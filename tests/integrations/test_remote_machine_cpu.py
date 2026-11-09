@@ -69,9 +69,12 @@ class MachineProviderHTTP:
         self.events, self.commands, self.pods, self.files = [], [], [], {}
         self.agent_jobs, self.detached = {}, {}
         self.deploys = 0
+        self.pod_id = POD  # the current (latest) pod; each deploy gets a new id
+        self.killed = []
         self.mount_id, self.mount_path = 7, (volume or {}).get("mount_path")
         self.expect_entry = "cpu-image"  # None: any entry, or a shipped workflow
         self.generations = []  # job.json of every generation job the pod ran
+        self.selections = []  # selection.json of every shipped selection the pod read
         self.seen_controller_progress = []
         self.job_hold = threading.Event()
         self.job_hold.set()
@@ -149,7 +152,8 @@ class MachineProviderHTTP:
             assert 'gpuTypeId: "gpu-exact"' in query and record["request_name"] in query
             assert not self.pods, "a second pod was deployed while one exists"
             self.deploys += 1
-            self.pods.append({"id": POD, "name": record["request_name"],
+            self.pod_id = POD if self.deploys == 1 else f"{POD}{self.deploys}"
+            self.pods.append({"id": self.pod_id, "name": record["request_name"],
                 "desiredStatus": "RUNNING", "actualStatus": "RUNNING", "costPerHr": 1.0, "gpuCount": 1,
                 "imageName": record["worker_image"],
                 "networkVolumeId": self.volume["id"] if self.volume else None,
@@ -159,10 +163,10 @@ class MachineProviderHTTP:
             return {"podFindAndDeployOnDemand": self.pods[0]}
         if "podMounts" in query:
             # Typed mounts, as runpod_lifecycle.discovery.observe_pod_mounts reads them (f2948817).
-            assert f'podId: "{POD}"' in query
+            assert f'podId: "{self.pod_id}"' in query
             mounts = [] if self.volume is None else [{"volumeId": self.volume["id"], "volumeType": "NETWORK_VOLUME",
                                                       "mountPath": self.mount_path, "readOnly": False}]
-            return {"pod": {"id": POD, "volumeMounts": mounts}}
+            return {"pod": {"id": self.pod_id, "volumeMounts": mounts}}
         if "networkVolumes" in query:
             return {"myself": {"networkVolumes": self._volumes()}}
         if "myself" in query:
@@ -220,7 +224,13 @@ class MachineProviderHTTP:
             assert "ensure_runtime" in command
             assert "17340" not in command and "--port" not in command and "8188" not in command
             assert any(path.endswith("/.astrid-engine/install.json") for path in self.files), "checked before install"
-            listed = [self.expect_entry] if self.expect_entry else list(self.listed)
+            listed = list(self.listed)  # what the pod's own (built-in) sources provide
+            if "tar -xzf" in command:
+                # The job's entry check: the pod lists only its built-ins and the shipped selection.
+                root = re.search(r"tar -xzf (\S+)/selection\.tar\.gz", command)[1].strip("'")
+                assert f"ASTRID_PACKS_PATH={root}/selection/packs" in command
+                assert f"VIBECOMFY_ENTRIES_DIR={root}/selection/entries" in command
+                listed += self._shipped(root)
             return 0, json.dumps([{"id": entry, "backend": "local", "ready": True} for entry in listed])
         if command.startswith(("cat ", "tail ")):
             return 0, self.files.get(shlex.split(command)[-1], b"").decode()
@@ -242,7 +252,7 @@ class MachineProviderHTTP:
     def _storage_probe(self, command):
         request = json.loads(base64.b64decode(shlex.split(command)[-1]))
         mapping = request.pop("provider_mapping")
-        assert mapping["schema"] == "runpod.provider-mounts.v1" and mapping["pod_id"] == POD
+        assert mapping["schema"] == "runpod.provider-mounts.v1" and mapping["pod_id"] == self.pod_id
         if not [e for e in self.events if e[0] == "storage_probe"]:
             # The first probe of a pod precedes every install write (a warm reuse re-probes later).
             assert not any(path.endswith("/.astrid-engine/install.json") for path in self.files), "probe after install"
@@ -258,6 +268,10 @@ class MachineProviderHTTP:
         assert "17340" not in detached and "--port" not in detached
         root = argv[argv.index("--job") + 1].rsplit("/", 1)[0]
         job = json.loads(self.files[root + "/job.json"])
+        assert f"export ASTRID_PACKS_PATH={root}/selection/packs" in detached
+        if argv[2] != "workflow":
+            # The entry resolves from the pod's built-ins or the shipped selection only.
+            assert argv[2] in [*self.listed, *self._shipped(root)], (argv[2], self.listed)
         assert argv[2] == (job["entry"] or "workflow") and set(job["inputs"]) >= {"python", "companion", "source"}
         for name in ("python", "companion", "source", "managed_assets", "source_video"):
             if name in job["inputs"]:
@@ -311,6 +325,31 @@ class MachineProviderHTTP:
 
     listed = ()
 
+    def _shipped(self, root):
+        """Entry ids the job's selection.tar.gz makes resolvable on the pod, from its real bytes."""
+        import tarfile
+        import yaml
+        data = self.files[root + "/selection.tar.gz"]
+        ids = []
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            names = archive.getnames()
+            manifest = json.loads(archive.extractfile("selection.json").read())
+            self.selections.append(manifest)
+            for name in names:
+                parts = name.split("/")
+                if len(parts) == 3 and parts[0] == "entries" and parts[2] == "entry.json":
+                    ids.append(json.loads(archive.extractfile(name).read())["id"])
+                if (len(parts) == 5 and parts[0] == "packs" and parts[2] == "extensions"
+                        and parts[3] == "vibecomfy.workflows" and name.endswith((".yaml", ".yml"))):
+                    ids += [row["id"] for row in (yaml.safe_load(archive.extractfile(name).read()) or {}).get("entries", [])]
+        return ids
+
+    def kill_pod(self):
+        """The provider terminates the pod between jobs (spot reclaim, user action)."""
+        self.killed.append(self.pod_id)
+        self.pods.clear()
+        self.files.clear()  # its container disk goes with it
+
     def output_for(self, job):
         """The pod's generated file for a job (an image unless a subclass knows the modality)."""
         return "cpu.png", self.image, "image/png"
@@ -336,23 +375,27 @@ class MachineProviderHTTP:
                 return reply(self._volumes())
             assert path.startswith("/v1/pods"), path
             if method == "DELETE":
-                assert path.endswith("/" + POD) and self.pods
+                if path.endswith("/" + self.pod_id) and self.pod_id in self.killed:
+                    # The provider already terminated this pod: an exact delete finds nothing.
+                    self.events.append(("pod-delete-gone", self.pod_id))
+                    return reply({}, 404)
+                assert path.endswith("/" + self.pod_id) and self.pods
                 record = json.loads(self.claim_path.read_text())
                 assert record["release_authorized"] is True
                 job = record["lease"].get("job")
                 assert job is None or job["state"] in {"exited", "cancelled"}, "pod deleted with a live job"
                 self.pods.clear()
-                self.events.append(("pod-delete", POD))
+                self.events.append(("pod-delete", self.pod_id))
                 return reply({}, 204)
             assert method == "GET"
             if path == "/v1/pods":
                 return reply(self.pods)
             if not self.pods:
-                self.events.append(("pod-404", POD))
+                self.events.append(("pod-404", self.pod_id))
             return reply(self.pods[0] if self.pods else {}, 200 if self.pods else 404)
         if host == "astrid-egress-preflight-8000.proxy.runpod.net":
             return reply({}, 404)
-        assert host == POD + "-8000.proxy.runpod.net", host
+        assert host == self.pod_id + "-8000.proxy.runpod.net", host
         assert "/engines/" not in path and path != "/engine-proxy", "the controller reached a pod engine"
         if path == "/health":
             return reply({"ok": True, "protocol": 1})
@@ -526,6 +569,14 @@ def _released(provider, record):
     assert not provider.pods
 
 
+def _machines_json(capsys):
+    from astrid.core.machines_cli import main as machines
+
+    capsys.readouterr()
+    assert machines(["--json"]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
 def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     j = journey
     s = j.start()
@@ -537,16 +588,27 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     assert provider.deploys == 1
     assert len(provider.kinds("pod_bootstrap.sh")) == 1
     assert len(provider.kinds("engines install comfyui")) == 1
-    assert len(provider.kinds("generate list --json")) == 1
+    # The runtime starts at the claim; the entry is listed from the shipped selection at start.
+    assert len(provider.kinds("generate list --json")) == 2
+    assert len([c for c in provider.kinds("generate list --json") if "tar -xzf" in c]) == 1
     record = j.record()
     lease = record["lease"]
     assert lease["state"] == "idle" and lease["job"]["state"] == "exited"
     preparation = lease["preparation"]
     assert preparation["state"] == "prepared"
     assert preparation["storage"] == {"mode": "ephemeral"}
-    assert preparation["runtime_check"]["entry"] == "cpu-image" and preparation["runtime_check"]["ready"]
+    # The claim proves the runtime starts; the entry is checked against the shipped selection at start.
+    assert preparation["runtime_check"]["entry"] is None and preparation["runtime_check"]["ready"]
     custody = preparation["custody"]
     assert custody["gpu_type"] == "CPU fixture GPU" and custody["account"] == "cpu-fixture"
+    # T5c: the attempt records which machine ran it, and the task listing shows it.
+    shown = s["client"].tasks.show(first.task_id)
+    machine = shown.data["result"]["machine"]
+    assert (machine["placement"], machine["machine"], machine["id"]) == ("runpod", "runpod.runpod", POD)
+    assert machine["lease"] == record["operation_id"] and machine["device"] == "CPU fixture GPU"
+    from astrid.core.cli.list_narrow import machine_label, render_list_table
+    assert machine_label(shown.data) == f"runpod:{POD} (CPU fixture GPU)"
+    assert f"runpod:{POD}" in render_list_table([shown.data], total=1, noun="tasks")
     assert custody["digest"].startswith("sha256:")
     # Progress: each poll copied one phase into the controller's attempt file before the job ended.
     assert provider.seen_controller_progress and provider.seen_controller_progress[0]["phase"] in {"align", "submit"}
@@ -557,7 +619,7 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     assert provider.deploys == 1, "the warm machine was not reused"
     new = provider.commands[len(jobs_before):]
     assert not [c for c in new if "pod_bootstrap.sh" in c or "engines install" in c]
-    assert len([c for c in new if "generate list --json" in c]) == 1
+    assert len([c for c in new if "generate list --json" in c]) == 2  # warm: the claim's check, then the job's
     assert len([c for c in new if " generate cpu-image " in c]) == 1
     assert j.record()["lease"]["preparation"]["custody"] == custody
     _released(provider, j.release())
@@ -620,3 +682,171 @@ def test_a_bad_mount_mapping_fails_before_install_and_releases(journey):
     assert not provider.kinds("engines install"), "install ran on an unpinned volume"
     assert not [e for e in provider.events if e[0] == "storage_probe"]
     _released(provider, j.record())
+
+
+def test_a_killed_pod_ends_its_lease_and_the_next_default_job_claims_fresh(journey, capsys):
+    """T5d: liveness before reuse; provider_terminated; a pinned job is refused; astrid machines lists both."""
+    j = journey
+    s = j.start()
+    provider = s["provider"]
+    first = j.image()
+    assert first.ok, first.to_dict()
+    assert j.record()["lease"]["state"] == "idle" and provider.deploys == 1
+    assert [row["id"] for row in _machines_json(capsys) if row["live"]] == [POD]
+    provider.kill_pod()
+    second = j.image()
+    assert second.ok, second.to_dict()
+    assert provider.deploys == 2, "the dead machine was not replaced"
+    assert len(provider.kinds("pod_bootstrap.sh")) == 2, "the fresh machine skipped bootstrap"
+    machine = s["client"].tasks.show(second.task_id).data["result"]["machine"]
+    assert machine["id"] == f"{POD}2" and machine["warm"] is False
+    rows = {row["id"]: row for row in _machines_json(capsys)}
+    assert rows[f"{POD}2"]["live"] and rows[f"{POD}2"]["state"] == "idle"
+    assert rows[POD]["live"] is False and rows[POD]["ended"] == "provider_terminated"
+    # A job pinned to the dead machine is refused with the reason and the live leases.
+    with pytest.raises(Exception, match=rf"no live runpod lease for machine '{POD}' \(ended: provider_terminated\); live leases: {POD}2"):
+        GenerationFacade().image(entry="cpu-image", placement={"kind": "runpod", "machine": POD},
+            client=s["client"], project=s["project"], consent=("paid",), max_usd=1.5,
+            deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
+            preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+    # Pinned to the live one, it runs warm there.
+    pinned = GenerationFacade().image(entry="cpu-image", placement={"kind": "runpod", "machine": f"{POD}2"},
+        client=s["client"], project=s["project"], consent=("paid",), max_usd=1.5,
+        deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
+        preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+    assert pinned.ok and provider.deploys == 2
+    _released(provider, j.release())
+    rows = {row["id"]: row for row in _machines_json(capsys)}
+    assert rows[f"{POD}2"]["ended"] == "explicit" and rows[POD]["ended"] == "provider_terminated"
+
+
+# -- T5e: the shipped selection ------------------------------------------------
+
+STUDIO_PACK = """schema_version: 3
+id: {pack_id}
+name: {pack_id}
+version: 1.0.0
+pack_api: "2.3"
+dependencies:
+  packs: [vibecomfy]
+  python_requirements: [vibecomfy]
+documents:
+  note:
+    format_version: 1
+    schema: {{type: object}}
+"""
+STUDIO_WORKFLOWS = """api: 1
+summary: {pack_id} looks.
+example: astrid generate image --entry {entry}
+effects: none
+ready_root: ../../workflows
+entries:
+  - id: {entry}
+    kind: image
+    modes: [t2i]
+    bundle: look
+"""
+
+
+def _write_workflow_pack(parent, pack_id, entry):
+    """A non-core pack with one vibecomfy.workflows entry (a canonical SaveImage bundle)."""
+    from vibecomfy.workflow import VibeOutput, VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import emit_bundle
+    pack = parent / pack_id
+    (pack / "extensions" / "vibecomfy.workflows").mkdir(parents=True)
+    (pack / "pack.yaml").write_text(STUDIO_PACK.format(pack_id=pack_id))
+    (pack / "extensions" / "vibecomfy.workflows" / "looks.yaml").write_text(
+        STUDIO_WORKFLOWS.format(pack_id=pack_id, entry=entry))
+    folder = pack / "workflows" / "look"
+    folder.mkdir(parents=True)
+    workflow = VibeWorkflow(entry, WorkflowSource(entry))
+    workflow.add_node("SaveImage", _id="1", uid="sink", filename_prefix="look")
+    workflow.register_input("filename_prefix", "1", "filename_prefix", "look", type="STRING")
+    workflow.outputs = [VibeOutput("1", "SaveImage", name="image", artifact_kind="image", mime_type="image/png")]
+    (folder / "source.json").write_text(json.dumps({"nodes": [
+        {"id": 1, "type": "SaveImage", "inputs": [], "widgets_values": ["look"]}], "links": []}))
+    emit_bundle(workflow, folder / "workflow.py", {"operation": "authored"})
+    return pack
+
+
+def _vibecomfy_distribution(monkeypatch):
+    # This env runs VibeComfy from PYTHONPATH; a release installs it as a distribution,
+    # which the pack validator checks a declared python requirement against.
+    from types import SimpleNamespace
+    from astrid.core.pack import loader
+    real = loader.importlib_metadata.distributions
+    monkeypatch.setattr(loader.importlib_metadata, "distributions",
+                        lambda: [*real(), SimpleNamespace(metadata={"Name": "vibecomfy"}, version="0.1.0")])
+
+
+def _install(tmp_path, monkeypatch, pack_id, entry):
+    """Install a pack as an active managed source (Plan 06), from a local git repository."""
+    from astrid.core.pack import source_setup
+    repo = tmp_path / f"{pack_id}-repo"
+    repo.mkdir()
+    _write_workflow_pack(repo, pack_id, entry)
+    git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True,  # noqa: E731
+                                    text=True).stdout.strip()
+    git("init", "-q")
+    git("add", "-A")
+    git("-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm", pack_id)
+    monkeypatch.setenv("ASTRID_SOURCE_STATE", str(tmp_path / "pack-sources.json"))
+    monkeypatch.setenv("ASTRID_SOURCE_DATA", str(tmp_path / "pack-data"))
+    source_setup.provision([source_setup.SourceDeclaration(pack_id, str(repo), git("rev-parse", "HEAD"), pack_id)])
+    (source,) = source_setup.active_sources()
+    return source
+
+
+def test_an_installed_pack_entry_and_an_as_entry_user_entry_run_on_the_machine(journey, monkeypatch):
+    """T5e (a) and (b): the selection ships; the pod resolves both entries from it only."""
+    from vibecomfy.entries import entries_dir, import_as_entry
+    j = journey
+    _vibecomfy_distribution(monkeypatch)
+    source = _install(j.tmp, monkeypatch, "studio", "studio-look")
+    # (b) a user entry saved the --as-entry way, from a canonical bundle.
+    bundle = Path(source.pack_root) / "workflows" / "look" / "workflow.py"
+    import_as_entry(bundle, "asentry-look")
+    assert (Path(entries_dir()) / "asentry-look" / "entry.json").is_file()
+    s = j.start()
+    provider = s["provider"]
+    provider.expect_entry = None
+    for entry in ("studio-look", "asentry-look", "cpu-image"):
+        result = GenerationFacade().image(entry=entry, placement="runpod", client=s["client"],
+            project=s["project"], consent=("paid",), max_usd=1.5,
+            deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
+            preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+        assert result.ok, (entry, result.to_dict())
+    assert [job["entry"] for job in provider.generations] == ["studio-look", "asentry-look", "cpu-image"]
+    assert provider.deploys == 1  # one warm machine served all three
+    shipped = provider.selections
+    # Every job ships the whole active selection, digest-pinned to its Plan 06 source record.
+    assert all([row["pack_id"] for row in sel["packs"]] == ["studio"] for sel in shipped)
+    pack = shipped[0]["packs"][0]
+    assert (pack["revision"], pack["tree_sha256"]) == (source.revision, source.tree_sha256)
+    assert "extensions/vibecomfy.workflows/looks.yaml" in pack["files"]
+    entries = {sel["entry"]: [row["id"] for row in sel["entries"]] for sel in shipped}
+    assert entries["asentry-look"] == ["asentry-look"] and entries["cpu-image"] == ["cpu-image"]
+    assert entries["studio-look"] == []  # a pack entry needs no user folder
+    _released(provider, j.release())
+
+
+def test_an_entry_from_a_pack_outside_the_active_selection_is_refused_before_the_claim(journey, monkeypatch):
+    """T5e (c): a user-scope pack is not an active source, so it is never shipped or claimed for."""
+    j = journey
+    _vibecomfy_distribution(monkeypatch)
+    loose = j.tmp / "user-packs"
+    _write_workflow_pack(loose, "loose", "loose-look")
+    monkeypatch.setenv("ASTRID_USER_PACKS", str(loose))
+    s = j.start()
+    provider = s["provider"]
+    with pytest.raises(Exception, match=r"loose-look.*outside the active pack selection"):
+        GenerationFacade().image(entry="loose-look", placement="runpod", client=s["client"],
+            project=s["project"], consent=("paid",), max_usd=1.5,
+            deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
+            preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+    assert provider.deploys == 0 and not s["claim_path"].exists()
+    assert not [e for e in provider.events if e[0] == "graphql" and "podFindAndDeployOnDemand" in e[1]]

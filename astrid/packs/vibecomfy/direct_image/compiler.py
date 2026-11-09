@@ -17,7 +17,7 @@ from typing import Any, Mapping
 
 
 SCHEMA_VERSION = "direct-image.v1"
-_PROFILE_NAMES = ("pip_embedded", "checkout_server")
+_PROFILE_NAMES = ("local_server", "checkout_server")
 _SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
@@ -61,12 +61,12 @@ class ProfileConfig:
 # session policies.  They share request/output meaning but never silently
 # select one another.
 PROFILE_CONFIGS: dict[str, ProfileConfig] = {
-    "pip_embedded": ProfileConfig(
-        name="pip_embedded",
+    "local_server": ProfileConfig(
+        name="local_server",
         dependency_lock="vibecomfy-pip-comfyui-0.26.0",
-        session_kind="embedded_session",
+        session_kind="external_server",
         warm_policy="never",
-        cancellation="owned_process_group",
+        cancellation="delete-owned-prompt-and-interrupt-if-running",
     ),
     "checkout_server": ProfileConfig(
         name="checkout_server",

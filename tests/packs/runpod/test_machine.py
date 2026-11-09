@@ -114,7 +114,9 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     assert json.loads(job.progress_path.read_text()) == {"phase": "fetch"}
     record = c.read()
     assert record["lease"]["state"] == "idle" and record["lease"]["job"]["state"] == "exited"
-    assert record["lease"]["preparation"]["runtime_check"]["entry"] == "cpu-image"
+    assert record["lease"]["preparation"]["runtime_check"]["entry"] is None  # claim: the runtime starts
+    # start: the shipped selection is extracted and the entry must be listed from it.
+    assert any("tar -xzf" in line and "generate list --json" in line for line in c.pod.exec_log)
     assert c.creates == 1 and c.deletes == []
     assert [kind for kind, _ in c.active] == ["begin", "done"]
     # Inputs shipped inside the job directory, each digest-checked after upload.
@@ -134,12 +136,14 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
 
 def test_a_failing_runtime_check_releases_the_lease_and_never_settles_warm(machine_case):
     c = machine_case
-    c.pod.listed = []  # the pod's runtime does not list the entry
+    c.pod.listed = []  # the pod's runtime does not list the entry from the shipped selection
+    job = c.job()
     with pytest.raises(rm.MachineError, match="not listed by the pod's runtime"):
-        c.machine.claim(c.job())
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                       sleep=lambda s: None)
     record = c.read()
     assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
-    assert record["lease"]["preparation"]["state"] == "unresolved"
+    assert record["lease"].get("ended") == "task_failed"
     assert not [line for line in c.pod.job_log if " generate " in line]
 
 
@@ -204,3 +208,116 @@ def test_an_unsafe_manifest_path_is_refused(machine_case, tmp_path):
         c.machine.fetch(run, tmp_path / "dest")
     c.machine.release(lease, False)
     assert c.deletes == ["pod-1"]
+
+
+def test_liveness_ends_a_dead_idle_lease_with_provider_terminated(machine_case):
+    """T5d: a host poll that finds the pod gone ends the lease; it stops being charged and leaves reuse."""
+    c = machine_case
+    job = c.job()
+    run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    assert c.host.observe_liveness(observe=lambda pod: "live") == "live"
+    assert c.read()["lease"]["state"] == "idle" and c.deletes == []
+    assert c.host.observe_liveness(observe=lambda pod: "gone") == "provider_terminated"
+    record = c.read()
+    assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "provider_terminated"
+    assert c.host.observe_liveness(observe=lambda pod: "gone") is None  # nothing live is left
+    ended = json.loads(c.host.ended_path().read_text())
+    assert [(row["id"], row["ended"], row["live"]) for row in ended] == [("pod-1", "provider_terminated", False)]
+    assert rm.lease_rows(c.host)[0]["ended"] == "provider_terminated"
+
+
+def test_a_job_pinned_to_an_ended_machine_is_refused_with_the_reason(machine_case):
+    from astrid.packs.runpod.target_selection import PaidSelectionError
+
+    c = machine_case
+    job = c.job()
+    run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    c.host.observe_liveness(observe=lambda pod: "gone")
+    pinned = c.job(2)
+    pinned = type(pinned)(**{**pinned.__dict__, "policy": {**pinned.policy, "machine": "pod-1"}})
+    creates = c.creates
+    with pytest.raises(PaidSelectionError, match=r"no live runpod lease for machine 'pod-1' "
+                                                 r"\(ended: provider_terminated\); live leases: none"):
+        c.machine.claim(pinned)
+    assert c.creates == creates
+
+
+def test_the_host_observes_machines_on_its_polls_throttled(monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.execution.generic_host import GenericPackHost
+
+    calls = []
+    host = SimpleNamespace(_target_bindings=SimpleNamespace(observe=lambda: calls.append(1)))
+    host._handoff_accounting_owner = host
+    monkeypatch.setenv("ASTRID_MACHINE_LIVENESS_SECONDS", "10")
+    for now in (100.0, 105.0, 111.0):
+        GenericPackHost._observe_machines(host, now)
+    assert calls == [1, 1]
+    host._target_bindings = SimpleNamespace(observe=lambda: (_ for _ in ()).throw(RuntimeError("provider down")))
+    GenericPackHost._observe_machines(host, 200.0)  # never raises into the claim loop
+
+
+def test_an_entry_from_a_pack_missing_from_the_shipped_selection_is_refused_before_the_claim(machine_case, tmp_path):
+    from types import SimpleNamespace
+
+    c = machine_case
+    installed = SimpleNamespace(id="studio.workflows", scope="installed", path=tmp_path / "studio" / "w.yaml",
+                                fields={"entries": [{"id": "studio-look"}]})
+    builtin = SimpleNamespace(id="vibecomfy.ready", scope="built-in",
+                              path=rm._agent_packs() / "vibecomfy" / "extensions" / "w.yaml",
+                              fields={"entries": [{"id": "z-image"}]})
+    registry = SimpleNamespace(contributions=lambda point: [installed, builtin])
+    reason = rm.unshipped_entry_reason("studio-look", registry=registry, action_rows=[])
+    assert "studio.workflows (installed pack" in reason and "outside the active pack selection" in reason
+    assert rm.unshipped_entry_reason("z-image", registry=registry, action_rows=[]) is None
+    assert rm.unshipped_entry_reason(None, registry=registry, action_rows=[]) is None
+    assert rm.unshipped_entry_reason("h3", registry=SimpleNamespace(contributions=lambda p: []),
+                                     action_rows=[{"id": "h3", "action": "h3_av.transform"}]) is None
+    assert "pack 'elsewhere'" in rm.unshipped_entry_reason(
+        "x", registry=SimpleNamespace(contributions=lambda p: []), action_rows=[{"id": "x", "action": "elsewhere.run"}])
+    # Through the machine: refused before any offer observation, lock or create.
+    import astrid.packs.runpod.machine as module
+    original = module.unshipped_entry_reason
+    module.unshipped_entry_reason = lambda entry: original(entry, registry=registry, action_rows=[])
+    try:
+        job = c.job()
+        job = type(job)(**{**job.__dict__, "entry": "studio-look"})
+        quotes = len(c.quotes)
+        with pytest.raises(rm.MachineError, match="outside the active pack selection"):
+            c.machine.claim(job)
+    finally:
+        module.unshipped_entry_reason = original
+    assert c.creates == 0 and len(c.quotes) == quotes and not c.owner.path.exists()
+
+
+def test_the_selection_ships_active_sources_and_the_user_entry_folder(tmp_path):
+    """T5e: build_selection pins each active source and copies the --as-entry folder."""
+    import tarfile
+    from types import SimpleNamespace
+
+    pack = tmp_path / "studio"
+    (pack / "extensions" / "vibecomfy.workflows").mkdir(parents=True)
+    (pack / "pack.yaml").write_text("id: studio\n")
+    (pack / ".git").mkdir()
+    (pack / ".git" / "HEAD").write_text("ref")
+    entries = tmp_path / "entries" / "mine"
+    entries.mkdir(parents=True)
+    (entries / "entry.json").write_text(json.dumps({"id": "mine"}))
+    (entries / "workflow.py").write_text("# bundle")
+    source = SimpleNamespace(pack_id="studio", pack_root=pack, revision="a" * 40, repository="file:///studio",
+                             tree_sha256="b" * 64, manifest_sha256="c" * 64)
+    archive, manifest = rm.build_selection("mine", tmp_path / "stage", sources=[source],
+                                           entries_dir=tmp_path / "entries")
+    assert manifest["packs"][0]["tree_sha256"] == "b" * 64 and "pack.yaml" in manifest["packs"][0]["files"]
+    assert manifest["entries"] == [{"id": "mine", "folder": "mine", "files": {
+        "entry.json": rm.sha256_file(entries / "entry.json"), "workflow.py": rm.sha256_file(entries / "workflow.py")}}]
+    with tarfile.open(archive) as handle:
+        names = set(handle.getnames())
+    assert {"packs/studio/pack.yaml", "entries/mine/entry.json", "entries/mine/workflow.py", "selection.json"} <= names
+    assert not any(".git" in name for name in names)
+    env = rm.selection_env("/root/astrid/runs/x")
+    assert "ASTRID_PACKS_PATH=/root/astrid/runs/x/selection/packs" in env
+    assert "VIBECOMFY_ENTRIES_DIR=/root/astrid/runs/x/selection/entries" in env
+    assert "ASTRID_SOURCE_STATE=" in env and "ASTRID_USER_PACKS=" in env

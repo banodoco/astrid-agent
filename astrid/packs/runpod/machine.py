@@ -147,20 +147,125 @@ def pin_storage(placement: RemotePlacement, state: RemoteRun, *, pod_id: str, vo
 # ----------------------------------------------------------------------------
 
 
-def runtime_check_command() -> str:
-    """Start the pod's Runtime headless (it picks its own port) and list entries."""
-    return (f"{POD_VENV}/bin/python -c "
+SELECTION_NAME = "selection.tar.gz"
+SELECTION_MANIFEST = "selection.json"
+
+
+def selection_env(remote_root: str) -> str:
+    """Point the pod-side run at the shipped selection only (no pod-local packs or entries)."""
+    root = f"{remote_root}/selection"
+    return " ".join(f"{name}={shlex.quote(value)}" for name, value in (
+        ("ASTRID_PACKS_PATH", f"{root}/packs"),
+        ("VIBECOMFY_ENTRIES_DIR", f"{root}/entries"),
+        ("ASTRID_SOURCE_STATE", f"{root}/no-managed-sources.json"),
+        ("ASTRID_USER_PACKS", f"{root}/no-user-packs"),
+    ))
+
+
+def extract_selection_command(remote_root: str) -> str:
+    root = shlex.quote(f"{remote_root}/selection")
+    return (f"mkdir -p {root}/packs {root}/entries {root}/no-user-packs && "
+            f"tar -xzf {shlex.quote(f'{remote_root}/{SELECTION_NAME}')} -C {root}")
+
+
+def runtime_check_command(remote_root: str | None = None) -> str:
+    """Start the pod's Runtime headless (it picks its own port) and list entries.
+
+    With ``remote_root``, the shipped selection is extracted first and the listing
+    sees only its packs and entries.
+    """
+    prefix = "" if remote_root is None else f"{extract_selection_command(remote_root)} && "
+    env = "" if remote_root is None else f"env {selection_env(remote_root)} "
+    return (prefix + f"{POD_VENV}/bin/python -c "
             + shlex.quote("from astrid.sdk.autobootstrap import ensure_runtime; ensure_runtime()")
-            + f" >/dev/null && {POD_VENV}/bin/astrid generate list --json")
+            + f" >/dev/null && {env}{POD_VENV}/bin/astrid generate list --json")
 
 
-def runtime_check(placement: RemotePlacement, state: RemoteRun, entry: str | None) -> dict[str, Any]:
+def build_selection(entry: str | None, staging: Path, *, sources: Any = None,
+                    entries_dir: Path | None = None) -> tuple[Path, dict[str, Any]]:
+    """The job's shipped selection: every active installed pack (Plan 06), plus the user entry folder.
+
+    Built-in packs are already on the pod (the pinned Agent source). Each installed
+    pack ships whole, pinned by its revision and tree digest; a ``--as-entry`` user
+    entry ships its own folder from ``VIBECOMFY_ENTRIES_DIR``. ``selection.json``
+    records both, with a sha256 per shipped file.
+    """
+    import tarfile
+
+    if sources is None:
+        from astrid.core.pack.source_setup import active_sources
+        sources = active_sources(verify=True)
+    members: list[tuple[str, Path]] = []
+    packs = []
+    for source in sources:
+        root = Path(source.pack_root)
+        files = _tree_files(root)
+        packs.append({"pack_id": source.pack_id, "revision": source.revision, "repository": source.repository,
+                      "tree_sha256": source.tree_sha256, "manifest_sha256": source.manifest_sha256,
+                      "files": {rel: sha256_file(path) for rel, path in files}})
+        members += [(f"packs/{source.pack_id}/{rel}", path) for rel, path in files]
+    shipped_entries = []
+    folder = _user_entry_folder(entry, entries_dir)
+    if folder is not None:
+        files = _tree_files(folder)
+        shipped_entries.append({"id": entry, "folder": folder.name,
+                                "files": {rel: sha256_file(path) for rel, path in files}})
+        members += [(f"entries/{folder.name}/{rel}", path) for rel, path in files]
+    manifest = {"schema": "astrid.machine-selection.v1", "entry": entry, "packs": packs, "entries": shipped_entries}
+    staging.mkdir(parents=True, exist_ok=True)
+    archive = staging / SELECTION_NAME
+    body = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    with tarfile.open(archive, "w:gz") as handle:
+        for name, path in members:
+            info = handle.gettarinfo(str(path), arcname=name)
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            with path.open("rb") as stream:
+                handle.addfile(info, stream)
+        import io
+        info = tarfile.TarInfo(SELECTION_MANIFEST)
+        info.size, info.mode, info.mtime = len(body), 0o644, 0
+        handle.addfile(info, io.BytesIO(body))
+    return archive, manifest
+
+
+def _tree_files(root: Path) -> list[tuple[str, Path]]:
+    files = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in (".git", "__pycache__"))
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            if name.endswith(".pyc") or path.is_symlink():
+                continue
+            files.append((path.relative_to(root).as_posix(), path))
+    return files
+
+
+def _user_entry_folder(entry: str | None, entries_dir: Path | None = None) -> Path | None:
+    if not entry:
+        return None
+    try:
+        from vibecomfy.entries import entries_dir as default_dir
+        root = Path(entries_dir) if entries_dir is not None else Path(default_dir())
+    except Exception:
+        return None
+    for path in sorted(root.glob("*/entry.json")):
+        try:
+            if json.loads(path.read_text(encoding="utf-8")).get("id") == entry:
+                return path.parent
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def runtime_check(placement: RemotePlacement, state: RemoteRun, entry: str | None,
+                  *, command: str | None = None) -> dict[str, Any]:
     """After install: the pod's own local Runtime starts and lists ``entry`` as ready.
 
     A job without a named entry ships its workflow bundle; then only the
     Runtime start and the listing are checked.
     """
-    code, stdout, stderr = placement._exec(state, runtime_check_command(), timeout=300)
+    code, stdout, stderr = placement._exec(state, command or runtime_check_command(), timeout=300)
     if code != 0:
         raise MachineError(f"pod runtime check failed (exit {code}): {(stderr or stdout)[-400:]}")
     try:
@@ -200,6 +305,7 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None)
     return (
         "set -u\n"
         f"export ASTRID_PROGRESS_PATH={shlex.quote(f'{remote_root}/{PROGRESS_NAME}')}\n"
+        f"export {selection_env(remote_root)}\n"
         f"{line} > {result}\n"
         "rc=$?\n"
         "if [ $rc -ne 0 ]; then exit $rc; fi\n"
@@ -274,6 +380,10 @@ class RunPodMachine:
 
         adapter = self._require()
         policy, inputs = job.policy, job.inputs
+        reason = unshipped_entry_reason(job.entry)
+        if reason is not None:
+            # Before the claim: the pod only gets the pinned source tuple and this job directory.
+            raise MachineError(reason)
         prevalidate_task(dict(policy), dict(inputs), scratch=job.scratch)
         owner = adapter.lease_owner
         if (policy.get("kind") != KIND or policy.get("engine") != adapter.installation.engine
@@ -287,6 +397,16 @@ class RunPodMachine:
         )
         # Refuse a changed offer first: before staging, the account lock or any create.
         owner.selection.consented_offer(consent, owner.selection.clock())
+        # A warm machine is reused only while the provider still runs it.
+        owner.observe_liveness(observe=getattr(adapter, "observe_pod", None))
+        pinned = policy.get("machine")
+        if pinned is not None:
+            live = [row["id"] for row in lease_rows(owner) if row["live"]]
+            if pinned not in live:
+                ended = next((row for row in lease_rows(owner) if row["id"] == pinned), None)
+                reason = f" (ended: {ended['ended']})" if ended and ended.get("ended") else ""
+                raise PaidSelectionError(f"no live runpod lease for machine {pinned!r}{reason}; "
+                                         f"live leases: {', '.join(live) or 'none'}")
         values = json.loads(inputs.get("workflow_inputs") or "{}")
         acquired: list[Any] = []
 
@@ -305,7 +425,7 @@ class RunPodMachine:
                     request, consent=consent, lease_owner=owner, placement=adapter.placement,
                     installation=adapter.installation, validate=adapter.validate,
                     requested_idle_seconds=policy["idle_seconds"], on_acquired=on_acquired,
-                    entry=job.entry, runtime_check=True, observe_mounts=self._observe_mounts,
+                    entry=None, runtime_check=True, observe_mounts=self._observe_mounts,
                 )
             except BaseException:
                 if acquired:
@@ -314,6 +434,13 @@ class RunPodMachine:
                     owner.release(reason="preparation_failed", _expected_operation=acquired[0].operation_id)
                 raise
         return MachineLease(prepared.lease, prepared.claim, prepared.state, prepared.custody, prepared.reused)
+
+    def describe(self, lease: MachineLease) -> dict[str, Any]:
+        """Which machine runs this job: recorded on the attempt when the machine is claimed."""
+        record = lease.lease.claim
+        return {"placement": KIND, "machine": "runpod.runpod", "id": lease.claim.pod_id,
+                "lease": lease.lease.operation_id, "generation": lease.lease.generation,
+                "device": lease.custody.get("gpu_type") or record.get("gpu_type"), "warm": lease.warm}
 
     # -- start ---------------------------------------------------------------
 
@@ -343,6 +470,14 @@ class RunPodMachine:
         local_job = staging / JOB_NAME
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
+        # The active pack selection and the user entry ship with the job; the
+        # pod-side run resolves its entry from them only.
+        archive, selection = build_selection(job.entry, staging)
+        placement._put_checked(state, archive, f"{remote_root}/{SELECTION_NAME}")
+        archive.unlink(missing_ok=True)
+        lease.state.note("selection", "shipped", packs=[row["pack_id"] for row in selection["packs"]],
+                         entries=[row["id"] for row in selection["entries"]])
+        runtime_check(placement, state, job.entry, command=runtime_check_command(remote_root))
         command = generation_command(job.entry, remote_root, mode=job.mode)
         job_id = uuid.uuid4().hex
         # The exact detached identity is durable before launch; a lost ACK never
@@ -505,6 +640,114 @@ class RunPodMachine:
             owner._save(record, {**record["lease"], "job": dict(job)})
 
 
+def _agent_packs() -> Path:
+    import astrid
+
+    return (Path(astrid.__file__).resolve().parent / "packs")
+
+
+def _active_sources() -> tuple[Any, ...]:
+    try:
+        from astrid.core.pack.source_setup import active_sources
+        return tuple(active_sources(verify=False))
+    except Exception:
+        return ()
+
+
+def _active_roots() -> list[Path]:
+    return [Path(source.pack_root).resolve() for source in _active_sources()]
+
+
+def _active_pack_ids() -> set[str]:
+    return {source.pack_id for source in _active_sources()}
+
+
+def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
+                           action_rows: Any = None) -> str | None:
+    """Why ``entry`` cannot run on a rented machine, or None when its code ships.
+
+    The pod receives the pinned source tuple (``remote_placement.SOURCE_DIRS``: the
+    Agent with its built-in packs, the Runtime, runpod-lifecycle, VibeComfy with its
+    ready templates) plus the job directory, which carries the active pack selection
+    (Plan 06 ``active_sources``) and the user entry folder (``build_selection``). An
+    entry from a pack outside that selection (user or project scope, ``--pack-root``,
+    ``ASTRID_PACKS_PATH``) is not shipped and is refused before the claim.
+    """
+    if not entry:
+        return None  # a bundle-only job: the bundle ships in the job directory
+    packs = _agent_packs()
+    if registry is None:
+        try:
+            from astrid.core.extensions.registry import ExtensionRegistry
+            registry = ExtensionRegistry().load()
+        except Exception:
+            registry = None
+    if registry is not None:
+        from astrid.core.generation.workflows import POINT as WORKFLOWS
+        for contribution in registry.contributions(WORKFLOWS):
+            ids = {row.get("id") for row in (contribution.fields.get("entries") or []) if isinstance(row, Mapping)}
+            if entry not in ids:
+                continue
+            path = Path(contribution.path).resolve()
+            shipped = ((contribution.scope == "built-in" and path.is_relative_to(packs))
+                       or any(path.is_relative_to(root) for root in _active_roots()))
+            if not shipped:
+                return (f"entry {entry!r} comes from {contribution.id} ({contribution.scope} pack at {path.parent}), "
+                        "which is outside the active pack selection shipped to a rented machine; install it "
+                        "with astrid packs (an active source), or run it locally")
+            return None
+    if action_rows is None:
+        try:
+            from astrid.core.generation.entries import action_entries
+            action_rows = action_entries()
+        except Exception:
+            action_rows = []
+    for row in action_rows:
+        if row.get("id") == entry and row.get("action"):
+            pack = str(row["action"]).split(".", 1)[0]
+            if not (packs / pack / "pack.yaml").is_file() and pack not in _active_pack_ids():
+                return (f"entry {entry!r} is an action of pack {pack!r}, which is outside the active pack "
+                        "selection shipped to a rented machine; run it locally")
+            return None
+    return None
+
+
+def lease_rows(owner: Any) -> list[dict[str, Any]]:
+    """This account's lease (live or most recently ended), as ``astrid machines`` lists it."""
+    record = owner.selection._read() if hasattr(owner, "selection") else owner
+    return [lease_row(record)] if isinstance(record, Mapping) and record.get("pod_id") else []
+
+
+def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
+    lease = record.get("lease") or {}
+    live = record.get("state") == "claimed" and lease.get("state") in {"active", "idle"}
+    return {"id": record.get("pod_id"), "kind": KIND, "lease": record.get("operation_id"),
+            "gpu": record.get("gpu_type"), "state": lease.get("state") if live else "ended",
+            "live": live, "idle_expires_at": lease.get("idle_expires_at") if lease.get("state") == "idle" else None,
+            "cost_usd": round(float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0), 4),
+            "ended": None if live else (lease.get("ended") or lease.get("release_reason"))}
+
+
+def journal_leases(account: str | None = None) -> list[dict[str, Any]]:
+    """Read-only listing from the account's lease journal (no lock, no provider call)."""
+    from .target_selection import canonical_claim_path, read_runpod_preferences
+
+    from .worker_owner import ended_leases_path
+
+    try:
+        account = account or read_runpod_preferences().provider_account_ref
+        path = canonical_claim_path(account)
+        record = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        ended_path = ended_leases_path(path)
+        ended = json.loads(ended_path.read_text(encoding="utf-8")) if ended_path.is_file() else []
+    except Exception:  # no preferences or no journal: no leases
+        return []
+    current = [lease_row(record)] if isinstance(record, Mapping) and record.get("pod_id") else []
+    seen = {row["lease"] for row in current}
+    # The live (or latest) lease first, then recently ended ones, newest first.
+    return current + [row for row in reversed(ended) if isinstance(row, dict) and row.get("lease") not in seen]
+
+
 def observe_mounts_with(api_key: str) -> Callable[[str, str], Mapping[str, Any]]:
     """The typed provider mapping, from runpod-lifecycle's exact-pod observation."""
     def observe(pod_id: str, nonce: str) -> Mapping[str, Any]:
@@ -518,6 +761,6 @@ def observe_mounts_with(api_key: str) -> Callable[[str, str], Mapping[str, Any]]
 #: The registered ``generation.machine`` contribution (no host owner until ``for_host``).
 MACHINE = RunPodMachine()
 
-__all__ = ["MACHINE", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
+__all__ = ["MACHINE", "journal_leases", "unshipped_entry_reason", "lease_row", "lease_rows", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
            "RunPodMachine", "custody_differences", "generation_argv", "machine_custody", "pin_storage",
            "runtime_check"]

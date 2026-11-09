@@ -202,15 +202,14 @@ def test_checkout_producer_still_rejects_installed_baseline_mismatch(tmp_path, m
     assert facts.evidence()["comfy_provenance"]["readiness"]["status"] == "ready_with_warnings"
 
 
-@pytest.mark.parametrize("profile", ["local_server", "pip_embedded"])
-def test_canonical_requirements_are_retained_before_profile_execution_fails(tmp_path, monkeypatch, profile):
+def test_canonical_requirements_are_retained_before_profile_execution_fails(tmp_path, monkeypatch):
+    profile = "local_server"
     from astrid.packs.vibecomfy import local_server_engine, production_engine
 
     def fail(*args, **kwargs):
         raise RuntimeError("profile execution failed")
 
     monkeypatch.setattr(local_server_engine, "run_local_server", fail)
-    monkeypatch.setattr(production_engine, "_bootstrap_embedded_comfy_client", fail)
     with readiness.ComfyProvenance().capture() as facts:
         with pytest.raises(RuntimeError, match="profile execution failed"):
             production_engine._run_profile_result(

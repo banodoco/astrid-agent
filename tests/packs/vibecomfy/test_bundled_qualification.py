@@ -64,9 +64,9 @@ def test_authored_workflow_with_wan_metadata_remains_unchanged(tmp_path, monkeyp
     dispatch.assert_called_once()
 
 
-@pytest.mark.parametrize('target', [None, 'auto'])
+@pytest.mark.parametrize('placement', [None, 'auto'])
 @pytest.mark.parametrize('dry_run', [False, True])
-def test_sdk_bundled_snapshot_is_refused_before_custody_probe_or_dispatch(tmp_path, monkeypatch, target, dry_run):
+def test_sdk_bundled_snapshot_is_refused_before_custody_probe_or_dispatch(tmp_path, monkeypatch, placement, dry_run):
     import vibecomfy
     import astrid.sdk as sdk
     from astrid.core.generation import preflight
@@ -82,7 +82,7 @@ def test_sdk_bundled_snapshot_is_refused_before_custody_probe_or_dispatch(tmp_pa
     from types import SimpleNamespace
     client = SimpleNamespace(media=SimpleNamespace(import_file=import_file))
     with pytest.raises(AstridError) as caught:
-        GenerationFacade().workflow(workflow=source, target=target, client=client,
+        GenerationFacade().workflow(workflow=source, placement=placement, client=client,
                                     project='demo', dry_run=dry_run)
     assert caught.value.code == 'generation_route_unqualified'
     assert 'video/wan_fake' in str(caught.value) and caught.value.fix
@@ -98,7 +98,7 @@ def test_central_typed_template_execute_refuses_before_dispatch(tmp_path, monkey
     request.write_text(json.dumps({
         'schema_version': 'astrid.vibecomfy.production-engine.v3',
         'workflow': {'template_id': 'video/wan22_animate_native_first_stage', 'bindings': {}},
-        'references': {}, 'profile': engine._PROFILE_CONFIGS['pip_embedded'], 'capability_id': 'fake',
+        'references': {}, 'profile': engine._PROFILE_CONFIGS['local_server'], 'capability_id': 'fake',
         'model_id': 'wan', 'template_id': 'video/wan22_animate_native_first_stage',
         'task_identity': 'fake-task'}))
     with pytest.raises(AstridError) as caught:

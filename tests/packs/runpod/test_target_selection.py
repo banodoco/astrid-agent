@@ -97,8 +97,8 @@ def case(tmp_path, monkeypatch):
 def test_preferences_use_independent_f02_writer_and_preserve_human_default(case, tmp_path):
     path = tmp_path / "config.toml"
     path.write_text('[comfyui]\nurl="http://127.0.0.1:8188"\nowner="human"\n')
-    save_runpod_preferences(case.raw, path=path)
-    assert read_runpod_preferences(path=path) == case.prefs
+    save_runpod_preferences(case.raw)
+    assert read_runpod_preferences() == case.prefs
     from astrid.core.generation.targets import read_target
     human = read_target(path=path)
     assert human.owner == "human"
@@ -368,17 +368,17 @@ def test_preferences_default_idle_uses_shared_warm_hold_default(case):
     assert DEFAULT_IDLE_SECONDS == 1800
     assert parsed.idle_timeout_seconds == direct.idle_timeout_seconds == DEFAULT_IDLE_SECONDS
     assert RunPodPreferences.from_mapping(parsed.as_mapping()) == parsed
-def test_default_idle_and_explicit_optional_volume(tmp_path):
+def test_default_idle_and_explicit_optional_volume(generation_settings_store):
     from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
     raw = {"provider_account_ref": "account-a", "gpu_types": ["gpu"],
            "image": "worker@sha256:" + "a" * 64, "volume": None}
     preferences = RunPodPreferences.from_mapping(raw)
     assert preferences.idle_timeout_seconds == DEFAULT_IDLE_SECONDS == 1800
     assert RunPodPreferences.from_mapping(preferences.as_mapping()) == preferences
-    path = tmp_path / "config.toml"
-    save_runpod_preferences(raw, path=path)
-    assert read_runpod_preferences(path=path) == preferences
-    assert "volume" not in path.read_text()
+    save_runpod_preferences(raw)
+    assert read_runpod_preferences() == preferences
+    stored, _ = generation_settings_store.documents["generation"]
+    assert "volume" not in stored["machines"]["runpod"]
 
 
 def test_initial_intent_directory_is_flushed_before_create(case, monkeypatch):

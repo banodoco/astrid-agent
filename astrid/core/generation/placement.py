@@ -2,9 +2,9 @@
 
 ``Placement`` is frozen and validated. It is resolved once, request -> user
 default -> built-in, by :func:`resolve_placement`, and then travels down as task
-data; nothing below re-infers it. The user default is the ``[placement]`` table
-of the existing global target config (``targets.config_path()``), so there is no
-new file. A machine kind is ``local``, ``attached`` or the key of a
+data; nothing below re-infers it. The user default is the ``placement`` key of the
+user's generation settings document in the Runtime (``settings``); ``path`` names an old
+VibeComfy TOML whose ``[placement]`` is imported into that document once. A machine kind is ``local``, ``attached`` or the key of a
 ``generation.machine`` contribution, validated against the registry rather than a
 closed enum. A lease is not a new object: ``machine`` names one live
 ``RunPodLeaseOwner`` lease, which the warm hold keeps alive.
@@ -109,11 +109,12 @@ def _merge(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def resolve_placement(request: Mapping[str, Any] | Placement | None = None, *,
-                      path: str | Path | None = None, builtin: Placement | None = None) -> Placement:
+                      path: str | Path | None = None, builtin: Placement | None = None,
+                      client: Any = None) -> Placement:
     """request -> user default -> built-in; the only place a placement is chosen."""
-    from astrid.core.generation.targets import read_config
+    from astrid.core.generation import settings
 
-    default = read_config(path).get("placement") or {}
+    default = settings.placement_default(client, legacy_path=path)
     if not isinstance(default, Mapping):
         raise _refuse("the [placement] default must be a table", field_name="placement")
     over = request.as_mapping() if isinstance(request, Placement) else dict(request or {})
@@ -155,7 +156,12 @@ def registered_machine_kinds() -> tuple[str, ...]:
 
 
 def _runpod_leases(kind: str) -> list[Mapping[str, Any]]:
-    return []
+    """Live leases of a machine kind, read from its lease journal (no provider call)."""
+    if kind != "runpod":
+        return []
+    from astrid.packs.runpod.machine import journal_leases
+
+    return [{"machine": row["id"], **row} for row in journal_leases()]
 
 
 def validate_placement(placement: Placement, *, machine_kinds: tuple[str, ...] | None = None,
@@ -178,9 +184,12 @@ def validate_placement(placement: Placement, *, machine_kinds: tuple[str, ...] |
         raise _refuse(f"a {placement.kind} placement takes a machine and policy, not a device or endpoint")
     if placement.machine:
         leases = (live_leases or _runpod_leases)(placement.kind)
-        live = [str(item.get("machine")) for item in leases]
+        live = [str(item.get("machine")) for item in leases if item.get("live", True)]
         if placement.machine not in live:
-            raise _refuse(f"no live {placement.kind} lease for machine {placement.machine!r}; "
+            ended = next((item.get("ended") for item in leases
+                          if str(item.get("machine")) == placement.machine and item.get("ended")), None)
+            raise _refuse(f"no live {placement.kind} lease for machine {placement.machine!r}"
+                          f"{f' (ended: {ended})' if ended else ''}; "
                           f"live leases: {', '.join(live) or 'none'}", field_name="machine", options=live,
                           fix="omit machine to acquire a new one, or name a live lease")
     return placement

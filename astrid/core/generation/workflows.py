@@ -34,7 +34,8 @@ def entries(contribution: Any) -> list[dict[str, Any]]:
     root = ready_root(contribution)
     rows = []
     for raw in contribution.fields.get("entries", []):
-        row = {"needs": [], "binds": {}, "defaults": {}, **raw}
+        # default_for is Astrid's slot-default declaration, not part of VibeComfy's thin entry.
+        row = {"needs": [], "binds": {}, "defaults": {}, **{k: v for k, v in raw.items() if k != "default_for"}}
         bundle = Path(row["bundle"])
         row["bundle"] = str(bundle if bundle.is_absolute() else (root / bundle).resolve())
         rows.append(row)
@@ -83,3 +84,14 @@ def workflow_entries(registry: Any) -> list[dict[str, Any]]:
 def _pack_root(contribution: Any) -> Path:
     # <pack>/extensions/<point>/<key>.yaml
     return contribution.path.parent.parent.parent
+
+
+def default_declarations(registry: Any) -> list[dict[str, Any]]:
+    """Each entry's ``default_for`` slots as ``{pack, entry, kind, mode, priority}`` rows."""
+    rows = []
+    for contribution in contributions(registry):
+        for raw in contribution.fields.get("entries", []):
+            for slot in raw.get("default_for", []):
+                rows.append({"pack": contribution.pack, "entry": raw["id"], "kind": slot["kind"],
+                             "mode": slot["mode"], "priority": slot["priority"]})
+    return rows

@@ -167,7 +167,7 @@ def runtime(monkeypatch, tmp_path):
 
 def argv(out=None, *, placement='managed'):
     args = ['generate', 'image', '--entry', 'qwen-image-2.1-turbo', '--mode', 't2i',
-            '--placement', target, '--width', '512', '--height', '512', '--seed', '19',
+            '--placement', placement, '--width', '512', '--height', '512', '--seed', '19',
             '--project', 'gpu-shakedown', '--consent', 'user_env', '--json', PROMPT]
     if out is not None:
         args += ['--out', str(out)]

@@ -383,7 +383,7 @@ def _run_profile(
     task_identity,
     destination,
 ):
-    assert profile_id == "pip_embedded"
+    assert profile_id == "local_server"
     assert model_id == MODEL_ID
     assert template_id == TEMPLATE_ID
     assert task_identity
@@ -460,7 +460,7 @@ def _video_enhance_cpu_fixture(root: Path) -> Path:
             "{python_exec}",
             str(runner),
             "--capability", "vibecomfy.video_enhance",
-            "--profile", "pip_embedded",
+            "--profile", "local_server",
             "--task-identity", "{task_identity}",
             "--readiness-profile-path", str(readiness_path),
             "--readiness-profile-hash", readiness_hash,
@@ -501,7 +501,7 @@ def _character_animation_cpu_fixture(root: Path) -> Path:
             "{python_exec}",
             str(runner),
             "--capability", "vibecomfy.character_animation",
-            "--profile", "pip_embedded",
+            "--profile", "local_server",
             "--task-identity", "{task_identity}",
             "--readiness-profile-path", str(readiness_path),
             "--readiness-profile-hash", readiness_hash,
