@@ -101,7 +101,10 @@ class Outcome:
             else:
                 first = f"Astrid did NOT update. It is still {release(self.still)}"
                 first += f"; {release(self.target)} is available." if self.target is not None else "."
-            return [first, f"Why: {why}", "Your projects are safe — nothing was changed."]
+            lines = [first, f"Why: {why}", "Your projects are safe — nothing was changed."]
+            if self.reason == "recovered-previous-version":
+                lines.append("Next: Run the same command again to finish updating.")
+            return lines
         if self.kind == "rolled-back":
             return ["Astrid did NOT update: the new version didn't start.",
                     f"Astrid went back to {release(self.still)}. Your projects are unchanged.",
