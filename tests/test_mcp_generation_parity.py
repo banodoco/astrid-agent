@@ -251,23 +251,21 @@ def test_engine_install_schema_and_argv_including_defaults():
     assert schema["required"] == ["engine"]
     assert {key: value["type"] for key, value in schema["properties"].items()} == {
         "engine": "string", "platform": "string", "placement": "string", "root": "string",
-        "deadline": "number", "dry_run": "boolean", "model_cache_root": "string",
-        "model_cache_device": "integer", "model_cache_mount_id": "integer"}
+        "deadline": "number", "dry_run": "boolean", "models_root": "string"}
+    # The declared deadline type is the one the CLI parses (float seconds), so schema and argv agree.
+    assert schema["properties"]["deadline"]["type"] == "number"
     assert schema["properties"]["placement"]["enum"] == ["local", "runpod"]
     argv, parsed = _parse_tool(tool, {"engine": "engine-a", "platform": "linux-x86_64-cu130",
                                      "placement": "runpod", "root": "/engine", "deadline": 30.5,
-                                     "dry_run": True, "model_cache_root": "/cache",
-                                     "model_cache_device": 9, "model_cache_mount_id": 42})
+                                     "dry_run": True, "models_root": "/cache"})
     assert argv == ["engines", "install", "engine-a", "--platform", "linux-x86_64-cu130", "--placement", "runpod",
-                    "--root", "/engine", "--deadline", "30.5", "--dry-run", "--model-cache-root", "/cache",
-                    "--model-cache-device", "9", "--model-cache-mount-id", "42"]
+                    "--root", "/engine", "--deadline", "30.5", "--dry-run", "--models-root", "/cache"]
     assert (parsed.platform, parsed.placement, parsed.deadline, parsed.dry_run) == ("linux-x86_64-cu130", "runpod", 30.5, True)
     assert mcp_server.argv_for(tool, {"engine": "e"}) == ["engines", "install", "e"]
     _, defaults = _parse_tool(tool, {"engine": "e"})
     assert (defaults.platform, defaults.placement, defaults.deadline, defaults.dry_run) == (
         "linux-x86_64-cu130", "local", 3600.0, False)
-    assert (defaults.root, defaults.model_cache_root, defaults.model_cache_device,
-            defaults.model_cache_mount_id) == (None, None, None, None)
+    assert (defaults.root, defaults.models_root) == (None, None)
     for invalid in ([], ["e", "--placement", "invalid"]):
         with pytest.raises(SystemExit) as exc:
             _real_leaf(tool).parse_args(invalid)
@@ -483,11 +481,9 @@ def test_engine_install_success_and_coded_error_envelopes(monkeypatch):
 
     monkeypatch.setattr(engine_cli, "load_recipe", lambda engine, platform: Recipe(id=engine, platform=platform))
     monkeypatch.setattr(engine_cli, "_root", lambda args: "/fake/engine")
-    monkeypatch.setattr(engine_cli, "plan_install", lambda recipe, root, placement: Plan(
+    monkeypatch.setattr(engine_cli, "plan_install", lambda recipe, root, placement, models_root=None: Plan(
         root=root, platform=recipe["platform"], placement=placement))
-    monkeypatch.setattr(engine_cli, "validate_model_cache_root", lambda *args, **kwargs: None)
-    monkeypatch.setattr(engine_cli, "load_model_lock", lambda *args: type("Models", (), {"models": []})())
-    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 100))
+    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 100 * 1024 ** 3))
     monkeypatch.setattr(engine_cli, "_custody_preflight", lambda root: None)
     monkeypatch.setattr(engine_cli, "install_engine", lambda *args, **kwargs: {"status": "installed", "engine": "e"})
     monkeypatch.setattr(engine_cli, "_default_backend", lambda **kwargs: (object(), object()))
@@ -524,5 +520,6 @@ def test_engine_install_success_and_coded_error_envelopes(monkeypatch):
     assert dry_run["structuredContent"] == {
         "plan": {"root": "/fake/engine", "platform": "linux-x86_64-cu130", "placement": "local"},
         "recipe": {"id": "e", "platform": "linux-x86_64-cu130"},
-        "disk_check": {"required_bytes": 0, "free_bytes": 100, "status": "ok", "basis": "locked_model_bytes"},
+        "disk_check": {"required_bytes": engine_cli.ENGINE_INSTALL_MIN_FREE_BYTES, "free_bytes": 100 * 1024 ** 3,
+                       "status": "ok", "basis": "minimum_free_space_floor"},
     }

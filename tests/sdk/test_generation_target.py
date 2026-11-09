@@ -629,6 +629,10 @@ def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, mo
         project = client.projects.create(name='Audio receipt', slug='audio-receipt', idempotency_key='project')
         assert project.ok
         project_id = project.data['project_id']
+        # Preferences live in the Runtime's settings document; the facade reads them through this client.
+        from astrid.packs.runpod import target_selection
+        target_selection.save_runpod_preferences({'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
+            'image': 'worker@sha256:' + 'a' * 64}, client=client)
         packs = Path(__file__).resolve().parents[2] / 'astrid' / 'packs'
         host = GenericPackHost(pack_roots=[packs / 'vibecomfy', packs / 'runpod'],
             client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
