@@ -101,11 +101,18 @@ class Outcome:
             else:
                 first = f"Astrid did NOT update. It is still {release(self.still)}"
                 first += f"; {release(self.target)} is available." if self.target is not None else "."
-            return [first, f"Why: {why}", "Your projects are safe — nothing was changed."]
+            # Only a run that installed nothing may say nothing was changed: a release that was
+            # installed but is not running is a change.
+            safe = ("Your projects are safe." if self.reason == "runtime-not-running"
+                    else "Your projects are safe — nothing was changed.")
+            return [first, f"Why: {why}", safe]
         if self.kind == "rolled-back":
             return ["Astrid did NOT update: the new version didn't start.",
                     f"Astrid went back to {release(self.still)}. Your projects are unchanged.",
                     "Next: run the same command again. If it fails twice, send the diagnostics to support."]
+        if self.still is None and self.start is None:
+            # A fresh install that failed has nothing to update; it was not installed.
+            return [f"Astrid was NOT installed: {why}", "Nothing was installed."]
         still = "Nothing was installed." if self.still is None else f"Astrid is still {release(self.still)}."
         return [f"Astrid did NOT update: {why}", still]
 
