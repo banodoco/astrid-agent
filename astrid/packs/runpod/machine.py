@@ -246,6 +246,14 @@ _ENTRY_CHECK = (
 )
 
 
+#: One line: writes active-job.json atomically, adding the job's own agent folder.
+_ACTIVE_WRITE = (
+    "import json,os,sys; value=json.loads(sys.argv[1]); value['job_dir']=os.path.abspath(sys.argv[2]); "
+    "tmp=sys.argv[3]+'.partial'; open(tmp,'w',encoding='utf-8').write(json.dumps(value,sort_keys=True)); "
+    "os.replace(tmp,sys.argv[3])"
+)
+
+
 def build_selection(entry: str | None, staging: Path, *, sources: Any = None,
                     entries_dir: Path | None = None) -> tuple[Path, dict[str, Any]]:
     """The job's shipped selection: every active installed pack (Plan 06), plus the user entry folder.
@@ -356,7 +364,8 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
     line = " ".join(shlex.quote(part) for part in generation_argv(entry, remote_root, mode=mode))
     result = shlex.quote(f"{remote_root}/result.json")
     listing = shlex.quote(f"{remote_root}/listing.json")
-    active = json.dumps(dict(active_job or {"run_id": remote_root.rsplit("/", 1)[-1]}), sort_keys=True)
+    active = json.dumps({**dict(active_job or {"run_id": remote_root.rsplit("/", 1)[-1]}), "run_dir": remote_root},
+                        sort_keys=True)
     check_entry = "" if entry in (None, WORKFLOW_FILE_ENTRY) else entry
     return (
         "set -u\n"
@@ -364,7 +373,10 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         "flock -s 9 || exit 75\n"
         f"if [ ! -f {p['ready']} ] || [ ! -f {p['prepared']} ] || [ -e {p['active']} ]; then "
         "echo 'the pod is not ready: a reset is pending' >&2; exit 75; fi\n"
-        f"printf '%s' {shlex.quote(active)} > {p['active']}\n"
+        # active-job.json names this job's run folder and its own agent job folder
+        # (the agent runs `bash "$d/command.sh"`), so a redone reset can remove both.
+        f"{POD_VENV}/bin/python -c {shlex.quote(_ACTIVE_WRITE)} {shlex.quote(active)} \"$(dirname \"$0\")\" "
+        f"{p['active']} || exit 75\n"
         f"export {p['prepared_env']}={p['prepared']} ASTRID_RUNTIME_DATA_ROOT={p['data_root']} "
         f"ASTRID_RUNTIME_SOURCE_MANIFEST={p['source_manifest']} ASTRID_RUNTIME_DOOR_PORT=0\n"
         f"export ASTRID_PROGRESS_PATH={shlex.quote(f'{remote_root}/{PROGRESS_NAME}')}\n"
