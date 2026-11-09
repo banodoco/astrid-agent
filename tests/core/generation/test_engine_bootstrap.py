@@ -58,10 +58,11 @@ def test_console_dry_run_and_help_are_isolated_and_exact():
     assert 'ORIGIN=' in result.stderr and 'astrid-engine-cli-' in result.stderr
     plan = json.loads(result.stdout)
     assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'start', 'health'}
-    # Plan 32 T5h: an install is model-free, so the plan quantifies no model bytes.
+    # Plan 32 T5h: an install is model-free; the gate is the policy free-space floor, not model bytes.
+    from astrid.core.engine_cli import ENGINE_INSTALL_MIN_FREE_BYTES
     assert plan['disk_check'] == {
-        'required_bytes': 0, 'free_bytes': free_bytes,
-        'status': 'ok', 'basis': 'model_free_install',
+        'required_bytes': ENGINE_INSTALL_MIN_FREE_BYTES, 'free_bytes': free_bytes,
+        'status': 'ok', 'basis': 'minimum_free_space_floor',
     }
     local_code = (
         f"import astrid.core.engine_cli as c; c._disk_anchor = lambda root: (root, 1, 1, {free_bytes}); "
@@ -172,8 +173,8 @@ def test_execution_is_not_qualified():
 
 
 def test_real_console_execution_refuses_without_a2(tmp_path):
-    # Historical name: the CLI now has a real backend, but this fixture stops at
-    # the locked-model disk gate before backend/custody/install work can begin.
+    # The CLI has a real backend; this fixture stops at the free-space floor gate
+    # before backend/custody/install work can begin.
     b = bootstrap.build_cli_bootstrap(ARGV)
     spec = json.loads(base64.b64decode(b.env['ASTRID_ENGINE_SPEC']))
     root = tmp_path / 'uncreated-engine-root'
@@ -196,14 +197,12 @@ def test_real_console_execution_refuses_without_a2(tmp_path):
     )
     result = run(b, env, loader)
     assert result.returncode == 1
-    from astrid.core.generation.engine_recipe import load_recipe_model_lock
-    required_bytes = sum(model.bytes for model in load_recipe_model_lock('comfyui', 'linux-x86_64-cu130').models)
-    assert required_bytes > 0
+    from astrid.core.engine_cli import ENGINE_INSTALL_MIN_FREE_BYTES
     assert json.loads(result.stderr) == {'error': {
         'code': 'ENGINE_INSTALL_INSUFFICIENT_DISK', 'step': None,
         'retryable': True, 'recovery_handle': None,
         'message': 'Free disk space or choose a different --root, then retry.',
-        'required_bytes': required_bytes, 'free_bytes': 0,
+        'required_bytes': ENGINE_INSTALL_MIN_FREE_BYTES, 'free_bytes': 0,
     }}
     assert not sentinel.exists()
     assert not root.exists()

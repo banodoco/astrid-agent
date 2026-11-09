@@ -648,6 +648,8 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
 
     from astrid.core import engine_cli
     from astrid.core.generation import engine_custody as custody, engine_recipe
+    # The free-space floor is a policy gate; this journey runs a real install on a sandbox disk.
+    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: (str(root), 1, 1, 10**15))
     from astrid.core.generation.engine_contracts import (
         CommandResult, DataRef, EngineRecipe, EngineReinstallRequired, HealthSpec, RequirementsSpec,
         SourcePin, SourceSpec, StartSpec,

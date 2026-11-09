@@ -124,9 +124,9 @@ def test_install_disk_check_is_read_only_on_refusal(tmp_path, monkeypatch, capsy
         assert rc == 0 and seen == ['backend', 'install'] and not err
     rc, out, err = invoke(['install', 'comfyui', '--root', str(root), '--dry-run'], capsys)
     disk = json.loads(out)['disk_check']
-    assert rc == 0 and not err and disk == {'required_bytes': disk['required_bytes'], 'free_bytes': free,
-                                           'status': status, 'basis': 'locked_model_bytes'}
-    assert disk['required_bytes'] > 0 and not root.exists()
+    assert rc == 0 and not err and disk == {'required_bytes': engine_cli.ENGINE_INSTALL_MIN_FREE_BYTES,
+                                           'free_bytes': free, 'status': status, 'basis': 'minimum_free_space_floor'}
+    assert not root.exists()
 
 
 def test_dry_run_is_pure_and_includes_identity(monkeypatch, capsys):
@@ -142,7 +142,7 @@ def test_dry_run_is_pure_and_includes_identity(monkeypatch, capsys):
     code, out, err = invoke(['install', *BASE, '--dry-run'], capsys, backend_factory=lambda **kw: pytest.fail('backend'))
     data = json.loads(out)
     assert code == 0 and not err
-    assert {step['kind'] for step in data['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
+    assert {step['kind'] for step in data['plan']['steps']} == {'source', 'environment', 'start', 'health'}
     assert data['plan']['steps'][-1]['depends_on'] == ['start']
     assert data['recipe']['pins']['sha256'] and data['plan']['models_lock_sha256']
     assert data['recipe']['sources'][0]['pin']['revision']
@@ -248,7 +248,8 @@ def test_runner_execution_and_missing_status(capsys):
     result = json.loads(out)
     assert rc == 0 and result['status'] == 'installed' and result['qualified'] is False
     assert seen[-1]['root'] == ROOT and seen[-1]['placement'] == 'local'
-    assert any(event[0] == 'download' for event in context.events)
+    # Plan 32 T5h: the install is model-free, so it downloads nothing.
+    assert not any(event[0] == 'download' for event in context.events)
 
 
 def test_status_json_retains_integrity_gate_without_raw_target_output(monkeypatch, capsys):
