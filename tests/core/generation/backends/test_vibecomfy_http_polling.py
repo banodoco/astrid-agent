@@ -173,40 +173,30 @@ def route(tmp_path, monkeypatch, endpoint, network, local_tls):
     return facts
 
 
-def execute_route(route, endpoint, *, deadline_seconds=None, settle=False, **transport_kwargs):
-    @contextmanager
-    def checkout(**kwargs):
-        route.factory += 1
-        if deadline_seconds is not None:
-            transport_kwargs["deadline"] = time.monotonic() + deadline_seconds
+def execute_route(route, endpoint, *, deadline_seconds=None, **transport_kwargs):
+    """Run the workflow with the engine endpoint transport; record the adapter the engine builds."""
+    from unittest import mock
+
+    original = backend.CheckoutServerAdapter.from_host_session
+
+    def recording(**kwargs):
+        route.adapter = original(**kwargs)
+        return route.adapter
+
+    route.factory += 1
+    if deadline_seconds is not None:
+        transport_kwargs["deadline"] = time.monotonic() + deadline_seconds
+    try:
         with EngineEndpointTransport(endpoint, pod_id="pod123", agent_port=8000, **transport_kwargs) as transport:
             route.transport = transport
-            adapter = backend.CheckoutServerAdapter.from_host_session(**kwargs, endpoint_transport=transport)
-            route.adapter = adapter
-            try:
-                yield adapter
-            finally:
-                route.closed += 1
-    if settle:
-        from astrid.core.pack.entrypoint import canonical_runtime_entrypoint
-        profile_path = route.destination.parent / "readiness.json"
-        profile_path.write_bytes(encoded(route.profile))
-        loaded = production_engine.load_workflow_path(route.workflow, route.destination.parent / "preflight")
-        identity = production_engine.loaded_workflow_execution_identity(loaded, route.profile)
-        with canonical_runtime_entrypoint("vibecomfy.run"):
-            action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-        return action._run_and_settle(
-            route.workflow, route.destination, task_identity="task-http-only", attempt_identity="attempt-http-only",
-            execution_identity=identity, readiness_profile_path=str(profile_path),
-            readiness_profile_hash="sha256:" + hashlib.sha256(profile_path.read_bytes()).hexdigest(),
-            workflow_inputs='{"reference":"reference.png"}', placement="runpod",
-            execution_request={"target": {"kind": "runpod", "pod_id": "pod123", "provider_account_ref": "account",
-                                          "storage": {"network_volume_id": "original-volume"}}},
-            endpoint_checkout=checkout)
-    return production_engine.run_workflow_result_path(
-        route.workflow, route.destination, task_identity="task-http-only", attempt_identity="attempt-http-only",
-        profile_id="checkout_server", hc03_profile=route.profile,
-        workflow_input_bindings={"reference": "reference.png"}, endpoint_checkout=checkout)
+            with mock.patch.object(backend.CheckoutServerAdapter, "from_host_session", staticmethod(recording)):
+                return production_engine.run_workflow_result_path(
+                    route.workflow, route.destination, task_identity="task-http-only",
+                    attempt_identity="attempt-http-only", profile_id="checkout_server",
+                    hc03_profile=route.profile, workflow_input_bindings={"reference": "reference.png"},
+                    endpoint_transport=transport)
+    finally:
+        route.closed += 1
 
 
 def test_one_prompt_multiple_polls_chunks_and_managed_identity(route, endpoint, network):
@@ -238,33 +228,6 @@ def test_one_prompt_multiple_polls_chunks_and_managed_identity(route, endpoint, 
     assert all("/ws" not in path and "/view" not in path and "Range" not in headers and "Upgrade" not in headers
                for _, path, headers in network["exchanges"])
     assert not list(result_path.parent.glob("generation-manifest*"))
-
-
-def test_registry_action_settles_real_json_custody_to_original_manifest_v2(route, endpoint, network):
-    manifest = execute_route(route, endpoint, settle=True)
-    assert manifest["schema_version"] == 2
-    assert json.loads((route.destination / "manifest.json").read_bytes()) == manifest
-    assert route.factory == route.closed == len(route.prompts) == 1
-    assert route.polls == 3
-    media = next(row for row in manifest["outputs"] if row["role"] == "result")
-    envelope = next(row for row in manifest["outputs"] if row["output_port"] == "result_manifest")
-    evidence = [row for row in manifest["outputs"] if row["role"] == "auxiliary"]
-    assert len(evidence) == 2
-    assert {Path(row["path"]).name for row in evidence} == {
-        "evidence-source-source.json", "evidence-effective_settings-effective-settings.json"}
-    for row in evidence:
-        assert hashlib.sha256((route.destination / row["path"]).read_bytes()).hexdigest() == row["content_hash"].removeprefix("sha256:")
-    assert media["output_port"] == "vibecomfy_run" and media["ordinal"] == 0 and media["role"] == "result"
-    assert media["content_hash"] == "sha256:" + hashlib.sha256(route.output).hexdigest()
-    assert (route.destination / media["path"]).read_bytes() == route.output
-    assert envelope["output_port"] == "result_manifest" and envelope["role"] == "manifest"
-    assert hashlib.sha256((route.destination / envelope["path"]).read_bytes()).hexdigest() == envelope["content_hash"].removeprefix("sha256:")
-    assert manifest["managed_generation_result"]["task_id"] == "task-http-only"
-    assert manifest["managed_generation_result"]["attempt_id"] == "attempt-http-only"
-    assert manifest["managed_generation_result"]["producer_run_id"] == route.adapter._last_run_result.run_id
-    assert not list(route.destination.rglob("generation-manifest*"))
-    assert all("/ws" not in path and "/view" not in path and "Range" not in headers and "Upgrade" not in headers
-               for _, path, headers in network["exchanges"])
 
 
 @pytest.mark.parametrize("mode", ["error", "uncertain", "unsafe"])
@@ -319,18 +282,6 @@ def test_bad_json_chunk_digest_never_produces_managed_result(route, endpoint, ne
         execute_route(route, endpoint)
     assert len(route.prompts) == 1 and route.polls == 3
     assert not list((tmp_path / "runtime").rglob("managed-generation-result.json"))
-
-
-@pytest.mark.parametrize("entry", ["_run_profile_result", "_run_profile", "run_workflow_path", "run_workflow_result_path"])
-def test_checkout_transport_conflict_refused_before_effects(tmp_path, entry):
-    common = dict(task_identity="task", endpoint_checkout=object(), endpoint_transport=object())
-    with pytest.raises(production_engine.ProductionEngineError, match="mutually exclusive"):
-        if entry.startswith("_run_profile"):
-            getattr(production_engine, entry)(None, "checkout_server", None, model_id="m", template_id="t",
-                                             destination=tmp_path / "out", **common)
-        else:
-            getattr(production_engine, entry)(tmp_path / "missing", tmp_path / "out", **common)
-    assert not (tmp_path / "out").exists()
 
 
 # ---- Provider no-route retry at the actual claimed-agent boundary ----------

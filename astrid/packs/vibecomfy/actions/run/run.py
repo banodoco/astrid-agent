@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, ContextManager
+from typing import Any
 from types import ModuleType
 
 from astrid.pack_api import build_manifest, write_manifest
@@ -725,22 +725,11 @@ def _run_and_settle(
     workflow_inputs: str = "{}",
     comfy_url: str = "",
     comfy_output_dir: str = "",
-    placement: str | None = None,
     execution_request: Any = None,
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
 ) -> dict[str, Any]:
     """Run *workflow_path*, copy every engine result, and write its receipt."""
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise AstridValueError("host-issued task identity is required")
-    from astrid.core.generation.placement import resolve_workflow_placement
-
-    # Placement is validated before any effect: a wrong placement creates nothing.
-    if placement is None:
-        # An unplaced call carrying a RunPod target is the legacy prepared route.
-        target = execution_request.get("target") if isinstance(execution_request, dict) else None
-        if isinstance(target, dict) and target.get("kind") == "runpod":
-            placement = "runpod"
-    resolved_placement = resolve_workflow_placement(placement, execution_request=execution_request)
     output_root = output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     # Canonical sibling source.json is the submitted source, not a re-emitted
@@ -749,17 +738,7 @@ def _run_and_settle(
     source_snapshot = _evidence_snapshot(source_path, output_root) if source_path.is_file() else None
     from astrid.packs.vibecomfy.workflow_route import WorkflowRunner
 
-    # The host injects admitted scheduling intent and its original endpoint
-    # attachment. Neither value is part of the workflow's creative inputs.
-    runpod_route = resolved_placement == "runpod"
-    if runpod_route:
-        if endpoint_checkout is None:
-            raise AstridValueError("RunPod workflow endpoint_checkout integration is unavailable (pending38)")
-        if comfy_url or comfy_output_dir:
-            raise AstridValueError("RunPod workflow cannot use local_server overrides")
-    elif endpoint_checkout is not None:
-        raise AstridValueError("endpoint_checkout requires the RunPod workflow route")
-    adapter = WorkflowRunner(endpoint_checkout=endpoint_checkout if runpod_route else None)
+    adapter = WorkflowRunner()
 
     if comfy_url:
         from astrid.core.generation.backends.vibecomfy_local_server import (
@@ -777,10 +756,10 @@ def _run_and_settle(
     if (readiness_profile_path == "-") != (readiness_profile_hash == "-"):
         raise AstridValueError("readiness profile path and hash must be supplied together")
     if readiness_profile_path != "-":
-        from astrid.packs.vibecomfy.endpoint_checkout import read_workflow_profile
+        from astrid.core.generation.engine_endpoint import read_readiness_profile
         from astrid.core.generation.engine_contracts import EngineError
         try:
-            readiness_profile = read_workflow_profile(readiness_profile_path, readiness_profile_hash)
+            readiness_profile = read_readiness_profile(readiness_profile_path, readiness_profile_hash)
         except (EngineError, OSError):
             raise AstridValueError("Worker readiness profile could not be read or its hash does not match") from None
     # A run with no comfy_url that is not the RunPod route is the engine's local run: ComfyUIEngine.run
@@ -852,8 +831,6 @@ def _run_and_settle(
         production_kwargs["comfy_output_dir"] = comfy_output_dir
     if attempt_identity != "-":
         production_kwargs["attempt_identity"] = attempt_identity
-    if runpod_route and os.environ.get("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"):
-        raise AstridValueError("RunPod workflow endpoint route cannot use the T9 substitute")
     synthetic = _t9_child_dispatch(
         readiness_profile, profile_path=readiness_profile_path, profile_hash=readiness_profile_hash,
         task_identity=task_identity, attempt_identity=attempt_identity, execution_identity=execution_identity,
@@ -1049,28 +1026,6 @@ def _run_and_settle(
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        from astrid.packs.vibecomfy.endpoint_checkout import (
-            checkout_from_profile, read_host_workflow_execution_request, read_workflow_profile,
-        )
-        request = read_host_workflow_execution_request(os.environ)
-        profile = None
-        if args.readiness_profile_path != "-":
-            profile = read_workflow_profile(args.readiness_profile_path, args.readiness_profile_hash)
-        endpoint_bearing = isinstance(profile, dict) and (
-            "workflow_endpoint" in profile or "endpoint_evidence" in profile
-        )
-        runpod = isinstance(request, dict) and request.get("target", {}).get("kind") == "runpod"
-        if endpoint_bearing and not runpod:
-            raise AstridValueError("workflow endpoint requires its host-admitted execution request")
-        endpoint_checkout = None
-        if runpod:
-            if args.comfy_url or args.comfy_output_dir:
-                raise AstridValueError("RunPod workflow cannot use local_server overrides")
-            endpoint_checkout = checkout_from_profile(
-                profile_path=Path(args.readiness_profile_path), profile_hash=args.readiness_profile_hash,
-                execution_request=request, task_identity=args.task_identity,
-                attempt_identity=args.attempt_identity, execution_identity=args.execution_identity,
-            )
         scratch = (
             args.out.expanduser().resolve().parent
             if args.out is not None
@@ -1117,8 +1072,6 @@ def main(argv: list[str] | None = None) -> int:
                 workflow_inputs=args.workflow_inputs,
                 comfy_url=args.comfy_url,
                 comfy_output_dir=args.comfy_output_dir,
-                execution_request=request, placement="runpod" if runpod else None,
-                endpoint_checkout=endpoint_checkout,
             )
     except Exception as exc:
         sys.stderr.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))

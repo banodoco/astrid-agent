@@ -4,7 +4,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from astrid.core.generation.engine_contracts import UnsupportedPlacement
 from astrid.packs.runpod.prepared_task import PreparedRunPodTaskClient
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.results import InvocationResult
@@ -51,7 +50,7 @@ def test_exact_domain_and_controls_use_supplied_client_once(tmp_path, ok, wait, 
         dry_run=dry_run, check_binaries=True, python_exec="python", verbose=True,
         argv=("literal",),
     )
-    returned = GenerationFacade().workflow(client=client, placement="runpod", **domain, **controls)
+    returned = GenerationFacade().workflow(client=client, **domain, **controls)
     assert returned is expected
     client.invoke_result.assert_called_once_with(
         "vibecomfy.run", kind="executor", client=client, inputs=domain, **controls,
@@ -100,7 +99,7 @@ def test_real_prepared_wrapper_keeps_two_phase_single_task_semantics(tmp_path):
     domain = {"python": {"object_id": "py", "filename": "workflow.py"},
               "workflow_inputs": '{"seed":0}'}
     actual = GenerationFacade().workflow(
-        client=prepared, project="project", placement="runpod", execution_request=RUNPOD,
+        client=prepared, project="project", execution_request=RUNPOD,
         recovery_path=tmp_path / "ordinary-receipt", **domain,
     )
     assert actual is final
@@ -112,20 +111,6 @@ def test_real_prepared_wrapper_keeps_two_phase_single_task_semantics(tmp_path):
     assert first.kwargs["inputs"] == second.kwargs["inputs"] == domain
     runtime.ensure_for_task.assert_called_once()
     runtime.retire_after_task.assert_called_once()
-
-
-@pytest.mark.parametrize("placement,execution_request_value", [
-    ("runpod", None), ("runpod", {"target": {"kind": "default"}}),
-    ("local", RUNPOD), ("unknown", RUNPOD), (False, None),
-    (None, {"target": {"kind": "profile", "id": "ambiguous"}}),
-])
-def test_wrong_placement_rejects_before_destination_or_invocation(monkeypatch, placement, execution_request_value):
-    import astrid.sdk.generation as generation
-    client = SimpleNamespace(invoke_result=Mock(side_effect=AssertionError("effect")))
-    monkeypatch.setattr(generation, "_resolve_invoke_destination", Mock(side_effect=AssertionError("destination")))
-    with pytest.raises(UnsupportedPlacement):
-        GenerationFacade().workflow(client=client, placement=placement, execution_request=execution_request_value)
-    client.invoke_result.assert_not_called()
 
 
 @pytest.mark.parametrize("unknown", ["prompt", "model", "rerun", "readiness_profile_path", "endpoint_checkout"])

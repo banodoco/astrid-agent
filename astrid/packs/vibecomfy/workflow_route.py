@@ -1,4 +1,4 @@
-"""The comfyui engine's workflow run: local engine endpoint, or RunPod via the injected checkout owner.
+"""The comfyui engine's workflow run: the local engine endpoint, or an attached local server.
 
 The engine's run site (actions/run/run.py _run_and_settle, reached by ComfyUIEngine.execute) constructs
 this; it is not a registered backend and nothing selects it by name.
@@ -6,7 +6,7 @@ this; it is not a registered backend and nothing selects it by name.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Mapping, TYPE_CHECKING
+from typing import Any, Mapping, TYPE_CHECKING
 
 from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
 
@@ -16,9 +16,6 @@ if TYPE_CHECKING:
 
 
 class WorkflowRunner(VibeComfyBackend):
-    def __init__(self, *, endpoint_checkout: Callable[..., ContextManager[Any]] | None = None):
-        self._endpoint_checkout = endpoint_checkout
-
     def workflow(
         self, workflow_path: Path, out_dir: Path, *, task_identity: str,
         attempt_identity: str | None = None,
@@ -39,8 +36,8 @@ class WorkflowRunner(VibeComfyBackend):
         if profile_id == "local_server":
             # Attached placement needs only its loopback URL. Output custody
             # uses the selected HTTP client, without a shared output directory.
-            if self._endpoint_checkout is not None or hc03_profile is not None:
-                raise ProductionEngineError("local workflow cannot use a RunPod checkout or readiness profile")
+            if hc03_profile is not None:
+                raise ProductionEngineError("local workflow cannot use a readiness profile")
             if not comfy_url:
                 raise ProductionEngineError("local workflow requires comfy_url from the engine endpoint")
             kwargs: dict[str, Any] = {"task_identity": task_identity}
@@ -61,31 +58,12 @@ class WorkflowRunner(VibeComfyBackend):
                 )
                 return complete_producer_result(result, out_dir, task_id=task_identity,
                                                 attempt_id=attempt_identity, source=source, transport=transport)
-        if self._endpoint_checkout is None:
-            # Local placement: embedded and host-session checkout profiles keep
-            # the base behavior; the RunPod route always injects a checkout.
-            return super().workflow(
-                workflow_path, out_dir, task_identity=task_identity,
-                attempt_identity=attempt_identity,
-                expected_execution_identity=expected_execution_identity,
-                workflow_input_bindings=workflow_input_bindings,
-                profile_id=profile_id, hc03_profile=hc03_profile,
-                comfy_url=comfy_url, comfy_output_dir=comfy_output_dir,
-            )
-        if profile_id != "checkout_server" or hc03_profile is None or comfy_url or comfy_output_dir:
-            raise ProductionEngineError("RunPod workflow requires the original checkout readiness binding")
-        if not expected_execution_identity or not attempt_identity:
-            raise ProductionEngineError("RunPod workflow requires original execution and attempt identities")
-        source = source_input_ref(workflow_path, out_dir)
-        with preserve_result_on_error(out_dir, task_id=task_identity, attempt_id=attempt_identity,
-                                      source=source, workflow_path=workflow_path, transport=transport):
-            result = run_workflow_result_path(
-                workflow_path, out_dir, task_identity=task_identity,
-                attempt_identity=attempt_identity,
-                expected_execution_identity=expected_execution_identity,
-                workflow_input_bindings=workflow_input_bindings,
-                profile_id=profile_id, hc03_profile=hc03_profile,
-                endpoint_checkout=self._endpoint_checkout,
-            )
-            return complete_producer_result(result, out_dir, task_id=task_identity,
-                                            attempt_id=attempt_identity, source=source, transport=transport)
+        # Embedded and host-session checkout profiles keep the base behavior.
+        return super().workflow(
+            workflow_path, out_dir, task_identity=task_identity,
+            attempt_identity=attempt_identity,
+            expected_execution_identity=expected_execution_identity,
+            workflow_input_bindings=workflow_input_bindings,
+            profile_id=profile_id, hc03_profile=hc03_profile,
+            comfy_url=comfy_url, comfy_output_dir=comfy_output_dir,
+        )

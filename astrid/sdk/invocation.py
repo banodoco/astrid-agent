@@ -58,11 +58,10 @@ _INTERNAL_DISPATCH_TOKEN = object()
 
 class _RetainedPreparedOwner:
     """One host-owned monitor for one exact task and binding, including follow."""
-    def __init__(self, monitor, owner=None, execution_request=None, endpoint_checkout=None,
+    def __init__(self, monitor, owner=None, execution_request=None,
                  h3_target=None, h3_endpoint=None):
         self.monitor, self.owner = monitor, owner
         self.execution_request = execution_request
-        self.endpoint_checkout = endpoint_checkout
         self.h3_target = h3_target
         self.h3_endpoint = json.loads(json.dumps(h3_endpoint)) if h3_endpoint is not None else None
         self.identity = None
@@ -141,7 +140,7 @@ class _RetainedPreparedOwner:
 
 
 def retain_prepared_owner(client, *, recovery_path, capability_id, monitor,
-                          owner=None, execution_request=None, endpoint_checkout=None,
+                          owner=None, execution_request=None,
                           h3_target=None, h3_endpoint=None):
     """F07 host seam: retain the owner on the authenticated client, not a CLI stack."""
     if client is None or recovery_path is None:
@@ -152,11 +151,10 @@ def retain_prepared_owner(client, *, recovery_path, capability_id, monitor,
         client._generation_prepared_owners = owners
     key = (str(Path(recovery_path).expanduser().absolute()), capability_id)
     if key not in owners:
-        owners[key] = _RetainedPreparedOwner(monitor, owner, execution_request, endpoint_checkout,
+        owners[key] = _RetainedPreparedOwner(monitor, owner, execution_request,
                                              h3_target, h3_endpoint)
     elif (owners[key].monitor is not monitor or owners[key].owner is not owner
           or owners[key].execution_request != execution_request
-          or owners[key].endpoint_checkout is not endpoint_checkout
           or owners[key].h3_target is not h3_target or owners[key].h3_endpoint != h3_endpoint):
         raise CapabilityValidationError('prepared recovery path already belongs to another owner')
     return owners[key]

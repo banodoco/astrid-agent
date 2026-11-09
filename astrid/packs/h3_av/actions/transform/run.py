@@ -53,21 +53,6 @@ UNSUPPORTED_TARGET_MESSAGE = (
 LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install comfyui"
 
 
-def _run_remote_placement(args: argparse.Namespace) -> dict[str, Any]:
-    """``--placement runpod``: claim a pod, run the local command there, pull back, release."""
-
-    from astrid.packs.h3_av.actions.verify.verify import _probe_strict, verify_candidate
-    from astrid.packs.runpod.remote_placement import run_remote_placement
-
-    def verify(_out: Path, result: Mapping[str, Any]) -> None:
-        verify_candidate(
-            preparation=json.loads(Path(str(result["preparation"])).read_text(encoding="utf-8")),
-            composition=json.loads(Path(str(result["composition"])).read_text(encoding="utf-8")),
-            candidate=Path(str(result["candidate"])),
-        )
-
-    return run_remote_placement(args, verify_fn=verify, ffprobe_fn=_probe_strict)
-
 
 def _resolve_local_engine() -> Any:
     """Resolve the installed local engine endpoint or fail fast with the next action."""
@@ -752,7 +737,6 @@ def _invoke(
 def _invoke_workflow(
     client: Any,
     *,
-    placement: str,
     inputs: Mapping[str, Any],
     out: Path,
     project: str | None,
@@ -765,7 +749,6 @@ def _invoke_workflow(
         return _invoke(client, "vibecomfy.run", inputs=inputs, out=out, project=project)
     result = generate.workflow(
         client=client,
-        placement=placement,
         **inputs,
         execution_request=execution_request,
         out=out,
@@ -1299,21 +1282,10 @@ def _invoke_canonical_run_impl(
     journal: OperationJournal,
     resume: bool,
     idempotency_context: Mapping[str, Any] | None = None,
-    placement: str | None = None,
 ) -> InvocationResult:
     """Admit once; an unsettled or identity-free response cannot be replayed."""
 
-    from astrid.core.generation.placement import resolve_workflow_placement
-
-    # An unplaced call carrying a RunPod target is the legacy prepared route.
-    if placement is None:
-        target = execution_request.get("target") if isinstance(execution_request, Mapping) else None
-        if isinstance(target, Mapping) and target.get("kind") == "runpod":
-            placement = "runpod"
-    # Resolve only inert placement metadata before touching admission or the
-    # prepared client. The facade validates this same original target again.
-    workflow_placement = resolve_workflow_placement(placement, execution_request=execution_request)
-    workflow_route = f"generation.workflow.v1/{workflow_placement}"
+    workflow_route = "generation.workflow.v1"
 
     admission_payload = {
         "capability_id": "vibecomfy.run",
@@ -1341,7 +1313,7 @@ def _invoke_canonical_run_impl(
     if resume and prior_run is not None and isinstance(client, ManagedParentClient):
         if prior_run.get("admission_digest") != admission_digest:
             raise AstridError("cannot resume canonical run: journaled admission identity changed")
-        result = _invoke_workflow(client, placement=workflow_placement, inputs=inputs, out=out,
+        result = _invoke_workflow(client, inputs=inputs, out=out,
             project=project, execution_request=execution_request, idempotency_context=idempotency_context,
             recovery_path=receipt_path, resume=True)
         _assert_recorded_identity(result, prior_run, phase="canonical run")
@@ -1359,7 +1331,6 @@ def _invoke_canonical_run_impl(
             raise AstridError("cannot resume canonical run: journaled admission identity changed")
         result = _invoke_workflow(
             client,
-            placement=workflow_placement,
             inputs=inputs,
             out=out,
             project=project,
@@ -1431,7 +1402,7 @@ def _invoke_canonical_run_impl(
     )
     try:
         result = _invoke_workflow(
-            client, placement=workflow_placement, inputs=inputs, out=out, project=project,
+            client, inputs=inputs, out=out, project=project,
             execution_request=execution_request,
             idempotency_context=idempotency_context,
             recovery_path=receipt_path,
@@ -1735,7 +1706,6 @@ def _execute_verified_pass(
         journal=journal,
         resume=bool(getattr(args, "resume", False)),
         idempotency_context=idempotency_context,
-        placement=placement,
     )
     output_contract = compilation.get("capabilities", {}).get("output_contract")
     generated_audio_path: Path | None = None
@@ -1973,13 +1943,16 @@ def _run_transform_unlocked(
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer"],
         }
     local_engine = None
-    # The remote placement command owns execution on its local run root.
-    terminal["enabled"] = placement == "local" or legacy_prepared
+    terminal["enabled"] = True
     if placement == "local":
         if managed_client is None:
             local_engine = _resolve_local_engine()
     elif not legacy_prepared:
-        return _run_remote_placement(args)
+        raise AstridError(
+            "H3 on RunPod runs through the generation front door: astrid media generate video --entry h3 "
+            "--placement runpod",
+            valid_options=("--placement local",),
+        )
     prepared_selection = None
     qualification: dict[str, Any] | None = None
     if args.worker_qualification is not None:
@@ -2943,12 +2916,11 @@ def execute(*, request, input_bundle, plan, source=None, editorial_approved=Fals
     client = ManagedParentClient(plan, root)
     controls = plan.get("controls", {})
     admitted_request = controls.get("run_execution_request")
-    placement = "runpod" if (admitted_request or {}).get("target", {}).get("kind") == "runpod" else "local"
     args = argparse.Namespace(request=paths["request"], asset_map=None, out=root / "stages",
         project=plan["project"], execution_request=None, worker_qualification=None, prepared_worker=None,
         cleanup_receipt=None, require_worker_qualification=False, editorial_approved=editorial_approved,
         resume=(root / "stages" / "operation-state.json").is_file(),
-        dry_run=False, placement=placement, _managed_client=client,
+        dry_run=False, placement=None, _managed_client=client,
         _managed_bundle=paths["input_bundle"], _managed_roots=roots,
         _admitted_cleanup_receipt=controls.get("cleanup_receipt"),
         _admitted_execution_request=admitted_request,

@@ -532,3 +532,18 @@ def ensure_prepared_session_endpoint(
         )
         _probe_prepared_endpoint(endpoint, recipe, agent_port=agent_port, deadline=deadline)
         return endpoint
+
+
+def read_readiness_profile(profile_path, profile_hash: str) -> dict:
+    """Read a Worker-issued readiness profile: the exact bytes must match their sha256 fence, then parse strictly."""
+    import hashlib
+    import time
+
+    raw = read_private_endpoint_file(str(profile_path), deadline=time.monotonic() + 20, private=False)
+    if not isinstance(profile_hash, str) or profile_hash != "sha256:" + hashlib.sha256(raw).hexdigest():
+        _bad()
+    value = _load(raw)
+    if not isinstance(value, dict):
+        _bad()
+    return value
+

@@ -128,7 +128,7 @@ def test_installed_baseline_version_remains_strict(monkeypatch, observed):
     assert not adapter._system_stats_verified
 
 
-def test_checkout_producer_allows_workflow_drift_to_reach_the_verified_adapter(tmp_path):
+def test_checkout_producer_allows_workflow_drift_to_reach_the_verified_adapter(tmp_path, monkeypatch):
     """Workflow declarations reach execution without weakening profile checks."""
     from contextlib import nullcontext
     from vibecomfy.contracts.runtime import RuntimeRequirements
@@ -149,11 +149,11 @@ def test_checkout_producer_allows_workflow_drift_to_reach_the_verified_adapter(t
 
     adapter = SimpleNamespace(run_compiled_workflow=run_compiled, _last_run_result=None,
                               release=lambda **kwargs: pytest.fail("unexpected release"))
+    monkeypatch.setattr(CheckoutServerAdapter, "from_host_session", staticmethod(lambda **kwargs: adapter))
     with readiness.ComfyProvenance().capture() as facts, pytest.warns(UserWarning) as warnings:
         result = production_engine._run_profile_result(
             bundle, "checkout_server", {"runtime": {"comfyui_version": "==0.26.0"}},
             model_id="a04", template_id="a04", task_identity="a04-task", destination=tmp_path,
-            endpoint_checkout=lambda **kwargs: nullcontext(adapter),
         )
     assert calls == ["executed"]
     assert facts.recorded["engine"] == "==0.25.0"
@@ -188,12 +188,12 @@ def test_checkout_producer_still_rejects_installed_baseline_mismatch(tmp_path, m
     monkeypatch.setattr(adapter, "run_compiled_workflow", lambda *args, **kwargs: adapter._probe_system_stats())
     releases = []
     monkeypatch.setattr(adapter, "release", lambda **kwargs: releases.append(kwargs))
+    monkeypatch.setattr(CheckoutServerAdapter, "from_host_session", staticmethod(lambda **kwargs: adapter))
     with readiness.ComfyProvenance().capture() as facts, pytest.warns(UserWarning):
         with pytest.raises(ValueError, match="installed baseline requires ComfyUI ==0.26.0"):
             production_engine._run_profile_result(
                 bundle, "checkout_server", profile,
                 model_id="a04", template_id="a04", task_identity="a04-task", destination=tmp_path,
-                endpoint_checkout=lambda **kwargs: nullcontext(adapter),
             )
     assert calls == ["http://127.0.0.1:8188/system_stats"]
     assert not adapter._system_stats_verified
