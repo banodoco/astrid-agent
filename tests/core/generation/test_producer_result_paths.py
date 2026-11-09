@@ -106,3 +106,15 @@ def test_after_outputs_replaces_the_output_before_its_digest_is_recorded(tmp_pat
     assert (host_root / first["path"]).read_bytes() == b"composed candidate"
     assert first["sha256"] == hashlib.sha256(b"composed candidate").hexdigest()
     assert first["bytes"] == len(b"composed candidate")
+
+
+def test_after_outputs_refuses_an_inventory_only_result(tmp_path):
+    """No managed result to seal: a requested after_outputs hook fails closed instead of being skipped."""
+    import json
+    import pytest
+    from astrid.core.contracts.errors import AstridValueError
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    spec = json.dumps({"entry": "h3", "job_dir": str(tmp_path), "inputs": {}, "files": {}})
+    with pytest.raises(AstridValueError, match="after_outputs requires a managed generation result"):
+        run._refuse_unsealed_hook(spec)
+    run._refuse_unsealed_hook("{}")  # no hook requested: nothing to refuse

@@ -725,6 +725,12 @@ def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
     return {**manifest, "models_root": f"{root}/models" if root and Path(root).is_dir() else ""}
 
 
+def _refuse_unsealed_hook(spec: Any) -> None:
+    """An after_outputs hook runs only where outputs are sealed from a managed result; never skip it silently."""
+    if _after_outputs(spec) is not None:
+        raise AstridValueError("after_outputs requires a managed generation result")
+
+
 def _after_outputs(spec: Any) -> Any:
     """The after_outputs callable for ``--after-outputs-job``, or None.
 
@@ -1059,6 +1065,7 @@ def _run_and_settle(
             )
         return manifest
 
+    _refuse_unsealed_hook(after_outputs_job)
     inventory = production_result.outputs
     if comfy_url:
         raise AstridValueError("local_server requires VibeComfy managed_generation_result_path")
