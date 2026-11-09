@@ -1,8 +1,7 @@
 """h3_av's kept modules import nothing from Astrid (Plan 32 T6b-3, item 5).
 
-The engine hands a hook what it needs (``shared/engine_facts.py``). Only a stage's
-``actions/*/run.py`` shell, the CLI and the legacy ``actions/transform`` parent (retiring
-with the action entry) may import ``astrid.*``.
+The engine hands a hook what it needs (``shared/engine_facts.py``). Only the CLI may
+import ``astrid.*``.
 """
 import ast
 from pathlib import Path
@@ -10,17 +9,14 @@ from pathlib import Path
 import pytest
 
 PACK = Path(__file__).resolve().parents[3] / "astrid" / "packs" / "h3_av"
-EXEMPT_DIRS = {"transform", "__pycache__"}
 
 
 def _checked():
     for path in sorted(PACK.rglob("*.py")):
         relative = path.relative_to(PACK)
-        if relative.parts[0] == "workflows":  # generated VibeComfy bundles
+        if relative.parts[0] in {"workflows", "__pycache__"}:  # generated VibeComfy bundles
             continue
-        if path.name == "run.py" and relative.parts[0] == "actions":
-            continue
-        if relative.parts == ("cli.py",) or (len(relative.parts) > 2 and relative.parts[1] in EXEMPT_DIRS):
+        if relative.parts == ("cli.py",):
             continue
         yield path
 

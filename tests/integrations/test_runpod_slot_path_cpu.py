@@ -62,6 +62,14 @@ def _slot_classes(slot):
     return classes
 
 
+def _h3_built_classes(request_path, asset_map, tmp):
+    """Node classes of the graph h3's build picks for this request (the stand-in ComfyUI must know them)."""
+    from astrid.core.generation import entries
+    built = entries.build_entry(entries.find_entry("h3"), {"request": str(request_path), "asset_map": asset_map},
+                                Path(tmp) / "classes-job")
+    return {node.class_type for node in built["workflow"].runtime_nodes().values()}
+
+
 def _media(kind, tmp):
     """A small real media file, so delivery and thumbnails probe real bytes."""
     import subprocess
@@ -176,7 +184,7 @@ def _attached_comfy(comfy):
 
 @contextlib.contextmanager
 def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=(), call=None,
-           machine_identity=False, target_kind="runpod"):
+           machine_identity=False, target_kind="runpod", h3_output=False):
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
     import subprocess
@@ -198,6 +206,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
     monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
     provider = SlotPod(claim_path, tmp_path / "attempts", _slot_classes(slot) | set(extra_classes))
+    provider.comfy.h3_output = h3_output
     send, send_requests, connect = httpx.Client.send, requests.Session.send, socket.socket.connect
     local = {"127.0.0.1", "localhost", "::1"}
     def respond(request):
@@ -361,6 +370,7 @@ def test_h3_av_through_the_runpod_machine(tmp_path, monkeypatch, real_runtime, t
     assets.write_text(json.dumps({request["media"][0]["asset"]["id"]: str(source), "source": str(source)}))
     h3_classes = set(json.loads((Path(__file__).resolve().parents[1]
                                  / "fixtures/h3_cpu/object_info_h3_runpod_graph_closure.json").read_text()))
+    h3_classes |= _h3_built_classes(H3_REQUEST, json.loads(assets.read_text()), tmp_path)
     def call(facade, controls, tmp):
         return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(assets), **controls)
     with _drive(("video", "h3"), tmp_path, monkeypatch, real_runtime, tuple_sources,
@@ -458,14 +468,14 @@ CAPABILITIES = [("image", "t2i"), ("image", "edit"), ("audio", "tts"), ("audio",
 _NO_ENGINE = "local generation requires a ComfyUI runtime; no managed engine is installed or registered"
 _RED = {
     **{(c, "local-managed"): ("GenerationReadinessError", _NO_ENGINE, "T4")
-       for c in CAPABILITIES if c != ("video", "h3")},
-    (("video", "h3"), "local-managed"): ("result", "capability 'h3_av.transform' child exited 1", "T6b"),
+       for c in CAPABILITIES},
+    # h3 builds its graph and reaches vibecomfy.run on the attached stand-in; the stand-in's LoadAudio schema
+    # (CHOICE) disagrees with the packaged one (COMBO) for the built graph's audio input.
+    (("video", "h3"), "attached"): ("CapabilityRuntimeError", "public_input_incompatible", "T8"),
     (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "T3"),
     (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "T3"),
     (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
-    (("video", "h3"), "attached"): ("CapabilityValidationError", "tracked H3 requires the default Runtime target", "T6b"),
     (("video", "i2v"), "runpod"): ("GenerationReadinessError", "No RunPod engine lock covers the models of 'video/ltx2_3_i2v'", "T5"),
-    (("video", "h3"), "runpod"): ("result", "h3_av.transform", "T6b"),
 }
 
 
@@ -518,9 +528,10 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, t
         assets.write_text(json.dumps({request["media"][0]["asset"]["id"]: str(source), "source": str(source)}))
         h3_classes = set(json.loads((Path(__file__).resolve().parents[1]
                                      / "fixtures/h3_cpu/object_info_h3_runpod_graph_closure.json").read_text()))
+        h3_classes |= _h3_built_classes(H3_REQUEST, json.loads(assets.read_text()), tmp_path)
         def call(facade, controls, tmp):
             return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(assets), **controls)
-        drive = dict(extra_classes=h3_classes, call=call, machine_identity=True)
+        drive = dict(extra_classes=h3_classes, call=call, machine_identity=True, h3_output=True)
     else:
         drive = dict(call=_capability_call(capability))
     red = _RED.get((capability, target_kind))

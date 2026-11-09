@@ -900,6 +900,7 @@ class GenerationFacade:
         source_video_widget: str | None = None,
         managed_assets: WorkflowFile | None = None,
         workflow_inputs: str | None = None,
+        after_outputs_job: str | None = None,
         comfy_url: str | None = None,
         comfy_output_dir: str | None = None,
         generation_intent: Mapping[str, Any] | None = None,
@@ -1001,6 +1002,7 @@ class GenerationFacade:
                 "source_video_node": source_video_node,
                 "source_video_widget": source_video_widget,
                 "managed_assets": managed_assets, "workflow_inputs": workflow_inputs,
+                "after_outputs_job": after_outputs_job,
                 "comfy_url": comfy_url, "comfy_output_dir": comfy_output_dir,
                 "placement_policy": (json.dumps(dict(placement_policy), sort_keys=True, separators=(',', ':'), allow_nan=False)
                                   if placement_policy is not None else None),
@@ -1369,7 +1371,14 @@ class GenerationFacade:
                     for record in manifest["assets"]:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
+            hook_job = None
+            if source == 'workflow' and plan and plan.get('job_dir') and 'after_outputs' in workflow_entries.entry_hooks(candidate):
+                # The hook runs where the job runs, after the outputs are written and before they are sealed.
+                job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
+                hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
+                                       'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
             result = self.workflow(
+                **({'after_outputs_job': hook_job} if hook_job else {}),
                 python=import_member(root / "workflow.py"),
                 companion=import_member(root / "workflow.vibe.json"),
                 source=source_ref,

@@ -167,8 +167,10 @@ def _media(kind: str) -> tuple[bytes, str, str]:
                             "sine=frequency=440:duration=1", str(out)], check=True, timeout=60)
             return out.read_bytes(), "flac", "audio/flac"
         out = Path(scratch) / "v.mp4"
+        # video_h3: the 108-frame 24 fps 1024x576 continuation h3's after_outputs composes (request.v2 fixture).
+        size, seconds = ("1024x576", "4.5") if kind == "video_h3" else ("64x64", "1")
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
-                        "color=c=blue:s=64x64:r=24:d=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                        f"color=c=blue:s={size}:r=24:d={seconds}", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
                         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)],
                        check=True, timeout=60)
         return out.read_bytes(), "mp4", "video/mp4"
@@ -217,7 +219,7 @@ class PodComfy:
             if key is None:
                 continue
             kind = {"images": "images", "audio": "audio", "gifs": "video"}[key]
-            data, ext, mime = _media(kind)
+            data, ext, mime = _media("video_h3" if kind == "video" and getattr(self, "h3_output", False) else kind)
             name = f"{prompt_id}-{node_id}.{ext}"
             self.outputs[name] = (data, mime)
             outputs[node_id] = {key: [{"filename": name, "subfolder": "", "type": "output"}]}
