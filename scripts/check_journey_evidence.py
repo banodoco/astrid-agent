@@ -394,14 +394,14 @@ def _autostart_row_errors(job_id, row, os_name):
                       "or it changed the selection, the data or the live Runtime")
     capture = row.get("capture") if isinstance(row.get("capture"), dict) else {}
     checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
-    # The macOS capture is attempted but not gated: it may record not-gated. Linux always gates it.
-    not_gated = (os_name == "macos" and checks.get("autostart_card_capture") == "not-gated"
-                 and capture.get("status") == "not-gated")
-    if not not_gated and (capture.get("device_scale_factor") != 2 or not isinstance(capture.get("path"), str)
+    # The macOS App build and capture may be unverified; Linux always gates the capture.
+    unverified = (os_name == "macos" and checks.get("autostart_card_capture") == "unverified"
+                  and capture.get("status") == "unverified")
+    if not unverified and (capture.get("device_scale_factor") != 2 or not isinstance(capture.get("path"), str)
                           or not DIGEST.fullmatch(str(capture.get("sha256", "")))):
         errors.append(f"{job_id}: autostart card capture is absent or not at deviceScaleFactor 2")
     for check in AUTOSTART_CHECKS:
-        if check == "autostart_card_capture" and not_gated:
+        if check == "autostart_card_capture" and unverified:
             continue
         if checks.get(check) != "pass":
             errors.append(f"{job_id}: {check} assertion did not pass")

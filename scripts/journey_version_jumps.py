@@ -1336,16 +1336,38 @@ def _hosted_update():
     return hosted
 
 
-def autostart_hosted_dist(job_id: str) -> Path:
-    """The candidate's built hosted App, which the autostart rows serve for the capture."""
-    value = os.environ.get("ASTRID_CI_HOSTED_APP_DIST", "").strip()
-    if not value or not (Path(value) / "index.html").is_file() or not (Path(value) / "build.json").is_file():
-        raise RuntimeError(f"{job_id} captures the autostart-off card from the App and needs its build "
-                           "in ASTRID_CI_HOSTED_APP_DIST")
-    return Path(value)
+def build_hosted_app(app: Path, evidence: Path) -> Path:
+    """The candidate's hosted App, built the way the button row builds it: npm ci, then npm run build:hosted."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, NODE_OPTIONS="--max-old-space-size=4096")
+    env.pop("ASTRID_APP_DIRECT_DOOR_PORT", None)
+    log = evidence / "app-build.log"
+    with log.open("w", encoding="utf-8") as stream:
+        for argv in (["npm", "ci", "--legacy-peer-deps"], ["npm", "run", "build:hosted"]):
+            process = subprocess.run(argv, cwd=app, env=env, stdout=stream, stderr=subprocess.STDOUT,
+                                     timeout=1800, check=False)
+            if process.returncode:
+                raise RuntimeError(f"App build failed: {' '.join(argv)} exited {process.returncode}")
+    dist = app / "dist"
+    if not (dist / "index.html").is_file() or not (dist / "build.json").is_file():
+        raise RuntimeError("App build did not produce index.html and build.json")
+    return dist
 
 
-def capture_autostart_card(evidence: Path, app: Path, dist: Path) -> dict:
+def install_capture_browser(root: Path) -> Path:
+    """The pinned Playwright and its Chromium, installed beside the run for the autostart capture only."""
+    directory = root.parent / "autostart-capture"
+    directory.mkdir(parents=True, exist_ok=True)
+    steps = (["npm", "install", "--prefix", str(directory), "--no-audit", "--no-fund", "playwright@1.47.2"],
+             [str(directory / "node_modules" / ".bin" / "playwright"), "install", "--with-deps", "chromium"])
+    for argv in steps:
+        process = subprocess.run(argv, env=dict(os.environ), timeout=1800, check=False)
+        if process.returncode:
+            raise RuntimeError(f"capture browser install failed: {argv[0]} exited {process.returncode}")
+    return directory
+
+
+def capture_autostart_card(evidence: Path, app: Path, dist: Path, capture_dir: Path) -> dict:
     """Serve the candidate's hosted App at astrid.haus through the intercept, then capture the autostart-off card.
 
     The page is the one the button row serves, with the candidate's own bootstrap and manifest routes. The
@@ -1359,9 +1381,7 @@ def capture_autostart_card(evidence: Path, app: Path, dist: Path) -> dict:
     png, meta = evidence / "autostart-off-card.png", evidence / "autostart-off-capture.json"
     config_path = evidence / "autostart-off-capture-config.json"
     with hosted.Intercept(routes, types=types) as intercept:
-        playwright_dir = os.environ.get("ASTRID_AUTOSTART_CAPTURE_DIR", "").strip()
-        playwright = (str(Path(playwright_dir) / "node_modules" / "playwright" / "index.mjs")
-                      if playwright_dir else "playwright")
+        playwright = str(capture_dir / "node_modules" / "playwright" / "index.mjs")
         config = {"playwright": playwright, "origin": AUTOSTART_ORIGIN, "entry": AUTOSTART_ENTRY,
                   "spki": intercept.leaf_spki, "text": AUTOSTART_CARD_TEXT,
                   "dpr": AUTOSTART_DEVICE_SCALE_FACTOR, "screenshot": str(png), "result": str(meta),
@@ -1404,7 +1424,6 @@ def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: 
     result_path = evidence / "journey-result.json"
     journey.write_json(result_path, result)
     try:
-        dist = autostart_hosted_dist(args.job_id)
         app = args.app_checkout.resolve(strict=True)
         candidate_path, manifest = journey.selected_manifest(
             app, source_override=False, agent=None, runtime=None, evidence=evidence)
@@ -1462,23 +1481,7 @@ def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: 
             raise RuntimeError("GET /update/status does not report reason autostart-off")
         result["checks"]["update_status_autostart_off"] = "pass"
 
-        # 5. The App is served at astrid.haus through the intercept, and the card is captured at deviceScaleFactor 2.
-        #    On macOS the capture is attempted but not gated: a failure is recorded, and assertions 1 to 3 still gate.
-        try:
-            capture = result["capture"] = capture_autostart_card(evidence / "capture", app, dist)
-        except Exception as exc:
-            if sys.platform != "darwin":
-                raise
-            result["capture"] = {"status": "not-gated", "reason": "macOS capture not verified in CI",
-                                 "error": f"{type(exc).__name__}: {exc}"}
-            result["checks"]["autostart_card_capture"] = "not-gated"
-        else:
-            if (capture.get("device_scale_factor") != AUTOSTART_DEVICE_SCALE_FACTOR
-                    or not DIGEST_PATTERN.fullmatch(str(capture.get("sha256", "")))):
-                raise RuntimeError("autostart card capture is absent or not at deviceScaleFactor 2")
-            result["checks"]["autostart_card_capture"] = "pass"
-
-        # 6. A POST update is refused with autostart-off and changes nothing.
+        # 5. A POST update is refused with autostart-off and changes nothing.
         post_code, post_body = runtime_request("POST", UPDATE_PATH)
         after_digest = read_selection()[1]
         after_health = journey.healthy(selected_data)
@@ -1497,7 +1500,29 @@ def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: 
         result["checks"]["post_update_refused_unchanged"] = "pass"
         result["checks"]["health"] = "pass"
 
-        # 7. The unrelated sentinel survives the whole leg.
+        # The gating assertions are on disk before the App build, so a failing or slow build cannot lose them.
+        journey.write_json(result_path, result)
+
+        # 7. The App is built, served at astrid.haus through the intercept, and the card captured at
+        #    deviceScaleFactor 2. On macOS an unverified build or capture is recorded; the assertions above gate.
+        gated = sys.platform != "darwin"
+        try:
+            dist = build_hosted_app(app, evidence / "app-build")
+            capture_dir = install_capture_browser(root)
+            capture = result["capture"] = capture_autostart_card(evidence / "capture", app, dist, capture_dir)
+        except Exception as exc:
+            if gated:
+                raise
+            result["capture"] = {"status": "unverified", "reason": "macOS App build or capture not verified in CI",
+                                 "error": f"{type(exc).__name__}: {exc}"}
+            result["checks"]["autostart_card_capture"] = "unverified"
+        else:
+            if (capture.get("device_scale_factor") != AUTOSTART_DEVICE_SCALE_FACTOR
+                    or not DIGEST_PATTERN.fullmatch(str(capture.get("sha256", "")))):
+                raise RuntimeError("autostart card capture is absent or not at deviceScaleFactor 2")
+            result["checks"]["autostart_card_capture"] = "pass"
+
+        # 8. The unrelated sentinel survives the whole leg.
         settled = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["at_settlement"] = settled
         if not settled["alive"]:
