@@ -243,7 +243,7 @@ def test_path_loaded_adapter_cold_and_warm_use_exact_placement_canonical_install
     install_commands = [line for line in c.pod.job_log if "engines install" in line]
     assert len(install_commands) == 1
     assert "install comfyui --platform linux-x86_64-cu130 --placement local" in install_commands[0]
-    assert "comfyui" not in install_commands[0]
+    assert "vibecomfy-h3" not in install_commands[0]
     c.host.settle(first.lease)
     jobs = list(c.pod.job_log)
     second = c.adapter.prepare(c.request, replace(c.grant, invocation_id="invocation-2"))
@@ -274,7 +274,7 @@ def test_retained_installation_accepts_only_the_existing_h3_recipe_and_root():
     installation = RunPodInstallation(compatibility, engine="comfyui", root=root)
     assert installation.plan() == expected
     with pytest.raises(Exception, match="unsupported retained installation"):
-        replace(installation, root="/root/astrid/engines/comfyui").plan()
+        replace(installation, root="/root/astrid/engines/other").plan()
 
 
 @pytest.mark.parametrize("change", ["denied", "cap", "rate", "datacenter", "stock", "engine", "tuple", "dirty", "validate"])
