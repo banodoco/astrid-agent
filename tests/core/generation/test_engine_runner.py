@@ -1234,13 +1234,15 @@ sys.meta_path.insert(0, Block())
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_runner import plan_install
 p=plan_install(load_recipe('comfyui','linux-x86_64-cu130'),root='/uncreated/install',placement='local')
-assert {s.kind for s in p.steps} == {'source','environment','model','start','health'}
+# Plan 32 T5h: the install is model-free, so the plan has no model steps.
+assert {s.kind for s in p.steps} == {'source','environment','start','health'}
 assert not any(m in sys.modules for m in ('runpod_lifecycle','runpod','paramiko'))
 print(len(p.steps))
 '''
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False, timeout=20)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "41"
+    recipe = recipes.load_recipe('comfyui', 'linux-x86_64-cu130')
+    assert int(result.stdout.strip()) == len(recipe.sources) + len(recipe.environments) + 2
 
 
 def test_helper_closure_uses_relative_paths_exact_bytes_and_no_install_root(setup):
