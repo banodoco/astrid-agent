@@ -436,6 +436,34 @@ class AstridClient:
                 protocol_version=protocol_version,
             )
 
+        # A warm RunPod machine (Plan 32 T5f) resets its one Runtime after each
+        # job and writes a prepared connection; the next job opens exactly that,
+        # with no launcher up/connect. Fail closed: never fall back to starting one.
+        prepared = os.environ.get("ASTRID_PREPARED_CONNECTION", "").strip()
+        if prepared:
+            import json as _json
+            from pathlib import Path as _Path
+
+            try:
+                value = _json.loads(_Path(prepared).read_text(encoding="utf-8"))
+                fields = {key: value[key] for key in ("endpoint", "credential_file", "realm_id", "actor_id")}
+                if not all(isinstance(item, str) and item for item in fields.values()):
+                    raise ValueError("incomplete")
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise ServiceUnavailableError(
+                    "the prepared Runtime connection is unavailable; the machine must reset before the next job",
+                    details={"next_action": "release the machine", "reason": "prepared_connection_unavailable"},
+                ) from exc
+            return cls.open(
+                endpoint=fields["endpoint"],
+                credential=_Path(fields["credential_file"]),
+                realm_id=fields["realm_id"],
+                actor_id=fields["actor_id"],
+                client_name=client_name,
+                client_version=client_version,
+                protocol_version=protocol_version,
+            )
+
         try:
             result = (
                 ensure_runtime()

@@ -5247,3 +5247,31 @@ def test_personal_root_is_not_added_to_scoped_host_and_is_added_to_default_host(
 
     default = GenericPackHost(pack_roots=[], personal_collection=True)
     assert personal in default.pack_roots
+
+
+def test_host_admission_reaches_the_child_environment_as_align_and_entry(tmp_path, monkeypatch):
+    """admission {align, entry} -> _run_command_definition -> _child_environment -> the child's env (Plan 32 T4g)."""
+    _write_manifest(tmp_path / "vibecomfy-run", capability_id="vibecomfy.run")
+    host = GenericPackHost(pack_roots=[tmp_path])
+    record = host.discover()[0]
+    monkeypatch.setattr(generic_host, "_network_sandbox_argv", lambda argv, *_args: argv)
+    monkeypatch.setattr(generic_host, "_read_readiness_profile_document", lambda *a, **k: None)
+    monkeypatch.setattr(generic_host, "_verify_admitted_source", lambda admission: None)
+    captured = []
+
+    class ReachedOwnedLaunch(Exception):
+        pass
+
+    def launch(argv, **kwargs):
+        captured.append(kwargs["env"])
+        raise ReachedOwnedLaunch
+
+    monkeypatch.setattr(generic_host, "spawn_task_scope", launch)
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    task = {"generation_intent": {"metadata": {"model": "named-entry", "mode": "t2i", "align": "align"}}}
+    with pytest.raises(ReachedOwnedLaunch):
+        host._run_command_definition(record, {}, attempt / "outputs", attempt,
+                                     admission=generic_host._align_admission(task))
+    assert captured[0]["ASTRID_ALIGN"] == "align"
+    assert captured[0]["ASTRID_GENERATION_ENTRY"] == "named-entry"

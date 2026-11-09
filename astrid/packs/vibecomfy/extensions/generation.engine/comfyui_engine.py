@@ -182,6 +182,23 @@ class ComfyUIEngine:
         result.update(fetched=[_key(r) for r in missing], status="ready")
         return result
 
+    def probe(self, endpoint: str, timeout: float = 5.0) -> dict[str, Any]:
+        """Report whether a ComfyUI at endpoint is ready: GET /object_info must answer with a JSON object.
+
+        Never raises: a closed port, a timeout, a non-200 or non-JSON answer is {"ready": False, "reason": ...}.
+        """
+        import json
+        import urllib.request
+        url = str(endpoint).rstrip("/") + "/object_info"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310  (caller-validated endpoint)
+                info = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001  (every failure is a clean not-ready)
+            return {"ready": False, "endpoint": endpoint, "reason": f"{type(exc).__name__}: {exc}", "exception": exc}
+        if not isinstance(info, dict):
+            return {"ready": False, "endpoint": endpoint, "reason": "object_info is not a JSON object"}
+        return {"ready": True, "endpoint": endpoint, "nodes": len(info)}
+
     def prepare(self, job: Any) -> Any:
         """Run the entry's optional build once (CPU, deterministic): {workflow, bindings, plan}, or None."""
         build = (job.get("hooks") or {}).get("build")
@@ -211,8 +228,17 @@ class ComfyUIEngine:
     def run(self, job: Any, local: Any) -> Any:
         """Build, align, start or reuse ComfyUI on this machine, submit to localhost, then finalize."""
         built = self.prepare(job)
-        self.align(job["manifest"], job.get("mode", "align"))
-        url = local.ensure_running()  # reuses a live server (attached) or starts one
+        endpoint = job.get("endpoint")
+        if endpoint:  # attached: probe the caller's server, then trust it; align only when asked for
+            probed = self.probe(endpoint)
+            if not probed["ready"]:
+                raise ValueError(f"ComfyUI at {endpoint} is not ready: {probed['reason']}") from probed.get("exception")
+            if job.get("mode") == "align":
+                self.align(job["manifest"], "align")
+            url = endpoint
+        else:
+            self.align(job["manifest"], job.get("mode", "align"))
+            url = local.ensure_running()  # reuses a live server (attached) or starts one
         outputs = local.submit(url, built["workflow"] if built else job["workflow"])
         return self.finish(job, outputs)
 
