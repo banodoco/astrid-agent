@@ -175,6 +175,15 @@ def _h3_locked_urls() -> dict[str, Any]:
     return {model.destination: model for model in lock.models}
 
 
+def _locked_asset(models: Mapping[str, Any], destination: str, **kwargs: Any) -> Any:
+    """A ModelAsset carrying the lock's own url, digest and size."""
+    from vibecomfy.templates import ModelAsset
+    model = models[destination] if destination in models else None
+    url = _required_locked_url(models, destination)
+    digest = model.sha256.removeprefix("sha256:")
+    return ModelAsset(url=url, sha256=digest, size_bytes=model.bytes, **kwargs)
+
+
 def _required_locked_url(models: Mapping[str, Any], destination: str) -> str:
     model = models.get(destination)
     if model is None:
@@ -239,15 +248,12 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         "audio_vae": ("vae", "minimax_h3_audio_vae_fp32.safetensors"),
     }
     model_assets = {
-        key: ModelAsset(url=_required_locked_url(locked_models, f"{subdir}/{name}"), subdir=subdir)
+        key: _locked_asset(locked_models, f"{subdir}/{name}", subdir=subdir)
         for key, (subdir, name) in names.items()
     }
     if turbo_enabled:
-        model_assets["turbo_lora"] = ModelAsset(
-            filename=TURBO_FILENAME,
-            url=_required_locked_url(locked_models, f"loras/{TURBO_FILENAME}"),
-            subdir="loras",
-        )
+        model_assets["turbo_lora"] = _locked_asset(
+            locked_models, f"loras/{TURBO_FILENAME}", filename=TURBO_FILENAME, subdir="loras")
     if adapter_strength is not None:
         model_assets["character_swap_lora"] = ModelAsset(
             filename=CHARACTER_SWAP_FILENAME,

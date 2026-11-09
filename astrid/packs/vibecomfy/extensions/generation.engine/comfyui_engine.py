@@ -1,7 +1,8 @@
 """ComfyUI contribution to generation.engine (Plan 32 T2a).
 
-Declared and loadable only: no production caller uses it yet, so every method refuses
-until a later task wires it to the existing ComfyUI path.
+requirements() is wired (Plan 32 T2): the manifest comes from VibeComfy's per-workflow
+ReadyMetadata, which already holds the model rows and custom-node pins. The other methods
+refuse until a later task wires them to the existing ComfyUI path.
 """
 
 from __future__ import annotations
@@ -9,9 +10,82 @@ from __future__ import annotations
 from typing import Any
 
 
+_WORKFLOWS: dict[Any, list[Any]] = {}
+
+
+def _workflows(entry: Any) -> list[Any]:
+    """The workflow(s) an entry runs: its bundle, or an action entry's profile workflows."""
+    key = (entry.get("action"), entry.get("bundle"), tuple(entry.get("requirements") or ()) if entry.get("action") else ())
+    if key not in _WORKFLOWS:
+        _WORKFLOWS[key] = _load_workflows(entry)
+    return _WORKFLOWS[key]
+
+
+def _load_workflows(entry: Any) -> list[Any]:
+    from astrid.core.generation import entries
+    if not entry.get("action"):
+        return [entries._load_entry_workflow(entry)]
+    import yaml
+    from astrid.core.pack.loader import packs_root
+    pack = packs_root() / entry["action"].split(".")[0]
+    return [entries._load_entry_workflow({"bundle": str(pack / yaml.safe_load(
+        (pack / ref).read_text(encoding="utf-8"))["workflow"])}) for ref in entry.get("requirements") or ()]
+
+
+def _pinned_locks() -> dict[tuple[str, str], Any]:
+    """Pinned model-lock rows by (destination, revision), across every RunPod engine."""
+    from astrid.core.generation import entries
+    from astrid.core.generation.engine_recipe import load_recipe_model_lock
+    rows: dict[tuple[str, str], Any] = {}
+    for engine in dict.fromkeys(("comfyui", *entries.runpod_engines())):
+        try:
+            lock = load_recipe_model_lock(engine, entries.RUNPOD_PLATFORM)
+        except Exception:
+            continue
+        for model in lock.models:
+            rows.setdefault((model.destination, model.revision), model)
+    return rows
+
+
 class ComfyUIEngine:
+    name = "comfyui"
+
     def requirements(self, entry: Any, inputs: Any) -> dict[str, Any]:
-        raise NotImplementedError("generation.engine comfyui is not wired to a caller yet")
+        models: dict[tuple[str, str], dict[str, Any]] = {}
+        nodes: dict[str, dict[str, Any]] = {}
+        base = None
+        for workflow in _workflows(entry):
+            metadata = workflow.metadata
+            for asset in metadata.get("model_assets", []):
+                row = {"name": asset["name"], "subdir": asset.get("subdir") or "", "url": asset.get("url"),
+                       "sha256": asset.get("sha256"), "size": asset.get("size_bytes")}
+                models.setdefault((row["subdir"], row["name"]), row)
+            requirements = metadata.get("requirements") or {}
+            base = base or (requirements.get("runtime") or {}).get("comfy_commit")
+            refs = [*(requirements.get("custom_node_refs") or ()), *(metadata.get("custom_node_packs") or {}).values()]
+            for ref in refs:
+                repo, commit = ref.get("url") or ref.get("repository"), ref.get("commit") or ref.get("revision")
+                if repo:
+                    nodes.setdefault(repo, {"repo": repo, "commit": commit})
+        if any(row["sha256"] is None or row["size"] is None for row in models.values()):
+            pinned = _pinned_locks()  # a workflow that pins only a url takes digest and size from the lock
+            for row in models.values():
+                revision = (row["url"] or "").split("/resolve/")[-1].split("/")[0]
+                model = pinned.get((f"{row['subdir']}/{row['name']}", revision))
+                if model is not None:
+                    row["sha256"] = row["sha256"] or model.sha256.removeprefix("sha256:")
+                    row["size"] = row["size"] if row["size"] is not None else model.bytes
+        extra = {"nodes": list(nodes.values())}
+        self.validate_extra(extra)
+        return {"engine": self.name, "base": base, "models": list(models.values()), "extra": extra}
+
+    def validate_extra(self, extra: Any) -> None:
+        """ComfyUI's extra is exactly nodes[repo, commit]; anything else is refused."""
+        nodes = extra.get("nodes") if isinstance(extra, dict) and set(extra) == {"nodes"} else None
+        if not isinstance(nodes, list) or not all(
+                isinstance(node, dict) and set(node) == {"repo", "commit"}
+                and all(isinstance(v, str) and v for v in node.values()) for node in nodes):
+            raise ValueError("comfyui extra must be {'nodes': [{'repo': str, 'commit': str}, ...]}")
 
     def align(self, manifest: Any, mode: str) -> Any:
         raise NotImplementedError("generation.engine comfyui is not wired to a caller yet")

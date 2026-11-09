@@ -192,15 +192,6 @@
         }
       }
     },
-    "engines": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["recipe"],
-        "properties": {"recipe": {"$ref": "#/$defs/relative_path"}}
-      }
-    },
     "resources": {
       "type": "array",
       "items": {
