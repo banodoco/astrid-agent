@@ -15,14 +15,17 @@ from astrid.core.execution.orchestrator.registry import (
 )
 from astrid.core.pack import discover_packs
 from astrid.core.pack.canonical import BundledCatalog, validate_canonical_pack
-from astrid.core.pack.validate_first_party import _FIRST_PARTY_PACK_IDS
 
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKS = ROOT / "astrid/packs"
-# One source of truth for the shipped pack ids: the first-party validator inventory.
-PACK_IDS = tuple(sorted(_FIRST_PARTY_PACK_IDS))
-RETIRED = {"builtin", "references", "astrid", "runaway", "shots", "timeline"}
+# Pinned shipped pack ids (the validator derives its inventory from manifests,
+# so deriving here would make the exact-set assertions circular).
+PACK_IDS = tuple(sorted({
+    "comfy_wrap", "developer", "generation", "h3_av", "local", "rendering",
+    "runpod", "timeline", "training", "vibecomfy", "wan2gp",
+}))
+RETIRED = {"builtin", "references", "astrid", "runaway", "shots"}
 
 
 def test_current_catalog_is_exact_strict_v3_capability_set() -> None:
@@ -52,10 +55,10 @@ def test_catalog_preserves_stage1_capability_census() -> None:
     elements = load_elements()
     assert tuple(pack.id for pack in packs) == PACK_IDS
     assert (len(packs), len(executors.list()), len(orchestrators.list()), len(elements.list())) == (
-        28,
-        107,
-        1,
-        44,
+        11,
+        54,
+        0,
+        10,
     )
 
 

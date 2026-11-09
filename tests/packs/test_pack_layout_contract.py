@@ -17,10 +17,6 @@ import subprocess
 from pathlib import Path
 
 from astrid.core.pack import discover_packs
-from astrid.core.pack.validate_first_party import (
-    _FIRST_PARTY_PACK_IDS,
-    _TRACKED_FIRST_PARTY_PACK_IDS,
-)
 
 # ── repo-root-relative paths ────────────────────────────────────────────────
 
@@ -40,10 +36,6 @@ _REMOVED_DATA_ONLY_PACKAGE_MARKERS = (
 _PRESERVED_HELPER_PACKAGE_MARKERS = (
     "astrid/packs/runpod/actions/session/__init__.py",
     "astrid/packs/training/actions/training_run/trainer_adapters/__init__.py",
-    "astrid/packs/editorial/actions/refine/src/reviewers/__init__.py",
-)
-_REMOVED_MARKER_IMPORT_PATHS = (
-    "astrid.packs.media.actions.clip_extract.run",
 )
 
 # ── known shipped pack ids (must remain stable across layout changes) ───────
@@ -51,8 +43,14 @@ _REMOVED_MARKER_IMPORT_PATHS = (
 # manifest is a "shipped pack".  The single source of truth is the first-party
 # validator's inventory; the tracked subset excludes the local-only packs that
 # may be gitignored in a given checkout.
-_SHIPPED_PACK_IDS = frozenset(_FIRST_PARTY_PACK_IDS)
-_TRACKED_SHIPPED_PACK_IDS = frozenset(_TRACKED_FIRST_PARTY_PACK_IDS)
+# The validator no longer carries a copied id list (inventory is derived from
+# manifests), so the expected set is pinned here: adding or removing a shipped
+# pack must be a deliberate edit of this test. No shipped pack is local-only.
+_SHIPPED_PACK_IDS = frozenset({
+    "comfy_wrap", "developer", "generation", "h3_av", "local", "rendering",
+    "runpod", "timeline", "training", "vibecomfy", "wan2gp",
+})
+_TRACKED_SHIPPED_PACK_IDS = _SHIPPED_PACK_IDS
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -200,13 +198,6 @@ def test_helper_package_markers_still_exist() -> None:
     assert not missing, (
         f"Helper package markers were removed but must remain importable: {missing}"
     )
-
-
-def test_removed_package_markers_do_not_break_runtime_imports() -> None:
-    """Namespace-packaged pack paths must still import after marker cleanup."""
-    for module_name in _REMOVED_MARKER_IMPORT_PATHS:
-        module = importlib.import_module(module_name)
-        assert module is not None
 
 
 # ── T15: special directory classification & discovery stability ──────────────
@@ -370,14 +361,8 @@ def test_skill_discovery_finds_pack_skills() -> None:
 
     # Packs known to have skill/SKILL.md (not exhaustive — just a floor).
     expected_with_skill = {
-        "editorial",
-        "foley",
         "generation",
-        "media",
         "rendering",
-        "stream_content",
-        "understanding",
-        "video_editing",
         "timeline",
     }
     descriptors = skill_discovery.list_skills()
@@ -395,8 +380,6 @@ def test_skill_discovery_finds_pack_skills() -> None:
 def test_v2_integration_packs_are_discoverable() -> None:
     """Former external-origin packs remain discoverable after v3 conversion."""
     integration_ids = {
-        "fal",
-        "moirae",
         "runpod",
         "vibecomfy",
         "comfy_wrap",

@@ -20,8 +20,17 @@ def user_entries() -> list[dict[str, Any]]:
 
 def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     """Project repository metadata, leaving unclassified modes explicit."""
-    from vibecomfy import resources
-    from vibecomfy.errors import ShippedResourceMissingError
+    try:
+        # vibecomfy is an optional install (not in the wheel's runtime lock):
+        # without it there are simply no ready-template entries, as before.
+        from vibecomfy import resources
+        from vibecomfy.errors import ShippedResourceMissingError
+    except ModuleNotFoundError as exc:
+        # Only an absent vibecomfy means "no entries"; a present one at the
+        # wrong revision (missing submodule or name) must still fail loudly.
+        if exc.name != "vibecomfy":
+            raise
+        return []
     root = resources.ready_templates_root().parent
     index = resources.template_index()['templates']
     coverage = resources.coverage_manifest()['workflows']

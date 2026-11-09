@@ -23,6 +23,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from astrid import pack_api, sdk
+from astrid.core.pack import _filelock
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import pack_digest, read_pin
 from astrid.core.pack.definitions import definitions_record, pack_definitions
@@ -99,7 +100,10 @@ def _json(value: Any) -> bytes:
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 def _sync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    if not hasattr(os, "O_DIRECTORY"):
+        # Windows cannot open a directory for fsync; NTFS journals the rename itself.
+        return
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
     try:
         os.fsync(fd)
     finally:
@@ -131,8 +135,6 @@ class _GroupCustody:
     attached: bool = True
 
     def consent(self, callback, preview, *, roots: tuple[Path, ...]) -> bool:
-        import fcntl
-
         if not self.exclusive or not self.attached or _HELD.get().get(self.key) is not True:
             raise PackInstallError("transaction_busy", "Consent requires this transaction's own exclusive custody.")
         if set(_HELD.get()) != {self.key}:
@@ -143,7 +145,7 @@ class _GroupCustody:
         # caller-owned outer acquisition is rejected before reaching here.
         _HELD.reset(self.token)
         self.attached = False
-        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        _filelock.unlock_fd(self.fd)
         try:
             accepted = callback(preview)
         finally:
@@ -152,7 +154,7 @@ class _GroupCustody:
             if self.key in _HELD.get():
                 raise PackInstallError("transaction_busy", "Release callback-owned collection custody before returning consent.")
             self._verify_descriptor(identity)
-            fcntl.flock(self.fd, fcntl.LOCK_EX)
+            _filelock.lock_fd(self.fd)
             self.token = _HELD.set({**_HELD.get(), self.key: True})
             self.attached = True
             self._verify_descriptor(identity)
@@ -204,10 +206,8 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
     creates it. Transaction writers create it before creating a collection.
     All group mutations use this stable lock, including refresh acknowledgments.
     """
-    try:
-        import fcntl
-    except ImportError as exc:
-        raise PackInstallError("atomic_swap_unsupported", "Group custody requires a supported POSIX filesystem.") from exc
+    if not _filelock.locking_supported():
+        raise PackInstallError("atomic_swap_unsupported", "Group custody requires a supported filesystem.")
     path = Path(root)
     lock = path.parent / ("." + path.name + ".transaction.lock")
     if not exclusive and lock.parent.resolve() == _SHIPPED_PACKS_ROOT:
@@ -222,7 +222,7 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
             raise PackInstallError("transaction_busy", "Release collection custody before starting another mutation.")
         yield
         return
-    flags = os.O_NOFOLLOW | (os.O_RDWR | os.O_CREAT if exclusive else os.O_RDONLY)
+    flags = getattr(os, "O_NOFOLLOW", 0) | (os.O_RDWR | os.O_CREAT if exclusive else (os.O_RDONLY if _filelock._fcntl is not None else os.O_RDWR))
     try:
         fd = os.open(lock, flags, 0o600)
     except FileNotFoundError:
@@ -234,7 +234,7 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise PackInstallError("unsafe_path", "Group lock must be a regular file with one link.")
-        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        _filelock.lock_fd(fd, exclusive=exclusive)
         token = _HELD.set({**held, key: exclusive})
         custody = _GroupCustody(fd, lock, key, exclusive, token)
         try:
