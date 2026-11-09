@@ -33,12 +33,13 @@ def _workflow_file() -> Path:
     return Path(rows[0]["bundle"])
 
 
-# Red characterizations, in the slot file's convention: each asserts today's refusal and names the
-# task that flips it. A workflow file on these targets is not yet served on this build.
+# Expected-to-flip characterizations (T1 style, not xfail): each asserts today's refusal and names
+# the task row that flips it. A workflow file on these targets is not served on this build yet;
+# T4f (local run path) and T5g (pod entry listing) make both cells really run.
 _NO_ENGINE = "local generation requires a ComfyUI runtime; no managed engine is installed or registered"
 _RED = {
-    "local-managed": ("GenerationReadinessError", _NO_ENGINE, "T4"),
-    "runpod": ("CapabilityRuntimeError", "entry 'workflow' is not listed by the pod's runtime", "T5"),
+    "local-managed": ("GenerationReadinessError", _NO_ENGINE, "T4f"),
+    "runpod": ("CapabilityRuntimeError", "entry 'workflow' is not listed by the pod's runtime", "T5g"),
 }
 
 
