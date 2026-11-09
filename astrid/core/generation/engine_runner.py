@@ -224,6 +224,9 @@ def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement
     if recipes.recipe_digest(recipe) != recipes.recipe_digest(verified):
         raise IntegrityError("recipe differs from the verified packaged recipe")
     root = _root(root, verified.platform)
+    if models_root is not None and placement != "local":
+        # A mounted model cache is bound by a local install; a RunPod pod installs with --placement local.
+        raise UnsupportedPlacement("mounted model cache requires local execution")
     models_root = _models_root(root, models_root)
     steps = []
     for source in verified.sources:
