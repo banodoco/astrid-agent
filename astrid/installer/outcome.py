@@ -227,9 +227,20 @@ def next_steps(log: str | Path | None = None, reason: str | None = None) -> list
 
 
 # Refusals that name their own reason on the exception; the enum (REASONS) is their only source of copy.
-ATTRIBUTED_REASONS = frozenset({"autostart-off", "needs-repair"})
-# Refusals raised before any stop, copy or write: settle reports them as refused (not-updated, exit 3).
-REFUSAL_REASONS = frozenset({"windows-upgrade-unsupported", "autostart-off"})
+NAMED_REFUSAL_REASONS = frozenset({"autostart-off", "needs-repair"})
+# Refusals recognised by their message: boundary_handoff refuses a Windows upgrade before any stop.
+MESSAGE_REFUSAL_REASONS = frozenset({"windows-upgrade-unsupported"})
+
+
+def _refusal_reason(failure: BaseException | None) -> str | None:
+    """The reason of a failure that refused before any change (not-updated, exit 3), or None."""
+    if failure is None:
+        return None
+    named = getattr(failure, "reason", None)
+    if named in NAMED_REFUSAL_REASONS:
+        return named
+    reason = reason_of(failure)
+    return reason if reason in MESSAGE_REFUSAL_REASONS else None
 
 
 def reason_of(failure: BaseException | None) -> str:
@@ -238,9 +249,9 @@ def reason_of(failure: BaseException | None) -> str:
 
     if failure is None:
         return "installer-bug"
-    attributed = getattr(failure, "reason", None)
-    if attributed in ATTRIBUTED_REASONS:
-        return attributed
+    named = getattr(failure, "reason", None)
+    if named in NAMED_REFUSAL_REASONS:
+        return named
     message = str(failure)
     if isinstance(failure, BackupSpaceError):
         return "disk-space"
@@ -294,10 +305,11 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         start = before.selected_release
     target = request.target
     source = request.target_source
-    if failure is not None and reason_of(failure) in REFUSAL_REASONS:
-        # boundary_handoff refuses a Windows upgrade, and the job refuses autostart-off, before any stop,
-        # journal or copy: a refusal that keeps its own reason.
-        request, failure = replace(request, refused=True, reason=reason_of(failure)), None
+    refusal = _refusal_reason(failure)
+    if refusal is not None:
+        # Refused before any stop, journal or copy (a Windows upgrade, autostart-off, or a malformed
+        # saved choice found at admission): nothing was changed, so a refusal that keeps its own reason.
+        request, failure = replace(request, refused=True, reason=refusal), None
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"
         return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode,
