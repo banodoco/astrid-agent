@@ -346,3 +346,20 @@ def test_absent_explicit_port_keeps_legacy_ambiguous_rejection(registered_h3_fin
         _generation_primary_output_port(replace(capability, definition={**capability.definition, "metadata": metadata}), "video")
     with pytest.raises(HostError, match="exactly one primary"):
         _generation_output_port(SimpleNamespace(definition=replace(definition, metadata=metadata)), {"modality": "video"})
+
+
+def test_builtin_generation_modality_table_is_the_single_source():
+    from types import SimpleNamespace
+
+    from astrid.sdk import invocation
+
+    table = invocation._GENERATION_MODALITY_BY_CAPABILITY
+    assert table == {
+        "generation.generate_image": "image",
+        "generation.generate_image_codex": "image",
+        "generation.generate_image_openai": "image",
+        "generation.generate_video": "video",
+        "generation.generate_audio": "audio",
+    }
+    for capability_id, modality in table.items():
+        assert invocation._generation_capability_modality(SimpleNamespace(id=capability_id)) == modality
