@@ -693,8 +693,9 @@ class _LocalEngineServer:
         from astrid.core.generation.backends.vibecomfy_local_server import validate_comfy_url, validate_output_directory
         from astrid.core.generation.engine_contracts import EngineError
         from astrid.core.generation.engine_local_endpoint import (
-            EngineNotInstalled, ensure_local_engine_server, local_engine_endpoint,
+            EngineNotInstalled, local_engine_endpoint,
         )
+        from astrid.core.generation.engine_local_server import ensure_local_engine_server
 
         try:
             # Start the installed engine's long-lived server, or reuse the owned one; never stop it.
