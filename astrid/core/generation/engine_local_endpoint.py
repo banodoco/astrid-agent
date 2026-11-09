@@ -21,8 +21,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .engine_contracts import (
-    EngineEndpoint, EngineError, EngineReinstallRequired, EndpointAuth, EndpointOwnershipError, HealthEvidence, LifecycleOwner,
-    LocalAttestation, UnsafePathError,
+    EndpointAuth,
+    EndpointOwnershipError,
+    EngineEndpoint,
+    EngineError,
+    EngineReinstallRequired,
+    HealthEvidence,
+    LifecycleOwner,
+    LocalAttestation,
+    UnsafePathError,
 )
 
 DEFAULT_PLATFORM = "linux-x86_64-cu130"
@@ -63,8 +70,9 @@ class EntryAssetsNotReady(EngineError):
     code = 'missing_model'
 
     def __init__(self, entry_id: str, assets: list[str]):
-        from .asset_gaps import align_argv
         import shlex
+
+        from .asset_gaps import align_argv
         self.entry_id, self.assets = entry_id, assets
         super().__init__(f"Declared entry assets are unavailable: {', '.join(assets)}; run: "
                          + shlex.join(align_argv(entry_id)))
@@ -262,8 +270,8 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
     persisted and disk discovery never grants authority to an unknown file.
     """
     from .asset_gaps import declared_model_specs
-    from .entries import ready_entries
     from .engine_contracts import IntegrityError
+    from .entries import ready_entries
     from .model_downloader import _matches, _root_and_destination, _validate_model
     from .model_root import canonical_model_inventory_digest, validate_model_root_binding
 
@@ -287,9 +295,10 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
                 raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}')
             inventory[key] = row
     if entry_id is not None:
+        from astrid.core.model_catalog.registry import ModelRegistry
+
         from .asset_alignment import catalog_manifests
         from .entries import find_entry
-        from astrid.core.model_catalog.registry import ModelRegistry
 
         entry = find_entry(entry_id)
         if entry is not None:
@@ -336,7 +345,11 @@ def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "v
     disk and nothing comes from a readiness profile; ``validate_model_root_binding`` re-hashes the
     actual files against these digests when the binding is used.
     """
-    from .model_root import ModelRootBindingError, canonical_model_inventory_digest, validate_model_root_binding
+    from .model_root import (
+        ModelRootBindingError,
+        canonical_model_inventory_digest,
+        validate_model_root_binding,
+    )
 
     models_root = posixpath.join(root, MODELS_RELATIVE_PATH)
     models = tuple(getattr(receipt, "models", ()) or ())

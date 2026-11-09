@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
+
 from runtime_protocol import platform
 
 from astrid.core.foundation.hash import canonical_json_digest

@@ -17,6 +17,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 # Exit-code contract (ruled by M-INT on PR #319). The target follows the request:
 # --update targets the manifest release; a plain install or repair (including
@@ -49,7 +50,7 @@ def _repair_next() -> str:
 # not finish. The exit code stays 0; the headline, its Next line and last-run.json
 # (warnings) carry the same copy in the terminal and the App. Each phrase follows
 # "but" in the first line, joined with "and" when a success has several.
-WARNINGS = {
+WARNINGS: dict[str, dict[str, Any]] = {
     "skills-not-refreshed": {
         "phrase": "its skills couldn't be refreshed",
         "next": "Next: to refresh Astrid's skills, rerun the install line with --skills on (replace this flag in the Way back line).",
@@ -73,6 +74,10 @@ REASONS = {
     "needs-repair": "something on this computer is out of step with the installed release; run the install line to repair it.",
     "other-runtime-running": "two copies of Astrid are running for the same workspace.",
     "windows-upgrade-unsupported": "upgrading from an earlier Windows version isn't supported yet.",
+    "autostart-off": "start at sign-in is off, so this update has to run from a terminal.",
+    "unsupported-service-manager": "in-app updates need user systemd 254 or newer on this Linux computer.",
+    "acknowledgement-unknown": "the update was started, but Astrid can't confirm yet that it was accepted.",
+    "legacy-update-record": "this update was started by an older Astrid, so this one can't continue it.",
     "pinokio-managed": "this Astrid is managed by Pinokio; use Pinokio's Update button.",
     "source-checkout": "this Astrid runs from source checkouts; update those instead.",
     "consent-required": "setup needs your consent; run the exact rerun command shown above.",
@@ -189,6 +194,12 @@ NEXT_STEPS = {
     "windows-upgrade-unsupported": "Next: this Windows version can't be upgraded this way. "
                                    "Open astrid.haus > Settings > Updates > Download diagnostics "
                                    "to see what is installed.",
+    "autostart-off": "Next: run the update command from a terminal. It updates Astrid and starts it, "
+                     "and your choice stays off.",
+    "unsupported-service-manager": "Next: run the update command from a terminal instead.",
+    "acknowledgement-unknown": "Next: wait a minute, then run the same update command again. It checks the "
+                               "earlier attempt before starting a new one.",
+    "legacy-update-record": "Next: run the update command from a terminal to start a fresh update.",
     "pinokio-managed": "Next: use the Update button in Pinokio.",
     "source-checkout": "Next: update the source checkout, then run the same command again.",
     "consent-required": "Next: run the install command again and accept the setup choices, "
@@ -223,12 +234,32 @@ def next_steps(log: str | Path | None = None, reason: str | None = None) -> list
     return [next_step(reason), f"Details: {Path(log).absolute()}" if log else CONSOLE_DETAILS]
 
 
+# Refusals that name their own reason on the exception; the enum (REASONS) is their only source of copy.
+NAMED_REFUSAL_REASONS = frozenset({"autostart-off", "needs-repair"})
+# Refusals recognised by their message: boundary_handoff refuses a Windows upgrade before any stop.
+MESSAGE_REFUSAL_REASONS = frozenset({"windows-upgrade-unsupported"})
+
+
+def _refusal_reason(failure: BaseException | None) -> str | None:
+    """The reason of a failure that refused before any change (not-updated, exit 3), or None."""
+    if failure is None:
+        return None
+    named = getattr(failure, "reason", None)
+    if named in NAMED_REFUSAL_REASONS:
+        return named
+    reason = reason_of(failure)
+    return reason if reason in MESSAGE_REFUSAL_REASONS else None
+
+
 def reason_of(failure: BaseException | None) -> str:
     """Map a run's failure to the reason enum; unknown failures are errors, never success."""
     from .core import BackupSpaceError, RuntimeOperationError, is_lifecycle_refusal
 
     if failure is None:
         return "installer-bug"
+    named = getattr(failure, "reason", None)
+    if named in NAMED_REFUSAL_REASONS:
+        return named
     message = str(failure)
     if isinstance(failure, BackupSpaceError):
         return "disk-space"
@@ -265,10 +296,46 @@ def receipt_warnings(outcomes: dict | None) -> tuple[str, ...]:
     return ()
 
 
+def _safe_refusal(failure: BaseException) -> bool:
+    from .core import is_lifecycle_refusal
+
+    return is_lifecycle_refusal(failure)
+
+
+def journal_before_stop(path: Path, started: dict | None) -> bool:
+    """Whether the update journal at ``path`` shows the run never reached the old Runtime's stop.
+
+    ``started`` is the journal this run found when it began. True only when there is no journal, a
+    ``staged`` one (the stop intent was never recorded), the run's own stop refusal (``complete`` with
+    ``stop_refused``), or a terminal journal this run left as it found it. Any other journal (a stop
+    intent, stopped or later, a recovery, or a rollback this run made) means the install may have changed.
+    An unreadable journal is never proof that nothing changed.
+    """
+    from .core import TERMINAL_STEPS, read_json
+
+    try:
+        journal = read_json(path)
+    except (OSError, ValueError):
+        return False
+    if not journal:
+        return True
+    step = journal.get("step")
+    if step == "staged" or (step == "complete" and journal.get("outcome") == "stop_refused"):
+        return True
+    started = started if isinstance(started, dict) else {}
+    return (step in TERMINAL_STEPS and started.get("step") == step
+            and started.get("operation_id") == journal.get("operation_id"))
+
+
 def settle(request: Request, before, resolver, *, failure: BaseException | None = None,
            rolled_back: bool = False, warnings: tuple[str, ...] = (),
-           details: str | None = None) -> Outcome:
-    """Observe the world after a run and classify it against the request."""
+           details: str | None = None, before_stop: bool = True) -> Outcome:
+    """Observe the world after a run and classify it against the request.
+
+    ``before_stop`` is False when the update journal shows the run went past the old Runtime's stop
+    (``journal_before_stop``): a Runtime refusal after that point is failed or rolled-back, never
+    "not updated, nothing changed".
+    """
     try:
         after = resolver()
     except Exception:  # noqa: BLE001 - an unreadable installation is an observation
@@ -282,17 +349,24 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         start = before.selected_release
     target = request.target
     source = request.target_source
-    if failure is not None and reason_of(failure) == "windows-upgrade-unsupported":
-        # boundary_handoff refuses a Windows upgrade before any stop, journal or copy: a refusal.
-        request, failure = replace(request, refused=True, reason="windows-upgrade-unsupported"), None
+    others = [r for r in (getattr(after, "live_runtimes", ()) or ()) if r.alive and not r.selected]
+    refusal = _refusal_reason(failure)
+    if refusal is not None:
+        # Refused before any stop, journal or copy (a Windows upgrade, autostart-off, or a malformed
+        # saved choice found at admission): nothing was changed, so a refusal that keeps its own reason.
+        request, failure = replace(request, refused=True, reason=refusal), None
+    if failure is not None and request.mode == "update" and before_stop and _safe_refusal(failure):
+        # Runtime refused the stop safely before the old Runtime stopped (nothing destroyed): a refusal that
+        # keeps its own reason (busy), never relabelled as other-runtime-running. After the stop (a rollback's
+        # candidate stop, or a recovery of an interrupted update) the same refusal is failed or rolled-back.
+        request, failure = replace(request, refused=True, reason=reason_of(failure)), None
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"
         return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode,
                        target_source=source)
-    others = [r for r in (getattr(after, "live_runtimes", ()) or ()) if r.alive and not r.selected]
     if request.refused:
         # Refused before any work: nothing was changed, whatever else is running.
-        reason = request.reason or "other-runtime-running"
+        reason: str | None = request.reason or "other-runtime-running"
         return Outcome("not-updated", live if live is not None else start, start, target, reason, request.mode,
                        target_source=source)
     # A second live Runtime is a warning on a success, and a refusal otherwise.

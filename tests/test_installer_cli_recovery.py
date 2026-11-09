@@ -335,8 +335,11 @@ def test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs(
     # proceed. This keeps recovery ahead of C2b release dispatch on every retry.
     routed = []
     backend.preflight_stop = lambda _data: routed.append("preflight")
-    monkeypatch.setattr(app_update, "update_pinokio", lambda *args, **kwargs: routed.append(
-        (args[0], kwargs.get("force"))))
+    def stub_update(*args, **kwargs):
+        routed.append((args[0], kwargs.get("force")))
+        return {}  # update_pinokio is declared to return a dict (app_update.py), even when it changes nothing
+
+    monkeypatch.setattr(app_update, "update_pinokio", stub_update)
     assert cli.main(first) == 3  # the retry's update is stubbed, so the release is unchanged (exit 3)
     assert routed == ["preflight", (root, True)]
 

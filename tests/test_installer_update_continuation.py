@@ -325,7 +325,7 @@ def test_new_durable_guards_refuse_a_single_invalid_prebootstrap_fact(
     elif mutation == "autostart-off":
         selection_path = update_job._selection_path()
         selection = read_json(selection_path)
-        selection["preferences"] = {"autostart": False}
+        selection["choices"] = {"autostart": False}
         write_json(selection_path, selection)
     elif mutation == "active-unclaimed":
         saved["state"] = "active"

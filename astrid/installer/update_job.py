@@ -137,6 +137,18 @@ class _BusyRefusal(ValueError):
     reason = "busy"
 
 
+class _InvalidAutostartChoice(_BusyRefusal):
+    """A saved autostart choice that is not a valid choice: the install must be repaired first."""
+
+    reason = "needs-repair"
+
+
+class _AutostartOff(_BusyRefusal):
+    """Saved autostart is off, which this release cannot preserve in-app: a refusal with its own reason."""
+
+    reason = "autostart-off"
+
+
 class _AcknowledgementUnknown(_BusyRefusal):
     """A submitted native attempt whose acknowledgement cannot be proved."""
 
@@ -500,6 +512,17 @@ def autostart_off(value: object) -> bool:
     return value is False or (isinstance(value, str) and value.casefold() == "off")
 
 
+def _saved_autostart(record: dict) -> bool:
+    """The saved autostart choice: the record's choices through the choices resolver. A legacy record stays on."""
+    from .choices import resolve_choices
+    try:
+        return resolve_choices(saved=record.get("choices"), existing_install=True)["autostart"]
+    except ValueError as failure:
+        raise _InvalidAutostartChoice(
+            "The saved autostart choice is not valid; run the install command without --update "
+            "to repair this installation, then update again.") from failure
+
+
 def _selection_path() -> Path:
     from .service import install_selection
     return install_selection(Path.home(), sys.platform)
@@ -767,9 +790,7 @@ def _validate_prebootstrap(root: Path, job: dict, data_root: Path) -> Version:
             _busy("The update claim state does not match its durable bootstrap proof.")
         if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
             _busy("The accepted update worker command cannot be proved.")
-        selection = read_json(_recorded_selection_path(job))
-        preferences = selection.get("preferences")
-        autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
+        autostart = _saved_autostart(read_json(_recorded_selection_path(job)))
         if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):
             _busy("Saved autostart prevents this update from continuing.")
         metadata = job.get("metadata")
@@ -788,6 +809,8 @@ def _validate_prebootstrap(root: Path, job: dict, data_root: Path) -> Version:
         return old
     except _BusyRefusal:
         raise
+    except _InvalidAutostartChoice:
+        raise  # a malformed saved choice is a repair, not a changed old version
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as failure:
         raise _BusyRefusal("The accepted old version, live Runtime, or private update inputs changed.") from failure
 
@@ -1316,10 +1339,9 @@ def accept(request: dict) -> dict:
             job["prior_transaction_sha256"] = (
                 hashlib.sha256(pending_path.read_bytes()).hexdigest()
                 if isinstance(pending, dict) else None)
-        preferences = read_json(_selection_path()).get("preferences")
-        autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
+        autostart = _saved_autostart(read_json(_selection_path()))
         if autostart_off(autostart):
-            raise ValueError("This update cannot run because saved autostart is off and the installer cannot preserve that choice yet.")
+            raise _AutostartOff("This update cannot run because saved autostart is off and the installer cannot preserve that choice yet.")
         job["autostart_snapshot"] = autostart
         log_path = Path(job["log_path"])
         platform.private_directory(log_path.parent)
@@ -1696,9 +1718,7 @@ def launch_job(root: Path, operation_id: str) -> dict:
             return job
         if job.get("state") != "accepted":
             raise ValueError("The update job is not accepted for launch.")
-        selection = read_json(_recorded_selection_path(job))
-        preferences = selection.get("preferences")
-        autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
+        autostart = _saved_autostart(read_json(_recorded_selection_path(job)))
         if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):
             # Runtime reports a refused launch from launch_error; without it
             # this policy refusal would read as an operating-system rejection.
@@ -2139,10 +2159,8 @@ def admit_worker(root: Path, operation_id: str, backend: Backend, installed: Ver
                  data: Path, manifest_path: Path | None) -> tuple[dict, Version]:
     """Validate the accepted job before the worker's installer run; point backend at its log."""
     job = _read_job(root, operation_id)
-    selection_record = read_json(backend.service.selection)
-    preferences = selection_record.get("preferences")
-    if isinstance(preferences, dict) and autostart_off(preferences.get("autostart")):
-        raise ValueError("This update cannot continue because saved autostart is off and the installer cannot preserve that choice yet.")
+    if autostart_off(_saved_autostart(read_json(backend.service.selection))):
+        raise _AutostartOff("This update cannot continue because saved autostart is off and the installer cannot preserve that choice yet.")
     if autostart_off(job.get("autostart_snapshot")):
         raise ValueError("This update cannot continue because saved autostart was off when it was accepted.")
     accepted_old, selected_data = _validate_worker_binding(root, job)

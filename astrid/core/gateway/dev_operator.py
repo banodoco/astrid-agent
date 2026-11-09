@@ -537,8 +537,8 @@ def run_promote(*, data_root: Path, ref: str | None = None, force: bool = False,
     """
     if force:
         raise DevOperatorError("force abandonment is unsupported; wait for owned work to settle")
-    from astrid.sdk.host_bootstrap import _terminate_old_host
     from astrid.sdk.client import AstridClient
+    from astrid.sdk.host_bootstrap import _terminate_old_host
     terminate_host = terminate_host or _terminate_old_host
     open_client = open_client or AstridClient.open_from_launcher
     default_digest, default_closure = _default_digests()
@@ -615,6 +615,7 @@ def run_promote(*, data_root: Path, ref: str | None = None, force: bool = False,
 def _reclaim_command(parsed: Any, resolve_runtime_data_root: Any) -> int:
     """`astrid dev reclaim`: report and expire registered disposable storage roots."""
     import sys
+
     from astrid.sdk.storage_ownership import reclaim
 
     try:
@@ -668,6 +669,7 @@ def _dev_cache_prune(parsed: Any) -> int:
     Filesystem-only: it never connects to or starts the runtime.
     """
     import sys
+
     from astrid.sdk import visualize_cache
     from astrid.sdk.invocation import _visualize_cache_base
 
@@ -695,6 +697,7 @@ def _dev_cache_prune(parsed: Any) -> int:
 
 def main(args: list[str]) -> int:
     import argparse
+
     from astrid.sdk.storage_root import resolve_runtime_data_root
     if args and args[0] == "journey":
         from astrid.core.dev.journey import main as journey_main

@@ -22,15 +22,15 @@ from runtime_protocol.dirfd import filesystem as os
 
 from astrid.core._shared.result_manifest import write_json_atomic
 from astrid.core.contracts.errors import AstridError, coerce_astrid_error
-from astrid.core.execution.terminal_result import serialize_terminal_result
-from astrid.core.foundation.hash import sha256_file
 from astrid.core.env_vars import ASTRID_TASK_RUN_ID
+from astrid.core.execution.terminal_result import serialize_terminal_result
 from astrid.core.execution.worker_qualification import (
     WorkerQualificationError,
     ensure_runpod_worker,
     load_worker_qualification,
     qualification_digest,
 )
+from astrid.core.foundation.hash import sha256_file
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 from astrid.packs.h3_av.actions.compose.run import _video_media_type
 from astrid.packs.h3_av.actions.transform.operation import OperationJournal, OperationJournalError
@@ -45,7 +45,6 @@ from astrid.packs.h3_av.shared.request import load_request_document, normalize_r
 from astrid.packs.h3_av.shared.request_v2 import CHARACTER_SWAP_ID, branch_for
 from astrid.sdk import AstridClient, generate, observe_task_invocation
 from astrid.sdk.results import InvocationResult
-
 
 UNSUPPORTED_TARGET_MESSAGE = (
     "H3 execution-request target must be default or runpod; choose where H3 runs with --placement local|runpod"
@@ -65,7 +64,10 @@ def _resolve_local_engine() -> Any:
     """Resolve the installed local engine endpoint or fail fast with the next action."""
 
     from astrid.core.generation.engine_contracts import EngineError
-    from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
+    from astrid.core.generation.engine_local_endpoint import (
+        EngineNotInstalled,
+        local_engine_endpoint,
+    )
 
     try:
         return local_engine_endpoint("vibecomfy-h3")
@@ -1296,7 +1298,8 @@ def _invoke_canonical_run_impl(
     """Admit once; an unsettled or identity-free response cannot be replayed."""
 
     from astrid.core.generation.backends.registry import (
-        GenerationBackendRegistry, resolve_workflow_descriptor,
+        GenerationBackendRegistry,
+        resolve_workflow_descriptor,
     )
 
     # An unplaced call carrying a RunPod target is the legacy prepared route.
@@ -2557,8 +2560,8 @@ def _parent_digest(data: bytes) -> str:
 def _compile_plan(request, bundle: Path, destination: Path, *, endpoint_client=None) -> dict[str, Any]:
     # Reuse the installed H3 implementation, including all branch/eligibility
     # decisions. This is CPU preparation, never a provider/worker admission.
-    from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
     from astrid.packs.h3_av.actions.compile.compile import compile_preparation
+    from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
     from astrid.packs.h3_av.shared.input_bundle import bundle_digest, resolve_preparation_assets
     from astrid.packs.vibecomfy.invocation_preflight import _assert_no_unresolved_placeholders
 
@@ -2667,7 +2670,10 @@ def public_controls(inputs: Mapping[str, Any]) -> dict[str, Any]:
         request, _ = _qualified_execution_request(qualification, request)
     prepared_digest = None
     if inputs.get("prepared_worker") is not None:
-        from astrid.packs.runpod.prepared_task import load_prepared_worker_selection, prepared_selection_digest
+        from astrid.packs.runpod.prepared_task import (
+            load_prepared_worker_selection,
+            prepared_selection_digest,
+        )
         selection = load_prepared_worker_selection(inputs["prepared_worker"])
         request = selection.execution_request(request)
         prepared_digest = prepared_selection_digest(selection)
@@ -2688,6 +2694,7 @@ def public_controls(inputs: Mapping[str, Any]) -> dict[str, Any]:
 def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry, h3_endpoint=None):
     """Freeze and import exact request/bundle/source bytes before one admission."""
     import tempfile
+
     from astrid.core.foundation.hash import executor_definition_digest
     from astrid.sdk.invocation import _generation_publish_effect
 
@@ -2904,6 +2911,7 @@ def execute(*, request, input_bundle, plan, source=None, editorial_approved=Fals
             host_output_root=None, **unused):
     """Installed Python action; the host owns output root, lease and settlement."""
     from os import environ
+
     from astrid.sdk import _child_bridge
     if not environ.get(ASTRID_TASK_RUN_ID, "").strip() or _child_bridge._bridge is None:
         raise AstridError("H3 parent requires a live Runtime-admitted attempt and child bridge")

@@ -20,8 +20,17 @@ def user_entries() -> list[dict[str, Any]]:
 
 def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     """Project repository metadata, leaving unclassified modes explicit."""
-    from vibecomfy import resources
-    from vibecomfy.errors import ShippedResourceMissingError
+    try:
+        # vibecomfy is an optional install (not in the wheel's runtime lock):
+        # without it there are simply no ready-template entries, as before.
+        from vibecomfy import resources
+        from vibecomfy.errors import ShippedResourceMissingError
+    except ModuleNotFoundError as exc:
+        # Only an absent vibecomfy means "no entries"; a present one at the
+        # wrong revision (missing submodule or name) must still fail loudly.
+        if exc.name != "vibecomfy":
+            raise
+        return []
     root = resources.ready_templates_root().parent
     index = resources.template_index()['templates']
     coverage = resources.coverage_manifest()['workflows']
@@ -34,6 +43,7 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     from vibecomfy.entries import LOADER_ROLES
     from vibecomfy.model_assets import _referenced_model_values
     from vibecomfy.registry.ready import _discover_ready_templates, workflow_from_ready
+
     from astrid.core.model_catalog.registry import ModelRegistry
     discovery = _discover_ready_templates(include_dynamic=False, include_json_references=False)
     catalog_by_template = {}
@@ -197,6 +207,7 @@ def _declared_default(port: dict[str, Any]) -> dict[str, Any]:
 def _catalog_inputs(kind: str, spec: Any, mode: str | None = None) -> list[dict[str, Any]]:
     """Mode membership comes from the catalog; scalar metadata from action ports."""
     import yaml
+
     from astrid.core.pack.loader import packs_root
     declarations = yaml.safe_load((packs_root() / 'generation' / 'pack.yaml').read_text())
     actions = declarations['actions']
@@ -236,9 +247,9 @@ def _ready_ids() -> set[str]:
 
 
 def _load_entry_workflow(entry: dict[str, Any]) -> Any:
+    from vibecomfy.schema import get_authoring_schema_provider
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import load_bundle
-    from vibecomfy.schema import get_authoring_schema_provider
     return load_bundle(bundle_path(entry), trust=Provenance.USER_CONFIRMED,
                        schema_provider=get_authoring_schema_provider(on_demand_schemas=False)).workflow
 
@@ -453,7 +464,10 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
             'inputs': schemas[selected] if selected is not None else [],
             'mode_descriptions': {name: {'mode': name, 'inputs': fields} for name, fields in schemas.items()}}
     from astrid.core.generation.availability import (
-        availability_declaration, availability_projection, entry_availability, model_availability,
+        availability_declaration,
+        availability_projection,
+        entry_availability,
+        model_availability,
     )
     declaration = availability_declaration()
     for name, row in description['mode_descriptions'].items():
@@ -476,8 +490,9 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
 
 def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> dict[str, Any]:
     """Describe raw/canonical Comfy work through the same offline input path."""
-    from astrid.packs.vibecomfy.production_engine import load_workflow_path
     from vibecomfy.entries import draft_entry
+
+    from astrid.packs.vibecomfy.production_engine import load_workflow_path
     path = path.expanduser()
     if path.is_dir():
         path = path / 'workflow.py'
@@ -791,6 +806,7 @@ def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
     import re
     if entry.get("action"):
         import yaml
+
         from astrid.core.pack.loader import packs_root
         pack = packs_root() / entry["action"].split(".")[0]
         workflows = [_load_entry_workflow({"bundle": str(pack / yaml.safe_load(
@@ -865,7 +881,10 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         missing = _missing_locked_models(entry, engine) if engine is not None else []
         if missing:
             # No live target: the chosen engine's pinned lock is the inventory.
-            from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
+            from astrid.core.generation.preflight import (
+                GenerationReadinessError,
+                readiness_envelope,
+            )
             raise GenerationReadinessError(readiness_envelope(
                 entry=_workflow_description(entry),
                 target=dict(pending_target) if pending_target is not None else {'engine': engine},
@@ -875,8 +894,9 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
                         for value in missing]))
         return None
     from types import SimpleNamespace
-    from astrid.core.generation.backends.comfy_target import _resolve_roles
+
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
+    from astrid.core.generation.backends.comfy_target import _resolve_roles
     observed = client.object_info()
     if not isinstance(observed, dict):
         raise ValueError("target model inventory is malformed")

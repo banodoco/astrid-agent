@@ -9,11 +9,10 @@ import sys
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from . import update_job
 from .backend import Backend
-from .installation import Installation
-from .outcome import RECORD, Request, clear_record, receipt_warnings, settle, write_record
 from .choices import (
     CHOICE_NAMES,
     RECOMMENDED_CHOICES,
@@ -35,6 +34,8 @@ from .core import (
     separate_roots,
     write_json,
 )
+from .installation import Installation, State
+from .outcome import RECORD, Request, clear_record, journal_before_stop, receipt_warnings, settle, write_record
 from .service import (
     LABEL,
     default_program_root,
@@ -334,8 +335,8 @@ def _prepare_log(path: Path, *protected: Path) -> Path | None:
 
 
 def _retained_r0_roots(service) -> list[Path]:
-    from .boundary_registration import retained_roots
     from .boundary_handoff import retained_roots as handoff_roots
+    from .boundary_registration import retained_roots
     from .r0_stop import _marker_path
 
     intent = read_json(absolute(_marker_path(service)))
@@ -392,11 +393,15 @@ class _Run:
         self.target_source: str | None = None
         self.reason: str | None = None
         self.refused = False  # the run stopped before doing anything; never reported as reached
-        self.before = None
-        self.home = self.system = self.root = None
-        self.choices = None
-        self.installer = None
+        self.before: State | None = None
+        self.home: Path | None = None
+        self.system: str | None = None
+        self.root: Path | None = None
+        self.choices: dict[str, bool] | None = None
+        self.installer: Any | None = None
         self.transaction_id = None
+        self.journal: Path | None = None  # the update journal, and what it held when the run began
+        self.started_journal: dict | None = None
         self.operation_id: str | None = None
         self.started_at: int | None = None
         self.protected: list[Path] = []
@@ -410,8 +415,11 @@ class _Run:
         self.operation_id = self.operation_id or secrets.token_hex(16)
         self.started_at = self.started_at or int(time.time())
         try:
-            self.before = Installation.resolve(home, system=system, root=root)
-            pending = read_json((root or self.before.program_root) / "update-transaction.json")
+            resolved = Installation.resolve(home, system=system, root=root)
+            self.before = resolved
+            self.journal = (root or resolved.program_root) / "update-transaction.json"
+            pending = read_json(self.journal)
+            self.started_journal = pending
             self.transaction_id = pending.get("operation_id")
         except Exception:  # noqa: BLE001 - observation only; settle re-resolves
             self.before = None
@@ -441,13 +449,17 @@ class _Run:
         except (OSError, ValueError):
             rolled_back = False
         request_mode = "update" if self.mode in {"update", "app-update"} else self.mode
+        journal = self.journal if self.journal is not None else (
+            None if self.root is None else self.root / "update-transaction.json")
+        before_stop = (failure is None or journal is None
+                       or journal_before_stop(journal, self.started_journal))
         outcome = settle(Request(request_mode, self.target, self.reason, self.refused, self.target_source),
                          self.before,
                          lambda: (None if self.home is None else
                                   Installation.resolve(self.home, system=self.system, root=self.root)),
                          failure=failure, rolled_back=rolled_back,
                          warnings=receipt_warnings(getattr(self.installer, "outcomes", None)),
-                         details=None if self.log is None else str(self.log))
+                         details=None if self.log is None else str(self.log), before_stop=before_stop)
         from dataclasses import replace
 
         # Every non-zero outcome ends with Next and Details (outcome.next_steps).

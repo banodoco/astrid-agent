@@ -1,6 +1,7 @@
 """The receipt's warnings: a success keeps its exit code and says what did not finish."""
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 from astrid.installer.outcome import Outcome, Request, receipt_warnings, settle
@@ -193,3 +194,110 @@ def test_windows_upgrade_refusal_settles_as_not_updated_with_exit_3():
     out = settle(Request("install"), r0, lambda: r0, failure=ValueError(WINDOWS_UPGRADE_REFUSAL))
     assert out.kind == "not-updated" and out.exit_code == 3
     assert out.reason == "windows-upgrade-unsupported"
+
+
+# --- autostart-off is one reason in the enum: a --update refusal, exit 3, with its own copy.
+
+def test_autostart_off_refusal_of_an_update_settles_not_updated_exit_3_with_why_next_and_details():
+    from astrid.installer.update_job import _AutostartOff
+
+    before = _state("runtime", 11)
+    refusal = _AutostartOff("This update cannot run because saved autostart is off and the installer "
+                            "cannot preserve that choice yet.")
+    out = settle(Request("update", 12, target_source="manifest"), before, lambda: before, failure=refusal)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "autostart-off"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[0] == "Astrid did NOT update. It is still Release 11; Release 12 is available."
+    assert lines[1] == "Why: start at sign-in is off, so this update has to run from a terminal."
+    assert lines[-2] == ("Next: run the update command from a terminal. It updates Astrid and starts it, "
+                         "and your choice stays off.")
+    assert lines[-1] == "Details: /logs/install.log"
+
+
+def test_a_malformed_saved_choice_settles_with_the_repair_next_line():
+    before = _state("runtime", 11)
+    refusal = ValueError("The saved autostart choice is not valid; run the install command "
+                                      "without --update to repair this installation, then update again.")
+    out = settle(Request("install"), before, lambda: before, failure=refusal)
+    assert out.reason == "needs-repair"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[-2] == ("Next: run the install command without --update to repair this installation, "
+                         "then update again.")
+
+
+# --- A malformed saved choice found at admission refuses the --update, exit 3, with its repair copy.
+
+def test_malformed_choice_at_admission_settles_not_updated_exit_3_with_needs_repair():
+    from astrid.installer.update_job import _InvalidAutostartChoice
+
+    before = _state("runtime", 11)
+    refusal = _InvalidAutostartChoice("The saved autostart choice is not valid; run the install command "
+                                      "without --update to repair this installation, then update again.")
+    out = settle(Request("update", 12, target_source="manifest"), before, lambda: before, failure=refusal)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "needs-repair"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[-2] == ("Next: run the install command without --update to repair this installation, "
+                         "then update again.")
+    assert lines[-1] == "Details: /logs/install.log"
+
+
+# --- A safe --update refusal keeps the Runtime's own reason (busy): it is never relabelled.
+
+BUSY_NEXT = ("Next: quit the other Astrid window (or let the other installer finish), "
+             "then run the same command again.")
+BUSY_REFUSAL = {"safe": False, "kind": "busy"}
+
+
+def test_update_safe_refusal_with_an_unselected_live_runtime_keeps_busy_and_names_no_second_copy():
+    from astrid.installer.core import RuntimeOperationError
+
+    before = _state("runtime", 11)
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    refusal = RuntimeOperationError("Astrid is busy (1 tasks running).", details=BUSY_REFUSAL)
+    out = settle(Request("update", 12, target_source="manifest"), before, lambda: after, failure=refusal)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "busy"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[-2] == BUSY_NEXT
+    assert lines[-1] == "Details: /logs/install.log"
+    assert "two copies" not in " ".join(lines)
+
+
+def test_update_safe_refusal_with_no_other_runtime_stays_busy_exit_3():
+    from astrid.installer.core import RuntimeOperationError
+
+    before = _state("runtime", 11)
+    after = _state("runtime", 11)
+    refusal = RuntimeOperationError("Astrid is busy (1 tasks running).", details=BUSY_REFUSAL)
+    out = settle(Request("update", 12, target_source="manifest"), before, lambda: after, failure=refusal)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "busy"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[-2] == BUSY_NEXT
+    assert lines[-1] == "Details: /logs/install.log"
+
+
+def test_plain_install_safe_refusal_is_unchanged_failed_busy_exit_1():
+    from astrid.installer.core import RuntimeOperationError
+
+    before = _state("runtime", 11)
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    refusal = RuntimeOperationError("Astrid is busy (1 tasks running).", details=BUSY_REFUSAL)
+    out = settle(Request("install"), before, lambda: after, failure=refusal)
+    assert out.kind == "failed" and out.exit_code == 1
+    assert out.reason == "busy"
+
+
+def test_unsafe_or_downstream_stop_failure_stays_failed_exit_1():
+    from astrid.installer.core import RuntimeOperationError
+
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    unsafe = RuntimeOperationError("the stop failed unsafely", details={"safe": None})
+    downstream = RuntimeOperationError("a later step failed", details={"cause_details": {"safe": False}})
+    for refusal in (unsafe, downstream):
+        out = settle(Request("update", 12, target_source="manifest"), _state("runtime", 11), lambda: after,
+                     failure=refusal)
+        assert out.kind == "failed" and out.exit_code == 1, refusal
+        assert out.reason == "error", refusal

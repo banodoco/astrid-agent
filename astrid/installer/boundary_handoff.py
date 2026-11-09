@@ -438,7 +438,9 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
             value = transaction.recover(rollback=True)
             say("Recovered the previous R0 service. Both roots were kept; changes made in R1 remain in R1.")
             return True
-        if value.get("retained_copy") or os.path.lexists(value["r1_data_root"]):
+        # The copy on disk decides, never the saved retained_copy flag: once the owner has
+        # preserved it elsewhere, this clears the journal, or Update stays refused for good.
+        if os.path.lexists(value["r1_data_root"]):
             raise ValueError(f"The previous R1 copy is retained at {value['r1_data_root']}. It cannot be reused or replaced automatically; preserve it before retrying.")
         transaction._restore_selection(value)
         path.unlink()

@@ -329,15 +329,15 @@ def _install_lock(root: Path):
     from astrid.core.pack.transaction import group_read_lock
 
     with group_read_lock(root, exclusive=True):
-        try:
-            import fcntl
-        except ImportError as exc:
-            raise PackInstallError("atomic_swap_unsupported", "Atomic pack installs require a supported POSIX filesystem.") from exc
-        descriptor = os.open(root / ".install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        from astrid.core.pack import _filelock
+
+        if not _filelock.locking_supported():
+            raise PackInstallError("atomic_swap_unsupported", "Atomic pack installs require a supported filesystem.")
+        descriptor = os.open(root / ".install.lock", os.O_RDWR | os.O_CREAT | _filelock.nofollow_flag(root / ".install.lock"), 0o600)
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode) or os.fstat(descriptor).st_nlink != 1:
                 raise PackInstallError("unsafe_path", "Install lock must be a regular file with one link.")
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            _filelock.lock_fd(descriptor)
             yield
         finally:
             os.close(descriptor)

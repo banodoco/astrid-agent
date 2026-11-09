@@ -9,16 +9,19 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
-from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
 from astrid.core.generation.engine_recipe import engine_source_revision
-
-from astrid.packs.h3_av.shared.request import H3Request, H3RequestError, normalize_request
-from astrid.packs.h3_av.shared.request_v2 import CHARACTER_SWAP_ID, REF2VA_MODEL, branch_for, effective_settings, read_prepared_request
-from astrid.packs.h3_av.shared.timing import ContinuationTimingError, plan_continuation
 from astrid.packs.h3_av.shared.errors import CompilationError
 from astrid.packs.h3_av.shared.input_bundle import _canonical_bytes, _write_asset_bundle
-
-
+from astrid.packs.h3_av.shared.request import H3Request, H3RequestError, normalize_request
+from astrid.packs.h3_av.shared.request_v2 import (
+    CHARACTER_SWAP_ID,
+    REF2VA_MODEL,
+    branch_for,
+    effective_settings,
+    read_prepared_request,
+)
+from astrid.packs.h3_av.shared.timing import ContinuationTimingError, plan_continuation
+from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
 
 _PROFILE_ID = "h3_av.native.v1"
 _LANPAINT_WORKFLOW = Path("workflows/lanpaint_h3_av_generalized")
@@ -470,13 +473,13 @@ def _compile_native_masked_edit(
     between the target latent and the sampler. Bounded mask frames encode the
     edit interval; composition still owns preservation and exact tail trimming.
     """
-    from astrid.packs.h3_av.shared.generation import build_generation_workflow, generation_timing
     from vibecomfy.model_assets import resolve_referenced_assets
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
 
     from astrid.packs.h3_av.actions.prepare.static_regions import resolve_static_region
     from astrid.packs.h3_av.shared.compose import CompositionError, probe_mask
+    from astrid.packs.h3_av.shared.generation import build_generation_workflow, generation_timing
     from astrid.packs.h3_av.shared.spec import Region, canonical_spec
 
     try:
@@ -637,17 +640,18 @@ def _compile_character_swap_v2(
     graph receives only the typed Character Swap references, so composition
     continues to own the exact source audio and delivery-mask permissions.
     """
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import emit_bundle
+
     from astrid.packs.h3_av.shared.generation import (
         CHARACTER_SWAP_FILENAME,
         CHARACTER_SWAP_REPOSITORY,
         CHARACTER_SWAP_REVISION,
         TURBO_FILENAME,
-        character_swap_asset_sha256,
         build_generation_workflow,
+        character_swap_asset_sha256,
         generation_timing,
     )
-    from vibecomfy.security.provenance import Provenance
-    from vibecomfy.workflow_bundle import emit_bundle
 
     value = request.value
     settings = effective_settings(request)
@@ -1065,7 +1069,12 @@ def _compile_generation(
     from PIL import Image
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
-    from astrid.packs.h3_av.shared.generation import IMAGE_REFERENCE_CAPACITY, build_generation_workflow, generation_timing
+
+    from astrid.packs.h3_av.shared.generation import (
+        IMAGE_REFERENCE_CAPACITY,
+        build_generation_workflow,
+        generation_timing,
+    )
 
     references = request.value["references"]
     # Keep slots ordered even for repeated assets; the archive deduplicates bytes.

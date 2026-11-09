@@ -556,8 +556,11 @@ def test_root_marker_retains_pinokio_manager_for_update_and_uninstall(tmp_path, 
         monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
         from astrid.installer import app_update
 
-        monkeypatch.setattr(app_update, "update_pinokio", lambda *args, **kwargs: captured.update(
-            managed_by="pinokio", run="update", adapter=(args, kwargs)))
+        def stub_update(*args, **kwargs):
+            captured.update(managed_by="pinokio", run="update", adapter=(args, kwargs))
+            return {}  # update_pinokio is declared to return a dict (app_update.py)
+
+        monkeypatch.setattr(app_update, "update_pinokio", stub_update)
         argv += ["--manifest", str(manifest), "--uv", str(uv)]
 
     # --update with the update stubbed (no release change) is not-updated (exit 3); the others exit 0.

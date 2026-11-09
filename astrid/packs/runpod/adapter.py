@@ -18,11 +18,18 @@ from typing import Any
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
 from astrid.packs.runpod.generation import prepare_retained_generation
 from astrid.packs.runpod.target_selection import (
-    PaidSelectionError, RunPodOffer, RunPodSelectionOwner, _digest, _number,
+    PaidSelectionError,
+    RunPodOffer,
+    RunPodSelectionOwner,
+    _digest,
+    _number,
 )
 from astrid.packs.runpod.worker_owner import _run_sync
 from astrid.packs.runpod.worker_preparation import (
-    AcquisitionUnresolvedError, RunPodTargetContract, inspect_volume_records, resolve_existing_volume,
+    AcquisitionUnresolvedError,
+    RunPodTargetContract,
+    inspect_volume_records,
+    resolve_existing_volume,
 )
 
 
@@ -144,8 +151,8 @@ class RunPodAdapter:
     def bind_task(self, policy, inputs, *, invocation_id, scratch, begin_lease, retain_bridge, retire_bridge):
         """Bind the admitted policy and materialized workflow to one lease."""
         from astrid.core.generation.interfaces import RunPodPreparationRequest
-        from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
         from astrid.packs.runpod.target_selection import PaidRunConsent
+        from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
 
         prevalidate_task(policy, inputs, scratch=scratch)
         if (policy["kind"] != "runpod" or policy["engine"] != self.installation.engine
@@ -199,13 +206,17 @@ class RunPodAdapter:
         drain before it can be used.  The A3 owner remains the only authority
         that settles or releases the paid lease.
         """
-        from astrid.core.generation.engine_recipe import load_recipe
-        from astrid.core.generation.backends.comfy_target import (
-            ComfyTarget, ComfyTargetClient, HTTP_TRANSFER_SECONDS, MAX_JSON_BYTES,
-        )
-        from runtime_protocol import platform
         from runpod_lifecycle.engine_bridge import EngineBridge
         from runpod_lifecycle.https import HttpsPodTransport, read_token_file
+        from runtime_protocol import platform
+
+        from astrid.core.generation.backends.comfy_target import (
+            HTTP_TRANSFER_SECONDS,
+            MAX_JSON_BYTES,
+            ComfyTarget,
+            ComfyTargetClient,
+        )
+        from astrid.core.generation.engine_recipe import load_recipe
 
         if not all(callable(value) for value in (begin_lease, retain_bridge, retire_bridge)):
             raise ValueError("endpoint binding requires the host's bridge drain")
@@ -384,9 +395,14 @@ def prevalidate_task(policy, inputs, *, scratch):
 
 def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, environ):
     """Construct the retained A3/A4 composition on an explicit host request."""
-    from astrid.core.generation import engine_recipe, engine_runner
     from runpod_lifecycle.config import RunPodConfig
-    from astrid.packs.runpod.remote_placement import ENGINE_BASE, RemotePlacement, RunPodInstallation
+
+    from astrid.core.generation import engine_recipe, engine_runner
+    from astrid.packs.runpod.remote_placement import (
+        ENGINE_BASE,
+        RemotePlacement,
+        RunPodInstallation,
+    )
     from astrid.packs.runpod.target_selection import RunPodLeaseCompatibility, RunPodPreferences
     from astrid.packs.runpod.worker_owner import RunPodLeaseOwner
 

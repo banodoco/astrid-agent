@@ -277,7 +277,11 @@ def test_stage_rejects_damaged_source_or_installed_schema_before_declaration(
         staged_installer, damage_at, damage):
     state = staged_installer
     state.damage_at, state.damage = damage_at, damage
-    with pytest.raises(ValueError, match="local canonical timeline schema|Runtime source pin"):
+    # A missing installed schema is named by its path; the other damage keeps its own wording.
+    expected = (r"staged Agent is missing: .*timeline-config\.schema\.json"
+                if (damage_at, damage) == ("wheel", "missing")
+                else "local canonical timeline schema|Runtime source pin")
+    with pytest.raises(ValueError, match=expected):
         state.backend.stage(state.manifest, state.root, state.data)
     candidates = list((state.root / "versions").iterdir())
     assert len(candidates) == 1

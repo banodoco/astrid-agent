@@ -134,6 +134,48 @@ def test_rollback_after_normalisation_restores_r0_and_keeps_both_roots(case, mon
     assert snapshot(c.destination) == r1
 
 
+def test_install_line_clears_a_rolled_back_handoff_once_the_r1_copy_is_preserved(case, monkeypatch, capsys):
+    """R2: --rollback leaves a rolled_back handoff journal, which refuses Update until the install line clears it.
+
+    The retained R1 copy is never reused or replaced, so the install line names it first. Once the owner has
+    preserved it elsewhere, the next install line must clear the journal; otherwise Update stays refused for good.
+    """
+    import os
+
+    from astrid.installer import boundary_handoff as handoff
+    from astrid.installer.installation import Installation
+
+    c = handed_off_release1_r0_live(case, monkeypatch)
+    _cli(c, monkeypatch)
+    assert handoff.normalise_completed(c.backend)
+    assert cli.main(["--root", str(c.root), "--rollback"]) == 0
+    assert read_json(c.tx.journal)["phase"] == "rolled_back"
+    assert Installation.resolve(c.service.home, system="linux").kind == "handoff-rolled-back"
+    install = ["--root", str(c.root), "--manifest", str(c.manifest_path(1)), "--uv", sys.executable]
+    capsys.readouterr()
+
+    assert cli.main(install) != 0
+    assert f"The previous R1 copy is retained at {c.destination}" in capsys.readouterr().out
+    assert read_json(c.tx.journal)["phase"] == "rolled_back"
+
+    preserved = c.destination.with_name(c.destination.name + "-preserved")
+    os.replace(c.destination, preserved)
+    r1 = snapshot(preserved)
+    reached = []
+
+    def fresh_handoff(self, *_args, **_kwargs):
+        # The journal is gone before the fresh copy-only upgrade starts; stop the run here.
+        reached.append((self.journal.exists(), Installation.resolve(c.service.home, system="linux").kind))
+        raise RuntimeError("stop at the fresh handoff")
+
+    monkeypatch.setattr(handoff.BoundaryHandoff, "run", fresh_handoff)
+    cli.main(install)
+    out = capsys.readouterr().out
+    assert "The previous R1 copy is retained" not in out, out
+    assert reached == [(False, "r0")], out
+    assert snapshot(preserved) == r1
+
+
 def test_rollback_after_a_post_handoff_update_refuses_without_changes(case, monkeypatch, capsys):
     c = handed_off_release1_r0_live(case, monkeypatch)
     _cli(c, monkeypatch)
@@ -572,6 +614,12 @@ EXPECTED_NEXT = {
     "windows-upgrade-unsupported": "Next: this Windows version can't be upgraded this way. "
                                    "Open astrid.haus > Settings > Updates > Download diagnostics "
                                    "to see what is installed.",
+    "autostart-off": "Next: run the update command from a terminal. It updates Astrid and starts it, "
+                     "and your choice stays off.",
+    "unsupported-service-manager": "Next: run the update command from a terminal instead.",
+    "acknowledgement-unknown": "Next: wait a minute, then run the same update command again. It checks the "
+                               "earlier attempt before starting a new one.",
+    "legacy-update-record": "Next: run the update command from a terminal to start a fresh update.",
     "pinokio-managed": "Next: use the Update button in Pinokio.",
     "source-checkout": "Next: update the source checkout, then run the same command again.",
     "consent-required": "Next: run the install command again and accept the setup choices, "
