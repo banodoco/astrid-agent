@@ -160,3 +160,14 @@ def test_core_names_neither_build_nor_finalize():
              if re.search(r"\bhooks?\[['\"](build|finalize)['\"]\]|\.get\(['\"](build|finalize)['\"]", p.read_text())
              and p.name != "workflows.py"]
     assert named == []
+
+
+def test_vibecomfy_argv_parses_with_the_real_cli():
+    """The argv is not assumed: each step must parse with VibeComfy's own parser."""
+    cli = pytest.importorskip("vibecomfy.cli")
+    parser = cli.build_parser()
+    commands = mod.VibeComfyCommands("wf.json", "custom_nodes.lock")
+    parsed = {step: parser.parse_args(commands.argv(step)) for step in ("doctor", "prepare", "nodes_restore", "fetch")}
+    assert parsed["prepare"].deps == "sync" and parsed["prepare"].no_models and parsed["prepare"].no_packs
+    assert parsed["fetch"].workflow == "wf.json" and not parsed["fetch"].force
+    assert parsed["nodes_restore"].lockfile == "custom_nodes.lock"
