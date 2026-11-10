@@ -394,7 +394,9 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         f"{POD_VENV}/bin/python -c {shlex.quote(_ENTRY_CHECK)} {listing} {shlex.quote(check_entry)} {shlex.quote(mode or '')} || exit 3\n"
         f"{line} > {result}\n"
         "rc=$?\n"
-        "if [ $rc -ne 0 ]; then exit $rc; fi\n"
+        f"if [ $rc -ne 0 ]; then {POD_VENV}/bin/python -c "
+        f"{shlex.quote(Path(__file__).with_name('failure_diagnostics.py').read_text(encoding='utf-8'))} "
+        f"{result}; exit $rc; fi\n"
         f"printf '%s' {shlex.quote(RESULT_MARK)}; tr -d '\\n' < {result}; echo\n"
         f"{manifest_command(f'{remote_root}/out')}\n"
     )
@@ -703,12 +705,18 @@ class RunPodMachine:
         placement, state, ops = adapter.placement, run.lease.state, run.lease.claim.ops
         record = ops.job_poll(run.job_id)
         self._checkpoint(run.lease, {"id": run.job_id, "state": "exited"})
-        stdout = stderr = ""
+        from .failure_diagnostics import MAX_FRAME_BYTES, parse_frame
+        failed = type(record.get("exit_code")) is not int or record["exit_code"] != 0
+        stdout = ""
         if run.directory:
-            _c, stdout, _e = ops.exec(f"cat {shlex.quote(run.directory)}/stdout", 120)
-            _c, stderr, _e = ops.exec(f"tail -c 4000 {shlex.quote(run.directory)}/stderr", 120)
-        if str(record.get("exit_code")) not in {"0"}:
-            raise MachineError(f"remote generation exited {record.get('exit_code')}: {stderr[-800:]}")
+            command = (f"tail -c {MAX_FRAME_BYTES + 1}" if failed else "cat")
+            _c, stdout, _e = ops.exec(f"{command} {shlex.quote(run.directory)}/stdout", 120)
+        if failed:
+            diagnostic = parse_frame(stdout)
+            exit_code = record.get("exit_code")
+            safe_exit = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else "unknown"
+            raise MachineError(f"remote generation failed (exit {safe_exit}; "
+                               f"category={diagnostic['category']}; code={diagnostic['code']})")
         lines = stdout.splitlines()
         result_line = next((line for line in lines if line.startswith(RESULT_MARK)), None)
         manifest_line = next((line for line in lines if line.startswith(MANIFEST_MARK)), None)
