@@ -97,6 +97,63 @@ class Crash(BaseException):
     pass
 
 
+@pytest.mark.parametrize("phase", ["prepared", "old_moved"])
+def test_windows_swapback_crash_restores_admitted_generation(tmp_path, windows, monkeypatch, phase):
+    root = tmp_path / "packs"
+    root.mkdir()
+    (root / "late-user-write").write_text("must survive")
+    retired = tmp_path / ".astrid-retired"
+    retired.mkdir()
+    candidate = retired / ("a" * 32)
+    candidate.mkdir()
+    (candidate / "new-pack").write_text("refused generation")
+    original_write = txn._write_exchange
+    attempts = 0
+
+    def crash_on_swapback(path, record, current):
+        nonlocal attempts
+        if current == "prepared":
+            attempts += 1
+        original_write(path, record, current)
+        if attempts == 2 and current == phase:
+            raise Crash()
+
+    def refuse(*args):
+        raise txn.PackInstallError("collection_changed", "force refusal")
+
+    monkeypatch.setattr(txn, "_write_exchange", crash_on_swapback)
+    monkeypatch.setattr(txn, "_verify_external_root_digests", refuse)
+    with pytest.raises(Crash), txn.group_read_lock(root, exclusive=True):
+        txn._publish_and_verify_external_roots(candidate, root, {}, {}, retired, "a" * 32, 1)
+    with txn.group_read_lock(root, exclusive=True):
+        assert (root / "late-user-write").read_text() == "must survive"
+        assert (candidate / "new-pack").read_text() == "refused generation"
+    assert not txn._exchange_journal(root).exists()
+
+
+@pytest.mark.parametrize("phase", ["prepared", "old_moved"])
+def test_windows_legacy_journal_blocks_ambiguous_recovery(tmp_path, windows, phase):
+    root = tmp_path / "packs"
+    root.mkdir()
+    retired = tmp_path / ".astrid-retired"
+    retired.mkdir()
+    candidate = retired / ("b" * 32)
+    candidate.mkdir()
+    (candidate / "late-user-write").write_text("must survive")
+    record = {"version": 1, "candidate": candidate.name,
+              "old": txn._exchange_identity(root), "new": txn._exchange_identity(candidate)}
+    (tmp_path / ".packs.transaction.lock").touch()
+    txn._write_exchange(root, record, phase)
+    if phase == "old_moved":
+        windows.replace(root, txn._exchange_backup(root))
+    with pytest.raises(txn.PackInstallError, match="Legacy collection exchange"):
+        with txn.group_read_lock(root):
+            pytest.fail("ambiguous collection was exposed")
+    assert (candidate / "late-user-write").read_text() == "must survive"
+    assert txn._exchange_journal(root).exists()
+    assert (root if phase == "prepared" else txn._exchange_backup(root)).is_dir()
+
+
 @pytest.mark.parametrize("phase", ["prepared", "old_moved", "published", "retired"])
 @pytest.mark.parametrize("timing", ["before", "after"])
 @pytest.mark.parametrize("restart", ["transaction", "host", "discovery"])
