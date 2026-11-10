@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -158,13 +160,53 @@ def test_dry_run_target_and_engine_equal_live_policy(slot, image, preferences):
 @pytest.mark.parametrize('slot,engine', [(('audio', 'tts'), 'comfyui'), (('audio', 'music'), 'comfyui'),
                                          (('image', 't2i'), 'comfyui'), (('image', 'edit'), 'comfyui')],
                          ids=lambda value: '/'.join(value) if isinstance(value, tuple) else value)
-def test_audio_runpod_uses_h3_engine_and_image_keeps_comfyui(slot, engine, image, preferences):
+def test_runpod_engine_matches_slot_recipe(slot, engine, image, preferences):
     modality, mode = slot
     plan = dict(_call(modality, mode, image, placement='runpod', dry_run=True, **PAID))
     assert plan['target']['engine'] == engine
     client = NoPodClient()
     _call(modality, mode, image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
     assert json.loads(client.calls[0][1]['inputs']['placement_policy'])['engine'] == engine
+
+
+@pytest.mark.parametrize('message', ['required values were not supplied', 'input contract incomplete'])
+def test_automatic_selection_skips_only_typed_missing_entry_inputs(monkeypatch, message):
+    from astrid.core.generation import defaults, settings, availability
+    from astrid.core.generation import placement as placements
+
+    candidates = [
+        {'id': 'a-contributed', 'kind': 'video', 'modes': ['t2v'], 'bundle': 'a.py',
+         'hooks_declared': True},
+        {'id': 'b-ordinary', 'kind': 'video', 'modes': ['t2v'], 'bundle': 'b.py'},
+    ]
+    monkeypatch.setattr(settings, 'read', lambda *a, **k: {})
+    monkeypatch.setattr(placements, 'resolve_placement', lambda *a, **k: SimpleNamespace(kind='runpod', machine=None))
+    monkeypatch.setattr(placements, 'validate_placement', lambda value: value)
+    monkeypatch.setattr(defaults, 'pinned_entry', lambda *a, **k: None)
+    monkeypatch.setattr(defaults, 'ordered_ids', lambda *a, **k: ())
+    monkeypatch.setattr(entries, 'user_entries', lambda: candidates)
+    monkeypatch.setattr(entries, 'ready_entries', lambda: [])
+    monkeypatch.setattr(availability, 'require_entry_available', lambda *a, **k: None)
+    monkeypatch.setattr(entries, 'describe_entry', lambda *a, **k: {'inputs': [{'name': 'request'}]})
+    monkeypatch.setattr(entries, 'validate_inputs', lambda *a, **k: (_ for _ in ()).throw(
+        entries.MissingRequiredEntryInputsError(message)))
+    monkeypatch.setattr(entries, 'runpod_engine', lambda *a, **k: 'comfyui')
+
+    @contextmanager
+    def snapshot(path):
+        yield Path(path)
+
+    class CandidateReached(Exception):
+        pass
+
+    monkeypatch.setattr(generation, '_snapshot_generation_workflow', snapshot)
+    monkeypatch.setattr(entries, 'prepare', lambda frozen, **kw: (_ for _ in ()).throw(CandidateReached(str(frozen))))
+    with pytest.raises(CandidateReached, match='b.py'):
+        GenerationFacade()._generate_on_target_impl(
+            _job_dirs=[], registry=SimpleNamespace(list_by_modality=lambda _: []), model=None,
+            mode='t2v', modality='video', placement='runpod', execution=None,
+            inputs={'prompt': 'boat'}, dry_run=True, consent=('paid',), max_usd=2,
+            deadline='2099-01-01T00:00:00Z')
 
 
 def test_runpod_request_never_selects_a_local_target(image, preferences, monkeypatch):
