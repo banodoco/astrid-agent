@@ -46,7 +46,7 @@ import threading
 import time
 import zipfile
 from contextlib import ExitStack, contextmanager, nullcontext
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
@@ -6706,6 +6706,10 @@ class GenericPackHost:
         # An unregistered host must retain the existing claim-loop failure
         # semantics. register() arms the first refresh after success.
         self._registration_refresh_deadline = float("inf")
+        # Startup binds the verified process/launch context only once it is ready.
+        # Every later successful registration republishes its current identity.
+        self._ready_marker_path: Path | None = None
+        self._ready_marker_context: dict[str, Any] = {}
         # Set by the host entrypoint.  Unresolved-cleanup notes are recorded
         # here so that `astrid doctor` can show them from another process.
         # The record never gates admission.
@@ -7936,6 +7940,27 @@ class GenericPackHost:
         self.capabilities = updated
         return tuple(updated[key] for key in sorted(updated) if capability_id is None or key == capability_id)
 
+    def _publish_ready_registration(self, registration: Mapping[str, Any] | None) -> None:
+        if self._ready_marker_path is None:
+            return
+        payload = {
+            **self._ready_marker_context,
+            "capability_count": len(self.capabilities),
+            "ready_capabilities": sorted(record.id for record in self.capabilities.values() if record.ready),
+            "unready_capabilities": sorted(record.id for record in self.capabilities.values() if not record.ready),
+            "missing_required_capabilities": list(self.missing_required_capabilities),
+            "gated_checks": _gated_remotion_faults(self.capabilities.values()),
+            "registration": registration,
+            "source_epoch": self.source_epoch,
+            "source_inventory_identity": self.source_inventory_identity,
+            "runtime_instance_id": self.runtime_state.get(
+                "runtime_instance_id", self._ready_marker_context.get("runtime_instance_id")
+            ),
+            "runtime_epoch": self.runtime_state.get("runtime_epoch"),
+            "schema_digest": self.runtime_state.get("schema_digest"),
+        }
+        _write_ready_marker(self._ready_marker_path, payload)
+
     def register(self, *, deliberate: bool = False) -> dict[str, Any]:
         # Cover discovery, preflight, the Runtime transaction, and local state
         # publication as one registration operation. In particular, a fenced
@@ -8009,7 +8034,9 @@ class GenericPackHost:
                 self.runtime_state = runtime_state
                 self._runtime_registration_fence = None
                 self._registration_refresh_blocked = False
-            return {"executor_id": self.executor_id, "capabilities": [r.manifest() for r in self.capabilities.values()], "ready": [r.id for r in self.capabilities.values() if r.ready and not _is_withdrawn(r)], "withdrawn_capabilities": removed}
+            result = {"executor_id": self.executor_id, "capabilities": [r.manifest() for r in self.capabilities.values()], "ready": [r.id for r in self.capabilities.values() if r.ready and not _is_withdrawn(r)], "withdrawn_capabilities": removed}
+            self._publish_ready_registration(result)
+            return result
         # Publish capability admission metadata before advertising the executor.
         # A real runtime must be able to validate a task against the exact
         # definition digest/source-derived readiness before it can claim work.
@@ -8077,6 +8104,7 @@ class GenericPackHost:
             # fail-closed rather than exposing a partial new registration.
             if removed:
                 self._withdraw_removed_capabilities(removed)
+            result = {"registration": registration, "capabilities": [r.manifest() for r in self.capabilities.values()], "withdrawn_capabilities": removed}
             # Keep the host registration counted until the exact state that
             # Runtime accepted is published under the same claim condition.
             with self._handoff_condition:
@@ -8084,6 +8112,7 @@ class GenericPackHost:
                 self._registered_state = state
                 self._registered_runtime_state = {**runtime_state, "source_epoch": self.source_epoch}
                 self.runtime_state = runtime_state
+                self._publish_ready_registration(result)
                 self._runtime_registration_fence = None
                 self._runtime_restarted = False
                 self._registration_refresh_blocked = False
@@ -8106,7 +8135,7 @@ class GenericPackHost:
                 status=int(getattr(exc, "status", 0) or 0),
                 details=details,
             ) from exc
-        return {"registration": registration, "capabilities": [r.manifest() for r in self.capabilities.values()], "withdrawn_capabilities": removed}
+        return result
 
     def _renew_executor_registration(self, *, idle: bool = True, deliberate: bool = False) -> None:
         """Refresh runtime executor liveness without replaying a receipt.
@@ -14227,10 +14256,16 @@ def _compose_cli_boot_manifest(
 
 def _write_ready_marker(path: Path, payload: Mapping[str, Any]) -> None:
     """Atomically publish one host bootstrap outcome."""
+    def structured(value: Any) -> Any:
+        # The generated Runtime executor response is a dataclass, not a dict.
+        if is_dataclass(value) and not isinstance(value, type):
+            return asdict(value)
+        return _json_safe(value)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(
-        json.dumps(dict(payload), sort_keys=True, default=_json_safe),
+        json.dumps(dict(payload), sort_keys=True, default=structured),
         encoding="utf-8",
     )
     temporary.replace(path)
@@ -17836,7 +17871,9 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             if activation is not None
             else None,
         }
-        _write_ready_marker(ready_path, ready_payload)
+        host._ready_marker_path = ready_path
+        host._ready_marker_context = ready_payload
+        host._publish_ready_registration(registration)
         _emit_startup_phase("ready_written")
         if stdin_shutdown is not None and stdin_shutdown.shutdown_requested.is_set():
             ready_path.unlink(missing_ok=True)
