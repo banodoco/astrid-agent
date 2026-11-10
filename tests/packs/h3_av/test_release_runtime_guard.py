@@ -29,8 +29,8 @@ def test_h3_managed_guard_enforces_release_runtime(case):
                 'comfy_version': '0.43.2' if case == 'wrong_version' else '0.36.0',
                 'packages': {'torch': '2.10.0+cu130', 'comfy-kitchen': '0.2.40', 'comfy-aimdo': '0.6.0'},
                 'launch_flags': flags, 'managed': True}
-    prep._native = lambda program, requirements, *args: json.dumps(
-        compare_runtime(json.loads(requirements), target=observed))
+    prep._native = lambda program, requirements, *args: SimpleNamespace(stdout=json.dumps(
+        compare_runtime(json.loads(requirements), target=observed)))
     if case == 'matching':
         prep._guard_runtime(workflow, runner, post=True)
     else:
