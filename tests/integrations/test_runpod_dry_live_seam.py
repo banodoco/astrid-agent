@@ -205,7 +205,7 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences, p
     records = tmp_path / 'peer-records'
     records.mkdir()
     program = f'''
-import sys,json,threading
+import sys,json,os,threading
 sys.path[:0] = {[str(Path(__file__).resolve().parents[2]), *sys.path]!r}
 from pathlib import Path
 from tests.integrations.runpod_slot_pod import PodComfy,pin_object_info
@@ -218,7 +218,7 @@ class Recorded(list):
 peer=PodComfy({provider.comfy.classes!r}, lambda: {files!r}, extra=pin_object_info())
 peer.h3_output={h3!r}
 peer.prompts=Recorded('prompts'); peer.views=Recorded('views'); peer.rejections=Recorded('rejections')
-port=int(sys.argv[1]); Path(sys.argv[3]).write_text('started')
+port=int(sys.argv[1]); Path(sys.argv[3]).write_text(str(os.getpid())+'\\n')
 with _attached_comfy(peer,port): threading.Event().wait()
 '''
     (root / 'tiny_http.py').write_text(program)
