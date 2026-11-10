@@ -483,53 +483,72 @@ def test_get_capability_raises_typed_lookup_errors() -> None:
         )
 
 
+def _write_demo_widget_pack(packs_root: Path) -> None:
+    """Write the schema v3 ``demo`` pack: it declares the ``widgets`` kind and ships ``widgets/glow``.
+
+    Discovery quarantines v1/v2 manifests, so the element is declared under
+    ``rendering`` with its descriptor beneath rendering/ (v3 has no folder scan).
+    """
+    pack_root = packs_root / "demo"
+    element_dir = Path("rendering") / "elements" / "widgets" / "glow"
+    (pack_root / element_dir).mkdir(parents=True)
+    (pack_root / "pack.yaml").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "id": "demo",
+                "name": "Demo Pack",
+                "version": "0.1.0",
+                "pack_api": "2.0",
+                "description": "Demo pack that declares a custom widget element kind.",
+                "extensions": {
+                    "elements": {
+                        "kinds": [
+                            {"id": "widgets", "singular": "widget"},
+                        ]
+                    }
+                },
+                "rendering": {
+                    "widgets/glow": {
+                        "type": "element",
+                        "path": (element_dir / "element.yaml").as_posix(),
+                        "resources": [
+                            {"kind": "implementation", "path": (element_dir / "component.tsx").as_posix()},
+                        ],
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (pack_root / element_dir / "component.tsx").write_text(
+        "export default function Glow() { return null; }\n",
+        encoding="utf-8",
+    )
+    (pack_root / element_dir / "element.yaml").write_text(
+        json.dumps(
+            {
+                "id": "glow",
+                "kind": "widget",
+                "pack_id": "demo",
+                "metadata": {"label": "Glow"},
+                "schema": {"type": "object"},
+                "defaults": {"enabled": True},
+                "dependencies": {"js_packages": [], "python_requirements": []},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_get_capability_supports_pack_declared_element_kinds_and_invalid_kind_errors() -> None:
     astrid = _import_public_module()
 
     with tempfile.TemporaryDirectory() as tmp:
         packs_root = Path(tmp) / "packs"
-        pack_root = packs_root / "demo"
-        pack_root.mkdir(parents=True)
-        (pack_root / "pack.yaml").write_text(
-            json.dumps(
-                {
-                    "id": "demo",
-                    "name": "Demo Pack",
-                    "version": "0.1.0",
-                    "schema_version": 2,
-                    "extensions": {
-                        "elements": {
-                            "kinds": [
-                                {"id": "widgets", "singular": "widget"},
-                            ]
-                        }
-                    },
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        element_root = pack_root / "elements" / "widgets" / "glow"
-        element_root.mkdir(parents=True)
-        (element_root / "component.tsx").write_text(
-            "export default function Glow() { return null; }\n",
-            encoding="utf-8",
-        )
-        (element_root / "element.yaml").write_text(
-            json.dumps(
-                {
-                    "id": "glow",
-                    "kind": "widget",
-                    "pack_id": "demo",
-                    "metadata": {"label": "Glow"},
-                    "schema": {"type": "object"},
-                    "defaults": {"enabled": True},
-                    "dependencies": {"js_packages": [], "python_requirements": []},
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        _write_demo_widget_pack(packs_root)
 
         capability = astrid.get_capability(
             "widget/glow",
@@ -558,6 +577,24 @@ def test_get_capability_supports_pack_declared_element_kinds_and_invalid_kind_er
                 kind="element",
                 extra_pack_roots=(str(packs_root),),
             )
+
+
+def test_discover_exposes_a_v3_pack_declared_element_kind_and_its_element() -> None:
+    """A v3 pack's own declared kind loads, and discover() reports it and the element using it."""
+    astrid = _import_public_module()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        packs_root = Path(tmp) / "packs"
+        _write_demo_widget_pack(packs_root)
+
+        inventory = astrid.discover(extra_pack_roots=(str(packs_root),))
+
+        assert any(pack["id"] == "demo" for pack in inventory.packs)
+        widget_kind = next(kind for kind in inventory.element_kinds if kind["canonical_kind"] == "widgets")
+        assert widget_kind["aliases"] == ["widgets", "widget"]
+        element = next(element for element in inventory.elements if element.id == "widgets/glow")
+        assert element.capability_type == "element"
+        assert element.handle.kind == "widgets"
 
 
 def test_invoke_rejects_elements_and_missing_executor_project(

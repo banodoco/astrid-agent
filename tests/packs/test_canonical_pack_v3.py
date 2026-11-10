@@ -178,6 +178,45 @@ def test_element_retains_kind_local_identity_and_descriptor_defaults(tmp_path: P
     assert yaml.safe_load((root / path).read_text()) == descriptor
 
 
+def test_element_may_use_an_element_kind_its_own_pack_declares(tmp_path: Path) -> None:
+    """Platform contract: a pack declares extensions.elements.kinds and ships elements of those kinds."""
+    path = "rendering/elements/widgets/glow/element.yaml"
+    root = _pack(tmp_path, files={path: yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": "demo"})},
+                 extensions={"elements": {"kinds": [{"id": "widgets", "singular": "widget"}]}},
+                 rendering={"widgets/glow": {"type": "element", "path": path}})
+    entry = validate_canonical_pack(root)
+    assert entry.definition.declaration_id("rendering", "widgets/glow") == "widgets/glow"
+
+
+@pytest.mark.parametrize("extensions", [
+    # A custom kind the pack does not declare (it declares a different one).
+    {"elements": {"kinds": [{"id": "gadgets", "singular": "gadget"}]}},
+    # A custom kind declared by no pack here: another pack's declaration never applies.
+    {},
+], ids=["undeclared-by-this-pack", "declared-elsewhere-or-nowhere"])
+def test_element_kind_neither_built_in_nor_declared_by_this_pack_is_refused(
+    tmp_path: Path, extensions: dict,
+) -> None:
+    path = "rendering/elements/widgets/glow/element.yaml"
+    root = _pack(tmp_path, files={path: yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": "demo"})},
+                 extensions=extensions,
+                 rendering={"widgets/glow": {"type": "element", "path": path}})
+    with pytest.raises(CanonicalPackValidationError) as excinfo:
+        validate_canonical_pack(root)
+    message = str(excinfo.value)
+    assert "element kind 'widget' is neither built in [effects, animations, transitions]" in message
+    assert "declared by pack 'demo' in extensions.elements.kinds" in message
+
+
+def test_malformed_pack_element_kinds_are_refused(tmp_path: Path) -> None:
+    path = "rendering/elements/widgets/glow/element.yaml"
+    root = _pack(tmp_path, files={path: yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": "demo"})},
+                 extensions={"elements": {"kinds": [{"id": "widgets", "bogus": True}]}},
+                 rendering={"widgets/glow": {"type": "element", "path": path}})
+    with pytest.raises(CanonicalPackValidationError, match="extensions.elements.kinds is invalid"):
+        validate_canonical_pack(root)
+
+
 def test_documents_are_schema_resources_with_independent_format_version(tmp_path: Path) -> None:
     root = _pack(tmp_path, files={"shared/note.schema.json": '{"type":"object"}',
                                  "shared/note-example.json": "{}"},
