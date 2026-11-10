@@ -25,6 +25,9 @@ MODEL_EXT = (".safetensors", ".gguf", ".pth", ".ckpt", ".pt", ".bin", ".sft")
 FOLDERS = {"unet_name": "diffusion_models", "vae_name": "vae", "clip_name": "text_encoders",
            "clip_name1": "text_encoders", "clip_name2": "text_encoders", "lora_name": "loras",
            "ckpt_name": "checkpoints", "model_name": None}
+# Custom Foley models live in their own directory under models/, and the loader
+# expects that directory to remain part of the selected model name.
+CLASS_FOLDERS = {("LoadDACHunyuanVAE", "vae_name"): "hunyuan_foley"}
 # the order real snapshots are preferred in when a class is in several
 PREFERRED = ("runpod-snapshot", "source-", "local", "zz-official", "object_info_comfyui", "stub")
 
@@ -108,18 +111,22 @@ def receipt_files(receipt: dict) -> list[str]:
 
 def fill_loader_menus(info: dict, files: list[str]) -> dict:
     """Replace every model-file combo's menu with what the pod's install receipt lists."""
-    for cls in info.values():
+    for class_name, cls in info.items():
         for section in ("required", "optional"):
             for field, spec in (cls["input"].get(section) or {}).items():
                 menu = _combo(spec)
                 if menu is None or not any(str(v).lower().endswith(MODEL_EXT) for v in menu):
                     continue
-                folder = FOLDERS.get(field)
+                custom_folder = CLASS_FOLDERS.get((class_name, field))
+                folder = custom_folder if custom_folder is not None else FOLDERS.get(field)
                 names = []
                 for path in files:
                     parts = path.split("/models/", 1)[-1]
                     if folder is None or parts.startswith(folder + "/") or "/" + folder + "/" in "/" + parts:
-                        names.append(parts.split("/", 1)[-1] if folder and parts.startswith(folder + "/") else parts)
+                        if custom_folder is not None:
+                            names.append(parts)
+                        else:
+                            names.append(parts.split("/", 1)[-1] if folder and parts.startswith(folder + "/") else parts)
                 _set_menu(spec, sorted(set(names)))
     return info
 
@@ -222,10 +229,11 @@ class PodComfy:
     def info(self):
         # Loader menus follow whatever the pod has installed when ComfyUI is asked, as on a pod.
         info = fill_loader_menus({name: real_class(name, self.extra) for name in self.classes}, self.installed_files())
-        for name in ("LoadImage", "LoadImageMask", "VHS_LoadVideo", "VHS_LoadVideoFFmpeg", "LoadAudio"):
+        for name in ("LoadImage", "LoadImageMask", "LoadVideo", "VHS_LoadVideo", "VHS_LoadVideoFFmpeg", "LoadAudio"):
             # These list the pod's input directory, which is whatever was uploaded.
             for field, spec in (info.get(name, {}).get("input", {}).get("required") or {}).items():
-                if _combo(spec) is not None and field in ("image", "video", "audio"):
+                if _combo(spec) is not None and (field in ("image", "video", "audio")
+                                                 or (name == "LoadVideo" and field == "file")):
                     _set_menu(spec, sorted(self.input_files))
         return info
 

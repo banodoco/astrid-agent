@@ -230,7 +230,7 @@ def _managed_local_engine(provider, tmp_path, monkeypatch):
 
 @contextlib.contextmanager
 def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=(), call=None,
-           machine_identity=False, target_kind="runpod", h3_output=False):
+           machine_identity=False, target_kind="runpod", h3_output=False, trusted_inventory=False):
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
     import subprocess
@@ -350,6 +350,19 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
             else:
                 stack.enter_context(_managed_local_engine(provider, tmp_path, monkeypatch))
                 controls = dict(placement="managed", client=client, project=project_id, wait=True)
+            if trusted_inventory:
+                # Trust exercises execution with unverified declarations, rather than real weights.
+                # Give the stand-in ComfyUI its declared loader names so /prompt can execute;
+                # focused trust tests separately cover an incomplete advertised inventory.
+                from astrid.core.generation import entries
+                from vibecomfy.model_assets import _referenced_model_values
+                declared = []
+                for identifier in SLOT_DEFAULTS[slot]:
+                    workflow = entries._load_entry_workflow(entries.find_entry(identifier))
+                    for reference in _referenced_model_values(workflow):
+                        declared.extend((reference['value'], reference['subdir'] + '/' + reference['value']))
+                installed = provider.comfy.installed_files
+                provider.comfy.installed_files = lambda: [*installed(), *declared]
             result = call(GenerationFacade(), controls, tmp_path)
             yield client, project_id, provider, result
     finally:
@@ -507,21 +520,21 @@ def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
 
 
 # One case per generation capability, each on every target kind. The runpod cells
-# repeat the slot and h3 cases above through the same drive; the local-managed and
-# attached cells are the questions T3/T4 answer. The i2v default is absent from
-# SLOT_DEFAULTS and reaches RunPod only through its own engine lock.
+# repeat the slot and h3 cases above through the same drive. Checked alignment
+# characterizes remaining inventory gaps; trust cells prove the execution path
+# for audio defaults without claiming that CPU fixtures verify real weights.
 CAPABILITIES = [("image", "t2i"), ("image", "edit"), ("audio", "tts"), ("audio", "music"),
                 ("audio", "sfx"), ("video", "i2v"), ("video", "h3")]
-# T1 characterization. Each red cell asserts today's refusal: (exception type or "result", key message, task that flips it).
-# T3 Placement and attached routing, T4 local run path, T5 RunPod as a machine, T6 one generate, T6b h3_av.
+# Checked-alignment refusals: (exception type or "result", message, remaining owner).
+# These are inventory/weight limitations, rather than unfinished placement work.
 _RED = {
-    # The managed local target now exists (T4f); these three still refuse, for reasons it cannot fix on CPU.
+    # The CPU fixture does not establish these models as ready on local targets.
     (("audio", "tts"), "local-managed"): ("CapabilityRuntimeError", "workflow-local model verification failed for config.json: sha256 mismatch", "Plan 34"),
     (("audio", "sfx"), "local-managed"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34"),
-    (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
-    (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "T3"),
-    (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "T3"),
-    (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
+    (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "Plan 34: local inventory"),
+    (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "Plan 34: local inventory"),
+    (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34: local inventory"),
+    (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "Plan 34: local inventory"),
 }
 
 
@@ -558,12 +571,14 @@ def _capability_call(capability):
 
 
 @pytest.mark.parametrize(
-    "capability,target_kind",
-    [pytest.param(c, t, id=f"{'/'.join(c)}-{t}",
+    "capability,target_kind,align_mode",
+    [pytest.param(c, t, "check", id=f"{'/'.join(c)}-{t}",
                   # CPU cannot verify the 1.9GB pinned turbo LoRA hash h3's validate step re-hashes (Plan 34; as the TTS local cell).
                   marks=[pytest.mark.gpu] if (c, t) == (("video", "h3"), "local-managed") else [])
-     for t in TARGET_KINDS for c in CAPABILITIES])
-def test_capability_reaches_generation_on_each_target(capability, target_kind, tmp_path, monkeypatch,
+     for t in TARGET_KINDS for c in CAPABILITIES]
+    + [pytest.param(("audio", mode), target, "trust", id=f"audio/{mode}-{target}-trust")
+       for mode in ("tts", "sfx") for target in ("local-managed", "attached")])
+def test_capability_reaches_generation_on_each_target(capability, target_kind, align_mode, tmp_path, monkeypatch,
                                                       real_runtime, tuple_sources):
     composed = set()
     if capability == ("video", "h3"):
@@ -594,9 +609,13 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, t
         drive = dict(extra_classes=h3_classes, call=call, machine_identity=True, h3_output=True)
     else:
         drive = dict(call=_capability_call(capability))
-    red = _RED.get((capability, target_kind))
+    if align_mode == "trust":
+        drive["trusted_inventory"] = True
+        call = drive["call"]
+        drive["call"] = lambda facade, controls, tmp: call(facade, {**controls, "align": "trust"}, tmp)
+    red = _RED.get((capability, target_kind)) if align_mode == "check" else None
     if red and red[0] != "result":
-        # T1 characterization: flips in T<n>, the task named for this cell in _RED
+        # Checked inventory refusal, with its remaining owner recorded in _RED
         with pytest.raises(Exception) as caught:
             with _drive(capability, tmp_path, monkeypatch, real_runtime, tuple_sources, target_kind=target_kind, **drive):
                 pass
@@ -605,10 +624,17 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, t
     with _drive(capability, tmp_path, monkeypatch, real_runtime, tuple_sources, target_kind=target_kind,
                 **drive) as (client, project_id, provider, result):
         if red:
-            # T1 characterization: flips in T<n>, the task named for this cell in _RED
+            # Checked inventory refusal, with its remaining owner recorded in _RED
             assert not result.ok and red[1] in json.dumps(result.to_dict(), default=str)
             return
         assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
+        if align_mode == "trust":
+            opened = client.media.open(project_id, result.manifest_ref, materialize=True,
+                                       cache_root=tmp_path / "trusted-receipt", preview_bytes=0)
+            assert opened.ok, opened.error
+            receipt = json.loads(Path(opened.data['local_path']).read_bytes())
+            assert receipt['evidence']['producer']['alignment'] == {
+                'mode': 'trust', 'status': 'unverified', 'verified': False}
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         assert delivered, "nothing was delivered"
         if capability == ("video", "h3") and target_kind != "runpod":

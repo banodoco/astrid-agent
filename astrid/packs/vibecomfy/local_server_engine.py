@@ -105,11 +105,14 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
                     or any(group in inputs and not isinstance(inputs[group], Mapping)
                            for group in ('required', 'optional'))):
                 raise ProductionEngineError(f'invalid live schema for {node.class_type}')
+        if target_custody is not None:
+            from astrid.core.generation.target_inventory import trust_declared_loader_choices
+            return trust_declared_loader_choices(observed, bundle.workflow)
         return observed
 
     custody = {}
     if target_custody is not None:
-        # Rows the host verified for this exact ComfyUI; approval skips the local-disk presence check.
+        # Explicitly trusted declarations; approval skips local byte checks, without asserting verification.
         custody = {"auxiliary_model_custody": "target", "target_model_assets": list(target_custody)}
     provider = UploadedTargetSchema.from_object_info(
         read_object_info(), server_url=url, model_availability="target",
@@ -383,6 +386,18 @@ def run_local_server(
             # (including the chosen seed) that actually reached /prompt.
             payload = json.loads(result_path.read_text(encoding="utf-8"))
             payload["inputs"].update(bindings)
+            if custody is not None:
+                alignment = {"mode": "trust", "status": "unverified", "verified": False}
+                payload["evidence"]["producer"]["alignment"] = alignment
+                attempt_path = result_path.with_name("attempt.json")
+                if (attempt_path.is_symlink() or not attempt_path.is_file()
+                        or not attempt_path.resolve().is_relative_to(destination.resolve())
+                        or any(part.is_symlink() for part in attempt_path.parents)):
+                    raise ProductionEngineError("local_server native attempt escaped attempt custody")
+                attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+                attempt["alignment"] = alignment
+                from astrid.core.foundation.atomic_io import write_json_atomic
+                write_json_atomic(attempt_path, attempt)
             if workflow_conversion_object_info_sha256 is not None:
                 schema_provenance = payload["evidence"]["producer"]["runtime"]["schema_provenance"]
                 schema_provenance["workflow_conversion_object_info_sha256"] = (
@@ -391,7 +406,15 @@ def run_local_server(
             result_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
             return _result_from_runtime_result(result, tuple(Path(path) for path in result.outputs))
         except BaseException as exc:
-            cleanup_prompts(url, destination)
+            try:
+                cleanup_prompts(url, destination)
+            except Exception as cleanup_error:
+                # Preserve the failure that triggered cleanup (especially a
+                # custody refusal) while retaining the cleanup failure as
+                # diagnostic context. cleanup_prompts validates journals
+                # before trusting their prompt IDs, so an unsafe journal must
+                # never replace the original attempt error.
+                exc.add_note(f"local_server prompt cleanup failed: {cleanup_error}")
             if "vibecomfy schema refresh" in str(exc) or getattr(exc, "next_action", None) == "vibecomfy schema refresh":
                 from astrid.core.generation.asset_gaps import align_argv
                 import shlex

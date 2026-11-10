@@ -26,3 +26,30 @@ def declared_rows(workflow: Any) -> tuple[dict[str, Any], ...]:
             rows.append({"name": name, "subdir": str(asset.get("subdir", asset.get("directory", "")) or ""),
                          "size": size, "sha256": digest.removeprefix("sha256:")})
     return tuple(rows)
+
+
+def trust_declared_loader_choices(observed: dict[str, Any], workflow: Any) -> dict[str, Any]:
+    """Overlay exact declared loader names for explicit trust, without changing live facts.
+
+    Callers retain node, socket, type and ordinary widget validation. A declaration
+    can extend an existing model menu, never create a missing node or socket.
+    """
+    from copy import deepcopy
+    from vibecomfy.model_assets import _referenced_model_values
+
+    trusted = deepcopy(observed)
+    for reference in _referenced_model_values(workflow):
+        row = trusted.get(reference['class_type'])
+        groups = row.get('input') if isinstance(row, dict) else None
+        if not isinstance(groups, dict):
+            continue
+        for section in ('required', 'optional'):
+            fields = groups.get(section)
+            spec = fields.get(reference['field']) if isinstance(fields, dict) else None
+            if not isinstance(spec, (list, tuple)) or not spec or not isinstance(spec[0], (list, tuple)):
+                continue
+            choices = list(spec[0])
+            if reference['value'] not in choices:
+                choices.append(reference['value'])
+            fields[reference['field']] = [choices, *spec[1:]]
+    return trusted
