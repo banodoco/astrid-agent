@@ -322,3 +322,50 @@ def test_backslash_led_path_entry_is_relative_on_posix_and_never_runs(tmp_path: 
     assert env["PATH"] == ""
     assert env["GIT_SSH_COMMAND"].startswith("ssh -F ")
     assert str(planted) not in env["GIT_SSH_COMMAND"]
+
+
+def test_recorded_installing_git_is_used_when_absolute_and_present(tmp_path: Path) -> None:
+    recorded = _executable(tmp_path / "Program Files" / "Git" / "cmd" / "git")
+
+    # The service PATH has no git at all; the recorded install path still resolves.
+    found = install._git_executable("/astrid-test-missing/bin", windows=False, cwd=tmp_path, recorded=str(recorded))
+
+    assert found == str(recorded)
+
+
+@pytest.mark.parametrize("recorded", ["git", "relative/git", "/astrid-test-missing/git"])
+def test_unusable_recorded_git_falls_back_to_absolute_path_lookup(tmp_path: Path, recorded: str) -> None:
+    real = _executable(tmp_path / "bin" / "git")
+
+    found = install._git_executable(str(real.parent), windows=False, cwd=tmp_path, recorded=recorded)
+
+    assert found == str(real)
+
+
+def test_recorded_git_inside_the_working_directory_is_still_only_a_recorded_path(tmp_path: Path) -> None:
+    # A relative recorded value never resolves against the cwd.
+    project = tmp_path / "project"
+    _executable(project / "git")
+
+    assert install._git_executable("", windows=False, cwd=project, recorded="git") is None
+
+
+def test_git_source_uses_recorded_install_path_when_service_path_lacks_git(tmp_path: Path,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    real_git = shutil.which("git")
+    if real_git is None:
+        pytest.skip("git is not installed")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setenv("ASTRID_GIT_EXECUTABLE", real_git)
+    work = tmp_path / "work"
+    work.mkdir()
+
+    install._git(work, "init", "--bare", "--template=")
+
+    assert (work / "objects.git" / "HEAD").is_file()
+
+
+def test_missing_git_message_names_git_for_windows_only_on_windows() -> None:
+    assert install._git_missing_reason("fetch", True) == (
+        "Git source operation failed (fetch; git not found). Install Git for Windows, then try again.")
+    assert install._git_missing_reason("fetch", False) == "Git source operation failed (fetch; git not found)."

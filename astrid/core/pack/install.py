@@ -252,13 +252,22 @@ def _find_executable(path_value: str, names: tuple[str, ...], *, windows: bool,
     return None
 
 
-def _git_executable(path_value: str, *, windows: bool, cwd: str | os.PathLike[str]) -> str | None:
-    """Find git in absolute PATH entries only; never the current directory.
+def _git_executable(path_value: str, *, windows: bool, cwd: str | os.PathLike[str],
+                    recorded: str | None = None) -> str | None:
+    """Find git: the install-recorded executable first, then absolute PATH entries only.
 
     shutil.which searches the current directory first on Windows, so a planted
-    git.exe in the working tree would run.
+    git.exe in the working tree would run. A recorded path must be absolute and
+    an existing file; anything else falls through to the PATH lookup.
     """
+    if recorded and os.path.isabs(recorded) and os.path.isfile(recorded):
+        return recorded
     return _find_executable(path_value, ("git.exe",) if windows else ("git",), windows=windows, cwd=cwd)
+
+
+def _git_missing_reason(operation: str, windows: bool) -> str:
+    hint = " Install Git for Windows, then try again." if windows else ""
+    return f"Git source operation failed ({operation}; git not found).{hint}"
 
 
 def _shell_word(path: str, windows: bool) -> str:
@@ -305,9 +314,10 @@ def _git(work: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     windows = os.name == "nt"
     cwd = os.getcwd()
     env = _git_environment(work, _askpass_program(work, windows), windows=windows, cwd=cwd)
-    git = _git_executable(os.environ.get("PATH", os.defpath), windows=windows, cwd=cwd)
+    git = _git_executable(os.environ.get("PATH", os.defpath), windows=windows, cwd=cwd,
+                          recorded=os.environ.get("ASTRID_GIT_EXECUTABLE"))
     if git is None:
-        raise PackInstallError("git_failed", f"Git source operation failed ({operation}; git not found).")
+        raise PackInstallError("git_failed", _git_missing_reason(operation, windows))
     command = [
         git, "-c", "core.hooksPath=" + os.devnull,
         "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",

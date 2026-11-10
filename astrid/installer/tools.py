@@ -567,6 +567,25 @@ def _install_omp_package(selected: str, root: Path, run, env: dict) -> None:
                 "ASTRID_INSTALL_OMP_PACKAGE": selected})
 
 
+def _record_installing_git(env: dict[str, str], run, *, windows: bool) -> None:
+    """Record the installing user's git, because the service PATH cannot reach it.
+
+    The service PATH is built deliberately (no user profile PATH), so a Git for
+    Windows install under Program Files is invisible to the launcher. Only an
+    absolute git found on the installing PATH is recorded, and it must answer
+    ``git --version``; without git nothing is recorded and pack installs from
+    git report that Git is missing.
+    """
+    from astrid.core.pack.install import _git_executable
+
+    git = _git_executable(os.environ.get("PATH", os.defpath), windows=windows, cwd=os.getcwd())
+    if git is None:
+        return
+    if not re.match(r"git version \S+", run([git, "--version"]).strip()):
+        raise ValueError("The Git found on PATH did not identify itself as Git.")
+    env["ASTRID_GIT_EXECUTABLE"] = git
+
+
 def install_tools(manifest: dict, root: Path, target: str, run) -> dict[str, str]:
     pins = manifest["tools"]
     selected = omp_source(pins["omp"])
@@ -601,6 +620,7 @@ def install_tools(manifest: dict, root: Path, target: str, run) -> dict[str, str
         directory = str(Path(env[name]).parent)
         if directory not in paths:
             paths.append(directory)
+    _record_installing_git(env, run, windows=windows)
     # Deliberately construct the service PATH. No user profile or refreshed PATH.
     system_path = (str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32")
                    if windows else "/usr/bin:/bin:/usr/sbin:/sbin")
