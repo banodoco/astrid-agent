@@ -103,7 +103,8 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences):
     monkeypatch.setattr(machine, 'RUNS_ROOT', str(tmp_path / 'pod' / 'runs'))
     scratch = tmp_path / 'controller'
     scratch.mkdir()
-    job = MachineJob(entry=dry['entry']['id'], mode=mode, policy=json.loads(inputs['placement_policy']),
+    job = MachineJob(entry=inputs['generation_intent']['metadata']['model'],
+                     mode=inputs['generation_intent']['metadata']['mode'], policy=json.loads(inputs['placement_policy']),
                      inputs=inputs, invocation_id='task:attempt', task_id='task', attempt_id='attempt',
                      scratch=scratch, progress_path=scratch / 'progress.json', align='trust')
     remote = machine.RunPodMachine(adapter).start(lease, job)
@@ -117,7 +118,12 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences):
         archive = read_archive(shipped['execution']['managed_assets'])
         media_bindings = archive.bindings
         for row in archive.manifest['assets']:
-            assert archive.members[row['member']] == Path(dry_values[row['binding']]).read_bytes()
+            dry_value = dry_values[row['binding']]
+            if h3:
+                assert Path(dry_value).name == dry_value
+                assert archive.members[row['member']] == source.read_bytes()
+            else:
+                assert archive.members[row['member']] == Path(dry_value).read_bytes()
     assert shipped['bindings'] == {name: value for name, value in dry_values.items() if name not in media_bindings}
 
     from astrid.packs.vibecomfy.actions.run import run as action
