@@ -5,6 +5,7 @@ import argparse
 import errno
 import json
 import os
+import stat
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -95,6 +96,95 @@ def test_windows_packs_add_over_existing_collection(source, tmp_path, windows, m
 
 class Crash(BaseException):
     pass
+
+
+def exchange_fixture(tmp_path, purpose):
+    root = tmp_path / "packs"
+    root.mkdir()
+    (root / "sentinel").write_bytes(b"current generation")
+    retired = tmp_path / ".astrid-retired"
+    retired.mkdir()
+    candidate = retired / ("c" * 32)
+    candidate.mkdir()
+    (candidate / "sentinel").write_bytes(b"candidate generation")
+    record = {"version": 1, "candidate": candidate.name, "purpose": purpose,
+              "old": txn._exchange_identity(root), "new": txn._exchange_identity(candidate)}
+    txn._write_exchange(root, record, "prepared")
+    return root, candidate
+
+
+def test_windows_recovery_removes_readonly_candidate_preserving_old_bytes(tmp_path, windows, monkeypatch):
+    root, candidate = exchange_fixture(tmp_path, "publish")
+    readonly = candidate / "sentinel"
+    readonly.chmod(stat.S_IREAD)
+    unlink = os.unlink
+    denied = []
+
+    def windows_unlink(path, *args, **kwargs):
+        info = os.stat(path, dir_fd=kwargs.get("dir_fd"), follow_symlinks=False)
+        if not info.st_mode & stat.S_IWRITE:
+            denied.append(str(path))
+            raise PermissionError(errno.EACCES, "read-only", str(path))
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", windows_unlink)
+    with txn.group_read_lock(root, exclusive=True):
+        pass
+    assert denied
+    assert (root / "sentinel").read_bytes() == b"current generation"
+    assert not candidate.exists()
+    assert not txn._exchange_journal(root).exists()
+
+
+@pytest.mark.parametrize("move", [1, 2, 3])
+def test_windows_restore_retries_after_each_rename_without_deleting(tmp_path, windows, monkeypatch, move):
+    root, candidate = exchange_fixture(tmp_path, "restore")
+    replace = windows.replace
+    count = 0
+
+    def interrupt(src, dst):
+        nonlocal count
+        replace(src, dst)
+        count += 1
+        if count == move:
+            raise Crash()
+
+    monkeypatch.setattr(txn, "remove_pack_tree", lambda *a, **k: pytest.fail("restore deleted a generation"))
+    monkeypatch.setattr(windows, "replace", interrupt)
+    with pytest.raises(Crash), txn.group_read_lock(root, exclusive=True):
+        pass
+    assert txn._exchange_journal(root).exists()
+    monkeypatch.setattr(windows, "replace", replace)
+    with txn.group_read_lock(root, exclusive=True):
+        pass
+    assert (root / "sentinel").read_bytes() == b"candidate generation"
+    assert (candidate / "sentinel").read_bytes() == b"current generation"
+    assert not txn._exchange_backup(root).exists()
+    assert not txn._exchange_journal(root).exists()
+
+
+def test_windows_recovery_cleanup_failure_retains_old_and_retries(tmp_path, windows, monkeypatch):
+    root, candidate = exchange_fixture(tmp_path, "publish")
+    remove = txn.remove_pack_tree
+
+    def fail_cleanup(path):
+        assert path == candidate
+        raise PermissionError(errno.EACCES, "busy")
+
+    monkeypatch.setattr(txn, "remove_pack_tree", fail_cleanup)
+    with pytest.raises(txn.PackInstallError, match="recovery is pending") as caught, txn.group_read_lock(root, exclusive=True):
+        pass
+    assert caught.value.code == "transaction_busy"
+    assert isinstance(caught.value.__cause__, PermissionError)
+    assert (root / "sentinel").read_bytes() == b"current generation"
+    assert (candidate / "sentinel").read_bytes() == b"candidate generation"
+    assert txn._exchange_journal(root).exists()
+    monkeypatch.setattr(txn, "remove_pack_tree", remove)
+    with txn.group_read_lock(root, exclusive=True):
+        pass
+    assert (root / "sentinel").read_bytes() == b"current generation"
+    assert not candidate.exists()
+    assert not txn._exchange_journal(root).exists()
 
 
 @pytest.mark.parametrize("phase", ["prepared", "old_moved"])
