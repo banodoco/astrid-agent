@@ -603,16 +603,76 @@ def test_machines_setup_saves_ordered_choices_and_volume(monkeypatch, capsys):
     assert saved_policy["budget_cap_usd"] == 8
 
 
-def test_machines_setup_refuses_missing_pinned_identity(monkeypatch, capsys):
+def test_machines_setup_fresh_uses_pinned_default_and_saved_credential_reference(monkeypatch):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.packs.runpod.target_selection import DEFAULT_RUNPOD_WORKER_IMAGE
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "credential_ref": "env:RUNPOD_API_KEY",
+    })
+    saved = {}
+    result = machines_cli.main(
+        ["setup", "--gpu", "RTX A", "--budget-usd", "7", "--json"],
+        volumes=lambda: [], offered_gpus=lambda *_: ["RTX A"],
+        setup=lambda policy: saved.update(policy) or type("Result", (), {"ok": True})(),
+    )
+    assert result == 0
+    assert saved["image"] == DEFAULT_RUNPOD_WORKER_IMAGE
+    assert saved["provider_account_ref"] == "env:RUNPOD_API_KEY"
+    assert saved["credential_ref"] == "env:RUNPOD_API_KEY"
+
+
+def test_machines_setup_preserves_saved_image_and_accepts_per_setup_override(monkeypatch):
     from astrid.core import machines_cli
     from astrid.core.generation import settings
 
-    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {"gpu_types": ["RTX A"]})
-    assert machines_cli.main(["setup", "--json"], volumes=lambda: [],
-                             offered_gpus=lambda *_: []) == 2
+    stored_image = "registry/saved@sha256:" + "a" * 64
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "provider_account_ref": "account", "credential_ref": "env:RUNPOD_API_KEY",
+        "image": stored_image, "gpu_types": ["RTX A"], "budget_cap_usd": 5,
+    })
+    saved = []
+    kwargs = {"volumes": lambda: [], "offered_gpus": lambda *_: ["RTX A"],
+              "setup": lambda policy: saved.append(policy) or type("Result", (), {"ok": True})()}
+    assert machines_cli.main(["setup", "--json"], **kwargs) == 0
+    assert saved[-1]["image"] == stored_image
+    override = "registry/override@sha256:" + "b" * 64
+    assert machines_cli.main(["setup", "--image", override, "--json"], **kwargs) == 0
+    assert saved[-1]["image"] == override
+
+
+def test_machines_setup_missing_credential_names_credential_command(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.core.util.credentials_scope import CredentialsScope
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {})
+    def missing(*args, **kwargs):
+        raise RuntimeError("credential absent")
+    monkeypatch.setattr(CredentialsScope, "resolve_local", missing)
+    assert machines_cli.main(["setup", "--json"]) == 2
     output = capsys.readouterr().out
-    assert "provider_account_ref" in output and "image" in output
-    assert "astrid machines setup" in output
+    assert "astrid credential set runpod" in output
+    assert "credential absent" not in output
+
+
+def test_machines_setup_show_reports_sanitized_preferences_and_store_location(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "provider_account_ref": "account", "credential_ref": "env:RUNPOD_API_KEY",
+        "gpu_types": ["RTX A"], "image": "registry/x@sha256:" + "a" * 64,
+        "api_key": "must-never-print-this-key",
+    })
+    assert machines_cli.main(["setup", "--show", "--json"],
+                             show_location=lambda: {"data_root": "/tmp/astrid-data", "realm": "realm-x"}) == 0
+    output = capsys.readouterr().out
+    assert "user/generation" in output
+    assert "/tmp/astrid-data" in output and "realm-x" in output
+    assert "env:RUNPOD_API_KEY" in output
+    assert "must-never-print-this-key" not in output
 
 
 def test_machines_setup_datacenter_filters_inventory_and_saves_choice(monkeypatch, capsys):

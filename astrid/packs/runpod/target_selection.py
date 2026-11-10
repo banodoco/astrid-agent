@@ -56,6 +56,13 @@ class RunPodSetupRequiredError(PaidSelectionError):
         )
 
 
+# Plan 34 live validation (banodoco/astrid-dev#260, 10 Nov 2026): this
+# immutable base image was validated for the retained RunPod worker path.
+DEFAULT_RUNPOD_WORKER_IMAGE = (
+    "runpod/base@sha256:820c605eaaa276de20a0d77993fb0846d54e180efff5de67d46341ed399b5a7f"
+)
+
+
 _OFFER_FAILURES = {
     "stock_unavailable": "no requested GPU has confirmed stock and price in the selected datacenter",
     "provider_transport_or_response_unavailable": "provider transport or response is unavailable; retry offer observation",
