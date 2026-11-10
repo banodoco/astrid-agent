@@ -173,7 +173,7 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     workspace.select_project(project_id, idempotency_key='select')
     packs = Path(__file__).resolve().parents[2] / 'astrid/packs'
     host = GenericPackHost(pack_roots=[packs / 'vibecomfy'],
-        client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token), attempt_base=tmp_path / 'attempts')
+        client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token), attempt_root=tmp_path / 'attempt')
     host.discover(); host.preflight(); host.register()
     if failure == 'cancel':
         original_check = ManagedEnginePreparation.check
@@ -186,15 +186,21 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     worker = threading.Thread(target=host.run, kwargs={'poll_seconds': 0.02}, daemon=True)
     worker.start()
     try:
+        from astrid.sdk.generation import _import_generation_member
+        controls = {"client": sdk, "project": project_id}
+        imported = {name: _import_generation_member(path, controls) for name, path in {
+            "python": bundle / "workflow.py", "companion": bundle / "workflow.vibe.json", "source": source}.items()}
         result = sdk.invoke_result('vibecomfy.run', kind='action', project=project_id,
-            inputs={'python': str(bundle / 'workflow.py'), 'companion': str(bundle / 'workflow.vibe.json'),
-                    'source': str(source), 'workflow_inputs': '{}',
+            inputs={**imported, 'workflow_inputs': '{}',
                     'generation_intent': {'version': 1, 'modality': 'image', 'partial_success_policy': 'reject',
                         'groups': [{'group_key': 'main', 'selectors': [{'selector': 'main-0', 'ordinal': 0,
                             'variant_key': 'original', 'required': True}]}], 'metadata': {'model': 'workflow', 'align': 'align'}}},
             wait=True, timeout_seconds=120, poll_seconds=0.05)
         if failure:
             assert not result.ok
+            assert 'prepare' in events and 'align' in events, (events, result.to_dict())
+            if failure != 'align':
+                assert 'fetched' in events, (events, result.to_dict())
             assert 'worker' not in events and 'ready' not in events, events
             assert not (root / 'prompts').exists()
         else:
@@ -202,9 +208,7 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
             assert events.index('fetched') < events.index('ready') < events.index('worker')
             assert 'supervisor-denied' in events
             assert (root / 'prompts').is_file()
-            receipts = list((tmp_path / 'attempts').rglob('task-result.json'))
-            assert receipts
-            receipt = json.loads(receipts[-1].read_text())
+            receipt = json.loads((tmp_path / 'attempt/result.json').read_text())
             assert receipt['machine']['placement'] == 'managed'
             assert receipt['managed_engine_preparation']['placement'] == 'managed'
     finally:

@@ -1417,6 +1417,7 @@ def _prepare_vibecomfy_execution_identity(
         loaded_workflow_session_requirements,
     )
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
+    from astrid.core.generation.engine_contracts import CustodyUnresolved
 
     previous_headless = os.environ.get("VIBECOMFY_HEADLESS")
     os.environ["VIBECOMFY_HEADLESS"] = "1"
@@ -1427,6 +1428,7 @@ def _prepare_vibecomfy_execution_identity(
             companion=inputs.get("companion"),
             source=inputs.get("source"),
             scratch=scratch,
+            preserve_on_error=(CustodyUnresolved,) if prepare_engine is not None else (),
         ) as (workflow_path, _authority):
             comfy_url = str(inputs.get("comfy_url") or "")
             if comfy_url:
@@ -11885,6 +11887,7 @@ class GenericPackHost:
         session_hold = None
         engine_preparation = None
         prepared_identity = None
+        assert_managed_input_identity = None
         target_context = machine_policy = None
         target_operation_result = None
         try:
@@ -11997,11 +12000,31 @@ class GenericPackHost:
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled)
                 _terminal["machine"] = {**_local_machine({}), "placement": "managed",
                                          "id": engine_preparation.root}
+                original_input_digests = {name: hashlib.sha256(Path(value).read_bytes()).hexdigest()
+                    for name, value in inputs.items() if name in {"workflow", "python", "companion", "source"} and value}
+                original_baseline = dict(immutable_input_baseline)
+                def input_nodes(paths):
+                    nodes = {}
+                    for path in paths:
+                        info = os.lstat(path)
+                        if not stat.S_ISREG(info.st_mode):
+                            raise HostError("managed generation input was replaced")
+                        nodes[path] = (info.st_dev, info.st_ino, info.st_mode, info.st_nlink)
+                    return nodes
+                original_nodes = input_nodes(original_baseline)
+                def assert_managed_input_identity():
+                    current = {}
+                    for input_root in (root / "inputs", root / "managed-objects"):
+                        current.update(self.execution_policy.immutable_input_baseline(input_root))
+                    if current != original_baseline or input_nodes(current) != original_nodes:
+                        raise HostError("managed generation admitted input bytes changed during preparation")
                 def prepare_engine(workflow_path, identity, loaded):
+                    assert_managed_input_identity()
                     from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value
                     canonical = _canonical_bundle_value(loaded.resolved)
                     report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs,
-                                                        canonical_workflow=canonical.workflow)
+                                                        canonical_workflow=canonical.workflow, input_digests=original_input_digests)
+                    assert_managed_input_identity()
                     _terminal["managed_engine_preparation"] = report
                     from astrid.packs.vibecomfy.local_server_engine import _live_preflight, _approve_live
                     bundle = _canonical_bundle_value(loaded.resolved)
@@ -12018,6 +12041,7 @@ class GenericPackHost:
                     provider = _live_preflight(bundle, bindings, report["endpoint"], root / "host-preflight",
                                                target_custody=custody)
                     _approve_live(bundle, bindings, provider)
+                    assert_managed_input_identity()
                     if cancelled():
                         raise HostCancelled("task cancelled after managed schema preflight")
                     _terminal["managed_engine_preparation"] = report
@@ -12214,6 +12238,8 @@ class GenericPackHost:
                     handle_guard_abort()
                     cancelled_attempt = True
                     return {"task_id": task_id, "status": "cancelled", "cancelled": True}
+                if assert_managed_input_identity is not None:
+                    assert_managed_input_identity()
                 lifetime.begin_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
