@@ -20,7 +20,7 @@ Choose the route by the requested result. Read only that route's guidance:
 
 | Request | Start here |
 | --- | --- |
-| Set up my generation: connect an engine, choose a placement and defaults | [Set up generation](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/setup/docs/SKILL.md#4-set-up-generation) (skill `astrid-setup`) |
+| Set up my generation: connect an engine, choose a placement and defaults | [Set up generation](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md#4-set-up-generation) (skill `astrid-setup`) |
 | Generate with the user's own ComfyUI: "my ComfyUI", "my saved workflow", local generation | [Run on your own ComfyUI](../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui) |
 | Find a project, inspect a run, or open a render | The CLI recipes below |
 | **Edit a timeline** (clips, timing, text, layout, effects), then publish and point the user to the editor (render only if asked) | [Timeline editing](../../timeline/docs/SKILL.md) |
@@ -65,7 +65,7 @@ irm https://astrid.haus/install.ps1 | iex
 
 The installer checks that Astrid is healthy and opens astrid.haus itself. Tell
 the user to choose Allow if Chrome or Edge asks to reach their computer, then
-confirm astrid.haus shows Connected. Then follow [Set up generation](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/setup/docs/SKILL.md#4-set-up-generation) (skill `astrid-setup`). Do not install or clone `astrid-app`; it is for app
+confirm astrid.haus shows Connected. Then follow [Set up generation](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md#4-set-up-generation) (skill `astrid-setup`). Do not install or clone `astrid-app`; it is for app
 developers.
 
 Synced skills use the absolute path of Astrid's own Python, so their
