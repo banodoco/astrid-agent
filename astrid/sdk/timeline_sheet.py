@@ -253,10 +253,15 @@ def _layer_row(tl, clip, lo, hi, *, is_picture, detail=False):
     return [gutter, track, name, _short(clip.element), what, " ".join(bits), " ".join(timing)]
 
 
-def _look_keys(element, keys):
-    """The keys that are clip-level look fields for this element: declared by clip_fields, not by the element."""
-    from astrid.sdk.timeline_address import declared_params
-    declared = set(declared_params(element))
+def _look_keys(element, keys, *, display=False):
+    """The keys that are clip-level look fields for this element: declared by clip_fields, not by the element.
+
+    ``display`` (showing a row only) tolerates an element no installed pack declares; applying refuses it."""
+    from astrid.sdk.timeline_address import MEDIA_CLIP_TYPE, declared_element_schema, declared_params
+    if display and element != MEDIA_CLIP_TYPE:
+        declared = set((declared_element_schema(element) or {}).get("properties") or {})
+    else:
+        declared = set(declared_params(element))
     return [k for k in keys if k in cf.FIELDS and k not in declared]
 
 
@@ -266,7 +271,7 @@ def _look_bits(clip, *, skip=()):
     shown = Look(clip).describe()
     if clip.is_audio:
         shown.update(cf.describe(clip.data, fps=clip._tl.fps))
-    keys = _look_keys(clip.element, [k for k in shown if k not in skip])
+    keys = _look_keys(clip.element, [k for k in shown if k not in skip], display=True)
     return [f"{k}={shown[k] if _is_number(shown[k]) else _value(shown[k])}" for k in keys]
 
 
