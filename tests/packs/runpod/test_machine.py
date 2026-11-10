@@ -658,6 +658,56 @@ def test_machines_setup_missing_credential_names_credential_command(monkeypatch,
     assert "credential absent" not in output
 
 
+def test_machines_setup_never_discloses_resolved_credential_sentinel(monkeypatch, capsys, caplog):
+    import json
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.core.util.credentials_scope import CredentialsScope
+    from astrid.packs.runpod import adapter
+
+    sentinel = "FAKE_RUNPOD_KEY_SENTINEL_DO_NOT_LEAK_73C4"
+    inventory_keys = []
+    saved_preferences = {}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved_preferences)
+    monkeypatch.setattr(CredentialsScope, "resolve_local",
+                        lambda *args, **kwargs: SimpleNamespace(value=sentinel))
+
+    async def fake_volumes(api_key):
+        inventory_keys.append(api_key)
+        return []
+
+    async def fake_gpu_types(api_key, *, datacenter_id, require_network_volume):
+        inventory_keys.append(api_key)
+        return ["RTX A"]
+
+    monkeypatch.setattr(adapter, "setup_volumes", fake_volumes)
+    monkeypatch.setattr(adapter, "setup_gpu_types", fake_gpu_types)
+    assert machines_cli.main(["setup", "--gpu", "RTX A", "--budget-usd", "4", "--json"],
+                             setup=lambda policy: saved_preferences.update(policy)
+                             or SimpleNamespace(ok=True)) == 0
+    setup_output = capsys.readouterr().out
+    assert inventory_keys == [sentinel, sentinel]
+    assert sentinel not in setup_output
+    assert sentinel not in caplog.text
+    assert sentinel not in json.dumps(saved_preferences, sort_keys=True)
+
+    def fail_with_sentinel(_policy):
+        raise RuntimeError(sentinel)
+
+    assert machines_cli.main(["setup", "--gpu", "RTX A", "--budget-usd", "4", "--json"],
+                             setup=fail_with_sentinel) == 1
+    setup_error = capsys.readouterr().out
+    assert sentinel not in setup_error
+    assert sentinel not in caplog.text
+
+    assert machines_cli.main(["setup", "--show", "--json"],
+                             show_location=lambda: {"data_root": "/tmp/astrid-data", "realm": "realm-x"}) == 0
+    shown = capsys.readouterr().out
+    assert sentinel not in shown
+    assert sentinel not in caplog.text
+
+
 def test_machines_setup_show_reports_sanitized_preferences_and_store_location(monkeypatch, capsys):
     from astrid.core import machines_cli
     from astrid.core.generation import settings
