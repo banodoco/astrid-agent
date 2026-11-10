@@ -15,7 +15,7 @@ import math
 import re
 import uuid
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
@@ -496,8 +496,8 @@ class RunPodSelectionOwner:
             if record["state"] == "claimed":
                 try:
                     observation = await observe_exact_target(config.api_key, RunPodTargetContract(
-                        str(record["pod_id"]), offer.gpu_type, p.image, p.volume_id, p.volume_name,
-                        p.volume_size_gb, record["request_name"], datacenter,
+                        str(record["pod_id"]), offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id, p.volume_name,
+                        p.volume_size_gb, record["request_name"], datacenter, defer_machine=True,
                     ))
                 except Exception:
                     raise AcquisitionUnresolvedError("exact journal-owned pod observation is unresolved") from None
@@ -546,7 +546,7 @@ class RunPodSelectionOwner:
                 # GPU and datacenter come from GraphQL pod.machine and the provider gpuTypes
                 # catalog (REST reports machine {} and no gpuTypeId/dataCenterId on a correct
                 # fresh pod). Unreported or unequal fails closed; no REST fallback.
-                await asyncio.to_thread(
+                gpu_display, observed_datacenter = await asyncio.to_thread(
                     worker_preparation.confirm_acquired_machine, config.api_key,
                     RunPodTargetContract(
                         observation.pod_id, offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id,
@@ -554,6 +554,7 @@ class RunPodSelectionOwner:
                     ),
                     timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
                 )
+                observation = replace(observation, gpu_type=gpu_display, datacenter_id=observed_datacenter)
                 try:
                     gpu_count = await asyncio.to_thread(
                         worker_preparation.read_acquired_gpu_count, config.api_key, observation.pod_id)

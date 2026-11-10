@@ -521,3 +521,43 @@ def test_unverified_live_machine_still_refuses_pinned_reuse(machine_case):
     with pytest.raises(PaidSelectionError, match="no live runpod lease"):
         c.machine.claim(job)
     assert c.creates == 1 and c.deletes == []
+
+
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_warm_gpu_id_uses_confirmed_display_and_refuses_mismatch(machine_case, monkeypatch, mismatch):
+    from dataclasses import replace
+    from astrid.packs.runpod import worker_preparation
+    c = machine_case
+    c.prefs = replace(c.prefs, gpu_types=("NVIDIA GeForce RTX 5090",))
+    c.owner.preferences = c.prefs
+    c.accepted_gpu_id = "NVIDIA GeForce RTX 5090"
+    old_observe = c.owner.observe_offer
+    c.owner.observe_offer = lambda: replace(old_observe(), gpu_type="NVIDIA GeForce RTX 5090")
+    c.grant = replace(c.grant, offer_digest=c.owner.observe_offer().digest(c.prefs))
+    confirmations = []
+    def confirm(api_key, contract, *, timeout_seconds):
+        assert contract.gpu_type == "NVIDIA GeForce RTX 5090"
+        confirmations.append(contract)
+        if mismatch and len(confirmations) == 3:
+            raise worker_preparation.TargetObservationError("GPU mismatch", gate="GPU")
+        return "RTX 5090", contract.datacenter_id
+    monkeypatch.setattr(worker_preparation, "confirm_acquired_machine", confirm)
+    first = c.job()
+    first = replace(first, policy={**first.policy, "preferences": c.prefs.as_mapping(), "offer_digest": c.grant.offer_digest})
+    run_on_machine(c.machine, first, destination=first.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    second = c.job(2)
+    second = replace(second, policy={**second.policy, "preferences": c.prefs.as_mapping(), "offer_digest": c.grant.offer_digest})
+    if mismatch:
+        with pytest.raises(Exception, match="GPU mismatch"):
+            run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
+                           sleep=lambda s: None)
+        assert c.read()["state"] == "cleanup_pending"
+        assert sum(" generate cpu-image " in line for line in c.pod.job_log) == 1
+        c.host.release()
+        assert c.deletes == ["pod-1"]
+    else:
+        run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
+                       sleep=lambda s: None)
+        assert c.read()["lease"]["preparation"]["custody"]["gpu_type"] == "RTX 5090"
+        assert c.creates == 1 and c.read()["lease"]["state"] == "idle"

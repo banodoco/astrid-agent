@@ -73,6 +73,11 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     c.module = module
     c.dc, c.quote_rate, c.stock, c.actual_rate = "DC-accepted", 1.0, "available", 1.0
     c.actual_gpu_id = "gpu-provider-exact"
+    c.accepted_gpu_id = "gpu-provider-exact"
+    # Confirmation returns the provider catalog display name, not its GPU ID.
+    from astrid.packs.runpod import worker_preparation
+    monkeypatch.setattr(worker_preparation, "confirm_acquired_machine",
+                        lambda api_key, contract, *, timeout_seconds: (c.prefs.gpu_types[0], contract.datacenter_id))
     c.create_kwargs, c.quotes, c.git_reads = [], [], []
     c.lost_start, c.cancel_unknown, c.dirty_sources = False, False, False
     # Opt-in: the fake pod's install honours the command's own --deadline
@@ -87,7 +92,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
 
     async def availability(**kw):
         c.quotes.append(kw)
-        return SimpleNamespace(gpu_type_id="gpu-provider-exact", datacenters=[SimpleNamespace(
+        return SimpleNamespace(gpu_type_id=c.accepted_gpu_id, datacenters=[SimpleNamespace(
             status=c.stock, price_per_hour=c.quote_rate, datacenter_id=c.dc)])
 
     monkeypatch.setattr(api, "get_network_volumes", volumes)
@@ -107,7 +112,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         assert journal["state"] == "allocation_pending" and journal["lease"]["state"] == "preparing"
         assert journal["network_volume_id"] == kw["network_volume_id"] == c.prefs.volume_id
         assert journal["network_volume_datacenter_id"] == kw["data_center_id"] == "DC-accepted"
-        assert journal["accepted_gpu_type_id"] == kw["gpu_type_id"] == "gpu-provider-exact"
+        assert journal["accepted_gpu_type_id"] == kw["gpu_type_id"] == c.accepted_gpu_id
         assert https.read_token_file(journal["https_token_file"]) == kw["https_token"]
         assert kw["https_token"] not in c.owner.path.read_text()
         c.create_kwargs.append(kw)
@@ -393,13 +398,16 @@ def test_retained_actual_gpu_id_mismatch_never_starts_preparation(retained, monk
     c = retained
     c.actual_gpu_id = "wrong-provider-gpu"
 
+    confirmations = []
     def provider_confirmation(api_key, contract, *, timeout_seconds):
-        if contract.gpu_type == "gpu-provider-exact":
+        confirmations.append(contract)
+        if len(confirmations) > 1:
             raise TargetObservationError(f"GPU mismatch: provider reports {c.actual_gpu_id!r}")
-        return contract.gpu_type, contract.datacenter_id
+        return c.prefs.gpu_types[0], contract.datacenter_id
     monkeypatch.setattr(worker_preparation, "confirm_acquired_machine", provider_confirmation)
     with pytest.raises(Exception, match="requires cleanup"):
         c.adapter.prepare(c.request, c.grant)
+    assert len(confirmations) == 2
     assert c.creates == 1 and not c.pod.job_log
     assert c.read()["state"] == "cleanup_pending"
     c.host.release()
