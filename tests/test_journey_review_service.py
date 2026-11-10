@@ -10,7 +10,10 @@ import pytest
 from scripts import ci_journey as journey
 
 
-@pytest.fixture(scope='session', autouse=True)
+# Module scope: the sentinel guards this module's service probes. At session
+# scope its teardown ran after the whole shard, past the sentinel's 300 s
+# lifetime, and pytest reported the error on whichever test ran last.
+@pytest.fixture(scope='module', autouse=True)
 def unrelated_process():
     process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
     try:
