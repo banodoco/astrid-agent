@@ -92,7 +92,7 @@ def test_alignment_failure_keeps_native_stderr_out_of_public_error(tmp_path, cap
     secret = 'PRIVATE_STDERR_SENTINEL'
     prep.context = SimpleNamespace(run=lambda request: CommandResult(9, '', secret, False, 0.1, None, False, False))
     with pytest.raises(IntegrityError) as error:
-        prep._command(['doctor', '/workflow.py'])
+        prep._native('fixture program', step='doctor')
     assert secret not in str(error.value) and secret not in caplog.text
     assert 'host log' in str(error.value)
 
@@ -343,7 +343,8 @@ def test_real_vibecomfy_doctor_stdout_failure_and_success_are_distinguished(tmp_
     prep.context = SimpleNamespace(run=run)
     secret = 'PRIVATE_NATIVE_WORKFLOW_PATH_SENTINEL'
     with pytest.raises(IntegrityError, match='step=doctor, reason=workflow_load_failed') as error:
-        prep._command(['doctor', str(tmp_path / secret / 'absent.py'), '--non-interactive'])
+        prep._native('import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
+                     'doctor', str(tmp_path / secret / 'absent.py'), '--non-interactive', '--yes', step='doctor')
     assert observed[-1].returncode == 1 and observed[-1].stderr == ''
     assert 'Layer: Python scratchpad import/build' in observed[-1].stdout
     assert secret not in str(error.value) + caplog.text
@@ -353,5 +354,6 @@ def test_real_vibecomfy_doctor_stdout_failure_and_success_are_distinguished(tmp_
         saved = SaveImage(images=image.out('IMAGE'), filename_prefix='astrid')
         workflow.finalize({}, outputs=[OutputSpec(node=saved)])
     emitted = emit_bundle_with_candidate(workflow, tmp_path / 'workflow.py', Provenance.USER_CONFIRMED, None)
-    prep._command(['doctor', str(emitted.python_path), '--non-interactive'])
+    prep._native('import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
+                 'doctor', str(emitted.python_path), '--non-interactive', '--yes', step='doctor')
     assert observed[-1].returncode == 0

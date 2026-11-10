@@ -155,3 +155,59 @@ def native_pip_program():
 def native_preparation_program():
     """Ship the same helper into an isolated, supervisor-owned engine command."""
     return _native_program(prepare_native_workflow)
+
+
+def run_native_doctor(argv, endpoint, expected_schema_sha256, request_timeout, *, schema_provider_type, schema_digest):
+    """Run the original doctor against one fresh, owner-bound target schema."""
+    import json
+    from urllib.parse import urlsplit
+    import httpx
+    import vibecomfy.commands.doctor as doctor
+    from vibecomfy.cli import main
+
+    parsed = urlsplit(endpoint)
+    if (parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or parsed.port is None
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path or parsed.query or parsed.fragment):
+        raise ValueError('managed doctor requires the owned loopback engine endpoint')
+    body = bytearray()
+    with httpx.stream('GET', endpoint + '/object_info', timeout=request_timeout,
+                      follow_redirects=False, trust_env=False) as response:
+        if response.status_code != 200:
+            raise ValueError('managed doctor target schema is unavailable')
+        for chunk in response.iter_bytes():
+            body.extend(chunk)
+            if len(body) > 16 * 1024 * 1024:
+                raise ValueError('managed doctor target schema exceeds its bound')
+    object_info = json.loads(body)
+    if not isinstance(object_info, dict) or schema_digest(object_info) != expected_schema_sha256:
+        raise ValueError('managed doctor target schema differs from owned engine health')
+    provider = schema_provider_type.from_object_info(object_info, server_url=endpoint)
+    original = doctor.get_schema_provider
+    def owned_provider(prefer):
+        if prefer != 'local':
+            raise ValueError('managed doctor requested an unexpected schema authority')
+        return provider
+    # Only this short-lived native command receives the provider. The original
+    # doctor retains all model, pin, drift, reconciliation and compile checks.
+    doctor.get_schema_provider = owned_provider
+    try:
+        return main(argv)
+    finally:
+        doctor.get_schema_provider = original
+
+
+def native_doctor_program():
+    """Ship the existing Agent schema adapter and digest without installing Agent in the engine."""
+    import inspect
+    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
+    from astrid.core.generation.engine_runner import _plain, _json, _sha, _object_info_sha256, _DYNAMIC_FILE_CHOICES
+
+    header = ("import copy,re,json,hashlib\nfrom dataclasses import fields,is_dataclass\n"
+              "from collections.abc import Mapping\n"
+              "from vibecomfy.schema.provider import TargetSchemaProvider as _TargetSchemaProvider\n"
+              f"_DYNAMIC_FILE_CHOICES = frozenset({sorted(_DYNAMIC_FILE_CHOICES)!r})\n")
+    sources = '\n'.join(inspect.getsource(function) for function in
+                        (_plain, _json, _sha, _object_info_sha256, TargetSchemaProvider, run_native_doctor))
+    return (header + sources + "\nimport sys\nraise SystemExit(run_native_doctor(**json.loads(sys.argv[1]), "
+            "schema_provider_type=TargetSchemaProvider, schema_digest=_object_info_sha256))\n")

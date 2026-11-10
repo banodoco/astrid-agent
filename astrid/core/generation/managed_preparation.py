@@ -41,7 +41,34 @@ def native_failure_diagnostic(step: str, stdout: str, stderr: str) -> tuple[str,
                 break
     if any(line.startswith("ModuleNotFoundError: ") for line in stderr[-4096:].splitlines()[-32:]):
         reason = "dependency_missing"
+    if step == "doctor":
+        fixed = {"ValueError: managed doctor target schema differs from owned engine health": "owned_schema_changed",
+                 "ValueError: managed doctor target schema is unavailable": "owned_schema_unavailable",
+                 "ValueError: managed doctor target schema exceeds its bound": "owned_schema_too_large"}
+        for line in stderr[-4096:].splitlines()[-32:]:
+            if line in fixed:
+                reason = fixed[line]
+                break
     return step, reason
+
+
+def native_failure_classes(stdout: str, reason: str) -> tuple[str, ...]:
+    """Expose only public class IDs in the pinned dependency's shipped index."""
+    if reason != "schema_reconciliation_failed":
+        return ()
+    try:
+        from importlib.resources import files
+        public = json.loads(files("vibecomfy").joinpath("porting/cache/object_info/index.json").read_text())
+    except (OSError, ValueError, TypeError, ImportError):
+        return ()
+    if not isinstance(public, dict):
+        return ()
+    prefix = "- workflow contains unresolved class types: "
+    for line in stdout[-4096:].splitlines()[-32:]:
+        if line.startswith(prefix):
+            return tuple(sorted({name for name in line[len(prefix):].split(", ")
+                                 if name in public and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name)})[:16])
+    return ()
 
 
 @contextmanager
@@ -193,6 +220,7 @@ class ManagedEnginePreparation:
         self.lock = None
         self.report = None
         self.uncertain = False
+        self._preparing_engine = False
 
     def check(self):
         if self.cancelled():
@@ -204,6 +232,8 @@ class ManagedEnginePreparation:
     def close(self, *, execution_root: Path | None = None, worker_drained: bool = True):
         if not worker_drained:
             self.uncertain = True
+        if not self.uncertain:
+            self._stop_preparing_engine()
         if not self.uncertain and execution_root is not None and self.report is not None:
             from .backends.vibecomfy_local_server import cleanup_prompts
             try:
@@ -221,10 +251,31 @@ class ManagedEnginePreparation:
     def prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
         from .engine_contracts import CustodyUnresolved
         try:
-            return self._prepare(workflow, execution_identity=execution_identity, inputs=inputs, canonical_workflow=canonical_workflow, input_digests=input_digests)
-        except CustodyUnresolved:
-            self.uncertain = True
+            report = self._prepare(workflow, execution_identity=execution_identity, inputs=inputs, canonical_workflow=canonical_workflow, input_digests=input_digests)
+            self.check()
+        except BaseException as error:
+            if isinstance(error, CustodyUnresolved):
+                self.uncertain = True
+            if not self.uncertain:
+                self._stop_preparing_engine()
             raise
+        # Only the completed report hands the live engine to the attempt. A
+        # successful doctor still leaves all remaining preparation under custody.
+        self._preparing_engine = False
+        return report
+
+    def _stop_preparing_engine(self):
+        if not getattr(self, "_preparing_engine", False):
+            return
+        from .engine_contracts import CustodyUnresolved
+        try:
+            # This client stops only its authenticated supervisor's retained
+            # handles and confirms all command/process/output drain before return.
+            self.context.service_client.stop_owned(deadline=time.monotonic() + 5)
+        except BaseException:
+            self.uncertain = True
+            raise CustodyUnresolved("managed preparation failed; exact owned engine stop remains unconfirmed") from None
+        self._preparing_engine = False
 
     def _prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
         from .engine_contracts import IntegrityError, effective_models_root
@@ -306,24 +357,16 @@ class ManagedEnginePreparation:
         self.check()
         if engine.workflow_requirements([selected.workflow]) != engine.workflow_requirements([canonical_workflow]):
             raise IntegrityError("managed CLI workflow requirements differ from the admitted workflow")
+        self._alignment_runner = runner
+        self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
         alignment = engine.align(manifest, self.mode, workflow=canonical_path)
         if alignment.get("status") == "missing":
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
         self.check()
-        if any(not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected
-               for path, expected in staged_digests.items()):
-            raise IntegrityError("managed alignment changed the canonical workflow bytes")
-        if self.mode != "trust":
-            self._verify_models(manifest)
-        self._guard_runtime(canonical_workflow, runner, post=True)
-        runner.check_environment_identities()
-        for step in plan.steps:
-            if step.kind in {"source", "environment"}:
-                runner.execute(step, readonly=True)
-        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
-            raise IntegrityError("managed alignment changed the installed base")
+        self._verify_alignment(*self._alignment_verification)
         runner.step_id = "start"
         start_action, start_facts = runner.start(readonly=False)
+        self._preparing_engine = True
         self.check()
         runner.step_id = "health"
         health_action, health_facts = runner.check_health()
@@ -347,6 +390,24 @@ class ManagedEnginePreparation:
             if getattr(self, "pip_bootstrap", None) is not None:
                 native_preparation["pip_bootstrap"] = self.pip_bootstrap
         return self.report
+
+    def _verify_alignment(self, workflow, runner, staged_digests, manifest, receipt):
+        """Attest mutation results before executing the engine, and again after doctor."""
+        from .engine_contracts import IntegrityError
+        self.check()
+        if any(path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected
+               for path, expected in staged_digests.items()):
+            raise IntegrityError("managed alignment changed the canonical workflow bytes")
+        if self.mode != "trust":
+            self._verify_models(manifest)
+        self._guard_runtime(workflow, runner, post=True)
+        runner.check_environment_identities()
+        for step in runner.plan.steps:
+            if step.kind in {"source", "environment"}:
+                runner.execute(step, readonly=True)
+        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
+            raise IntegrityError("managed alignment changed the installed base")
+        self.check()
 
     def _verify_models(self, manifest):
         from ._engine_target_files import _TargetFiles
@@ -433,12 +494,14 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         if result.exit_code != 0:
             import logging
             step, reason = native_failure_diagnostic(step, result.stdout, result.stderr)
+            classes = native_failure_classes(result.stdout, reason)
             logging.getLogger(__name__).error(
-                "managed alignment failed task=%s attempt=%s step=%s reason=%s exit=%s stdout_sha256=%s stderr_sha256=%s",
-                self.task, self.attempt, step, reason, result.exit_code,
+                "managed alignment failed task=%s attempt=%s step=%s reason=%s missing_classes=%s exit=%s stdout_sha256=%s stderr_sha256=%s",
+                self.task, self.attempt, step, reason, json.dumps(classes), result.exit_code,
                 hashlib.sha256(result.stdout.encode()).hexdigest(),
                 hashlib.sha256(result.stderr.encode()).hexdigest())
-            raise IntegrityError(f"managed alignment command failed (step={step}, reason={reason}); "
+            detail = f", missing_classes={json.dumps(classes)}" if classes else ""
+            raise IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); "
                                  "inspect the host log for this attempt")
         self.check()
         return result
@@ -460,6 +523,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             # This is the host's own canonical renderer output, never admitted
             # Python. Its exact bytes are checked before and after the command.
             argv = [*argv, "--yes"]
+        if argv[0] == "doctor":
+            return self._doctor(argv)
         if argv[0] == "prepare":
             from astrid.packs.vibecomfy.native_preparation import native_preparation_program
             primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
@@ -475,3 +540,34 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         else:
             step = "nodes_restore" if argv[0] == "nodes" else argv[0]
             self._native(program, *argv, step=step)
+
+    def _doctor(self, argv):
+        from .engine_contracts import IntegrityError
+        from astrid.packs.vibecomfy.native_preparation import native_doctor_program
+        runner = self._alignment_runner
+        # align has already run nodes/fetch/prepare. Re-attest their results
+        # before the first launch can execute the installed ComfyUI or venv.
+        self._verify_alignment(*self._alignment_verification)
+        try:
+            self.check()
+            runner.step_id = "doctor-start"
+            runner.start(readonly=False)
+            # A refused foreign owner or mismatched launch never authorizes
+            # stop. Uncertain start responses retain the fence in prepare().
+            self._preparing_engine = True
+            runner.step_id = "doctor-health"
+            runner.check_health()
+            expected = runner.health.object_info_sha256
+            request = {"argv": argv, "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
+                       "expected_schema_sha256": expected,
+                       "request_timeout": min(20.0, max(0.001, self.deadline - time.monotonic()))}
+            result = self._native(native_doctor_program(), json.dumps(request), step="doctor")
+            self.check()
+            runner.step_id = "doctor-post-health"
+            runner.check_health()
+            if runner.health.object_info_sha256 != expected:
+                raise IntegrityError("managed doctor target schema changed during diagnosis")
+            return result
+        except BaseException:
+            self._stop_preparing_engine()
+            raise
