@@ -9,9 +9,8 @@ user site visible to the installed program (``python -I``, empty cwd, fresh HOME
 * ``vibecomfy.utils.find_repo_root()`` raises ``CheckoutRequiredError``
   (VibeComfy donor 1b2e242c vibecomfy/utils.py:18-31, vibecomfy/errors.py:81);
 * the ``generate list`` inventory contains the six defaults;
-* a dry run per default (``--placement runpod --dry-run`` as D1b leaves it; the Foley
-  RunPod refusal for sound effects, plus an auto dry run of sound effects against
-  the CLI-GOLD stand-in ComfyUI so that slot also has a resolving dry run);
+* a dry run per default (``--placement runpod --dry-run``, plus an auto dry run
+  of sound effects against the CLI-GOLD stand-in ComfyUI);
 * fail-closed guidance (``needs a local GPU or --placement runpod``) with no engine and
   no RunPod.
 
@@ -48,8 +47,6 @@ import pytest
 from tests.core.generation.test_cli_gold_075b import (
     DEFAULT_ENTRY_IDS,
     EDGE_TTS,
-    FOLEY_REFUSAL_CODE,
-    FOLEY_REFUSAL_MESSAGE,
     GPU_GUIDANCE,
     SLOTS,
     SLOT_IDS,
@@ -355,10 +352,6 @@ def test_installed_runpod_dry_run_per_default(slot, installed, tmp_path):
     stage = f"dry run {slot.name} runpod"
     result = installed.generate(*slot_argv(slot, _inputs(tmp_path), placement="runpod"),
                                 root=tmp_path, stage=stage)
-    if slot.name == "sound-effects":
-        _expect(result, stage, ok=False, contains=(FOLEY_REFUSAL_CODE, FOLEY_REFUSAL_MESSAGE))
-        assert not _task_ids(_payload(result)), _task_ids(_payload(result))
-        return
     _expect(result, stage, ok=True)
     payload = _payload(result)
     _assert_entry_named(payload, slot)
@@ -368,8 +361,8 @@ def test_installed_runpod_dry_run_per_default(slot, installed, tmp_path):
 
 
 def test_installed_sound_effects_auto_dry_run_resolves_foley(installed, tmp_path):
-    """RunPod refuses Foley, so sound effects resolves through `--placement auto` against the
-    CLI-GOLD stand-in ComfyUI (reads only; no /prompt)."""
+    """Sound effects resolves through `--placement auto` against the CLI-GOLD
+    stand-in ComfyUI (reads only; no /prompt)."""
     slot = next(item for item in SLOTS if item.name == "sound-effects")
     files = _inputs(tmp_path)
     with StandInComfy(_stand_in_object_info()) as comfy:
