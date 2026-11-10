@@ -125,11 +125,16 @@ Use the **Set up my generation** section of the `generation` skill first
 (installed name: `generation`;
 [public copy](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/generation/docs/SKILL.md#set-up-my-generation)).
 It discovers existing tools and settings, asks before each change, and reports
-changes and undo. Keep its discovery and handoff; do not repeat its scan or
-change its read-only rules. If it finds a working ComfyUI, continue that handoff.
-If it finds only Wan2GP, explain that Plan 12 will support Wan2GP and continue
-the handoff; do not install or alter it. If nothing is found, assess this
-computer before offering a route below.
+changes and undo. Keep its discovery and handoff. Do not repeat its scan or
+change its read-only rules. Tell the user what it found before proposing a
+change. Explain what each proposed change does before asking for its own yes.
+The user can decline a change and leave generation setup for later.
+
+If it finds a working ComfyUI, tell the user it can use that installation.
+Continue the generation handoff. If it finds only Wan2GP, tell the user that
+Wan2GP support is planned in Plan 12. Continue the handoff without installing
+or altering Wan2GP. If nothing is found, tell the user no existing generation
+tool was found. Assess this computer before offering a route below.
 
 On Linux or Windows run this once:
 
@@ -144,10 +149,12 @@ uname -m
 ```
 
 Success is an architecture. On failure use the installer's `--doctor` fallback
-from step 2, report the result and treat capability as unconfirmed. A capable
+from step 2. Report the result. Treat capability as unconfirmed. A capable
 Linux or Windows computer has one NVIDIA GPU with at least 12 GB VRAM, or meets
 the declared default generation requirement if available. Do not add GPU
-memory together. macOS has no managed engine.
+memory together. macOS has no managed engine. Report the GPU and memory or
+architecture found. Explain whether this computer meets the requirement or
+whether capability is still unconfirmed.
 
 On a capable computer, check the engine recipe and read-only plan. On Linux:
 
@@ -164,21 +171,27 @@ On Windows, substitute an absolute Windows engine root:
 Each succeeds on exit 0 with a plan and disk check; otherwise use `--doctor`.
 A recipe alone does not establish execution support: Windows execution is not
 yet available. If a managed engine is available for this platform, show the
-plan and disk requirement. Offer installation and run the following Linux
-command only on its own yes; consent is an agent gate, not a CLI flag:
+plan and disk requirement. Explain that the next step installs ComfyUI on this
+computer. The user can decline installation and leave generation setup for
+later. Run the following Linux command only on its own yes. Consent is an
+agent gate, not a CLI flag:
 
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui
 ```
 
-Success is exit 0 with installed status; otherwise use `--doctor`. Return to
-the generation handoff to select placement and defaults. Never install into or
-restart the user's existing ComfyUI. If capable but no managed engine is
-available, point to the engine's own installer or offer RunPod.
+Success is exit 0 with installed status; otherwise use `--doctor`. Report the
+installation result. Return to the generation handoff to select placement and
+defaults. Never install into or restart the user's existing ComfyUI. If capable
+but no managed engine is available, explain that Astrid cannot install a managed
+engine on this platform yet. Point to the engine's own installer or offer RunPod.
+The user can choose either route or leave generation setup for later.
 
-If the computer is not capable or capability is unconfirmed, offer RunPod and
-explain that it rents a GPU and costs money. Guide the user to enter their key
-locally using the hidden prompt. Linux:
+If the computer is not capable or capability is unconfirmed, offer RunPod.
+Explain that RunPod rents a GPU and costs money. Give the same explanation
+whenever offering RunPod above. The user can decline RunPod and leave generation
+setup for later. If they choose RunPod, explain that the next step saves their
+key locally. Guide them to enter it using the hidden prompt. Linux:
 
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" credential set runpod
@@ -197,8 +210,9 @@ Windows PowerShell:
 ```
 
 Each succeeds on a successful setter result; otherwise use `--doctor`. Never
-ask for the key in chat, a command argument, or shell history. Set up the
-retained RunPod owner using [runpod.setup](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/runpod/docs/SKILL.md#replacing-preferences),
+ask for the key in chat, a command argument, or shell history. Explain the
+RunPod preferences to be saved before asking the user to approve them. The user
+can decline saving preferences. Set up the retained RunPod owner using [runpod.setup](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/runpod/docs/SKILL.md#replacing-preferences),
 with the user's approved policy, positive `budget_cap_usd` ceiling and credential
 reference, not the key. The policy needs the account reference, ordered GPU
 types, an image pinned by digest and a positive cap; use the user's actual
@@ -206,8 +220,10 @@ choices rather than inventing them. It succeeds when the result is ok and
 `target_operation.state` is `saved`; otherwise use `--doctor`. Saving preferences
 does not authorize spending.
 
-With a separate yes, set `placement` to `{"kind": "runpod"}` in the generation
-settings, preserving the other settings. Substitute a safe absolute file path.
+Explain that the next change selects RunPod for generation. The user can decline
+this change and keep their current placement. With a separate yes, set
+`placement` to `{"kind": "runpod"}` in the generation settings. Preserve the
+other settings. Substitute a safe absolute file path.
 On Linux, checkout and checkin use respectively:
 
 ```sh
@@ -230,9 +246,10 @@ On Windows:
 ```
 
 Edit the checked-out file between the commands. Checkout succeeds on exit 0
-with the file; checkin succeeds on exit 0. On failure use `--doctor`; on stale
-checkin checkout again and merge. Return to the generation handoff for defaults
-and undo.
+with the file; checkin succeeds on exit 0. On failure use `--doctor`. On stale
+checkin, checkout again. Merge the changes before retrying checkin.
+Report whether the placement change succeeded. Return to the generation handoff
+for defaults and undo.
 
 Before each paid generation, obtain the current offer without claiming a pod.
 On Linux:
@@ -255,11 +272,13 @@ On Windows:
 
 Success is exit 0 with an offer and `offer_digest`; otherwise use `--doctor`.
 Disclose the account, offer, rate, image, optional volume, estimated cost,
-preparation, execution and idle times, cap and absolute UTC deadline. Obtain a
-fresh paid consent for that exact offer and bounds; changed prices or offers
-need another yes. Suggest a $2 cap within the saved ceiling. Substitute the
-approved entry, input file, digest, future UTC deadline and time bounds below;
-validate the entry and inputs first. Linux:
+preparation, execution and idle times, cap and absolute UTC deadline. Explain
+that the next command starts a paid generation with those limits. The user can
+decline before any pod is claimed. Obtain a fresh paid consent for that exact
+offer and bounds. Changed prices or offers need another yes. Suggest a $2 cap
+within the saved ceiling. Substitute the approved entry, input file, digest,
+future UTC deadline and time bounds below. Validate the entry and inputs first.
+Linux:
 
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --offer-digest OFFER_DIGEST --preparation-seconds PREPARATION_SECONDS --execution-seconds EXECUTION_SECONDS --idle-seconds IDLE_SECONDS --json
@@ -278,8 +297,10 @@ Windows:
 ```
 
 Success requires a successful generation result and delivered artifact, not
-merely a pod claim; on failure use `--doctor`. Afterward list leases and, unless
-the user chooses to keep it warm, release the owned lease by its ID. Linux:
+merely a pod claim; on failure use `--doctor`. Report the result and the artifact
+location if delivered. Afterward list leases. Explain that keeping a lease warm
+can continue to cost money. Unless the user chooses to keep it warm, release the
+owned lease by its ID. Linux:
 
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" machines --json
