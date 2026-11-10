@@ -5176,7 +5176,56 @@ def test_refresh_not_matching_the_committed_packs_stays_pending(tmp_path, monkey
 
     assert host.acknowledge_pack_refresh() is False
     assert refresh_pending(packs_root=personal)
-    assert "pack refresh not acknowledged: registration does not match committed packs: personal.echo" in capsys.readouterr().err
+    assert "registration does not match committed packs: personal.echo" in capsys.readouterr().err
+
+
+def test_single_worker_loop_acknowledges_a_pack_that_declares_no_actions(tmp_path, monkeypatch):
+    """A pack with only non-action declarations is admitted, so its outbox entry is consumed."""
+    import json
+
+    from astrid.core.pack.transaction import refresh_pending
+    from astrid.pack_api import VERSION as PACK_API_VERSION
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    _pending_personal_outbox(personal, changed_ids=("notes",))
+    (personal / "notes").mkdir()
+    (personal / "notes" / "pack.yaml").write_text(json.dumps({
+        "schema_version": 3, "id": "notes", "name": "Notes", "version": "1.0.0",
+        "pack_api": f"{PACK_API_VERSION[0]}.{PACK_API_VERSION[1]}",
+        "documentation": {"kind": "none", "reason": "Test fixture."},
+    }), encoding="utf-8")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[], client=runtime, personal_collection=True)
+    polls = 0
+
+    def claim_next(**payload):
+        nonlocal polls
+        polls += 1
+        if not refresh_pending(packs_root=personal) or polls > 200:
+            host._shutdown.set()
+        return None
+
+    runtime.claim_next = claim_next
+    assert host.run(poll_seconds=0.01) == []
+
+    assert "notes" in host._admitted_pack_ids
+    assert not refresh_pending(packs_root=personal), "a pack without actions was never acknowledged"
+
+
+def test_pack_refresh_failures_log_at_powers_of_two_and_back_off(capsys):
+    host = GenericPackHost(pack_roots=[], client=FakeRuntime())
+    delays = []
+    for _ in range(5):
+        host._record_pack_refresh_failure("boom")
+        delays.append(host._pack_refresh_delay())
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 3  # consecutive failures 1, 2 and 4 are logged
+    assert all("pack refresh not acknowledged" in line and "boom" in line for line in lines)
+    assert delays == [2.0, 4.0, 8.0, 16.0, 30.0]
 
 
 def test_run_once_leaves_the_packs_add_outbox_pending(tmp_path, monkeypatch):
