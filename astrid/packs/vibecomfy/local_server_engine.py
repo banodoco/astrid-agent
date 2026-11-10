@@ -138,6 +138,27 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
     # Missing classes must fail here, before ambient/on-demand authoring lookup.
     _capture_live_schemas(bundle, provider)
     api = {} if missing_nodes else bundle.workflow.compile("api", run_inputs=dict(run_inputs or {}))
+    # A blank LoadImage may be an unused workflow placeholder. Refuse it when
+    # it actually feeds an output, before sending the prompt to ComfyUI.
+    observed = provider.object_info()
+    pending = {str(output.node_id) for output in bundle.workflow.outputs}
+    pending.update(node_id for node_id, node in api.items()
+                   if observed.get(node.get("class_type"), {}).get("output_node"))
+    if api and (not pending or any(node_id not in api for node_id in pending)):
+        raise ProductionEngineError("ComfyUI workflow output roots could not be established")
+    reached = set()
+    while pending:
+        node_id = pending.pop()
+        if node_id in reached or node_id not in api:
+            continue
+        reached.add(node_id)
+        node = api[node_id]
+        if node.get("class_type") == "LoadImage" and not str(node.get("inputs", {}).get("image") or "").strip():
+            raise ProductionEngineError("ComfyUI workflow has a connected LoadImage without an image binding")
+        for value in node.get("inputs", {}).values():
+            if (isinstance(value, list) and len(value) == 2 and isinstance(value[0], str)
+                    and isinstance(value[1], int)):
+                pending.add(value[0])
     issues = [*validate_api_against_schema(api, provider), *validate_api_link_shapes(api, provider)] if api else []
     missing_models: list[str] = []
     for node_id, node in api.items():
