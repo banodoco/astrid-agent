@@ -231,6 +231,9 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
 
     def call(facade, controls, tmp):
         nonlocal replay_seed
+        if cell in {("audio", "tts"), ("audio", "sfx")}:
+            # The stand-in advertises these models but holds no real weights.
+            controls = {**controls, "align": "trust"}
         recorder.take()
         dry = run(facade, controls, tmp, dry_run=True)
         runs["dry"] = (dry, recorder.take())
