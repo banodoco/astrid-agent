@@ -2439,6 +2439,13 @@ PACK_REFRESH_PROBE = ("from astrid.personal_packs_root import resolve_personal_p
                       "root = resolve_personal_packs_root()\n"
                       "print('pending' if root is not None and refresh_pending(packs_root=root) else 'registered')")
 PACK_REGISTRATION_TIMEOUT = 180
+# Resolves a capability through the public SDK lookup that admission's preflight uses.
+CAPABILITY_PROBE = ("import json\n"
+                    "from astrid.sdk import get_capability\n"
+                    "capability = get_capability({capability_id!r}, kind='executor')\n"
+                    "print(json.dumps({{'id': str(getattr(capability, 'id', ''))}}))")
+# Journey pack id -> the executor capability the journey's task admits.
+JOURNEY_PACK_CAPABILITIES = {"chiptune": "chiptune.sfx"}
 
 
 def console_routes_packs(source: str | None) -> bool:
@@ -2469,9 +2476,22 @@ def wait_pack_registered(version: dict, evidence: Path, pack_id: str, *,
     deadline = time.monotonic() + timeout
     while _installed_probe(version, PACK_REFRESH_PROBE, evidence, "journey-pack-refresh.log") != "registered":
         if time.monotonic() >= deadline:
+            # A product finding, not a harness flake: the running host never acknowledged the add.
             raise RuntimeError(f"The running host did not register {pack_id} within {int(timeout)}s of "
                                "`packs add`: its pack refresh is still pending")
         time.sleep(interval)
+    capability_id = JOURNEY_PACK_CAPABILITIES.get(pack_id)
+    if capability_id is None:
+        return
+    code = CAPABILITY_PROBE.format(capability_id=capability_id)
+    try:
+        resolved = json.loads(_installed_probe(version, code, evidence, "journey-pack-capability.log"))
+    except (RuntimeError, ValueError) as exc:
+        raise RuntimeError(f"{capability_id} is not registered after the host acknowledged "
+                           f"{pack_id}'s refresh") from exc
+    if not isinstance(resolved, dict) or resolved.get("id") != capability_id:
+        raise RuntimeError(f"{capability_id} is not registered after the host acknowledged "
+                           f"{pack_id}'s refresh")
 
 
 def invocation_outcome(invocation: dict) -> tuple[bool | None, object]:

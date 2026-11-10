@@ -189,13 +189,29 @@ def test_journey_packs_skip_without_a_packs_route_and_wait_for_registration():
 
 
 def test_wait_pack_registered_polls_the_refresh_outbox(tmp_path, monkeypatch):
-    answers = iter(["pending", "pending", "registered"])
+    answers = iter(["pending", "pending", "registered", json.dumps({"id": "chiptune.sfx"})])
     seen = []
+    codes = []
     monkeypatch.setattr(journey, "_installed_probe",
-                        lambda version, code, evidence, name: seen.append(name) or next(answers))
+                        lambda version, code, evidence, name: (seen.append(name), codes.append(code),
+                                                               next(answers))[2])
     journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
-    assert seen == ["journey-pack-refresh.log"] * 3
+    assert seen == ["journey-pack-refresh.log"] * 3 + ["journey-pack-capability.log"]
     assert "refresh_pending" in journey.PACK_REFRESH_PROBE
+    assert "get_capability('chiptune.sfx', kind='executor')" in codes[-1]
+    compile(codes[-1], "probe", "exec")
+    answers = iter(["registered", json.dumps({"id": "other"})])
+    with pytest.raises(RuntimeError, match="chiptune.sfx is not registered after the host acknowledged"):
+        journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
+
+    def refused(version, code, evidence, name):
+        if name == "journey-pack-capability.log":
+            raise RuntimeError("journey-pack-capability.log: exit 1")
+        return "registered"
+
+    monkeypatch.setattr(journey, "_installed_probe", refused)
+    with pytest.raises(RuntimeError, match="chiptune.sfx is not registered"):
+        journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
     monkeypatch.setattr(journey, "_installed_probe", lambda *a, **k: "pending")
     with pytest.raises(RuntimeError, match="did not register chiptune .*still pending"):
         journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=0, interval=0)
