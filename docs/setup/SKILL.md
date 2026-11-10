@@ -12,8 +12,8 @@ Help the user install Astrid on this computer and reach a first image. Use
 on their computer so they can change the editor itself, follow the fully local
 path below. Both paths use the same installed Runtime and workspace.
 
-The journey has four steps, in order: 0 entry route, 1 choices, 2 install,
-3 connected.
+The journey has five steps, in order: 0 entry route, 1 choices, 2 install,
+3 connected, 4 generation.
 Carry out requested checks, report their actual results, and do not claim a
 check passed when it could not be run.
 
@@ -121,17 +121,191 @@ If Chrome or Edge asks to reach this computer, tell the user to choose Allow.
 Confirm that astrid.haus shows Connected.
 If it does not, follow [Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md#asking-for-help).
 
-### Set up generation
+## 4. Set up generation
 
-To connect a ComfyUI the user already runs, or to find their Wan2GP folder,
-use the **Set up my generation** section of the `generation` skill
+Use the **Set up my generation** section of the `generation` skill first
 (installed name: `generation`;
 [public copy](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/generation/docs/SKILL.md#set-up-my-generation)).
-It reads what is set up, asks before it changes anything, and lists every change
-with how to undo it. Do not start, restart or install anything for ComfyUI or
-Wan2GP during setup. Carry
-out requested checks, report their actual results, and do not claim a check
-passed when it could not be run.
+It discovers existing tools and settings, asks before each change, and reports
+changes and undo. Keep its discovery and handoff; do not repeat its scan or
+change its read-only rules. If it finds a working ComfyUI, continue that handoff.
+If it finds only Wan2GP, explain that Plan 12 will support Wan2GP and continue
+the handoff; do not install or alter it. If nothing is found, assess this
+computer before offering a route below.
+
+On Linux or Windows run this once:
+
+```sh
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+```
+
+Success is GPU names and memory. On macOS run:
+
+```sh
+uname -m
+```
+
+Success is an architecture. On failure use the installer's `--doctor` fallback
+from step 2, report the result and treat capability as unconfirmed. A capable
+Linux or Windows computer has one NVIDIA GPU with at least 12 GB VRAM, or meets
+the declared default generation requirement if available. Do not add GPU
+memory together. macOS has no managed engine.
+
+On a capable computer, check the engine recipe and read-only plan. On Linux:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui --dry-run
+```
+
+On Windows, substitute an absolute Windows engine root:
+
+```powershell
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" engines install comfyui --platform windows-x86_64-cu130 --root ABSOLUTE_ENGINE_ROOT --dry-run
+```
+
+Each succeeds on exit 0 with a plan and disk check; otherwise use `--doctor`.
+A recipe alone does not establish execution support: Windows execution is not
+yet available. If a managed engine is available for this platform, show the
+plan and disk requirement. Offer installation and run the following Linux
+command only on its own yes; consent is an agent gate, not a CLI flag:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui
+```
+
+Success is exit 0 with installed status; otherwise use `--doctor`. Return to
+the generation handoff to select placement and defaults. Never install into or
+restart the user's existing ComfyUI. If capable but no managed engine is
+available, point to the engine's own installer or offer RunPod.
+
+If the computer is not capable or capability is unconfirmed, offer RunPod and
+explain that it rents a GPU and costs money. Guide the user to enter their key
+locally using the hidden prompt. Linux:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" credential set runpod
+```
+
+macOS:
+
+```sh
+"$HOME/.local/share/astrid/run-astrid" credential set runpod
+```
+
+Windows PowerShell:
+
+```powershell
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" credential set runpod
+```
+
+Each succeeds on a successful setter result; otherwise use `--doctor`. Never
+ask for the key in chat, a command argument, or shell history. Set up the
+retained RunPod owner using [runpod.setup](../../astrid/packs/runpod/docs/SKILL.md#replacing-preferences),
+with the user's approved policy, positive `budget_cap_usd` ceiling and credential
+reference, not the key. The policy needs the account reference, ordered GPU
+types, an image pinned by digest and a positive cap; use the user's actual
+choices rather than inventing them. It succeeds when the result is ok and
+`target_operation.state` is `saved`; otherwise use `--doctor`. Saving preferences
+does not authorize spending.
+
+With a separate yes, set `placement` to `{"kind": "runpod"}` in the generation
+settings, preserving the other settings. Substitute a safe absolute file path.
+On Linux, checkout and checkin use respectively:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkout --file /absolute/path/generation.json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkin /absolute/path/generation.json
+```
+
+On macOS:
+
+```sh
+"$HOME/.local/share/astrid/run-astrid" generate settings checkout --file /absolute/path/generation.json
+"$HOME/.local/share/astrid/run-astrid" generate settings checkin /absolute/path/generation.json
+```
+
+On Windows:
+
+```powershell
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate settings checkout --file C:\absolute\path\generation.json
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate settings checkin C:\absolute\path\generation.json
+```
+
+Edit the checked-out file between the commands. Checkout succeeds on exit 0
+with the file; checkin succeeds on exit 0. On failure use `--doctor`; on stale
+checkin checkout again and merge. Return to the generation handoff for defaults
+and undo.
+
+Before each paid generation, obtain the current offer without claiming a pod.
+On Linux:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe --placement runpod --engine comfyui --json
+```
+
+On macOS:
+
+```sh
+"$HOME/.local/share/astrid/run-astrid" generate describe --placement runpod --engine comfyui --json
+```
+
+On Windows:
+
+```powershell
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate describe --placement runpod --engine comfyui --json
+```
+
+Success is exit 0 with an offer and `offer_digest`; otherwise use `--doctor`.
+Disclose the account, offer, rate, image, optional volume, estimated cost,
+preparation, execution and idle times, cap and absolute UTC deadline. Obtain a
+fresh paid consent for that exact offer and bounds; changed prices or offers
+need another yes. Suggest a $2 cap within the saved ceiling. Substitute the
+approved entry, input file, digest, future UTC deadline and time bounds below;
+validate the entry and inputs first. Linux:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --offer-digest OFFER_DIGEST --preparation-seconds PREPARATION_SECONDS --execution-seconds EXECUTION_SECONDS --idle-seconds IDLE_SECONDS --json
+```
+
+macOS:
+
+```sh
+"$HOME/.local/share/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --offer-digest OFFER_DIGEST --preparation-seconds PREPARATION_SECONDS --execution-seconds EXECUTION_SECONDS --idle-seconds IDLE_SECONDS --json
+```
+
+Windows:
+
+```powershell
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate image --entry ENTRY --inputs-json C:\absolute\path\inputs.json --placement runpod --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --offer-digest OFFER_DIGEST --preparation-seconds PREPARATION_SECONDS --execution-seconds EXECUTION_SECONDS --idle-seconds IDLE_SECONDS --json
+```
+
+Success requires a successful generation result and delivered artifact, not
+merely a pod claim; on failure use `--doctor`. Afterward list leases and, unless
+the user chooses to keep it warm, release the owned lease by its ID. Linux:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" machines --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" machines release ID --json
+```
+
+macOS:
+
+```sh
+"$HOME/.local/share/astrid/run-astrid" machines --json
+"$HOME/.local/share/astrid/run-astrid" machines release ID --json
+```
+
+Windows:
+
+```powershell
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" machines --json
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" machines release ID --json
+```
+
+Listing succeeds on exit 0 with the lease list; release succeeds on exit 0 and
+an ok result. Verify the lease ended and follow the RunPod skill's independent
+provider cleanup checks; use `--doctor` on failure. Never create a pod during
+setup without paid consent.
 
 ## Run everything on this computer
 
