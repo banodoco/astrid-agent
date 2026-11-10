@@ -42,6 +42,25 @@ class PaidSelectionError(TargetObservationError):
     """
 
 
+_OFFER_FAILURES = {
+    "stock_unavailable": "no requested GPU has confirmed stock and price in the selected datacenter",
+    "provider_transport_or_response_unavailable": "provider transport or response is unavailable; retry offer observation",
+    "provider_authentication_failed": "provider authentication was rejected; check the configured credential",
+    "provider_rate_limited": "provider rate limit was reached; retry offer observation later",
+    "provider_observation_unavailable": "provider availability could not be confirmed; retry offer observation",
+    "price_unconfirmed": "the selected GPU price could not be confirmed; retry offer observation",
+    "observation_failed": "current RunPod offer could not be confirmed; retry offer observation",
+}
+
+
+class OfferObservationError(PaidSelectionError):
+    """Fixed offer diagnostics, independent of provider response/error text."""
+
+    def __init__(self, reason: str):
+        self.reason = reason if isinstance(reason, str) and reason in _OFFER_FAILURES else "observation_failed"
+        super().__init__(f"RunPod offer unavailable (reason={self.reason}): {_OFFER_FAILURES[self.reason]}", gate="offer")
+
+
 # The readiness timeout the acquisition path already used (was the literal in
 # min(900, ...) for acquire/reconcile); the GPU/DC confirmation waits this long
 # (bounded by the paid lifetime) for GraphQL to populate pod.machine.
@@ -350,8 +369,10 @@ class RunPodSelectionOwner:
         """
         try:
             offer = self.observe_offer()
+        except OfferObservationError as exc:
+            raise OfferObservationError(exc.reason) from None
         except Exception:
-            raise PaidSelectionError("current RunPod offer could not be confirmed") from None
+            raise OfferObservationError("observation_failed") from None
         observed = offer.digest(self.preferences)
         if consent.offer_digest != observed:
             self._record_offer_refusal(offer, observed, consent.offer_digest, now)

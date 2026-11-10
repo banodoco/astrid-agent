@@ -503,3 +503,54 @@ def test_refused_reuse_never_reaches_create_or_reconcile(case, monkeypatch):
     case.now += timedelta(hours=2)
     with pytest.raises(PaidSelectionError, match="cannot be extended by reuse"):
         asyncio.run(case.owner.select(replace(case.grant, deadline=(case.now + timedelta(hours=1)).isoformat())))
+
+
+@pytest.mark.parametrize('failure,reason', [
+    ('transport', 'provider_transport_or_response_unavailable'),
+    ('authentication', 'provider_authentication_failed'),
+    ('rate_limit', 'provider_rate_limited'),
+    ('invalid_response', 'provider_observation_unavailable'),
+    ('stock', 'stock_unavailable'),
+])
+def test_offer_reobservation_preserves_fixed_provider_or_stock_reason_without_allocation(case, monkeypatch, failure, reason):
+    import httpx
+    import runpod_lifecycle
+    from runpod_lifecycle import availability
+    from astrid.packs.runpod.adapter import observe_priced_offer
+    c = case
+    secret = 'PRIVATE_PROVIDER_RESPONSE_AND_CREDENTIAL'
+    c.owner.preferences = RunPodPreferences.from_mapping({**c.raw, 'volume': None})
+    config = SimpleNamespace(api_key=secret, container_disk_gb=40, allowed_cuda_versions=('13.0',), min_cuda_version=None)
+    if failure == 'stock':
+        async def no_stock(**kwargs):
+            return availability.GpuAvailability(kwargs['gpu'], 'gpu-id', 'GPU', 'unavailable', 'now', {}, [
+                availability.DataCenterAvailability('DC', None, None, 'unavailable', None, 1.0, False)])
+        monkeypatch.setattr(runpod_lifecycle, 'gpu_availability', no_stock)
+    else:
+        def post(*args, **kwargs):
+            if failure == 'transport':
+                raise httpx.ConnectError(secret)
+            status = {'authentication': 403, 'rate_limit': 429, 'invalid_response': 200}[failure]
+            return SimpleNamespace(status_code=status, json=lambda: {'errors': [{'message': secret}]})
+        # Real pinned lifecycle query/unknown behavior, replaced only at HTTP I/O.
+        monkeypatch.setattr(availability.httpx, 'post', post)
+    c.owner.observe_offer = lambda: asyncio.run(observe_priced_offer(c.owner.preferences, config))
+    with pytest.raises(PaidSelectionError) as raised:
+        c.owner.consented_offer(c.grant, c.now)
+    assert getattr(raised.value, 'reason', None) == reason
+    assert 'reason=' + reason in str(raised.value)
+    assert secret not in str(raised.value)
+    assert c.creates == 0 and not c.owner.path.exists()
+
+
+def test_unexpected_offer_error_cannot_forward_provider_text(case):
+    from astrid.packs.runpod.target_selection import OfferObservationError
+    secret = 'PRIVATE_UNEXPECTED_PROVIDER_FAILURE'
+    def failed():
+        raise RuntimeError(secret)
+    case.owner.observe_offer = failed
+    with pytest.raises(OfferObservationError) as raised:
+        case.owner.consented_offer(case.grant, case.now)
+    assert raised.value.reason == 'observation_failed'
+    assert secret not in str(raised.value)
+    assert case.creates == 0 and not case.owner.path.exists()
