@@ -151,6 +151,20 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     assert c.deletes == ["pod-1"]
 
 
+@pytest.mark.parametrize(('requested', 'bound', 'expected'), [(600, 60, 60), (0, 60, 0), (15, 60, 15)])
+def test_claim_caps_idle_and_reports_the_acquired_timeout(machine_case, requested, bound, expected):
+    from dataclasses import replace
+    c = machine_case
+    original = c.job()
+    job = replace(original, policy={**original.policy, 'placement_idle_seconds': requested, 'idle_seconds': bound})
+    lease = c.machine.claim(job)
+    try:
+        assert c.read()['lease']['idle_seconds'] == expected
+        assert c.machine.describe(lease)['idle_timeout_s'] == expected
+    finally:
+        c.machine.release(lease, False)
+
+
 def test_a_failing_runtime_check_releases_the_lease_and_never_settles_warm(machine_case):
     c = machine_case
     c.pod.listed = []  # the pod's runtime does not list the entry from the shipped selection

@@ -570,14 +570,14 @@ def journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
         assert setup.ok, setup.to_dict()
         return state
 
-    def image(*, wait=True, invocation=None, placement="runpod"):
+    def image(*, wait=True, invocation=None, placement="runpod", idle_seconds=1800):
         client = state["client"]
         quote = GenerationFacade().describe(placement=placement, client=client)
         return GenerationFacade().image(entry="cpu-image", placement=placement, client=client,
             project=state["project"], consent=("paid",), max_usd=1.5,
             deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
             offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-            idle_seconds=1800, wait=wait)
+            idle_seconds=idle_seconds, wait=wait)
 
     def record():
         return json.loads(state["claim_path"].read_text())
@@ -691,7 +691,33 @@ def test_resolved_runpod_policy_controls_the_claim_and_warm_hold(journey):
     assert result.ok, result.to_dict()
     lease = j.record()["lease"]
     assert lease["idle_seconds"] == 0
+    assert state["client"].tasks.show(result.task_id).data["result"]["machine"]["idle_timeout_s"] == 0
     assert state["provider"].deploys == 1
+
+
+@pytest.mark.parametrize("placement", ["runpod", {"kind": "runpod", "policy": {"idle_timeout_s": 300}}],
+                         ids=["default", "explicit"])
+def test_paid_idle_bound_caps_placement_and_reports_effective_timeout(journey, placement):
+    from astrid.sdk.generation import _runpod_operation
+    j = journey
+    state = j.start()
+    result = j.image(placement=placement, idle_seconds=30)
+    assert result.ok, result.to_dict()
+    lease = j.record()["lease"]
+    assert lease["idle_seconds"] == 30
+    machine = state["client"].tasks.show(result.task_id).data["result"]["machine"]
+    assert machine["idle_timeout_s"] == 30
+    status = _runpod_operation("status", client=state["client"], wait=True)
+    assert status.ok, status.to_dict()
+    payload = status.raw_result['result']
+    payload = payload.get('payload', payload)
+    assert payload['target_operation']['lease']['idle_timeout_s'] == 30
+    listing = _runpod_operation("ls", client=state["client"], wait=True)
+    assert listing.ok, listing.to_dict()
+    listing_payload = listing.raw_result['result']
+    listing_payload = listing_payload.get('payload', listing_payload)
+    assert listing_payload['target_operation']['leases'][0]['lease']['idle_timeout_s'] == 30
+    _released(state["provider"], j.release())
 
 
 def test_overridden_gpu_lease_remains_manageable_with_saved_preferences(journey):

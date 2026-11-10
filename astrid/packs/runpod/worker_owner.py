@@ -258,9 +258,9 @@ class RunPodLeaseOwner:
                 "pod_id": record.get("pod_id"),
                 "provider_account_ref": record["provider_account_ref"],
                 "state": record["state"],
-                "lease": {key: lease.get(key) for key in (
+                "lease": {**{key: lease.get(key) for key in (
                     "state", "generation", "invocation_id", "paid_expires_at", "idle_expires_at",
-                )},
+                )}, "idle_timeout_s": lease.get("idle_seconds")},
             }]
 
     def _retry_recovery(self, operation: str) -> None:

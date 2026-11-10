@@ -134,6 +134,7 @@ class RunPodAdapter:
             lease = record.get("lease", {})
             result["lease"] = {key: lease.get(key) for key in
                                ("state", "owner_epoch", "generation", "invocation_id", "paid_expires_at", "idle_expires_at")}
+            result["lease"]["idle_timeout_s"] = lease.get("idle_seconds")
         if include_quote:
             if operation != "status":
                 raise ValueError("offer observation requires status")
@@ -194,9 +195,7 @@ def prevalidate_task(policy, inputs, *, scratch):
     if saved_cap is not None and policy["max_usd"] > saved_cap:
         raise PaidSelectionError("invocation cap exceeds the saved RunPod budget ceiling")
     if "placement_idle_seconds" in policy:
-        actual_idle = _number(policy["placement_idle_seconds"], "placement idle", zero=True)
-        if actual_idle > policy["idle_seconds"]:
-            raise PaidSelectionError("placement idle exceeds the disclosed paid idle bound")
+        _number(policy["placement_idle_seconds"], "placement idle", zero=True)
     durations = [_number(policy[name], name, zero=True) for name in
                  ("preparation_seconds", "execution_seconds", "idle_seconds")]
     if sum(durations) <= 0 or (_utc(policy["deadline"]) - datetime.now(timezone.utc)).total_seconds() < sum(durations):
