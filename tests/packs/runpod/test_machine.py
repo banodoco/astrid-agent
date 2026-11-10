@@ -561,3 +561,102 @@ def test_warm_gpu_id_uses_confirmed_display_and_refuses_mismatch(machine_case, m
                        sleep=lambda s: None)
         assert c.read()["lease"]["preparation"]["custody"]["gpu_type"] == "RTX 5090"
         assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
+
+
+@pytest.mark.parametrize("entry,mode,template", [
+    ("qwen-image-2.1-turbo", "t2i", "image/qwen_image_2_1_turbo"),
+    ("qwen-image-2.1-turbo-edit", "edit", "edit/qwen_image_2_1_turbo_edit"),
+])
+def test_catalog_job_capacity_uses_selected_local_workflow(entry, mode, template, monkeypatch):
+    from astrid.core.generation import entries
+    from astrid.packs.runpod.remote_placement import RunPodInstallation
+
+    assert entries.find_entry(entry) is None
+    expected = tuple(entries.requirements(entries.find_entry(template), {}).get("models", ()))
+    assert len(expected) == 3 and all(row["size"] > 0 for row in expected)
+    original_find = entries.find_entry
+    monkeypatch.setattr(entries, "find_entry", lambda name: {"requirements": {
+        "engine": "comfyui", "base": None, "models": [], "extra": {}}}
+        if name == template else original_find(name))
+    rows = rm._job_manifest_rows(entry, {}, mode=mode)
+    assert rows == expected
+    assert RunPodInstallation.model_bytes(None, rows) == sum(row["size"] for row in expected)
+
+
+@pytest.mark.parametrize("entry,mode", [
+    ("unknown-catalog-entry", "t2i"),
+    ("qwen-image-2.1-turbo", "edit"),
+])
+def test_unresolved_catalog_job_capacity_fails_closed(entry, mode):
+    with pytest.raises((KeyError, ValueError, rm.MachineError)):
+        rm._job_manifest_rows(entry, {}, mode=mode)
+
+
+@pytest.mark.parametrize("failure", ["no-local", "missing-template", "ambiguous-mode"])
+def test_catalog_capacity_requires_available_selected_workflow(monkeypatch, failure):
+    from types import SimpleNamespace
+    from astrid.core.generation import entries
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    local = SimpleNamespace(template="missing/workflow", template_hash="sha256:" + "0" * 64)
+    selected = SimpleNamespace(backends={} if failure == "no-local" else {"local": local})
+    model = SimpleNamespace(modes={"t2i": selected, "edit": selected})
+    monkeypatch.setattr(ModelRegistry, "load_default", lambda: SimpleNamespace(get=lambda entry: model))
+    monkeypatch.setattr(entries, "find_entry", lambda entry: None)
+    with pytest.raises((rm.MachineError, ValueError, KeyError)):
+        rm._job_manifest_rows("catalog-model", {}, mode=None if failure == "ambiguous-mode" else "t2i")
+
+
+def test_catalog_capacity_rejects_changed_template_pin(monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    from astrid.core.generation import entries
+
+    model = ModelRegistry.load_default().get("qwen-image-2.1-turbo")
+    monkeypatch.setattr(entries, "find_entry", lambda entry: None)
+    selected = model.modes["t2i"]
+    changed = replace(selected.backends["local"], template_hash="sha256:" + "0" * 64)
+    model = SimpleNamespace(modes={"t2i": SimpleNamespace(backends={"local": changed})})
+    monkeypatch.setattr(ModelRegistry, "load_default", lambda: SimpleNamespace(get=lambda entry: model))
+    with pytest.raises(ValueError, match="hash|pin|digest"):
+        rm._job_manifest_rows("qwen-image-2.1-turbo", {}, mode="t2i")
+
+
+@pytest.mark.parametrize("entry", [None, "workflow"])
+def test_workflow_file_capacity_reads_shipped_bundle(machine_case, entry):
+    from vibecomfy.workflow_bundle import emit_bundle
+    from astrid.core.generation import entries
+
+    job = machine_case.job()
+    workflow = entries._load_entry_workflow(entries.find_entry("image/qwen_image_2_1_turbo"))
+    expected = tuple(entries.requirements({"workflow": workflow}, {}).get("models", ()))
+    emit_bundle(workflow, job.inputs["python"], {"operation": "authored"})
+    rows = rm._job_manifest_rows(entry, {}, execution=job.inputs)
+    assert rows == expected and len(rows) == 3
+
+
+@pytest.mark.parametrize("execution", [{}, {"python": "/missing/workflow.py"}, {"workflow": "/missing/workflow.json"}])
+def test_workflow_file_capacity_rejects_missing_bundle(execution):
+    with pytest.raises(ValueError):
+        rm._job_manifest_rows(None, {}, execution=execution)
+
+
+def test_claim_reads_workflow_bundle_before_preparing(machine_case, monkeypatch):
+    from dataclasses import replace
+    from astrid.packs.runpod import generation as runpod_generation
+
+    job = replace(machine_case.job(), entry=None)
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop before create")
+
+    monkeypatch.setattr(runpod_generation, "prepare_retained_generation", capture)
+    with pytest.raises(RuntimeError, match="stop before create"):
+        machine_case.machine.claim(job)
+    assert tuple(captured["manifest_rows"]) == ()  # a valid model-free workflow
+    with pytest.raises(ValueError):
+        machine_case.machine.claim(replace(job, inputs={"workflow_inputs": "{}"}))
