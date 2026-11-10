@@ -113,7 +113,7 @@ class LinuxPlatformAdapter:
                               _bootstrap.engine_process_env(launch_env, root), deadline)
 
     @contextmanager
-    def local_install_lock(self, root, *, deadline):
+    def local_install_lock(self, root, *, deadline, cancelled=None):
         # Import only at the target; no operational Runtime daemon is involved.
         from runtime_protocol import platform
 
@@ -148,6 +148,9 @@ class LinuxPlatformAdapter:
                 raise UnsafePathError("unsafe install lock inode")
             while True:
                 _deadline(deadline)
+                if cancelled is not None and cancelled():
+                    from concurrent.futures import CancelledError
+                    raise CancelledError("engine lock acquisition cancelled")
                 try:
                     platform.lock_file(fd, exclusive=True, blocking=False)
                     locked = True

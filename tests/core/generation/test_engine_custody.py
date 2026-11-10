@@ -56,7 +56,7 @@ class Handler(BaseHTTPRequestHandler):
    time.sleep(2)
   if setting=='redirect':
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
-  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'VHS_VideoCombine':{}}
+  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'UNETLoader':{},'VAELoader':{},'VHS_VideoCombine':{}}
   if self.path=='/queue': value={'queue_running':[[1]] if setting=='busy' else [],'queue_pending':[]}
   if self.path=='/system_stats': value={'system':{'comfyui_version':'0.36.0'},'devices':[{'vram_total':24000,'vram_free':20000}]}
   if self.path.startswith('/history/'):
@@ -660,7 +660,7 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     assert (registry / "source_revision").read_text() == next(s.pin.revision for s in recipe.sources if s.name == "vibecomfy")
     expected = hashlib.sha256(b"tiny.py\0" + hashlib.sha256(b"# immutable fixture source\n").digest()).hexdigest()
     assert (registry / "source_content_digest").read_text() == "sha256:" + expected
-    nodes = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}}
+    nodes = {"MiniMaxH3ReferenceToVideo": {}, "UNETLoader": {}, "VAELoader": {}, "VHS_VideoCombine": {}}
     assert first["object_info_sha256"] == _sha(nodes)
     assert len(list(Path(client.control).glob("*.json"))) == 1
 
@@ -1716,3 +1716,43 @@ def test_live_supervisor_busy_and_failed_free_are_not_released(session, setting,
     assert result["status"] == expected
     assert result.get("models_unloaded") is not True
     assert not (root / "release-posts").exists()
+
+
+def test_cancel_finite_request_drains_original_before_return_and_keeps_engine(session):
+    from concurrent.futures import CancelledError
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    engine_pid = int(started.read_text().splitlines()[-1])
+    entered = root / "cancel-command-entered"
+    command_pid = root / "cancel-command-pid"
+    cancelled = threading.Event()
+    client.cancelled = cancelled.is_set
+    errors = []
+    def execute():
+        try:
+            client.run(_request(root, f"import os,time;from pathlib import Path;Path({str(command_pid)!r}).write_text(str(os.getpid()));Path({str(entered)!r}).write_text('yes');time.sleep(60)", 30))
+        except BaseException as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=execute)
+    worker.start()
+    _wait(entered.exists)
+    pid = int(command_pid.read_text())
+    cancelled.set()
+    worker.join(timeout=15)
+    assert not worker.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], CancelledError), errors
+    assert not _alive(pid)
+    assert _alive(engine_pid)
+    client.cancelled = None
+    assert _call(client, payload, "health")["healthy"] is True
+
+
+def test_already_cancelled_request_never_creates_supervisor(tmp_path):
+    from concurrent.futures import CancelledError
+    root = tmp_path / "no-owner"
+    root.mkdir()
+    client = _client(_identity(root))
+    client.cancelled = lambda: True
+    with pytest.raises(CancelledError):
+        client.run(_request(root, "raise SystemExit(99)"))
+    assert not (root / ".astrid-engine/session").exists()

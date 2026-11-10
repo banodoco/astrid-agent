@@ -81,8 +81,8 @@ class VibeComfyCommands:
     that installs node packs. fetch skips files already on disk, so it is not passed --force.
     """
 
-    def __init__(self, workflow: str = "", lockfile: str | None = None) -> None:
-        self.workflow, self.lockfile = workflow, lockfile
+    def __init__(self, workflow: str = "", lockfile: str | None = None, *, runner: Any = None) -> None:
+        self.workflow, self.lockfile, self.runner = workflow, lockfile, runner
 
     def argv(self, step: str) -> list[str]:
         if step == "doctor":
@@ -96,6 +96,9 @@ class VibeComfyCommands:
         raise ValueError(step)
 
     def _run(self, step: str) -> None:
+        if self.runner is not None:
+            self.runner(self.argv(step))
+            return
         import subprocess
         import sys
         subprocess.run([sys.executable, "-c", "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))",

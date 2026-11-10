@@ -332,9 +332,11 @@ def run_local_server(
     config = SessionConfig.from_dict(values)
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
-    client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    from astrid.core.generation.managed_preparation import read_preparation
+    prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=url)
+    client = ComfyTargetClient(ComfyTarget(url, "managed" if prepared else "attached"))
     custody = _trust_from_environment(bundle)
-    provider = _live_preflight(bundle, run_inputs, url, destination, target_custody=custody)
+    provider = _live_preflight(bundle, run_inputs, url, destination, client=client, target_custody=custody)
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.
     bundle = local_server_bundle(
@@ -396,6 +398,16 @@ def run_local_server(
                     raise ProductionEngineError("local_server native attempt escaped attempt custody")
                 attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
                 attempt["alignment"] = alignment
+                from astrid.core.foundation.atomic_io import write_json_atomic
+                write_json_atomic(attempt_path, attempt)
+            if prepared is not None:
+                payload["evidence"]["producer"]["alignment"] = prepared["alignment"]
+                payload["evidence"]["transport"]["target"] = {"kind": "managed", "endpoint": url}
+                attempt_path = result_path.with_name("attempt.json")
+                attempt = json.loads(attempt_path.read_text())
+                attempt["alignment"] = prepared["alignment"]
+                if isinstance(attempt.get("target"), dict):
+                    attempt["target"]["kind"] = "managed"
                 from astrid.core.foundation.atomic_io import write_json_atomic
                 write_json_atomic(attempt_path, attempt)
             if workflow_conversion_object_info_sha256 is not None:
