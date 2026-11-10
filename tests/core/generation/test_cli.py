@@ -529,3 +529,45 @@ def test_cli_kind_table_covers_every_generation_kind_and_gates_audio_only_option
     assert any(action.dest == 'video_ref' for action in audio._actions)
     assert not any(action.dest == 'video_ref' for action in image._actions)
     assert cli._KIND_SPEC['video'].get('prompt_only_guard') is True
+
+
+@pytest.mark.parametrize(("option", "value", "expected_placement"), [
+    ("--gpu", "RTX A6000", {"kind": "runpod", "policy": {"gpu_types": ["RTX A6000"]}}),
+    ("--datacenter", "US-TX-3", "runpod"),
+])
+def test_video_cli_runpod_overrides_accept_recovery_path(monkeypatch, capsys, option, value, expected_placement):
+    from astrid.sdk.generation import _video_resolve_mode
+
+    calls = []
+
+    class SDK:
+        @staticmethod
+        def _infer_video_mode(mode, inputs):
+            return mode or "i2v"
+
+    def invoke(**kwargs):
+        calls.append(kwargs)
+        _video_resolve_mode(SDK, mode=kwargs.get("mode"), inputs={}, resume=False,
+                            recovery_path=kwargs.get("recovery_path"), placement=kwargs["placement"])
+        return SimpleNamespace(ok=True, to_dict=lambda: {"kernel_task_id": "video-task"})
+
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(video=invoke))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+    argv = ["video", "a moving scene", "--image-ref", "reference.png", "--placement", "runpod",
+            "--recovery-path", "receipt.json", "--max-hourly-usd", "2", "--max-usd", "5",
+            "--consent", "paid", "--no-wait", "--json", option, value]
+
+    assert cli.main(argv) == 0
+    assert calls[0]["placement"] == expected_placement
+    assert calls[0]["recovery_path"] == "receipt.json"
+    assert json.loads(capsys.readouterr().out) == {"kernel_task_id": "video-task"}
+
+
+def test_video_recovery_refuses_non_runpod_mapped_placement():
+    from astrid.sdk.exceptions import CapabilityValidationError
+    from astrid.sdk.generation import _video_resolve_mode
+
+    with pytest.raises(CapabilityValidationError, match="supported only for RunPod"):
+        _video_resolve_mode(SimpleNamespace(_infer_video_mode=lambda mode, inputs: "i2v"), mode=None,
+                            inputs={}, resume=False, recovery_path="receipt.json",
+                            placement={"kind": "local", "policy": {"gpu_types": []}})

@@ -818,7 +818,9 @@ def _image_resolve_mode(sdk_module: Any, *, model: Any, mode: Any, execution: An
 
 def _video_resolve_mode(sdk_module: Any, *, mode: Any, inputs: dict[str, Any], resume: bool,
                         recovery_path: Any, placement: Any, **_: Any) -> tuple[Any, bool]:
-    if resume or recovery_path is not None and placement != 'runpod':
+    from astrid.core.generation.placement import is_runpod_placement
+
+    if resume or recovery_path is not None and not is_runpod_placement(placement):
         raise CapabilityValidationError("video recovery is supported only for RunPod jobs")
     return sdk_module._infer_video_mode(mode, inputs), False
 
@@ -1011,7 +1013,8 @@ class GenerationFacade:
         from astrid.core.generation.target_launch import launch_target
 
         _generation_controls(engine=engine, consent=consent, max_usd=None, deadline=None)
-        if placement == 'runpod':
+        from astrid.core.generation.placement import is_runpod_placement
+        if is_runpod_placement(placement):
             raise GenerationInputError('launch requires a selected local human ComfyUI')
         try:
             selection = targets.resolve_target(placement, repo=project_root)
@@ -1030,7 +1033,8 @@ class GenerationFacade:
             if targets.canonical_engine(engine) != 'comfyui':
                 raise ValueError('Phase 1 targets support only comfyui')
             updates = merge_input_values(inputs if inputs is not None else {})
-            if placement == 'runpod':
+            from astrid.core.generation.placement import is_runpod_placement
+            if is_runpod_placement(placement):
                 if save:
                     allowed = {'gpu_types', 'datacenter_id', 'volume', 'image', 'idle_timeout_seconds',
                                'provider_account_ref', 'credential_ref'}
@@ -1100,7 +1104,8 @@ class GenerationFacade:
             from astrid.core.generation import placement as placements
             resolved = placements.validate_placement(placements.resolve_placement(
                 placements.request_from_selector(placement), client=client))
-            if resolved.kind != 'runpod' or entry is not None or workflow is not None:
+            from astrid.core.generation.placement import is_runpod_placement
+            if not is_runpod_placement(resolved) or entry is not None or workflow is not None:
                 raise GenerationInputError('target describe requires only target=runpod')
             preferences = _runpod_job_preferences(_runpod_preferences(client), datacenter)
             if resolved.policy.gpu_types:
@@ -1141,7 +1146,8 @@ class GenerationFacade:
         from astrid.core.generation.targets import canonical_engine
         if canonical_engine(engine) != 'comfyui':
             raise GenerationInputError('Phase 1 release supports only comfyui')
-        if placement == 'runpod':
+        from astrid.core.generation.placement import is_runpod_placement
+        if is_runpod_placement(placement):
             return _runpod_operation('release', client=client, wait=wait, machine_id=machine_id)
         if machine_id is not None:
             raise GenerationInputError('machine id release requires runpod placement')
