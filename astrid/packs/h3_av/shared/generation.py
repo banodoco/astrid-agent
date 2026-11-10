@@ -1,6 +1,6 @@
 """General single-pass H3 reference-to-AV adapter; no project or fixture inputs.
 
-Node contract: ComfyUI ee71d5c4993f29086b27fde1629a945ae48425bf,
+Node contract: ComfyUI 423cbd20511becb1f16122ab518e92e58bfa03d9,
 comfy_extras/nodes_minimax_h3.py, MiniMaxH3ReferenceToVideo.
 """
 from __future__ import annotations
@@ -265,8 +265,8 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         requirements={
             "runtime": {
                 "comfy_commit": facts().comfy_commit(),
-                "comfy_version": "==0.36.0",
-                "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.34", "comfy-aimdo": "==0.5.3"},
+                "comfy_version": "==0.43.2",
+                "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.40", "comfy-aimdo": "==0.6.0"},
                 "launch_flags": ["--use-ck-attention", "--disable-comfy-compiler"],
             },
             "custom_node_refs": [
