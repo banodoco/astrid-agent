@@ -38,14 +38,14 @@ def test_default_skill_policy_comes_from_pack_manifests() -> None:
         if load_pack_manifest(descriptor.skill_dir.parent / "pack.yaml")
         .extensions.get("astrid", {}).get("skills", {}).get("default") is True
     }
-    assert declared_ids == {"vibecomfy", "rendering", "typed_timeline", "video_editing"}
+    assert declared_ids == {"setup", "vibecomfy", "rendering"}
     assert declared_ids <= default_ids
 
 
 def test_default_composition_preserves_opt_outs_without_acquisition(monkeypatch, tmp_path) -> None:
     descriptors = list_skills()
     current = state.load(tmp_path / "skills.json")
-    current["disabled_defaults"]["codex"] = ["vibecomfy", "typed_timeline"]
+    current["disabled_defaults"]["codex"] = ["vibecomfy", "setup"]
 
     def forbidden_acquisition(*_args, **_kwargs):
         raise AssertionError("default skill composition must not provision sources or providers")
@@ -57,8 +57,8 @@ def test_default_composition_preserves_opt_outs_without_acquisition(monkeypatch,
     selected_ids = {descriptor.pack_id for descriptor in selected}
 
     assert "_core" in selected_ids
-    assert {"rendering", "video_editing"} <= selected_ids
-    assert not {"vibecomfy", "typed_timeline"} & selected_ids
+    assert {"rendering"} <= selected_ids
+    assert not {"vibecomfy", "setup"} & selected_ids
 
 
 def test_retained_integrations_flow_through_existing_sync_selection(tmp_path) -> None:
