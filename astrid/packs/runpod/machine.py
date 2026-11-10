@@ -430,6 +430,8 @@ class MachineRun:
     scratch: Path
     progress: list[dict[str, Any]] = field(default_factory=list)
     state: str = "running"
+    task_id: str | None = None
+    attempt_id: str | None = None
 
 
 def _job_manifest_rows(entry: str | None, values: Any, *, mode: str | None = None,
@@ -640,7 +642,7 @@ class RunPodMachine:
         lease.job_dir = str(started.get("dir") or "") or None
         state.note("job", "started", job_id=job_id)
         return MachineRun(lease, job_id, str(started.get("dir") or ""), remote_root,
-                          Path(job.progress_path), staging)
+                          Path(job.progress_path), staging, task_id=job.task_id, attempt_id=job.attempt_id)
 
     # -- poll ----------------------------------------------------------------
 
@@ -742,6 +744,7 @@ class RunPodMachine:
                 local.unlink(missing_ok=True)
                 raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
             files[relative] = str(local)
+        self._checkpoint_installed(run, files)
         state.note("fetch", "done", files=len(files))
         pid = str(record.get("pid") or "").strip()
         return {"files": files, "result": result if isinstance(result, Mapping) else {},
@@ -749,6 +752,49 @@ class RunPodMachine:
                 "progress": list(run.progress),
                 # The remote detached job's own process evidence (its pid on the pod).
                 "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
+
+    def _checkpoint_installed(self, run: MachineRun, files: Mapping[str, str]) -> None:
+        """Retain only the canonical receipt attested by this successful job.
+
+        Managed alignment legitimately refreshes launch/health receipt bytes.
+        Revalidate them before the reset removes the producer evidence; the next
+        claim still compares the complete snapshot, including its receipt hash.
+        """
+        adapter = self._require()
+        owner, placement, state = adapter.lease_owner, adapter.placement, run.lease.state
+        with owner.lock:
+            current = owner.preparation_claim(run.lease.lease)
+            preparation = current["lease"]["preparation"]
+            previous = dict(preparation["installed"])
+            if previous != state.installed or preparation["state"] != "prepared":
+                raise MachineError("retained installation checkpoint changed during generation")
+            if not placement._canonical_installed(state):
+                raise MachineError("completed job has no verified canonical installation")
+            expected = previous
+            if state.installed != previous:
+                try:
+                    manifest = json.loads(Path(files["manifest.json"]).read_text(encoding="utf-8"))
+                    payload = manifest["managed_generation_result"]
+                    report = payload["evidence"]["producer"]["attempt"]["record"]["managed_engine_preparation"]
+                    installed = report["installation"]
+                    if (report["schema"] != "astrid.managed-engine-preparation.v1"
+                            or any(value.get("task_id") != run.task_id or value.get("attempt_id") != run.attempt_id
+                                   for value in (payload, report))
+                            or not run.task_id or not run.attempt_id
+                            or installed["root"] != previous["root"]
+                            or "sha256:" + installed["recipe_sha256"] != previous["compatibility"]["recipe_digest"]):
+                        raise ValueError
+                    expected = {**previous, "receipt_sha256": "sha256:" + installed["receipt_sha256"]}
+                except (KeyError, TypeError, ValueError, OSError):
+                    raise MachineError("changed installation has no matching completed-job attestation") from None
+                if state.installed != expected:
+                    raise MachineError("live installation differs from completed-job attestation")
+            # Recheck the same owner, generation and invocation after observation.
+            observed = owner.preparation_claim(run.lease.lease)
+            if observed["lease"]["preparation"] != preparation:
+                raise MachineError("retained installation checkpoint changed during verification")
+            owner._save(observed, {**observed["lease"],
+                                  "preparation": {**preparation, "installed": dict(expected)}})
 
     # -- release -------------------------------------------------------------
 

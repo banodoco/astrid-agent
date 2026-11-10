@@ -720,3 +720,71 @@ def test_claim_reads_workflow_bundle_before_preparing(machine_case, monkeypatch)
     assert tuple(captured["manifest_rows"]) == ()  # a valid model-free workflow
     with pytest.raises(ValueError):
         machine_case.machine.claim(replace(job, inputs={"workflow_inputs": "{}"}))
+
+
+@pytest.mark.parametrize("tamper", [None, "receipt", "report"])
+def test_two_jobs_retain_verified_managed_launch_refresh(machine_case, monkeypatch, tamper):
+    """An untouched controller reuses the receipt legitimately refreshed by job one."""
+    import hashlib
+    from astrid.core.generation import engine_runner
+    c = machine_case
+    original = c.pod._generate
+    refreshed = []
+
+    def generate(command):
+        key = c.installation.root + '/.astrid-engine/install.json'
+        raw = c.context.files[key]
+        before = c.pod.files[key]
+        runner = engine_runner._Runner(c.installation.plan(), c.context, c.context.adapter,
+                                       c.context.deadline)
+        with c.context.acquire_install_lock(c.installation.root, deadline=c.context.deadline):
+            action, facts = runner.start()
+            health_action, health_facts = runner.check_health()
+            digest = engine_runner.refresh_installed_launch(runner, raw, start_action=action,
+                start_facts=facts, health_action=health_action, health_facts=health_facts, check=lambda: None)
+        c.pod.files[key] = engine_runner._json(c.context.files[key]).encode()
+        assert c.pod.files[key] != before
+        refreshed.append(digest)
+        output = original(command)
+        root = c.pod.active_job['run_dir']
+        job = json.loads(c.pod.files[root + '/job.json'])
+        report = {'schema': 'astrid.managed-engine-preparation.v1',
+                  'task_id': job['task_identity'], 'attempt_id': job['attempt_identity'],
+                  'installation': {'root': c.installation.root, 'receipt_sha256': digest,
+                                   'recipe_sha256': c.installation.plan().recipe_sha256}}
+        if tamper == 'report':
+            report['attempt_id'] = 'foreign-attempt'
+        if tamper == 'receipt':
+            c.context.files[key]['health']['checked_at'] = '2026-01-01T00:00:00Z'
+            c.pod.files[key] = engine_runner._json(c.context.files[key]).encode()
+        payload = {'task_id': job['task_identity'], 'attempt_id': job['attempt_identity'],
+                   'evidence': {'producer': {'attempt': {'record': {'managed_engine_preparation': report}}}}}
+        path = root + '/out/manifest.json'
+        c.pod.files[path] = json.dumps({'managed_generation_result': payload}).encode()
+        manifest_path = root + '/out/' + rm.MANIFEST_NAME
+        manifest = json.loads(c.pod.files[manifest_path])
+        manifest['files']['manifest.json'] = {'sha256': hashlib.sha256(c.pod.files[path]).hexdigest(),
+                                            'size': len(c.pod.files[path])}
+        c.pod.files[manifest_path] = json.dumps(manifest).encode()
+        output = (output.split(rm.MANIFEST_MARK)[0] + rm.MANIFEST_MARK
+                  + hashlib.sha256(c.pod.files[manifest_path]).hexdigest() + '\n')
+        return output
+
+    monkeypatch.setattr(c.pod, '_generate', generate)
+    if tamper:
+        job = c.job()
+        with pytest.raises(rm.MachineError, match=('differs from completed-job attestation' if tamper == 'receipt'
+                                                    else 'no matching completed-job attestation')):
+            run_on_machine(c.machine, job, destination=job.scratch / 'outputs', cancelled=lambda: False,
+                           sleep=lambda s: None)
+        assert c.read()['state'] == 'cleanup_complete' and c.deletes == ['pod-1']
+        return
+    for n in (1, 2):
+        job = c.job(n)
+        run_on_machine(c.machine, job, destination=job.scratch / 'outputs', cancelled=lambda: False,
+                       sleep=lambda s: None)
+        record = c.read()
+        assert record['lease']['state'] == 'idle'
+        assert record['lease']['preparation']['installed']['receipt_sha256'] == 'sha256:' + refreshed[-1]
+    assert len(refreshed) == 2 and c.creates == 1 and not c.deletes
+    c.host.release()
