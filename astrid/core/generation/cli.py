@@ -81,6 +81,13 @@ def _common_options(command):
     command.add_argument('--no-wait', action='store_true', help='Return the admitted task; follow it separately.')
     command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
     command.add_argument('--max-usd', action=_Once, type=float)
+    command.add_argument('--max-hourly-usd', action=_Once, type=float,
+                         help='Approve waiting for the selected GPUs and saved storage below this hourly USD ceiling.')
+    capacity = command.add_mutually_exclusive_group()
+    capacity.add_argument('--capacity-timeout', action=_Once, metavar='DURATION',
+                          help='Stop waiting for capacity after a duration such as 10m; default waits until claimed or cancelled.')
+    capacity.add_argument('--no-wait-for-capacity', action='store_true',
+                          help='Make one capacity observation and at most one create attempt.')
     command.add_argument('--deadline', action=_Once, help='Absolute UTC execution deadline.')
     command.add_argument('--offer-digest', action=_Once, help='Accept the digest returned by target description.')
     command.add_argument('--preparation-seconds', action=_Once, type=float)
@@ -229,6 +236,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument("--gpu", action="append", metavar="GPU_TYPE",
                          help="RunPod GPU type; repeat in preference order. Use the same list for describe and generate because the offer digest is GPU-bound.")
+    command.add_argument('--max-hourly-usd', action=_Once, type=float,
+                         help='Disclose a waiting-policy hourly ceiling even when the GPU is out of stock.')
     command.add_argument("--json", action="store_true")
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
@@ -325,10 +334,15 @@ def _controls(parsed):
     if getattr(parsed, 'resume', False):
         controls['resume'] = True
     for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path', 'offer_digest',
-                 'preparation_seconds', 'execution_seconds', 'idle_seconds', 'align'):
+                 'preparation_seconds', 'execution_seconds', 'idle_seconds', 'align', 'max_hourly_usd'):
         value = getattr(parsed, name, None)
         if value is not None and value != []:
             controls[name] = value
+    if getattr(parsed, 'capacity_timeout', None) is not None:
+        from astrid.core.machines_cli import _duration_seconds
+        controls['capacity_timeout_seconds'] = _duration_seconds(parsed.capacity_timeout)
+    if getattr(parsed, 'no_wait_for_capacity', False):
+        controls['wait_for_capacity'] = False
     return controls
 
 
@@ -525,7 +539,8 @@ def _main(argv: list[str]) -> int:
                 parser.error('target describe cannot also select an entry or workflow')
             placement = _gpu_placement(parsed.placement, parsed.gpu, parser)
             with _open_client() as client:
-                description = _generate_facade().describe(placement=placement, engine=parsed.engine, client=client)
+                description = _generate_facade().describe(placement=placement, engine=parsed.engine, client=client,
+                    **({'max_hourly_usd': parsed.max_hourly_usd} if parsed.max_hourly_usd is not None else {}))
             print(json.dumps(description, indent=2, sort_keys=True))
             return 0
         from astrid.core.generation.entries import describe_entry
@@ -545,7 +560,10 @@ def _main(argv: list[str]) -> int:
         return _workflow_command(parsed)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
-    if parsed.gpu and parsed.placement == "runpod" and not parsed.offer_digest and not parsed.dry_run:
+    if ((parsed.max_hourly_usd is not None or parsed.capacity_timeout is not None or parsed.no_wait_for_capacity)
+            and parsed.placement != 'runpod'):
+        parser.error('capacity waiting controls require --placement runpod')
+    if parsed.gpu and parsed.placement == "runpod" and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
         parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu values")
     if parsed.prompt is not None and not parsed.prompt.strip():
         parser.error("prompt must not be empty")

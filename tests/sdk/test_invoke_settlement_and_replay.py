@@ -4,6 +4,7 @@ F-054: idempotent replays are labelled, and a failed replay is re-run only on re
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -89,6 +90,72 @@ def _wait(client, **kwargs):
         client, task_id=TASK, run_id=RUN, timeout_seconds=5, poll_seconds=0.001,
         read_managed_outputs=True, expects_outputs=True, **kwargs,
     )
+
+
+@pytest.mark.parametrize("placement,expected", [("runpod", [TASK]), ("local", [])])
+def test_ctrl_c_cancels_only_the_known_runpod_generation_task(monkeypatch, placement, expected):
+    cancelled = []
+    task = {"state": "running", "spec": {"capability_id": "vibecomfy.run", "inputs": {
+        "placement_policy": json.dumps({"kind": placement})}}}
+    tasks = SimpleNamespace(show=lambda task_id: SimpleNamespace(ok=True, data=task),
+                            cancel=lambda task_id, **kwargs: cancelled.append(task_id))
+    monkeypatch.setattr(invocation.time, "sleep", lambda seconds: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        _wait(SimpleNamespace(tasks=tasks))
+    assert cancelled == expected
+
+
+def test_ctrl_c_without_a_runtime_cancel_api_preserves_the_interrupt(monkeypatch):
+    task = {"state": "running", "spec": {"capability_id": "vibecomfy.run", "inputs": {
+        "placement_policy": json.dumps({"kind": "runpod"})}}}
+    tasks = SimpleNamespace(show=lambda task_id: SimpleNamespace(ok=True, data=task))
+    monkeypatch.setattr(invocation.time, "sleep", lambda seconds: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        _wait(SimpleNamespace(tasks=tasks))
+
+
+@pytest.mark.parametrize("placement,capacity_timeout,complete,limit", [
+    ("runpod", None, True, None), ("runpod", 10, False, 3610), ("local", None, False, 3600),
+])
+def test_runpod_capacity_follow_preserves_other_task_wait_limits(monkeypatch, capsys,
+                                                               placement, capacity_timeout, complete, limit):
+    now = [0.0]
+    policy = {"kind": placement, "wait_for_capacity": True, "capacity_timeout_seconds": capacity_timeout}
+
+    def show(task_id):
+        state = "succeeded" if complete and now[0] >= 3700 else "running"
+        return SimpleNamespace(ok=True, data={"state": state, "result": {"outputs": []},
+            "spec": {"capability_id": "vibecomfy.run", "inputs": {"placement_policy": json.dumps(policy)}}})
+
+    monkeypatch.setattr(invocation.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(invocation.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    raw, ok, _ = invocation._wait_for_kernel_task(
+        SimpleNamespace(tasks=SimpleNamespace(show=show)), task_id=TASK, run_id=RUN,
+        timeout_seconds=3600, poll_seconds=60)
+    if complete:
+        assert ok and now[0] > 3600
+    else:
+        assert not ok and raw["error"]["code"] == "task_wait_timeout"
+        assert raw["error"]["details"]["timeout_seconds"] == limit and now[0] == limit
+    heartbeat = capsys.readouterr().err
+    assert ("Still following RunPod" in heartbeat) is (placement == "runpod")
+
+
+def test_host_capacity_timeout_is_reported_before_the_sdk_wait_limit(monkeypatch):
+    now = [0.0]
+    policy = {"kind": "runpod", "capacity_timeout_seconds": 10}
+
+    def show(task_id):
+        return SimpleNamespace(ok=True, data={"state": "failed" if now[0] >= 10 else "running",
+            "result": {"error": "RunPod capacity timeout passed"},
+            "spec": {"capability_id": "vibecomfy.run", "inputs": {"placement_policy": json.dumps(policy)}}})
+
+    monkeypatch.setattr(invocation.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(invocation.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    raw, ok, _ = invocation._wait_for_kernel_task(SimpleNamespace(tasks=SimpleNamespace(show=show)),
+        task_id=TASK, run_id=RUN, timeout_seconds=3600, poll_seconds=1)
+    assert not ok and now[0] == 10 and raw["error"]["code"] == "task_failed"
+    assert "capacity timeout" in raw["error"]["message"]
 
 
 # ---- F-053: wait ------------------------------------------------------------

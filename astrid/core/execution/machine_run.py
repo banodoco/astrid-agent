@@ -11,6 +11,7 @@ release). Every path ends with ``release``; a machine's release is idempotent.
 from __future__ import annotations
 
 import time
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -71,7 +72,11 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
 
     ``on_claim(lease)`` records which machine runs the job as soon as it is claimed.
     """
-    lease = machine.claim(job)
+    # Existing machine kinds keep their original claim contract. A machine
+    # with a capacity wait can opt into the same host cancellation callback.
+    claim_parameters = inspect.signature(machine.claim).parameters
+    lease = (machine.claim(job, cancelled=cancelled) if "cancelled" in claim_parameters
+             else machine.claim(job))
     success = False
     try:
         if on_claim is not None:

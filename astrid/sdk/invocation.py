@@ -13,6 +13,7 @@ import os
 import platform
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -3388,7 +3389,57 @@ def _capability_declares_outputs(capability: Any) -> bool:
     return bool(declared)
 
 
+def _runpod_generation_policy(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    spec = task.get("spec")
+    inputs = spec.get("inputs") if isinstance(spec, Mapping) else None
+    policy = inputs.get("placement_policy") if isinstance(inputs, Mapping) else None
+    try:
+        policy = json.loads(policy) if isinstance(policy, str) else policy
+    except (ValueError, TypeError):
+        return None
+    return (policy if isinstance(spec, Mapping) and spec.get("capability_id") == "vibecomfy.run"
+            and isinstance(policy, Mapping) and policy.get("kind") == "runpod" else None)
+
+
 def _wait_for_kernel_task(
+    client: Any,
+    *,
+    task_id: str,
+    run_id: str,
+    timeout_seconds: float,
+    poll_seconds: float,
+    read_managed_outputs: bool = False,
+    expects_outputs: bool = False,
+    owner_tick: Any | None = None,
+) -> tuple[dict[str, Any], bool, str]:
+    """Follow a task, cancelling an admitted RunPod generation on caller Ctrl-C."""
+    latest: dict[str, Any] = {}
+
+    def observed(task):
+        latest.clear()
+        latest.update(task)
+        if owner_tick is not None:
+            owner_tick(task)
+
+    try:
+        return _wait_for_kernel_task_loop(
+            client, task_id=task_id, run_id=run_id, timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds, read_managed_outputs=read_managed_outputs,
+            expects_outputs=expects_outputs, owner_tick=observed)
+    except KeyboardInterrupt as interrupt:
+        policy = _runpod_generation_policy(latest)
+        cancel = getattr(getattr(client, "tasks", None), "cancel", None)
+        if policy is not None and callable(cancel):
+            try:
+                result = cancel(task_id, idempotency_key=f"runpod-interrupt-{uuid.uuid4().hex}")
+                if getattr(result, "ok", True) is False:
+                    interrupt.add_note("RunPod task cancellation was not confirmed; inspect this task before retrying.")
+            except Exception:
+                interrupt.add_note("RunPod task cancellation was not confirmed; inspect this task before retrying.")
+        raise
+
+
+def _wait_for_kernel_task_loop(
     client: Any,
     *,
     task_id: str,
@@ -3411,7 +3462,9 @@ def _wait_for_kernel_task(
             "runtime client does not expose task status for synchronous invocation"
         )
 
-    deadline = time.monotonic() + float(timeout_seconds)
+    started = last_heartbeat = time.monotonic()
+    effective_timeout = float(timeout_seconds)
+    deadline = started + effective_timeout
     while True:
         try:
             observed = show(task_id)
@@ -3448,6 +3501,18 @@ def _wait_for_kernel_task(
         task = dict(data)
         if owner_tick is not None:
             owner_tick(task)
+        runpod_policy = _runpod_generation_policy(task)
+        if runpod_policy is not None and runpod_policy.get("wait_for_capacity", True) is not False:
+            capacity_timeout = runpod_policy.get("capacity_timeout_seconds")
+            if capacity_timeout is None and float(timeout_seconds) == 3600.0:
+                deadline = None
+            elif (type(capacity_timeout) in (int, float) and math.isfinite(capacity_timeout)
+                  and capacity_timeout > 0):
+                effective_timeout = float(timeout_seconds) + capacity_timeout
+                deadline = started + effective_timeout
+            if time.monotonic() - last_heartbeat >= 60:
+                print(f"Still following RunPod task {task_id}; press Ctrl-C to cancel.", file=sys.stderr, flush=True)
+                last_heartbeat = time.monotonic()
         state = str(task.get("state") or task.get("status") or "").lower()
         attempt_id = str(task.get("attempt_id") or "")
         if state in {"succeeded", "completed"}:
@@ -3544,8 +3609,8 @@ def _wait_for_kernel_task(
                 },
             }, False, attempt_id
 
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        remaining = deadline - time.monotonic() if deadline is not None else float(poll_seconds)
+        if deadline is not None and remaining <= 0:
             return {
                 "ok": False,
                 "run_id": run_id,
@@ -3559,11 +3624,11 @@ def _wait_for_kernel_task(
                     "message": "render task did not reach a terminal state before the wait timeout",
                     "details": {
                         "state": state or "unknown",
-                        "timeout_seconds": float(timeout_seconds),
+                        "timeout_seconds": effective_timeout,
                     },
                 },
             }, False, attempt_id
-        time.sleep(min(float(poll_seconds), remaining))
+        time.sleep(min(float(poll_seconds), remaining, 60.0 if runpod_policy is not None else float(poll_seconds)))
 
 
 def _observe_task_invocation(

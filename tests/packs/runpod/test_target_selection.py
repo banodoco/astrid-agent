@@ -275,7 +275,6 @@ def test_bounded_capacity_retries_use_real_lifecycle_and_fake_provider(case, mon
     import runpod_lifecycle
     from runpod_lifecycle import RunPodConfig, lifecycle
     from runpod_lifecycle.errors import ProviderCapacityUnavailable
-    from astrid.packs.runpod.worker_preparation import CapacityExhaustedError
 
     elapsed = [0.0]
     starts = []
@@ -294,6 +293,7 @@ def test_bounded_capacity_retries_use_real_lifecycle_and_fake_provider(case, mon
     async def sleep(seconds):
         sleeps.append(seconds)
         elapsed[0] += seconds
+        case.now += timedelta(seconds=seconds)
 
     async def ready(self, **kwargs):
         pass
@@ -309,25 +309,24 @@ def test_bounded_capacity_retries_use_real_lifecycle_and_fake_provider(case, mon
     monkeypatch.setattr(lifecycle, "get_storage_volume_id", lambda key, name: case.prefs.volume_id)
     monkeypatch.setattr(lifecycle, "create_pod", create)
     monkeypatch.setattr(lifecycle.Pod, "wait_ready", ready)
-    monkeypatch.setattr(selection.asyncio, "sleep", sleep)
+    case.owner.sleep = sleep
+    case.owner.monotonic = lambda: elapsed[0]
+    monkeypatch.setattr(selection.random, "uniform", lambda *args: 0)
+    case.grant = replace(case.grant, capacity_timeout_seconds=20)
     if capacity_failures < 10:
         result = asyncio.run(case.owner.select(case.grant))
         assert result["pod_id"] == "pod-1"
         assert len(starts) == 4
     else:
-        with pytest.raises(CapacityExhaustedError) as error:
+        with pytest.raises(selection.CapacityWaitTimeout, match="capacity timeout"):
             asyncio.run(case.owner.select(case.grant))
-        assert error.value.code == "capacity_exhausted"
-        assert len(starts) == 10
+        assert len(starts) == 4
         record = json.loads(case.owner.path.read_text())
-        assert record["state"] == "capacity_exhausted"
-        assert record["create_attempts"] == 10
-        with pytest.raises(AcquisitionUnresolvedError):
-            asyncio.run(case.owner.select(case.grant))
-        assert len(starts) == 10
-    assert sleeps == [min(60, 15 * 1.5 ** i) for i in range(len(starts) - 1)]
-    assert [b - a for a, b in zip(starts, starts[1:])] == sleeps
-    assert all(delay >= 15 for delay in sleeps)
+        assert record["state"] == "capacity_retry_ready"
+        assert record["create_attempts"] == 4
+        assert record["capacity_rejection"] == "ProviderCapacityUnavailable"
+    assert sleeps == [5] * (3 if capacity_failures < 10 else 4)
+    assert [b - a for a, b in zip(starts, starts[1:])] == [5, 5, 5]
 
 
 def test_bounded_capacity_retries_never_repeat_ambiguous_post(case, monkeypatch):
@@ -452,6 +451,222 @@ def test_per_job_gpu_override_refuses_a_digest_from_the_saved_gpu_list(case):
         asyncio.run(case.owner.select(case.grant))
 
     assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
+def waiting_grant(case, **changes):
+    return replace(case.grant, **{"offer_digest": None, "deadline": None,
+                   "policy_digest": selection.policy_consent_digest(case.owner.preferences, 1.5),
+                   "max_hourly_usd": 1.5, "capacity_timeout_seconds": 30, **changes})
+
+
+def fake_capacity_clock(case, monkeypatch):
+    sleeps = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        case.now += timedelta(seconds=seconds)
+
+    case.owner.sleep = sleep
+    case.owner.monotonic = lambda: case.now.timestamp()
+    monkeypatch.setattr(selection.random, "uniform", lambda *args: 0)
+    return sleeps
+
+
+def test_policy_wait_observes_stock_again_and_starts_paid_clock_at_post(case, monkeypatch):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    attempts = []
+    initial = case.now
+
+    def observe():
+        attempts.append(case.now)
+        assert not case.owner.path.exists()
+        if len(attempts) < 3:
+            raise selection.OfferObservationError("stock_unavailable")
+        return case.offer
+
+    case.owner.observe_offer = observe
+    selected = asyncio.run(case.owner.select(waiting_grant(case)))
+    assert len(attempts) == 3 and sleeps == [5, 5] and case.creates == 1
+    assert selected["paid_limits"]["authorized_at"] == (initial + timedelta(seconds=10)).isoformat()
+    assert selection._utc(selected["paid_limits"]["expires_at"]) == initial + timedelta(seconds=3610)
+    assert selected["consented_offer"]["offer_id"] == case.offer.offer_id
+
+
+def test_wait_never_refreshes_an_exact_offer_digest(case, monkeypatch):
+    fake_capacity_clock(case, monkeypatch)
+    calls = []
+
+    def observe():
+        calls.append(1)
+        if len(calls) == 1:
+            raise selection.OfferObservationError("stock_unavailable")
+        return replace(case.offer, hourly_usd=1.25, offer_id="changed")
+
+    case.owner.observe_offer = observe
+    with pytest.raises(PaidSelectionError, match="offer or rate changed"):
+        asyncio.run(case.owner.select(case.grant))
+    assert len(calls) == 2 and case.creates == 0 and not case.owner.path.exists()
+
+
+@pytest.mark.parametrize("change", [{"hourly_usd": 2.0}, {"gpu_type": "not-approved"},
+                                     {"datacenter_id": "other-datacenter"}])
+def test_waiting_policy_refuses_an_offer_outside_its_approved_policy(case, change):
+    case.owner.preferences = replace(case.prefs, datacenter_id="approved-datacenter")
+    case.offer = replace(case.offer, **{"datacenter_id": "approved-datacenter", **change})
+    with pytest.raises(PaidSelectionError):
+        asyncio.run(case.owner.select(waiting_grant(case)))
+    assert case.creates == 0 and not case.owner.path.exists()
+
+
+def test_capacity_timeout_and_no_wait_make_no_pod_when_stock_is_absent(case, monkeypatch):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    calls = []
+
+    def absent():
+        calls.append(1)
+        raise selection.OfferObservationError("stock_unavailable")
+
+    case.owner.observe_offer = absent
+    with pytest.raises(selection.OfferObservationError):
+        asyncio.run(case.owner.select(waiting_grant(case, wait_for_capacity=False)))
+    assert len(calls) == 1 and not sleeps
+    with pytest.raises(selection.CapacityWaitTimeout, match="capacity timeout"):
+        asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=12)))
+    assert sleeps == [5, 5, 2] and case.creates == 0 and not case.owner.path.exists()
+
+
+def test_absolute_policy_deadline_stops_capacity_wait_without_a_pod(case, monkeypatch):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError("stock_unavailable"))
+    grant = waiting_grant(case, deadline=(case.now + timedelta(seconds=7)).isoformat(),
+                          preparation_seconds=0, execution_seconds=0, idle_seconds=1)
+    with pytest.raises(selection.CapacityWaitTimeout, match="paid deadline"):
+        asyncio.run(case.owner.select(grant))
+    assert sleeps == [5, 2] and case.creates == 0 and not case.owner.path.exists()
+
+
+def test_capacity_rate_limit_honours_retry_after(case, monkeypatch):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    calls = []
+
+    def observe():
+        calls.append(1)
+        if len(calls) == 1:
+            raise selection.OfferObservationError("provider_rate_limited", retry_after=12)
+        return case.offer
+
+    case.owner.observe_offer = observe
+    asyncio.run(case.owner.select(waiting_grant(case)))
+    assert sleeps == [12] and case.creates == 1
+
+
+def test_capacity_rate_limit_without_metadata_backs_off_and_resets_after_observation(case, monkeypatch):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    outcomes = iter(["provider_rate_limited"] * 6 + ["stock_unavailable", "provider_rate_limited", None])
+
+    def observe():
+        reason = next(outcomes)
+        if reason is not None:
+            raise selection.OfferObservationError(reason)
+        return case.offer
+
+    case.owner.observe_offer = observe
+    asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=300)))
+    assert sleeps == [5, 10, 20, 40, 60, 60, 5, 5] and case.creates == 1
+
+
+def test_waiting_policy_cannot_create_on_different_storage(case):
+    config = case.owner.config_factory(case.offer)
+    case.owner.config_factory = lambda offer: SimpleNamespace(**{**vars(config), "network_volume_id": "other-volume"})
+    with pytest.raises(PaidSelectionError, match="exact placement"):
+        asyncio.run(case.owner.select(waiting_grant(case)))
+    assert case.creates == 0 and not case.owner.path.exists()
+
+
+@pytest.mark.parametrize("when", ["sleep", "observation"])
+def test_capacity_wait_cancellation_before_post_creates_no_pod(case, monkeypatch, when):
+    fake_capacity_clock(case, monkeypatch)
+    cancelled = [False]
+
+    def observe():
+        if when == "observation":
+            cancelled[0] = True
+            return case.offer
+        raise selection.OfferObservationError("stock_unavailable")
+
+    async def sleep(seconds):
+        cancelled[0] = True
+
+    case.owner.observe_offer, case.owner.sleep = observe, sleep
+    with pytest.raises(selection.CapacityWaitCancelled):
+        asyncio.run(case.owner.select(waiting_grant(case), cancelled=lambda: cancelled[0]))
+    assert case.creates == 0 and not case.owner.path.exists()
+
+
+def test_capacity_cancellation_during_post_keeps_exact_journal_for_reconciliation(case, monkeypatch):
+    import runpod_lifecycle
+    cancelled = [False]
+
+    async def launch(config, *, name, **kwargs):
+        case.creates += 1
+        case.pods.append({"id": "pod-1", "name": name, "desiredStatus": "RUNNING", "actualStatus": "RUNNING",
+                          "machineType": case.offer.gpu_type, "imageName": case.prefs.image,
+                          "networkVolumeId": case.prefs.volume_id})
+        cancelled[0] = True
+        await asyncio.sleep(100)
+
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
+    with pytest.raises(selection.CapacityWaitCancelled):
+        asyncio.run(case.owner.select(waiting_grant(case), cancelled=lambda: cancelled[0]))
+    record = json.loads(case.owner.path.read_text())
+    assert record["state"] == "allocation_unknown" and record["safe_to_retry"] is False
+    restored = asyncio.run(case.owner.select(replace(waiting_grant(case), invocation_id="reconcile")))
+    assert restored["pod_id"] == "pod-1" and case.creates == 1
+
+
+def test_retained_machine_reuse_does_not_require_current_market_stock(case):
+    first = asyncio.run(case.owner.select(case.grant))
+    case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError("stock_unavailable"))
+    second = asyncio.run(case.owner.select(replace(case.grant, invocation_id="reuse-with-no-stock")))
+    assert second["pod_id"] == first["pod_id"] and case.creates == 1
+
+
+def test_delayed_post_does_not_restart_the_paid_clock_at_readiness(case):
+    initial = case.now
+    case.before_create = lambda: setattr(case, "now", case.now + timedelta(seconds=30))
+    result = asyncio.run(case.owner.select(waiting_grant(case)))
+    assert result["paid_limits"]["authorized_at"] == initial.isoformat()
+    assert selection._utc(result["paid_limits"]["expires_at"]) == initial + timedelta(hours=1)
+
+
+def test_sdk_policy_consent_binds_saved_preferences_without_an_exact_offer(case, monkeypatch):
+    from astrid.sdk import generation
+
+    monkeypatch.setattr(generation, "_runpod_preferences", lambda client: case.prefs.as_mapping())
+    policy = generation._runpod_placement_policy(
+        {"consent": ("paid",), "max_usd": 1.0, "max_hourly_usd": 1.5,
+         "preparation_seconds": 30, "execution_seconds": 30, "idle_seconds": 60}, engine="comfyui")
+    assert policy["offer_digest"] is None and policy["deadline"] is None
+    assert policy["policy_digest"] == selection.policy_consent_digest(case.prefs, 1.5)
+    assert policy["wait_for_capacity"] is True
+
+
+def test_stockless_description_keeps_policy_disclosure_and_exact_quote_unchanged(case, monkeypatch):
+    from astrid.packs.runpod.adapter import RunPodAdapter
+    from astrid.sdk import generation
+    from dataclasses import asdict
+
+    adapter = RunPodAdapter(lease_owner=SimpleNamespace(selection=case.owner), placement=None,
+                            installation=None, validate=None)
+    assert adapter.quote() == {"offer": asdict(case.offer), "offer_digest": case.offer.digest(case.prefs)}
+    case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError("stock_unavailable"))
+    stockless = adapter.quote()
+    assert stockless["availability"]["reason"] == "stock_unavailable"
+    monkeypatch.setattr(generation, "_runpod_preferences", lambda client: case.prefs.as_mapping())
+    monkeypatch.setattr(generation, "_runpod_status", lambda **kwargs: dict(stockless))
+    described = generation.GenerationFacade().describe(placement="runpod", max_hourly_usd=1.5)
+    assert described["waiting_policy"]["max_hourly_usd"] == 1.5
+    assert described["waiting_policy"]["policy_digest"] == selection.policy_consent_digest(case.prefs, 1.5)
 
 
 def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):

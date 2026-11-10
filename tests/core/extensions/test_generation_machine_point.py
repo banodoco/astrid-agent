@@ -35,7 +35,7 @@ def test_registry_resolves_the_runpod_machine_and_checks_the_protocol(registry: 
     for name in REQUIRED:
         assert callable(getattr(machine, name)), name
     params = {n: list(inspect.signature(getattr(machine, n)).parameters) for n in REQUIRED}
-    assert params["claim"] == ["job"]
+    assert params["claim"] == ["job", "cancelled"]
     assert params["start"] == ["lease", "job"]
     assert params["poll"] == ["run"]
     assert params["cancel"] == ["run"]
@@ -120,6 +120,21 @@ def test_the_test_machine_runs_a_job_through_the_same_contract(registry, tmp_pat
     assert [e[0] for e in machine.events] == ["claim", "start", "poll", "poll", "fetch", "release"]
     assert machine.released == [True]  # success settles warm
     assert '"current": 2' in (tmp_path / ".astrid-progress.json").read_text()
+
+
+def test_machine_claim_can_receive_the_existing_cancel_callback(tmp_path) -> None:
+    received = []
+
+    class WaitingMachine(RentedDirMachine):
+        def claim(self, job, *, cancelled=None):
+            received.append(cancelled)
+            return super().claim(job)
+
+    callback = lambda: False
+    machine = WaitingMachine()
+    run_on_machine(machine, _job(tmp_path), destination=tmp_path / "outputs",
+                   cancelled=callback, sleep=lambda seconds: None)
+    assert received == [callback] and machine.released == [True]
 
 
 def test_a_cancelled_run_stops_the_job_then_releases_cold(tmp_path) -> None:
