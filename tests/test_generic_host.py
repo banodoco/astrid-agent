@@ -5126,11 +5126,16 @@ def test_host_without_explicit_roots_discovers_the_personal_collection(tmp_path,
 
 def _pending_personal_outbox(personal: Path, *, revision: int = 1, changed_ids=("personal_echo",)) -> None:
     """A committed `packs add` whose host acknowledgment never happened."""
+    from astrid.core.pack.identity import pack_digest
+
     personal.mkdir(parents=True, exist_ok=True)
     (personal.parent / ".packs.transaction.lock").touch()  # created by every real transaction writer
     transaction_id = "a" * 32
     (personal / ".group.json").write_text(json.dumps({
-        "version": 1, "revision": revision, "transaction_id": transaction_id, "removals": [], "admissions": {},
+        "version": 1, "revision": revision, "transaction_id": transaction_id, "removals": [],
+        "admissions": {pack_id: {"packId": pack_id, "sourceDigest": pack_digest(personal / pack_id),
+                                 "committedRevision": revision, "transactionId": transaction_id}
+                       for pack_id in changed_ids if (personal / pack_id).is_dir()},
         "refresh": {"transaction_id": transaction_id, "revision": revision, "changed_ids": sorted(changed_ids)},
     }), encoding="utf-8")
 
@@ -5142,8 +5147,8 @@ def _personal_echo_host(tmp_path, monkeypatch, *, personal_collection: bool = Tr
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
-    _pending_personal_outbox(personal)
     _write_v3_pack(personal / "personal_echo", "personal_echo", "Personal Echo", {"echo": {"name": "Echo", "version": "1.0", "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; Path('{out}/answer').write_text('ok')"]}}, "outputs": []}}, capabilities=["echo"])
+    _pending_personal_outbox(personal)
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[], client=runtime, personal_collection=personal_collection)
     return host, runtime, personal
@@ -5156,7 +5161,7 @@ def test_host_acknowledges_a_pending_packs_add_through_its_one_registrar(tmp_pat
     host, runtime, personal = _personal_echo_host(tmp_path, monkeypatch)
     registrations: list[bool] = []
     monkeypatch.setattr(host, "_renew_executor_registration",
-                        lambda *, idle=True, deliberate=False: registrations.append("personal_echo.echo" in host.capabilities))
+                        lambda **_: registrations.append("personal_echo.echo" in host.capabilities))
     assert refresh_pending(packs_root=personal)
 
     assert host.acknowledge_pack_refresh() is True
@@ -5210,8 +5215,8 @@ def test_refresh_not_matching_the_committed_packs_stays_pending(tmp_path, monkey
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
-    _pending_personal_outbox(personal)
     _write_v3_pack(personal / "personal_echo", "other_echo", "Other Echo", {"echo": {"name": "Echo", "version": "1.0", "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; Path('{out}/answer').write_text('ok')"]}}, "outputs": []}}, capabilities=["echo"])
+    _pending_personal_outbox(personal)
     host = GenericPackHost(pack_roots=[], client=FakeRuntime(), personal_collection=True)
 
     assert host.acknowledge_pack_refresh() is False
@@ -5231,13 +5236,13 @@ def test_single_worker_loop_acknowledges_a_pack_that_declares_no_actions(tmp_pat
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
-    _pending_personal_outbox(personal, changed_ids=("notes",))
-    (personal / "notes").mkdir()
+    (personal / "notes").mkdir(parents=True)
     (personal / "notes" / "pack.yaml").write_text(json.dumps({
         "schema_version": 3, "id": "notes", "name": "Notes", "version": "1.0.0",
         "pack_api": f"{PACK_API_VERSION[0]}.{PACK_API_VERSION[1]}",
         "documentation": {"kind": "none", "reason": "Test fixture."},
     }), encoding="utf-8")
+    _pending_personal_outbox(personal, changed_ids=("notes",))
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[], client=runtime, personal_collection=True)
     polls = 0
@@ -5299,8 +5304,8 @@ def _chiptune_host(tmp_path, monkeypatch):
 
 def _commit_chiptune_add(personal: Path) -> None:
     """A committed `packs add` of chiptune, mid-run: the pack is on disk and the outbox is pending."""
-    _pending_personal_outbox(personal, changed_ids=("chiptune",))
     _write_v3_pack(personal / "chiptune", "chiptune", "Chiptune", _CHIPTUNE_ECHO, capabilities=["echo"])
+    _pending_personal_outbox(personal, changed_ids=("chiptune",))
 
 
 def _run_until_acknowledged(host, runtime, personal) -> None:
@@ -5328,8 +5333,8 @@ def test_deliberate_refresh_acknowledges_a_retained_outbox_on_a_registered_host(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
-    _pending_personal_outbox(personal, changed_ids=("chiptune",))
     _write_v3_pack(personal / "chiptune", "chiptune", "Chiptune", _CHIPTUNE_ECHO, capabilities=["echo"])
+    _pending_personal_outbox(personal, changed_ids=("chiptune",))
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[], client=runtime, personal_collection=True)
     host.discover()
@@ -5528,6 +5533,123 @@ def test_a_real_fence_and_a_failed_refresh_still_reach_the_ack_and_recover(tmp_p
     assert "pack refresh not acknowledged (1 consecutive, retrying): HostRegistrationError" in err
 
 
+@pytest.mark.parametrize("difference", ["edit", "stray", "stray-without-actions", "committed-edit", "removed", "context", "definition"])
+def test_committed_refresh_refuses_sources_outside_its_committed_delta(tmp_path, monkeypatch, difference):
+    from astrid.core.pack.transaction import refresh_pending
+
+    host, runtime, personal = _transaction_host(tmp_path, monkeypatch)
+    registered_before = len(runtime.registrations)
+    registered_epoch = host.source_epoch
+    registered_inventory = dict(host._registered_source_inventory)
+    _commit_through_the_transaction(tmp_path, personal, "chiptune", "Chiptune")
+    if difference.startswith("stray"):
+        actions = {} if difference == "stray-without-actions" else _CHIPTUNE_ECHO
+        _write_v3_pack(personal / "stray", "stray", "Stray", actions, capabilities=list(actions))
+    elif difference == "removed":
+        import shutil
+        shutil.rmtree(personal / "personal_echo")
+    elif difference == "context":
+        host.source_inventory_identity = "uncommitted-inventory-identity"
+    elif difference == "definition":
+        from astrid.sdk import actions
+        project = actions.action_executor_definition
+
+        def changed_definition(discovered_pack, local_id, declaration):
+            definition = project(discovered_pack, local_id, declaration)
+            if discovered_pack.pack.id == "personal_echo":
+                return dataclasses.replace(definition, name="Changed outside the committed transaction")
+            return definition
+
+        monkeypatch.setattr(actions, "action_executor_definition", changed_definition)
+    else:
+        pack_id = "chiptune" if difference == "committed-edit" else "personal_echo"
+        (personal / pack_id / "uncommitted.py").write_text("# outside the committed transaction\n")
+
+    assert host.acknowledge_pack_refresh() is False
+    assert refresh_pending(packs_root=personal)
+    assert "pack_refresh_source_mismatch" in host._pack_refresh_reason
+    assert len(runtime.registrations) == registered_before
+    assert host._registered_runtime_state["source_epoch"] == registered_epoch
+    assert host._registered_source_inventory == registered_inventory
+    assert host._registration_refresh_blocked is True
+    with pytest.raises(HostError, match="executor registration refresh is blocked"):
+        host.claim_once()
+
+
+def test_committed_refresh_keeps_its_source_binding_through_preflight(tmp_path, monkeypatch):
+    from astrid.core.pack.transaction import refresh_pending
+
+    host, runtime, personal = _transaction_host(tmp_path, monkeypatch)
+    _commit_through_the_transaction(tmp_path, personal, "chiptune", "Chiptune")
+    registered_before = len(runtime.registrations)
+    preflight = host._preflight
+
+    def edit_during_preflight(**kwargs):
+        result = preflight(**kwargs)
+        (personal / "chiptune" / "late.py").write_text("# changed after transaction validation\n")
+        return result
+
+    monkeypatch.setattr(host, "_preflight", edit_during_preflight)
+    assert host.acknowledge_pack_refresh() is False
+    assert refresh_pending(packs_root=personal)
+    assert "pack_refresh_source_mismatch" in host._pack_refresh_reason
+    assert len(runtime.registrations) == registered_before
+    assert host._registration_refresh_blocked is True
+
+
+def test_committed_refresh_accepts_carried_forward_additions_and_a_committed_removal(tmp_path, monkeypatch):
+    from astrid.core.pack.transaction import install_group, refresh_pending
+
+    host, runtime, personal = _transaction_host(tmp_path, monkeypatch)
+    _commit_through_the_transaction(tmp_path, personal, "chiptune", "Chiptune")
+    _commit_through_the_transaction(tmp_path, personal, "notes", "Notes")
+    assert host.acknowledge_pack_refresh() is True
+    assert not refresh_pending(packs_root=personal)
+    assert {"chiptune.echo", "notes.echo"} <= set(host.capabilities)
+
+    install_group(source=tmp_path / "sources" / "chiptune", packs={}, packs_root=personal,
+                  python_packages={}, remove=("chiptune",))
+    assert host.acknowledge_pack_refresh() is True
+    assert not refresh_pending(packs_root=personal)
+    assert "chiptune.echo" not in host.capabilities
+    assert "notes.echo" in host.capabilities
+    assert host._registration_admission_reason() is None
+
+
+@pytest.mark.parametrize("source_change", [None, "epoch", "edit", "addition"])
+def test_runtime_restart_recovers_only_the_same_registered_source(tmp_path, monkeypatch, source_change):
+    host, runtime, personal = _transaction_host(tmp_path, monkeypatch)
+    registered_before = len(runtime.registrations)
+    registered_epoch = host.source_epoch
+    if source_change == "epoch":
+        host.source_epoch = "different-source-epoch"
+    elif source_change == "edit":
+        (personal / "personal_echo" / "uncommitted.py").write_text("# not committed\n")
+    elif source_change == "addition":
+        _write_v3_pack(personal / "stray", "stray", "Stray", _CHIPTUNE_ECHO, capabilities=["echo"])
+    health = runtime.health
+    monkeypatch.setattr(runtime, "health", lambda: {**health(), "runtime_epoch": 2})
+
+    with pytest.raises(HostError, match="runtime epoch changed"):
+        host._renew_executor_registration(idle=True)
+    assert host._runtime_restarted is True
+    assert len(runtime.registrations) == registered_before
+
+    if source_change:
+        with pytest.raises(HostError, match="source epoch changed"):
+            host._renew_executor_registration(idle=True, deliberate=False)
+        assert len(runtime.registrations) == registered_before
+        assert host._registered_runtime_state["source_epoch"] == registered_epoch
+        assert host._registration_refresh_blocked is True
+    else:
+        host._renew_executor_registration(idle=True, deliberate=False)
+        assert len(runtime.registrations) == registered_before + 1
+        assert runtime.registrations[-1][1]["source_epoch"] == registered_epoch
+        assert runtime.registrations[-1][1]["runtime_epoch"] == 2
+        assert host._runtime_restarted is False
+        assert host._registration_admission_reason() is None
+
+
 def test_an_uncommitted_source_change_is_never_adopted_by_the_loop(tmp_path, monkeypatch):
     """The fence holds without a committed transaction: a pack directory that appears with no outbox entry is
     neither discovered nor registered, however many renewals and acks the loop runs."""
@@ -5569,14 +5691,9 @@ def test_the_pre_claim_ack_is_throttled_and_adds_no_runtime_calls(tmp_path, monk
 def test_failed_registration_leaves_the_packs_add_outbox_pending(tmp_path, monkeypatch):
     from astrid.core.pack.transaction import refresh_pending
 
-    home = tmp_path / "home"
-    personal = home / "Astrid" / "packs"
-    _pending_personal_outbox(personal)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    host = GenericPackHost(pack_roots=[])
+    host, runtime, personal = _personal_echo_host(tmp_path, monkeypatch)
 
-    def broken(*, idle=True, deliberate=False):
+    def broken(**_):
         raise HostError("runtime unavailable")
 
     monkeypatch.setattr(host, "_renew_executor_registration", broken)
