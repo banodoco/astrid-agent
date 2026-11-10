@@ -5615,3 +5615,81 @@ def test_personal_root_is_not_added_to_scoped_host_and_is_added_to_default_host(
 
     default = GenericPackHost(pack_roots=[], personal_collection=True)
     assert personal in default.pack_roots
+
+
+@pytest.mark.parametrize("renewal", [False, True])
+def test_ready_marker_tracks_successful_deliberate_refresh(tmp_path, monkeypatch, renewal):
+    from astrid_runtime_client.generated import Executor
+
+    class StructuredRuntime(FakeRuntime):
+        def register_executor(self, executor_id, **payload):
+            super().register_executor(executor_id, **payload)
+            return Executor.from_json({**payload, "executor_id": executor_id,
+                                       "protocol": payload["protocol_version"], "readiness": "ready"})
+
+    packs = tmp_path / "packs"
+    _write_manifest(packs / "echo")
+    runtime = StructuredRuntime()
+    host = GenericPackHost(pack_roots=[packs], client=runtime)
+    result = host.register()
+    ready = tmp_path / "generic-host.ready.json"
+    context = {"status": "ready", "pid": os.getpid(), "process_birth_id": "same-birth",
+               "ready_file": str(ready), "boot_manifest_hash": "same-boot"}
+    host._ready_marker_path, host._ready_marker_context = ready, context
+    host._publish_ready_registration(result)
+    before = json.loads(ready.read_text())
+    old_bytes = ready.read_bytes()
+    replacements = []
+    original_replace = Path.replace
+
+    def replace(candidate, target):
+        if target == ready:
+            # A complete new record exists while readers still see the old record.
+            replacements.append(json.loads(candidate.read_text()))
+            assert ready.read_bytes() == old_bytes
+        return original_replace(candidate, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    _write_manifest(packs / "added", capability_id="test.added")
+    host.refresh()
+    if renewal:
+        host._renew_executor_registration(deliberate=True)
+    else:
+        host.register(deliberate=True)
+
+    after = json.loads(ready.read_text())
+    assert replacements == [after]
+    assert after.keys() == before.keys()
+    assert all(after[key] == value for key, value in context.items())
+    assert after["source_epoch"] == host.source_epoch != before["source_epoch"]
+    assert after["ready_capabilities"] == ["test.added", "test.echo"]
+    assert after["capability_count"] == 2
+    executor = after["registration"]["registration"]
+    payload = runtime.registrations[-1][1]
+    for key in ("source_epoch", "source_digest", "dependency_digest", "runtime_epoch", "capabilities"):
+        assert executor[key] == payload[key]
+    assert executor["executor_id"] == host.executor_id
+    assert executor["source_digest"] != before["registration"]["registration"]["source_digest"]
+    assert next(cap for cap in executor["capabilities"] if cap["capability_id"] == "test.added")["status"] == "ready"
+    assert after["runtime_instance_id"] == "fixture-runtime-instance"
+    assert after["runtime_epoch"] == 1
+    assert after["schema_digest"] == runtime.schema_digest
+
+
+def test_failed_registration_does_not_publish_ready_marker(tmp_path, monkeypatch):
+    _write_manifest(tmp_path / "packs" / "echo")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path / "packs"], client=runtime)
+    result = host.register()
+    marker = tmp_path / "generic-host.ready.json"
+    host._ready_marker_path, host._ready_marker_context = marker, {"status": "ready"}
+    host._publish_ready_registration(result)
+    before = marker.read_bytes()
+    _write_manifest(tmp_path / "packs" / "added", capability_id="test.added")
+    host.refresh()
+    monkeypatch.setattr(runtime, "register_executor", lambda *_a, **_kw: (_ for _ in ()).throw(HostError("refused")))
+
+    with pytest.raises(HostRegistrationError, match="refused"):
+        host.register(deliberate=True)
+
+    assert marker.read_bytes() == before
