@@ -88,3 +88,42 @@ def test_custom_name_is_not_pruned_as_an_orphan(tmp_path):
     assert prune_orphan_skill_links(skills_dir, {"demo"}, known_names={target.name},
                                     declared_sources=[source]) == []
     assert target.is_symlink()
+
+
+def test_setup_is_selected_and_visible_in_default_sync(tmp_path):
+    from unittest import mock
+    from astrid import skills
+    fx_home = tmp_path / 'home'
+    (fx_home / '.claude').mkdir(parents=True)
+    state_path = tmp_path / 'state.json'
+    with mock.patch.dict('os.environ', {'HOME': str(fx_home), 'ASTRID_STATE_HOME': str(tmp_path / 'state')}), \
+            mock.patch.object(Path, 'home', return_value=fx_home):
+        skills.sync(harness_names=['claude'], state_path=state_path)
+        adapter = ClaudeAdapter()
+        view = tmp_path / 'skills/claude/packs/setup/SKILL.md'
+        assert view.is_file()
+
+
+def test_preinstalled_managed_setup_copy_is_adopted_by_sync(tmp_path):
+    import json
+    import shutil
+    from unittest import mock
+    from astrid import skills
+    from astrid.skills.harnesses.base import _directory_digest
+    from astrid.skills.discovery import list_skills
+    fx_home = tmp_path / 'home'
+    skills_dir = fx_home / '.claude/skills'
+    skills_dir.mkdir(parents=True)
+    source = next(d.skill_dir for d in list_skills() if d.pack_id == 'setup').resolve()
+    target = skills_dir / 'astrid-setup'
+    shutil.copytree(source, target)
+    (target / '.astrid-managed-skill.json').write_text(json.dumps({
+        'source': str(source), 'digest': _directory_digest(source), 'mechanism': 'copy'
+    }) + '\n')
+    with mock.patch.dict('os.environ', {'HOME': str(fx_home), 'ASTRID_STATE_HOME': str(tmp_path / 'state')}), \
+            mock.patch.object(Path, 'home', return_value=fx_home):
+        report = skills.sync(harness_names=['claude'], mechanism='copy', state_path=tmp_path / 'state.json')
+        assert target.is_dir() and not target.is_symlink()
+        assert (target / '.astrid-managed-skill.json').is_file()
+        assert len(list(skills_dir.glob('astrid-setup'))) == 1
+        assert not any('conflict' in str(row).lower() for row in report.get('conflicts', []))

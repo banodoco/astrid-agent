@@ -64,6 +64,20 @@ Astrid defaults are:
 - Astrid skills: on (`--skills on|off`)
 - skill copies: off (`--skill-copies on|off`)
 
+Offer skill copies as an optional installation choice. When enabled, the
+installer saves each selected skill as an Astrid-managed copy in the harness
+skills directory. Future syncs recognize the `.astrid-managed-skill.json`
+marker and update that copy. Existing unmanaged skill folders are preserved.
+For a fresh install, use the OS command below after the user approves the
+choices; use these commands only when they choose skill copies:
+
+- macOS or Linux: `curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies on`
+- Windows PowerShell: `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies on`
+
+If the user changes another choice, replace that flag's value with the approved
+value. The commands install Astrid and create managed copies; they do not
+require credentials or a separate skill download.
+
 Ask the user whether they want to change any choice. If they change one, use
 its new value in step 2. If the user approved an App brief, keep the brief's values,
 and when the user changes one, use the new value for that choice only. Do not run the install until the choices are settled. Then
