@@ -679,7 +679,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
         elif kind == 'file_map':
             # {id: path}; shipped in the managed-assets archive, one binding per id (asset_manifest.file_map_bindings).
             if isinstance(value, (str, Path)) and Path(str(value)).expanduser().is_file():
-                # A path to the map's JSON document (h3's --asset-map): read when the job is built
+                # A path to the map's JSON document: read when the job is built
                 # (``entry_job``), not here, so describing and dry-running do not open the media.
                 value = str(value)
             elif not file_map_is_valid(value):
