@@ -180,6 +180,99 @@ def test_explicit_align_is_forwarded_to_the_facade(monkeypatch, align):
     assert calls[0]["align"] == align
 
 
+def test_runpod_gpu_flags_map_to_ordered_per_job_policy_for_generate(monkeypatch, capsys):
+    calls = _facade(monkeypatch)
+
+    assert cli.main(["image", "a dog", "--placement", "runpod",
+                     "--gpu", "RTX 4090", "--gpu", "A40",
+                     "--offer-digest", "sha256:" + "a" * 64]) == 0
+
+    assert calls[0]["placement"] == {
+        "kind": "runpod", "policy": {"gpu_types": ["RTX 4090", "A40"]},
+    }
+    capsys.readouterr()
+
+
+def test_runpod_gpu_flags_map_to_ordered_policy_for_target_describe(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(
+        describe=lambda **kwargs: (calls.append(kwargs) or {"offer_digest": "digest"})))
+
+    assert cli.main(["describe", "--placement", "runpod", "--gpu", "RTX 4090",
+                     "--gpu", "A40", "--json"]) == 0
+
+    assert calls[0]["placement"] == {
+        "kind": "runpod", "policy": {"gpu_types": ["RTX 4090", "A40"]},
+    }
+    assert json.loads(capsys.readouterr().out) == {"offer_digest": "digest"}
+
+
+def test_runpod_gpu_requires_runpod_target_and_offer_digest(monkeypatch):
+    calls = _facade(monkeypatch)
+    with pytest.raises(SystemExit):
+        cli.main(["image", "a dog", "--gpu", "RTX 4090"])
+    with pytest.raises(SystemExit):
+        cli.main(["image", "a dog", "--placement", "runpod", "--gpu", "RTX 4090"])
+    assert not calls
+
+
+def test_runpod_gpu_offer_mismatch_has_actionable_refusal(monkeypatch):
+    from astrid.core.generation.preflight import GenerationReadinessError
+    from astrid.sdk.exceptions import CapabilityRuntimeError
+
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+
+    def reject(**kwargs):
+        raise CapabilityRuntimeError("offer or rate changed; disclose it and obtain fresh paid consent")
+
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=reject))
+    with pytest.raises(GenerationReadinessError) as raised:
+        cli.main(["image", "a dog", "--placement", "runpod", "--gpu", "RTX 4090",
+                  "--offer-digest", "sha256:" + "a" * 64])
+
+    assert "same ordered --gpu values" in str(raised.value)
+    assert "GPU type or rate" in str(raised.value)
+
+
+def test_runpod_generate_without_gpu_keeps_saved_policy_request(monkeypatch, capsys):
+    calls = _facade(monkeypatch)
+
+    assert cli.main(["image", "a dog", "--placement", "runpod"]) == 0
+
+    assert calls[0]["placement"] == "runpod"
+    capsys.readouterr()
+
+
+def test_runpod_policy_wait_controls_forward_ceiling_and_capacity_timeout(monkeypatch, capsys):
+    calls = _facade(monkeypatch)
+    assert cli.main(["image", "a dog", "--placement", "runpod", "--gpu", "RTX 4090",
+                     "--consent", "paid", "--max-usd", "2", "--max-hourly-usd", "1.5",
+                     "--capacity-timeout", "2m"]) == 0
+    assert calls[0]["max_hourly_usd"] == 1.5
+    assert calls[0]["capacity_timeout_seconds"] == 120
+    assert calls[0]["placement"]["policy"]["gpu_types"] == ["RTX 4090"]
+    assert "offer_digest" not in calls[0] and "deadline" not in calls[0]
+    capsys.readouterr()
+
+
+def test_runpod_no_wait_for_capacity_is_independent_of_async_generation(monkeypatch, capsys):
+    calls = _facade(monkeypatch)
+    assert cli.main(["image", "a dog", "--placement", "runpod", "--no-wait-for-capacity"]) == 0
+    assert calls[0]["wait_for_capacity"] is False and "wait" not in calls[0]
+    capsys.readouterr()
+
+
+def test_describe_discloses_the_hourly_waiting_ceiling(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(
+        describe=lambda **kwargs: (calls.append(kwargs) or {"waiting_policy": {"max_hourly_usd": kwargs["max_hourly_usd"]}})))
+    assert cli.main(["describe", "--placement", "runpod", "--max-hourly-usd", "1.5", "--json"]) == 0
+    assert calls[0]["max_hourly_usd"] == 1.5
+    assert json.loads(capsys.readouterr().out)["waiting_policy"]["max_hourly_usd"] == 1.5
+
+
 @pytest.mark.parametrize("modality", ["image", "video"])
 def test_installed_console_dispatches_generate_to_the_gateway(monkeypatch, modality):
     from astrid import console

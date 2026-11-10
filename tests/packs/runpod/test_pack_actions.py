@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import socket
 import threading
+import json
+from dataclasses import asdict
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -174,3 +176,62 @@ def test_manifest_routes_setup_and_ls_to_the_existing_host_owner():
     assert "metadata: {host_target_operation: ls}" in text
     assert "host_target_operation: status" in text
     assert "host_target_operation: release" in text
+    assert "host_target_operation: keep" in text
+
+
+def keep_policy():
+    preferences = RunPodPreferences.from_mapping(raw_preferences())
+    offer = RunPodOffer("account-a", "gpu-a", 1.0, "offer-1")
+    grant = PaidRunConsent("keep-1", offer.digest(preferences), 2.0,
+                           "2026-11-02T02:00:00Z", ("paid",), 0, 0, 120)
+    return {"kind": "runpod", "engine": "comfyui", "preferences": preferences.as_mapping(),
+            "machine": "pod-owned", "paid_consent": asdict(grant), "until_release": True}
+
+
+def test_keep_without_a_live_owner_refuses_without_constructing_or_recovering():
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.get = lambda **kwargs: pytest.fail("keep constructed an owner and could recover its pod")
+    policy = keep_policy()
+    before = json.dumps(policy, sort_keys=True)
+    with pytest.raises(ValueError, match="running host that owns this machine"):
+        bindings.operate(policy, "keep")
+    assert bindings.provider is None and json.dumps(policy, sort_keys=True) == before
+
+
+def test_keep_operation_dispatches_exact_machine_and_fresh_consent_to_retained_owner():
+    calls = []
+
+    class Owner:
+        def keep(self, machine, consent, until_release):
+            calls.append((machine, consent, until_release))
+            return {"state": "claimed", "pod_id": machine, "lease": {"state": "idle", "paid_expires_at": 200},
+                    "paid_limits": {"hourly_usd": 1, "max_usd": consent.max_usd, "expires_at": "later"}}
+
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    policy = keep_policy()
+    bindings.provider = RunPodAdapter(lease_owner=Owner(), placement=None, installation=None, validate=None)
+    bindings.signature = json.dumps([policy["kind"], policy["engine"], policy["preferences"]])
+    bindings.get = lambda **kwargs: pytest.fail("keep replaced the retained owner")
+    result = bindings.operate(policy, "keep")
+    assert len(calls) == 1
+    machine, grant, until_release = calls[0]
+    assert machine == "pod-owned" and grant.invocation_id == "keep-1" and until_release is True
+    assert result["paid_limits"]["max_usd"] == 2.0 and result["lease"]["paid_expires_at"] == 200
+    assert bindings.operations == 0
+
+
+def test_sdk_keep_sends_exact_machine_consent_and_waits_longer_than_release_timeout():
+    from astrid.sdk.generation import _runpod_operation
+
+    calls = []
+    client = SimpleNamespace(invoke_result=lambda *args, **kwargs: calls.append((args, kwargs)))
+    policy = keep_policy()
+    _runpod_operation("keep", client=client, wait=True, preferences=policy["preferences"],
+                       machine_id=policy["machine"], consent=policy["paid_consent"],
+                       until_release=True, timeout_seconds=300)
+    args, kwargs = calls[0]
+    assert args == ("runpod.keep",)
+    submitted = json.loads(kwargs["inputs"]["placement_policy"])
+    assert submitted["machine"] == "pod-owned" and submitted["until_release"] is True
+    assert submitted["paid_consent"]["invocation_id"] == "keep-1"
+    assert kwargs["wait"] is True and kwargs["timeout_seconds"] == 300

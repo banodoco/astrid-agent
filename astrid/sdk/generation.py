@@ -11,7 +11,7 @@ import importlib
 import json
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import wraps
 from pathlib import Path
 from typing import Any, Mapping, Protocol, TYPE_CHECKING
@@ -263,9 +263,10 @@ def _runpod_paid_controls(controls):
     cap, deadline = controls.get('max_usd'), controls.get('deadline')
     _generation_controls(engine=controls.get('engine'), consent=consent,
                          max_usd=cap, deadline=deadline)
-    if ('paid' not in consent or cap is None or deadline is None
-            or datetime.fromisoformat(deadline) <= datetime.now(timezone.utc)):
-        raise generation_error(ValueError('RunPod requires fresh paid consent, a positive max_usd and a future UTC deadline'),
+    policy_wait = controls.get('max_hourly_usd') is not None
+    if ('paid' not in consent or cap is None or (deadline is None and not policy_wait)
+            or deadline is not None and datetime.fromisoformat(deadline) <= datetime.now(timezone.utc)):
+        raise generation_error(ValueError('RunPod requires fresh paid consent, a positive max_usd and an exact-offer deadline or explicit hourly ceiling'),
                                code='input_rejected', details={'field': 'consent'})
     return dict(consent=consent, max_usd=cap, deadline=deadline)
 
@@ -288,38 +289,69 @@ def _runpod_placement_policy(controls, *, engine, machine=None, placement_policy
     ``machine`` pins the job to one live lease (its machine id); by default the
     host reuses the warm machine with the same custody, or claims one.
     """
-    from astrid.packs.runpod.target_selection import read_runpod_preferences
+    from astrid.packs.runpod.target_selection import policy_consent_digest, RunPodPreferences, _number
 
     paid = _runpod_paid_controls(controls)
-    names = ("offer_digest", "preparation_seconds", "execution_seconds", "idle_seconds")
+    names = ("preparation_seconds", "execution_seconds", "idle_seconds")
     if any(controls.get(name) is None for name in names):
-        raise GenerationInputError("RunPod requires the disclosed offer digest and preparation, execution and idle bounds")
+        raise GenerationInputError("RunPod requires preparation, execution and idle bounds")
     preferences = _runpod_preferences(controls.get("client"))
     if placement_policy is not None:
         if placement_policy.gpu_types:
             preferences["gpu_types"] = list(placement_policy.gpu_types)
+    ceiling, exact = controls.get("max_hourly_usd"), controls.get("offer_digest")
+    if ceiling is not None and exact is not None:
+        raise GenerationInputError("choose an exact offer digest or a waiting policy hourly ceiling, not both")
+    if ceiling is None and exact is None:
+        raise GenerationInputError("RunPod requires the disclosed offer digest or --max-hourly-usd for policy consent")
+    policy_digest = None
+    if ceiling is not None:
+        ceiling = _number(ceiling, "hourly USD ceiling")
+        policy_digest = policy_consent_digest(RunPodPreferences.from_mapping(preferences), ceiling)
+    capacity_timeout = controls.get("capacity_timeout_seconds")
+    if capacity_timeout is not None:
+        capacity_timeout = _number(capacity_timeout, "capacity timeout seconds")
+    wait_for_capacity = controls.get("wait_for_capacity", True)
+    if type(wait_for_capacity) is not bool:
+        raise GenerationInputError("wait_for_capacity must be a boolean")
     return {"kind": "runpod", "engine": engine, "preferences": preferences,
             **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"]),
+            "offer_digest": exact, "policy_digest": policy_digest, "max_hourly_usd": ceiling,
+            "capacity_timeout_seconds": capacity_timeout, "wait_for_capacity": wait_for_capacity,
             **({"machine": machine} if machine else {}),
             **({"placement_idle_seconds": placement_policy.idle_timeout_s} if placement_policy is not None else {})}
 
 
-def _runpod_operation(operation, *, client, wait, include_quote=False, preferences=None, machine_id=None):
+def _runpod_operation(operation, *, client, wait, include_quote=False, preferences=None, machine_id=None,
+                      consent=None, until_release=False, timeout_seconds=None):
     """Submit an ordinary task to the retained host's target owner."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
     policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences if preferences is not None else _runpod_preferences(client)}
     if machine_id is not None:
-        if operation != "release" or not isinstance(machine_id, str) or not machine_id.strip():
-            raise GenerationInputError("exact machine release requires a nonempty machine id")
+        if operation not in {"release", "keep"} or not isinstance(machine_id, str) or not machine_id.strip():
+            raise GenerationInputError("exact machine operation requires a nonempty machine id")
         policy["machine"] = machine_id
+    if operation == "keep":
+        from astrid.packs.runpod.target_selection import PaidRunConsent
+
+        if machine_id is None or type(until_release) is not bool:
+            raise GenerationInputError("keep requires an exact machine and a boolean until-release selection")
+        if isinstance(consent, PaidRunConsent):
+            consent = asdict(consent)
+        if not isinstance(consent, Mapping):
+            raise GenerationInputError("keep requires fresh paid consent")
+        policy.update(paid_consent=dict(consent), until_release=until_release)
+    elif consent is not None or until_release:
+        raise GenerationInputError("paid keep consent requires the keep operation")
     inputs = {"placement_policy": json.dumps(policy, sort_keys=True, separators=(',', ':'), allow_nan=False)}
     if operation == 'status':
         inputs['include_quote'] = include_quote
     sdk_module = importlib.import_module('astrid.sdk')
     invoke = client.invoke_result if client is not None else sdk_module.invoke_result
     return invoke('runpod.' + operation, kind='action', inputs=inputs, client=client,
-                  wait=wait, read_managed_outputs=False)
+                  wait=wait, read_managed_outputs=False, **(
+                      {"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}))
 
 
 def _runpod_status(*, client, include_quote, preferences=None):
@@ -336,11 +368,18 @@ def _runpod_status(*, client, include_quote, preferences=None):
 
 
 def _modality_controls(*, engine, consent, max_usd, deadline, offer_digest, preparation_seconds,
-                       execution_seconds, idle_seconds, align) -> dict[str, Any]:
+                       execution_seconds, idle_seconds, align, max_hourly_usd=None,
+                       capacity_timeout_seconds=None, wait_for_capacity=True) -> dict[str, Any]:
     """The controls image, video and audio all build from their public keywords."""
     controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
     controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                     execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+    if max_hourly_usd is not None:
+        controls['max_hourly_usd'] = max_hourly_usd
+    if capacity_timeout_seconds is not None:
+        controls['capacity_timeout_seconds'] = capacity_timeout_seconds
+    if wait_for_capacity is not True:
+        controls['wait_for_capacity'] = wait_for_capacity
     if align is not None:
         controls['align'] = _align_mode(align)
     return controls
@@ -1027,7 +1066,7 @@ class GenerationFacade:
 
     @_generation_boundary
     def describe(self, entry: str | None = None, *, workflow=None, mode=None,
-                 placement=None, engine='comfyui', client=None):
+                 placement=None, engine='comfyui', client=None, max_hourly_usd=None):
         from astrid.core.generation.entries import describe_entry, describe_workflow
         if placement is not None:
             _generation_controls(engine=engine, consent=(), max_usd=None, deadline=None)
@@ -1039,10 +1078,29 @@ class GenerationFacade:
             preferences = _runpod_preferences(client)
             if resolved.policy.gpu_types:
                 preferences['gpu_types'] = list(resolved.policy.gpu_types)
-            return _runpod_status(client=client, include_quote=True, preferences=preferences)
+            from astrid.packs.runpod.target_selection import RunPodPreferences, policy_consent_digest, _number
+
+            if max_hourly_usd is not None:
+                max_hourly_usd = _number(max_hourly_usd, "hourly USD ceiling")
+            description = _runpod_status(client=client, include_quote=True, preferences=preferences)
+            description["waiting_policy"] = {
+                "preferences": preferences, "max_hourly_usd": max_hourly_usd,
+                "policy_digest": (policy_consent_digest(RunPodPreferences.from_mapping(preferences), max_hourly_usd)
+                                  if max_hourly_usd is not None else None),
+                "paid_consent_required": True,
+            }
+            return description
         if bool(entry) == bool(workflow):
             raise GenerationInputError('describe requires an entry or a workflow')
         return describe_entry(entry, mode=mode) if entry else describe_workflow(Path(workflow), mode=mode)
+
+    @_generation_boundary
+    def keep(self, *, machine_id, consent, until_release=False, client=None, wait=False,
+             timeout_seconds=300.0):
+        """Keep the exact rented RunPod machine with fresh paid consent."""
+        return _runpod_operation('keep', client=client, wait=wait, machine_id=machine_id,
+                                 consent=consent, until_release=until_release,
+                                 timeout_seconds=timeout_seconds)
 
     @_generation_boundary
     def release(self, *, engine: str, placement: str, machine_id=None, client=None, wait=False):
@@ -1115,6 +1173,9 @@ class GenerationFacade:
         preparation_seconds: float | None = None,
         execution_seconds: float | None = None,
         idle_seconds: float | None = None,
+        max_hourly_usd: float | None = None,
+        capacity_timeout_seconds: float | None = None,
+        wait_for_capacity: bool = True,
         placement_policy: Mapping[str, Any] | None = None,
         python: WorkflowFile | None = None,
         companion: WorkflowFile | None = None,
@@ -1163,7 +1224,9 @@ class GenerationFacade:
             from astrid.core.generation.entries import resolve_workflow_inputs
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
             controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                            execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+                            execution_seconds=execution_seconds, idle_seconds=idle_seconds,
+                            max_hourly_usd=max_hourly_usd, capacity_timeout_seconds=capacity_timeout_seconds,
+                            wait_for_capacity=wait_for_capacity)
             if align is not None:
                 controls['align'] = _align_mode(align)
             if not isinstance(workflow, (str, Path)) or python is not None or companion is not None:
@@ -1313,7 +1376,8 @@ class GenerationFacade:
                             {"kind": "local", "device": placement.device} if is_managed_target else None)
         runpod_engine = pending_target = None
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
-                     'execution_seconds', 'idle_seconds'):
+                     'execution_seconds', 'idle_seconds', 'max_hourly_usd', 'capacity_timeout_seconds',
+                     'wait_for_capacity'):
             controls.pop(name, None)
         requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
         align = _align_mode(requested_align or 'check')
@@ -1759,6 +1823,9 @@ class GenerationFacade:
         preparation_seconds: float | None = None,
         execution_seconds: float | None = None,
         idle_seconds: float | None = None,
+        max_hourly_usd: float | None = None,
+        capacity_timeout_seconds: float | None = None,
+        wait_for_capacity: bool = True,
         wait: bool = True,
         out: Path | str | None = None,
         project: str | None = None,
@@ -1801,6 +1868,9 @@ class GenerationFacade:
         preparation_seconds: float | None = None,
         execution_seconds: float | None = None,
         idle_seconds: float | None = None,
+        max_hourly_usd: float | None = None,
+        capacity_timeout_seconds: float | None = None,
+        wait_for_capacity: bool = True,
         wait: bool = True,
         out: Path | str | None = None,
         project: str | None = None,
@@ -1828,6 +1898,8 @@ class GenerationFacade:
             engine=engine, consent=consent, max_usd=max_usd, deadline=deadline,
             offer_digest=offer_digest, preparation_seconds=preparation_seconds,
             execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
+            max_hourly_usd=max_hourly_usd, capacity_timeout_seconds=capacity_timeout_seconds,
+            wait_for_capacity=wait_for_capacity,
         )
         if not kind.retire_inputs_first:
             _reject_retired_generation_inputs(inputs)
@@ -1975,6 +2047,9 @@ class GenerationFacade:
         preparation_seconds: float | None = None,
         execution_seconds: float | None = None,
         idle_seconds: float | None = None,
+        max_hourly_usd: float | None = None,
+        capacity_timeout_seconds: float | None = None,
+        wait_for_capacity: bool = True,
         wait: bool = True,
         request: str | Mapping[str, Any] | None = None,
         asset_map: str | Mapping[str, Any] | None = None,
@@ -2017,6 +2092,9 @@ class GenerationFacade:
         preparation_seconds: float | None = None,
         execution_seconds: float | None = None,
         idle_seconds: float | None = None,
+        max_hourly_usd: float | None = None,
+        capacity_timeout_seconds: float | None = None,
+        wait_for_capacity: bool = True,
         wait: bool = True,
         out: Path | str | None = None,
         project: str | None = None,

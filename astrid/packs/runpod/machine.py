@@ -32,6 +32,7 @@ import json
 import os
 import secrets
 import shlex
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -490,7 +491,7 @@ class RunPodMachine:
 
     # -- claim ---------------------------------------------------------------
 
-    def claim(self, job: Any) -> MachineLease:
+    def claim(self, job: Any, *, cancelled: Callable[[], bool] | None = None) -> MachineLease:
         """Rent or reuse one pod for ``job``; release it on any failure after the claim."""
         from astrid.core.generation.interfaces import RunPodPreparationRequest
         from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
@@ -515,9 +516,18 @@ class RunPodMachine:
             deadline=policy["deadline"], consent=tuple(policy["consent"]),
             preparation_seconds=policy["preparation_seconds"], execution_seconds=policy["execution_seconds"],
             idle_seconds=policy["idle_seconds"],
+            policy_digest=policy.get("policy_digest"), max_hourly_usd=policy.get("max_hourly_usd"),
+            capacity_timeout_seconds=policy.get("capacity_timeout_seconds"),
+            wait_for_capacity=policy.get("wait_for_capacity", True),
         )
-        # Refuse a changed offer first: before staging, the account lock or any create.
-        owner.selection.consented_offer(consent, owner.selection.clock())
+        # Validate authority without market stock; _select first checks retained
+        # custody, then owns observation/retry under the existing owner lock.
+        consent.validate_authority(owner.selection.preferences, owner.selection.clock())
+        prior = owner.selection._read()
+        if consent.policy_digest is None and (prior is None or prior.get("state") == "cleanup_complete"):
+            # Exact quoted offers retain their early refusal before source staging.
+            # A retained machine is checked through its own recorded offer instead.
+            owner.selection.consented_offer(consent, owner.selection.clock())
         # A warm machine is reused only while the provider still runs it.
         owner.observe_liveness(observe=getattr(adapter, "observe_pod", None))
         pinned = policy.get("machine")
@@ -554,6 +564,7 @@ class RunPodMachine:
                                                policy["idle_seconds"]), on_acquired=on_acquired,
                     entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
                     manifest_rows=manifest_rows,
+                    **({"cancelled": cancelled} if cancelled is not None else {}),
                 )
                 # Preparation and execution have separate disclosed budgets. Arm once
                 # at handoff, clipped to this lease's original paid expiry.
@@ -979,11 +990,25 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
         state = lease["state"]
     else:
         state = "unresolved"
+    now = time.time()
+    hourly_usd = lease.get("hourly_usd")
+    cost_usd = float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0)
+    release_at = None
+    minutes_left = None
+    if live:
+        release_at = (lease.get("idle_expires_at") if state == "idle"
+                      else lease.get("paid_expires_at"))
+        accounted_at = lease.get("accounted_at", lease.get("started_at"))
+        if isinstance(hourly_usd, (int, float)) and isinstance(accounted_at, (int, float)):
+            cost_usd += max(0, now - accounted_at) * hourly_usd / 3600
+        if isinstance(release_at, (int, float)):
+            minutes_left = max(0.0, round((release_at - now) / 60, 1))
     return {"id": record.get("pod_id"), "kind": KIND, "lease": record.get("operation_id"),
             "gpu": record.get("gpu_type"), "state": state,
             "live": live, "idle_timeout_s": lease.get("idle_seconds"),
             "idle_expires_at": lease.get("idle_expires_at") if state == "idle" else None,
-            "cost_usd": round(float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0), 4),
+            "release_at": release_at, "minutes_left": minutes_left,
+            "cost_usd": round(cost_usd, 4), "hourly_usd": hourly_usd,
             "ended": None if live else (lease.get("ended") or lease.get("release_reason"))}
 
 

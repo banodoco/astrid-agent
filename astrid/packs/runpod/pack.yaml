@@ -940,6 +940,27 @@ actions:
       kind: command
       command:
         argv: ['{python_exec}', '-c', 'pass']
+  keep:
+    name: Retained target keep
+    version: 0.1.0
+    short_description: Keep the exact rented machine with fresh paid consent.
+    description: Change the live owner's paid limit and optionally disable idle release within that limit.
+    inputs:
+    - name: placement_policy
+      type: string
+      required: true
+      description: Provider policy with the exact machine, fresh paid consent and until-release selection.
+    outputs: []
+    resources: []
+    cache: {mode: none}
+    conditions: []
+    graph: {consumes: [], provides: []}
+    isolation: {mode: subprocess, network: false}
+    metadata: {host_target_operation: keep}
+    invocation:
+      kind: command
+      command:
+        argv: ['{python_exec}', '-c', 'pass']
 resources:
 - kind: implementation
   path: shared/common.py
@@ -951,6 +972,10 @@ extensions:
   astrid:
     output_result_exemptions:
       actions:
+        keep:
+          reasons:
+          - no-artifact
+          note: Changes the retained RunPod machine's paid limit without producing a media artifact.
         ls:
           reasons:
           - no-artifact

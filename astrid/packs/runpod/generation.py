@@ -49,6 +49,7 @@ def prepare_retained_generation(
     pod_ready: bool = False,
     observe_mounts: Callable[[str, str], Mapping[str, Any]] | None = None,
     manifest_rows: tuple[Mapping[str, Any], ...] = (),
+    cancelled: Callable[[], bool] | None = None,
 ) -> PreparedRunPodLease:
     """Prepare one machine under A3's existing lock and journal, without a worker on pod.
 
@@ -106,7 +107,8 @@ def prepare_retained_generation(
                 source_digest=bootstrap_digest)
             if custody_differences(prior_preparation.get("custody"), expected):
                 lease_owner.release(reason="custody_changed", _expected_operation=prior["operation_id"])
-        invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds)
+        invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds,
+                                         **({"cancelled": cancelled} if cancelled is not None else {}))
         if on_acquired is not None:
             on_acquired(invocation)
         claimed = lease_owner.preparation_claim(invocation)
