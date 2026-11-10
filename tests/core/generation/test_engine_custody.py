@@ -96,7 +96,8 @@ def _launch(recipe, root):
     from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
 
     request = LinuxPlatformAdapter(recipe.platform).start_request(recipe, str(root), deadline=time.monotonic() + 5)
-    return {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+    return {"argv": list(request.argv), "cwd": request.cwd,
+            "env": {**dict(request.env), "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES")}}
 
 
 def _client(identity):
@@ -1278,6 +1279,25 @@ def test_device_launch_is_bound_to_owned_process(session):
     injected = {**chosen, "launch": {**chosen["launch"], "env": {**chosen["launch"]["env"], "EVIL": "1"}}}
     with pytest.raises(EndpointOwnershipError):
         _call(client, injected, "probe")
+    assert len(started.read_text().splitlines()) == 1
+
+
+def test_ambient_visibility_is_bound_including_unset_and_empty(session, monkeypatch):
+    client, payload, recipe, root, mode, started = session
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    launch = payload["launch"]
+    def requested(value):
+        return {**payload, "launch": {**launch, "env": {**launch["env"], "CUDA_VISIBLE_DEVICES": value}}}
+    first = _call(client, requested("0"))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert _call(client, requested("0"), "probe")["owner_id"] == first["owner_id"]
+    for value in ("1", "", None):
+        with pytest.raises(EndpointOwnershipError):
+            _call(client, requested(value), "probe")
+    legacy_env = dict(launch["env"])
+    legacy_env.pop("CUDA_VISIBLE_DEVICES")
+    with pytest.raises(EndpointOwnershipError):
+        _call(client, {**payload, "launch": {**launch, "env": legacy_env}}, "probe")
     assert len(started.read_text().splitlines()) == 1
 
 

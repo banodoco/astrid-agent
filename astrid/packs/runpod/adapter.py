@@ -392,12 +392,11 @@ class TargetProviderBindings:
             policy = {**policy, "preferences": RunPodPreferences.from_mapping(policy["preferences"]).as_mapping()}
         with self.lock:
             provider = self.provider if self.provider is not None and json.loads(self.signature)[0] == policy["kind"] else None
-            if (operation != "setup" and not (operation == "status" and include_quote)
-                    and provider is not None and json.loads(self.signature)[2] != policy["preferences"]):
-                raise ValueError(
-                    "target operation preferences differ from the retained provider owner; "
-                    "invoke runpod.setup to replace preferences after releasing any owned lease"
-                )
+            if provider is not None and json.loads(self.signature)[1] != policy["engine"]:
+                raise ValueError("target operation engine differs from the retained provider owner")
+            # Status without a quote, listing, and release operate on the retained
+            # owner, whose custody may use a per-job override of saved preferences.
+            # A quote still binds the preferences for the offer it discloses.
         if provider is None:
             provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"])
         elif (operation == "setup" or operation == "status" and include_quote) and json.loads(self.signature)[2] != policy["preferences"]:

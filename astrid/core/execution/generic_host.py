@@ -12016,7 +12016,7 @@ class GenericPackHost:
                     scratch=root / "engine-preparation", device=local_device)
                 _terminal["machine"] = {**_local_machine({}), "placement": "managed",
                                          "id": engine_preparation.root,
-                                         "device": str(local_device) if local_device is not None else _local_machine({})["device"]}
+                                         "device": engine_preparation.visibility if engine_preparation.visibility is not None else "auto"}
                 original_input_digests = {name: hashlib.sha256(Path(value).read_bytes()).hexdigest()
                     for name, value in inputs.items() if name in {"workflow", "python", "companion", "source"} and value}
                 original_baseline = dict(immutable_input_baseline)
@@ -12273,7 +12273,7 @@ class GenericPackHost:
                     _terminal["machine"] = _local_machine(inputs)
                     if engine_preparation is not None:
                         _terminal["machine"].update(placement="managed", machine="local",
-                            id=engine_preparation.root, device=str(local_device) if local_device is not None else _local_machine({})["device"])
+                            id=engine_preparation.root, device=engine_preparation.visibility if engine_preparation.visibility is not None else "auto")
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,

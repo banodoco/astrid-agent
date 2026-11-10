@@ -694,6 +694,20 @@ def test_resolved_runpod_policy_controls_the_claim_and_warm_hold(journey):
     assert state["provider"].deploys == 1
 
 
+def test_overridden_gpu_lease_remains_manageable_with_saved_preferences(journey):
+    from astrid.sdk.generation import _runpod_operation
+    j = journey
+    state = j.start(gpu_types=["gpu-exact"])
+    result = j.image(placement={"kind": "runpod", "policy": {
+        "gpu_types": ["CPU fixture GPU"], "idle_timeout_s": 300}})
+    assert result.ok, result.to_dict()
+    assert j.record()["lease"]["state"] == "idle"
+    for operation in ("status", "ls"):
+        result = _runpod_operation(operation, client=state["client"], wait=True)
+        assert result.ok, result.to_dict()
+    _released(state["provider"], j.release())
+
+
 def test_a_failed_reset_releases_the_pod_instead_of_settling_it(journey):
     """T5f: the outputs are delivered, but a pod whose reset failed is never left warm."""
     j = journey

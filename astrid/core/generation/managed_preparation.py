@@ -7,6 +7,7 @@ from contextvars import ContextVar
 import copy
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 import time
@@ -156,6 +157,7 @@ class ManagedEnginePreparation:
 
         self.task, self.attempt, self.mode = task, attempt, mode
         self.device = device
+        self.visibility = str(device) if device is not None else os.environ.get("CUDA_VISIBLE_DEVICES")
         self.scratch = scratch
         self.deadline, self.cancelled = deadline, cancelled
         self.root = default_engine_root("comfyui")
@@ -220,7 +222,7 @@ class ManagedEnginePreparation:
         receipt = _parse_receipt(raw, plan)
         if receipt.status != "installed":
             raise IntegrityError("managed preparation requires a completed installation")
-        runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device)
+        runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
         # These checks read the saved environment identities; they do not
         # re-enter the install lock or require the HTTP service to be running.
         runner.check_environment_identities()

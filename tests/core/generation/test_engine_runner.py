@@ -1660,6 +1660,19 @@ def test_target_models_config_is_deterministic_and_loopback_launch_is_recipe_bou
     assert "CUDA_VISIBLE_DEVICES" not in launch.env
 
 
+def test_launch_snapshots_ambient_visibility_and_explicitly_clears_unset(setup, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    first = runner._Runner(*setup)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    second = runner._Runner(*setup)
+    assert first.launch_spec()["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert second.launch_spec()["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert runner._Runner(*setup).launch_spec()["env"]["CUDA_VISIBLE_DEVICES"] is None
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert runner._Runner(*setup).launch_spec()["env"]["CUDA_VISIBLE_DEVICES"] == ""
+
+
 def test_helper_error_envelope_preserves_stable_error_without_raw_exception(tmp_path, capsys):
     payload = _helper_payload(tmp_path)
     assert target.main(["identity", runner._json({**payload, "helper_sha256": "0" * 64})]) == 0

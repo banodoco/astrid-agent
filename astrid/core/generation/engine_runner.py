@@ -283,8 +283,11 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 
 
+_INHERIT_VISIBILITY = object()
+
+
 class _Runner:
-    def __init__(self, plan, context, adapter, deadline, *, device=None):
+    def __init__(self, plan, context, adapter, deadline, *, device=None, visibility=_INHERIT_VISIBILITY):
         _deadline(deadline)
         if not isinstance(plan, InstallPlan):
             raise RecipeValidationError("install_engine requires an InstallPlan")
@@ -303,6 +306,11 @@ class _Runner:
         if device is not None and (type(device) is not int or device < 0):
             raise RecipeValidationError("invalid local GPU device")
         self.device = device
+        self.visibility = (str(device) if device is not None else
+                           os.environ.get("CUDA_VISIBLE_DEVICES") if visibility is _INHERIT_VISIBILITY else visibility)
+        if self.visibility is not None and (not isinstance(self.visibility, str) or "\0" in self.visibility
+                                            or len(self.visibility.encode("utf-8")) > 4096):
+            raise RecipeValidationError("invalid local GPU visibility")
         self.plan, self.context, self.adapter, self.deadline = plan, context, adapter, deadline
         self.helper_sha256 = _sha(helper_manifest(self.recipe))
         self.env = engine_process_env(adapter.environment(self.recipe, plan.root), plan.root)
@@ -460,8 +468,7 @@ class _Runner:
         if any(request.env.get(k) != v for k, v in expected["env"].items()):
             raise RecipeValidationError("adapter launch environment differs from recipe", step_id=self.step_id)
         env = dict(request.env)
-        if self.device is not None:
-            env["CUDA_VISIBLE_DEVICES"] = str(self.device)
+        env["CUDA_VISIBLE_DEVICES"] = self.visibility
         return {"argv": list(request.argv), "cwd": request.cwd, "env": env}
 
     def placeholder_values(self, environment=None):

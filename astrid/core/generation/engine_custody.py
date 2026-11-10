@@ -854,13 +854,14 @@ class _Supervisor:
         if not isinstance(launch, dict) or set(launch) != {"argv", "cwd", "env"}:
             return False
         env = launch.get("env")
-        if not isinstance(env, dict):
+        if not isinstance(env, dict) or "CUDA_VISIBLE_DEVICES" not in env:
             return False
         device = env.get("CUDA_VISIBLE_DEVICES")
-        if device is not None and (not isinstance(device, str) or not re.fullmatch(r"0|[1-9][0-9]*", device)):
+        if device is not None and (not isinstance(device, str) or "\0" in device
+                                   or len(device.encode("utf-8")) > 4096):
             return False
         expected = dict(self.base_launch["env"])
-        if device is not None:
+        if "CUDA_VISIBLE_DEVICES" in env:
             expected["CUDA_VISIBLE_DEVICES"] = device
         return launch["argv"] == self.base_launch["argv"] and launch["cwd"] == self.base_launch["cwd"] and env == expected
 
