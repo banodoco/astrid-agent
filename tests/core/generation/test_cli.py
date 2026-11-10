@@ -571,3 +571,23 @@ def test_video_recovery_refuses_non_runpod_mapped_placement():
         _video_resolve_mode(SimpleNamespace(_infer_video_mode=lambda mode, inputs: "i2v"), mode=None,
                             inputs={}, resume=False, recovery_path="receipt.json",
                             placement={"kind": "local", "policy": {"gpu_types": []}})
+
+
+def test_workflow_runpod_job_choices_reach_facade_and_validate(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
+        workflow=lambda **kwargs: calls.append(kwargs) or {'ok': True}))
+    monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime-client'))
+    args = ['workflow', 'workflow.json', '--placement', 'runpod', '--gpu', 'RTX 4090',
+            '--gpu', 'A40', '--datacenter', 'EU-FAKE', '--offer-digest', 'digest', '--no-wait']
+    assert cli.main(args) == 0
+    assert calls[0]['placement'] == {'kind': 'runpod', 'policy': {'gpu_types': ['RTX 4090', 'A40']}}
+    assert calls[0]['datacenter'] == 'EU-FAKE'
+    assert calls[0]['offer_digest'] == 'digest'
+    capsys.readouterr()
+    for invalid in ([ 'workflow', 'workflow.json', '--gpu', 'A40'],
+                    [ 'workflow', 'workflow.json', '--datacenter', 'EU-FAKE'],
+                    [ 'workflow', 'workflow.json', '--placement', 'runpod', '--gpu', 'A40']):
+        with pytest.raises(SystemExit):
+            cli.main(invalid)
+    assert len(calls) == 1

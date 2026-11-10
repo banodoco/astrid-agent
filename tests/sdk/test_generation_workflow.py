@@ -117,3 +117,68 @@ def test_real_prepared_wrapper_keeps_two_phase_single_task_semantics(tmp_path):
 def test_unknown_or_host_owned_inputs_are_not_accepted(unknown):
     with pytest.raises(TypeError):
         GenerationFacade().workflow(**{unknown: "value"})
+
+
+def test_target_workflow_forwards_job_datacenter_to_shared_admission(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    import astrid.core.generation.entries as entries
+    import astrid.core.generation.availability as availability
+    import astrid.sdk.generation as generation
+
+    path = tmp_path / 'workflow.json'
+    path.write_text('{}')
+    @contextmanager
+    def snapshot(path):
+        yield path
+    monkeypatch.setattr(generation, '_snapshot_generation_workflow', snapshot)
+    monkeypatch.setattr(availability, 'require_bundled_workflow_available', lambda *a, **k: None)
+    monkeypatch.setattr(entries, 'resolve_workflow_inputs', lambda *a, **k: (
+        {'id': 'workflow', 'kind': 'image', 'mode': 't2i'}, {}))
+    monkeypatch.setattr(generation, '_load_model_registry', lambda **kwargs: {})
+    calls = []
+    monkeypatch.setattr(GenerationFacade, '_generate_on_target', lambda self, **kwargs: calls.append(kwargs))
+    placement = {'kind': 'runpod', 'policy': {'gpu_types': ['RTX 4090', 'A40']}}
+    GenerationFacade().workflow(workflow=path, placement=placement, datacenter='EU-FAKE',
+                                offer_digest='digest', dry_run=True)
+    assert calls[0]['placement'] == placement
+    assert calls[0]['datacenter'] == 'EU-FAKE'
+    assert calls[0]['offer_digest'] == 'digest'
+
+
+def test_workflow_job_policy_binds_choices_without_mutating_saved_preferences(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    from copy import deepcopy
+    import astrid.core.generation.entries as entries
+    import astrid.core.generation.availability as availability
+    import astrid.sdk.generation as generation
+    from astrid.core.generation.placement import PlacementPolicy
+    from astrid.packs.runpod.target_selection import RunPodPreferences, policy_consent_digest
+
+    saved = {'provider_account_ref': 'account', 'gpu_types': ['saved'],
+             'image': 'worker@sha256:' + 'a' * 64}
+    original = deepcopy(saved)
+    monkeypatch.setattr(generation, '_runpod_preferences', lambda client: deepcopy(saved))
+    path = tmp_path / 'workflow.json'
+    path.write_text('{}')
+    @contextmanager
+    def snapshot(path):
+        yield path
+    monkeypatch.setattr(generation, '_snapshot_generation_workflow', snapshot)
+    monkeypatch.setattr(availability, 'require_bundled_workflow_available', lambda *a, **k: None)
+    monkeypatch.setattr(entries, 'resolve_workflow_inputs', lambda *a, **k: (
+        {'id': 'workflow', 'kind': 'image', 'mode': 't2i'}, {}))
+    monkeypatch.setattr(generation, '_load_model_registry', lambda **kwargs: {})
+    monkeypatch.setattr(generation, '_retain_generation_source', lambda *a, **k: {})
+    def admit(self, **kwargs):
+        policy = PlacementPolicy.from_mapping(kwargs.pop('placement')['policy'])
+        return generation._runpod_placement_policy(kwargs, engine='comfyui', placement_policy=policy)
+    monkeypatch.setattr(GenerationFacade, '_generate_on_target', admit)
+    result = GenerationFacade().workflow(workflow=path,
+        placement={'kind': 'runpod', 'policy': {'gpu_types': ['RTX 4090', 'A40']}},
+        datacenter='EU-FAKE', consent=('paid',), max_usd=5, max_hourly_usd=2,
+        preparation_seconds=60, execution_seconds=60, idle_seconds=60)
+    assert result['preferences']['gpu_types'] == ['RTX 4090', 'A40']
+    assert result['preferences']['datacenter_id'] == 'EU-FAKE'
+    assert result['policy_digest'] == policy_consent_digest(RunPodPreferences.from_mapping(result['preferences']), 2)
+    assert result['policy_digest'] != policy_consent_digest(RunPodPreferences.from_mapping(original), 2)
+    assert saved == original

@@ -1246,6 +1246,7 @@ class GenerationFacade:
         max_usd: float | None = None,
         deadline: str | None = None,
         offer_digest: str | None = None,
+        datacenter: str | None = None,
         preparation_seconds: float | None = None,
         execution_seconds: float | None = None,
         idle_seconds: float | None = None,
@@ -1302,7 +1303,7 @@ class GenerationFacade:
             controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                             execution_seconds=execution_seconds, idle_seconds=idle_seconds,
                             max_hourly_usd=max_hourly_usd, capacity_timeout_seconds=capacity_timeout_seconds,
-                            wait_for_capacity=wait_for_capacity)
+                            wait_for_capacity=wait_for_capacity, datacenter=datacenter)
             if align is not None:
                 controls['align'] = _align_mode(align)
             if not isinstance(workflow, (str, Path)) or python is not None or companion is not None:
