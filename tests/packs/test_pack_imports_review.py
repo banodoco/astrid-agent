@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from astrid.pack_imports import ImportContract, check_pack_imports
 
 
@@ -243,13 +245,14 @@ def test_private_and_unknown_sdk_imports_are_rejected(tmp_path):
 
 def test_pack_root_sibling_module_and_package_are_pack_private(tmp_path):
     pack = _pack(tmp_path)
-    (pack / "_shared.py").write_text("value = 1\n", encoding="utf-8")
-    (pack / "helpers").mkdir()
-    (pack / "helpers" / "__init__.py").write_text("", encoding="utf-8")
-    (pack / "helpers" / "util.py").write_text("x = 1\n", encoding="utf-8")
+    (pack / "_demo_pack_shared.py").write_text("value = 1\n", encoding="utf-8")
+    (pack / "demo_pack_helpers").mkdir()
+    (pack / "demo_pack_helpers" / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "demo_pack_helpers" / "util.py").write_text("x = 1\n", encoding="utf-8")
     (pack / "entry.py").write_text(
-        "import _shared\nfrom _shared import value\nimport helpers\nimport helpers.util\n"
-        "from helpers.util import x\n",
+        "import _demo_pack_shared\nfrom _demo_pack_shared import value\nimport demo_pack_helpers\n"
+        "import demo_pack_helpers.util\nfrom demo_pack_helpers.util import x\n"
+        "from demo_pack_helpers import util\n",
         encoding="utf-8",
     )
     assert check_pack_imports(pack, contract=ImportContract(), manifest=_manifest()) == []
@@ -276,16 +279,36 @@ def test_module_only_outside_the_pack_root_is_still_undeclared(tmp_path):
 def test_pack_root_symlink_pointing_outside_the_pack_is_not_pack_private(tmp_path):
     pack = _pack(tmp_path)
     outside = tmp_path / "elsewhere"
-    (outside / "linked_pkg").mkdir(parents=True)
-    (outside / "linked_pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (outside / "linked_mod.py").write_text("value = 1\n", encoding="utf-8")
-    (pack / "linked_mod.py").symlink_to(outside / "linked_mod.py")
-    (pack / "linked_pkg").symlink_to(outside / "linked_pkg", target_is_directory=True)
-    (pack / "entry.py").write_text("import linked_mod\nimport linked_pkg\n", encoding="utf-8")
+    (outside / "demo_linked_pkg").mkdir(parents=True)
+    (outside / "demo_linked_pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (outside / "demo_linked_mod.py").write_text("value = 1\n", encoding="utf-8")
+    (pack / "demo_linked_mod.py").symlink_to(outside / "demo_linked_mod.py")
+    (pack / "demo_linked_pkg").symlink_to(outside / "demo_linked_pkg", target_is_directory=True)
+    (pack / "entry.py").write_text("import demo_linked_mod\nimport demo_linked_pkg\n", encoding="utf-8")
     found = check_pack_imports(pack, contract=ImportContract(), manifest=_manifest())
     assert [(item.module, item.code) for item in found] == [
-        ("linked_mod", "undeclared_python"),
-        ("linked_pkg", "undeclared_python"),
+        ("demo_linked_mod", "undeclared_python"),
+        ("demo_linked_pkg", "undeclared_python"),
+    ]
+
+
+def test_symlink_below_the_top_level_pointing_outside_the_pack_is_not_pack_private(tmp_path):
+    """Every dotted component must stay in the pack, so no outside file is accepted unscanned."""
+    pack = _pack(tmp_path)
+    outside = tmp_path / "elsewhere" / "sub"
+    outside.mkdir(parents=True)
+    (outside / "__init__.py").write_text("", encoding="utf-8")
+    (outside / "mod.py").write_text("import totally_undeclared\n", encoding="utf-8")
+    (pack / "demo_pkg").mkdir()
+    (pack / "demo_pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "demo_pkg" / "sub").symlink_to(outside, target_is_directory=True)
+    (pack / "entry.py").write_text(
+        "import demo_pkg\nimport demo_pkg.sub.mod\nfrom demo_pkg import sub\n", encoding="utf-8"
+    )
+    found = check_pack_imports(pack, contract=ImportContract(), manifest=_manifest())
+    assert [(item.module, item.code) for item in found] == [
+        ("demo_pkg.sub.mod", "undeclared_python"),  # line 2
+        ("demo_pkg.sub", "undeclared_python"),      # line 3: from demo_pkg import sub
     ]
 
 
@@ -304,6 +327,51 @@ def test_pack_root_module_shadowing_a_declared_requirement_is_refused(tmp_path):
     ]
     assert "shadows the declared Python requirement 'requests'" in found[0].fix
     assert "'pyyaml'" in found[1].fix
+
+
+@pytest.mark.parametrize("name", ["vibecomfy", "astrid_runtime", "runtime_protocol", "astrid_extra"])
+def test_pack_root_decoy_of_a_reserved_name_is_refused(tmp_path, name):
+    """Reserved names are refused whether or not the real package is installed here."""
+    pack = _pack(tmp_path)
+    (pack / name).mkdir()
+    (pack / name / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "entry.py").write_text(f"import {name}.anything\n", encoding="utf-8")
+    found = check_pack_imports(pack, contract=ImportContract(), manifest=_manifest())
+    assert [(item.module, item.code) for item in found] == [(f"{name}.anything", "shadowed_dependency")]
+    assert "reserved for Astrid and its runtimes" in found[0].fix
+
+
+def test_pack_root_decoy_of_a_host_importable_package_is_refused(tmp_path, monkeypatch):
+    """An empty pack-root torch/ must not stand in for an installed torch the runtime would load."""
+    from astrid import pack_imports
+
+    real = pack_imports._host_can_import
+    monkeypatch.setattr(
+        pack_imports, "_host_can_import",
+        lambda name, *, pack_root: name == "torch" or real(name, pack_root=pack_root),
+    )
+    pack = _pack(tmp_path)
+    for name in ("torch", "pytest"):  # torch simulated as installed; pytest really is
+        (pack / name).mkdir()
+        (pack / name / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "entry.py").write_text("import torch.nn\nfrom pytest import fixture\n", encoding="utf-8")
+    found = check_pack_imports(pack, contract=ImportContract(), manifest=_manifest())
+    assert [(item.module, item.code) for item in found] == [
+        ("torch.nn", "shadowed_dependency"),
+        ("pytest", "shadowed_dependency"),
+    ]
+    assert all("importable on this host" in item.fix for item in found)
+
+
+def test_host_import_lookup_excludes_the_pack_root(tmp_path, monkeypatch):
+    """The pack's own directory on sys.path does not make its helper look installed."""
+    from astrid import pack_imports
+
+    pack = _pack(tmp_path)
+    (pack / "_demo_only_in_pack.py").write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(pack))
+    assert pack_imports._host_can_import("_demo_only_in_pack", pack_root=pack) is False
+    assert pack_imports._host_can_import("json", pack_root=pack) is True
 
 
 def test_pack_root_astrid_package_does_not_bypass_the_sdk_surface(tmp_path):
