@@ -1474,3 +1474,71 @@ def test_portable_bundled_task_keeps_one_discovery_owner(tmp_path, monkeypatch, 
     assert summary["check_only"] is True
     receipt = json.loads((tmp_path / "attempt" / "result.json").read_text())
     assert receipt["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("simulated_platform", ["darwin", "win32"])
+@pytest.mark.parametrize("pack_id", ["personal", "chiptune"])
+@pytest.mark.parametrize("route", ["python", "command"])
+def test_portable_personal_task_keeps_one_discovery_owner(
+        tmp_path, monkeypatch, simulated_platform, pack_id, route):
+    from astrid.personal_packs_root import resolve_personal_packs_root
+
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "runtime-data"))
+    root = _write_action_pack(resolve_personal_packs_root() / pack_id)
+    sentinel = tmp_path / "personal-entry.json"
+    action = root / "actions" / "run.py"
+    action.write_text(
+        "from pathlib import Path\nimport json\n"
+        "def run():\n"
+        "    from astrid.sdk import discover\n"
+        "    packs = discover().packs\n"
+        f"    owners = [item['root'] for item in packs if item['id'] == {pack_id!r}]\n"
+        f"    Path({str(sentinel)!r}).write_text(json.dumps([__file__, owners]))\n"
+        "    return 'snapshot action ran'\n"
+        "if __name__ == '__main__': run()\n")
+    manifest = yaml.safe_load((root / "pack.yaml").read_text())
+    manifest["id"] = pack_id
+    manifest["actions"]["run"]["invocation"] = (
+        {"kind": "python", "path": "actions/run.py", "function": "run"} if route == "python" else
+        {"kind": "command", "command": {"argv": ["{python_exec}", str(action)]}})
+    (root / "pack.yaml").write_text(yaml.safe_dump(manifest))
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    with monkeypatch.context() as selection:
+        selection.setattr(generic_host.sys, "platform", simulated_platform)
+        host = GenericPackHost(pack_roots=[root], client=runtime, attempt_root=tmp_path / "attempt")
+    assert host._pack_capture is generic_host._portable_pack_capture
+    host.discover()
+    capability = f"{pack_id}.run"
+    _definition, admission = host.admit("executor", capability)
+    task = _real_host_task(runtime, capability, "personal-task")
+    task["task"]["spec"]["spec"]["admitted_source_digest"] = admission["source_digest"]
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    method = "invoke_capability" if route == "python" else "_run_command_definition"
+    execute = getattr(host, method)
+    snapshots = []
+
+    def captured_action(*args, **kwargs):
+        selected = kwargs["admission"]["selected_pack_map"][pack_id]
+        snapshot = Path(selected["root"])
+        assert snapshot != root and snapshot.is_dir()
+        assert generic_host.platform.is_owner_only(snapshot.parent)
+        assert snapshot.parent.parent.name == "pack-captures"
+        assert kwargs["admission"]["verified_pack_relocations"][pack_id] == {
+            "original_root": str(root), **selected}
+        assert pack_digest(snapshot) == selected["source_digest"]
+        snapshots.append(snapshot)
+        # Discovery retains the original owner, but executable imports must use
+        # captured bytes even if the live action changes before child launch.
+        action.write_text("raise AssertionError('live personal action executed')\n")
+        return execute(*args, **kwargs)
+
+    monkeypatch.setattr(host, method, captured_action)
+    host.run_task(task, lease_token="personal-lease")
+    assert runtime.settlements and not runtime.failures
+    action_path, owners = json.loads(sentinel.read_text())
+    assert len(snapshots) == 1 and Path(action_path).is_relative_to(snapshots[0])
+    assert owners == [str(root)]
+    assert not snapshots[0].parent.exists()
+    receipt = json.loads((tmp_path / "attempt" / "result.json").read_text())
+    assert receipt["status"] == "succeeded"
