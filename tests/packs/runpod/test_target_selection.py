@@ -857,6 +857,50 @@ def test_pricing_mixed_datacenters_selects_healthy_offer_and_requires_consent(ca
     assert case.creates == case.configs == 0 and not case.owner.path.exists()
 
 
+@pytest.mark.parametrize("available_datacenter", ["EU-FAKE", "US-FAKE", "AP-FAKE", "CN-FAKE"])
+def test_unrestricted_pricing_observes_every_returned_datacenter(case, monkeypatch, available_datacenter):
+    import runpod_lifecycle
+    from runpod_lifecycle import availability
+    from astrid.packs.runpod.adapter import observe_priced_offer
+
+    preferences = RunPodPreferences.from_mapping({**case.raw, "volume": None, "datacenter_id": None})
+    config = SimpleNamespace(api_key="fake-only", container_disk_gb=40,
+                             allowed_cuda_versions=("13.0",), min_cuda_version=None)
+    datacenters = ["EU-FAKE", "US-FAKE", "AP-FAKE", "CN-FAKE"]
+    filters, observed_datacenters = [], []
+    real_observe = runpod_lifecycle.gpu_availability
+
+    def post(*args, **kwargs):
+        query = kwargs["json"]["query"]
+        if "GpuCatalogue" in query:
+            data = {"gpuTypes": [{"id": "gpu-id", "displayName": "preferred-gpu"}]}
+        elif "DataCenterStock" in query:
+            data = {"dataCenters": [{"id": dc, "gpuAvailability": [
+                {"gpuTypeId": "gpu-id", "available": True, "stockStatus": "High"}]} for dc in datacenters]}
+        else:
+            assert "DataCenterPrices" in query
+            data = {"gpuTypes": [{"id": "gpu-id", **{
+                f"dc{index}": ({"stockStatus": "High", "uninterruptablePrice": 1.0}
+                               if dc == available_datacenter else None)
+                for index, dc in enumerate(datacenters)}}]}
+        return SimpleNamespace(status_code=200, json=lambda: {"data": data})
+
+    async def observe(**kwargs):
+        filters.append(kwargs["datacenter_ids"])
+        assert kwargs["require_network_volume"] is False
+        result = await real_observe(**kwargs)
+        observed_datacenters.append({dc.datacenter_id for dc in result.datacenters})
+        return result
+
+    monkeypatch.setattr(availability.httpx, "post", post)
+    monkeypatch.setattr(runpod_lifecycle, "gpu_availability", observe)
+    offer = asyncio.run(observe_priced_offer(preferences, config))
+    assert filters == [None]
+    assert observed_datacenters == [set(datacenters)]
+    assert offer.datacenter_id == available_datacenter and offer.hourly_usd == 1.0
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
 def test_pricing_conflicting_failures_use_first_specific_reason(case, monkeypatch):
     from runpod_lifecycle import availability
     from astrid.packs.runpod.adapter import observe_priced_offer
