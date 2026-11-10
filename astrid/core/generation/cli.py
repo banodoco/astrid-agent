@@ -98,9 +98,11 @@ def _common_options(command):
 
 def _gpu_placement(placement, gpu_types, parser):
     """Put a per-job RunPod GPU list into the existing placement policy."""
+    from astrid.core.generation.placement import is_runpod_placement
+
     if not gpu_types:
         return placement
-    if placement != "runpod":
+    if not is_runpod_placement(placement):
         parser.error("--gpu requires --placement runpod")
     if any(not gpu.strip() for gpu in gpu_types):
         parser.error("--gpu values must be nonempty GPU type names")
@@ -111,9 +113,11 @@ def _gpu_placement(placement, gpu_types, parser):
 
 def _validate_datacenter(placement, datacenter, parser):
     """A datacenter is a one-job RunPod choice, never a saved preference edit."""
+    from astrid.core.generation.placement import is_runpod_placement
+
     if datacenter is None:
         return
-    if placement != "runpod":
+    if not is_runpod_placement(placement):
         parser.error("--datacenter requires --placement runpod")
     if not datacenter.strip():
         parser.error("--datacenter must be a nonempty datacenter ID")
@@ -517,6 +521,7 @@ def _main(argv: list[str]) -> int:
                     configure(child)
     configure(parser)
     parsed = parser.parse_args(argv)
+    from astrid.core.generation.placement import is_runpod_placement
     if parsed.modality == 'list':
         from astrid.core.generation.listing import main as list_main
         return list_main(argv)
@@ -579,10 +584,10 @@ def _main(argv: list[str]) -> int:
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
     if ((parsed.max_hourly_usd is not None or parsed.capacity_timeout is not None or parsed.no_wait_for_capacity)
-            and parsed.placement != 'runpod'):
+            and not is_runpod_placement(parsed.placement)):
         parser.error('capacity waiting controls require --placement runpod')
     _validate_datacenter(parsed.placement, parsed.datacenter, parser)
-    if (parsed.gpu or parsed.datacenter) and parsed.placement == "runpod" and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
+    if (parsed.gpu or parsed.datacenter) and is_runpod_placement(parsed.placement) and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
         parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu and --datacenter values")
     if parsed.prompt is not None and not parsed.prompt.strip():
         parser.error("prompt must not be empty")
@@ -644,7 +649,7 @@ def _main(argv: list[str]) -> int:
                 model=parsed.model, entry=parsed.entry, inputs=values)):
             # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)
-        elif description is not None and description["source"] == "action" and parsed.placement != 'runpod':
+        elif description is not None and description["source"] == "action" and not is_runpod_placement(parsed.placement):
             # Action-backed entries are validated (and refused, fail-closed) by the SDK
             # before any Runtime is needed; never open one ahead of that.
             result = generate(**kwargs)
@@ -652,7 +657,7 @@ def _main(argv: list[str]) -> int:
             try:
                 client_scope = _open_client()
             except AstridSDKError:
-                if parsed.placement != 'runpod' and _no_generation_target(parsed.placement, repo=kwargs.get('project_root'), client=None):
+                if not is_runpod_placement(parsed.placement) and _no_generation_target(parsed.placement, repo=kwargs.get('project_root'), client=None):
                     # No workspace and no engine or ComfyUI: the target guidance
                     # (the refusal a dry run gives) is the actionable answer.
                     generate(**{**kwargs, "dry_run": True})
@@ -666,7 +671,7 @@ def _main(argv: list[str]) -> int:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
         from astrid.core.generation.preflight import generation_error
-        if parsed.placement == "runpod" and parsed.offer_digest and "offer or rate changed" in str(exc).lower():
+        if is_runpod_placement(parsed.placement) and parsed.offer_digest and "offer or rate changed" in str(exc).lower():
             exc = ValueError("RunPod offer changed (GPU type or rate; datacenter is also included in the digest). Use the same ordered --gpu values and --datacenter ID in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
         selector = ['--entry', parsed.entry or parsed.model] if parsed.entry or parsed.model else []
         raise generation_error(exc, fixes=[{
@@ -677,7 +682,7 @@ def _main(argv: list[str]) -> int:
         from astrid.core.generation.preflight import generation_error
         error = getattr(result, 'error', None) or {
             'code': 'generation_failed', 'message': 'Generation did not succeed.'}
-        if parsed.placement == "runpod" and parsed.offer_digest and "offer or rate changed" in str(error).lower():
+        if is_runpod_placement(parsed.placement) and parsed.offer_digest and "offer or rate changed" in str(error).lower():
             error = ValueError("RunPod offer changed (GPU type or rate). Use the same ordered --gpu values in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
         raise generation_error(error, task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
