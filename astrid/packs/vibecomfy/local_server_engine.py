@@ -422,7 +422,13 @@ def run_local_server(
                 )
     record = _approve_live(bundle, bindings, provider)
 
+    from astrid.core.generation.target_inventory import POD_STOP
+    pod_stop = POD_STOP.get()
+
     def stop(signum: int, _frame: Any) -> None:
+        if pod_stop is not None:
+            pod_stop(signum, _frame)
+            return
         raise SystemExit(128 + signum)
 
     pins = {"VIBECOMFY_COMFY_CONFIGURATION": "{}", "VIBECOMFY_WARM": "never",

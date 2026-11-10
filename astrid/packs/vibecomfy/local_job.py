@@ -7,11 +7,80 @@ from typing import Any
 
 from astrid.core.generation.local_job import JobFileError
 
+
+def run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
+                     align: str, **kwargs: Any) -> dict[str, Any]:
+    """Prepare under owned custody, then execute once against its HTTP endpoint."""
+    import hashlib
+    import shutil
+    import signal
+    import tempfile
+    import threading
+    import time
+
+    from astrid.core.generation.managed_preparation import ManagedEnginePreparation, preparation_scope
+    from astrid.core.generation.target_inventory import POD_STOP
+    from astrid.packs.vibecomfy.actions.run import run as run_action
+    from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value, load_workflow_path
+
+    if threading.current_thread() is not threading.main_thread():
+        raise JobFileError("pod generation requires the main thread for cancellation custody")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="astrid-pod-preparation-", dir=out.parent))
+    cancelled = threading.Event()
+    state = {"phase": "prepare", "signum": None}
+
+    def stop(signum, _frame):
+        if state["signum"] is not None:
+            return
+        # Latch before Event.set and before raising: repeated signals must not
+        # re-enter Event's lock or interrupt the subsequent drainage.
+        state["signum"] = signum
+        cancelled.set()
+        if state["phase"] == "execute":
+            state["phase"] = "drain"
+            raise SystemExit(128 + signum)
+
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    stop_token = POD_STOP.set(stop)
+    preparation = None
+    closed = False
+    try:
+        loaded = load_workflow_path(workflow, scratch / "load")
+        canonical = _canonical_bundle_value(loaded.resolved).workflow
+        members = ({"python": workflow, "companion": workflow.with_suffix(".vibe.json"),
+                    "source": workflow.with_name("source.json")}
+                   if workflow.suffix == ".py" else {"workflow": workflow})
+        digests = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in members.items()}
+        preparation = ManagedEnginePreparation(task=task_identity, attempt=attempt_identity, mode=align,
+            deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine")
+        report = preparation.prepare(workflow, execution_identity="-", inputs=members,
+                                     canonical_workflow=canonical, input_digests=digests)
+        state["phase"] = "execute"
+        if state["signum"] is not None:
+            state["phase"] = "drain"
+            raise SystemExit(128 + state["signum"])
+        with preparation_scope(report):
+            return run_action._run_and_settle(workflow, out, task_identity=task_identity,
+                attempt_identity=attempt_identity, align=align, comfy_url=report["endpoint"], **kwargs)
+    finally:
+        state["phase"] = "drain"
+        try:
+            if preparation is not None:
+                preparation.close(execution_root=out, worker_drained=True)
+            closed = True
+        finally:
+            POD_STOP.reset(stop_token)
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+            if closed:
+                shutil.rmtree(scratch, ignore_errors=True)
+
+
 def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, Any], bindings: dict[str, Any], out: Path,
                       *, task: str, attempt: str, mode: str | None, align: str) -> dict[str, Any]:
     """Execute a controller-prepared bundle; public inputs never include transport controls."""
     from astrid.core.generation import entries
-    from astrid.packs.vibecomfy.actions.run import run as run_action
 
     workflow = execution.get("python") or execution.get("workflow") or execution.get("source")
     if not isinstance(workflow, str):
@@ -46,7 +115,7 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
     with staged_workflow_path(workflow=execution.get("workflow"), python=execution.get("python"),
                               companion=execution.get("companion"), source=execution.get("source")) as (workflow, _):
-        return run_action._run_and_settle(
+        return run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt, entry=named,
             workflow_inputs=json.dumps(bindings, sort_keys=True), align=align, **files)
 
@@ -71,7 +140,6 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
 
     from astrid.core.generation import entries
     from astrid.core.generation.preflight import require_generation_target_readiness
-    from astrid.packs.vibecomfy.actions.run import run as run_action
 
     try:
         description, inputs = entries.resolve_entry_inputs(named, inputs, mode=mode)
@@ -143,7 +211,7 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
             hook_job = {"after_outputs_job": json.dumps(
                 {"entry": described["id"], "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"]},
                 sort_keys=True, default=str)}
-        result = run_action._run_and_settle(
+        result = run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt,
             workflow_inputs=json.dumps(workflow_inputs, sort_keys=True, default=str), entry=named,
             align=align, manifest=manifest, **hook_job, **run_files)
