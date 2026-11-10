@@ -59,6 +59,34 @@ def _descriptors():
     return discovery.list_skills()
 
 
+def test_fresh_sync_selects_and_links_declared_defaults():
+    fx = _Tmp()
+    try:
+        defaults = skills.default_descriptors()
+        assert skills_cli.main(["sync", "--skills", "on", "--harness", "claude", "--json"]) == 0
+        adapter = ClaudeAdapter()
+        assert all(adapter.target_for(descriptor).is_symlink() for descriptor in defaults)
+        selected = state.load()["skills"]["claude"]["skills"]
+        assert all(selected[descriptor.skill_id]["selected"] for descriptor in defaults)
+    finally:
+        fx.close()
+
+
+def test_fresh_sync_preserves_an_explicit_empty_selection():
+    fx = _Tmp()
+    try:
+        state.save(state.load())
+        defaults = skills.default_descriptors()
+        assert skills_cli.main(["sync", "--skills", "on", "--harness", "claude", "--json"]) == 0
+        adapter = ClaudeAdapter()
+        assert not any(adapter.target_for(descriptor).exists() or adapter.target_for(descriptor).is_symlink()
+                       for descriptor in defaults if descriptor.pack_id != "_core")
+        assert not any(item.get("selected") for item in
+                       state.load()["skills"]["claude"]["skills"].values())
+    finally:
+        fx.close()
+
+
 def _subparser(parser: argparse.ArgumentParser, name: str) -> argparse.ArgumentParser:
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
