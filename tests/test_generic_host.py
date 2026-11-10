@@ -5120,6 +5120,41 @@ def test_host_acknowledges_a_pending_packs_add_through_its_one_registrar(tmp_pat
     assert registrations == [True]
 
 
+def test_single_worker_claim_loop_registers_and_acknowledges_a_pending_packs_add(tmp_path, monkeypatch):
+    """The ordinary one-worker service consumes the outbox while idle, with no restart and no parallel slots."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    _pending_personal_outbox(personal)
+    _write_manifest(personal / "echo", capability_id="personal.echo")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[], client=runtime)
+    assert host.max_concurrency == 1
+    assert refresh_pending(packs_root=personal)
+    polls = 0
+
+    def claim_next(**payload):
+        # The real claim_once runs; only the coordinator's empty queue is fake.
+        nonlocal polls
+        polls += 1
+        if not refresh_pending(packs_root=personal) or polls > 200:
+            host._shutdown.set()
+        return None
+
+    runtime.claim_next = claim_next
+    assert host.run(poll_seconds=0.01) == []
+
+    assert polls >= 1
+    assert not refresh_pending(packs_root=personal), "single-worker loop never acknowledged the outbox"
+    registered = {row["capability_id"] for row in runtime.registrations[-1][1]["capabilities"]}
+    assert "personal.echo" in registered
+
+
 def test_failed_registration_leaves_the_packs_add_outbox_pending(tmp_path, monkeypatch):
     from astrid.core.pack.transaction import refresh_pending
 

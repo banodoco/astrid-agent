@@ -13615,6 +13615,7 @@ class GenericPackHost:
             return self._run_claim_slots(poll_seconds=poll_seconds, max_tasks=max_tasks)
         results: list[Mapping[str, Any]] = []
         consecutive_claim_failures = 0
+        pack_ack_at = 0.0
         while not self._shutdown.is_set() and (max_tasks is None or len(results) < max_tasks):
             try:
                 if time.monotonic() >= self._registration_refresh_deadline:
@@ -13651,6 +13652,17 @@ class GenericPackHost:
                 if once:
                     break
                 continue
+            # Idle, like the parallel loop's `not active`: consume committed
+            # pack-refresh outbox entries so a newly added pack is served
+            # without a restart. A failure leaves the outbox pending for retry.
+            now = time.monotonic()
+            if now >= pack_ack_at:
+                pack_ack_at = now + 2.0
+                try:
+                    self.acknowledge_pack_refresh()
+                except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
+                    print(f"generic host claim failed (1 consecutive): "
+                          f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             if once:
                 break
             if self._shutdown.is_set():
