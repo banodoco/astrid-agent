@@ -658,9 +658,9 @@ jobs:
           # The drop-in sets the manager process's own environment, which decides where it looks for
           # units. Units are started with the manager's activation environment, which is separate, so
           # give it the install's XDG variables too and fail loudly unless it reports exactly them.
-          timeout 10s systemctl --user set-environment "XDG_CONFIG_HOME=$config" "XDG_DATA_HOME=$data"
+          timeout 10s systemctl --user set-environment "HOME=$run_root/home" "XDG_CONFIG_HOME=$config" "XDG_DATA_HOME=$data"
           activation=$(timeout 10s systemctl --user show-environment)
-          for expected in "XDG_CONFIG_HOME=$config" "XDG_DATA_HOME=$data"; do
+          for expected in "HOME=$run_root/home" "XDG_CONFIG_HOME=$config" "XDG_DATA_HOME=$data"; do
             name=${expected%%=*}
             actual=$(printf '%s\n' "$activation" | sed -n "s/^$name=//p")
             if [[ -z "$actual" ]]; then
@@ -972,7 +972,7 @@ jobs:
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt',
             'journey-packs-list.json', 'journey-pack-hot-refresh.json', 'journey-pack-registration.json',
-            'journey-pack-host-identity.json', 'runtime-service-log-status.json'
+            'journey-pack-host-identity.json', 'r11-home-packs.json', 'runtime-service-log-status.json'
           )
           $maxArtifactBytes = 49000000
           # Reserve 1 KiB per file for the stored ZIP entry and central directory.

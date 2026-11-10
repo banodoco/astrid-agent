@@ -126,8 +126,8 @@ def test_release11_leg_rows_are_direct_linux_and_macos_and_outside_the_strict_ma
     assert rows["direct-macos-r11-update"] == {
         "job_id": "direct-macos-r11-update", "mode": "direct", "runner": "macos-15",
         "shell": "sh", "os": "macos", "leg": LEG}
-    # The strict five-row Release-1 contract keeps its own legs and job ids.
-    assert set(journey_matrix.RELEASE1_JOB_IDS).isdisjoint(ROW_IDS)
+    # Both R11 rows are included in the strict Release-1 aggregate.
+    assert set(ROW_IDS) <= set(journey_matrix.RELEASE1_JOB_IDS)
     assert journey_matrix.validate_job("direct-linux-r11-update", "direct")["leg"] == LEG
     assert journey_matrix.validate_job("direct-macos-r11-update", "direct")["leg"] == LEG
 
@@ -206,6 +206,7 @@ def test_legacy_baseline_adds_the_pack_then_restarts_its_owned_host(monkeypatch,
     monkeypatch.setattr(jumps.journey, "runtime_processes", lambda *_a: next(owners))
     monkeypatch.setattr(jumps.journey, "wait_ready", lambda *_a: events.append("ready"))
     monkeypatch.setattr(jumps, "wait_r11_baseline_ready", lambda *_a: events.append("r11-ready"))
+    monkeypatch.setattr(jumps, "capture_r11_home_packs", lambda *_a: events.append("home-packs"))
     monkeypatch.setattr(jumps, "selected_data_root", lambda _root, selected, **_k: selected)
     monkeypatch.setattr(jumps.time, "sleep", lambda *_a: None)
     assert jumps.add_journey_pack_and_restart_legacy_host(
@@ -214,7 +215,11 @@ def test_legacy_baseline_adds_the_pack_then_restarts_its_owned_host(monkeypatch,
                    else (("launchctl", "bootout", f"gui/{jumps.os.getuid()}/haus.astrid.runtime"),
                          ("launchctl", "bootstrap", f"gui/{jumps.os.getuid()}")))
     # Add first (no hot-refresh hooks: this is the legacy path), then a full owned-host restart.
-    assert events == [("add", ["routes_packs"]), "owned", stop, start, "r11-ready", "ready", "owned"]
+    expected = [("add", ["routes_packs"]), "owned", stop, start, "r11-ready"]
+    if jumps.sys.platform.startswith("linux"):
+        expected.append("home-packs")
+    expected += ["ready", "owned"]
+    assert events == expected
 
 
 def test_legacy_baseline_restarts_nothing_when_the_pack_is_already_there(monkeypatch, tmp_path):

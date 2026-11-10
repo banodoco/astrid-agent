@@ -1041,8 +1041,8 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
 
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
-    # Five: the candidate App, the frozen App candidate checkouts, and the pinned Release 9 App.
-    assert workflow.count("repository: banodoco/astrid-app") == 5
+    # Six: the candidate App, frozen App candidate checkouts, and pinned Release 9/11 Apps.
+    assert workflow.count("repository: banodoco/astrid-app") == 6
     assert workflow.count("name: Check out frozen App candidate") == 3
     assert "repository: banodoco/reigh-app" not in workflow
 

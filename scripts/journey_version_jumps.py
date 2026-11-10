@@ -658,6 +658,35 @@ def wait_r11_baseline_ready(data: Path, evidence: Path, previous: dict, restart_
         time.sleep(min(1, remaining))
 
 
+def capture_r11_home_packs(data: Path, evidence: Path) -> None:
+    """Record only home/XDG paths for the restarted R11 host and packs console."""
+    keys = ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
+    marker = journey.read_json(data / "runtime" / "generic-host.ready.json")
+    pid = marker.get("pid")
+    if type(pid) is not int or pid <= 0:
+        raise RuntimeError("R11 host readiness marker has no valid pid for environment capture")
+    raw = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    host_env = {}
+    for item in raw:
+        key, sep, value = item.partition(b"=")
+        if sep and key.decode("ascii", errors="ignore") in keys:
+            host_env[key.decode("ascii")] = value.decode("utf-8", errors="replace")
+    console_env = {key: os.environ[key] for key in keys if key in os.environ}
+
+    def personal_root(values):
+        home = values.get("HOME")
+        if not home:
+            return None
+        return str((Path(home) / "Astrid" / "packs").resolve(strict=False))
+
+    journey.write_json(evidence.parents[1] / "r11-home-packs.json", {
+        "schema_version": 1, "host_pid": pid,
+        "host": {"environment": {key: host_env[key] for key in keys if key in host_env},
+                 "personal_packs_root": personal_root(host_env)},
+        "console": {"environment": console_env, "personal_packs_root": personal_root(console_env)},
+    })
+
+
 def add_journey_pack_and_restart_legacy_host(root: Path, data: Path, version: dict, evidence: Path) -> list[str]:
     """For a LEGACY baseline (R11) only: add the journey pack, then restart the owned host.
 
@@ -697,6 +726,8 @@ def add_journey_pack_and_restart_legacy_host(root: Path, data: Path, version: di
     restart_ns = time.time_ns()
     journey.run(start, evidence / "legacy-pack-start-service.log", timeout=120)
     wait_r11_baseline_ready(selected_data_root(root, data), evidence.parent / "release11-task", previous, restart_ns)
+    if sys.platform.startswith("linux"):
+        capture_r11_home_packs(selected_data_root(root, data), evidence)
     journey.wait_ready(selected_data_root(root, data))
     journey.assert_direct_service_ownership(root, data)
     return added
@@ -1461,6 +1492,24 @@ def runtime_request(method: str, path: str) -> tuple[int, dict]:
         return exc.code, body
 
 
+def _safe_runtime_body(value):
+    """Keep refusal diagnostics useful without retaining credential material."""
+    sensitive = re.compile(
+        r"(?i)(bearer\s+|(?:token|authorization|credential|password|secret|cookie|api[_-]?key)[=: ]+)[^\s,;]+"
+        r"|\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})\b"
+        r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
+    )
+    if isinstance(value, dict):
+        return {str(key): ("<redacted>" if re.search(
+            r"(?i)token|credential|authorization|password|secret|cookie|api[_-]?key|private[_-]?key", str(key))
+                           else _safe_runtime_body(item)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_safe_runtime_body(item) for item in value]
+    if isinstance(value, str):
+        return sensitive.sub(r"\1<redacted>", value)
+    return value
+
+
 def read_selection() -> tuple[dict, str]:
     """The installer's selection record and its SHA-256, read beside the lock."""
     path = journey.selection_path()
@@ -1638,11 +1687,14 @@ def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: 
         semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
         data_same = (semantic_digest({k: before[k] for k in semantic_keys})
                      == semantic_digest({k: after[k] for k in semantic_keys}))
-        refused = type(post_code) is int and post_code >= 400 and post_body.get("reason") == "autostart-off"
+        details = post_body.get("details") if isinstance(post_body, dict) else None
+        post_reason = details.get("reason") if isinstance(details, dict) else None
+        refused = type(post_code) is int and post_code >= 400 and post_reason == "autostart-off"
         unchanged = (after_digest == selection_digest
                      and after_health["runtime_instance_id"] == before_health["runtime_instance_id"] and data_same)
         result["post_update"] = {"method": "POST", "path": UPDATE_PATH, "status": post_code,
-                                 "reason": post_body.get("reason"), "refused": refused, "unchanged": unchanged}
+                                 "body": _safe_runtime_body(post_body), "reason": post_reason,
+                                 "refused": refused, "unchanged": unchanged}
         if not (refused and unchanged):
             raise RuntimeError("POST update was not refused with autostart-off, or it changed the selection, "
                                "the data or the live Runtime")

@@ -50,7 +50,7 @@ def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, stat
         if method == "GET":
             return 200, {"available": False, "reason": status_reason}
         state["post"] += 1
-        return post_status, {"reason": post_reason}
+        return post_status, {"code": "conflict", "details": {"reason": post_reason}}
 
     def live_workspace(*_args, **_kwargs):
         if _args[3] == "seed":
@@ -157,6 +157,8 @@ def test_leg_passes_only_when_all_four_assertions_hold(monkeypatch, tmp_path):
     assert result["selection"]["choices_autostart"] is False
     assert result["update_status"]["reason"] == "autostart-off"
     assert result["post_update"]["refused"] is True and result["post_update"]["unchanged"] is True
+    assert result["post_update"]["status"] == 409
+    assert result["post_update"]["body"] == {"code": "conflict", "details": {"reason": "autostart-off"}}
     assert result["capture"]["device_scale_factor"] == 2
     for check in jumps.AUTOSTART_CHECKS:
         assert result["checks"][check] == "pass", check
@@ -190,6 +192,25 @@ def test_refused_post_must_change_nothing(monkeypatch, tmp_path):
     run, _, _ = _leg(monkeypatch, tmp_path, data_after_change=True)
     with pytest.raises(RuntimeError, match=message):
         run()
+
+
+@pytest.mark.parametrize("body", [
+    {"code": "conflict", "details": {"reason": "busy"}},
+    {"code": "conflict"},
+])
+def test_post_with_other_or_missing_details_reason_is_not_refused(monkeypatch, tmp_path, body):
+    run, _, _ = _leg(monkeypatch, tmp_path)
+    monkeypatch.setattr(jumps, "runtime_request", lambda method, path:
+                        (200, {"available": False, "reason": "autostart-off"}) if method == "GET"
+                        else (409, body))
+    with pytest.raises(RuntimeError, match="POST update was not refused with autostart-off"):
+        run()
+
+
+def test_post_receipt_body_redacts_credentials():
+    assert jumps._safe_runtime_body({"code": "conflict", "access_token": "sensitive",
+                                     "message": "Bearer sensitive"}) == {
+        "code": "conflict", "access_token": "<redacted>", "message": "Bearer <redacted>"}
 
 
 def test_the_autostart_card_capture_must_be_at_device_scale_factor_two(monkeypatch, tmp_path):

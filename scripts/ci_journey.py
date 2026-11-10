@@ -108,6 +108,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-pack-registration.json",
     # The sanitized pack-host identity beside each registration observation.
     "journey-pack-host-identity.json",
+    "r11-home-packs.json",
     # Linux/macOS: each expected host/service log, captured or absent.
     "runtime-service-log-status.json",
 })
