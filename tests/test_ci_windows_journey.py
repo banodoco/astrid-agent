@@ -264,8 +264,11 @@ def test_journey_installs_chiptune_from_the_pinned_source_before_the_task(monkey
     monkeypatch.setattr(shared_journey, "installed_routes_packs", lambda version, evidence: True)
     monkeypatch.setattr(shared_journey, "wait_pack_registered",
                         lambda version, evidence, pack_id: calls.append(["registered", pack_id]))
+    monkeypatch.setattr(shared_journey, "before_journey_pack_add",
+                        lambda evidence: calls.append(["host-before"]))
     journey.install_journey_packs()
-    assert calls[-2:] == [["packs", "add", "https://github.com/banodoco/poms_packs", "--revision",
+    assert calls[-3:] == [["host-before"],
+                          ["packs", "add", "https://github.com/banodoco/poms_packs", "--revision",
                            "2379ab54aca522019ff4f869cfdf9375bdb56dfc", "--pack-id", "chiptune",
                            "--subpath", "chiptune", "--yes"], ["registered", "chiptune"]]
 

@@ -259,33 +259,122 @@ def test_journey_packs_skip_without_a_packs_route_and_wait_for_registration():
     assert calls == [["packs", "list", "--json"]]
 
 
-def test_wait_pack_registered_polls_the_refresh_outbox(tmp_path, monkeypatch):
-    answers = iter(["pending", "pending", "registered", json.dumps({"id": "chiptune.sfx"})])
+def test_wait_pack_registered_requires_live_capability_readiness_not_the_refresh_outbox(tmp_path, monkeypatch):
+    def unresolved():
+        raise RuntimeError("journey-pack-capability.log: exit 1")
+
+    answers = iter([unresolved, lambda: json.dumps({"id": "other"}), lambda: json.dumps({"id": "chiptune.sfx"})])
     seen = []
     codes = []
-    monkeypatch.setattr(journey, "_installed_probe",
-                        lambda version, code, evidence, name: (seen.append(name), codes.append(code),
-                                                               next(answers))[2])
+
+    def probe(version, code, evidence, name):
+        seen.append(name)
+        codes.append(code)
+        return next(answers)()
+
+    monkeypatch.setattr(journey, "_installed_probe", probe)
     journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
-    assert seen == ["journey-pack-refresh.log"] * 3 + ["journey-pack-capability.log"]
-    assert "refresh_pending" in journey.PACK_REFRESH_PROBE
+    # Only the capability resolve gates; refresh_pending is no longer a criterion.
+    assert seen == ["journey-pack-capability.log"] * 3
     assert "get_capability('chiptune.sfx', kind='executor')" in codes[-1]
     compile(codes[-1], "probe", "exec")
-    answers = iter(["registered", json.dumps({"id": "other"})])
-    with pytest.raises(RuntimeError, match="chiptune.sfx is not registered after the host acknowledged"):
-        journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
-
-    def refused(version, code, evidence, name):
-        if name == "journey-pack-capability.log":
-            raise RuntimeError("journey-pack-capability.log: exit 1")
-        return "registered"
-
-    monkeypatch.setattr(journey, "_installed_probe", refused)
-    with pytest.raises(RuntimeError, match="chiptune.sfx is not registered"):
-        journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
-    monkeypatch.setattr(journey, "_installed_probe", lambda *a, **k: "pending")
-    with pytest.raises(RuntimeError, match="did not register chiptune .*still pending"):
+    monkeypatch.setattr(journey, "_installed_probe", lambda *a, **k: json.dumps({"id": "other"}))
+    with pytest.raises(RuntimeError, match="chiptune.sfx is not registered within 0s of `packs add` of chiptune"):
         journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=0, interval=0)
+
+
+def _pack_host(monkeypatch, tmp_path, hosts):
+    """Serve successive pack-host ready markers: (pid, birth, command) tuples."""
+    data = tmp_path / "data"
+    selection = tmp_path / "astrid-install.json"
+    selection.write_text(json.dumps({"data_root": str(data)}), encoding="utf-8")
+    ready = data / "runtime" / journey.PACK_HOST_READY
+    ready.parent.mkdir(parents=True, exist_ok=True)
+    state = {"index": 0}
+    commands = {}
+
+    def advance():
+        pid, birth, command = hosts[min(state["index"], len(hosts) - 1)]
+        state["index"] += 1
+        commands[pid] = command
+        ready.write_text(json.dumps({"pid": pid, "process_birth_id": birth}), encoding="utf-8")
+
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "selection_path", lambda: selection)
+    monkeypatch.setattr(journey, "_process_command", lambda pid: commands.get(pid, ""))
+    monkeypatch.setattr(journey, "_installed_probe", lambda *a, **k: "registered")
+    return advance
+
+
+HOST = "py -X utf8 -m astrid.core.execution.generic_host --service --source-checkout /s --support-root /r"
+
+
+def test_pack_hot_refresh_requires_the_same_single_worker_host(tmp_path, monkeypatch):
+    advance = _pack_host(monkeypatch, tmp_path, [(10, "b10", HOST)])
+    evidence = tmp_path / "evidence"
+    advance()
+    before = journey.before_journey_pack_add(evidence)
+    assert before["single_worker"] is True and before["max_concurrency"] == "default"
+    advance()
+    receipt = journey.assert_pack_hot_refreshed({}, evidence)
+    assert receipt["hot_refreshed"] is True and receipt["refresh_pending_after"] is False
+    assert json.loads((evidence / journey.PACK_HOT_REFRESH_RECEIPT).read_text())["hot_refreshed"] is True
+    # Nothing was added for a later task: no check.
+    assert journey.assert_pack_hot_refreshed({}, evidence) is None
+
+
+def test_pack_activation_by_host_restart_fails_loudly(tmp_path, monkeypatch):
+    advance = _pack_host(monkeypatch, tmp_path, [(10, "b10", HOST), (11, "b11", HOST)])
+    evidence = tmp_path / "evidence"
+    advance()
+    journey.before_journey_pack_add(evidence)
+    advance()
+    with pytest.raises(RuntimeError, match="restarted the pack host \\(pid 10 -> 11\\).*did not hot-refresh"):
+        journey.assert_pack_hot_refreshed({}, evidence)
+    receipt = json.loads((evidence / journey.PACK_HOT_REFRESH_RECEIPT).read_text())
+    assert receipt["hot_refreshed"] is False and receipt["after"]["pid"] == 11
+
+
+def test_pack_hot_refresh_is_checked_on_the_default_single_worker_host_only(tmp_path, monkeypatch):
+    advance = _pack_host(monkeypatch, tmp_path, [(10, "b10", HOST + " --max-concurrency 4")])
+    advance()
+    with pytest.raises(RuntimeError, match="not the live default single-worker host.*max_concurrency=4"):
+        journey.before_journey_pack_add(tmp_path / "evidence")
+    advance = _pack_host(monkeypatch, tmp_path, [(12, "b12", "")])
+    advance()
+    with pytest.raises(RuntimeError, match="alive=False"):
+        journey.before_journey_pack_add(tmp_path / "evidence")
+
+
+def test_task_checks_hot_refresh_after_admission_and_completion(tmp_path, monkeypatch):
+    order = []
+    monkeypatch.setattr(journey, "submit_task", lambda *a, **k: order.append("admitted") or "task-1")
+    settled = {"ok": True, "data": {"state": "succeeded", "result": {"outputs": [
+        {"name": name, "digest": "sha256:" + "a" * 64, "size": 1} for name in ("sfx", "sfx_meta")]}}}
+
+    def cli(version, argv, evidence, name, **kwargs):
+        order.append(argv[1])
+        return json.dumps(settled) if argv[1] == "show" else ""
+
+    monkeypatch.setattr(journey, "installed_cli", cli)
+    monkeypatch.setattr(journey, "assert_pack_hot_refreshed", lambda version, evidence: order.append("hot-refresh"))
+    assert journey.task({}, tmp_path, "project") == "task-1"
+    assert order == ["admitted", "follow", "show", "hot-refresh"]
+
+
+def test_journey_packs_snapshot_the_host_once_before_the_first_add():
+    calls = []
+    added = journey.install_journey_packs(
+        lambda argv, name: (calls.append(argv[:2]), json.dumps({"packs": []}))[1],
+        routes_packs=lambda: True, before_add=lambda: calls.append("before"),
+        wait_registered=lambda pack_id: calls.append(("ready", pack_id)))
+    assert added == ["chiptune"]
+    assert calls == [["packs", "list"], "before", ["packs", "add"], ("ready", "chiptune")]
+    calls.clear()
+    assert journey.install_journey_packs(
+        lambda argv, name: (calls.append(argv[:2]), json.dumps({"packs": [{"id": "chiptune"}]}))[1],
+        routes_packs=lambda: True, before_add=lambda: calls.append("before")) == []
+    assert calls == [["packs", "list"]]
 
 
 def test_invocation_outcome_decodes_omp_invoke_content_text():

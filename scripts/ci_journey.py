@@ -99,6 +99,8 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
     # install_journey_packs: `packs list` output; per-pack `packs add` logs match JOURNEY_PACK_LOG.
     "journey-packs-list.json",
+    # assert_pack_hot_refreshed: the pack host before `packs add` and after the task completed.
+    "journey-pack-hot-refresh.json",
 })
 JOURNEY_PACK_LOG = re.compile(r"journey-pack-[A-Za-z0-9_-]+\.log")
 EVIDENCE_LOG_LIMIT = 1024 * 1024
@@ -2487,26 +2489,31 @@ def _pack_rows(value):
             yield from _pack_rows(child)
 
 
-def install_journey_packs(run_cli, *, routes_packs=None, wait_registered=None) -> None:
+def install_journey_packs(run_cli, *, routes_packs=None, before_add=None, wait_registered=None) -> list[str]:
     """Install each JOURNEY_PACKS pack from its pinned source through the public `packs add` path.
 
     ``run_cli(argv, name)`` runs the installed ``astrid`` console entry point (the
     only route to ``packs``) and returns its stdout. ``routes_packs()`` says whether
     the installed release has that route at all: for older releases (no console
-    module, or a console without ``packs``) nothing is added. ``wait_registered(pack_id)``
-    returns once the running host has
-    registered a pack this call added.
+    module, or a console without ``packs``) nothing is added. ``before_add()`` runs once,
+    before the first add. ``wait_registered(pack_id)`` returns once a pack this call
+    added is live. Returns the ids this call added.
     """
+    added: list[str] = []
     if routes_packs is not None and not routes_packs():
-        return
+        return added
     for pack_id, (source, revision) in JOURNEY_PACKS.items():
         listing = json.loads(run_cli(["packs", "list", "--json"], "journey-packs-list.json"))
         if any(row.get("id") == pack_id for row in _pack_rows(listing)):
             continue
+        if before_add is not None and not added:
+            before_add()
         run_cli(["packs", "add", source, "--revision", revision, "--pack-id", pack_id,
                  "--subpath", pack_id, "--yes"], f"journey-pack-{pack_id}.log")
+        added.append(pack_id)
         if wait_registered is not None:
             wait_registered(pack_id)
+    return added
 
 
 _CONSOLE_PACKS_ROUTE = re.compile(r"""\[0\]\s*==\s*["']packs["']""")
@@ -2528,6 +2535,76 @@ CAPABILITY_PROBE = ("import json\n"
                     "print(json.dumps({{'id': str(getattr(capability, 'id', ''))}}))")
 # Journey pack id -> the executor capability the journey's task admits.
 JOURNEY_PACK_CAPABILITIES = {"chiptune": "chiptune.sfx"}
+
+
+PACK_HOST_READY = "generic-host.ready.json"
+PACK_HOT_REFRESH_RECEIPT = "journey-pack-hot-refresh.json"
+# evidence dir -> the pack-host snapshot taken before this task attempt's `packs add`.
+PACK_HOT_REFRESH: dict[Path, dict] = {}
+
+
+def _process_command(pid: int) -> str:
+    if sys.platform == "win32":
+        return windows.powershell(
+            f"$p=Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}'; if ($p) {{ $p.CommandLine }}",
+            "pack-host-command.txt", show=False, timeout=30).strip()
+    return subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True,
+                          text=True, timeout=10, check=False).stdout.strip()
+
+
+def pack_host_snapshot() -> dict:
+    """The live pack host's identity, read from its ready marker beside the selected data root."""
+    record_path = selection_path()
+    record = read_json(record_path) if record_path.is_file() else {}
+    data_root = record.get("data_root")
+    if not isinstance(data_root, str) or not data_root:
+        raise RuntimeError("The selection record names no data root for the pack host")
+    ready = read_json(Path(data_root) / "runtime" / PACK_HOST_READY)
+    pid, birth = ready.get("pid"), ready.get("process_birth_id")
+    if type(pid) is not int or pid <= 0 or not isinstance(birth, str) or not birth:
+        raise RuntimeError("The pack host's ready marker has no process identity")
+    command = _process_command(pid)
+    workers = re.search(r"--max-concurrency(?:=|\s+)(\S+)", command)
+    return {"pid": pid, "process_birth_id": birth, "alive": bool(command),
+            "max_concurrency": workers.group(1) if workers else "default",
+            "single_worker": workers is None or workers.group(1) == "1",
+            "runtime_instance_id": ready.get("runtime_instance_id")}
+
+
+def before_journey_pack_add(evidence: Path) -> dict:
+    """Record the default single-worker pack host that must hot-refresh the added pack."""
+    before = pack_host_snapshot()
+    if not before["alive"] or not before["single_worker"]:
+        raise RuntimeError("The journey's pack host is not the live default single-worker host "
+                           f"(alive={before['alive']}, max_concurrency={before['max_concurrency']})")
+    PACK_HOT_REFRESH[evidence.absolute()] = before
+    write_json(evidence / PACK_HOT_REFRESH_RECEIPT,
+               {"schema_version": 1, "before": before, "after": None, "hot_refreshed": False})
+    return before
+
+
+def assert_pack_hot_refreshed(version: dict, evidence: Path) -> dict | None:
+    """After admission AND completion: the same host served the added pack, with no restart."""
+    before = PACK_HOT_REFRESH.pop(evidence.absolute(), None)
+    if before is None:
+        return None
+    receipt = {"schema_version": 1, "before": before, "after": None, "hot_refreshed": False}
+    try:
+        after = receipt["after"] = pack_host_snapshot()
+        try:  # Diagnostic only: whether the host acknowledged the `packs add` outbox.
+            receipt["refresh_pending_after"] = _installed_probe(
+                version, PACK_REFRESH_PROBE, evidence, "journey-pack-refresh.log") == "pending"
+        except (RuntimeError, OSError, subprocess.SubprocessError):
+            receipt["refresh_pending_after"] = None
+        if (after["pid"], after["process_birth_id"]) != (before["pid"], before["process_birth_id"]):
+            raise RuntimeError(f"Pack activation restarted the pack host (pid {before['pid']} -> {after['pid']}): "
+                               "the default single-worker host did not hot-refresh the added pack")
+        if not after["alive"] or not after["single_worker"]:
+            raise RuntimeError("The pack host that ran the journey task is not the live default single-worker host")
+        receipt["hot_refreshed"] = True
+        return receipt
+    finally:
+        write_json(evidence / PACK_HOT_REFRESH_RECEIPT, receipt)
 
 
 def console_routes_packs(source: str | None) -> bool:
@@ -2555,25 +2632,28 @@ def installed_routes_packs(version: dict, evidence: Path) -> bool:
 
 def wait_pack_registered(version: dict, evidence: Path, pack_id: str, *,
                          timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0) -> None:
-    deadline = time.monotonic() + timeout
-    while _installed_probe(version, PACK_REFRESH_PROBE, evidence, "journey-pack-refresh.log") != "registered":
-        if time.monotonic() >= deadline:
-            # A product finding, not a harness flake: the running host never acknowledged the add.
-            raise RuntimeError(f"The running host did not register {pack_id} within {int(timeout)}s of "
-                               "`packs add`: its pack refresh is still pending")
-        time.sleep(interval)
+    """Wait for live capability readiness after `packs add` (no restart, no refresh-outbox gate).
+
+    Readiness here is the capability resolving through the installed public SDK; admission
+    AND completion of the journey task, then assert_pack_hot_refreshed, prove the rest.
+    """
     capability_id = JOURNEY_PACK_CAPABILITIES.get(pack_id)
     if capability_id is None:
         return
     code = CAPABILITY_PROBE.format(capability_id=capability_id)
-    try:
-        resolved = json.loads(_installed_probe(version, code, evidence, "journey-pack-capability.log"))
-    except (RuntimeError, ValueError) as exc:
-        raise RuntimeError(f"{capability_id} is not registered after the host acknowledged "
-                           f"{pack_id}'s refresh") from exc
-    if not isinstance(resolved, dict) or resolved.get("id") != capability_id:
-        raise RuntimeError(f"{capability_id} is not registered after the host acknowledged "
-                           f"{pack_id}'s refresh")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            resolved = json.loads(_installed_probe(version, code, evidence, "journey-pack-capability.log"))
+        except (RuntimeError, ValueError):
+            resolved = None
+        if isinstance(resolved, dict) and resolved.get("id") == capability_id:
+            return
+        if time.monotonic() >= deadline:
+            # A product finding, not a harness flake: the added pack never became live.
+            raise RuntimeError(f"{capability_id} is not registered within {int(timeout)}s of "
+                               f"`packs add` of {pack_id}")
+        time.sleep(interval)
 
 
 def invocation_outcome(invocation: dict) -> tuple[bool | None, object]:
@@ -2611,6 +2691,7 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
                 duration_s: float = 0.1) -> str:
     """Admit one chiptune SFX task through the installed SDK and return its id, unfollowed."""
     SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
+    PACK_HOT_REFRESH.pop(evidence.absolute(), None)
     for name in ("project.json", "sdk-invocation.json"):
         (evidence / name).unlink(missing_ok=True)
     for phase in ("before-cleanup", "after-cleanup"):
@@ -2629,6 +2710,7 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
     install_journey_packs(lambda argv, name: installed_cli(version, argv, evidence, name,
                                                            console=True, timeout=600),
                           routes_packs=lambda: installed_routes_packs(version, evidence),
+                          before_add=lambda: before_journey_pack_add(evidence),
                           wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
@@ -2687,6 +2769,8 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
                 not re.fullmatch(r"sha256:[0-9a-f]{64}", outputs[name].get("digest", "")) or
                 outputs[name].get("size", 0) <= 0 for name in ("sfx", "sfx_meta"))):
         raise RuntimeError("Task did not settle successfully with materialized outputs")
+    # A pack added for this task must have been hot-refreshed into the same single-worker host.
+    assert_pack_hot_refreshed(version, evidence)
     return task_id
 
 

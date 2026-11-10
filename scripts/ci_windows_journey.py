@@ -736,10 +736,23 @@ def install_journey_packs():
         from scripts import ci_journey
 
     installed = version()
+    ci_journey.PACK_HOT_REFRESH.pop(EVIDENCE.absolute(), None)
     ci_journey.install_journey_packs(
         lambda argv, name: cli("astrid", argv, name, console=True, timeout=600),
         routes_packs=lambda: ci_journey.installed_routes_packs(installed, EVIDENCE),
+        before_add=lambda: ci_journey.before_journey_pack_add(EVIDENCE),
         wait_registered=lambda pack_id: ci_journey.wait_pack_registered(installed, EVIDENCE, pack_id))
+
+
+def assert_journey_pack_hot_refreshed():
+    try:
+        import ci_journey
+    except ImportError:  # imported as scripts.ci_windows_journey
+        from scripts import ci_journey
+
+    if EVIDENCE.absolute() not in ci_journey.PACK_HOT_REFRESH:
+        return None  # No pack was added for this task.
+    return ci_journey.assert_pack_hot_refreshed(version(), EVIDENCE)
 
 
 def task(project="windows-journey", *, create_project=True):
@@ -821,6 +834,8 @@ def task(project="windows-journey", *, create_project=True):
                 not re.fullmatch(r"sha256:[0-9a-f]{64}", outputs[name].get("digest", "")) or
                 outputs[name].get("size", 0) <= 0 for name in ("sfx", "sfx_meta"))):
         raise RuntimeError("Task did not settle successfully with outputs")
+    # A pack added for this task must have been hot-refreshed into the same single-worker host.
+    assert_journey_pack_hot_refreshed()
     return task_id
 
 

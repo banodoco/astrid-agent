@@ -971,7 +971,7 @@ jobs:
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt',
-            'journey-packs-list.json'
+            'journey-packs-list.json', 'journey-pack-hot-refresh.json'
           )
           $maxArtifactBytes = 49000000
           # Reserve 1 KiB per file for the stored ZIP entry and central directory.
