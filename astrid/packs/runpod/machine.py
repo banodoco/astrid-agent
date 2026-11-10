@@ -424,15 +424,33 @@ class MachineRun:
     state: str = "running"
 
 
-def _job_manifest_rows(entry: str | None, values: Any) -> tuple[Mapping[str, Any], ...]:
+def _job_manifest_rows(entry: str | None, values: Any, *, mode: str | None = None,
+                       execution: Mapping[str, Any] | None = None) -> tuple[Mapping[str, Any], ...]:
     """The job's model manifest rows: the entry's requirements, as align() reads them on the pod."""
-    if not entry or entry == "workflow":
-        return ()
     from astrid.core.generation import entries as catalog
+
+    if not entry or entry == "workflow":
+        from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
+
+        execution = execution or {}
+        with staged_workflow_path(**{name: execution.get(name) for name in
+                                     ("workflow", "python", "companion", "source")}) as (path, _):
+            workflow = catalog._load_entry_workflow({"bundle": str(path)})
+            return tuple(catalog.requirements({"workflow": workflow}, values).get("models", ()))
 
     described = catalog.find_entry(entry)
     if described is None:
-        return ()
+        from astrid.core.model_catalog.registry import ModelRegistry
+
+        model = ModelRegistry.load_default().get(entry)
+        selected_mode = mode or (next(iter(model.modes)) if len(model.modes) == 1 else None)
+        selected = model.modes.get(selected_mode)
+        backend = selected.backends.get("local") if selected is not None else None
+        if backend is None or not backend.template:
+            raise MachineError(f"entry {entry!r} has no local workflow for mode {selected_mode!r}")
+        from astrid.core.generation.backends.vibecomfy import _load_pinned_catalog_workflow
+
+        described = {"workflow": _load_pinned_catalog_workflow(backend)}
     return tuple(catalog.requirements(described, values).get("models", ()))
 
 
@@ -505,7 +523,7 @@ class RunPodMachine:
                                          f"live leases: {', '.join(live) or 'none'}")
         values = json.loads(inputs.get("workflow_inputs") or "{}")
         # The volume is sized by this job's manifest rows (the list align fetches on the pod), not the lock.
-        manifest_rows = _job_manifest_rows(job.entry, values)
+        manifest_rows = _job_manifest_rows(job.entry, values, mode=job.mode, execution=inputs)
         acquired: list[Any] = []
 
         def on_acquired(lease: Any) -> None:
@@ -527,6 +545,12 @@ class RunPodMachine:
                     entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
                     manifest_rows=manifest_rows,
                 )
+                # Preparation and execution have separate disclosed budgets. Arm once
+                # at handoff, clipped to this lease's original paid expiry.
+                adapter.placement.begin_execution(deadline_seconds=min(
+                    consent.execution_seconds,
+                    prepared.lease.claim["lease"]["paid_expires_at"] - owner.clock(),
+                ))
             except BaseException:
                 if acquired:
                     # A failed preparation never settles warm: release the exact pod.

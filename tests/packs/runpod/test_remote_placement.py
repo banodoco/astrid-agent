@@ -312,6 +312,18 @@ def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp
     assert not any("/01-prepare/" in path for path in claim.ops.files)
 
 
+def test_changed_source_bootstraps_even_when_previous_product_marker_exists(tmp_path, sources):
+    old = _provider(sources)
+    files = {old.marker: b"ok"}
+    (sources / "src/astrid-agent/mod.py").write_text("# new source install payload\n")
+    provider = _provider(sources, volume=files)
+    assert provider.marker != old.marker
+    claim = provider.claim(rp.ClaimSpec())
+    _wrapper(provider, sources).prepare_claimed(claim, out=tmp_path / "prepare", deadline_seconds=120)
+    assert any("pod_bootstrap.sh" in command for command in claim.ops.job_log)
+    assert files[provider.marker] == files[old.marker] == b"ok"
+
+
 def test_prepare_claimed_install_is_model_free(tmp_path, sources):
     """Plan 32 T5h: a claim installs the engine only; no model flag, no model fetch on the pod."""
     provider = _provider(sources)

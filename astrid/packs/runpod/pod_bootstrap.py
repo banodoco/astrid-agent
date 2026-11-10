@@ -19,8 +19,8 @@ VENV="${ASTRID_VENV:-/opt/astrid}"
 AGENT_LOCK="src/astrid-agent/requirements/runtime.lock"
 SRC_DIRS=(src/astrid-runtime src/runpod-lifecycle src/astrid-agent src/VibeComfy)
 PACKAGES=(runpod astrid-runtime runpod-lifecycle astrid vibecomfy)
-# Build backends can write metadata into their source directories. Stage only the
-# requested sources on writable storage; the mounted originals stay untouched.
+# Runtime and Agent execute from the persistent transported Git checkouts, which
+# own their source-profile identity. Dependencies use disposable writable copies.
 staged_uv_install() (
   local mode="$1" stage source
   shift
@@ -33,9 +33,28 @@ staged_uv_install() (
   trap 'rm -rf "$stage"' EXIT
   tar --exclude=.git -cf - "$@" | tar -xf - -C "$stage" || exit $?
   chmod -R u+w "$stage" || exit $?
-  for source in "$@"; do install_args+=("$stage/$source"); done
+  for source in "$@"; do
+    case "$source" in
+      src/astrid-agent|src/astrid-runtime) install_args+=(-e "$(pwd)/$source") ;;
+      *) install_args+=("$stage/$source") ;;
+    esac
+  done
   uv pip install "${install_args[@]}" || exit $?
 )
+
+source_install_current() {
+  "$VENV/bin/python" -I -B - "$(pwd)/src/astrid-agent" "$(pwd)/src/astrid-runtime" <<'PY'
+import importlib.util, pathlib, sys
+agent, runtime = map(pathlib.Path, sys.argv[1:])
+for name, root in (("astrid", agent), ("astrid_runtime_client", agent),
+                   ("astrid_runtime", runtime), ("runtime_protocol", runtime)):
+    expected = root / name / "__init__.py"
+    spec = importlib.util.find_spec(name)
+    if (spec is None or spec.origin != str(expected) or not expected.is_file()
+            or list(spec.submodule_search_locations or ()) != [str(expected.parent)]):
+        sys.exit(1)
+PY
+}
 
 # The one runpod route: the SDK comes from PyPI at the Agent lock's pin (version, markers and
 # hashes), the same lock file the local installer installs from. Nothing here names a version.
@@ -146,7 +165,7 @@ PY
 }
 
 # The engine's FIX-RECEIPT-PROBE change lives in these two astrid modules. astrid is installed
-# non-editable, so the installed copy must be the one from src/astrid-agent: a hand-copied file or
+# editable, bound to src/astrid-agent: a hand-copied file or
 # any other drift would run the old probe with no warning. Compare the modules by sha256 and
 # reinstall astrid only on a mismatch or a missing copy. Cheap enough to run on every bootstrap.
 PROBE_MODULES=(engine_runner.py engine_runner_target.py)
@@ -192,6 +211,10 @@ if [ -f "$marker" ]; then
   echo "pod_bootstrap: already done ($marker)"
   run_gpu_sanity
   if "$VENV/bin/python" -c 'import runpod_lifecycle' >/dev/null 2>&1; then
+    if ! source_install_current; then
+      staged_uv_install reinstall src/astrid-runtime src/astrid-agent || exit $?
+    fi
+    source_install_current || { echo "pod_bootstrap: Runtime/Agent imports differ from transported sources" >&2; exit 1; }
     verify_astrid_install
     setup_runtime
     exit 0
@@ -219,7 +242,8 @@ have_all() {
   for p in "${PACKAGES[@]}"; do
     grep -qiE "^${p//-/[-_]}==" <<< "$installed" || return 1
   done
-  "$VENV/bin/python" -c 'import runpod_lifecycle' >/dev/null 2>&1
+  "$VENV/bin/python" -c 'import runpod_lifecycle' >/dev/null 2>&1 || return 1
+  source_install_current
 }
 
 if have_all; then
@@ -245,6 +269,7 @@ if ! grep -qiE '^pip==' <<< "$installed"; then
   uv pip install --python "$VENV" pip
 fi
 verify_astrid_install
+source_install_current || { echo "pod_bootstrap: Runtime/Agent imports differ from transported sources" >&2; exit 1; }
 "$VENV/bin/python" -c 'import runpod_lifecycle'
 
 # New source bytes: the long-lived Runtime, its template and the prepared connection
