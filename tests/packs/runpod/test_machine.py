@@ -481,6 +481,71 @@ def test_unfinished_machine_custody_is_live(state, lease_state, display):
     assert row["live"] is True and row["state"] == display and row["ended"] is None
 
 
+def test_live_machine_row_shows_idle_release_and_accrued_estimated_cost(monkeypatch):
+    monkeypatch.setattr(rm.time, "time", lambda: 2_000.0)
+    row = rm.lease_row({"pod_id": "pod-idle", "state": "claimed", "estimated_cost_usd": 2.5,
+                        "lease": {"state": "idle", "paid_expires_at": 5_000.0,
+                                  "idle_expires_at": 2_600.0, "hourly_usd": 1.2,
+                                  "accounted_at": 1_100.0}})
+
+    assert row["release_at"] == 2_600.0
+    assert row["minutes_left"] == 10.0
+    assert row["cost_usd"] == 2.8
+    assert row["hourly_usd"] == 1.2
+
+
+def test_active_machine_uses_paid_limit_and_cost_grows_with_clock(monkeypatch):
+    record = {"pod_id": "pod-active", "state": "claimed", "estimated_cost_usd": 3.0,
+              "lease": {"state": "active", "paid_expires_at": 3_800.0,
+                        "idle_expires_at": 2_100.0, "hourly_usd": 3.6,
+                        "accounted_at": 1_900.0}}
+    monkeypatch.setattr(rm.time, "time", lambda: 2_000.0)
+    first = rm.lease_row(record)
+    monkeypatch.setattr(rm.time, "time", lambda: 2_300.0)
+    second = rm.lease_row(record)
+
+    assert first["release_at"] == 3_800.0
+    assert first["minutes_left"] == 30.0
+    assert first["cost_usd"] == 3.1
+    assert second["cost_usd"] == 3.4
+
+
+def test_ended_machine_row_keeps_recorded_cost_without_live_deadline(monkeypatch):
+    monkeypatch.setattr(rm.time, "time", lambda: 2_000.0)
+    row = rm.lease_row({"pod_id": "pod-ended", "state": "cleanup_complete",
+                        "estimated_cost_usd": 7.25,
+                        "lease": {"state": "releasing", "paid_expires_at": 3_800.0,
+                                  "idle_expires_at": 2_100.0, "hourly_usd": 3.6,
+                                  "accounted_at": 1_900.0, "ended": "released"}})
+
+    assert row["live"] is False and row["state"] == "ended"
+    assert row["cost_usd"] == 7.25
+    assert row["release_at"] is None and row["minutes_left"] is None
+    assert row["ended"] == "released"
+
+
+def test_machines_table_and_json_show_lifetime_fields(monkeypatch, capsys):
+    from astrid.core import machines_cli
+
+    row = {"id": "pod-idle", "kind": "runpod", "gpu": "RTX 5090", "state": "idle",
+           "live": True, "release_at": 2_600.0, "minutes_left": 10.0,
+           "cost_usd": 2.8, "hourly_usd": 1.2, "ended": None}
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [row])
+
+    assert machines_cli.main([]) == 0
+    table = capsys.readouterr().out
+    assert "RELEASES (UTC)" in table and "MIN LEFT" in table
+    assert "COST EST. (USD)" in table and "RATE (USD/HR)" in table
+    assert "10.0" in table and "2.80" in table and "1.20" in table
+
+    assert machines_cli.main(["--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["release_at"] == 2_600.0
+    assert payload[0]["minutes_left"] == 10.0
+    assert payload[0]["cost_usd"] == 2.8
+    assert payload[0]["hourly_usd"] == 1.2
+
+
 @pytest.mark.parametrize("restart", [False, True])
 def test_unverified_machine_cli_release_and_recovery_reconcile_exact_pod(small_lease, monkeypatch, capsys, restart):
     from astrid.core import machines_cli
