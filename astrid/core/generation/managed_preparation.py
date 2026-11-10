@@ -204,7 +204,7 @@ class ManagedEnginePreparation:
     def _prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
         from .engine_contracts import IntegrityError, effective_models_root
         from .engine_recipe import recipe_digest
-        from .engine_runner import _Runner, _parse_receipt, plan_install
+        from .engine_runner import _Runner, _parse_receipt, plan_install, refresh_installed_launch
         from astrid.packs.vibecomfy.actions.run import run as run_action
 
         self.check()
@@ -298,17 +298,20 @@ class ManagedEnginePreparation:
         if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
             raise IntegrityError("managed alignment changed the installed base")
         runner.step_id = "start"
-        runner.start(readonly=False)
+        start_action, start_facts = runner.start(readonly=False)
         self.check()
         runner.step_id = "health"
-        runner.check_health()
+        health_action, health_facts = runner.check_health()
+        self.check()
+        receipt_sha256 = refresh_installed_launch(runner, raw, start_action=start_action, start_facts=start_facts,
+                                                  health_action=health_action, health_facts=health_facts, check=self.check)
         self.check()
         health = {"healthy": True, "object_info_sha256": runner.health.object_info_sha256,
                   "required_nodes_present": runner.health.required_nodes_present}
         self.report = {"schema": SCHEMA, "task_id": self.task, "attempt_id": self.attempt,
             "execution_identity": execution_identity, "inputs": dict(input_digests),
             "manifest": manifest, "manifest_sha256": digest(manifest),
-            "installation": {"root": self.root, "receipt_sha256": hashlib.sha256(Path(receipt_path).read_bytes()).hexdigest(),
+            "installation": {"root": self.root, "receipt_sha256": receipt_sha256,
                 "recipe_sha256": recipe_digest(self.recipe), "helper_sha256": runner.helper_sha256},
             "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
             "output_dir": str(Path(self.root) / next(s.relative_path for s in self.recipe.sources if s.name == "comfyui") / "output"),
