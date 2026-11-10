@@ -310,7 +310,9 @@ def _trust_from_environment(bundle: Any) -> tuple[dict[str, Any], ...] | None:
     """``--align trust`` on an attached ComfyUI: the workflow's declared rows; otherwise none."""
     from astrid.core.generation import target_inventory
 
-    if os.environ.pop(target_inventory.TRUST_ENV, None) != "trust":
+    child_trust = os.environ.pop(target_inventory.TRUST_ENV, None) == "trust"
+    pod_trust = target_inventory.POD_TRUST.get()
+    if not (child_trust if pod_trust is None else pod_trust):
         return None
     return target_inventory.declared_rows(bundle.workflow)
 

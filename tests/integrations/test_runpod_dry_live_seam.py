@@ -108,7 +108,15 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences):
     job_path = Path(remote.remote_root) / 'job.json'
     assert job_path.read_bytes() == transport.uploads[str(job_path)]
     shipped = json.loads(job_path.read_bytes())
-    assert shipped['bindings'] == json.loads(dry_bindings)
+    dry_values = json.loads(dry_bindings)
+    media_bindings = {}
+    if 'managed_assets' in shipped['execution']:
+        from astrid.packs.vibecomfy.asset_manifest import read_archive
+        archive = read_archive(shipped['execution']['managed_assets'])
+        media_bindings = archive.bindings
+        for row in archive.manifest['assets']:
+            assert archive.members[row['member']] == Path(dry_values[row['binding']]).read_bytes()
+    assert shipped['bindings'] == {name: value for name, value in dry_values.items() if name not in media_bindings}
 
     from astrid.packs.vibecomfy.actions.run import run as action
     from astrid.packs.vibecomfy import local_server_engine
@@ -146,6 +154,8 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences):
                               'models_root': str(tmp_path / 'pod-engine' / 'managed' / 'engines' / 'comfyui' / 'models')}
     from astrid.packs.vibecomfy.local_server_engine import run_scoped_overrides
     scoped = run_scoped_overrides(workflow, namespaces[0])
+    for name, filename in media_bindings.items():
+        assert str(runtime[0][name]).endswith(filename)
     for name, value in runtime[0].items():
         if str(getattr(scoped.inputs[name], 'media_semantics', '') or '').lower() not in {'image', 'mask', 'audio', 'video'}:
             assert shipped['bindings'].get(name, scoped.inputs[name].value) == value
