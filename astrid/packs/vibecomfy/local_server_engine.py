@@ -406,7 +406,15 @@ def run_local_server(
             result_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
             return _result_from_runtime_result(result, tuple(Path(path) for path in result.outputs))
         except BaseException as exc:
-            cleanup_prompts(url, destination)
+            try:
+                cleanup_prompts(url, destination)
+            except Exception as cleanup_error:
+                # Preserve the failure that triggered cleanup (especially a
+                # custody refusal) while retaining the cleanup failure as
+                # diagnostic context. cleanup_prompts validates journals
+                # before trusting their prompt IDs, so an unsafe journal must
+                # never replace the original attempt error.
+                exc.add_note(f"local_server prompt cleanup failed: {cleanup_error}")
             if "vibecomfy schema refresh" in str(exc) or getattr(exc, "next_action", None) == "vibecomfy schema refresh":
                 from astrid.core.generation.asset_gaps import align_argv
                 import shlex
