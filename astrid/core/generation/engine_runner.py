@@ -284,7 +284,7 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 
 class _Runner:
-    def __init__(self, plan, context, adapter, deadline):
+    def __init__(self, plan, context, adapter, deadline, *, device=None):
         _deadline(deadline)
         if not isinstance(plan, InstallPlan):
             raise RecipeValidationError("install_engine requires an InstallPlan")
@@ -300,6 +300,9 @@ class _Runner:
             raise UnsupportedPlatform("Windows runner execution requires the A7 adapter")
         if adapter.validate_root(plan.root) != plan.root:
             raise UnsafePathError("adapter changed the bound install root")
+        if device is not None and (type(device) is not int or device < 0):
+            raise RecipeValidationError("invalid local GPU device")
+        self.device = device
         self.plan, self.context, self.adapter, self.deadline = plan, context, adapter, deadline
         self.helper_sha256 = _sha(helper_manifest(self.recipe))
         self.env = engine_process_env(adapter.environment(self.recipe, plan.root), plan.root)
@@ -456,7 +459,10 @@ class _Runner:
             raise RecipeValidationError("adapter launch differs from verified recipe", step_id=self.step_id)
         if any(request.env.get(k) != v for k, v in expected["env"].items()):
             raise RecipeValidationError("adapter launch environment differs from recipe", step_id=self.step_id)
-        return {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+        env = dict(request.env)
+        if self.device is not None:
+            env["CUDA_VISIBLE_DEVICES"] = str(self.device)
+        return {"argv": list(request.argv), "cwd": request.cwd, "env": env}
 
     def placeholder_values(self, environment=None):
         if environment is None:

@@ -173,7 +173,7 @@ def prevalidate_task(policy, inputs, *, scratch):
 
     required = {"kind", "engine", "preferences", "offer_digest", "consent", "max_usd", "deadline",
                 "preparation_seconds", "execution_seconds", "idle_seconds"}
-    if (not isinstance(policy, dict) or not required <= set(policy) <= required | {"machine"}
+    if (not isinstance(policy, dict) or not required <= set(policy) <= required | {"machine", "placement_idle_seconds"}
             or policy["kind"] != "runpod"):
         raise PaidSelectionError("target policy lacks exact offer and paid bounds")
     if policy["engine"] not in {"comfyui"}:
@@ -193,6 +193,10 @@ def prevalidate_task(policy, inputs, *, scratch):
     saved_cap = preferences.budget_cap_usd
     if saved_cap is not None and policy["max_usd"] > saved_cap:
         raise PaidSelectionError("invocation cap exceeds the saved RunPod budget ceiling")
+    if "placement_idle_seconds" in policy:
+        actual_idle = _number(policy["placement_idle_seconds"], "placement idle", zero=True)
+        if actual_idle > policy["idle_seconds"]:
+            raise PaidSelectionError("placement idle exceeds the disclosed paid idle bound")
     durations = [_number(policy[name], name, zero=True) for name in
                  ("preparation_seconds", "execution_seconds", "idle_seconds")]
     if sum(durations) <= 0 or (_utc(policy["deadline"]) - datetime.now(timezone.utc)).total_seconds() < sum(durations):
@@ -388,15 +392,15 @@ class TargetProviderBindings:
             policy = {**policy, "preferences": RunPodPreferences.from_mapping(policy["preferences"]).as_mapping()}
         with self.lock:
             provider = self.provider if self.provider is not None and json.loads(self.signature)[0] == policy["kind"] else None
-            if (operation != "setup" and provider is not None
-                    and json.loads(self.signature)[2] != policy["preferences"]):
+            if (operation != "setup" and not (operation == "status" and include_quote)
+                    and provider is not None and json.loads(self.signature)[2] != policy["preferences"]):
                 raise ValueError(
                     "target operation preferences differ from the retained provider owner; "
                     "invoke runpod.setup to replace preferences after releasing any owned lease"
                 )
         if provider is None:
             provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"])
-        elif operation == "setup" and json.loads(self.signature)[2] != policy["preferences"]:
+        elif (operation == "setup" or operation == "status" and include_quote) and json.loads(self.signature)[2] != policy["preferences"]:
             # get() closes/rebuilds only after the old owner proves no lease is live.
             provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"])
         with self.lock:

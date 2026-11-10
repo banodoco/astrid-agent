@@ -38,6 +38,7 @@ from urllib.parse import urlsplit,parse_qs
 from PIL import Image
 port=int(sys.argv[1]); started=Path(sys.argv[3]); histories={}
 with started.open('a') as stream:stream.write(str(os.getpid())+'\n')
+(started.parent/'device-env').write_text(os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>'))
 schema={name:{} for name in ('MiniMaxH3ReferenceToVideo','UNETLoader','VAELoader','VHS_VideoCombine')}
 schema.update({
  'EmptyImage':{'input':{'required':{'width':['INT',{'default':16}],'height':['INT',{'default':16}],'batch_size':['INT',{'default':1}],'color':['INT',{'default':0}]}},'output':['IMAGE'],'output_name':['IMAGE'],'output_node':False,'python_module':'nodes'},
@@ -119,8 +120,8 @@ def artifact_server():
         server.shutdown(); server.server_close(); thread.join()
 
 
-@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema', 'trust'],
-                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker', 'trust-skips-absent-auxiliary'])
+@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema', 'trust', 'device-explicit', 'device-default'],
+                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker', 'trust-skips-absent-auxiliary', 'device-explicit', 'device-default'])
 def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, real_runtime, managed_install, artifact_server, failure):
     from vibecomfy.workflow_bundle import emit_bundle_with_candidate
     from vibecomfy.security.provenance import Provenance
@@ -253,14 +254,23 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         controls = {"client": sdk, "project": project_id}
         imported = {name: _import_generation_member(path, controls) for name, path in {
             "python": bundle / "workflow.py", "companion": bundle / "workflow.vibe.json", "source": source}.items()}
-        result = sdk.invoke_result('vibecomfy.run', kind='action', project=project_id,
+        if failure in {'device-explicit', 'device-default'}:
+            from astrid.sdk.generation import GenerationFacade
+            from astrid.core.generation import settings
+            settings.update(lambda document: document['placement'].update({'kind': 'local', 'device': 1}), sdk)
+            placement = {'device': 2} if failure == 'device-explicit' else 'auto'
+            result = GenerationFacade().workflow(workflow=bundle / 'workflow.py', placement=placement,
+                inputs={}, client=sdk, project=project_id, align='align', wait=True,
+                timeout_seconds=120, poll_seconds=0.05)
+        else:
+            result = sdk.invoke_result('vibecomfy.run', kind='action', project=project_id,
             inputs={**imported, 'workflow_inputs': '{}',
                     'generation_intent': {'version': 1, 'modality': 'image', 'partial_success_policy': 'reject',
                         'groups': [{'group_key': 'main', 'selectors': [{'selector': 'main-0', 'ordinal': 0,
                             'variant_key': 'original', 'required': True}]}], 'metadata': {'model': 'workflow', 'align': 'trust' if failure == 'trust' else 'align'}}},
             wait=True, timeout_seconds=120, poll_seconds=0.05)
         assert receipt_written.wait(10), 'host terminal receipt did not complete after Runtime settlement'
-        if failure and failure != 'trust':
+        if failure and failure not in {'trust', 'device-explicit', 'device-default'}:
             assert not result.ok
             assert 'prepare' in events and 'align' in events, (events, result.to_dict())
             if failure != 'align':
@@ -283,6 +293,10 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
             assert (root / 'prompts').is_file()
             receipt = json.loads((tmp_path / 'attempt/result.json').read_text())
             assert receipt['machine']['placement'] == 'managed'
+            if failure in {'device-explicit', 'device-default'}:
+                expected = '2' if failure == 'device-explicit' else '1'
+                assert (root / 'device-env').read_text() == expected
+                assert receipt['machine']['device'] == expected
             assert receipt['managed_engine_preparation']['placement'] == 'managed'
             if failure != 'trust':
                 assert artifact_hits and 'native-doctor' in events and 'native-prepare' in events

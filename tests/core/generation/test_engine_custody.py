@@ -1266,6 +1266,21 @@ def test_changed_launch_or_installation_cannot_reuse_service(session):
     assert len(started.read_text().splitlines()) == 1
 
 
+def test_device_launch_is_bound_to_owned_process(session):
+    client, payload, recipe, root, mode, started = session
+    launch = payload["launch"]
+    chosen = {**payload, "launch": {**launch, "env": {**launch["env"], "CUDA_VISIBLE_DEVICES": "2"}}}
+    first = _call(client, chosen)
+    assert _call(client, chosen, "probe")["owner_id"] == first["owner_id"]
+    other = {**chosen, "launch": {**chosen["launch"], "env": {**launch["env"], "CUDA_VISIBLE_DEVICES": "3"}}}
+    with pytest.raises(EndpointOwnershipError):
+        _call(client, other, "probe")
+    injected = {**chosen, "launch": {**chosen["launch"], "env": {**chosen["launch"]["env"], "EVIL": "1"}}}
+    with pytest.raises(EndpointOwnershipError):
+        _call(client, injected, "probe")
+    assert len(started.read_text().splitlines()) == 1
+
+
 def _running_client(client, root, witness):
     code = f"from pathlib import Path;import os,time;Path({str(witness)!r}).write_text(str(os.getpid()));time.sleep(60)"
     program = f'''
