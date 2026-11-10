@@ -2089,9 +2089,9 @@ def test_child_progress_path_is_the_attempt_root_the_heartbeat_reads(tmp_path):
     observed = []
     original = GenericPackHost._prepare_producer_evidence
 
-    def capture(self, output_root, task_data):
+    def capture(self, output_root, task_data, **kwargs):
         observed.append(json.loads((output_root / "answer.txt").read_text(encoding="utf-8")))
-        return original(self, output_root, task_data)
+        return original(self, output_root, task_data, **kwargs)
 
     GenericPackHost._prepare_producer_evidence = capture
     try:
