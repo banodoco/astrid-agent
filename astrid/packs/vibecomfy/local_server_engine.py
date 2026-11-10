@@ -213,13 +213,7 @@ def run_scoped_overrides(workflow: Any, attempt_id: str) -> Any:
         prefix = node.inputs.get("filename_prefix", node.widgets.get("filename_prefix"))
         if isinstance(prefix, str) and prefix:
             fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
-            scoped_prefix = f"{prefix}_astrid_{attempt_id}"
-            fields["filename_prefix"] = scoped_prefix
-            # Compilation reapplies registered input values. Keep any public alias
-            # for this output in sync with the node, as bundle serialization does.
-            for name, spec in getattr(workflow, "inputs", {}).items():
-                if str(spec.node_id) == str(output.node_id) and spec.field == "filename_prefix":
-                    workflow.set_input(name, scoped_prefix)
+            fields["filename_prefix"] = f"{prefix}_astrid_{attempt_id}"
     return workflow
 
 

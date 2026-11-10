@@ -275,4 +275,8 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         for name, value in media.items():
             scoped.set_input(name, value)
         expected = _output_reachable(json.loads(_graph(scoped)))
-        assert submitted == expected, "submitted graph differs in nodes, inputs, links or values"
+        assert submitted == expected, (
+            "submitted graph differs in nodes, inputs, links or values; "
+            f"outputs={[(out.node_id, scoped.nodes[out.node_id].inputs, scoped.nodes[out.node_id].widgets) for out in scoped.outputs]!r}; "
+            f"variant={scoped.default_variant!r} overrides={scoped.variants!r}"
+        )
