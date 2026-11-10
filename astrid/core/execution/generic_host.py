@@ -11981,6 +11981,13 @@ class GenericPackHost:
                     readiness_profile = None
                 inputs.pop("placement_policy", None)
             _terminal["inputs"] = inputs
+            # Freeze admitted bytes before any canonical import or trusted
+            # alignment command can read them. Cancellation guards recheck this
+            # baseline during preparation as well as execution.
+            immutable_input_baseline = {}
+            for input_root in (root / "inputs", root / "managed-objects"):
+                immutable_input_baseline.update(self.execution_policy.immutable_input_baseline(input_root))
+            evidence_root = root
             if (capability_id == "vibecomfy.run" and machine_policy is None
                     and not inputs.get("comfy_url") and readiness_profile is None):
                 from astrid.core.generation.managed_preparation import ManagedEnginePreparation
@@ -11988,12 +11995,22 @@ class GenericPackHost:
                 admitted_mode = _align_admission(task_data).get("align", "check")
                 engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled)
+                _terminal["machine"] = {**_local_machine({}), "placement": "managed",
+                                         "id": engine_preparation.root}
                 def prepare_engine(workflow_path, identity, loaded):
-                    report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs)
                     from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value
+                    canonical = _canonical_bundle_value(loaded.resolved)
+                    report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs,
+                                                        canonical_workflow=canonical.workflow)
+                    _terminal["managed_engine_preparation"] = report
                     from astrid.packs.vibecomfy.local_server_engine import _live_preflight, _approve_live
                     bundle = _canonical_bundle_value(loaded.resolved)
                     bindings = json.loads(inputs.get("workflow_inputs") or "{}")
+                    if inputs.get("managed_assets"):
+                        from astrid.packs.vibecomfy.actions.run.run import _stage_managed_asset_manifest, resolve_inputs
+                        resolved = _stage_managed_asset_manifest(inputs["managed_assets"],
+                            readiness_profile=None, output_root=root / "host-preflight")
+                        bindings = resolve_inputs(resolved.manifest, bindings)
                     custody = None
                     if admitted_mode == "trust":
                         from astrid.core.generation.target_inventory import declared_rows
@@ -12091,12 +12108,8 @@ class GenericPackHost:
                 except ImageStoragePolicyError as exc:
                     raise HostError(str(exc)) from exc
             _assert_live_storage_envelope(storage_estimate, root, root / "outputs")
-            immutable_input_baseline = {}
-            for input_root in (root / "inputs", root / "managed-objects"):
-                immutable_input_baseline.update(
-                    self.execution_policy.immutable_input_baseline(input_root)
-                )
-            evidence_root = root
+            if cancelled():
+                raise HostCancelled("task cancelled after managed preparation")
             lifetime.assert_deadline()
             if capability_id == "vibecomfy.run":
                 execution_identity, model_id, template_id, workflow_session_requirements = (
@@ -12749,6 +12762,15 @@ class GenericPackHost:
                 if engine_preparation is not None:
                     engine_preparation.close()
             except Exception as exc:
+                # Keep the live lock object reachable. Releasing it while an
+                # owned preparation may still write would allow another job to
+                # mutate or execute the same installation. Restart/recovery
+                # remains subject to the supervisor's retained custody fence.
+                retained = getattr(self, "_uncertain_engine_preparations", None)
+                if retained is None:
+                    retained = self._uncertain_engine_preparations = []
+                retained.append(engine_preparation)
+                self._latch_cleanup_uncertainty("managed preparation cleanup is unconfirmed")
                 cleanup_errors.append(f"managed preparation release: {exc}")
             try:
                 if session_hold is not None:

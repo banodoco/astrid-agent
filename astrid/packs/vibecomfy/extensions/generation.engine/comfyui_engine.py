@@ -130,10 +130,14 @@ class ComfyUIEngine:
         self.models_root = models_root
 
     def requirements(self, entry: Any, inputs: Any) -> dict[str, Any]:
+        return self.workflow_requirements(_workflows(entry, inputs))
+
+    def workflow_requirements(self, workflows: Any) -> dict[str, Any]:
+        """Requirements of the already selected canonical graph(s), without rebuilding."""
         models: dict[tuple[str, str], dict[str, Any]] = {}
         nodes: dict[str, dict[str, Any]] = {}
         base = None
-        for workflow in _workflows(entry, inputs):
+        for workflow in workflows:
             metadata = workflow.metadata
             for asset in metadata.get("model_assets", []):
                 row = {"name": asset["name"], "subdir": asset.get("subdir") or "", "url": asset.get("url"),

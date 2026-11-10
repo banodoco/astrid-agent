@@ -5,6 +5,7 @@ from concurrent.futures import CancelledError
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 import time
 from typing import Any
@@ -19,7 +20,7 @@ def digest(value: Any) -> str:
 
 
 def read_preparation(*, task: str, attempt: str | None, endpoint: str,
-                     execution_identity: str | None = None) -> dict[str, Any] | None:
+                     execution_identity: str | None = None, inputs: Any = None) -> dict[str, Any] | None:
     """Read only the host-projected, attempt-bound preparation, never ambient policy."""
     import os
     raw = os.environ.get(PREPARATION_ENV)
@@ -36,6 +37,32 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
             or body["health"].get("healthy") is not True
             or execution_identity is not None and body["execution_identity"] != execution_identity):
         raise ValueError("managed engine preparation differs from this attempt")
+    installation = body["installation"]
+    health = body["health"]
+    if (not isinstance(installation, dict)
+            or set(installation) != {"root", "receipt_sha256", "recipe_sha256", "helper_sha256"}
+            or not isinstance(installation["root"], str) or not Path(installation["root"]).is_absolute()
+            or any(not isinstance(installation[key], str) or re.fullmatch(r"[0-9a-f]{64}", installation[key]) is None
+                   for key in ("receipt_sha256", "recipe_sha256", "helper_sha256"))
+            or set(health) != {"healthy", "object_info_sha256", "required_nodes_present"}
+            or health["required_nodes_present"] is not True
+            or not isinstance(health["object_info_sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", health["object_info_sha256"]) is None
+            or not isinstance(body["inputs"], dict) or not body["inputs"]
+            or set(body["inputs"]) - {"workflow", "python", "companion", "source"}
+            or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                   for value in body["inputs"].values())
+            or body["manifest"].get("engine") != "comfyui"
+            or set(body["manifest"]) - {"engine", "base", "models", "extra", "models_root"}
+            or not isinstance(body["manifest"].get("models_root"), str)
+            or body["alignment"].get("mode") != body["mode"]
+            or body["alignment"].get("status") not in {"ready", "unverified"}
+            or not isinstance(body["output_dir"], str)):
+        raise ValueError("managed engine preparation has invalid installation facts")
+    if inputs is not None and any(name not in inputs or not Path(inputs[name]).is_file()
+            or hashlib.sha256(Path(inputs[name]).read_bytes()).hexdigest() != expected
+            for name, expected in body["inputs"].items()):
+        raise ValueError("managed engine preparation input bytes differ from this attempt")
     return body
 
 
@@ -59,6 +86,7 @@ class ManagedEnginePreparation:
         self.context.service_client.cancelled = cancelled
         self.lock = None
         self.report = None
+        self.uncertain = False
 
     def check(self):
         if self.cancelled():
@@ -68,11 +96,22 @@ class ManagedEnginePreparation:
             raise DeadlineExceeded("managed preparation deadline exceeded")
 
     def close(self):
+        if self.uncertain:
+            from .engine_contracts import CustodyUnresolved
+            raise CustodyUnresolved("managed preparation retains an unconfirmed command; keep installation fenced")
         if self.lock is not None:
             lock, self.lock = self.lock, None
             lock.__exit__(None, None, None)
 
-    def prepare(self, workflow: Path, *, execution_identity: str, inputs: Any) -> dict[str, Any]:
+    def prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any) -> dict[str, Any]:
+        from .engine_contracts import CustodyUnresolved
+        try:
+            return self._prepare(workflow, execution_identity=execution_identity, inputs=inputs, canonical_workflow=canonical_workflow)
+        except CustodyUnresolved:
+            self.uncertain = True
+            raise
+
+    def _prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any) -> dict[str, Any]:
         from .engine_contracts import IntegrityError, effective_models_root
         from .engine_recipe import recipe_digest
         from .engine_runner import _Runner, _parse_receipt, plan_install
@@ -93,8 +132,16 @@ class ManagedEnginePreparation:
         # These checks read the saved environment identities; they do not
         # re-enter the install lock or require the HTTP service to be running.
         runner.check_environment_identities()
+        runner.step_id = "helper-identity"
+        if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
+            raise IntegrityError("managed engine helper identity differs")
+        for step in plan.steps:
+            if step.kind in {"source", "environment"}:
+                runner.execute(step, readonly=True)
+        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
+            raise IntegrityError("managed installation evidence differs from its receipt")
         engine = copy.copy(run_action._engine_for({"engine": "comfyui"}))
-        manifest = run_action._engine_manifest(engine, workflow)
+        manifest = engine.workflow_requirements([canonical_workflow])
         manifest = {**manifest, "engine": "comfyui", "models_root": effective_models_root(self.root, receipt.models_root)}
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
         lockfile = workflow.parent / "managed-custom-nodes.lock"
@@ -154,5 +201,10 @@ class ManagedEnginePreparation:
         if result.timed_out:
             raise DeadlineExceeded("managed alignment command timed out")
         if result.exit_code != 0:
-            raise IntegrityError("managed alignment command failed: " + str(result.exit_code) + ": " + result.stderr[-1500:])
+            import logging
+            logging.getLogger(__name__).error(
+                "managed alignment failed task=%s attempt=%s step=%s exit=%s stderr_sha256=%s",
+                self.task, self.attempt, argv[0], result.exit_code,
+                hashlib.sha256(result.stderr.encode()).hexdigest())
+            raise IntegrityError("managed alignment command failed; inspect the host log for this attempt")
         self.check()

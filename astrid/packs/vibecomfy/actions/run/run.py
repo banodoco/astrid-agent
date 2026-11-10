@@ -867,7 +867,10 @@ def _run_and_settle(
     # starts or reuses the installed local ComfyUI and submits to it, so it is a local_server submit.
     from astrid.core.generation.managed_preparation import read_preparation
     prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=comfy_url,
-                                execution_identity=execution_identity)
+                                execution_identity=execution_identity,
+                                inputs=({"python": workflow_path, "companion": workflow_path.with_suffix(".vibe.json"),
+                                         "source": workflow_path.with_name("source.json")}
+                                        if workflow_path.suffix == ".py" else {"workflow": workflow_path}))
     engine_local_run = not comfy_url
     if manifest is None and engine_local_run and entry:
         manifest = _entry_manifest(entry, _workflow_inputs(workflow_inputs))

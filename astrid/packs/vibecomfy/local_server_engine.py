@@ -334,7 +334,7 @@ def run_local_server(
 
     from astrid.core.generation.managed_preparation import read_preparation
     prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=url)
-    client = ComfyTargetClient(ComfyTarget(url, "managed" if prepared else "attached"))
+    client = ComfyTargetClient(ComfyTarget(url, "attached"))
     custody = _trust_from_environment(bundle)
     provider = _live_preflight(bundle, run_inputs, url, destination, client=client, target_custody=custody)
     # Unknown connected classes may not survive a canonical rewrite. Report
