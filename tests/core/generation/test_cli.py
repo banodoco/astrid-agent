@@ -296,6 +296,18 @@ def test_generation_help_does_not_load_sdk_or_start_runtime(monkeypatch, capsys)
     assert "--placement" in capsys.readouterr().out
 
 
+def test_audio_help_lists_runpod_without_excluding_sound_effects(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_generate_facade", lambda: pytest.fail("help loaded SDK"))
+    monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("help connected to Runtime"))
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["audio", "--help"])
+    assert exc.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "Audio mode: music, tts, or sfx." in help_text
+    assert "auto (default), managed, a loopback ComfyUI URL, or runpod." in help_text
+    assert "music/tts only" not in help_text
+
+
 @pytest.mark.parametrize('entrypoint', ['console', 'gateway'])
 @pytest.mark.parametrize('status,code', [('ready', 0), ('blocked', 2)])
 def test_public_launch_forwards_per_call_controls_without_runtime(

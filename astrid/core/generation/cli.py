@@ -183,8 +183,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
             "--placement", action=_Once, default='auto', metavar="PLACEMENT",
-            help=("auto (default), managed, a loopback ComfyUI URL, or runpod (music/tts only)." if 'audio_modes' in spec
-                  else "auto (default), managed, a loopback ComfyUI URL, or runpod."),
+            help="auto (default), managed, a loopback ComfyUI URL, or runpod.",
         )
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
