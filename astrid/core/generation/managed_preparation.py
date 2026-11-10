@@ -155,7 +155,16 @@ class ManagedEnginePreparation:
             from .engine_contracts import DeadlineExceeded
             raise DeadlineExceeded("managed preparation deadline exceeded")
 
-    def close(self):
+    def close(self, *, execution_root: Path | None = None, worker_drained: bool = True):
+        if not worker_drained:
+            self.uncertain = True
+        if not self.uncertain and execution_root is not None and self.report is not None:
+            from .backends.vibecomfy_local_server import cleanup_prompts
+            try:
+                cleanup_prompts(self.report["endpoint"], execution_root, confirm=True)
+            except BaseException:
+                self.uncertain = True
+                raise
         if self.uncertain:
             from .engine_contracts import CustodyUnresolved
             raise CustodyUnresolved("managed preparation retains an unconfirmed command; keep installation fenced")

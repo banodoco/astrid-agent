@@ -107,3 +107,55 @@ def test_configured_models_root_is_read_only_and_refuses_unsafe_receipt(tmp_path
     receipt.write_text('{"invalid":true}')
     with pytest.raises((IntegrityError, ValueError)):
         configured_models_root(root=str(root))
+
+
+@pytest.mark.parametrize('drained', [False, True])
+def test_preparation_retains_lock_when_worker_or_prompt_drainage_is_unconfirmed(tmp_path, monkeypatch, drained):
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep.uncertain = False
+    prep.report = {'endpoint': 'http://127.0.0.1:8188'}
+    released = []
+    prep.lock = SimpleNamespace(__exit__=lambda *args: released.append(True))
+    def cleanup(*args, **kwargs):
+        assert kwargs['confirm'] is True
+        raise TimeoutError('owned prompt remains running')
+    monkeypatch.setattr('astrid.core.generation.backends.vibecomfy_local_server.cleanup_prompts', cleanup)
+    with pytest.raises((CustodyUnresolved, TimeoutError)):
+        prep.close(execution_root=tmp_path, worker_drained=drained)
+    assert prep.uncertain and prep.lock is not None and not released
+
+
+def test_prompt_cleanup_confirms_owned_absence_and_never_cancels_foreign(tmp_path, monkeypatch):
+    from astrid.core.generation.backends.vibecomfy_local_server import cleanup_prompts
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+    path = tmp_path / '.vibecomfy-runtime/out/runs/owned/attempt.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'queue_acceptance': {'status': 'accepted', 'prompt_id': 'owned'}}))
+    calls, observations = [], iter([['owned', 'foreign'], ['foreign']])
+    class Client:
+        def __init__(self, *args): pass
+        def witness_prompt(self, value): calls.append(('witness', value))
+        def cancel_prompt(self, value): calls.append(('cancel', value))
+        def request_json(self, path):
+            return {'queue_running': [[0, value] for value in next(observations)], 'queue_pending': []}
+    monkeypatch.setattr('astrid.core.generation.backends.vibecomfy_local_server.ComfyTargetClient', Client)
+    cleanup_prompts('http://127.0.0.1:8188', tmp_path, confirm=True)
+    assert calls == [('witness', 'owned'), ('cancel', 'owned')]
+
+
+def test_prompt_cleanup_timeout_and_unknown_acceptance_refuse_release(tmp_path, monkeypatch):
+    from astrid.core.generation.backends.vibecomfy_local_server import cleanup_prompts
+    path = tmp_path / '.vibecomfy-runtime/out/runs/owned/attempt.json'
+    path.parent.mkdir(parents=True)
+    class Client:
+        def __init__(self, *args): pass
+        def witness_prompt(self, value): pass
+        def cancel_prompt(self, value): pass
+        def request_json(self, path): return {'queue_running': [[0, 'owned']], 'queue_pending': []}
+    monkeypatch.setattr('astrid.core.generation.backends.vibecomfy_local_server.ComfyTargetClient', Client)
+    path.write_text(json.dumps({'queue_acceptance': {'status': 'accepted', 'prompt_id': 'owned'}}))
+    with pytest.raises(TimeoutError, match='not drained'):
+        cleanup_prompts('http://127.0.0.1:8188', tmp_path, confirm=True, timeout=0)
+    path.write_text(json.dumps({'queue_acceptance': {'status': 'unknown', 'prompt_id': None}}))
+    with pytest.raises(ValueError, match='acceptance remains unconfirmed'):
+        cleanup_prompts('http://127.0.0.1:8188', tmp_path, confirm=True, timeout=0)

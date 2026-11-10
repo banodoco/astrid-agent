@@ -556,3 +556,62 @@ def test_trust_refuses_a_native_attempt_symlink(comfy, tmp_path, monkeypatch):
             attempt_identity='attempt-trust', comfy_url=comfy.url, profile_id='local_server',
         )
     assert outside.read_text() == '{"sentinel": true}'
+
+
+@pytest.mark.parametrize('outcome', ['success', 'failure', 'cancel'])
+def test_managed_preparation_retains_native_http_identity_on_all_outcomes(comfy, tmp_path, monkeypatch, outcome):
+    prepared = {'placement': 'managed', 'alignment': {'mode': 'align', 'status': 'ready', 'verified': True},
+                'manifest': {'models': []}, 'execution_identity': 'execution'}
+    monkeypatch.setattr('astrid.core.generation.managed_preparation.read_preparation', lambda **kwargs: prepared)
+    run = importlib.import_module('vibecomfy.runtime.run')
+    original = run.run_sync
+    observed = {}
+    def invoke(*args, **kwargs):
+        context = kwargs.get('run_context')
+        assert context is not None, 'managed run needs an exact native context on failure too'
+        observed['path'] = context.receipt_path
+        if outcome == 'failure':
+            raise ValueError('forced native failure')
+        if outcome == 'cancel':
+            raise SystemExit(143)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(run, 'run_sync', invoke)
+    def execute():
+        return production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / 'attempt' / 'outputs', task_identity='task-managed',
+            attempt_identity='attempt-managed', comfy_url=comfy.url, profile_id='local_server')
+    if outcome == 'success':
+        observed['result'] = execute()
+    else:
+        with pytest.raises(ValueError if outcome == 'failure' else SystemExit): execute()
+    attempt = json.loads(observed['path'].read_text())
+    assert attempt['placement'] == 'managed'
+    assert attempt['alignment'] == prepared['alignment']
+    assert attempt['managed_engine_preparation'] == prepared
+    if outcome == 'success':
+        assert attempt['adapter']['kind'] == 'external'
+        payload = json.loads(Path(observed['result'].managed_generation_result_path).read_text())
+        embedded = payload['evidence']['producer']['attempt']['record']
+        assert embedded['managed_engine_preparation'] == prepared
+        assert embedded['adapter']['kind'] == 'external'
+
+
+def test_managed_preparation_refuses_native_attempt_symlink(comfy, tmp_path, monkeypatch):
+    monkeypatch.setattr('astrid.core.generation.managed_preparation.read_preparation', lambda **kwargs:
+        {'placement': 'managed', 'alignment': {'mode': 'align'}, 'manifest': {'models': []}})
+    run = importlib.import_module('vibecomfy.runtime.run')
+    original = run.run_sync
+    outside = tmp_path / 'outside-managed-attempt.json'
+    outside.write_text('{"sentinel": true}')
+    def substitute(*args, **kwargs):
+        result = original(*args, **kwargs)
+        native = Path(result.managed_generation_result_path).with_name('attempt.json')
+        native.unlink()
+        native.symlink_to(outside)
+        return result
+    monkeypatch.setattr(run, 'run_sync', substitute)
+    with pytest.raises(production_engine.ProductionEngineError, match='native attempt escaped attempt custody'):
+        production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / 'attempt' / 'outputs', task_identity='task-managed',
+            attempt_identity='attempt-managed', comfy_url=comfy.url, profile_id='local_server')
+    assert outside.read_text() == '{"sentinel": true}'

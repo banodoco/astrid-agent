@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -120,7 +121,7 @@ def upload_media(
     )
 
 
-def cleanup_prompts(url: str, destination: Path) -> None:
+def cleanup_prompts(url: str, destination: Path, *, confirm: bool = False, timeout: float = 5.0) -> None:
     """Cancel only prompts witnessed in this attempt's private VibeComfy journal.
 
     This is safe to repeat after child termination: it neither clears a queue
@@ -130,12 +131,34 @@ def cleanup_prompts(url: str, destination: Path) -> None:
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
     runs = destination / ".vibecomfy-runtime" / "out" / "runs"
     for path in runs.glob("*/attempt.json"):
-        if path.is_symlink() or not path.resolve().is_relative_to(destination.resolve()):
+        if (path.is_symlink() or not path.is_file()
+                or any(part.is_symlink() for part in path.parents)
+                or not path.resolve().is_relative_to(destination.resolve())):
             raise ValueError("local_server attempt journal escaped attempt custody")
         attempt = json.loads(path.read_text(encoding="utf-8"))
         acceptance = attempt.get("queue_acceptance", {})
         prompt_id = acceptance.get("prompt_id")
-        if acceptance.get("status") != "accepted" or not isinstance(prompt_id, str) or not prompt_id:
+        status = acceptance.get("status")
+        if confirm and (status not in {"not_attempted", "rejected", "accepted"}
+                        or status == "accepted" and (not isinstance(prompt_id, str) or not prompt_id)):
+            raise ValueError("local_server prompt acceptance remains unconfirmed")
+        if status != "accepted" or not isinstance(prompt_id, str) or not prompt_id:
             continue
         client.witness_prompt(prompt_id)
         client.cancel_prompt(prompt_id)
+        if confirm:
+            deadline = time.monotonic() + timeout
+            while True:
+                queue = client.request_json("/queue")
+                identities = set()
+                for key in ("queue_running", "queue_pending"):
+                    rows = queue.get(key) if isinstance(queue, dict) else None
+                    if (not isinstance(rows, list) or any(not isinstance(row, list) or len(row) < 2
+                                                         or not isinstance(row[1], str) for row in rows)):
+                        raise ValueError("local_server prompt drainage has invalid queue identities")
+                    identities.update(row[1] for row in rows)
+                if prompt_id not in identities:
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("local_server owned prompt has not drained")
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))

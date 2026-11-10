@@ -1455,7 +1455,11 @@ def _prepare_vibecomfy_execution_identity(
         from concurrent.futures import CancelledError
         if isinstance(exc, CancelledError):
             raise
-        raise HostError(f"vibecomfy.run canonical input preflight failed: {exc}") from exc
+        error = HostError(f"vibecomfy.run canonical input preflight failed: {exc}")
+        for name in ("code", "field", "fix", "readiness"):
+            if hasattr(exc, name):
+                setattr(error, name, getattr(exc, name))
+        raise error from exc
     finally:
         if previous_headless is None:
             os.environ.pop("VIBECOMFY_HEADLESS", None)
@@ -8689,7 +8693,7 @@ class GenericPackHost:
         transport = payload["evidence"]["transport"]
         if preparation is not None:
             producer["alignment"] = preparation["alignment"]
-            transport["target"] = {"kind": "managed", "endpoint": preparation["endpoint"]}
+            transport["placement"] = "managed"
         # The bundle loader uses a fixed sibling basename. Restore the
         # admitted source identity only after checking it against the bytes
         # retained by the producer.
@@ -12039,9 +12043,16 @@ class GenericPackHost:
                     if admitted_mode == "trust":
                         from astrid.core.generation.target_inventory import declared_rows
                         custody = declared_rows(bundle.workflow)
-                    provider = _live_preflight(bundle, bindings, report["endpoint"], root / "host-preflight",
-                                               target_custody=custody)
-                    _approve_live(bundle, bindings, provider)
+                    from astrid.core.generation.target_inventory import declared_rows
+                    try:
+                        provider = _live_preflight(bundle, bindings, report["endpoint"], root / "host-preflight",
+                                                   target_custody=custody, prepared_models=declared_rows(bundle.workflow))
+                        _approve_live(bundle, bindings, provider)
+                    except Exception as error:
+                        if isinstance(getattr(error, "readiness", None), dict):
+                            error.readiness = {**error.readiness, "placement": "managed",
+                                               "target": {"kind": "managed", "endpoint": report["endpoint"]}}
+                        raise
                     assert_managed_input_identity()
                     if cancelled():
                         raise HostCancelled("task cancelled after managed schema preflight")
@@ -12787,8 +12798,10 @@ class GenericPackHost:
                         cleanup_errors.append(f"managed release: {exc}")
             try:
                 if engine_preparation is not None:
-                    engine_preparation.close()
+                    engine_preparation.close(execution_root=output_root,
+                        worker_drained=command_cleanup_error is None and not bool(self._active_processes))
             except Exception as exc:
+                retain_attempt = True
                 # Keep the live lock object reachable. Releasing it while an
                 # owned preparation may still write would allow another job to
                 # mutate or execute the same installation. Restart/recovery
