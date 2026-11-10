@@ -10,6 +10,16 @@ from astrid.core.generation.local_job import JobFileError
 
 def run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
                      align: str, **kwargs: Any) -> dict[str, Any]:
+    """Run the pod's admitted job under this action's exact runner authority."""
+    from astrid.pack_api import canonical_runtime_entrypoint
+
+    with canonical_runtime_entrypoint("vibecomfy.run"):
+        return _run_owned_action(workflow, out, task_identity=task_identity,
+                                 attempt_identity=attempt_identity, align=align, **kwargs)
+
+
+def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
+                      align: str, **kwargs: Any) -> dict[str, Any]:
     """Prepare under owned custody, then execute once against its HTTP endpoint."""
     import hashlib
     import shutil
