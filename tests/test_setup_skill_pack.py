@@ -127,3 +127,79 @@ def test_preinstalled_managed_setup_copy_is_adopted_by_sync(tmp_path):
         assert (target / '.astrid-managed-skill.json').is_file()
         assert len(list(skills_dir.glob('astrid-setup'))) == 1
         assert not any('conflict' in str(row).lower() for row in report.get('conflicts', []))
+
+
+def test_preinstall_helper_writes_durable_marker_and_default_sync_preserves_it(tmp_path, monkeypatch):
+    import importlib.util
+    import json
+    from astrid import skills
+    from astrid.skills.harnesses.base import is_managed_copy
+    helper = ROOT / 'scripts/preinstall_setup_skill.py'
+    spec = importlib.util.spec_from_file_location('preinstall_setup_skill', helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source_file = tmp_path / 'fixture.md'
+    source_file.write_text('---\nname: astrid-setup\ndescription: Fixture.\n---\nFixture body.\n')
+    home = tmp_path / 'home'
+    monkeypatch.setattr(Path, 'home', lambda: home)
+    monkeypatch.setenv('ASTRID_SETUP_SKILL_SOURCE', str(source_file))
+    monkeypatch.setenv('ASTRID_STATE_HOME', str(tmp_path / 'state'))
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
+    monkeypatch.setattr('builtins.input', lambda _prompt: 'claude')
+    assert module.main() == 0
+    target = home / '.claude/skills/astrid-setup'
+    marker = json.loads((target / '.astrid-managed-skill.json').read_text())
+    durable = tmp_path / 'data/astrid-preinstall/skills/astrid-setup'
+    assert marker == {'source': str(durable.resolve()), 'digest': module.directory_digest(durable), 'mechanism': 'copy'}
+    assert is_managed_copy(target)
+
+    with monkeypatch.context() as patch:
+        patch.setenv('HOME', str(home))
+        patch.setattr(Path, 'home', lambda: home)
+        skills.sync(harness_names=['claude'], mechanism='copy', state_path=tmp_path / 'state.json')
+    assert is_managed_copy(target)
+    assert json.loads((target / '.astrid-managed-skill.json').read_text()) == marker
+    assert (tmp_path / 'skills/claude/packs/setup/SKILL.md').is_file()
+    assert len(list((home / '.claude/skills').glob('astrid-setup'))) == 1
+
+
+def test_preinstall_helper_preserves_unmanaged_harness_entry(tmp_path, monkeypatch):
+    import importlib.util
+    helper = ROOT / 'scripts/preinstall_setup_skill.py'
+    spec = importlib.util.spec_from_file_location('preinstall_setup_skill_foreign', helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source_file = tmp_path / 'fixture.md'
+    source_file.write_text('---\nname: astrid-setup\ndescription: Fixture.\n---\n')
+    home = tmp_path / 'home'
+    target = home / '.codex/skills/astrid-setup'
+    target.mkdir(parents=True)
+    (target / 'SKILL.md').write_text('user content')
+    monkeypatch.setattr(Path, 'home', lambda: home)
+    monkeypatch.setenv('ASTRID_SETUP_SKILL_SOURCE', str(source_file))
+    monkeypatch.setenv('CODEX_HOME', str(home / '.codex'))
+    monkeypatch.setattr('builtins.input', lambda _prompt: 'codex')
+    assert module.main() == 2
+    assert (target / 'SKILL.md').read_text() == 'user content'
+
+
+def test_documented_preinstall_launcher_form_runs_with_local_helper(tmp_path):
+    import os
+    import subprocess
+    import sys
+    source = tmp_path / 'fixture.md'
+    source.write_text('---\nname: astrid-setup\ndescription: Fixture.\n---\n')
+    home = tmp_path / 'home'
+    env = {
+        **os.environ,
+        'HOME': str(home),
+        'XDG_DATA_HOME': str(tmp_path / 'data'),
+        'ASTRID_SETUP_SKILL_SOURCE': str(source),
+        'CLAUDE_CONFIG_DIR': str(home / '.claude'),
+    }
+    code = f"import urllib.request; exec(urllib.request.urlopen({(ROOT / 'scripts/preinstall_setup_skill.py').as_uri()!r}).read())"
+    result = subprocess.run([sys.executable, '-c', code], input='claude\n', text=True,
+                            capture_output=True, env=env, check=True)
+    assert 'This installs the skill only' in result.stdout
+    assert (home / '.claude/skills/astrid-setup/.astrid-managed-skill.json').is_file()

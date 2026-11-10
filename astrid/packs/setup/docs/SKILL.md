@@ -62,19 +62,23 @@ Astrid defaults are:
 - Astrid skills: on (`--skills on|off`)
 - skill copies: off (`--skill-copies on|off`)
 
-Offer skill copies as an optional installation choice. When enabled, the
-installer saves each selected skill as an Astrid-managed copy in the harness
-skills directory. Future syncs recognize the `.astrid-managed-skill.json`
-marker and update that copy. Existing unmanaged skill folders are preserved.
-For a fresh install, use the OS command below after the user approves the
-choices; use these commands only when they choose skill copies:
+Before Astrid is installed, offer to install this setup skill by itself. Ask
+which harness they are using if it is not clear. The command prompts for
+Claude Code, Codex, or Hermes and writes one copy in that harness's supported
+skills folder. It also keeps a source under the user's data directory and
+writes the exact `.astrid-managed-skill.json` ownership marker. If the target
+already exists, the command preserves it and stops. This installs the skill
+only; Astrid and its Runtime are not installed.
 
-- macOS or Linux: `curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies on`
-- Windows PowerShell: `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies on`
+- macOS or Linux: `python3 -c 'import urllib.request; exec(urllib.request.urlopen("https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py").read())'`
+- Windows PowerShell: `python -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py').read())"`
 
-If the user changes another choice, replace that flag's value with the approved
-value. The commands install Astrid and create managed copies; they do not
-require credentials or a separate skill download.
+The current default sync composes this skill into Astrid's writable view and
+preserves the preinstalled harness copy. It does not yet adopt or refresh that
+copy automatically. After Astrid is installed, the user can select the setup
+skill through Astrid's skills controls to have sync manage it. Unmanaged skill
+folders are preserved. The command downloads only the setup skill source and
+helper; it does not request credentials.
 
 Ask the user whether they want to change any choice. If they change one, use
 its new value in step 2. If the user approved an App brief, keep the brief's values,
