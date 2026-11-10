@@ -17,12 +17,26 @@ from typing import Any
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
 from astrid.packs.runpod.generation import prepare_retained_generation
 from astrid.packs.runpod.target_selection import (
-    PaidSelectionError, RunPodOffer, RunPodSelectionOwner, _digest, _number,
+    OfferObservationError, PaidSelectionError, RunPodOffer, RunPodSelectionOwner, _digest, _number,
 )
 from astrid.packs.runpod.worker_owner import _run_sync
 from astrid.packs.runpod.worker_preparation import (
     RunPodTargetContract, inspect_volume_records, resolve_existing_volume,
 )
+
+
+def _unavailable_offer_reason(reason: Any) -> str:
+    # Lifecycle discovery deliberately returns unknown rather than throwing
+    # provider response/error text. Recognize only its fixed sanitized labels.
+    if not isinstance(reason, str):
+        return "provider_observation_unavailable"
+    if reason == "RunPod GraphQL transport or JSON response unavailable":
+        return "provider_transport_or_response_unavailable"
+    if reason in {"RunPod GraphQL HTTP 401", "RunPod GraphQL HTTP 403"}:
+        return "provider_authentication_failed"
+    if reason == "RunPod GraphQL HTTP 429":
+        return "provider_rate_limited"
+    return "provider_observation_unavailable"
 
 
 async def observe_priced_offer(preferences, config) -> RunPodOffer:
@@ -40,6 +54,7 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
         datacenter = volume.get("dataCenterId")
         if not isinstance(datacenter, str) or not datacenter:
             raise PaidSelectionError("exact volume datacenter could not be confirmed")
+    unavailable = []
     for gpu in p.gpu_types:
         observed = await gpu_availability(
             api_key=config.api_key, gpu=gpu,
@@ -49,13 +64,22 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
             allowed_cuda_versions=config.allowed_cuda_versions,
             min_cuda_version=config.min_cuda_version,
         )
+        if getattr(observed, "status", None) == "unknown":
+            unavailable.append(_unavailable_offer_reason(getattr(observed, "reason", None)))
         if not observed.gpu_type_id:
             continue
         for dc in observed.datacenters:
+            if dc.status == "unknown":
+                unavailable.append(_unavailable_offer_reason(getattr(dc, "reason", None)))
+            elif dc.status == "available" and dc.price_per_hour is None:
+                unavailable.append("price_unconfirmed")
             if (dc.status != "available" or dc.price_per_hour is None or not dc.datacenter_id
                     or (datacenter is not None and dc.datacenter_id != datacenter)):
                 continue
-            rate = _number(dc.price_per_hour, "observed hourly USD rate")
+            try:
+                rate = _number(dc.price_per_hour, "observed hourly USD rate")
+            except PaidSelectionError:
+                raise OfferObservationError("price_unconfirmed") from None
             identity = {"gpu": observed.gpu_type_id, "datacenter": dc.datacenter_id,
                         "hourly_usd": rate, "preferences": p.as_mapping(),
                         "container_disk_gb": config.container_disk_gb,
@@ -63,7 +87,13 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
                         "min_cuda_version": config.min_cuda_version}
             return RunPodOffer(p.provider_account_ref, gpu, rate, _digest(identity),
                                dc.datacenter_id, observed.gpu_type_id)
-    raise PaidSelectionError("no requested GPU has confirmed stock and price in the selected datacenter")
+    # Unknown provider evidence never proves that every selected GPU is sold out.
+    # A later confirmed offer still wins, preserving the existing choice order.
+    # Lifecycle's aggregate unknown can hide a more useful DC-level reason.
+    # Keep the first specific reason in observation order when failures differ.
+    reason = next((item for item in unavailable if item != "provider_observation_unavailable"),
+                  unavailable[0] if unavailable else "stock_unavailable")
+    raise OfferObservationError(reason)
 
 
 def broker_selection(preferences, config, *, account_ref, data_root, compatibility):
