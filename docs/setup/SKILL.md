@@ -64,6 +64,24 @@ Astrid defaults are:
 - Astrid skills: on (`--skills on|off`)
 - skill copies: off (`--skill-copies on|off`)
 
+Before Astrid is installed, offer to install this setup skill by itself. Ask
+which harness they are using if it is not clear. The command prompts for
+Claude Code, Codex, or Hermes and writes one copy in that harness's supported
+skills folder. It also keeps a source under the user's data directory and
+writes the exact `.astrid-managed-skill.json` ownership marker. If the target
+already exists, the command preserves it and stops. This installs the skill
+only; Astrid and its Runtime are not installed.
+
+- macOS or Linux: `python3 -c 'import urllib.request; exec(urllib.request.urlopen("https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py").read())'`
+- Windows PowerShell: `python -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py').read())"`
+
+The current default sync composes this skill into Astrid's writable view and
+preserves the preinstalled harness copy. It does not yet adopt or refresh that
+copy automatically. After Astrid is installed, the user can select the setup
+skill through Astrid's skills controls to have sync manage it. Unmanaged skill
+folders are preserved. The command downloads only the setup skill source and
+helper; it does not request credentials.
+
 Ask the user whether they want to change any choice. If they change one, use
 its new value in step 2. If the user approved an App brief, keep the brief's values,
 and when the user changes one, use the new value for that choice only. Do not run the install until the choices are settled. Then
