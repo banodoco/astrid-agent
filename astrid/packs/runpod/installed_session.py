@@ -79,9 +79,16 @@ class InstalledVibeComfySessionTransport:
             files = {name: self._read(root, registry + "/" + name, deadline) for name in _NAMES}
             config, marker = _json(files["config.json"]), _json(files["launch.json"])
             launch = adapter.start_request(recipe, root, deadline=deadline, models_root=receipt.models_root)
-            launch_value = {"argv": list(launch.argv), "cwd": launch.cwd, "env": dict(launch.env)}
-            launch_sha = engine_runner._sha(launch_value)
             facts = next(s.facts for s in receipt.steps if s.kind == "start")
+            if "cuda_visible_devices" not in facts:
+                raise ManagedSessionError("installed launch has no bound GPU visibility")
+            visibility = facts["cuda_visible_devices"]
+            if visibility is not None and (not isinstance(visibility, str) or "\0" in visibility
+                                           or len(visibility.encode("utf-8")) > 4096):
+                raise ManagedSessionError("installed launch GPU visibility is invalid")
+            launch_value = {"argv": list(launch.argv), "cwd": launch.cwd,
+                            "env": {**dict(launch.env), "CUDA_VISIBLE_DEVICES": visibility}}
+            launch_sha = engine_runner._sha(launch_value)
             if (facts.get("owner_id") != marker.get("launch_token")
                     or facts.get("launch_sha256") != launch_sha):
                 raise ManagedSessionError("installed receipt and registry launch owner differ")

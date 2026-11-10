@@ -282,7 +282,7 @@ def _runpod_preferences(client):
     return read_runpod_preferences().as_mapping()
 
 
-def _runpod_placement_policy(controls, *, engine, machine=None):
+def _runpod_placement_policy(controls, *, engine, machine=None, placement_policy=None):
     """Snapshot the user's disclosed offer and preferences into the task.
 
     ``machine`` pins the job to one live lease (its machine id); by default the
@@ -294,16 +294,21 @@ def _runpod_placement_policy(controls, *, engine, machine=None):
     names = ("offer_digest", "preparation_seconds", "execution_seconds", "idle_seconds")
     if any(controls.get(name) is None for name in names):
         raise GenerationInputError("RunPod requires the disclosed offer digest and preparation, execution and idle bounds")
-    return {"kind": "runpod", "engine": engine, "preferences": _runpod_preferences(controls.get("client")),
+    preferences = _runpod_preferences(controls.get("client"))
+    if placement_policy is not None:
+        if placement_policy.gpu_types:
+            preferences["gpu_types"] = list(placement_policy.gpu_types)
+    return {"kind": "runpod", "engine": engine, "preferences": preferences,
             **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"]),
-            **({"machine": machine} if machine else {})}
+            **({"machine": machine} if machine else {}),
+            **({"placement_idle_seconds": placement_policy.idle_timeout_s} if placement_policy is not None else {})}
 
 
-def _runpod_operation(operation, *, client, wait, include_quote=False):
+def _runpod_operation(operation, *, client, wait, include_quote=False, preferences=None):
     """Submit an ordinary task to the retained host's target owner."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
-    policy = {"kind": "runpod", "engine": "comfyui", "preferences": _runpod_preferences(client)}
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences if preferences is not None else _runpod_preferences(client)}
     inputs = {"placement_policy": json.dumps(policy, sort_keys=True, separators=(',', ':'), allow_nan=False)}
     if operation == 'status':
         inputs['include_quote'] = include_quote
@@ -313,8 +318,9 @@ def _runpod_operation(operation, *, client, wait, include_quote=False):
                   wait=wait, read_managed_outputs=False)
 
 
-def _runpod_status(*, client, include_quote):
-    result = _runpod_operation('status', client=client, wait=True, include_quote=include_quote)
+def _runpod_status(*, client, include_quote, preferences=None):
+    result = _runpod_operation('status', client=client, wait=True, include_quote=include_quote,
+                               preferences=preferences)
     if not result.ok:
         raise CapabilityInvocationError('target status task failed', details={'error': result.error})
     settled = result.raw_result.get('result', {})
@@ -1021,9 +1027,15 @@ class GenerationFacade:
         from astrid.core.generation.entries import describe_entry, describe_workflow
         if placement is not None:
             _generation_controls(engine=engine, consent=(), max_usd=None, deadline=None)
-            if placement != 'runpod' or entry is not None or workflow is not None:
+            from astrid.core.generation import placement as placements
+            resolved = placements.validate_placement(placements.resolve_placement(
+                placements.request_from_selector(placement), client=client))
+            if resolved.kind != 'runpod' or entry is not None or workflow is not None:
                 raise GenerationInputError('target describe requires only target=runpod')
-            return _runpod_status(client=client, include_quote=True)
+            preferences = _runpod_preferences(client)
+            if resolved.policy.gpu_types:
+                preferences['gpu_types'] = list(resolved.policy.gpu_types)
+            return _runpod_status(client=client, include_quote=True, preferences=preferences)
         if bool(entry) == bool(workflow):
             raise GenerationInputError('describe requires an entry or a workflow')
         return describe_entry(entry, mode=mode) if entry else describe_workflow(Path(workflow), mode=mode)
@@ -1289,8 +1301,10 @@ class GenerationFacade:
         if is_remote_target:
             _runpod_paid_controls(controls)
         # Validate paid bounds now; the engine follows the selected entry below.
-        placement_policy = (_runpod_placement_policy(controls, engine=None, machine=placement.machine)
-                            if is_remote_target and not dry_run else None)
+        placement_policy = (_runpod_placement_policy(controls, engine=None, machine=placement.machine,
+                                                     placement_policy=placement.policy)
+                            if is_remote_target and not dry_run else
+                            {"kind": "local", "device": placement.device} if is_managed_target else None)
         runpod_engine = pending_target = None
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):
@@ -1552,7 +1566,7 @@ class GenerationFacade:
                 fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
         entry_id, workflow, bundle, plan, schema, approval, assets = selected
-        if placement_policy is not None:
+        if is_remote_target and placement_policy is not None:
             placement_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
         from astrid.core.generation.targets import TargetRecord

@@ -517,7 +517,8 @@ class RunPodMachine:
                 prepared = prepare_retained_generation(
                     request, consent=consent, lease_owner=owner, placement=adapter.placement,
                     installation=adapter.installation, validate=adapter.validate,
-                    requested_idle_seconds=policy["idle_seconds"], on_acquired=on_acquired,
+                    requested_idle_seconds=min(policy.get("placement_idle_seconds", policy["idle_seconds"]),
+                                               policy["idle_seconds"]), on_acquired=on_acquired,
                     entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
                     manifest_rows=manifest_rows,
                 )
@@ -534,7 +535,8 @@ class RunPodMachine:
         record = lease.lease.claim
         return {"placement": KIND, "machine": "runpod.runpod", "id": lease.claim.pod_id,
                 "lease": lease.lease.operation_id, "generation": lease.lease.generation,
-                "device": lease.custody.get("gpu_type") or record.get("gpu_type"), "warm": lease.warm}
+                "device": lease.custody.get("gpu_type") or record.get("gpu_type"), "warm": lease.warm,
+                "idle_timeout_s": record["lease"]["idle_seconds"]}
 
     # -- start ---------------------------------------------------------------
 
@@ -882,7 +884,8 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
     live = record.get("state") == "claimed" and lease.get("state") in {"active", "idle"}
     return {"id": record.get("pod_id"), "kind": KIND, "lease": record.get("operation_id"),
             "gpu": record.get("gpu_type"), "state": lease.get("state") if live else "ended",
-            "live": live, "idle_expires_at": lease.get("idle_expires_at") if lease.get("state") == "idle" else None,
+            "live": live, "idle_timeout_s": lease.get("idle_seconds"),
+            "idle_expires_at": lease.get("idle_expires_at") if lease.get("state") == "idle" else None,
             "cost_usd": round(float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0), 4),
             "ended": None if live else (lease.get("ended") or lease.get("release_reason"))}
 

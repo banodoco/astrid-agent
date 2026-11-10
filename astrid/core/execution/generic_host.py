@@ -11960,6 +11960,7 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            local_device = None
             placement_policy = inputs.get("placement_policy")
             if record.definition.metadata.get("host_target_operation") and not placement_policy:
                 raise HostError("host target operation requires a target policy")
@@ -11977,14 +11978,21 @@ class GenericPackHost:
                     raise HostError("host target policy must be an object")
                 if cancelled():
                     raise HostCancelled("task cancelled before target acquisition")
-                target_context = self._host_target_bindings(policy.get("kind"))
+                if policy.get("kind") == "local" and not target_operation:
+                    if (set(policy) != {"kind", "device"} or
+                            policy["device"] is not None and (type(policy["device"]) is not int or policy["device"] < 0)):
+                        raise HostError("invalid local placement device")
+                    local_device = policy["device"]
+                    target_context = None
+                else:
+                    target_context = self._host_target_bindings(policy.get("kind"))
                 if target_operation:
                     include_quote = inputs.get("include_quote", False)
                     if type(include_quote) is not bool:
                         raise HostError("target quote selection must be boolean")
                     target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote)
                     inputs.pop("include_quote", None)
-                else:
+                elif target_context is not None:
                     # A rented placement is a generation.machine: the whole local
                     # run happens there and only its outputs come back.
                     machine_policy = policy
@@ -12005,9 +12013,10 @@ class GenericPackHost:
                 admitted_mode = _align_admission(task_data).get("align", "check")
                 engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
-                    scratch=root / "engine-preparation")
+                    scratch=root / "engine-preparation", device=local_device)
                 _terminal["machine"] = {**_local_machine({}), "placement": "managed",
-                                         "id": engine_preparation.root}
+                                         "id": engine_preparation.root,
+                                         "device": engine_preparation.visibility if engine_preparation.visibility is not None else "auto"}
                 original_input_digests = {name: hashlib.sha256(Path(value).read_bytes()).hexdigest()
                     for name, value in inputs.items() if name in {"workflow", "python", "companion", "source"} and value}
                 original_baseline = dict(immutable_input_baseline)
@@ -12264,7 +12273,7 @@ class GenericPackHost:
                     _terminal["machine"] = _local_machine(inputs)
                     if engine_preparation is not None:
                         _terminal["machine"].update(placement="managed", machine="local",
-                            id=engine_preparation.root)
+                            id=engine_preparation.root, device=engine_preparation.visibility if engine_preparation.visibility is not None else "auto")
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,

@@ -38,6 +38,7 @@ from urllib.parse import urlsplit,parse_qs
 from PIL import Image
 port=int(sys.argv[1]); started=Path(sys.argv[3]); histories={}
 with started.open('a') as stream:stream.write(str(os.getpid())+'\n')
+(started.parent/'device-env').write_text(os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>'))
 schema={name:{} for name in ('MiniMaxH3ReferenceToVideo','UNETLoader','VAELoader','VHS_VideoCombine')}
 schema.update({
  'EmptyImage':{'input':{'required':{'width':['INT',{'default':16}],'height':['INT',{'default':16}],'batch_size':['INT',{'default':1}],'color':['INT',{'default':0}]}},'output':['IMAGE'],'output_name':['IMAGE'],'output_node':False,'python_module':'nodes'},
@@ -119,8 +120,8 @@ def artifact_server():
         server.shutdown(); server.server_close(); thread.join()
 
 
-@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema', 'trust'],
-                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker', 'trust-skips-absent-auxiliary'])
+@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema', 'trust', 'device-explicit', 'device-default', 'device-ambient'],
+                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker', 'trust-skips-absent-auxiliary', 'device-explicit', 'device-default', 'device-ambient'])
 def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, real_runtime, managed_install, artifact_server, failure):
     from vibecomfy.workflow_bundle import emit_bundle_with_candidate
     from vibecomfy.security.provenance import Provenance
@@ -163,11 +164,20 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         events.append('align')
         assert mode == ('trust' if failure == 'trust' else 'align') and manifest['models_root'] == str(root / 'models')
         assert any(row['name'] == artifact.name for row in manifest['models'])
-        assert not started.exists(), 'server started before host alignment'
+        if failure != 'device-ambient' or events.count('align') == 1:
+            assert not started.exists(), 'server started before host alignment'
         if failure == 'align':
             raise ValueError('forced managed align failure')
         return original_align(self, manifest, mode, **kwargs)
     monkeypatch.setattr(type(engine), 'align', align)
+
+    service_launches = []
+    original_service_call = engine_custody.LinuxEngineServiceClient.call
+    def record_service_call(self, operation, payload, **kwargs):
+        if operation == 'probe':
+            service_launches.append(payload['launch']['env'].get('CUDA_VISIBLE_DEVICES'))
+        return original_service_call(self, operation, payload, **kwargs)
+    monkeypatch.setattr(engine_custody.LinuxEngineServiceClient, 'call', record_service_call)
 
     original_command = ManagedEnginePreparation._command
     def command(self, argv):
@@ -253,14 +263,27 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         controls = {"client": sdk, "project": project_id}
         imported = {name: _import_generation_member(path, controls) for name, path in {
             "python": bundle / "workflow.py", "companion": bundle / "workflow.vibe.json", "source": source}.items()}
-        result = sdk.invoke_result('vibecomfy.run', kind='action', project=project_id,
+        if failure in {'device-explicit', 'device-default', 'device-ambient'}:
+            from astrid.sdk.generation import GenerationFacade
+            from astrid.core.generation import settings
+            if failure == 'device-ambient':
+                monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0')
+                placement = 'managed'
+            else:
+                settings.update(lambda document: document['placement'].update({'kind': 'local', 'device': 1}), sdk)
+                placement = {'device': 2} if failure == 'device-explicit' else 'auto'
+            result = GenerationFacade().workflow(workflow=bundle / 'workflow.py', placement=placement,
+                inputs={}, client=sdk, project=project_id, align='align', wait=True,
+                timeout_seconds=120, poll_seconds=0.05)
+        else:
+            result = sdk.invoke_result('vibecomfy.run', kind='action', project=project_id,
             inputs={**imported, 'workflow_inputs': '{}',
                     'generation_intent': {'version': 1, 'modality': 'image', 'partial_success_policy': 'reject',
                         'groups': [{'group_key': 'main', 'selectors': [{'selector': 'main-0', 'ordinal': 0,
                             'variant_key': 'original', 'required': True}]}], 'metadata': {'model': 'workflow', 'align': 'trust' if failure == 'trust' else 'align'}}},
             wait=True, timeout_seconds=120, poll_seconds=0.05)
         assert receipt_written.wait(10), 'host terminal receipt did not complete after Runtime settlement'
-        if failure and failure != 'trust':
+        if failure and failure not in {'trust', 'device-explicit', 'device-default', 'device-ambient'}:
             assert not result.ok
             assert 'prepare' in events and 'align' in events, (events, result.to_dict())
             if failure != 'align':
@@ -283,6 +306,19 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
             assert (root / 'prompts').is_file()
             receipt = json.loads((tmp_path / 'attempt/result.json').read_text())
             assert receipt['machine']['placement'] == 'managed'
+            if failure in {'device-explicit', 'device-default', 'device-ambient'}:
+                expected = {'device-explicit': '2', 'device-default': '1', 'device-ambient': '0'}[failure]
+                assert (root / 'device-env').read_text() == expected
+                assert receipt['machine']['device'] == expected
+                if failure == 'device-ambient':
+                    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '1')
+                    with pytest.raises(Exception, match='engine supervisor: endpoint_ownership'):
+                        GenerationFacade().workflow(workflow=bundle / 'workflow.py', placement='managed',
+                            inputs={}, client=sdk, project=project_id, align='align', wait=True,
+                            timeout_seconds=120, poll_seconds=0.05)
+                    assert service_launches[-2:] == ['0', '1']
+                    assert (root / 'device-env').read_text() == '0'
+                    assert len(started.read_text().splitlines()) == 1
             assert receipt['managed_engine_preparation']['placement'] == 'managed'
             if failure != 'trust':
                 assert artifact_hits and 'native-doctor' in events and 'native-prepare' in events
@@ -299,6 +335,29 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         worker.join(timeout=35)
         host.shutdown()
         daemon.stop()
+
+
+@pytest.fixture
+def managed_install_with_ambient(monkeypatch, request):
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '2')
+    return request.getfixturevalue('managed_install')
+
+
+def test_real_status_and_readiness_use_installed_visibility(managed_install_with_ambient, monkeypatch):
+    from astrid.core.generation import engine_readiness
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+    client, payload, recipe, root, started, bootstrap = managed_install_with_ambient
+    assert payload['launch']['env']['CUDA_VISIBLE_DEVICES'] == '2'
+    monkeypatch.delenv('CUDA_VISIBLE_DEVICES')
+    deadline = time.monotonic() + 90
+    receipt = engine_readiness.canonical_status(root=str(root), deadline=deadline)
+    assert receipt.status == 'installed', receipt
+    start = next(step.facts for step in receipt.steps if step.kind == 'start')
+    assert start['cuda_visible_devices'] == '2'
+    health, launch = engine_readiness._owned_health(str(root), recipe, LinuxPlatformAdapter(recipe.platform),
+        start['owner_id'], deadline, models_root=receipt.models_root, visibility=start['cuda_visible_devices'])
+    assert health['healthy'] and launch['env']['CUDA_VISIBLE_DEVICES'] == '2'
+    assert len(started.read_text().splitlines()) == 1
 
 
 def test_plain_workflow_preparation_does_not_write_beside_admitted_input(tmp_path, monkeypatch, managed_install):

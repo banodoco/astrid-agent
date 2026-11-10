@@ -256,7 +256,8 @@ def installation(tmp_path_factory, request):
     from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
     # The engine env (pycache prefix included) comes from the adapter, as the runner builds it.
     bound = LinuxPlatformAdapter(PLATFORM).start_request(recipe, str(root), deadline=time.monotonic() + 5)
-    launch = {"argv": tiny["argv"], "cwd": str(comfy), "env": dict(bound.env)}
+    launch = {"argv": tiny["argv"], "cwd": str(comfy),
+              "env": {**dict(bound.env), "CUDA_VISIBLE_DEVICES": "2" if a04_source else os.environ.get("CUDA_VISIBLE_DEVICES")}}
     payload = {**identity, "schema": custody._SCHEMA, "launch": launch, "owner_id": None,
                "timeout_seconds": recipe.health.timeout_seconds,
                "poll_interval_seconds": recipe.health.poll_interval_seconds}
@@ -272,7 +273,8 @@ def installation(tmp_path_factory, request):
             {e.name: "a" * 64 for e in recipe.environments}, {s.name: s.pin.revision for s in recipe.sources},
             (),  # Plan 32 T5h: a model-free install records no model rows; align fetches a job's rows later.
             tuple(StepReceipt(s.id, s.kind, "executed", "passed",
-                              {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"]}
+                              {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"],
+                               "cuda_visible_devices": launch["env"]["CUDA_VISIBLE_DEVICES"]}
                               if s.kind == "start" else {}) for s in plan.steps),
             HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None,
         )
@@ -350,6 +352,9 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     bearer = (state / "engine-bearer.token").read_bytes()
     out = _harness(installation, state)
     assert out["ok"] is True, out.get("reason")
+    # The retained release runs without this variable; the receipt carries it.
+    if installation["tiny"].get("vibecomfy_revision"):
+        assert installation["payload"]["launch"]["env"]["CUDA_VISIBLE_DEVICES"] == "2"
     # Real producer ran from the retained release; VibeComfy came only from the selected checkout.
     assert Path(out["readiness_origin"]) == release / "site/astrid/core/generation/engine_readiness.py"
     assert Path(out["vibecomfy_origin"]) == root / "runtime/vibecomfy/vibecomfy/__init__.py"

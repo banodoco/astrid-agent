@@ -96,7 +96,8 @@ def _launch(recipe, root):
     from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
 
     request = LinuxPlatformAdapter(recipe.platform).start_request(recipe, str(root), deadline=time.monotonic() + 5)
-    return {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+    return {"argv": list(request.argv), "cwd": request.cwd,
+            "env": {**dict(request.env), "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES")}}
 
 
 def _client(identity):
@@ -905,7 +906,7 @@ LocalLinuxExecutionContext.run=run
             {"cpu": lock_digest}, {s.name: s.pin.revision for s in recipe.sources},
             tuple(model_results),
             tuple(StepReceipt(s.id, s.kind, "executed", "passed", {"owner_id": facts["owner_id"],
-                "launch_sha256": facts["launch_sha256"]} if s.kind == "start" else {}) for s in plan.steps),
+                "launch_sha256": facts["launch_sha256"], "cuda_visible_devices": payload["launch"]["env"]["CUDA_VISIBLE_DEVICES"]} if s.kind == "start" else {}) for s in plan.steps),
             HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None)
         (root / ".astrid-engine/install.json").write_text(_json(_plain(receipt)))
         yield client, payload, recipe, root, started, program_path
@@ -1266,6 +1267,40 @@ def test_changed_launch_or_installation_cannot_reuse_service(session):
     assert len(started.read_text().splitlines()) == 1
 
 
+def test_device_launch_is_bound_to_owned_process(session):
+    client, payload, recipe, root, mode, started = session
+    launch = payload["launch"]
+    chosen = {**payload, "launch": {**launch, "env": {**launch["env"], "CUDA_VISIBLE_DEVICES": "2"}}}
+    first = _call(client, chosen)
+    assert _call(client, chosen, "probe")["owner_id"] == first["owner_id"]
+    other = {**chosen, "launch": {**chosen["launch"], "env": {**launch["env"], "CUDA_VISIBLE_DEVICES": "3"}}}
+    with pytest.raises(EndpointOwnershipError):
+        _call(client, other, "probe")
+    injected = {**chosen, "launch": {**chosen["launch"], "env": {**chosen["launch"]["env"], "EVIL": "1"}}}
+    with pytest.raises(EndpointOwnershipError):
+        _call(client, injected, "probe")
+    assert len(started.read_text().splitlines()) == 1
+
+
+def test_ambient_visibility_is_bound_including_unset_and_empty(session, monkeypatch):
+    client, payload, recipe, root, mode, started = session
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    launch = payload["launch"]
+    def requested(value):
+        return {**payload, "launch": {**launch, "env": {**launch["env"], "CUDA_VISIBLE_DEVICES": value}}}
+    first = _call(client, requested("0"))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert _call(client, requested("0"), "probe")["owner_id"] == first["owner_id"]
+    for value in ("1", "", None):
+        with pytest.raises(EndpointOwnershipError):
+            _call(client, requested(value), "probe")
+    legacy_env = dict(launch["env"])
+    legacy_env.pop("CUDA_VISIBLE_DEVICES")
+    with pytest.raises(EndpointOwnershipError):
+        _call(client, {**payload, "launch": {**launch, "env": legacy_env}}, "probe")
+    assert len(started.read_text().splitlines()) == 1
+
+
 def _running_client(client, root, witness):
     code = f"from pathlib import Path;import os,time;Path({str(witness)!r}).write_text(str(os.getpid()));time.sleep(60)"
     program = f'''
@@ -1450,7 +1485,8 @@ def installed_consumer(session, monkeypatch):
         tuple(DownloadResult(m.name, str(root / "models" / m.destination), "skipped",
                              m.bytes, m.sha256, True, 0) for m in models.models),
         tuple(StepReceipt(s.id, s.kind, "executed", "passed",
-                          {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"]}
+                          {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"],
+                           "cuda_visible_devices": payload["launch"]["env"]["CUDA_VISIBLE_DEVICES"]}
                           if s.kind == "start" else {}) for s in plan.steps),
         HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None,
     )

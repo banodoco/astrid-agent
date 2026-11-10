@@ -283,8 +283,11 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 
 
+_INHERIT_VISIBILITY = object()
+
+
 class _Runner:
-    def __init__(self, plan, context, adapter, deadline):
+    def __init__(self, plan, context, adapter, deadline, *, device=None, visibility=_INHERIT_VISIBILITY):
         _deadline(deadline)
         if not isinstance(plan, InstallPlan):
             raise RecipeValidationError("install_engine requires an InstallPlan")
@@ -300,6 +303,14 @@ class _Runner:
             raise UnsupportedPlatform("Windows runner execution requires the A7 adapter")
         if adapter.validate_root(plan.root) != plan.root:
             raise UnsafePathError("adapter changed the bound install root")
+        if device is not None and (type(device) is not int or device < 0):
+            raise RecipeValidationError("invalid local GPU device")
+        self.device = device
+        self.visibility = (str(device) if device is not None else
+                           os.environ.get("CUDA_VISIBLE_DEVICES") if visibility is _INHERIT_VISIBILITY else visibility)
+        if self.visibility is not None and (not isinstance(self.visibility, str) or "\0" in self.visibility
+                                            or len(self.visibility.encode("utf-8")) > 4096):
+            raise RecipeValidationError("invalid local GPU visibility")
         self.plan, self.context, self.adapter, self.deadline = plan, context, adapter, deadline
         self.helper_sha256 = _sha(helper_manifest(self.recipe))
         self.env = engine_process_env(adapter.environment(self.recipe, plan.root), plan.root)
@@ -456,7 +467,9 @@ class _Runner:
             raise RecipeValidationError("adapter launch differs from verified recipe", step_id=self.step_id)
         if any(request.env.get(k) != v for k, v in expected["env"].items()):
             raise RecipeValidationError("adapter launch environment differs from recipe", step_id=self.step_id)
-        return {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+        env = dict(request.env)
+        env["CUDA_VISIBLE_DEVICES"] = self.visibility
+        return {"argv": list(request.argv), "cwd": request.cwd, "env": env}
 
     def placeholder_values(self, environment=None):
         if environment is None:
@@ -697,7 +710,8 @@ class _Runner:
         if probe["state"] == "owned":
             if self.models_config_helper("models-config-check") != {"valid": True}:
                 raise IntegrityError("owned engine models configuration differs", step_id=self.step_id)
-            return "skipped", {"owner_id": self.service_owner, "launch_sha256": _sha(launch)}
+            return "skipped", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
+                               "cuda_visible_devices": self.visibility}
         if readonly:
             raise EndpointHealthError("owned engine server is absent", step_id=self.step_id)
         if self.models_config_helper("models-config") != {"written": True}:
@@ -705,7 +719,8 @@ class _Runner:
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
             raise EndpointOwnershipError("server start did not establish ownership", step_id=self.step_id)
-        return "executed", {"owner_id": self.service_owner, "launch_sha256": _sha(launch)}
+        return "executed", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
+                            "cuda_visible_devices": self.visibility}
 
     def check_health(self):
         if self.models_config_helper("models-config-check") != {"valid": True}:
@@ -987,7 +1002,11 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
         from .engine_platforms import platform_adapter
     except ImportError as exc:
         raise UnsupportedPlatform("installed status requires the A2 production Linux adapter") from exc
-    runner = _Runner(plan, context, platform_adapter(platform), deadline)
+    start_facts = next(step.facts for step in receipt.steps if step.kind == "start")
+    if "cuda_visible_devices" not in start_facts:
+        raise IntegrityError("installed launch has no bound GPU visibility")
+    runner = _Runner(plan, context, platform_adapter(platform), deadline,
+                     visibility=start_facts["cuda_visible_devices"])
     runner.receipt_id, runner.started_at = receipt.receipt_id, receipt.started_at
     failed_step_id = "helper-identity"
     try:

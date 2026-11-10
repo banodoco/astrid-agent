@@ -7,6 +7,7 @@ from contextvars import ContextVar
 import copy
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 import time
@@ -149,12 +150,14 @@ class ManagedEnginePreparation:
     The install lock excludes another host's preparation and installation while
     the HTTP worker runs. No worker receives this object or its control socket.
     """
-    def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any, scratch: Path):
+    def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any, scratch: Path, device: int | None = None):
         from .engine_execution import create_local_backend
         from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
         from .engine_recipe import load_recipe
 
         self.task, self.attempt, self.mode = task, attempt, mode
+        self.device = device
+        self.visibility = str(device) if device is not None else os.environ.get("CUDA_VISIBLE_DEVICES")
         self.scratch = scratch
         self.deadline, self.cancelled = deadline, cancelled
         self.root = default_engine_root("comfyui")
@@ -219,7 +222,7 @@ class ManagedEnginePreparation:
         receipt = _parse_receipt(raw, plan)
         if receipt.status != "installed":
             raise IntegrityError("managed preparation requires a completed installation")
-        runner = _Runner(plan, self.context, self.adapter, self.deadline)
+        runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
         # These checks read the saved environment identities; they do not
         # re-enter the install lock or require the HTTP service to be running.
         runner.check_environment_identities()

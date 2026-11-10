@@ -498,8 +498,8 @@ def journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
 
     state = {}
 
-    def start(volume=None):
-        preferences = {"provider_account_ref": "cpu-fixture", "gpu_types": ["CPU fixture GPU"],
+    def start(volume=None, gpu_types=None):
+        preferences = {"provider_account_ref": "cpu-fixture", "gpu_types": gpu_types or ["CPU fixture GPU"],
             "image": "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404"
                      "@sha256:24795acee5856a3e6d383e879ccdd53edd25d24ea38d0edab5a1d3718ea385e6",
             "volume": ({"id": None, "name": None, "size_gb": 0, "mount_path": "/workspace"} if volume is None
@@ -551,6 +551,7 @@ def journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
         assert project.ok, project.error
         project_id = project.data["project_id"]
         owner.select_project(project_id, idempotency_key="select")
+        target_selection.save_runpod_preferences(preferences, client=client)
         packs = Path(__file__).resolve().parents[2] / "astrid" / "packs"
         host = GenericPackHost(pack_roots=[packs / "vibecomfy", packs / "runpod"],
             client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token), attempt_base=tmp_path / "attempts",
@@ -569,14 +570,14 @@ def journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
         assert setup.ok, setup.to_dict()
         return state
 
-    def image(*, wait=True, invocation=None):
+    def image(*, wait=True, invocation=None, placement="runpod", idle_seconds=1800):
         client = state["client"]
-        quote = GenerationFacade().describe(placement="runpod", client=client)
-        return GenerationFacade().image(entry="cpu-image", placement="runpod", client=client,
+        quote = GenerationFacade().describe(placement=placement, client=client)
+        return GenerationFacade().image(entry="cpu-image", placement=placement, client=client,
             project=state["project"], consent=("paid",), max_usd=1.5,
             deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
             offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-            idle_seconds=1800, wait=wait)
+            idle_seconds=idle_seconds, wait=wait)
 
     def record():
         return json.loads(state["claim_path"].read_text())
@@ -680,6 +681,57 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     _released(provider, j.release())
     order = [e[0] for e in provider.events if e[0] in {"pod-delete", "pod-404"}]
     assert order[:2] == ["pod-delete", "pod-404"]
+
+
+def test_resolved_runpod_policy_controls_the_claim_and_warm_hold(journey):
+    j = journey
+    state = j.start(gpu_types=["gpu-exact"])
+    result = j.image(placement={"kind": "runpod", "policy": {
+        "gpu_types": ["CPU fixture GPU"], "idle_timeout_s": 0}})
+    assert result.ok, result.to_dict()
+    lease = j.record()["lease"]
+    assert lease["idle_seconds"] == 0
+    assert state["client"].tasks.show(result.task_id).data["result"]["machine"]["idle_timeout_s"] == 0
+    assert state["provider"].deploys == 1
+
+
+@pytest.mark.parametrize("placement", ["runpod", {"kind": "runpod", "policy": {"idle_timeout_s": 300}}],
+                         ids=["default", "explicit"])
+def test_paid_idle_bound_caps_placement_and_reports_effective_timeout(journey, placement):
+    from astrid.sdk.generation import _runpod_operation
+    j = journey
+    state = j.start()
+    result = j.image(placement=placement, idle_seconds=30)
+    assert result.ok, result.to_dict()
+    lease = j.record()["lease"]
+    assert lease["idle_seconds"] == 30
+    machine = state["client"].tasks.show(result.task_id).data["result"]["machine"]
+    assert machine["idle_timeout_s"] == 30
+    status = _runpod_operation("status", client=state["client"], wait=True)
+    assert status.ok, status.to_dict()
+    payload = status.raw_result['result']
+    payload = payload.get('payload', payload)
+    assert payload['target_operation']['lease']['idle_timeout_s'] == 30
+    listing = _runpod_operation("ls", client=state["client"], wait=True)
+    assert listing.ok, listing.to_dict()
+    listing_payload = listing.raw_result['result']
+    listing_payload = listing_payload.get('payload', listing_payload)
+    assert listing_payload['target_operation']['leases'][0]['lease']['idle_timeout_s'] == 30
+    _released(state["provider"], j.release())
+
+
+def test_overridden_gpu_lease_remains_manageable_with_saved_preferences(journey):
+    from astrid.sdk.generation import _runpod_operation
+    j = journey
+    state = j.start(gpu_types=["gpu-exact"])
+    result = j.image(placement={"kind": "runpod", "policy": {
+        "gpu_types": ["CPU fixture GPU"], "idle_timeout_s": 300}})
+    assert result.ok, result.to_dict()
+    assert j.record()["lease"]["state"] == "idle"
+    for operation in ("status", "ls"):
+        result = _runpod_operation(operation, client=state["client"], wait=True)
+        assert result.ok, result.to_dict()
+    _released(state["provider"], j.release())
 
 
 def test_a_failed_reset_releases_the_pod_instead_of_settling_it(journey):

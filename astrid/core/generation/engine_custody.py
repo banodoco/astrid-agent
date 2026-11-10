@@ -648,6 +648,7 @@ class _Supervisor:
         request = self.adapter.start_request(recipe, self.root, deadline=time.monotonic() + 1,
                                              models_root=_installed_models_root(self.root, recipe))
         self.launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+        self.base_launch = self.launch
         self.engine = None
         self.commands = []  # Retain uncertain handles; never reconstruct them from disk.
         self.stopping = threading.Event()
@@ -849,13 +850,29 @@ class _Supervisor:
                 self.registry_names.append(name)
                 _write(fd, name, value.encode())
 
+    def valid_launch(self, launch):
+        if not isinstance(launch, dict) or set(launch) != {"argv", "cwd", "env"}:
+            return False
+        env = launch.get("env")
+        if not isinstance(env, dict) or "CUDA_VISIBLE_DEVICES" not in env:
+            return False
+        device = env.get("CUDA_VISIBLE_DEVICES")
+        if device is not None and (not isinstance(device, str) or "\0" in device
+                                   or len(device.encode("utf-8")) > 4096):
+            return False
+        expected = dict(self.base_launch["env"])
+        if "CUDA_VISIBLE_DEVICES" in env:
+            expected["CUDA_VISIBLE_DEVICES"] = device
+        return launch["argv"] == self.base_launch["argv"] and launch["cwd"] == self.base_launch["cwd"] and env == expected
+
     def service(self, operation, payload, deadline, channel):
         if self.unresolved:
             raise CustodyUnresolved("session retains an unresolved native cleanup obligation")
         expected = {"schema", *self.identity, "launch", "owner_id", "timeout_seconds", "poll_interval_seconds"}
         if (not isinstance(payload, dict) or set(payload) != expected or payload["schema"] != _SCHEMA
                 or any(payload[k] != v for k, v in self.identity.items())
-                or payload["launch"] != self.launch
+                or not self.valid_launch(payload["launch"])
+                or self.engine is not None and payload["launch"] != self.launch
                 or payload["owner_id"] not in (None, self.token)
                 or payload["timeout_seconds"] != self.recipe.health.timeout_seconds
                 or payload["poll_interval_seconds"] != self.recipe.health.poll_interval_seconds):
@@ -872,6 +889,7 @@ class _Supervisor:
                     return self.facts("unowned")
             if operation != "start":
                 return self.facts("absent")
+            self.launch = payload["launch"]
             source = self.source_identity(deadline, channel)
             request = _command({**self.launch, "max_output_bytes": 262144}, deadline)
             self.engine = self.spawn(request)

@@ -624,7 +624,7 @@ def canonical_status(*, root, deadline, engine=ENGINE):
                          context=context, deadline=deadline)
 
 
-def _owned_health(root, recipe, adapter, owner_id, deadline, models_root=None):
+def _owned_health(root, recipe, adapter, owner_id, deadline, models_root=None, *, visibility):
     """Existing supervisor health; never creates a supervisor or starts an engine."""
     from .engine_custody import LinuxEngineServiceClient, _SCHEMA
     from .engine_recipe import recipe_digest
@@ -634,7 +634,8 @@ def _owned_health(root, recipe, adapter, owner_id, deadline, models_root=None):
                                       recipe_sha256=recipe_digest(recipe),
                                       helper_sha256=_sha(helper_manifest(recipe)))
     request = adapter.start_request(recipe, root, deadline=deadline, models_root=models_root)
-    launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+    launch = {"argv": list(request.argv), "cwd": request.cwd,
+              "env": {**dict(request.env), "CUDA_VISIBLE_DEVICES": visibility}}
     payload = {**client.identity, "schema": _SCHEMA, "launch": launch, "owner_id": owner_id,
                "timeout_seconds": recipe.health.timeout_seconds,
                "poll_interval_seconds": recipe.health.poll_interval_seconds}
@@ -775,8 +776,11 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
 
         # 3. Live owned health through the existing supervisor, bound to the receipt.
         start = next(step.facts for step in receipt.steps if step.kind == "start")
+        if "cuda_visible_devices" not in start:
+            raise ReadinessError("installed launch has no bound GPU visibility")
         health, launch = _owned_health(root, recipe, adapter, token, deadline,
-                                       models_root=getattr(receipt, "models_root", None))
+                                       models_root=getattr(receipt, "models_root", None),
+                                       visibility=start["cuda_visible_devices"])
         if (health["object_info_sha256"] != receipt.health.object_info_sha256
                 or start.get("owner_id") != token or start.get("launch_sha256") != health["launch_sha256"]):
             raise ReadinessError("live engine health differs from the installed receipt")
