@@ -112,10 +112,26 @@ runpy.run_module("astrid.core.execution.generic_host_worker", run_name="__main__
     def observe_launch(original):
         def launch(argv, *args, **kwargs):
             env = kwargs.get("env") or {}
-            if env.get("ASTRID_GENERATION_ENTRY") and "astrid.core.execution.generic_host_worker" in argv:
-                index = argv.index("-m")
-                assert argv[index + 1] == "astrid.core.execution.generic_host_worker"
-                argv = [*argv[:index], "-c", bootstrap, *argv[index + 2:]]
+            if env.get("ASTRID_GENERATION_ENTRY"):
+                if "astrid.packs.vibecomfy.actions.run.run" in argv:
+                    index = argv.index("-m")
+                    module = argv[index + 1]
+                    direct_bootstrap = bootstrap.replace(
+                        'sys.argv = ["astrid.core.execution.generic_host_worker", *sys.argv[1:]]',
+                        f'sys.argv = [{module!r}, *sys.argv[1:]]').replace(
+                        'runpy.run_module("astrid.core.execution.generic_host_worker", run_name="__main__")',
+                        f'runpy.run_module({module!r}, run_name="__main__")')
+                    argv = [*argv[:index], "-c", direct_bootstrap, *argv[index + 2:]]
+                elif "astrid.core.execution.generic_host_worker" in argv:
+                    index = argv.index("-m")
+                    assert argv[index + 1] == "astrid.core.execution.generic_host_worker"
+                    argv = [*argv[:index], "-c", bootstrap, *argv[index + 2:]]
+                elif "-c" in argv:
+                    index = argv.index("-c") + 1
+                    marker = "runpy.run_module('astrid.core.execution.generic_host_worker',run_name='__main__')"
+                    assert marker in argv[index], "unrecognized generation worker startup"
+                    argv = list(argv)
+                    argv[index] = argv[index].replace(marker, f"exec({bootstrap!r})")
             return original(argv, *args, **kwargs)
         return launch
     # Observe before process custody wraps the worker in its private tree launcher.
