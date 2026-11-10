@@ -292,7 +292,8 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         # The production approval compiles with these exact witnessed bindings.
         # Replaying them also applies the already-verified non-media values to
         # workflows with aliases/defaults, such as H3's duration input.
-        expected = _output_reachable(json.loads(_graph(scoped, run_inputs=runtime[0])))
+        compiled = json.loads(_graph(scoped, run_inputs=runtime[0]))
+        expected = compiled["api"]
         if submitted != expected:
             (tmp_path / "graph-difference.json").write_text(json.dumps({
                 node: {"submitted": submitted.get(node), "expected": expected.get(node)}
@@ -304,3 +305,14 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
             f"outputs={[(out.node_id, scoped.nodes[out.node_id].inputs, scoped.nodes[out.node_id].widgets) for out in scoped.outputs]!r}; "
             f"variant={scoped.default_variant!r} overrides={scoped.variants!r}"
         )
+        # ComfyUI can execute output nodes beyond the workflow's artifact
+        # declarations (H3's finalizer is one). Include every output root
+        # advertised by the actual target as well as the declared outputs.
+        info = provider.comfy.info
+        roots = set(compiled["outputs"]) | {
+            node_id for node_id, node in expected.items()
+            if info.get(node["class_type"], {}).get("output_node")
+        }
+        assert roots
+        assert _output_reachable({"api": submitted, "outputs": sorted(roots)}) == _output_reachable(
+            {"api": expected, "outputs": sorted(roots)})
