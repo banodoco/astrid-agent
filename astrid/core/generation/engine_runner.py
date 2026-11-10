@@ -1001,6 +1001,10 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
             raise IntegrityError("target engine helper identity differs")
         for step in plan.steps:
             failed_step_id = step.id
+            if step.kind == "start" and (runner.locks != receipt.requirements_locks
+                                         or runner.commits != receipt.source_commits):
+                failed_step_id = "receipt-evidence"
+                raise IntegrityError("current evidence differs from installed receipt")
             runner.execute(step, readonly=True)
         failed_step_id = "receipt-evidence"
         if (runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits

@@ -1779,6 +1779,19 @@ def test_status_absent_server_does_not_start_or_repair(setup):
     assert not any(e[0] in {"service:start", "write", "download", "mkdir"} for e in setup[1].events)
 
 
+def test_status_checks_receipt_lock_evidence_before_absent_server(setup):
+    install(setup)
+    context = setup[1]
+    context.server = None
+    receipt = context.files[ROOT + "/" + runner._RECEIPT]
+    receipt["requirements_locks"]["comfy"] = "0" * 64
+    context.events.clear()
+    report = status(setup)
+    assert (report.status, report.error_code, report.failed_step_id) == (
+        "failed", "integrity_failed", "receipt-evidence")
+    assert not any(e[0] == "service:start" for e in context.events)
+
+
 def test_status_custody_unresolved_preserves_exact_error(setup):
     install(setup)
     error = CustodyUnresolved("exact custody", recovery_handle="/recovery/exact-status-job")

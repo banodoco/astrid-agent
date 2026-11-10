@@ -504,7 +504,7 @@ def require_local_generation_readiness(
     )
 
 
-def _installed_managed_target(entry_id=None):
+def _installed_managed_target(entry_id=None, *, start_managed=False):
     """Bind an installed ComfyUI through its existing receipt/custody verifier."""
     from .backends.comfy_target import ComfyTarget, ComfyTargetClient
     from .engine_contracts import EngineError
@@ -515,6 +515,9 @@ def _installed_managed_target(entry_id=None):
         root = recorded_engine_root('comfyui')
         if root is None:
             return None
+        if start_managed:
+            from .engine_local_server import start_verified_stopped_engine
+            start_verified_stopped_engine('comfyui', root=root)
         installed = local_engine_endpoint('comfyui', root=root,
             **({'entry_id': entry_id} if entry_id is not None else {}))
     except EntryAssetsNotReady as exc:
@@ -561,7 +564,7 @@ def _installed_managed_target(entry_id=None):
     return client
 
 
-def _select_generation_target(target: str, *, repo=None, entry_id=None):
+def _select_generation_target(target: str, *, repo=None, entry_id=None, start_managed=False):
     """Select and probe one Comfy target without changing machine config.
 
     ``None`` selects managed lifecycle; a returned client owns only HTTP I/O.
@@ -582,7 +585,8 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
         selection = resolve_target(target, repo=repo)
         record = selection.record
         if record is None or record.owner == "astrid":
-            return _installed_managed_target(**({'entry_id': entry_id} if entry_id is not None else {}))
+            return _installed_managed_target(**({'entry_id': entry_id} if entry_id is not None else {}),
+                **({'start_managed': True} if start_managed else {}))
         if record.endpoint is None:
             raise AstridError(
                 "Selected human ComfyUI target has no endpoint; launch it with explicit consent first",
@@ -625,13 +629,15 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
 
 
 def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGenerationOwner | None = None,
-                             entry_id: str | None = None, mode: str | None = None):
+                             entry_id: str | None = None, mode: str | None = None,
+                             start_managed: bool = False):
     """Read/probe the bound target and expose the shared error envelope."""
     try:
         if target == 'runpod' and runpod_owner is not None:
             return call_runpod_owner(runpod_owner.validation_target)
         return _select_generation_target(target, repo=repo,
-            **({'entry_id': entry_id} if entry_id is not None else {}))
+            **({'entry_id': entry_id} if entry_id is not None else {}),
+            **({'start_managed': True} if start_managed else {}))
     except AstridError as exc:
         if isinstance(exc, GenerationReadinessError) and exc.code == 'engine_not_found':
             envelope = exc.to_envelope()

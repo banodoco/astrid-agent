@@ -13,6 +13,29 @@ from typing import Any, Callable
 from .engine_local_endpoint import DEFAULT_PLATFORM, RECEIPT_RELATIVE_PATH, default_engine_root
 
 
+def start_verified_stopped_engine(engine: str, *, root: str, platform: str = DEFAULT_PLATFORM,
+                                  deadline_seconds: float = 120.0) -> None:
+    """Start only when installed-status verification stopped at an absent server.
+
+    Status checks the receipt and preceding source and environment steps read-only.
+    The caller must still resolve the endpoint afterwards, which revalidates health,
+    custody and the complete receipt evidence.
+    """
+    from .engine_contracts import EndpointHealthError
+    from .engine_execution import create_local_backend
+    from .engine_runner import engine_status
+
+    deadline = time.monotonic() + deadline_seconds
+    context, _ = create_local_backend(
+        engine=engine, platform=platform, placement="local", root=root, deadline=deadline)
+    receipt = engine_status(engine, platform=platform, placement="local", root=root,
+                            context=context, deadline=deadline)
+    if (receipt is not None and receipt.status == "failed"
+            and receipt.failed_step_id == "start" and receipt.error_code == EndpointHealthError.code):
+        ensure_local_engine_server(engine, platform=platform, root=root,
+                                   deadline_seconds=max(0.0, deadline - time.monotonic()))
+
+
 def ensure_local_engine_server(
     engine: str = "comfyui",
     *,
