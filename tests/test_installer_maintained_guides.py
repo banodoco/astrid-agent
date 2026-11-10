@@ -122,7 +122,8 @@ def test_generation_setup_routes_capability_and_consent():
     assert body.count("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader") == 1
     core = (ROOT / "astrid/packs/_core/docs/SKILL.md").read_text(encoding="utf-8")
     row = next(line for line in core.splitlines() if line.startswith("| Set up my generation:"))
-    assert "docs/setup/SKILL.md#4-set-up-generation" in row
+    assert "astrid/packs/setup/docs/SKILL.md#4-set-up-generation" in row
+    assert "skill `astrid-setup`" in row
 
 
 def test_generation_commands_include_platform_launchers_and_paid_bounds():
