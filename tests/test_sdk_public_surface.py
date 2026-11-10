@@ -29,6 +29,14 @@ RETIRED_COMPATIBILITY_SUBMODULES = (
     "astrid._paths",
 )
 
+# Test-owned v3 pack (tests/fixtures/sdk_surface_packs/sdk_surface). The SDK
+# surface tests discover, look up and invoke its actions, so they do not depend
+# on which first-party packs ship inside the Agent (editorial and iteration
+# moved out of the Agent).
+SDK_SURFACE_PACK_ROOTS = (str(Path(__file__).resolve().parent / "fixtures" / "sdk_surface_packs"),)
+SURFACE_EXECUTOR = "sdk_surface.arrange"
+SURFACE_ASSEMBLE_EXECUTOR = "sdk_surface.assemble"
+
 
 def _fresh_import_probe() -> dict[str, Any]:
     script = """
@@ -192,7 +200,7 @@ def test_retired_filesystem_event_helpers_are_not_public_or_reachable() -> None:
 def test_discover_and_get_capability_expose_public_dtos() -> None:
     astrid = _import_public_module()
 
-    inventory = astrid.discover()
+    inventory = astrid.discover(extra_pack_roots=SDK_SURFACE_PACK_ROOTS)
     assert tuple(astrid.__all__) == EXPECTED_PUBLIC_NAMES
     assert isinstance(inventory.executors, tuple)
     assert isinstance(inventory.orchestrators, tuple)
@@ -217,74 +225,80 @@ def test_discover_and_get_capability_expose_public_dtos() -> None:
     assert any(feature["id"] == "prompt" for feature in inventory.generation_features)
     assert any(mode["id"] == "t2i" for mode in inventory.generation_modes)
 
-    editorial_pack = next(pack for pack in inventory.packs if pack["id"] == "editorial")
-    assert editorial_pack["permissions"] == [
+    surface_pack = next(pack for pack in inventory.packs if pack["id"] == "sdk_surface")
+    assert surface_pack["permissions"] == [
         {
             "id": "subprocess",
-            "reason": "Runs Editorial actions as subprocesses for transcription, review, and arrangement.",
+            "reason": "Runs SDK surface fixture actions as subprocesses.",
         },
         {
             "id": "project_files",
-            "reason": "Reads and writes transcripts, scenes, arrangements, and review artifacts.",
+            "reason": "Reads and writes fixture briefs and artifacts in the project.",
         },
         {
             "id": "network",
-            "reason": "Sends source audio to the configured transcription provider.",
+            "reason": "Declared so the surface tests see a network disclosure.",
         },
         {
             "id": "environment",
-            "reason": "Reads scoped transcription-provider credentials from the environment.",
+            "reason": "Declared so the surface tests see an environment disclosure.",
         },
     ]
-    assert editorial_pack["permission_ids"] == [
+    assert surface_pack["permission_ids"] == [
         "subprocess",
         "project_files",
         "network",
         "environment",
     ]
-    assert editorial_pack["trust"] == {
+    assert surface_pack["trust"] == {
         "sandbox": "none",
         "runs_with_user_process_permissions": True,
         "permission_enforcement": "disclosure_only",
     }
 
-    editorial_capability = next(
+    surface_capability = next(
         capability
         for capability in inventory.capabilities
-        if capability.handle.pack_id == "editorial"
+        if capability.handle.pack_id == "sdk_surface"
     )
-    assert editorial_capability.handle.safety.permissions == (
+    assert surface_capability.handle.safety.permissions == (
         "environment", "network", "project_files", "subprocess",
     )
     assert all(
         isinstance(permission_id, str)
-        for permission_id in editorial_capability.handle.safety.permissions
+        for permission_id in surface_capability.handle.safety.permissions
     )
 
     canonical_executor = astrid.get_capability(
-        "editorial.inspect_cut",
+        SURFACE_ASSEMBLE_EXECUTOR,
         kind="executor",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
     )
     # V3 hype is an executor; exercise an actual admitted orchestrator instead.
     orchestrator_id = inventory.orchestrators[0].id
     canonical_orchestrator = astrid.get_capability(
         orchestrator_id,
         kind="orchestrator",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
     )
 
     executor = astrid.get_capability(
-        "editorial.arrange",
+        SURFACE_EXECUTOR,
         kind="executor",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
     )
     kindless_executor = astrid.get_capability(
-        "editorial.arrange",
+        SURFACE_EXECUTOR,
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
     )
     orchestrator = astrid.get_capability(
         orchestrator_id,
         kind="orchestrator",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
     )
     kindless_orchestrator = astrid.get_capability(
         orchestrator_id,
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
     )
     element = astrid.get_capability(
         "effects/text-card",
@@ -299,8 +313,8 @@ def test_discover_and_get_capability_expose_public_dtos() -> None:
         "effects/text-card",
     )
 
-    assert executor.id == "editorial.arrange"
-    assert kindless_executor.id == "editorial.arrange"
+    assert executor.id == SURFACE_EXECUTOR
+    assert kindless_executor.id == SURFACE_EXECUTOR
     assert executor.capability_type == "executor"
     assert executor.native_kind in {"built_in", "external"}
     assert isinstance(executor.handle, astrid.CapabilityHandle)
@@ -559,8 +573,9 @@ def test_invoke_rejects_elements_and_missing_executor_project(
 
     with pytest.raises(astrid.CapabilityPreconditionError, match="project is required"):
         astrid.invoke(
-            "editorial.arrange",
+            SURFACE_EXECUTOR,
             kind="executor",
+            extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
             )
 
 
@@ -574,10 +589,15 @@ def test_discover_exposes_pack_declared_extension_metadata() -> None:
         (pack_root / "pack.yaml").write_text(
             json.dumps(
                 {
+                    # Schema v3: discovery quarantines v1/v2 manifests. v3 needs
+                    # one declaration; this pack contributes only metadata.
                     "id": "demo",
                     "name": "Demo Pack",
                     "version": "0.1.0",
-                    "schema_version": 2,
+                    "schema_version": 3,
+                    "pack_api": "2.0",
+                    "description": "Demo pack that declares generation and element-kind extension metadata.",
+                    "documentation": {"kind": "none", "reason": "Test fixture pack."},
                     "extensions": {
                         "generation": {
                             "backends": [
@@ -615,27 +635,6 @@ def test_discover_exposes_pack_declared_extension_metadata() -> None:
                             ]
                         },
                     },
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        element_root = pack_root / "elements" / "widgets" / "glow"
-        element_root.mkdir(parents=True)
-        (element_root / "component.tsx").write_text(
-            "export default function Glow() { return null; }\n",
-            encoding="utf-8",
-        )
-        (element_root / "element.yaml").write_text(
-            json.dumps(
-                {
-                    "id": "glow",
-                    "kind": "widget",
-                    "pack_id": "demo",
-                    "metadata": {"label": "Glow"},
-                    "schema": {"type": "object"},
-                    "defaults": {"enabled": True},
-                    "dependencies": {"js_packages": [], "python_requirements": []},
                 }
             )
             + "\n",
@@ -731,8 +730,9 @@ class _FakeOrchestratorResult:
 def test_invoke_executor_returns_manifest_preview_without_runner(tmp_path: Path) -> None:
     astrid = _import_public_module()
     result = astrid.invoke(
-        "editorial.arrange",
+        SURFACE_EXECUTOR,
         kind="executor",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
         out=tmp_path,
         project="demo-project",
         inputs={"brief": "demo"},
@@ -742,10 +742,10 @@ def test_invoke_executor_returns_manifest_preview_without_runner(tmp_path: Path)
         check_binaries=True,
         python_exec=sys.executable,
         verbose=True,
-        argv=("executors", "run", "editorial.arrange"),
+        argv=("executors", "run", SURFACE_EXECUTOR),
     )
 
-    assert result.capability_id == "editorial.arrange"
+    assert result.capability_id == SURFACE_EXECUTOR
     assert result.capability_type == "executor"
     assert result.native_kind in {"built_in", "external"}
     assert result.ok is True
@@ -795,8 +795,9 @@ def test_invoke_executor_prefers_universal_manifest_path_from_payload(
     monkeypatch.setattr(inv_mod, "_kernel_invoke", fake_kernel_invoke)
 
     result = astrid.invoke(
-        "editorial.arrange",
+        SURFACE_EXECUTOR,
         kind="executor",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
         out=tmp_path,
         project="demo-project",
     )
@@ -827,8 +828,9 @@ def test_invoke_executor_discovers_universal_manifest_from_out_dir(
     monkeypatch.setattr(inv_mod, "_kernel_invoke", fake_kernel_invoke)
 
     result = astrid.invoke(
-        "editorial.arrange",
+        SURFACE_EXECUTOR,
         kind="executor",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
         out=tmp_path,
         project="demo-project",
     )
@@ -860,8 +862,9 @@ def test_invoke_executor_ignores_domain_manifest_payload_paths(
     monkeypatch.setattr(inv_mod, "_kernel_invoke", fake_kernel_invoke)
 
     result = astrid.invoke(
-        "iteration.assemble",
+        SURFACE_ASSEMBLE_EXECUTOR,
         kind="executor",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
         out=tmp_path,
         project="demo-project",
     )
@@ -945,8 +948,9 @@ def test_invoke_uses_kernel_execution_boundary(
     monkeypatch.setattr(inv_mod, "_kernel_invoke", fake_kernel_invoke)
 
     result = astrid.invoke(
-        "editorial.arrange",
+        SURFACE_EXECUTOR,
         kind="executor",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
         out=tmp_path,
         project="demo-project",
     )
@@ -975,8 +979,9 @@ def test_invoke_executor_allows_project_without_explicit_out(
     monkeypatch.setattr(inv_mod, "_kernel_invoke", fake_kernel_invoke)
 
     result = astrid.invoke(
-        "editorial.arrange",
+        SURFACE_EXECUTOR,
         kind="executor",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
         project="demo-project",
     )
 
@@ -1048,8 +1053,9 @@ def test_invoke_maps_typed_sdk_exceptions_from_internal_failures(
         monkeypatch.setattr(inv_mod, "_kernel_invoke", fake_kernel_invoke)
         with pytest.raises(expected):
             astrid.invoke(
-                "editorial.arrange",
+                SURFACE_EXECUTOR,
                 kind="executor",
+                extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
                 out=tmp_path,
                 project="demo-project",
             )
@@ -1065,14 +1071,15 @@ def test_invoke_missing_input_runner_errors_raise_sdk_missing_input(
     def fake_kernel_invoke(capability, *, kind, project, inputs, outputs, **_kwargs) -> Any:
         from astrid.core.execution.executor.runner import ExecutorRunnerError
 
-        raise ExecutorRunnerError("executor 'editorial.arrange' missing required input(s): brief")
+        raise ExecutorRunnerError(f"executor {SURFACE_EXECUTOR!r} missing required input(s): brief")
 
     monkeypatch.setattr(inv_mod, "_kernel_invoke", fake_kernel_invoke)
 
     with pytest.raises(astrid.CapabilityMissingInputError, match="missing required input"):
         astrid.invoke(
-            "editorial.arrange",
+            SURFACE_EXECUTOR,
             kind="executor",
+            extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
             out=tmp_path,
             project="demo-project",
         )
@@ -1116,8 +1123,9 @@ def test_invoke_maps_executor_result_error_into_public_taxonomy(
     # This test originally checked error taxonomy via run_executor result error; kernel path does not map same way.
     # Verify that kernel invoke still surfaces error via raw_result
     result = astrid.invoke(
-        "editorial.arrange",
+        SURFACE_EXECUTOR,
         kind="executor",
+        extra_pack_roots=SDK_SURFACE_PACK_ROOTS,
         out=tmp_path,
         project="demo-project",
     )
