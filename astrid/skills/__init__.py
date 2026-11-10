@@ -436,7 +436,13 @@ def sync(
     targets = _resolve_harnesses(harness_names)
     if proposed_state is not None and not dry_run:
         raise ValueError("proposed_state is only valid for a dry-run sync")
+    selection_path = state_path or state.state_path()
+    fresh_state = not selection_path.exists()
     current_state = proposed_state if proposed_state is not None else state.load(state_path)
+    if fresh_state and proposed_state is None:
+        defaults = default_descriptors(all_descriptors)
+        for harness_name in targets:
+            _select_units(current_state, harness_name, defaults)
     if developer:
         if dry_run:
             current_state = copy.deepcopy(current_state)
