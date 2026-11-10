@@ -9,6 +9,7 @@ import pytest
 
 from astrid.core.generation import cli
 from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401  (CPU stand-in ComfyUI)
+from tests.integrations.test_managed_host_preparation import managed_install, session, _workflow  # noqa: F401
 
 
 def _engine(name):
@@ -53,19 +54,22 @@ def test_job_align_reaches_engine_align(comfy, tmp_path, monkeypatch):  # noqa: 
     assert seen[0][1]["models_root"].endswith("/models")
 
 
-def test_job_file_form_runs_end_to_end_on_the_cpu_standin(comfy, tmp_path, monkeypatch, capsys):  # noqa: F811
-    _endpoint(comfy, monkeypatch)
+@pytest.mark.integration
+def test_job_file_form_runs_end_to_end_on_the_cpu_standin(managed_install, tmp_path, capsys):
+    _, _, _, root, _, _ = managed_install
+    workflow = tmp_path / "workflow.json"
+    workflow.write_text(json.dumps(_workflow()))
     job = tmp_path / "job.json"
     job.write_text(json.dumps({"schema": "astrid.machine-job.v1", "entry": None, "mode": None, "align": "trust",
                                "task_identity": "task-t4g", "attempt_identity": "attempt-t4g",
-                               "inputs": {"source": str(comfy.workflow)}}))
+                               "inputs": {"source": str(workflow)}}))
     out = tmp_path / "attempt" / "out"
     code = cli._main(["workflow", "--placement", "local", "--job", str(job), "--out", str(out), "--json"])
     assert code == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed["managed_generation_result_path"]
     assert (out / printed["managed_generation_result_path"]).is_file()
-    assert len(comfy.prompts) == 1
+    assert len((root / "prompts").read_text().splitlines()) == 1
 
 
 def test_job_file_rejects_a_foreign_document(tmp_path):
@@ -331,11 +335,12 @@ def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeyp
 
     T4i: binds and defaults are applied by ``entries.apply_workflow_inputs`` (the function the facade's
     ``entries.prepare`` calls), proved against a real bound workflow in test_t4i_job_contract.py. This test
-    keeps the alias-to-public-name resolution, the validation and the entry identity; only the binding is stubbed.
+    keeps the alias-to-public-name resolution, the validation and the entry identity; binding and owned
+    execution are stubbed at their boundaries.
     """
     from astrid.core.generation import entries
     from astrid.core.generation.local_job import JobFileError, run_job
-    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    from astrid.packs.vibecomfy import local_job as vibe_job
     public = {"id": "named", "kind": "image", "source": "workflow", "modes": ["t2i"], "mode": "t2i",
               "inputs": [{"name": "prompt", "type": "string", "required": True},
                          {"name": "seed", "type": "integer", "required": False, "default": 42},
@@ -346,7 +351,7 @@ def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeyp
     monkeypatch.setattr(entries, "describe_entry", lambda *a, **k: public)
     monkeypatch.setattr(entries, "find_entry", lambda entry_id: {"id": entry_id, "bundle": str(bundle)})
     seen = {}
-    monkeypatch.setattr(action, "_run_and_settle", lambda workflow, out, **kw: seen.update(kw, workflow=workflow) or {})
+    monkeypatch.setattr(vibe_job, "run_owned_action", lambda workflow, out, **kw: seen.update(kw, workflow=workflow) or {})
     monkeypatch.setattr("astrid.core.generation.preflight.require_generation_target_readiness", lambda *a: None)
     monkeypatch.setattr(entries, "_load_entry_workflow", lambda entry: object())
     monkeypatch.setattr(entries, "target_schema", lambda *a, **k: None)
