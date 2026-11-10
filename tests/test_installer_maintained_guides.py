@@ -125,11 +125,24 @@ def test_generation_setup_routes_capability_and_consent():
     assert "docs/setup/SKILL.md#4-set-up-generation" in row
 
 
+def test_generation_commands_include_platform_launchers_and_paid_bounds():
+    body = _steps(_skill())[4]
+    blocks = FENCE.findall(body)
+    assert blocks
+    assert '"$HOME/.local/share/astrid/run-astrid" credential set runpod' in body
+    assert '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" credential set runpod' in body
+    assert '"$env:LOCALAPPDATA\\Astrid\\run-astrid.cmd" credential set runpod' in body
+    for flag in ("--deadline", "--offer-digest", "--preparation-seconds", "--execution-seconds", "--idle-seconds"):
+        assert any(flag in block for block in blocks), flag
+    assert any("generate describe --placement runpod" in block for block in blocks)
+    assert any("engines install comfyui --dry-run" in block for block in blocks)
+
+
 def test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallback():
     steps = _steps(_skill())
     command_steps = {number for number, body in steps.items() if FENCE.search(body)}
-    assert command_steps == {2}, command_steps
-    for number in sorted(command_steps):
+    assert command_steps == {2, 4}, command_steps
+    for number in (2,):
         body = steps[number]
         covered = _block_os(body)
         assert None not in covered, (number, "a fenced block has no OS label")
