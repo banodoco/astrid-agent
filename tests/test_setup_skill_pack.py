@@ -1,6 +1,8 @@
 """Setup skill packaging, mirror and generic harness naming."""
 from dataclasses import replace
 from pathlib import Path
+import subprocess
+import sys
 
 from astrid.core.pack import load_pack_manifest
 from astrid.skills import default_pack_ids
@@ -9,7 +11,7 @@ from astrid.skills.harnesses import ClaudeAdapter, CodexAdapter, HermesAdapter
 
 ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / 'astrid/packs/setup'
-HEADER = '<!-- Generated from astrid/packs/setup/docs/SKILL.md; do not edit. -->\n\n'
+HEADER = '<!-- Generated from astrid/packs/setup/docs/SKILL.md; regenerate with python scripts/generate_setup_skill_mirror.py. -->\n\n'
 
 
 def test_setup_pack_is_default_and_mirror_is_current():
@@ -17,7 +19,16 @@ def test_setup_pack_is_default_and_mirror_is_current():
     assert descriptor.skill_md == PACK / 'docs/SKILL.md'
     assert descriptor.sync_name == 'astrid-setup'
     assert 'setup' in default_pack_ids()
-    assert (ROOT / 'docs/setup/SKILL.md').read_text() == HEADER + descriptor.skill_md.read_text()
+    mirror = (ROOT / 'docs/setup/SKILL.md').read_text()
+    source = descriptor.skill_md.read_text()
+    assert mirror.startswith('---\n')
+    assert mirror.replace(HEADER, '', 1) == source
+    from astrid.skills.discovery import _parse_frontmatter
+    assert _parse_frontmatter(mirror)[0] == _parse_frontmatter(source)[0]
+    command = [sys.executable, str(ROOT / 'scripts/generate_setup_skill_mirror.py')]
+    result = subprocess.run([*command, '--stdout'], capture_output=True, text=True, check=True)
+    assert result.stdout == mirror
+    subprocess.run([*command, '--check'], check=True)
     assert load_pack_manifest(PACK / 'pack.yaml').documentation['sync_name'] == 'astrid-setup'
 
 

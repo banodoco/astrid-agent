@@ -1,9 +1,9 @@
-<!-- Generated from astrid/packs/setup/docs/SKILL.md; do not edit. -->
-
 ---
 name: astrid-setup
 description: Set up Astrid on a new or existing machine, verify its Runtime connection, and help the user begin.
 ---
+<!-- Generated from astrid/packs/setup/docs/SKILL.md; regenerate with python scripts/generate_setup_skill_mirror.py. -->
+
 
 # Set up Astrid
 
