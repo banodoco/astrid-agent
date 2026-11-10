@@ -848,7 +848,7 @@ def test_real_host_reports_installed_and_observed_digest_mismatch(
     }]
 
 
-@pytest.mark.parametrize("construction_platform", ["linux", "unsupported"])
+@pytest.mark.parametrize("construction_platform", ["linux", "darwin", "win32"])
 def test_host_retains_capture_mechanism_selected_at_construction(
     tmp_path, monkeypatch, construction_platform,
 ):
@@ -858,12 +858,17 @@ def test_host_retains_capture_mechanism_selected_at_construction(
     with monkeypatch.context() as selection:
         selection.setattr(generic_host.sys, "platform", construction_platform)
         host = GenericPackHost(pack_roots=[root], client=runtime, attempt_root=tmp_path / "attempt")
+    capture_policy = host._pack_capture
     host.discover()
     task = _real_host_task(runtime, "hello_ext.run", "construction-policy")
     monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
     dispatched = []
 
     def execute(_record, _inputs, output_root, _attempt, **_kwargs):
+        assert host._pack_capture is capture_policy
+        selected_root = Path(_record.definition.metadata["pack_root"])
+        assert (selected_root == root) == (construction_platform == "linux")
+        assert pack_digest(selected_root) == pack_digest(root)
         dispatched.append(True)
         output_root.mkdir(parents=True, exist_ok=True)
         return SimpleNamespace(payload={}, process_id=12345, returncode=0)
@@ -873,20 +878,11 @@ def test_host_retains_capture_mechanism_selected_at_construction(
     with monkeypatch.context() as changed:
         changed.setattr(generic_host.sys, "platform",
                         "unsupported" if construction_platform == "linux" else "linux")
-        if construction_platform == "linux":
-            host.run_task(task, lease_token="construction-lease")
-        else:
-            with pytest.raises(HostError, match="file lease support"):
-                host.run_task(task, lease_token="construction-lease")
+        host.run_task(task, lease_token="construction-lease")
     receipt = json.loads((tmp_path / "attempt" / "result.json").read_text())
-    if construction_platform == "linux":
-        assert dispatched == [True]
-        assert receipt["status"] == "succeeded"
-        assert receipt["pack_provenance"][0]["observed_digest"] == pack_digest(root)
-    else:
-        assert dispatched == [] and runtime.failures
-        assert receipt["status"] == "failed"
-        assert not receipt.get("pack_provenance")
+    assert dispatched == [True]
+    assert receipt["status"] == "succeeded"
+    assert receipt["pack_provenance"][0]["observed_digest"] == pack_digest(root)
 
 
 def _composition_pack(tmp_path, route):
@@ -1055,3 +1051,291 @@ def _cli_composition(tmp_path, monkeypatch, real_runtime, route, scenario):
 @pytest.mark.parametrize("scenario", ["matching", "modified", "final-read-write"])
 def test_production_cli_runtime_capture_composition(tmp_path, monkeypatch, real_runtime, route, scenario):
     _cli_composition(tmp_path, monkeypatch, real_runtime, route, scenario)
+
+
+@pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
+@pytest.mark.parametrize("failure", [False, True])
+def test_portable_host_executes_verified_copy_and_cleans_it(tmp_path, monkeypatch, route, failure):
+    root, sentinel, _installed = _composition_pack(tmp_path, route)
+    # A real child records its source location outside the disposable copy.
+    script = ("from pathlib import Path; import sys; "
+              "Path(sys.argv[1]).write_text(str(Path(__file__).resolve())); "
+              "Path(sys.argv[2]).mkdir(parents=True,exist_ok=True); "
+              "Path(sys.argv[2], 'answer.txt').write_text('snapshot child ran')")
+    (root / "emit.py").write_text(script)
+    if route == "legacy-executor":
+        manifest_path = root / "executors" / "echo" / "executor.yaml"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["command"]["argv"] = ["{python_exec}", str(root / "emit.py"), str(sentinel), "{out}"]
+        manifest_path.write_text(json.dumps(manifest))
+    expected_pack_digest = pack_digest(root)
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    with monkeypatch.context() as selection:
+        selection.setattr(generic_host.sys, "platform", "darwin")
+        host = GenericPackHost(pack_roots=[root], client=runtime, attempt_root=tmp_path / "attempt")
+    host.discover()
+    _definition, admitted = host.admit("executor", "hello_ext.run")
+    task = _real_host_task(runtime, "hello_ext.run", "portable-copy")
+    task["task"]["spec"]["spec"]["admitted_source_digest"] = admitted["source_digest"]
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    execute = host._run_command_definition
+    snapshots = []
+
+    def after_capture(record, *args, **kwargs):
+        snapshot = Path(record.definition.metadata["pack_root"])
+        snapshots.append(snapshot)
+        assert snapshot != root and snapshot.is_dir()
+        assert generic_host.platform.is_owner_only(snapshot.parent)
+        assert snapshot.parent.parent.name == "pack-captures"
+        assert pack_digest(snapshot) == expected_pack_digest
+        assert not os.path.samefile(snapshot / "emit.py", root / "emit.py")
+        # A write after admission cannot affect the independent executable bytes.
+        (root / "emit.py").write_text("raise RuntimeError('live source executed')")
+        if failure:
+            raise RuntimeError("fixture child failure")
+        return execute(record, *args, **kwargs)
+
+    monkeypatch.setattr(host, "_run_command_definition", after_capture)
+    if failure:
+        with pytest.raises(RuntimeError, match="fixture child failure"):
+            host.run_task(task, lease_token="portable-lease")
+        assert not sentinel.exists()
+    else:
+        host.run_task(task, lease_token="portable-lease")
+        assert sentinel.read_text() == str(snapshots[0] / "emit.py")
+    assert len(snapshots) == 1
+    assert not snapshots[0].parent.exists()
+    # The reusable host keeps its live selection for the next task.
+    assert host.capabilities["hello_ext.run"].source_root.is_relative_to(root)
+
+
+@pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
+def test_portable_host_refuses_change_after_admission(tmp_path, monkeypatch, route):
+    root = (_write_action_pack(tmp_path / "packs" / "hello_ext") if route == "selected-action"
+            else _write_legacy_pack(tmp_path / "packs" / "hello_ext"))
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    host = GenericPackHost(pack_roots=[root], client=runtime, attempt_root=tmp_path / "attempt",
+                           pack_capture=generic_host._portable_pack_capture)
+    host.discover()
+    _definition, admitted = host.admit("executor", "hello_ext.run")
+    task = _real_host_task(runtime, "hello_ext.run", "portable-mismatch")
+    task["task"]["spec"]["spec"]["admitted_source_digest"] = admitted["source_digest"]
+    (root / "generation.txt").write_text("changed after admission")
+    monkeypatch.setattr(host, "_run_command_definition", lambda *a, **k: pytest.fail("launched changed source"))
+    with pytest.raises(HostError, match="snapshot digest mismatch"):
+        host.run_task(task, lease_token="portable-lease")
+    assert runtime.failures[0][3]["structured_error"]["code"] == "selected_pack_capture_failed"
+    from astrid.sdk.storage_root import resolve_runtime_data_root
+    parent = resolve_runtime_data_root() / "runtime" / "pack-captures"
+    assert not parent.exists() or list(parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("mutation", ["copy-write", "copy-error", "interrupt", "symlink", "writable-mmap"])
+def test_portable_capture_fails_closed_and_cleans_partial_copy(tmp_path, monkeypatch, mutation):
+    payload, expected, record = _selected_pack(tmp_path / "pack")
+    generation = generic_host._selected_pack_generation(record)
+    copytree = shutil.copytree
+    mapping = None
+
+    def contested_copy(source, destination, **kwargs):
+        if mutation in {"copy-error", "interrupt"}:
+            Path(destination).mkdir()
+            if mutation == "interrupt":
+                raise KeyboardInterrupt()
+            raise OSError("fixture disk full")
+        if mutation == "copy-write":
+            payload.write_text("VALUE = 2\n")
+        elif mutation == "symlink":
+            payload.unlink()
+            payload.symlink_to(tmp_path / "outside.py")
+            (tmp_path / "outside.py").write_text("VALUE = 1\n")
+        elif mutation == "writable-mmap":
+            mapping[:] = b"VALUE = 2\n"
+            mapping.flush()
+        return copytree(source, destination, **kwargs)
+
+    if mutation == "writable-mmap":
+        with payload.open("r+b") as stream:
+            mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE)
+    monkeypatch.setattr(shutil, "copytree", contested_copy)
+    try:
+        with pytest.raises(KeyboardInterrupt if mutation == "interrupt" else generic_host.PackCaptureError) as error:
+            with generic_host._portable_pack_capture(generation, expected_digest=expected):
+                pytest.fail("captured contested source")
+        if mutation != "interrupt":
+            assert error.value.code == "selected_pack_capture_failed"
+    finally:
+        if mapping is not None:
+            mapping.close()
+    from astrid.sdk.storage_root import resolve_runtime_data_root
+    assert list((resolve_runtime_data_root() / "runtime" / "pack-captures").iterdir()) == []
+
+
+def test_portable_standalone_provenance_uses_verified_copy(tmp_path, monkeypatch):
+    _payload, expected, record = _selected_pack(tmp_path / "pack")
+    monkeypatch.setattr(generic_host, "_standalone_pack_capture", generic_host._portable_pack_capture)
+    assert generic_host._run_pack_provenance(record, expected)[0]["observed_digest"] == expected
+    from astrid.sdk.storage_root import resolve_runtime_data_root
+    assert list((resolve_runtime_data_root() / "runtime" / "pack-captures").iterdir()) == []
+
+
+@pytest.mark.parametrize("retained_custody", [False, True])
+def test_portable_python_action_and_dependency_use_snapshots(tmp_path, monkeypatch, retained_custody):
+    import base64
+    import hashlib
+    from runtime_protocol.verified_host_launch import canonical
+    from tests.core.execution.test_generic_host_actions_v3 import pack
+
+    sentinel = tmp_path / "python-entry.json"
+    root, _host, _runtime, _definition, _admission = pack(tmp_path)
+    (root / "actions" / "hello.py").write_text(
+        "from pathlib import Path\nimport json\n"
+        "import astrid.packs.hello_ext.api as helper\n"
+        "def run(value='default'):\n"
+        f"    Path({str(sentinel)!r}).write_text(json.dumps([__file__, helper.__file__, helper.VALUE]))\n"
+        "    return 'snapshot action ran'\n")
+    dependency = _write_action_pack(tmp_path / "dependencies" / "hello_ext")
+    (dependency / "api.py").write_text("VALUE = 'admitted'\n")
+    manifest = yaml.safe_load((root / "pack.yaml").read_text())
+    manifest["dependencies"] = {"packs": ["hello_ext"]}
+    (root / "pack.yaml").write_text(yaml.safe_dump(manifest))
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    host = GenericPackHost(pack_roots=[root, dependency], client=runtime, attempt_root=tmp_path / "attempt",
+                           pack_capture=generic_host._portable_pack_capture)
+    host.discover()
+    _definition, admission = host.admit("executor", "unrelated.calculate")
+    original_record = host.capabilities["unrelated.calculate"]
+    if retained_custody:
+        # The Runtime authority is a fixed fixture here. Exercise the real
+        # descriptor, worker grant-byte check, and relocated-definition check.
+        contents = {path.relative_to(root).as_posix(): path.read_bytes()
+                    for path in root.rglob("*") if path.is_file()}
+        chosen = {"path": "pack.yaml", "capability_kind": "executor", "capability_id": original_record.id,
+                  "definition_digest": original_record.capability_digest}
+        selected = canonical({"scope": {}, "selected_profile_digest": "0" * 64, "definition": chosen,
+                              "source": {"root": str(root), "definitions": [chosen],
+                                         "contents": {name: base64.b64encode(data).decode() for name, data in contents.items()},
+                                         "files": {name: hashlib.sha256(data).hexdigest() for name, data in contents.items()}}})
+        custody = object.__new__(generic_host._RuntimeSourceCustody)
+
+        def select(record, **kwargs):
+            assert record is original_record
+            return selected
+
+        custody.select = select
+        monkeypatch.setattr(generic_host, "_runtime_external_sources", custody)
+    task = _real_host_task(runtime, "unrelated.calculate", "portable-python")
+    task["task"]["spec"]["spec"]["admitted_source_digest"] = admission["source_digest"]
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    invoke = host.invoke_capability
+    snapshots = []
+
+    def after_capture(**kwargs):
+        selected = kwargs["admission"]["selected_pack_map"]
+        snapshots.extend(Path(item["root"]) for item in selected.values())
+        assert len(snapshots) == 2 and all(path.is_dir() for path in snapshots)
+        assert Path(selected["unrelated"]["root"]) != root
+        assert Path(selected["hello_ext"]["root"]) != dependency
+        (root / "actions" / "hello.py").write_text("raise AssertionError('live action')")
+        (dependency / "api.py").write_text("raise AssertionError('live dependency')")
+        return invoke(**kwargs)
+
+    monkeypatch.setattr(host, "invoke_capability", after_capture)
+    host.run_task(task, lease_token="portable-python-lease")
+    action_path, dependency_path, value = json.loads(sentinel.read_text())
+    assert value == "admitted"
+    assert any(Path(action_path).is_relative_to(snapshot) for snapshot in snapshots)
+    assert any(Path(dependency_path).is_relative_to(snapshot) for snapshot in snapshots)
+    assert all(not snapshot.parent.exists() for snapshot in snapshots)
+
+
+def test_portable_worker_rejects_snapshot_different_from_retained_bytes(tmp_path):
+    import base64
+    import hashlib
+    import tempfile
+    from runtime_protocol.verified_host_launch import canonical
+    from astrid.core.execution import generic_host_worker
+
+    private = tmp_path / "private"
+    generic_host.platform.private_directory(private)
+    root = private / "pack"
+    root.mkdir()
+    (root / "code.py").write_text("unauthorized bytes")
+    chosen = {"capability_id": "pack.run"}
+    data = b"admitted bytes"
+    selected = {"scope": {}, "selected_profile_digest": "0" * 64, "definition": chosen,
+                "snapshot_root": str(root), "source": {"root": str(tmp_path / "live"),
+                "definitions": [chosen], "files": {"code.py": hashlib.sha256(data).hexdigest()},
+                "contents": {"code.py": base64.b64encode(data).decode()}}}
+    with tempfile.TemporaryFile() as channel:
+        channel.write(canonical(selected))
+        channel.seek(0)
+        with pytest.raises(ValueError, match="differs from Runtime-selected bytes"):
+            generic_host_worker._read_captured_source(os.dup(channel.fileno()))
+
+
+def test_portable_capture_cleans_read_only_source_copy(tmp_path):
+    payload, expected, record = _selected_pack(tmp_path / "pack")
+    payload.chmod(0o444)
+    # Permission changes also change generation tokens; capture this generation.
+    generation = generic_host._selected_pack_generation(record)
+    try:
+        with generic_host._portable_pack_capture(generation, expected_digest=expected) as captured:
+            private = captured[2].parent
+            assert pack_digest(captured[2]) == expected
+        assert not private.exists()
+        assert not payload.stat().st_mode & 0o200
+    finally:
+        payload.chmod(0o600)
+
+
+def test_portable_capture_reports_cleanup_failure(tmp_path, monkeypatch):
+    _payload, expected, record = _selected_pack(tmp_path / "pack")
+    remove = generic_host._remove_pack_snapshot
+
+    def denied(path):
+        raise PermissionError("fixture cleanup denied")
+
+    monkeypatch.setattr(generic_host, "_remove_pack_snapshot", denied)
+    try:
+        with pytest.raises(generic_host.PackCaptureError, match="snapshot cleanup failed"):
+            with generic_host._portable_pack_capture(generic_host._selected_pack_generation(record),
+                                                      expected_digest=expected) as captured:
+                private = captured[2].parent
+    finally:
+        remove(private)
+
+
+def test_linux_selector_keeps_refusal_without_lease_api(monkeypatch):
+    with monkeypatch.context() as selection:
+        selection.setattr(generic_host.sys, "platform", "linux")
+        selection.setitem(generic_host.sys.modules, "fcntl", None)
+        capture = generic_host._select_pack_capture()
+    assert capture is generic_host._unavailable_pack_capture
+    with pytest.raises(HostError, match="Linux file lease support"):
+        with capture(object()):
+            pytest.fail("Linux silently fell back from its lease policy")
+
+
+def test_portable_copy_uses_the_digest_exclusion_rules(tmp_path):
+    payload, _expected, record = _selected_pack(tmp_path / "pack")
+    root = payload.parent
+    # These names are valid, included source entries: exclusions depend on type.
+    (root / ".cache").write_text("a regular source file")
+    (root / "source.pyc").mkdir()
+    (root / "source.pyc" / "included.py").write_text("VALUE = 1\n")
+    (root / "__pycache__").mkdir()
+    (root / "__pycache__" / "untrusted.pyc").write_bytes(b"ignored bytecode")
+    (root / "ignored.pyc").write_bytes(b"ignored bytecode")
+    expected = pack_digest(root)
+    with generic_host._portable_pack_capture(generic_host._selected_pack_generation(record),
+                                              expected_digest=expected) as captured:
+        snapshot = captured[2]
+        assert pack_digest(snapshot) == expected
+        assert (snapshot / ".cache").is_file()
+        assert (snapshot / "source.pyc" / "included.py").is_file()
+        assert not (snapshot / "__pycache__").exists()
+        assert not (snapshot / "ignored.pyc").exists()
