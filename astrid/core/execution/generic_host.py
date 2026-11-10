@@ -6483,6 +6483,8 @@ class GenericPackHost:
             if any(str(root) not in _runtime_external_sources._launch_roots for root in configured_roots):
                 raise HostError("discovery root is outside retained Runtime source custody")
         self.pack_roots = tuple(dict.fromkeys(configured_roots))
+        # Only a host that serves the personal collection may acknowledge its outbox.
+        self._personal_collection = bool(personal_collection)
         self.client = client
         self.executor_id = executor_id
         self.max_concurrency = max(1, int(max_concurrency))
@@ -8006,6 +8008,8 @@ class GenericPackHost:
         from astrid.core.pack.transaction import refresh_pending, retry_refresh
         from astrid.personal_packs_root import resolve_personal_packs_root
 
+        if not self._personal_collection:
+            return False  # a host that does not serve the personal collection never consumes its outbox
         root = resolve_personal_packs_root()
         if root is None or not refresh_pending(packs_root=root):
             return False
@@ -8013,6 +8017,16 @@ class GenericPackHost:
         def renew(*, transaction_id: str, committed_revision: int, changed_ids: tuple[str, ...]) -> dict[str, Any]:
             self.discover()
             self._renew_executor_registration(idle=True)
+            # Acknowledge only when the registration matches the committed collection: a
+            # changed pack is registered exactly when its directory is present.
+            registered = {str(record.definition.metadata.get("source_pack", ""))
+                          for record in self.capabilities.values()}
+            unserved = [pack_id for pack_id in changed_ids
+                        if (root / pack_id).is_dir() != (pack_id in registered)]
+            if unserved:
+                reason = f"registration does not match committed packs: {', '.join(unserved)}"
+                print(f"generic host pack refresh not acknowledged: {reason}", file=sys.stderr, flush=True)
+                return {"version": 1, "accepted": False, "revision": committed_revision, "reason": reason}
             return {"version": 1, "accepted": True, "revision": committed_revision,
                     "reason": "registered by the running generic host"}
 
@@ -13654,14 +13668,15 @@ class GenericPackHost:
                 continue
             # Idle, like the parallel loop's `not active`: consume committed
             # pack-refresh outbox entries so a newly added pack is served
-            # without a restart. A failure leaves the outbox pending for retry.
+            # without a restart. `once` is the diagnostic surface and leaves the
+            # outbox untouched. A failure leaves the outbox pending for retry.
             now = time.monotonic()
-            if now >= pack_ack_at:
+            if not once and now >= pack_ack_at:
                 pack_ack_at = now + 2.0
                 try:
                     self.acknowledge_pack_refresh()
                 except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
-                    print(f"generic host claim failed (1 consecutive): "
+                    print(f"generic host pack refresh acknowledgment failed (retrying): "
                           f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             if once:
                 break
@@ -13832,7 +13847,8 @@ class GenericPackHost:
                     try:
                         self.acknowledge_pack_refresh()
                     except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
-                        report_failure(exc, 1)
+                        print(f"generic host pack refresh acknowledgment failed (retrying): "
+                              f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
                 if now >= max(self._registration_refresh_deadline, refresh_retry_at):
                     try:
                         self._renew_executor_registration(idle=not active)
