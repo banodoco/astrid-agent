@@ -2,10 +2,10 @@
 
 Core owns the order and the money rule; the machine owns its provider:
 
-    claim -> start -> poll ... (progress copied into the attempt) -> fetch -> release(warm=success)
+    claim -> start -> poll ... (progress copied into the attempt) -> fetch -> settle/release
 
-A cancelled local run calls the machine's ``cancel`` (stop the remote job, then
-release). Every path ends with ``release``; a machine's release is idempotent.
+A cancelled local run calls the machine's ``cancel`` to stop the remote job.
+Every path ends with ``release``; the machine verifies whether it can settle idle.
 """
 
 from __future__ import annotations
@@ -29,11 +29,11 @@ FILE_INPUTS = frozenset({"python", "companion", "source", "managed_assets", "sou
 
 
 class MachineRunError(AstridError):
-    """The remote job failed; the machine has been released."""
+    """The remote job failed; the machine decides safe retention under its lease."""
 
 
 class MachineRunCancelled(MachineRunError):
-    """The local run was cancelled; the remote job was stopped and the machine released."""
+    """The local run was cancelled; the remote job was stopped."""
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
                    cancelled: Callable[[], bool], poll_seconds: float = 15.0,
                    sleep: Callable[[float], None] = time.sleep,
                    on_claim: Callable[[Any], None] | None = None) -> Mapping[str, Any]:
-    """Claim, start, poll, fetch into ``destination``, then release (warm only on success).
+    """Claim, start, poll, fetch into ``destination``, then settle or release.
 
     ``on_claim(lease)`` records which machine runs the job as soon as it is claimed.
     """
@@ -78,6 +78,8 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
     lease = (machine.claim(job, cancelled=cancelled) if "cancelled" in claim_parameters
              else machine.claim(job))
     success = False
+    failure = None
+    stage = "start"
     try:
         if on_claim is not None:
             on_claim(lease)
@@ -85,7 +87,9 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
             raise MachineRunCancelled("generation cancelled before the remote job started")
         run = machine.start(lease, job)
         while True:
+            stage = "poll"
             if cancelled():
+                stage = "cancel"
                 machine.cancel(run)
                 raise MachineRunCancelled("generation cancelled; the remote job was stopped")
             status = machine.poll(run)
@@ -95,11 +99,22 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
             if state in {"cancelled", "missing"}:
                 raise MachineRunError(f"remote job is {state}")
             sleep(poll_seconds)
+        stage = "fetch"
         fetched = machine.fetch(run, destination)
         success = True
         return fetched
+    except BaseException as exc:
+        failure = exc
+        raise
     finally:
-        machine.release(lease, success)
+        release_parameters = inspect.signature(machine.release).parameters
+        if "failure" in release_parameters:
+            details = {"failure": failure}
+            if "stage" in release_parameters:
+                details["stage"] = stage
+            machine.release(lease, success, **details)
+        else:
+            machine.release(lease, success)
 
 
 __all__ = ["WORKFLOW_FILE_ENTRY", "BUILT_IN", "FILE_INPUTS", "MachineJob", "MachineRunCancelled", "MachineRunError",

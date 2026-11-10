@@ -214,10 +214,13 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             return {"id": job_id, "state": "missing" if c.cancel_unknown else "cancelled"}
 
     pod = RetainedPod({}, provider.marker)
+    c.transport_deadlines = []
     class Transport:
-        def __init__(self, pod_id, token):
+        def __init__(self, pod_id, token, *, deadline=None):
             assert pod_id == "pod-1"
             assert token == https.read_token_file(c.read()["https_token_file"])
+            self.deadline = deadline
+            c.transport_deadlines.append(deadline)
         def execute_command(self, *a): return pod.exec(*a)
         def put(self, *a): return pod.put(*a)
         def get(self, *a): return pod.get(*a)

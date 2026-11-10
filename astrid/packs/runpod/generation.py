@@ -108,6 +108,7 @@ def prepare_retained_generation(
             if custody_differences(prior_preparation.get("custody"), expected):
                 lease_owner.release(reason="custody_changed", _expected_operation=prior["operation_id"])
         invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds,
+                                         defer_unsafe_release=True,
                                          **({"cancelled": cancelled} if cancelled is not None else {}))
         if on_acquired is not None:
             on_acquired(invocation)
@@ -126,6 +127,7 @@ def prepare_retained_generation(
             return lease_owner._save(current, {**current["lease"], "preparation": preparation})
 
         save()
+        installation_started = False
         try:
             claim = connect_claimed_for_preparation(claimed)
             # Preparation (bootstrap and the model-free engine install) is
@@ -163,6 +165,7 @@ def prepare_retained_generation(
                 raise CustodyChanged("warm machine custody differs: "
                                      + ", ".join(custody_differences(previous.get("custody"), custody)))
             save(custody=custody, storage=storage)
+            installation_started = True
             state = placement.prepare_claimed(
                 claim, out=out,
                 deadline_seconds=remaining, installation=installation,
@@ -179,11 +182,20 @@ def prepare_retained_generation(
                 raise PreparedWorkerError("preparation consumed its paid lifetime or source bytes changed")
             saved = save(state="prepared", installed=dict(state.installed))
         except BaseException:
-            # Failure never re-arms warm retention. Preserve any pre-start job
-            # identity for the same A3 release/restart reconciliation path.
+            # Before any installation mutation, a previously attested snapshot
+            # is still safe. Once preparation may have touched the pod, keep
+            # the unresolved state for exact release/recovery instead.
             current = lease_owner._read()
-            lease_owner._save(current, {**current["lease"], "preparation": {**preparation, "state": "unresolved"}},
-                              state="cleanup_pending", reconciliation_required=True)
+            if (not installation_started and previous is not None and previous.get("state") == "prepared"
+                    and isinstance(previous.get("installed"), dict)
+                    and current is not None and current.get("state") == "claimed"
+                    and current.get("operation_id") == invocation.operation_id
+                    and current.get("lease", {}).get("state") == "active"
+                    and current.get("pod_id") == claimed.get("pod_id")):
+                lease_owner._save(current, {**current["lease"], "preparation": previous})
+            else:
+                lease_owner._save(current, {**current["lease"], "preparation": {**preparation, "state": "unresolved"}},
+                                  state="cleanup_pending", reconciliation_required=True)
             raise
         return PreparedRunPodLease(
             RunPodLease(invocation.operation_id, invocation.owner_epoch, invocation.generation,

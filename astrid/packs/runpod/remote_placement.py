@@ -17,6 +17,7 @@ Money rules, enforced here and pinned by tests:
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import io
 import json
@@ -622,15 +623,21 @@ class RemotePlacement:
             raise RemotePlacementError("engine install finished but status is not installed and healthy")
         state.note("install", "done")
 
-    def _canonical_installed(self, state: RemoteRun) -> bool:
+    def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:
         from astrid.core.generation import engine_runner
 
         installation = state.installation
         plan = installation.plan()
+        remaining = min(120, self._remaining() if verification_seconds is None else verification_seconds)
+        if remaining <= 0:
+            return False
         command = (f"{POD_VENV}/bin/astrid engines status {installation.engine} "
                    f"--platform {installation.platform} --placement local "
-                   f"--root {shlex.quote(installation.root)} --deadline {min(120, self._remaining())}")
-        code, stdout, _ = self._exec(state, command, timeout=120)
+                   f"--root {shlex.quote(installation.root)} --deadline {remaining}")
+        # Failure verification is read-only and bounded by the original paid
+        # lease, independently of the execution timer that the job may exhaust.
+        code, stdout, _ = (self._exec(state, command, timeout=120) if verification_seconds is None
+                           else state.claim.ops.exec(command, remaining))
         if code != 0 or stdout.strip() in {"", "null"}:
             return False
         raw = json.loads(stdout)
@@ -639,15 +646,41 @@ class RemotePlacement:
         # Status re-verifies the actual source/model/environment/start/health
         # through the canonical runner. Parse with that same receipt boundary.
         live = engine_runner._parse_receipt(raw, plan)
-        path = state.local_out / "installed.json"
-        try:
-            state.claim.ops.get(installation.root + "/.astrid-engine/install.json", path)
-            if path.is_symlink() or path.stat().st_size > 1024 * 1024:
-                raise RemotePlacementError("invalid canonical installation receipt file")
-            data = path.read_bytes()
-            saved = engine_runner._parse_receipt(json.loads(data), plan)
-        finally:
-            path.unlink(missing_ok=True)
+        receipt = installation.root + "/.astrid-engine/install.json"
+        if verification_seconds is None:
+            path = state.local_out / "installed.json"
+            try:
+                state.claim.ops.get(receipt, path)
+                if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                    raise RemotePlacementError("invalid canonical installation receipt file")
+                data = path.read_bytes()
+            finally:
+                path.unlink(missing_ok=True)
+        else:
+            # One transport deadline covers status, this fixed-file read and
+            # the later reset. Do not stream an unbounded pod file into a
+            # controller journal or extend the original paid lease.
+            script = ("import base64,os,stat,sys;"
+                      "fd=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK);"
+                      "s=os.fstat(fd);"
+                      "(stat.S_ISREG(s.st_mode) and s.st_size<=1048576) or sys.exit(2);"
+                      "data=os.read(fd,1048577);"
+                      "len(data)<=1048576 or sys.exit(2);"
+                      "print(base64.b64encode(data).decode())")
+            remaining = min(verification_seconds, max(0, state.claim.ops.deadline - time.monotonic()))
+            if remaining <= 0:
+                return False
+            code, output, _ = state.claim.ops.exec(
+                f"{POD_VENV}/bin/python -c {shlex.quote(script)} {shlex.quote(receipt)}", remaining)
+            if code != 0 or len(output) > 1400000:
+                return False
+            try:
+                data = base64.b64decode(output.strip(), validate=True)
+            except (ValueError, binascii.Error):
+                return False
+            if len(data) > 1024 * 1024:
+                return False
+        saved = engine_runner._parse_receipt(json.loads(data), plan)
         if (saved.status != "installed" or live.receipt_id != saved.receipt_id
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks
@@ -694,13 +727,17 @@ class RemotePlacement:
 
 
 class _HttpsOps:
-    def __init__(self, pod_id: str, token: str) -> None:
-        self.pod_id, self.token = pod_id, token
+    def __init__(self, pod_id: str, token: str, *, deadline: float | None = None) -> None:
+        self.pod_id, self.token, self.deadline = pod_id, token, deadline
+
+    def bounded(self, deadline: float) -> "_HttpsOps":
+        return type(self)(self.pod_id, self.token, deadline=deadline)
 
     def _transport(self):
         from runpod_lifecycle.https import HttpsPodTransport
 
-        return HttpsPodTransport(self.pod_id, self.token)
+        return HttpsPodTransport(self.pod_id, self.token,
+                                 **({"deadline": self.deadline} if self.deadline is not None else {}))
 
     def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         transport = self._transport()

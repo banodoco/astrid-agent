@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 from collections.abc import Mapping
@@ -28,10 +29,54 @@ CODES = {
     'command_failed': 'execution', 'generation_failed': 'execution',
     'generation_route_unqualified': 'qualification',
 }
+FACTS = ('node_id', 'node_class', 'field', 'constraint')
+EXCEPTIONS = frozenset({
+    'MachineError', 'MachineRunError', 'MachineRunCancelled', 'RemotePlacementError',
+    'RunPodWorkerOwnerError', 'TargetObservationError', 'AcquisitionUnresolvedError',
+    'PreparedWorkerError', 'PreparationDeadlineExceeded', 'DigestMismatch',
+    'CustodyChanged', 'TimeoutError', 'ValueError', 'RuntimeError', 'OSError',
+    'ConnectionError', 'PermissionError', 'FileNotFoundError', 'IntegrityError',
+    'DeadlineExceeded', 'UnknownError',
+})
+
+
+def _safe_fact(value):
+    if type(value) is int and 0 <= value < 10**12:
+        return str(value)
+    if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,64}', value):
+        return value
+    return None
 
 
 def fallback():
     return {'code': 'unknown', 'category': 'unknown'}
+
+
+def host_summary(error, diagnostic=None, *, stage='execution'):
+    """Journal only bounded facts; exception text and remote output are untrusted."""
+    safe = summarize(diagnostic) if isinstance(diagnostic, Mapping) else fallback()
+    if isinstance(diagnostic, Mapping) and {'code', 'category'} <= set(diagnostic) <= {'code', 'category', *FACTS}:
+        code = diagnostic.get('code')
+        if isinstance(code, str) and code in CODES and diagnostic.get('category') == CODES[code]:
+            safe = {'code': code, 'category': CODES[code]}
+            safe.update({key: diagnostic[key] for key in FACTS if key in diagnostic
+                         and _safe_fact(diagnostic[key]) == diagnostic[key]})
+    name = type(error).__name__ if error is not None else 'UnknownError'
+    if name not in EXCEPTIONS:
+        name = 'UnknownError'
+    return {'exception': name, 'stage': stage if stage in {'claim', 'preparation', 'start', 'poll', 'fetch',
+            'execution', 'reset', 'cancel'} else 'execution', **safe}
+
+
+def safe_stored_summary(value):
+    """Revalidate a journal read before it reaches machine listing or CLI."""
+    if not isinstance(value, Mapping):
+        return fallback()
+    result = host_summary(None, value, stage=value.get('stage'))
+    name = value.get('exception')
+    if isinstance(name, str) and name in EXCEPTIONS:
+        result['exception'] = name
+    return result
 
 
 def summarize(value):
@@ -44,16 +89,21 @@ def summarize(value):
         for issue in issues:
             if isinstance(issue, Mapping) and issue.get('severity') == 'error':
                 details = issue.get('details')
+                facts = {}
                 if isinstance(details, Mapping):
-                    candidates.append(details.get('engine_code'))
-                candidates.append(issue.get('code'))
+                    for key in FACTS:
+                        fact = _safe_fact(details.get(key))
+                        if fact is not None:
+                            facts[key] = fact
+                    candidates.append((details.get('engine_code'), facts))
+                candidates.append((issue.get('code'), facts))
     error = value.get('error')
     if isinstance(error, Mapping):
-        candidates.append(error.get('code'))
-    candidates.append(value.get('code'))
-    for code in candidates:
+        candidates.append((error.get('code'), {}))
+    candidates.append((value.get('code'), {}))
+    for code, facts in candidates:
         if isinstance(code, str) and code in CODES:
-            return {'code': code, 'category': CODES[code]}
+            return {'code': code, 'category': CODES[code], **facts}
     return fallback()
 
 
@@ -80,11 +130,13 @@ def parse_frame(stdout):
         return fallback()
     try:
         value = json.loads(lines[0])
-        if not isinstance(value, dict) or set(value) != {'code', 'category'}:
+        if not isinstance(value, dict) or not {'code', 'category'} <= set(value) or not set(value) <= {'code', 'category', *FACTS}:
             return fallback()
         code = value['code']
         if isinstance(code, str) and code in CODES and value['category'] == CODES[code]:
-            return {'code': code, 'category': CODES[code]}
+            facts = {key: value[key] for key in FACTS if key in value and _safe_fact(value[key]) == value[key]}
+            if set(facts) == set(value) - {'code', 'category'}:
+                return {'code': code, 'category': CODES[code], **facts}
     except (ValueError, TypeError, RecursionError):
         pass
     return fallback()
