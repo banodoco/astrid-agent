@@ -131,7 +131,8 @@ def test_windows_swapback_crash_restores_admitted_generation(tmp_path, windows, 
     assert not txn._exchange_journal(root).exists()
 
 
-def test_windows_legacy_journal_preserves_ambiguous_candidate(tmp_path, windows):
+@pytest.mark.parametrize("phase", ["prepared", "old_moved"])
+def test_windows_legacy_journal_blocks_ambiguous_recovery(tmp_path, windows, phase):
     root = tmp_path / "packs"
     root.mkdir()
     retired = tmp_path / ".astrid-retired"
@@ -141,10 +142,15 @@ def test_windows_legacy_journal_preserves_ambiguous_candidate(tmp_path, windows)
     (candidate / "late-user-write").write_text("must survive")
     record = {"version": 1, "candidate": candidate.name,
               "old": txn._exchange_identity(root), "new": txn._exchange_identity(candidate)}
-    txn._write_exchange(root, record, "prepared")
-    with txn.group_read_lock(root, exclusive=True):
-        assert (candidate / "late-user-write").read_text() == "must survive"
-    assert not txn._exchange_journal(root).exists()
+    txn._write_exchange(root, record, phase)
+    if phase == "old_moved":
+        windows.replace(root, txn._exchange_backup(root))
+    with pytest.raises(txn.PackInstallError, match="Legacy collection exchange"):
+        with txn.group_read_lock(root):
+            pytest.fail("ambiguous collection was exposed")
+    assert (candidate / "late-user-write").read_text() == "must survive"
+    assert txn._exchange_journal(root).exists()
+    assert (root if phase == "prepared" else txn._exchange_backup(root)).is_dir()
 
 
 @pytest.mark.parametrize("phase", ["prepared", "old_moved", "published", "retired"])

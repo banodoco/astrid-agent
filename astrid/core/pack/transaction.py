@@ -182,6 +182,10 @@ def _recover_exchange(root: Path) -> None:
             raise ValueError("malformed exchange record")
     except (ValueError, TypeError) as exc:
         raise PackInstallError("invalid_state", "Collection exchange journal is invalid; restore it before retrying.") from exc
+    if "purpose" not in record:
+        # An older journal cannot distinguish publication from swap-back.
+        # Neither generation can be exposed safely until custody is resolved.
+        raise PackInstallError("invalid_state", "Legacy collection exchange needs manual recovery before retrying.")
     retired = _directory(root.parent / ".astrid-retired")
     candidate = retired / record["candidate"]
     backup = _exchange_backup(root)
@@ -207,10 +211,8 @@ def _recover_exchange(root: Path) -> None:
         _sync_directory(root.parent)
         locations = {"current": old, "candidate": new, "backup": None}
     if locations == {"current": old, "candidate": new, "backup": None}:
-        # Legacy journals cannot distinguish a fresh candidate from a prior
-        # admitted generation in an interrupted swap-back. Preserve it.
-        if record.get("purpose") == "publish":
-            shutil.rmtree(candidate)
+        # The new generation was never published and belongs to this attempt.
+        shutil.rmtree(candidate)
     elif locations == {"current": new, "candidate": None, "backup": old}:
         # Remove the temporary backup name by transferring the old generation
         # to existing retirement custody (rollback/artifact leases still own it).
