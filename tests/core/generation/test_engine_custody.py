@@ -682,6 +682,9 @@ def cpu_h3_install(session, monkeypatch, request):
     from astrid.core.generation.engine_runner import _plain, plan_install
 
     _, _, original, root, mode, started = session
+    extra_flags = tuple(getattr(request, 'extra_launch_flags', ()))
+    if extra_flags:
+        original = replace(original, start=replace(original.start, argv=(*original.start.argv, *extra_flags)))
     uv = shutil.which("uv")
     if uv is None and Path(sys.executable).with_name("uv").is_file():
         uv = str(Path(sys.executable).with_name("uv"))
@@ -758,6 +761,15 @@ def cpu_h3_install(session, monkeypatch, request):
         buffer = io.StringIO(); csv.writer(buffer).writerows(records)
         (info / 'RECORD').write_text(buffer.getvalue())
         native_distributions.append(importlib.metadata.PathDistribution(info))
+        # Metadata-only CPU stand-ins are never imported by the HTTP fake and
+        # do not claim GPU dependency or inference qualification.
+        for name, version in getattr(request, 'standin_distributions', {}).items():
+            info = site / f"{name.replace('-', '_')}-{version}.dist-info"
+            info.mkdir()
+            (info / 'METADATA').write_text(f"Metadata-Version: 2.3\nName: {name}\nVersion: {version}\n")
+            (info / 'WHEEL').write_text('Wheel-Version: 1.0\nGenerator: astrid-cpu-standin\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+            (info / 'RECORD').write_text('')
+            native_distributions.append(importlib.metadata.PathDistribution(info))
     fixture = root / "cpu-fixture"
     fixture.mkdir()
     lock = f"packaging=={packaging.version} --hash=sha256:{hashlib.sha256(packaging.read_text('METADATA').encode()).hexdigest()}\n".encode()

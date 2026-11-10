@@ -29,15 +29,30 @@ from tests.integrations.test_dry_run_equals_live_run import H3_CLASSES
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture
-def pinned_managed_install(session, monkeypatch, request, tmp_path):
-    source = Path(os.environ.get('ASTRID_TEST_COMFY_SOURCE',
-                                str(Path(__file__).resolve().parents[3] / 'comfyui-pinned')))
-    assert source.is_dir(), 'provide the clean recipe-pinned ComfyUI checkout in ASTRID_TEST_COMFY_SOURCE'
-    pin = '423cbd20511becb1f16122ab518e92e58bfa03d9'
+@pytest.fixture(scope='session')
+def pinned_comfy_source(tmp_path_factory):
+    """Use a supplied clean pin or obtain the public source once per test run."""
+    pins = Path(__file__).resolve().parents[2] / 'astrid/packs/vibecomfy/pins.json'
+    pin = json.loads(pins.read_text())['sources']['comfyui']['revision']
+    supplied = os.environ.get('ASTRID_TEST_COMFY_SOURCE')
+    if supplied:
+        source = Path(supplied)
+    else:
+        source = tmp_path_factory.mktemp('pinned-comfy') / 'source'
+        subprocess.run(['git', 'clone', '--quiet', '--no-checkout', '--filter=blob:none',
+                        'https://github.com/Comfy-Org/ComfyUI.git', str(source)], check=True, timeout=180)
+        subprocess.run(['git', '-C', str(source), 'checkout', '--quiet', '--detach', pin], check=True, timeout=180)
     assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == pin
     assert not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'], text=True).strip()
-    profile = SimpleNamespace(comfy_source=source)
+    return source
+
+
+@pytest.fixture
+def pinned_managed_install(session, monkeypatch, request, tmp_path, pinned_comfy_source):
+    source = pinned_comfy_source
+    profile = SimpleNamespace(comfy_source=source,
+        extra_launch_flags=('--use-ck-attention', '--disable-comfy-compiler'),
+        standin_distributions={'torch': '2.10.0+cu130', 'comfy-kitchen': '0.2.40', 'comfy-aimdo': '0.6.0'})
     generator = managed_install.__wrapped__(session, monkeypatch, profile, tmp_path)
     fixture = next(generator)
     try:
