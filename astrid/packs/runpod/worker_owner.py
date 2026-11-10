@@ -214,18 +214,21 @@ class RunPodLeaseOwner:
                         self.expiry_retry_timer.cancel()
                     self.expiry_retry_timer = self.timer(1, lambda: self._expire(reason, generation, operation))
 
-    def recover(self) -> None:
+    def recover(self, *, expected_machine_id: str | None = None) -> None:
         """Startup barrier: reconcile, then terminate the prior host's lease."""
         with self.lock:
             if self._release_inflight:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
             record = self._read()
+            if expected_machine_id is not None and (record is None or record.get("pod_id") != expected_machine_id):
+                raise RunPodWorkerOwnerError("current lease differs from the requested machine; release refused")
             if record is None or record["state"] == "cleanup_complete":
                 if record is not None:
                     _validate_completed_release(record)
                 self.started = True
                 return
-        self.release(reason="restart", _expected_operation=record["operation_id"])
+        self.release(reason="restart", _expected_operation=record["operation_id"],
+                     expected_machine_id=expected_machine_id)
 
     def setup(self) -> Mapping[str, Any]:
         """Persist this owner's validated preferences while no lease is live.
@@ -363,8 +366,14 @@ class RunPodLeaseOwner:
             raise RunPodWorkerOwnerError("preparation requires the exact active invocation lease")
         return record
 
-    def release(self, *, reason: str = "explicit", _expected_operation: str | None = None) -> Mapping[str, Any] | None:
+    def release(self, *, reason: str = "explicit", _expected_operation: str | None = None,
+                expected_machine_id: str | None = None) -> Mapping[str, Any] | None:
         with self.lock:
+            if expected_machine_id is not None:
+                current = self._read()
+                if (not isinstance(expected_machine_id, str) or not expected_machine_id.strip()
+                        or current is None or current.get("pod_id") != expected_machine_id):
+                    raise RunPodWorkerOwnerError("current lease differs from the requested machine; release refused")
             if _expected_operation is not None:
                 current = self._read()
                 if current is None or current["operation_id"] != _expected_operation:

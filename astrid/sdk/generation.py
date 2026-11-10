@@ -304,11 +304,15 @@ def _runpod_placement_policy(controls, *, engine, machine=None, placement_policy
             **({"placement_idle_seconds": placement_policy.idle_timeout_s} if placement_policy is not None else {})}
 
 
-def _runpod_operation(operation, *, client, wait, include_quote=False, preferences=None):
+def _runpod_operation(operation, *, client, wait, include_quote=False, preferences=None, machine_id=None):
     """Submit an ordinary task to the retained host's target owner."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
     policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences if preferences is not None else _runpod_preferences(client)}
+    if machine_id is not None:
+        if operation != "release" or not isinstance(machine_id, str) or not machine_id.strip():
+            raise GenerationInputError("exact machine release requires a nonempty machine id")
+        policy["machine"] = machine_id
     inputs = {"placement_policy": json.dumps(policy, sort_keys=True, separators=(',', ':'), allow_nan=False)}
     if operation == 'status':
         inputs['include_quote'] = include_quote
@@ -1041,7 +1045,7 @@ class GenerationFacade:
         return describe_entry(entry, mode=mode) if entry else describe_workflow(Path(workflow), mode=mode)
 
     @_generation_boundary
-    def release(self, *, engine: str, placement: str, client=None, wait=False):
+    def release(self, *, engine: str, placement: str, machine_id=None, client=None, wait=False):
         """Release a managed engine through its verified owner; never HTTP free an unowned target.
 
         Attached or unmanaged targets are refused and never receive an HTTP free.
@@ -1053,7 +1057,9 @@ class GenerationFacade:
         if canonical_engine(engine) != 'comfyui':
             raise GenerationInputError('Phase 1 release supports only comfyui')
         if placement == 'runpod':
-            return _runpod_operation('release', client=client, wait=wait)
+            return _runpod_operation('release', client=client, wait=wait, machine_id=machine_id)
+        if machine_id is not None:
+            raise GenerationInputError('machine id release requires runpod placement')
         bridge = getattr(client, 'release_generation', None)
         if not callable(bridge):
             raise generation_error(ValueError('The bound host release owner is unavailable'),
