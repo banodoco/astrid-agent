@@ -104,17 +104,17 @@ def test_generation_mcp_selectors_preserve_paid_and_release_controls():
     assert {"generate_list", "generate_targets", "generate_describe", "generate_launch",
             "generate_image", "generate_video", "generate_workflow", "generate_release"} <= set(tools)
     argv = mcp_server.argv_for(tools["generate_image"], {
-        "entry": "z-image", "mode": "t2i", "target": "runpod", "consent": ["paid"],
+        "entry": "z-image", "mode": "t2i", "placement": "runpod", "consent": ["paid"],
         "max_usd": 2.0, "deadline": "2099-01-01T00:00:00Z", "no_wait": True,
     })
     parsed = _parser().parse_args(argv[1:])
-    assert (parsed.entry, parsed.target, parsed.consent, parsed.max_usd, parsed.deadline,
+    assert (parsed.entry, parsed.placement, parsed.consent, parsed.max_usd, parsed.deadline,
             parsed.no_wait) == ("z-image", "runpod", ["paid"], 2.0, "2099-01-01T00:00:00Z", True)
     release = mcp_server.argv_for(tools["generate_release"], {
-        "engine": "comfyui", "target": "runpod", "no_wait": True,
+        "engine": "comfyui", "placement": "runpod", "no_wait": True,
     })
     parsed = _parser().parse_args(release[1:])
-    assert (parsed.engine, parsed.target, parsed.no_wait) == ("comfyui", "runpod", True)
+    assert (parsed.engine, parsed.placement, parsed.no_wait) == ("comfyui", "runpod", True)
 
 
 def _snapshot(root):
