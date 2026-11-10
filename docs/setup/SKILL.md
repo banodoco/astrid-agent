@@ -29,15 +29,16 @@ PATH entry. Use the path for the user's OS:
 Check the routes in this order. Use the first one that fits, and only that one:
 
 1. **App brief**: the brief lists the setup choices and a command. Show those
-   values back. Recommend the user's current settings: saved choices if Astrid
-   is already installed, or Astrid defaults on a fresh install.
+   values back as "your choices from the App". Recommend keeping them.
    Ask "Install with these choices, or change one?"
    On no change, run the brief's command exactly as given. If they change one,
    go to step 1. Then follow step 2's success and failure rules.
 2. **Fresh install**: no launcher exists at its path above. Ask the user for
-   consent once, unless they have already given it. Then go to step 1.
+   consent once, unless they have already given it. Recommend Astrid defaults.
+   Then go to step 1.
 3. **Existing install**: the launcher exists. Ask the user for consent, unless
-   they have already approved this run. Tell the user: "Your saved setup choices
+   they have already approved this run. Recommend "keep your current settings".
+   Do not guess saved choices. Tell the user: "Your saved setup choices
    stay as they are. Tell me if you want to change one." Do not show the choices
    list. Run
    the install command for the user's OS with no choice flags:
@@ -52,8 +53,8 @@ Check the routes in this order. Use the first one that fits, and only that one:
 ## 1. The choices
 
 Show the user the setup choices before you run anything.
-Recommend the user's current settings: saved choices if Astrid is already
-installed, or Astrid defaults on a fresh install. Do not guess saved choices.
+If there is an App brief, recommend keeping the brief's values.
+For a fresh install without an App brief, recommend Astrid defaults.
 Astrid defaults are:
 
 - Start at sign-in: on (`--autostart on|off`)

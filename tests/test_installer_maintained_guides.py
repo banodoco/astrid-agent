@@ -254,20 +254,26 @@ def test_readme_banner_keeps_saved_choices_for_an_existing_install():
 
 
 def test_setup_choices_recommend_current_settings():
-    recommendation = (
-        "Recommend the user's current settings: saved choices if Astrid is already "
-        "installed, or Astrid defaults on a fresh install."
-    )
-    assert recommendation in _routes()["App brief"]
+    routes = _routes()
+    app = routes["App brief"]
+    assert 'as "your choices from the App"' in app
+    assert "Recommend keeping them." in app
+    assert "saved" not in app
+    assert "defaults" not in app
+    assert "Recommend Astrid defaults." in routes["Fresh install"]
+    existing = routes["Existing install"]
+    assert 'Recommend "keep your current settings".' in existing
+    assert "Do not guess saved choices." in existing
+    assert "Do not show the choices list." in existing
     choices = " ".join(_steps(_skill())[1].split())
-    assert recommendation in choices
-    assert "Do not guess saved choices." in choices
+    assert "If there is an App brief, recommend keeping the brief's values." in choices
+    assert "For a fresh install without an App brief, recommend Astrid defaults." in choices
     assert "Astrid defaults are:" in choices
     install = " ".join(_steps(_skill())[2].split())
     assert "Use the approved values from step 1 for every choice." in install
     banner_line = (
-        "When you show choices, recommend my current settings: saved choices if "
-        "Astrid is already installed, or Astrid defaults on a fresh install."
+        "Before you install, show me the setup choices, recommending my current "
+        "settings, and let me change them."
     )
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert banner_line in readme
