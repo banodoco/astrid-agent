@@ -23,9 +23,9 @@ PACK = Path(__file__).resolve().parents[3] / "astrid/packs/h3_av"
 def _recipe_runtime() -> dict[str, str]:
     recipe = load_recipe("comfyui", "linux-x86_64-cu130")
     source = next(row for row in recipe.sources if row.name == "comfyui")
-    assert source.pin.revision == "423cbd20511becb1f16122ab518e92e58bfa03d9"
-    stats_path = PACK.parents[2] / "tests/fixtures/comfyui/live-423cbd20/system-stats.json"
-    observed_version = json.loads(stats_path.read_text(encoding="utf-8"))["system"]["comfyui_version"]
+    # Version read from comfyui_version.py at the immutable source commit.
+    assert source.pin.revision == "ee71d5c4993f29086b27fde1629a945ae48425bf"
+    observed_version = "0.36.0"
     environment = next(row for row in recipe.environments if row.name == recipe.primary_environment)
     lock_ref = environment.requirements.packaged_lock
     assert lock_ref is not None
