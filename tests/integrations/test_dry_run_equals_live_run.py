@@ -245,7 +245,7 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
 
     with _drive(cell, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=h3_classes, call=call,
                 machine_identity=h3, target_kind=target_kind, h3_output=h3,
-                trusted_inventory=not h3) as (client, project_id, provider, result):
+                trusted_inventory=cell in {("audio", "tts"), ("audio", "sfx")}) as (client, project_id, provider, result):
         assert result.ok, json.dumps(result.to_dict(), default=str)[:2000]
         (dry, dry_rows), (live, live_rows) = runs["dry"], runs["live"]
         assert isinstance(dry, dict) and dry["status"] == "ready", dry
