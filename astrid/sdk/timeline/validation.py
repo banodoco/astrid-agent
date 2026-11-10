@@ -610,9 +610,18 @@ def _validate_params(
         if schema is None:
             return
     else:
-        from astrid.sdk.timeline_address import element_schema
+        from astrid.sdk.timeline_address import ElementSchemaUnavailable, element_schema
 
-        schema = element_schema(element)
+        try:
+            schema = element_schema(element)
+        except ElementSchemaUnavailable as exc:
+            # Values carried unchanged from the baseline were admitted earlier; anything new
+            # cannot be checked against an element no installed pack declares, so it is refused.
+            if not params and not previous:
+                return  # creating a clip with no params does not write element parameters
+            if baseline is not None and equal(params, previous):
+                return
+            _fail(f"{path}.clipType", str(exc))
     properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
     if not isinstance(properties, Mapping):
         properties = {}

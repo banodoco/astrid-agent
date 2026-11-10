@@ -1,0 +1,155 @@
+schema_version: 1
+id: am-sprite
+kind: effect
+pack_id: astrid_motion
+short_description: Transparent pixel cutout with stepped keyframes, stamp or slide entrance and run-cycle strips.
+description: Places a transparent pixel cutout (a managed PNG attached as clip.asset, or a static URL in params.src) on the 320x180 logical grid. Position and flip change only on keyframe steps. Entrances are a 2-frame flicker with a 1 px drop (stamp) or a stepped slide from one side. An optional horizontal sprite strip cycles on steps for run animations. Blink frames hide the sprite for two frames.
+keywords:
+- sprite
+- cutout
+- pixel
+- stepped
+- keyframe
+- run-cycle
+- blink
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: Pixel cutout overlay.
+metadata:
+  label: AM Sprite
+  description: Transparent pixel cutout with stepped keyframes, stamp or slide entrance, and run-cycle strips.
+  whenToUse: Use for a pixel character or prop that moves in stop-motion steps over a plate. Attach the cutout as clip.asset. Set scale to the screen px per art px (6 puts one art px on one logical px). Use frames for a horizontal run strip; use blinkAt for mink blinks.
+  role: "sprite"
+  summary: "Transparent pixel cutout with stepped keyframes"
+  geometry: {"position":["x","y"],"scale":"scale","full_frame":false}
+  units: {"scale":6,"logical":["x","y","keyframes[].x","keyframes[].y"],"frames":["keyframes[].frame"]}
+defaults:
+  scale: 6
+  x: 0
+  y: 0
+  flipX: false
+  stepFrames: 2
+  enter: cut
+  slideFrom: left
+  slideDistance: 24
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    src:
+      type: string
+      description: Static URL or public path. Leave empty and use clip.asset for managed media.
+    scale:
+      type: integer
+      minimum: 1
+      maximum: 24
+      description: Screen px per art (logical) px.
+    x:
+      type: number
+      description: Logical px from the left of the 320x180 grid.
+    y:
+      type: number
+      description: Logical px from the top of the 320x180 grid.
+    flipX:
+      type: boolean
+    stepFrames:
+      type: integer
+      enum:
+      - 2
+      - 3
+    frameOffset:
+      type: integer
+      minimum: 0
+      maximum: 10000000
+      description: Internal source frame offset used by a cut sprite piece.
+    keyframes:
+      type: array
+      description: Held poses. The last keyframe at or before each step is active.
+      items:
+        type: object
+        required:
+        - frame
+        properties:
+          frame:
+            type: integer
+            minimum: 0
+          x:
+            type: number
+          y:
+            type: number
+          flipX:
+            type: boolean
+    enter:
+      type: string
+      enum:
+      - stamp
+      - slideIn
+      - cut
+    slideFrom:
+      type: string
+      enum:
+      - left
+      - right
+      - top
+      - bottom
+    slideDistance:
+      type: number
+      minimum: 0
+      description: Logical px the sprite starts away from its rest position; closes in 4 steps.
+    frames:
+      type: object
+      description: Horizontal sprite strip. Frames advance at fps, quantised to clip frames.
+      required:
+      - frameWidth
+      - frameHeight
+      - count
+      - fps
+      properties:
+        frameWidth:
+          type: integer
+          minimum: 1
+        frameHeight:
+          type: integer
+          minimum: 1
+        count:
+          type: integer
+          minimum: 1
+        fps:
+          type: number
+          exclusiveMinimum: 0
+    sourceClock:
+      type: object
+      description: Internal source frame clock for a sprite cut at a chapter boundary.
+      required:
+      - offsetFrames
+      - speed
+      properties:
+        offsetFrames:
+          type: number
+          minimum: 0
+        speed:
+          type: number
+          exclusiveMinimum: 0
+    blinkAt:
+      description: Clip frame(s) where the sprite hides (or shows blinkIndex) for two frames.
+      oneOf:
+      - type: integer
+        minimum: 0
+      - type: array
+        items:
+          type: integer
+          minimum: 0
+    blinkIndex:
+      type: integer
+      minimum: 0
+      description: Strip frame shown during a blink when frames is set. Without it the sprite hides.
+    silhouette:
+      description: 'true, or {until: frame}: draw the art as a flat ink silhouette (until that frame).'
+    outline:
+      type: object
+      description: '{color, px (art px), pulse (frames)}: hard pixel outline, blinking one px wider every `pulse` frames.'

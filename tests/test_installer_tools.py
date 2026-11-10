@@ -228,3 +228,50 @@ def test_a_git_that_is_not_git_does_not_block_the_install(tmp_path, monkeypatch)
 
     assert "ASTRID_GIT_EXECUTABLE" not in env
     assert notes == [f"Git for pack installs was not recorded: {fake_git} did not identify itself as Git."]
+
+
+def test_update_stages_recorded_git_from_restricted_service_environment(tmp_path, monkeypatch):
+    from astrid.installer import backend as backend_module
+    from astrid.installer.service import Version
+
+    root, *_unused, tool_run = harness(tmp_path, monkeypatch)
+    git = media_binary(tmp_path / "Program Files" / "Git" / "cmd", "git")
+    monkeypatch.setenv("PATH", str(git.parent))
+
+    def run(argv, **kwargs):
+        if str(argv[0]) == str(git):
+            return "git version 2.47.0"
+        if str(argv[0]) == str(installer.uv):
+            return "uv 1.0.0" if argv[1:] == ["--version"] else ""
+        return tool_run(argv, **kwargs)
+
+    installer = backend_module.Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    installer.uv.touch()
+    initial = tools.install_tools(manifest(), root, TARGET, run)
+    assert initial["ASTRID_GIT_EXECUTABLE"] == str(git)
+    assert str(git.parent) not in initial["PATH"].split(os.pathsep)
+    old = Version(tmp_path / "old", tmp_path / "old/python", tmp_path / "old/profile", initial)
+    # The update worker overlays the actual old.env onto its inherited environment.
+    for key, value in old.env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(backend_module, "current", lambda _root: old)
+    monkeypatch.setattr(backend_module, "source", lambda _name, _sha, destination, **_kw: destination)
+    monkeypatch.setattr(installer, "_verify_local_timeline_schema", lambda *_args: None)
+    monkeypatch.setattr(installer, "run", run)
+    captured = {}
+    original_install_tools = backend_module.install_tools
+
+    class Staged(Exception):
+        pass
+
+    def capture(*args, **kwargs):
+        captured.update(original_install_tools(*args, **kwargs))
+        raise Staged
+
+    monkeypatch.setattr(backend_module, "install_tools", capture)
+    pins = manifest()
+    pins.update({"agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40}})
+    pins["tools"].update({"uv": {"version": "1.0.0"}, "python": {"version": "3.11.9"}})
+    with pytest.raises(Staged):
+        installer.stage(pins, installer.root, tmp_path / "data")
+    assert captured["ASTRID_GIT_EXECUTABLE"] == str(git)

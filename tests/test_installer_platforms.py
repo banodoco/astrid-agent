@@ -129,6 +129,47 @@ def test_launchd_pins_the_install_time_home(tmp_path):
     assert value['EnvironmentVariables']['HOME'] == str(install_home)
 
 
+def test_systemd_install_and_update_pin_personal_packs_home(tmp_path, monkeypatch):
+    from astrid.personal_packs_root import resolve_personal_packs_root
+
+    install_home = tmp_path / 'install home %'
+    monkeypatch.setenv('HOME', str(install_home))
+    expected = resolve_personal_packs_root()
+    svc = service.Service(tmp_path / 'program', tmp_path / 'log', Mock(return_value=''),
+                          home=install_home, system='linux')
+    svc.systemd = Mock(return_value=True)
+    svc.autostart_enabled = Mock(return_value=True)
+    version, data, _ = sample()
+    for attempt in range(2):
+        if attempt:
+            # An existing pre-fix unit is regenerated during an update.
+            svc.path.write_text('\n'.join(line for line in svc.path.read_text().splitlines()
+                                          if not line.startswith('Environment="HOME=')) + '\n')
+        svc.register(version, data)
+        unit = svc.path.read_text()
+        assert 'Environment=' + service.systemd_quote('HOME=' + str(install_home)) in unit
+        # Evaluate the value carried by the generated unit under a different manager HOME.
+        line = next(line for line in unit.splitlines() if line.startswith('Environment="HOME='))
+        import shlex
+        binding = shlex.split(line[len('Environment='):])[0].replace('%%', '%')
+        monkeypatch.setenv('HOME', '/different-manager-home')
+        monkeypatch.setenv(*binding.split('=', 1))
+        assert resolve_personal_packs_root() == expected
+
+
+def test_windows_task_pins_userprofile_for_personal_packs(tmp_path, monkeypatch):
+    import ntpath
+    version, data, log = sample('win32')
+    install_home = tmp_path / "install home"
+    xml = service.render('win32', version, data, log, home=install_home)
+    root = ET.fromstring(xml)
+    ns = {'t': 'http://schemas.microsoft.com/windows/2004/02/mit/task'}
+    arguments = root.findtext('t:Actions/t:Exec/t:Arguments', namespaces=ns)
+    assert f"os.environ['USERPROFILE']={str(install_home)!r}" in arguments
+    monkeypatch.setenv('USERPROFILE', str(install_home))
+    assert ntpath.expanduser('~') == str(install_home)
+
+
 def _darwin_service(tmp_path, process_home):
     svc = service.Service(tmp_path / 'program', tmp_path / 'log', Mock(return_value=''),
                           home=process_home, system='darwin')

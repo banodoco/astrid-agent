@@ -1,0 +1,67 @@
+schema_version: 1
+id: am-tweet
+kind: effect
+pack_id: astrid_motion
+short_description: Reconstructed post card with a visible slot for the real text, a generic avatar and a RECONSTRUCTION chip.
+description: A panel card with a generic pixel silhouette avatar (never a likeness), the name and handle as given, a date slot, a dashed slot box for the post body (default [REAL TWEET TEXT + LINK NEEDED] with a blinking caret), a link slot and a pixel action row. A RECONSTRUCTION chip is always on the card and a mono note above it says to paste the real post verbatim. Stamp entrance; optional marker swipe across the body.
+keywords:
+- post
+- tweet
+- social
+- slot
+- reconstruction
+- card
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: AM Tweet overlay.
+metadata:
+  label: AM Tweet
+  description: Reconstructed post card with a visible slot for the real text, a generic avatar and a RECONSTRUCTION chip.
+  whenToUse: 'Use when a real post must appear but its text is not verified yet. Never put invented words in body: leave the default slot until the verbatim text and link are known.'
+  role: "card"
+  text: ["body"]
+  summary: "{name} reconstructed post"
+  geometry: {"position":["x","y"],"scale":"width","full_frame":false}
+defaults: {}
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    name:
+      type: string
+    handle:
+      type: string
+    date:
+      type: string
+      description: Verbatim date or the slot marker.
+    body:
+      type: string
+      description: Verbatim post text only. Default is the slot marker.
+    link:
+      type: string
+    badge:
+      type: string
+      description: Default RECONSTRUCTION.
+    note:
+      type: string
+    x:
+      type: number
+    y:
+      type: number
+    width:
+      type: number
+      minimum: 600
+    enter:
+      type: string
+      enum:
+      - stamp
+      - cut
+    highlightAt:
+      type: integer
+      minimum: 0
+      description: Frame of a 4-step marker swipe across the body.
