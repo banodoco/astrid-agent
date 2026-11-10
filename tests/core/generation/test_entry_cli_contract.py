@@ -202,3 +202,51 @@ def test_context_help_exposes_declared_aliases_and_constraints(monkeypatch, caps
     help_text = capsys.readouterr().out
     assert "Aliases: texture" in help_text
     assert "min: 0" in help_text and "max: 1" in help_text
+
+
+@pytest.mark.parametrize('prompt_args', [['Hello from Astrid.'], ['--prompt', 'Hello from Astrid.']])
+def test_real_tts_gateway_maps_prompt_without_runtime(monkeypatch, capsys, prompt_args):
+    from astrid.core import gateway
+    captured = []
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('dry-run opened Runtime'))
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
+        audio=lambda **kwargs: captured.append(kwargs) or {'ok': True}))
+    assert gateway.main(['generate', 'audio', *prompt_args, '--mode', 'tts',
+                         '--entry', 'audio/qwen3_tts_custom_voice', '--dry-run', '--json']) == 0
+    assert captured[0]['text'] == 'Hello from Astrid.'
+    assert 'prompt' not in captured[0]
+
+
+@pytest.mark.parametrize('text', ['hello', 'different'])
+def test_real_tts_duplicate_prompt_names_declared_input(text):
+    with pytest.raises(ValueError, match='--input text='):
+        entries.resolve_entry_inputs('audio/qwen3_tts_custom_voice',
+                                     {'prompt': 'hello', 'text': text}, mode='tts', kind='audio')
+
+
+@pytest.mark.parametrize(('kind', 'mode', 'ports', 'values', 'expected'), [
+    ('image', 't2i', [{'name': 'prompt', 'type': 'string'}], {'prompt': 'x'}, {'prompt': 'x'}),
+    ('audio', 'tts', [{'name': 'prompt', 'type': 'string'}, {'name': 'text', 'type': 'string'}],
+     {'prompt': 'x'}, {'prompt': 'x'}),
+    ('audio', 'tts', [{'name': 'text', 'type': 'string', 'aliases': ['prompt']}],
+     {'prompt': 'x'}, {'text': 'x'}),
+    ('audio', 'tts', [{'name': 'text', 'type': 'string'}, {'name': 'negative_prompt', 'type': 'string'}],
+     {'negative_prompt': 'x'}, {'negative_prompt': 'x'}),
+])
+def test_prompt_mapping_preserves_declared_contract(monkeypatch, kind, mode, ports, values, expected):
+    monkeypatch.setattr(entries, 'describe_entry', lambda *a, **k: {
+        'id': 'fixture', 'source': 'workflow', 'kind': kind, 'mode': mode,
+        'modes': [mode], 'inputs': ports})
+    assert entries.resolve_entry_inputs('fixture', values, mode=mode)[1] == expected
+
+
+@pytest.mark.parametrize('ports', [
+    [{'name': 'words', 'type': 'string'}, {'name': 'script', 'type': 'string'}],
+    [{'name': 'text', 'type': 'integer'}],
+])
+def test_tts_prompt_without_canonical_text_has_declared_input_hint(monkeypatch, ports):
+    monkeypatch.setattr(entries, 'describe_entry', lambda *a, **k: {
+        'id': 'fixture', 'source': 'workflow', 'kind': 'audio', 'mode': 'tts',
+        'modes': ['tts'], 'inputs': ports})
+    with pytest.raises(ValueError, match='use declared --input NAME=VALUE'):
+        entries.resolve_entry_inputs('fixture', {'prompt': 'hello'}, mode='tts')
