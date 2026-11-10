@@ -65,6 +65,35 @@ its original policy and confirm cleanup first. Setup refuses unresolved
 custody. It uses the existing `runpod.setup` action; do not edit a journal or
 restart Runtime to force a policy change.
 
+### Replacing preferences
+
+`runpod.setup` is the supported reset of the retained in-process owner. Use a
+Runtime-bound client, as the generation CLI does:
+
+```python
+import json
+from astrid.sdk.client import AstridClient
+
+# preferences is the complete validated policy; it contains credential refs,
+# never credential bytes. Saving policy grants no permission to spend.
+policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences}
+with AstridClient.open_from_launcher() as client:
+    result = client.invoke_result(
+        "runpod.setup", kind="action", project=None,
+        inputs={"placement_policy": json.dumps(policy, sort_keys=True)},
+        wait=True, read_managed_outputs=False,
+    )
+assert result.ok, result.to_dict()
+assert result.raw_result["payload"]["target_operation"]["state"] == "saved"
+```
+
+Writing preferences on disk does not replace the host's retained owner.
+Status, listing and release reject a different policy and preserve the lease.
+Release an existing lease using its original policy, verify cleanup, then call
+setup with the replacement. Setup replaces an absent or cleanup-complete
+owner only when no operation or invocation remains active; it does not quote,
+allocate, or clear unresolved custody. A Runtime restart is unnecessary.
+
 ### Choose a GPU and datacenter
 
 The saved GPU list is tried in the user's order. Within each GPU type, the
