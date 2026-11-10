@@ -250,3 +250,21 @@ def test_tts_prompt_without_canonical_text_has_declared_input_hint(monkeypatch, 
         'modes': ['tts'], 'inputs': ports})
     with pytest.raises(ValueError, match='use declared --input NAME=VALUE'):
         entries.resolve_entry_inputs('fixture', {'prompt': 'hello'}, mode='tts')
+
+
+def test_real_named_tts_sdk_maps_prompt_and_refuses_duplicate_before_target(monkeypatch):
+    import astrid.sdk.generation as sdk_generation
+    from astrid.sdk.generation import GenerationInputError
+
+    captured = []
+    monkeypatch.setattr(sdk_generation.GenerationFacade, '_generate_on_target',
+                        lambda self, **kwargs: captured.append(kwargs) or {'ok': True})
+    facade = sdk_generation.GenerationFacade()
+    assert facade.audio(entry='audio/qwen3_tts_custom_voice', mode='tts',
+                        prompt='Hello from Astrid.', placement='local', dry_run=True) == {'ok': True}
+    assert captured[0]['inputs'] == {'text': 'Hello from Astrid.'}
+    for text in ('Hello from Astrid.', 'different'):
+        with pytest.raises(GenerationInputError, match='--input text='):
+            facade.audio(entry='audio/qwen3_tts_custom_voice', mode='tts',
+                         prompt='Hello from Astrid.', text=text, placement='local', dry_run=True)
+    assert len(captured) == 1
