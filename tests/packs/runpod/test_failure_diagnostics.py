@@ -14,14 +14,36 @@ from astrid.packs.runpod import machine as rm
 SENTINEL = 'SENTINEL_TOKEN https://private.example/secret private-output'
 
 
+def _malformed_bounded_child(send, _pod, _token, deadline, _base_url, _name, args, _kwargs):
+    import os
+    import struct
+    import time
+    mode, marker = args
+    Path(marker).write_text(mode)
+    if mode == 'partial':
+        os.write(send.fileno(), struct.pack('!i', 100) + b'{')
+        time.sleep(10)
+    elif mode == 'oversized':
+        os.write(send.fileno(), struct.pack('!i', 2 * 1024 * 1024 + 1))
+        time.sleep(10)
+    elif mode == 'late':
+        time.sleep(max(0, deadline - time.monotonic()) + 0.1)
+        send.send_bytes(b'{"ok":true,"value":{"id":"late"}}')
+    send.close()
+
+
 def emit(tmp_path, raw):
     path = tmp_path / 'result.json'
     path.write_bytes(raw)
+    graph = tmp_path / 'source.json'
+    graph.write_text(json.dumps({'nodes': {'17': {'class_type': 'KSampler'}}}))
+    job = tmp_path / 'job.json'
+    job.write_text(json.dumps({'execution': {'source': str(graph)}}))
     command = rm.generation_command('cpu-image', '/fake/run', mode='t2i')
     # Execute the exact producer projection shipped in the failed-job branch.
     branch = command.split('if [ $rc -ne 0 ]; then ', 1)[1].split('; exit $rc; fi', 1)[0]
     argv = shlex.split(branch)
-    argv[0], argv[-1] = sys.executable, str(path)
+    argv[0], argv[-2], argv[-1] = sys.executable, str(path), str(job)
     result = subprocess.run(argv, capture_output=True, text=True, check=True)
     assert not result.stderr and SENTINEL not in result.stdout
     return result.stdout
@@ -66,6 +88,387 @@ def test_result_symlink_and_missing_file_are_not_read(tmp_path):
 ])
 def test_untrusted_frames_never_escape_or_select_unknown_categories(stdout):
     assert fd.parse_frame(stdout) == fd.fallback()
+
+
+def test_host_summary_keeps_only_bounded_failure_facts():
+    diagnostic = {'code': 'generation_failed', 'category': 'execution', 'node_id': '17',
+                  'node_class': 'KSampler', 'field': SENTINEL, 'constraint': 'min_value'}
+    summary = fd.host_summary(RuntimeError(SENTINEL), diagnostic, stage='fetch', node_ids={'17'})
+    assert summary == {'exception': 'RuntimeError', 'stage': 'fetch', 'code': 'generation_failed',
+                       'category': 'execution', 'node_id': '17', 'node_class': 'KSampler',
+                       'constraint': 'min_value'}
+    assert SENTINEL not in json.dumps(summary)
+
+
+def test_remote_issue_fields_are_allowlisted_and_redacted(tmp_path):
+    payload = {'issues': [{'severity': 'error', 'code': 'generation_failed', 'message': SENTINEL,
+                           'details': {'node_id': '17', 'node_class': 'KSampler',
+                                       'field': SENTINEL, 'constraint': 'min_value'}}]}
+    frame = emit(tmp_path, json.dumps(payload).encode())
+    assert fd.parse_frame(frame, node_ids={'17'}) == {'code': 'generation_failed', 'category': 'execution',
+                                     'node_id': '17', 'node_class': 'KSampler',
+                                     'constraint': 'min_value'}
+    assert SENTINEL not in frame
+
+
+def test_journal_summary_is_revalidated_before_display():
+    stored = {'exception': 'RuntimeError', 'stage': 'fetch', 'code': 'generation_failed',
+              'category': 'execution', 'node_id': SENTINEL, 'prompt': SENTINEL}
+    result = fd.safe_stored_summary(stored)
+    assert result == {'exception': 'RuntimeError', 'stage': 'fetch',
+                      'code': 'generation_failed', 'category': 'execution'}
+    assert SENTINEL not in json.dumps(result)
+    hostile_class = type('SENTINEL_TOKEN', (Exception,), {})
+    assert fd.host_summary(hostile_class(SENTINEL))['exception'] == 'UnknownError'
+
+
+def test_valid_node_facts_survive_owner_journal_round_trip():
+    source = {'exception': 'MachineError', 'stage': 'fetch', 'code': 'generation_failed',
+              'category': 'execution', 'node_id': '0017', 'node_class': 'KSampler',
+              'field': 'seed', 'constraint': 'min_value'}
+    projected = fd.safe_stored_summary(source, node_ids={'17'})
+    assert projected == {**source, 'node_id': '17'}
+    assert fd.safe_stored_summary(projected, node_ids={'17'}) == projected
+    row = rm.lease_row({'pod_id': 'pod-1', 'state': 'claimed',
+                        'lease': {'state': 'idle', 'paid_expires_at': 1000, 'idle_expires_at': 900,
+                                  'hourly_usd': 1, 'accounted_at': 100,
+                                  'last_job': {'outcome': 'failed', 'generation': 1,
+                                               'failure': projected, 'structural_node_ids': ['17']}}})
+    assert row['last_job']['failure'] == projected
+    assert 'node_id' not in fd.safe_stored_summary(source)
+
+
+def test_synthetic_identifier_secrets_are_omitted_from_node_facts():
+    source = {'code': 'generation_failed', 'category': 'execution', 'node_id': 'idABC123',
+              'node_class': 'SENTINELTOKEN123', 'field': 'private-key-123',
+              'constraint': 'SENTINELTOKEN123'}
+    projected = fd.host_summary(RuntimeError(SENTINEL), source, stage='fetch')
+    assert projected == {'exception': 'RuntimeError', 'stage': 'fetch',
+                         'code': 'generation_failed', 'category': 'execution'}
+    assert 'SENTINEL' not in json.dumps(projected)
+
+
+def test_digits_only_secret_is_not_structural_graph_node(tmp_path):
+    payload = {'issues': [{'severity': 'error', 'code': 'generation_failed',
+                           'details': {'node_id': '999999999999', 'node_class': 'KSampler'}}]}
+    frame = emit(tmp_path, json.dumps(payload).encode())
+    assert '999999999999' not in frame
+    projected = fd.parse_frame(frame, node_ids={'17'})
+    assert projected == {'code': 'generation_failed', 'category': 'execution',
+                         'node_class': 'KSampler'}
+    assert '999999999999' not in json.dumps(fd.safe_stored_summary(
+        fd.host_summary(RuntimeError(), projected, stage='fetch', node_ids={'17'})))
+
+
+def test_failure_observer_uses_one_scoped_transport_deadline(monkeypatch):
+    from runpod_lifecycle import https
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+    seen = []
+
+    class Transport:
+        def __init__(self, pod_id, token, *, deadline=None):
+            seen.append((pod_id, deadline))
+        def execute_command(self, command, timeout):
+            return 0, "ok", ""
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(https, "HttpsPodTransport", Transport)
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", _HttpsOps._call_direct)
+    original = _HttpsOps("pod-1", "private-token")
+    observer = original.bounded(10**12)
+    assert observer.exec("status", 12) == (0, "ok", "")
+    assert seen == [("pod-1", 10**12)] and original.deadline is None
+
+
+@pytest.mark.parametrize('mode', ['slow_drip', 'route_retry'])
+def test_real_https_slow_drip_is_killed_at_outer_deadline(mode):
+    import multiprocessing
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    import time
+    from astrid.packs.runpod.remote_placement import _HttpsOps, RemotePlacementError
+
+    class Drip(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.do_GET()
+        def do_GET(self):
+            if mode == 'route_retry':
+                self.send_response(404)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header('Content-Length', '100')
+            self.end_headers()
+            for _ in range(100):
+                try:
+                    self.wfile.write(b' ')
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                time.sleep(0.025)
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Drip)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    token = 'private-token-' + 'x' * 32
+    children_before = {child.pid for child in multiprocessing.active_children()}
+    try:
+        start = time.monotonic()
+        ops = _HttpsOps('pod1', token,
+                        base_url=f'http://127.0.0.1:{server.server_port}').bounded(start + 0.35)
+        with pytest.raises(RemotePlacementError) as caught:
+            ops.job_poll('a' * 32)
+        assert time.monotonic() - start < 0.85
+        assert {child.pid for child in multiprocessing.active_children()} == children_before
+        assert token not in str(caught.value)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize('mode', ['slow_drip', 'route_retry'])
+def test_real_https_request_enters_then_observer_deadline_fences_result(mode):
+    import multiprocessing
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+    import time
+    from astrid.packs.runpod.remote_placement import _HttpsOps, RemotePlacementError
+
+    entered = Event()
+    requests, writes = [], []
+    class Slow(BaseHTTPRequestHandler):
+        def do_POST(self):
+            try:
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            except (ValueError, TypeError):
+                body = {}
+            requests.append((self.path, body.get('path')))
+            self.do_GET()
+        def do_GET(self):
+            entered.set()
+            if mode == 'route_retry':
+                self.send_response(404)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header('Content-Length', '1000')
+            self.end_headers()
+            for _ in range(1000):
+                try:
+                    self.wfile.write(b' ')
+                    self.wfile.flush()
+                    writes.append(1)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                time.sleep(0.025)
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Slow)
+    Thread(target=server.serve_forever, daemon=True).start()
+    children_before = {child.pid for child in multiprocessing.active_children()}
+    try:
+        start = time.monotonic()
+        ops = _HttpsOps('pod1', 'x' * 32,
+                        base_url=f'http://127.0.0.1:{server.server_port}').bounded(start + 10)
+        with pytest.raises(RemotePlacementError, match='deadline expired'):
+            ops.job_poll('a' * 32)
+        assert entered.is_set()  # This case exercised actual pinned HTTP.
+        assert requests and all(path == '/download-chunk' and isinstance(source, str)
+                                and ('a' * 32) in source and source.endswith('/status')
+                                for path, source in requests)
+        assert (len(requests) > 1 if mode == 'route_retry' else len(writes) > 1)
+        assert 8.5 <= time.monotonic() - start < 10.8
+        assert {child.pid for child in multiprocessing.active_children()} == children_before
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_bounded_observer_has_no_token_in_process_metadata():
+    import multiprocessing
+    import time
+    from astrid.packs.runpod.remote_placement import _bounded_https_call_child
+
+    token = 'secret-child-token-' + 'x' * 32
+    context = multiprocessing.get_context('spawn')
+    recv, send = context.Pipe(duplex=False)
+    child = context.Process(target=_bounded_https_call_child,
+                            args=(send, 'pod1', token, time.monotonic() + 10,
+                                  'http://127.0.0.1:9', 'detached_poll', ('a' * 32,), {}))
+    try:
+        child.start()
+        assert token.encode() not in Path(f'/proc/{child.pid}/cmdline').read_bytes()
+    finally:
+        if child.is_alive():
+            child.kill()
+        child.join(2)
+        assert not child.is_alive()
+        child.close()
+        recv.close()
+        send.close()
+
+
+@pytest.mark.parametrize('mode', [
+    pytest.param('partial', marks=pytest.mark.skipif(sys.platform == 'win32', reason='raw pipe FD is POSIX-only')),
+    pytest.param('oversized', marks=pytest.mark.skipif(sys.platform == 'win32', reason='raw pipe FD is POSIX-only')),
+    'late', 'eof',
+])
+def test_bounded_observer_rejects_malformed_or_late_child_frame(tmp_path, monkeypatch, mode):
+    import multiprocessing
+    import time
+    from astrid.packs.runpod import remote_placement as rp
+
+    marker = tmp_path / 'child-entered'
+    monkeypatch.setattr(rp, '_bounded_https_call_child', _malformed_bounded_child)
+    before = {child.pid for child in multiprocessing.active_children()}
+    start = time.monotonic()
+    ops = rp._HttpsOps('pod1', 'x' * 32, deadline=start + 2)
+    with pytest.raises(rp.RemotePlacementError) as caught:
+        ops._bounded_call('detached_poll', mode, str(marker))
+    assert marker.read_text() == mode  # The child reached the malformed IPC case.
+    assert time.monotonic() - start < 2.6
+    assert 'SENTINEL' not in str(caught.value)
+    assert {child.pid for child in multiprocessing.active_children()} == before
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='raw partial-frame pipe writing is POSIX-only')
+@pytest.mark.parametrize('early_abort', [False, True])
+def test_partial_ipc_from_unkillable_caller_returns_with_pending_fence(monkeypatch, early_abort):
+    import multiprocessing
+    import os
+    import struct
+    from threading import Event, Timer
+    import time
+    from astrid.packs.runpod import remote_placement as rp
+
+    real = multiprocessing.get_context('spawn')
+    children = []
+    class Unkillable:
+        def __init__(self, *, target, args):
+            self.send = args[0]
+            self.daemon = False
+            self.writer = None
+            self.kills = 0
+            self.alive = True
+            children.append(self)
+        def start(self):
+            self.writer = os.dup(self.send.fileno())
+            os.write(self.writer, struct.pack('!i', 100) + b'{')
+        def is_alive(self): return self.alive
+        def kill(self): self.kills += 1
+        def join(self, timeout=None): pass
+        def close(self):
+            assert not self.alive, 'an unkillable caller must stay fenced'
+
+    monkeypatch.setattr(rp.multiprocessing, 'get_context',
+                        lambda method: SimpleNamespace(Pipe=real.Pipe, Process=Unkillable))
+    abort = Event()
+    timer = Timer(0.1, abort.set) if early_abort else None
+    deadline = time.monotonic() + (120 if early_abort else 0.5)
+    ops = rp._HttpsOps('pod1', 'private-token', deadline=deadline,
+                       abort_event=abort if early_abort else None)
+    try:
+        if timer is not None:
+            timer.start()
+        start = time.monotonic()
+        with pytest.raises(rp.BoundedObserverUnreaped):
+            ops.job_poll('a' * 32)
+        assert time.monotonic() - start < 1.0
+        assert ops.unreaped_child.process is children[0] and children[0].kills > 0
+        assert 'private-token' not in repr(ops.unreaped_child)
+    finally:
+        if timer is not None:
+            timer.cancel()
+        for child in children:
+            if child.writer is not None:
+                os.close(child.writer)
+            child.alive = False
+        if getattr(ops, 'unreaped_child', None) is not None:
+            ops.unreaped_child.join(0.1)
+            ops.unreaped_child.close()
+
+
+def test_portable_blocked_pipe_reader_is_fenced_after_early_abort(monkeypatch):
+    import multiprocessing
+    from threading import Event, Timer
+    import time
+    from astrid.packs.runpod import remote_placement as rp
+
+    unblock = Event()
+    class Receive:
+        def recv_bytes(self, maxlength):
+            assert maxlength == 2 * 1024 * 1024
+            unblock.wait(10)
+            raise EOFError
+        def close(self): pass
+    class Send:
+        def close(self): pass
+    class SurvivingProcess:
+        alive = True
+        daemon = False
+        def __init__(self, *, target, args): pass
+        def start(self): pass
+        def is_alive(self): return self.alive
+        def kill(self): pass
+        def join(self, timeout=None): pass
+        def close(self): assert not self.alive
+
+    process = SurvivingProcess(target=None, args=())
+    monkeypatch.setattr(rp.multiprocessing, 'get_context', lambda method: SimpleNamespace(
+        Pipe=lambda duplex: (Receive(), Send()), Process=lambda **kwargs: process))
+    abort = Event()
+    timer = Timer(0.1, abort.set)
+    ops = rp._HttpsOps('pod1', 'private-token', deadline=time.monotonic() + 120,
+                       abort_event=abort)
+    try:
+        timer.start()
+        start = time.monotonic()
+        with pytest.raises(rp.BoundedObserverUnreaped):
+            ops.job_poll('a' * 32)
+        assert time.monotonic() - start < 1.0
+        assert ops.unreaped_child.process is process and ops.unreaped_child.is_alive()
+    finally:
+        timer.cancel()
+        process.alive = False
+        unblock.set()
+        ops.unreaped_child.join(0.1)
+        ops.unreaped_child.close()
+
+
+@pytest.mark.parametrize("mode", ["blocked_response", "route_retry"])
+def test_pinned_https_receipt_read_stops_at_scoped_deadline(tmp_path, monkeypatch, mode):
+    import httpx
+    import time
+    from runpod_lifecycle.https import HttpsPodTransport
+
+    transport = HttpsPodTransport("pod1", "x" * 32, base_url="http://127.0.0.1:8000",
+                                  deadline=time.monotonic() + 10,
+                                  request_timeout=0.02, poll_interval=0.005, route_grace=1)
+    transport.deadline = time.monotonic() + 0.5
+    calls = []
+
+    def request(*args, **kwargs):
+        calls.append(kwargs.get("timeout"))
+        if mode == "blocked_response":
+            time.sleep(0.6)  # Simulate a transport that returns after its per-phase timeout.
+            raise httpx.ReadTimeout("SENTINEL_TOKEN private response")
+        return SimpleNamespace(status_code=404, content=b"", headers={})
+
+    monkeypatch.setattr(transport.http, "request", request)
+    try:
+        with pytest.raises(Exception) as caught:
+            transport.get("/fixed/install.json", tmp_path / "receipt")
+        assert "SENTINEL_TOKEN" not in str(caught.value)
+        assert calls and all(0 < timeout <= 0.5 for timeout in calls)
+        assert not (tmp_path / "receipt").exists()
+    finally:
+        transport.disconnect()
 
 
 @pytest.mark.parametrize('exit_code', [2, SENTINEL])

@@ -1,7 +1,7 @@
 """Plan 32 T5: RunPod as a machine on the real lease owner, with the pod and provider faked.
 
-Money rules ported from the remote placement wrapper: one claim per job; any
-failure after the claim releases the pod; only a successful job settles warm;
+Money rules ported from the remote placement wrapper: one claim per job; a
+verified failed job settles warm within the original limits;
 the detached job is checkpointed before start, so a crash is cancelled by
 ``recover()`` before the pod is deleted.
 """
@@ -24,6 +24,19 @@ from tests.packs.runpod.test_warm_session import (  # noqa: F401  (fixtures)
 BASE = dict(account="acct", gpu_type="NVIDIA RTX 5090", image="img@sha256:" + "1" * 64,
             volume={"id": "vol", "mount_path": "/workspace", "cache_device": 64768, "mount_id": 7},
             source_digest="0123456789abcdef")
+
+
+def test_host_shutdown_releases_before_closing_owner():
+    from types import SimpleNamespace
+    from astrid.packs.runpod.adapter import TargetProviderBindings
+
+    calls = []
+    bindings = TargetProviderBindings(pack_roots=(), holds=None, credentials=None, environ={})
+    owner = SimpleNamespace(release=lambda **kw: calls.append(("release", kw)),
+                            close=lambda: calls.append(("close", None)))
+    bindings.provider = SimpleNamespace(lease_owner=owner)
+    bindings.close()
+    assert calls == [("release", {"reason": "host_shutdown"}), ("close", None)]
 
 
 # ----------------------------------------------------------------------------
@@ -173,7 +186,7 @@ def test_claim_caps_idle_and_reports_the_acquired_timeout(machine_case, requeste
         c.machine.release(lease, False)
 
 
-def test_a_failing_runtime_check_releases_the_lease_and_never_settles_warm(machine_case):
+def test_a_failing_runtime_check_keeps_the_verified_machine_for_retry(machine_case):
     c = machine_case
     c.pod.listed = []  # the pod's runtime does not list the entry from the shipped selection
     job = c.job()
@@ -181,10 +194,36 @@ def test_a_failing_runtime_check_releases_the_lease_and_never_settles_warm(machi
         run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                        sleep=lambda s: None)
     record = c.read()
-    assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
-    assert record["lease"].get("ended") == "task_failed"
+    assert record["state"] == "claimed" and record["lease"]["state"] == "idle"
+    assert record["lease"]["last_job"]["outcome"] == "failed" and c.deletes == []
+    assert any(deadline is not None for deadline in c.transport_deadlines)
     # The check is the job command's first step: the run itself never produced outputs.
-    assert not any("/out/" in path for path in c.pod.files) and len(c.pod.resets) == 1
+    assert not any("/out/" in path for path in c.pod.files) and len(c.pod.resets) == 2
+    c.pod.listed = ["cpu-image"]
+    retry = c.job(2)
+    run_on_machine(c.machine, retry, destination=retry.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    assert c.creates == 1 and c.read()["lease"]["last_job"]["outcome"] == "success"
+
+
+def test_diagnostic_read_failure_still_settles_and_never_records_secret(machine_case, monkeypatch):
+    c = machine_case
+    c.pod.listed = []
+    secret = "SENTINEL_TOKEN https://private.example/secret"
+    original = c.pod.exec
+
+    def unreadable(command, timeout=600):
+        if command.startswith("tail -c") and command.endswith("/stdout"):
+            raise RuntimeError(secret)
+        return original(command, timeout)
+
+    monkeypatch.setattr(c.pod, "exec", unreadable)
+    job = c.job()
+    with pytest.raises(rm.MachineError, match="remote failure diagnostic unavailable") as caught:
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                       sleep=lambda s: None)
+    assert secret not in str(caught.value) and secret not in json.dumps(c.read())
+    assert c.read()["lease"]["state"] == "idle" and c.creates == 1 and c.deletes == []
 
 
 def test_a_failed_reset_releases_the_pod_instead_of_settling_it(machine_case):
@@ -199,6 +238,443 @@ def test_a_failed_reset_releases_the_pod_instead_of_settling_it(machine_case):
     assert [r["ok"] for r in c.pod.resets] == [True, False]
     assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "reset_failed"
     assert record["lease"]["job"]["state"] == "exited" and c.deletes == ["pod-1"]
+
+
+def test_recoverable_claim_preparation_failure_keeps_attested_pod(machine_case, monkeypatch):
+    c = machine_case
+    first = c.machine.claim(c.job())
+    c.host.settle(first.lease)
+    original = c.placement.begin_execution
+    with monkeypatch.context() as patch:
+        patch.setattr(c.placement, "begin_execution", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("ordinary failure")))
+        with pytest.raises(RuntimeError, match="ordinary failure"):
+            c.machine.claim(c.job(2))
+    record = c.read()
+    assert record["state"] == "claimed" and record["lease"]["state"] == "idle"
+    assert record["lease"]["last_job"]["outcome"] == "failed"
+    assert record["lease"]["last_job"]["failure"]["stage"] == "preparation"
+    assert c.creates == 1 and c.deletes == []
+    assert original is not None
+
+
+@pytest.mark.parametrize("unsafe", ["probe_unavailable", "changed_mount"])
+def test_unverified_current_storage_probe_releases_previous_warm_pod(machine_case, monkeypatch, unsafe):
+    c = machine_case
+    first = c.machine.claim(c.job())
+    c.host.settle(first.lease)
+    if unsafe == "probe_unavailable":
+        monkeypatch.setattr(c.placement, "begin_claimed",
+                            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("probe unavailable")))
+        expected = "probe unavailable"
+    else:
+        c.mount_id += 1
+        expected = "warm machine custody differs"
+    with pytest.raises(Exception, match=expected):
+        c.machine.claim(c.job(2))
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.creates == 1
+
+
+def test_unverified_installation_failure_releases_exact_pod(machine_case, monkeypatch):
+    c = machine_case
+    with monkeypatch.context() as patch:
+        patch.setattr(c.placement, "prepare_claimed", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad install")))
+        with pytest.raises(RuntimeError, match="bad install"):
+            c.machine.claim(c.job())
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.read()["lease"]["ended"] == "preparation_unverified"
+
+
+@pytest.mark.parametrize("unsafe", ["paid_expired", "changed_receipt"])
+def test_unsafe_failed_job_verification_releases_exact_pod(machine_case, monkeypatch, unsafe):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "f" * 32, "state": "exited"})
+    paid = c.read()["lease"]["paid_expires_at"]
+
+    def unverified(*args, **kwargs):
+        if unsafe == "paid_expired":
+            c.clock.now = paid
+        else:
+            lease.state.installed = {**lease.state.installed, "receipt_sha256": "sha256:" + "f" * 64}
+        return True
+
+    monkeypatch.setattr(c.placement, "_canonical_installed", unverified)
+    c.machine.release(lease, False, failure=rm.MachineError("job failed"))
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["lease"]["ended"] == "unsafe_job_state"
+    assert c.creates == 1 and c.deletes == ["pod-1"]
+
+
+def test_unreadable_invocation_lease_releases_known_exact_pod(machine_case, monkeypatch):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    monkeypatch.setattr(c.host, "preparation_claim", lambda invocation: (_ for _ in ()).throw(RuntimeError("lost lease")))
+    c.machine.release(lease, False, failure=rm.MachineError("job failed"))
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.creates == 1
+
+
+def test_blocked_failure_verifier_does_not_hold_owner_lock_or_revive_lease(machine_case, monkeypatch):
+    import threading
+    import time
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "a" * 32, "state": "exited"})
+    entered, resume = threading.Event(), threading.Event()
+    errors = []
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert resume.wait(5)
+        return True
+
+    monkeypatch.setattr(c.placement, "_canonical_installed", blocked)
+
+    def settle_failure():
+        try:
+            c.machine.release(lease, False, failure=rm.MachineError("job failed"))
+        except Exception as exc:
+            errors.append(exc)
+
+    verifier = threading.Thread(target=settle_failure)
+    verifier.start()
+    assert entered.wait(5)
+    releaser = threading.Thread(target=lambda: c.host.release(
+        reason="paid_deadline", _expected_operation=lease.lease.operation_id,
+        expected_machine_id=lease.claim.pod_id))
+    releaser.start()
+    for _ in range(100):
+        if c.read()["lease"]["state"] == "releasing":
+            break
+        time.sleep(0.01)
+    assert c.read()["lease"]["state"] == "releasing"
+    resume.set()
+    verifier.join(5)
+    releaser.join(5)
+    assert not verifier.is_alive() and not releaser.is_alive() and not errors
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_paid_timer_drains_real_https_slow_drip_without_late_warm_settlement(machine_case, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+    import time
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "d" * 32, "state": "exited"})
+    with c.host.lock:
+        current = c.host._read()
+        shortened = {**current["lease"], "paid_expires_at": c.clock() + 10}
+        c.host._arm(c.host._save(current, shortened))
+
+    entered = Event()
+    requests, writes = [], []
+    class Slow(BaseHTTPRequestHandler):
+        def do_POST(self):
+            try:
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            except (ValueError, TypeError):
+                body = {}
+            requests.append((self.path, body.get('path')))
+            entered.set()
+            self.send_response(200)
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            for _ in range(1000):
+                try:
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                    writes.append(1)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                time.sleep(0.025)
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", c.real_bounded_call)
+    lease.claim.ops = _HttpsOps("pod1", "x" * 32,
+                               base_url=f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(c.placement, "_canonical_installed",
+                        lambda state, **kwargs: state.claim.ops.job_poll("d" * 32))
+    errors = []
+    def release_failure():
+        try:
+            c.machine.release(lease, False, failure=rm.MachineError("private failure"))
+        except Exception as exc:
+            errors.append(exc)
+    verifier = Thread(target=release_failure)
+    try:
+        verifier.start()
+        assert entered.wait(5)
+        for _ in range(100):
+            if len(writes) > 1:
+                break
+            time.sleep(0.01)
+        assert requests and requests[0][0] == '/download-chunk'
+        assert isinstance(requests[0][1], str) and ('d' * 32) in requests[0][1]
+        assert len(writes) > 1
+        c.clock.advance(10)  # Real fake timer invokes exact release during the HTTP drip.
+        verifier.join(3)
+        assert not verifier.is_alive() and not errors
+        assert c.read()["state"] == "cleanup_complete"
+        assert c.deletes == ["pod-1"] and c.creates == 1
+        assert c.read()["lease"]["state"] == "releasing"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_exact_cleanup_has_its_own_finite_budget_and_keeps_pending_custody(machine_case, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+    from types import SimpleNamespace
+    import multiprocessing
+    import time
+    from astrid.packs.runpod import remote_placement, worker_owner
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "e" * 32, "state": "running"})
+    operation = lease.lease.operation_id
+    entered = Event()
+
+    class Slow(BaseHTTPRequestHandler):
+        def do_POST(self):
+            entered.set()
+            self.send_response(200)
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            for _ in range(1000):
+                try:
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                time.sleep(0.025)
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(remote_placement._HttpsOps, "_bounded_call", c.real_bounded_call)
+    monkeypatch.setattr(worker_owner, "EXACT_CLEANUP_SECONDS", 10.0)
+    ops = remote_placement._HttpsOps("pod1", "x" * 32,
+                                    base_url=f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(remote_placement, "connect_claimed_for_preparation",
+                        lambda record: SimpleNamespace(ops=ops))
+    children_before = {child.pid for child in multiprocessing.active_children()}
+    try:
+        start = time.monotonic()
+        with pytest.raises(remote_placement.RemotePlacementError) as caught:
+            c.host.release(reason="paid_deadline", _expected_operation=operation,
+                           expected_machine_id=lease.claim.pod_id)
+        assert entered.is_set() and time.monotonic() - start < 11.5, str(caught.value)
+        record = c.read()
+        assert record["operation_id"] == operation and record["state"] == "cleanup_pending"
+        assert record["lease"]["state"] == "releasing"
+        assert record["lease"]["job"] == {"id": "e" * 32, "state": "running"}
+        assert c.deletes == [] and c.creates == 1
+        assert {child.pid for child in multiprocessing.active_children()} == children_before
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_unreaped_observer_fences_custody_until_it_is_gone(machine_case, monkeypatch):
+    from astrid.packs.runpod import remote_placement
+    from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "d" * 32, "state": "exited"})
+
+    class Child:
+        alive = True
+        closed = False
+        def is_alive(self): return self.alive
+        def join(self, timeout=0): pass
+        def close(self): self.closed = True
+
+    child = Child()
+    def unreaped(self, *_args, **_kwargs):
+        self.unreaped_child = child
+        raise remote_placement.BoundedObserverUnreaped("observer could not be reaped")
+
+    monkeypatch.setattr(remote_placement._HttpsOps, "_bounded_call", unreaped)
+    monkeypatch.setattr(c.placement, "_canonical_installed",
+                        lambda state, **kwargs: state.claim.ops.job_poll("d" * 32))
+    with pytest.raises(AcquisitionUnresolvedError, match="custody is pending"):
+        c.machine.release(lease, False, failure=rm.MachineError("private failure"))
+    record = c.read()
+    assert record["state"] == "cleanup_pending" and record["lease"]["state"] == "releasing"
+    assert c.deletes == [] and c.creates == 1
+    with pytest.raises(AcquisitionUnresolvedError, match="observer still lives"):
+        c.host.release(reason="recovery", _expected_operation=lease.lease.operation_id)
+    child.alive = False
+    c.host.release(reason="recovery", _expected_operation=lease.lease.operation_id)
+    assert child.closed and c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_stale_release_identity_cannot_abort_another_observer(machine_case):
+    from threading import Event
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    stale = c.read()
+    old_key, old_event = c.host.begin_failure_observation(lease.lease, lease.claim.pod_id)
+    replacement_key = ("f" * 32, "e" * 32, lease.lease.generation + 1, "pod-replacement")
+    replacement_event = Event()
+    with c.host._observer_lock:
+        c.host._failure_observers[replacement_key] = replacement_event
+    try:
+        c.host._abort_failure_observation(stale)
+        assert old_event.is_set() and not replacement_event.is_set()
+        c.host._abort_failure_observation({**stale, "operation_id": replacement_key[0],
+                                           "pod_id": replacement_key[3],
+                                           "lease": {**stale["lease"], "owner_epoch": replacement_key[1],
+                                                     "generation": replacement_key[2]}})
+        assert replacement_event.is_set()
+    finally:
+        c.host.end_failure_observation(old_key)
+        c.host.end_failure_observation(replacement_key)
+        c.host.release()
+
+
+def test_exact_cleanup_cancel_does_not_hold_owner_lock(machine_case, monkeypatch):
+    from threading import Event, Thread
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "e" * 32, "state": "running"})
+    entered, resume = Event(), Event()
+    original = c.pod.job_cancel
+    errors = []
+
+    def blocked(job_id):
+        entered.set()
+        assert resume.wait(5)
+        return original(job_id)
+
+    monkeypatch.setattr(c.pod, "job_cancel", blocked)
+    def cleanup():
+        try:
+            c.host.release(reason="paid_deadline", _expected_operation=lease.lease.operation_id,
+                           expected_machine_id=lease.claim.pod_id)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = Thread(target=cleanup)
+    try:
+        thread.start()
+        assert entered.wait(5)
+        assert c.host.lock.acquire(timeout=0.5)
+        try:
+            assert c.read()["state"] == "cleanup_pending"
+        finally:
+            c.host.lock.release()
+    finally:
+        resume.set()
+        thread.join(5)
+    assert not thread.is_alive() and not errors
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_exact_cleanup_shares_one_deadline_across_both_job_cancels(machine_case):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    with c.host.lock:
+        record = c.host._read()
+        current = record["lease"]
+        preparation = {**current["preparation"], "state": "unresolved",
+                       "job": {"id": "a" * 32, "state": "running"}}
+        c.host._save(record, {**current, "preparation": preparation,
+                              "job": {"id": "b" * 32, "state": "running"}})
+    before = len(c.transport_deadlines)
+    c.host.release(reason="explicit", _expected_operation=lease.lease.operation_id,
+                   expected_machine_id=lease.claim.pod_id)
+    scoped = [deadline for deadline in c.transport_deadlines[before:] if deadline is not None]
+    assert len(scoped) == 2 and scoped[0] == scoped[1]
+    assert c.pod.cancelled[-2:] == ["a" * 32, "b" * 32]
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_paid_expiry_during_failure_reset_stdout_read_prevents_settlement(machine_case, monkeypatch):
+    c = machine_case
+    c.pod.listed = []
+    original = c.pod.exec
+
+    def expiry_at_stdout(command, timeout=600):
+        if command.startswith("cat ") and "/stdout" in command and len(c.pod.resets) >= 2:
+            c.clock.now = c.read()["lease"]["paid_expires_at"]
+        return original(command, timeout)
+
+    monkeypatch.setattr(c.pod, "exec", expiry_at_stdout)
+    job = c.job()
+    with pytest.raises(rm.MachineError, match="remote generation failed"):
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                       sleep=lambda s: None)
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.read()["lease"]["ended"] == "reset_failed"
+
+
+def test_lost_reset_start_ack_keeps_exact_job_for_release_reconciliation(machine_case, monkeypatch):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "e" * 32, "state": "exited"})
+    original = c.pod.job_start
+
+    def lost_ack(command, *, job_id=None):
+        result = original(command, job_id=job_id)
+        if "pod_reset reset" in command:
+            raise TimeoutError("private reset response")
+        return result
+
+    monkeypatch.setattr(c.pod, "job_start", lost_ack)
+    c.machine.release(lease, False, failure=rm.MachineError("generation failed"))
+    record = c.read()
+    assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "reset_failed"
+    reset_id = record["lease"]["job"]["id"]
+    assert reset_id in c.pod.cancelled and c.deletes == ["pod-1"] and c.creates == 1
+
+
+def test_wrong_reset_poll_identity_cannot_mark_the_journaled_job_exited(machine_case, monkeypatch):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "e" * 32, "state": "exited"})
+    original = c.pod.job_poll
+
+    def wrong_reset_poll(job_id):
+        result = original(job_id)
+        return {**result, "id": "f" * 32} if job_id != "e" * 32 else result
+
+    monkeypatch.setattr(c.pod, "job_poll", wrong_reset_poll)
+    c.machine.release(lease, False, failure=rm.MachineError("generation failed"))
+    record = c.read()
+    assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "reset_failed"
+    reset_id = record["lease"]["job"]["id"]
+    assert reset_id != "e" * 32 and reset_id in c.pod.cancelled
+    assert c.deletes == ["pod-1"] and c.creates == 1
+
+
+def test_structural_node_fact_survives_owner_journal_and_machine_listing(machine_case):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    lease.node_ids = frozenset({"17"})
+    lease.failure_diagnostic = {"code": "generation_failed", "category": "execution",
+                                "node_id": "17", "node_class": "KSampler", "field": "seed"}
+    c.machine._checkpoint(lease, {"id": "c" * 32, "state": "exited"})
+    c.machine.release(lease, False, failure=rm.MachineError("private output"), stage="fetch")
+    record = c.read()
+    summary = record["lease"]["last_job"]["failure"]
+    assert summary["node_id"] == "17" and summary["field"] == "seed"
+    assert rm.lease_row(record)["last_job"]["failure"] == summary
+    assert "private output" not in json.dumps(record) and c.creates == 1
 
 
 def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
@@ -222,12 +698,15 @@ def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
     assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
 
 
-def test_cancel_stops_the_job_checkpoints_it_then_releases(machine_case):
+def test_cancel_stops_the_job_checkpoints_it_then_keeps_verified_machine(machine_case):
     c = machine_case
     job = c.job()
     original = c.pod.job_poll
+    generation_job = [None]
     def running(job_id):  # the generation job keeps running; preparation jobs finish
-        if c.read()["lease"].get("job", {}).get("id") == job_id:
+        if generation_job[0] is None and c.read()["lease"].get("job", {}).get("id") == job_id:
+            generation_job[0] = job_id
+        if generation_job[0] == job_id:
             return {"id": job_id, "state": "running", "exit_code": ""}
         return original(job_id)
     c.pod.job_poll = running
@@ -243,8 +722,30 @@ def test_cancel_stops_the_job_checkpoints_it_then_releases(machine_case):
     record = c.read()
     generation = next(line for line in c.pod.job_log if " generate " in line)
     assert generation and c.pod.cancelled, "the remote job was not cancelled"
-    assert record["lease"]["job"] == {"id": c.pod.cancelled[0], "state": "cancelled"}
-    assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert record["lease"]["job"]["state"] == "exited"  # verified reset followed the exact stop
+    assert record["state"] == "claimed" and record["lease"]["state"] == "idle"
+    assert record["lease"]["last_job"]["outcome"] == "cancelled" and c.deletes == []
+
+
+@pytest.mark.parametrize("bad_ack", [{"id": "other-job", "state": "cancelled"},
+                                         {"state": "cancelled"}])
+def test_unverified_cancel_ack_never_settles_warm(machine_case, monkeypatch, bad_ack):
+    c = machine_case
+    job = c.job()
+    lease = c.machine.claim(job)
+    run = c.machine.start(lease, job)
+    original = c.pod.job_cancel
+    replies = [bad_ack]
+
+    def cancel(job_id):
+        return replies.pop(0) if replies else original(job_id)
+
+    monkeypatch.setattr(c.pod, "job_cancel", cancel)
+    with pytest.raises(rm.MachineError, match="exact remote job stop could not be verified"):
+        c.machine.cancel(run)
+    c.machine.release(lease, False, failure=rm.MachineError("unverified stop"), stage="cancel")
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.creates == 1
 
 
 def test_generation_policy_waits_for_stock_through_the_real_machine_claim(machine_case, monkeypatch):
@@ -1082,12 +1583,11 @@ def test_warm_gpu_id_uses_confirmed_display_and_refuses_mismatch(machine_case, m
     second = c.job(2)
     second = replace(second, policy={**second.policy, "preferences": c.prefs.as_mapping(), "offer_digest": c.grant.offer_digest})
     if mismatch:
-        with pytest.raises(Exception, match="GPU mismatch"):
+        with pytest.raises(Exception, match="custody could not be verified"):
             run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
                            sleep=lambda s: None)
-        assert c.read()["state"] == "cleanup_pending"
+        assert c.read()["state"] == "cleanup_complete"
         assert sum(" generate cpu-image " in line for line in c.pod.job_log) == 1
-        c.host.release()
         assert c.deletes == ["pod-1"]
     else:
         run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
@@ -1127,7 +1627,7 @@ def test_execution_gets_its_own_deadline_after_preparation(machine_case, monkeyp
         c.machine.poll(run)
 
 
-def test_execution_timeout_cancels_and_releases_without_another_claim(machine_case, monkeypatch):
+def test_execution_timeout_stops_job_and_keeps_verified_machine(machine_case, monkeypatch):
     c = machine_case
     ticks = [0.0]
     c.placement._clock = lambda: ticks[0]
@@ -1143,9 +1643,10 @@ def test_execution_timeout_cancels_and_releases_without_another_claim(machine_ca
         run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                        sleep=lambda s: None)
     record = c.read()
-    assert record["lease"]["job"] == {"id": c.pod.cancelled[0], "state": "cancelled"}
-    assert record["state"] == "cleanup_complete"
-    assert c.deletes == ["pod-1"] and c.creates == 1
+    assert c.pod.cancelled and record["lease"]["job"]["state"] == "exited"
+    assert record["state"] == "claimed" and record["lease"]["state"] == "idle"
+    assert record["lease"]["last_job"]["outcome"] == "failed"
+    assert c.deletes == [] and c.creates == 1
 
 
 @pytest.mark.parametrize("entry,mode,template", [

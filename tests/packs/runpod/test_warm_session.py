@@ -499,6 +499,64 @@ def test_small_lease_intent_compatibility_lock_idle_and_exact_release(small_leas
     assert second.operation_id != first.operation_id and c.creates == 2
 
 
+def test_failed_job_settles_under_original_idle_and_paid_limits(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    first = owner.acquire(c.grant, requested_idle_seconds=10)
+    paid = c.read()["lease"]["paid_expires_at"]
+    owner.settle(first, outcome="failed", failure={"exception": "MachineError", "stage": "fetch",
+                                                   "code": "generation_failed", "category": "execution"})
+    lease = c.read()["lease"]
+    assert lease["state"] == "idle" and lease["idle_expires_at"] == c.clock() + 10
+    assert lease["paid_expires_at"] == paid and lease["last_job"]["outcome"] == "failed"
+    assert c.creates == 1 and not c.deletes
+    second = owner.acquire(replace(c.grant, invocation_id="retry"), requested_idle_seconds=10)
+    assert c.creates == 1 and second.operation_id == first.operation_id
+    assert c.read()["lease"]["paid_expires_at"] <= paid
+    owner.settle(second, outcome="success")
+    assert c.read()["lease"]["last_job"]["outcome"] == "success"
+    c.clock.advance(10)
+    assert c.deletes == ["pod-1"]
+
+
+def test_failed_job_keep_until_release_still_ends_at_paid_cap(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    invocation = owner.acquire(c.grant, requested_idle_seconds=600)
+    owner.keep("pod-1", keep_grant(c, max_usd=20 / 3600, idle_seconds=20), until_release=True)
+    owner.settle(invocation, outcome="failed", failure={"exception": "MachineError"})
+    assert c.read()["lease"]["idle_expires_at"] == c.read()["lease"]["paid_expires_at"]
+    c.clock.advance(20)
+    assert c.deletes == ["pod-1"]
+
+
+@pytest.mark.parametrize("journal_swapped", [False, True])
+def test_failed_acquire_releases_only_its_captured_exact_identity(small_lease, monkeypatch, journal_swapped):
+    from astrid.packs.runpod.worker_preparation import TargetObservationError, write_target_record
+
+    c = small_lease
+    owner = c.fresh()
+    first = owner.acquire(c.grant)
+    identity = (first.operation_id, "pod-1")
+
+    def failed(*args, **kwargs):
+        error = TargetObservationError("SENTINEL_TOKEN private provider detail", gate="GPU")
+        error._astrid_failed_identity = identity
+        if journal_swapped:
+            record = c.read()
+            replacement = "f" * 32
+            record.update(operation_id=replacement, pod_id="pod-2", name="astrid-product-" + replacement,
+                          request_name="astrid-product-" + replacement)
+            write_target_record(c.owner.path, record)
+        raise error
+
+    monkeypatch.setattr(owner, "_acquire", failed)
+    with pytest.raises(RunPodWorkerOwnerError, match="custody could not be verified") as caught:
+        owner.acquire(replace(c.grant, invocation_id="second"))
+    assert "SENTINEL_TOKEN" not in str(caught.value)
+    assert c.deletes == ([] if journal_swapped else ["pod-1"])
+
+
 def test_small_lease_reuses_snapshot_and_stale_holder_cannot_expire_next_run(small_lease):
     c = small_lease
     owner = c.fresh()

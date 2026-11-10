@@ -712,9 +712,40 @@ def _main(argv: list[str]) -> int:
     return 0
 
 
+def _kept_failure(before: set[tuple[str, int]]) -> None:
+    """Read only the bounded owner result after a failed RunPod command."""
+    try:
+        from astrid.packs.runpod.machine import journal_leases
+        from astrid.core.machines_cli import _when
+        for row in journal_leases():
+            last = row.get('last_job') or {}
+            identity = (row.get('lease'), last.get('generation'))
+            if (identity in before or not row.get('live') or row.get('state') != 'idle'
+                    or last.get('outcome') != 'failed'):
+                continue
+            facts = last.get('failure') or {}
+            summary = ', '.join(f'{name}={facts[name]}' for name in
+                                ('exception', 'stage', 'code', 'category', 'node_id', 'node_class', 'field', 'constraint')
+                                if name in facts)
+            print(f"Failure: {summary or 'unknown'}. machine {row['id']} kept until "
+                  f"{_when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
+                  f"reuse it or run `astrid machines release {row['id']}`", file=sys.stderr)
+    except Exception:
+        pass  # Diagnostic reads cannot change settlement or mask the original error.
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error
+    before = set()
+    runpod = '--placement' in argv and argv[argv.index('--placement') + 1:][:1] == ['runpod']
+    if runpod:
+        try:
+            from astrid.packs.runpod.machine import journal_leases
+            before = {(row.get('lease'), (row.get('last_job') or {}).get('generation'))
+                      for row in journal_leases()}
+        except Exception:
+            pass
     try:
         scope = nullcontext()
         if '--dry-run' in argv:
@@ -723,11 +754,17 @@ def main(argv: list[str] | None = None) -> int:
         with scope:
             return _main(argv)
     except (RuntimeError, ValueError, OSError, ImportError) as exc:
+        if runpod:
+            _kept_failure(before)
         error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:
             print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
             return 2
         raise error from exc
+    except BaseException:
+        if runpod:
+            _kept_failure(before)
+        raise
 
 
 if __name__ == "__main__":

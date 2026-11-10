@@ -60,6 +60,12 @@ class RunPodWorkerOwnerError(RuntimeError):
     """Exact RunPod preparation or host custody could not be established."""
 
 
+# The expired paid/verification clock cannot be reused for exact cancellation.
+# This short, separate transport budget only drains already-journaled work;
+# it never grants a fresh machine or extends permission to run a job.
+EXACT_CLEANUP_SECONDS = 30.0
+
+
 def runpod_idle_seconds(*, requested: float | None = None,
                        environ: Mapping[str, str] | None = None,
                        service_environ: Mapping[str, str] | None = None) -> float:
@@ -127,6 +133,9 @@ class RunPodLeaseOwner:
         self.closed, self.started = False, False
         self._release_inflight = False
         self._acquisition_cancel = threading.Event()
+        self._observer_lock = threading.Lock()
+        self._failure_observers: dict[tuple[str, str, int, str], threading.Event] = {}
+        self._unreaped_children: list[Any] = []
         self._paid_consent_ids: set[str] = set()
         self._machine_identity: tuple[str, str] | None = None
         selection._read()  # Refuse unsafe paths before opening custody.
@@ -331,8 +340,40 @@ class RunPodLeaseOwner:
             self.last_error_type = type(exc).__name__
 
     def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
-                cancelled: Callable[[], bool] | None = None) -> RunPodLease:
+                cancelled: Callable[[], bool] | None = None,
+                defer_unsafe_release: bool = False) -> RunPodLease:
+        from .worker_preparation import TargetObservationError, observation_failure_gate
+        try:
+            return self._acquire(consent, requested_idle_seconds=requested_idle_seconds, cancelled=cancelled)
+        except TargetObservationError as exc:
+            gate = observation_failure_gate(exc)
+            if gate in {"GPU", "volume", "datacenter", "machine"}:
+                # The failed gate may have run before on_acquired. Release only
+                # the durable journal-created exact pod, outside the acquire
+                # lock. An ambiguous create stays pending for reconciliation.
+                captured = getattr(exc, "_astrid_failed_identity", None)
+                try:
+                    with self.lock:
+                        record = self._read()
+                        exact = (captured is not None and record is not None
+                                 and (record.get("operation_id"), record.get("pod_id")) == captured)
+                except Exception:
+                    exact = False
+                if exact and not defer_unsafe_release:
+                    try:
+                        self.release(reason="custody_changed", _expected_operation=captured[0],
+                                     expected_machine_id=captured[1])
+                    except Exception:
+                        pass  # Exact-release failure keeps durable pending custody/retry.
+                error = RunPodWorkerOwnerError("RunPod machine custody could not be verified; exact release or reconciliation required")
+                error.release_identity = captured if exact and defer_unsafe_release else None
+                raise error from None
+            raise
+
+    def _acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
+                 cancelled: Callable[[], bool] | None = None) -> RunPodLease:
         from .target_selection import _utc
+        from .worker_preparation import TargetObservationError
         if not self.started:
             self.recover()
         with self.lock:
@@ -364,6 +405,8 @@ class RunPodLeaseOwner:
                      "started_at": self.clock() if previous is None else previous["started_at"]}
             if previous is not None and previous.get("preparation") is not None:
                 lease["preparation"] = previous["preparation"]
+            if previous is not None and previous.get("last_job") is not None:
+                lease["last_job"] = previous["last_job"]
             if previous is not None and previous.get("keep_until_release"):
                 lease["keep_until_release"] = True
             # Only P1's already-owned account lock is bypassed here, as in R02.
@@ -385,8 +428,19 @@ class RunPodLeaseOwner:
                 claimed = self._save(claimed, lease, estimated_cost_usd=cost)
                 self._paid_consent_ids.add(consent.invocation_id)
                 self._machine_identity = (claimed["operation_id"], claimed["pod_id"])
-            except BaseException:
+            except BaseException as exc:
                 current = self.selection._read()
+                if isinstance(exc, TargetObservationError) and current is not None:
+                    operation, pod = current.get("operation_id"), current.get("pod_id")
+                    exact = (isinstance(operation, str) and re.fullmatch(r"[0-9a-f]{32}", operation)
+                             and isinstance(pod, str) and bool(pod)
+                             and current.get("request_name") == "astrid-product-" + operation
+                             and current.get("name") == current.get("request_name")
+                             and current.get("provider_account_ref") == self.selection.preferences.provider_account_ref
+                             and current.get("release_authorized") is True
+                             and (record is None or record.get("operation_id") == operation)
+                             and (self._machine_identity is None or self._machine_identity == (operation, pod)))
+                    exc._astrid_failed_identity = (operation, pod) if exact else None
                 if (current is not None and current.get("state") == "allocation_ready"
                         and current.get("create_attempts") == 0 and current.get("pod_id") is None):
                     # This process still owns the lock and has not written the
@@ -486,7 +540,9 @@ class RunPodLeaseOwner:
             self._arm(record)
             return record
 
-    def settle(self, invocation: RunPodLease) -> None:
+    def settle(self, invocation: RunPodLease, *, outcome: str = "success",
+               failure: Mapping[str, Any] | None = None,
+               node_ids: frozenset[str] = frozenset()) -> None:
         """Called by the host after that exact invocation has settled."""
         with self.lock:
             record = self._read()
@@ -501,13 +557,42 @@ class RunPodLeaseOwner:
                 return  # Release owns the terminal transition; never re-arm it.
             if record["state"] != "claimed" or lease["state"] != "active":
                 raise RunPodWorkerOwnerError("release already fences this invocation")
+            if self.closed or self.clock() >= lease["paid_expires_at"]:
+                raise RunPodWorkerOwnerError("paid lease expired before settlement")
             preparation = lease.get("preparation")
             if preparation is not None and preparation["state"] != "prepared":
                 raise RunPodWorkerOwnerError("unresolved preparation cannot enter warm retention")
-            lease.update(state="idle", idle_expires_at=(lease["paid_expires_at"] if lease.get("keep_until_release")
+            if outcome not in {"success", "failed", "cancelled"}:
+                raise RunPodWorkerOwnerError("invalid job outcome")
+            from .failure_diagnostics import safe_stored_summary
+            lease.update(last_job={"outcome": outcome, "generation": lease["generation"],
+                                   "failure": safe_stored_summary(failure, node_ids=node_ids)
+                                   if outcome != "success" else None,
+                                   "structural_node_ids": sorted(node_ids) if outcome != "success" else []},
+                         state="idle", idle_expires_at=(lease["paid_expires_at"] if lease.get("keep_until_release")
                          else min(self.clock() + lease["idle_seconds"], lease["paid_expires_at"])))
             record = self._save(record, lease)
             self._arm(record)
+
+    def note_failed_job(self, invocation: RunPodLease, failure: Mapping[str, Any], *,
+                        outcome: str = "failed", node_ids: frozenset[str] = frozenset()) -> None:
+        """Keep bounded last-job facts even when unsafe custody must be released."""
+        from .failure_diagnostics import safe_stored_summary
+
+        with self.lock:
+            record = self._read()
+            lease = dict(record["lease"]) if record is not None else {}
+            if (record is None or record.get("operation_id") != invocation.operation_id
+                    or lease.get("owner_epoch") != invocation.owner_epoch
+                    or lease.get("generation") != invocation.generation
+                    or lease.get("invocation_id") != invocation.invocation_id
+                    or lease.get("state") not in {"active", "preparing"}
+                    or outcome not in {"failed", "cancelled"}):
+                return
+            lease["last_job"] = {"outcome": outcome, "generation": lease["generation"],
+                                 "failure": safe_stored_summary(failure, node_ids=node_ids),
+                                 "structural_node_ids": sorted(node_ids)}
+            self._save(record, lease)
 
     def preparation_claim(self, invocation: RunPodLease) -> dict[str, Any]:
         """Only the current active holder may prepare under this account lock."""
@@ -522,6 +607,66 @@ class RunPodLeaseOwner:
             raise RunPodWorkerOwnerError("preparation requires the exact active invocation lease")
         return record
 
+    def begin_failure_observation(self, invocation: RunPodLease, pod_id: str) -> tuple[tuple[str, str, int, str], threading.Event]:
+        """Register an exact invocation before an out-of-lock remote probe."""
+        key = (invocation.operation_id, invocation.owner_epoch, invocation.generation, pod_id)
+        with self.lock:
+            record = self.preparation_claim(invocation)
+            if record.get("pod_id") != pod_id:
+                raise RunPodWorkerOwnerError("failure observation differs from machine custody")
+            event = threading.Event()
+            with self._observer_lock:
+                self._failure_observers[key] = event
+        return key, event
+
+    def end_failure_observation(self, key: tuple[str, str, int, str]) -> None:
+        with self._observer_lock:
+            self._failure_observers.pop(key, None)
+
+    def _abort_failure_observation(self, record: Mapping[str, Any] | None) -> None:
+        if record is None:
+            return
+        lease = record.get("lease") or {}
+        key = (record.get("operation_id"), lease.get("owner_epoch"),
+               lease.get("generation"), record.get("pod_id"))
+        with self._observer_lock:
+            event = self._failure_observers.get(key)
+            if event is not None:
+                event.set()
+
+    def _check_observer_children(self, record: Mapping[str, Any] | None) -> None:
+        """Never resume deletion/replacement while an old local caller lives."""
+        had_local_child = bool(self._unreaped_children)
+        still_live = []
+        for child in self._unreaped_children:
+            if child.is_alive():
+                still_live.append(child)
+            else:
+                child.join(timeout=0)
+                child.close()
+        self._unreaped_children = still_live
+        if still_live:
+            raise AcquisitionUnresolvedError("bounded pod observer still lives; exact custody remains pending")
+        if record is not None and record.get("observer_unreaped") is True:
+            if not had_local_child:
+                raise AcquisitionUnresolvedError("unreaped observer has no local death proof; exact custody remains pending")
+            self._save(record, record["lease"], observer_unreaped=False)
+
+    def fence_unreaped_observer(self, invocation: RunPodLease, pod_id: str, child: Any) -> None:
+        """An unkillable local HTTPS caller may still mutate this exact pod."""
+        with self.lock:
+            record = self._read()
+            lease = record.get("lease") if record is not None else {}
+            if (record is None or record.get("operation_id") != invocation.operation_id
+                    or record.get("pod_id") != pod_id or lease.get("owner_epoch") != invocation.owner_epoch
+                    or lease.get("generation") != invocation.generation):
+                raise AcquisitionUnresolvedError("unreaped observer custody changed")
+            self._unreaped_children.append(child)
+            self._save(record, {**lease, "state": "releasing", "release_reason": "observer_unreaped"},
+                       state="cleanup_pending", reconciliation_required=True, observer_unreaped=True)
+            self._cancel()
+            self.deadline_timer = self.timer(1, lambda: self._retry_recovery(invocation.operation_id))
+
     def release(self, *, reason: str = "explicit", _expected_operation: str | None = None,
                 expected_machine_id: str | None = None) -> Mapping[str, Any] | None:
         # Release must reach an acquisition that currently holds self.lock.
@@ -530,6 +675,7 @@ class RunPodLeaseOwner:
         if ((expected_machine_id is None or observed is not None and observed.get("pod_id") == expected_machine_id)
                 and (_expected_operation is None or observed is not None and observed.get("operation_id") == _expected_operation)):
             self._acquisition_cancel.set()
+            self._abort_failure_observation(observed)
         with self.lock:
             if expected_machine_id is not None:
                 current = self._read()
@@ -540,6 +686,14 @@ class RunPodLeaseOwner:
                 current = self._read()
                 if current is None or current["operation_id"] != _expected_operation:
                     return current
+            current = self._read()
+            self._abort_failure_observation(current)
+            try:
+                self._check_observer_children(current)
+            except AcquisitionUnresolvedError:
+                if current is not None:
+                    self.deadline_timer = self.timer(1, lambda: self._retry_recovery(current["operation_id"]))
+                raise
             if self._release_inflight:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
             self._release_inflight = True
@@ -564,6 +718,17 @@ class RunPodLeaseOwner:
     def _release(self, *, reason: str) -> Mapping[str, Any] | None:
         from .target_selection import RunPodOffer
         from .worker_preparation import reconcile_target
+        cleanup_deadline = time.monotonic() + EXACT_CLEANUP_SECONDS
+
+        def exact_cleanup_ops(record: Mapping[str, Any]):
+            from .remote_placement import connect_claimed_for_preparation
+
+            if time.monotonic() >= cleanup_deadline:
+                raise AcquisitionUnresolvedError("exact cleanup transport budget expired")
+            claim = connect_claimed_for_preparation({**record, "state": "claimed"})
+            bounded = getattr(claim.ops, "bounded", None)
+            return bounded(cleanup_deadline) if bounded is not None else claim.ops
+
         with self.lock:
             self._discard_stale_capacity_intent(self.selection._read())
             record = self._read()
@@ -604,36 +769,83 @@ class RunPodLeaseOwner:
                     preparation = {**preparation, "state": "unresolved", "job": {"id": job["id"], "state": "cancelled"}}
                     lease = {**lease, "preparation": preparation}
                     record = self._save(record, lease)
-                    job = preparation["job"]
-                if job is not None and job["state"] not in {"exited", "cancelled"}:
-                    from .remote_placement import connect_claimed_for_preparation
-                    # The original verified claim is still exact custody; no
-                    # new claim or detached start occurs during reconciliation.
-                    claim = connect_claimed_for_preparation({**record, "state": "claimed"})
-                    stopped = claim.ops.job_cancel(job["id"])
-                    if stopped.get("id") != job["id"] or stopped.get("state") not in {"exited", "cancelled"}:
-                        raise AcquisitionUnresolvedError("exact preparation job stop remains unresolved")
-                    preparation = {**preparation, "state": "unresolved",
-                                   "job": {"id": job["id"], "state": stopped["state"]}}
-                    lease = {**lease, "preparation": preparation}
-                    record = self._save(record, lease)
             machine_job = lease.get("job")
             if (machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}
                     and reason == "provider_terminated"):
                 lease = {**lease, "job": {"id": machine_job["id"], "state": "cancelled"}}
                 record = self._save(record, lease)
-                machine_job = lease["job"]
-            if machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}:
-                from .remote_placement import connect_claimed_for_preparation
-                # A generation job the host started (or crashed after starting)
-                # is stopped on the same exact custody before the pod is deleted.
-                claim = connect_claimed_for_preparation({**record, "state": "claimed"})
-                stopped = claim.ops.job_cancel(machine_job["id"])
-                if stopped.get("id") != machine_job["id"] or stopped.get("state") not in {"exited", "cancelled"}:
-                    raise AcquisitionUnresolvedError("exact machine job stop remains unresolved")
-                lease = {**lease, "job": {"id": machine_job["id"], "state": stopped["state"]}}
+            identity = (record["operation_id"], record["pod_id"],
+                        lease["owner_epoch"], lease["generation"], lease["invocation_id"])
+
+        # Transport may block on a slow HTTP stream. Keep only the account's
+        # durable releasing fence, never the invocation lock, across the RPC.
+        for kind in ("preparation", "machine"):
+            with self.lock:
+                record = self._read()
+                if record is None or record["state"] != "cleanup_pending" or (
+                        record["operation_id"], record["pod_id"],
+                        record["lease"]["owner_epoch"], record["lease"]["generation"],
+                        record["lease"]["invocation_id"]) != identity:
+                    raise AcquisitionUnresolvedError("exact cleanup custody changed during cancellation")
+                lease = record["lease"]
+                preparation = lease.get("preparation")
+                job = (preparation or {}).get("job") if kind == "preparation" else lease.get("job")
+                if job is None or job["state"] in {"exited", "cancelled"}:
+                    continue
+                job_id = job["id"]
+            # One monotonic deadline covers both cancels, including connect,
+            # framed response parsing and child cleanup. A lost/wrong ACK
+            # leaves the exact journaled job pending for a later retry.
+            ops = exact_cleanup_ops(record)
+            try:
+                stopped = ops.job_cancel(job_id)
+            except Exception:
+                child = getattr(ops, "unreaped_child", None)
+                if child is not None:
+                    with self.lock:
+                        self._unreaped_children.append(child)
+                        current = self._read()
+                        if current is not None:
+                            self._save(current, current["lease"], observer_unreaped=True)
+                raise
+            if stopped.get("id") != job_id or stopped.get("state") not in {"exited", "cancelled"}:
+                raise AcquisitionUnresolvedError(f"exact {kind} job stop remains unresolved")
+            with self.lock:
+                record = self._read()
+                if record is None or record["state"] != "cleanup_pending" or (
+                        record["operation_id"], record["pod_id"],
+                        record["lease"]["owner_epoch"], record["lease"]["generation"],
+                        record["lease"]["invocation_id"]) != identity:
+                    raise AcquisitionUnresolvedError("exact cleanup custody changed after cancellation")
+                lease = record["lease"]
+                preparation = lease.get("preparation")
+                current_job = (preparation or {}).get("job") if kind == "preparation" else lease.get("job")
+                if current_job is None or current_job["id"] != job_id or current_job["state"] not in {"starting", "running"}:
+                    raise AcquisitionUnresolvedError("exact cleanup job checkpoint changed after cancellation")
+                if kind == "preparation":
+                    lease = {**lease, "preparation": {**preparation, "state": "unresolved",
+                             "job": {"id": job_id, "state": stopped["state"]}}}
+                else:
+                    lease = {**lease, "job": {"id": job_id, "state": stopped["state"]}}
                 record = self._save(record, lease)
-            if preparation is not None or machine_job is not None:
+        observer_key = (identity[0], identity[2], identity[3], identity[1])
+        while True:
+            with self._observer_lock:
+                observing = observer_key in self._failure_observers
+            if not observing:
+                break
+            if time.monotonic() >= cleanup_deadline:
+                raise AcquisitionUnresolvedError("failure observer drain exceeded exact cleanup budget")
+            time.sleep(min(0.02, max(0, cleanup_deadline - time.monotonic())))
+        with self.lock:
+            record = self._read()
+            if record is None or record["state"] != "cleanup_pending" or (
+                    record["operation_id"], record["pod_id"], record["lease"]["owner_epoch"],
+                    record["lease"]["generation"], record["lease"]["invocation_id"]) != identity:
+                raise AcquisitionUnresolvedError("exact cleanup custody changed before quiescence")
+            if record.get("observer_unreaped") is True:
+                raise AcquisitionUnresolvedError("unreaped observer keeps exact cleanup pending")
+            if record["lease"].get("preparation") is not None or record["lease"].get("job") is not None:
                 validate_lease_preparation(record, releasing=True)
         # Keep the account lock, but let a completing host invocation call
         # settle while quiescence waits for it. Durable releasing state and

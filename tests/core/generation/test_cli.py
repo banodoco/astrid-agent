@@ -11,6 +11,31 @@ import pytest
 from astrid.core.generation import cli
 
 
+def test_failed_runpod_command_prints_bounded_kept_machine_summary(monkeypatch, capsys):
+    from astrid.packs.runpod import machine
+
+    row = {'id': 'pod-1', 'lease': 'operation-1', 'state': 'idle', 'live': True,
+           'release_at': 1800000600.0, 'cost_usd': 0.25,
+           'last_job': {'generation': 2, 'outcome': 'failed',
+                        'failure': {'exception': 'MachineError', 'stage': 'fetch',
+                                    'code': 'generation_failed', 'category': 'execution'}}}
+    monkeypatch.setattr(machine, 'journal_leases', lambda: [row])
+    cli._kept_failure({('operation-1', 1)})
+    message = capsys.readouterr().err
+    assert 'Failure: exception=MachineError, stage=fetch, code=generation_failed' in message
+    assert 'machine pod-1 kept until ' in message and '(cost so far $0.25)' in message
+    assert 'reuse it or run `astrid machines release pod-1`' in message
+
+
+def test_machines_table_shows_last_job_outcome():
+    from astrid.core.machines_cli import render
+
+    row = {'id': 'pod-1', 'kind': 'runpod', 'state': 'idle', 'live': True,
+           'last_job': {'outcome': 'failed'}}
+    table = render([row])
+    assert 'LAST JOB' in table and 'failed' in table
+
+
 def _facade(monkeypatch):
     calls = []
 

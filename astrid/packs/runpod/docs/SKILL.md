@@ -170,6 +170,7 @@ The machine table shows live and recently ended leases: ID, GPU, state,
 scheduled release time in UTC, minutes left, estimated accrued USD cost,
 hourly rate and end reason. The release time is the idle expiry while idle
 and the paid expiry while active. Estimates are not a provider invoice.
+After a failed job, a verified machine stays idle until that release time; inspect its last job outcome and reuse it or release it explicitly.
 
 To authorize a separate extension for that exact live machine:
 

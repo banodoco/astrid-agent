@@ -594,4 +594,7 @@ class TargetProviderBindings:
                 self.active = None
             provider, self.provider = self.provider, None
         if provider is not None:
-            provider.lease_owner.close()
+            try:
+                provider.lease_owner.release(reason="host_shutdown")
+            finally:
+                provider.lease_owner.close()

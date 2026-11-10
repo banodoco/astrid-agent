@@ -17,15 +17,18 @@ Money rules, enforced here and pinned by tests:
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import io
 import json
 import math
+import multiprocessing
 import os
 import re
 import shlex
 import subprocess
 import tarfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -70,6 +73,10 @@ SOURCE_DIRS = (
 
 class RemotePlacementError(AstridError):
     """A remote placement step failed. The pod has been released unless stated."""
+
+
+class BoundedObserverUnreaped(RemotePlacementError):
+    """A local HTTPS caller survived kill; its exact custody remains pending."""
 
 
 class PreparationDeadlineExceeded(RemotePlacementError):
@@ -622,15 +629,21 @@ class RemotePlacement:
             raise RemotePlacementError("engine install finished but status is not installed and healthy")
         state.note("install", "done")
 
-    def _canonical_installed(self, state: RemoteRun) -> bool:
+    def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:
         from astrid.core.generation import engine_runner
 
         installation = state.installation
         plan = installation.plan()
+        remaining = min(120, self._remaining() if verification_seconds is None else verification_seconds)
+        if remaining <= 0:
+            return False
         command = (f"{POD_VENV}/bin/astrid engines status {installation.engine} "
                    f"--platform {installation.platform} --placement local "
-                   f"--root {shlex.quote(installation.root)} --deadline {min(120, self._remaining())}")
-        code, stdout, _ = self._exec(state, command, timeout=120)
+                   f"--root {shlex.quote(installation.root)} --deadline {remaining}")
+        # Failure verification is read-only and bounded by the original paid
+        # lease, independently of the execution timer that the job may exhaust.
+        code, stdout, _ = (self._exec(state, command, timeout=120) if verification_seconds is None
+                           else state.claim.ops.exec(command, remaining))
         if code != 0 or stdout.strip() in {"", "null"}:
             return False
         raw = json.loads(stdout)
@@ -639,15 +652,41 @@ class RemotePlacement:
         # Status re-verifies the actual source/model/environment/start/health
         # through the canonical runner. Parse with that same receipt boundary.
         live = engine_runner._parse_receipt(raw, plan)
-        path = state.local_out / "installed.json"
-        try:
-            state.claim.ops.get(installation.root + "/.astrid-engine/install.json", path)
-            if path.is_symlink() or path.stat().st_size > 1024 * 1024:
-                raise RemotePlacementError("invalid canonical installation receipt file")
-            data = path.read_bytes()
-            saved = engine_runner._parse_receipt(json.loads(data), plan)
-        finally:
-            path.unlink(missing_ok=True)
+        receipt = installation.root + "/.astrid-engine/install.json"
+        if verification_seconds is None:
+            path = state.local_out / "installed.json"
+            try:
+                state.claim.ops.get(receipt, path)
+                if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                    raise RemotePlacementError("invalid canonical installation receipt file")
+                data = path.read_bytes()
+            finally:
+                path.unlink(missing_ok=True)
+        else:
+            # One transport deadline covers status, this fixed-file read and
+            # the later reset. Do not stream an unbounded pod file into a
+            # controller journal or extend the original paid lease.
+            script = ("import base64,os,stat,sys;"
+                      "fd=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK);"
+                      "s=os.fstat(fd);"
+                      "(stat.S_ISREG(s.st_mode) and s.st_size<=1048576) or sys.exit(2);"
+                      "data=os.read(fd,1048577);"
+                      "len(data)<=1048576 or sys.exit(2);"
+                      "print(base64.b64encode(data).decode())")
+            remaining = min(verification_seconds, max(0, state.claim.ops.deadline - time.monotonic()))
+            if remaining <= 0:
+                return False
+            code, output, _ = state.claim.ops.exec(
+                f"{POD_VENV}/bin/python -c {shlex.quote(script)} {shlex.quote(receipt)}", remaining)
+            if code != 0 or len(output) > 1400000:
+                return False
+            try:
+                data = base64.b64decode(output.strip(), validate=True)
+            except (ValueError, binascii.Error):
+                return False
+            if len(data) > 1024 * 1024:
+                return False
+        saved = engine_runner._parse_receipt(json.loads(data), plan)
         if (saved.status != "installed" or live.receipt_id != saved.receipt_id
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks
@@ -693,21 +732,167 @@ class RemotePlacement:
 # ----------------------------------------------------------------------------
 
 
+class _OutstandingObserver:
+    """A surviving local caller and pipe reader; release waits for both to die."""
+
+    def __init__(self, process: Any, reader: threading.Thread | None,
+                 watchdog: threading.Thread | None, recv: Any, send: Any) -> None:
+        self.process, self.reader, self.watchdog = process, reader, watchdog
+        self.recv, self.send = recv, send
+
+    def is_alive(self) -> bool:
+        return (self.process.is_alive()
+                or self.reader is not None and self.reader.is_alive()
+                or self.watchdog is not None and self.watchdog.is_alive())
+
+    def join(self, timeout: float = 0) -> None:
+        end = time.monotonic() + timeout
+        if self.process.is_alive():
+            self.process.join(timeout=max(0, end - time.monotonic()))
+        for thread in (self.reader, self.watchdog):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=max(0, end - time.monotonic()))
+
+    def close(self) -> None:
+        if self.is_alive():
+            raise BoundedObserverUnreaped("bounded pod observer still lives")
+        self.process.close()
+        self.recv.close()
+        self.send.close()
+
+
 class _HttpsOps:
-    def __init__(self, pod_id: str, token: str) -> None:
-        self.pod_id, self.token = pod_id, token
+    def __init__(self, pod_id: str, token: str, *, deadline: float | None = None,
+                 base_url: str | None = None, abort_event: threading.Event | None = None) -> None:
+        self.pod_id, self.token, self.deadline, self.base_url = pod_id, token, deadline, base_url
+        self.abort_event = abort_event
+
+    def bounded(self, deadline: float, *, abort_event: threading.Event | None = None) -> "_HttpsOps":
+        return type(self)(self.pod_id, self.token, deadline=deadline, base_url=self.base_url,
+                          abort_event=abort_event)
 
     def _transport(self):
         from runpod_lifecycle.https import HttpsPodTransport
 
-        return HttpsPodTransport(self.pod_id, self.token)
+        return HttpsPodTransport(self.pod_id, self.token,
+                                 **({"deadline": self.deadline} if self.deadline is not None else {}),
+                                 **({"base_url": self.base_url} if self.base_url is not None else {}))
 
-    def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+    def _call_direct(self, name: str, *args: Any, **kwargs: Any) -> Any:
         transport = self._transport()
         try:
             return getattr(transport, name)(*args, **kwargs)
         finally:
             transport.disconnect()
+
+    def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """Kill a slow-drip caller before it can hold the host's drain forever."""
+        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
+            raise RemotePlacementError("unsupported bounded pod operation")
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise RemotePlacementError("failure verification deadline expired")
+        if self.abort_event is not None and self.abort_event.is_set():
+            raise RemotePlacementError("bounded pod operation interrupted by exact release")
+        context = multiprocessing.get_context("spawn")
+        recv, send = context.Pipe(duplex=False)
+        child = context.Process(target=_bounded_https_call_child,
+                                args=(send, self.pod_id, self.token, self.deadline, self.base_url, name, args, kwargs))
+        child.daemon = True
+        started = False
+        watchdog = None
+        reader = None
+        stop_watchdog = threading.Event()
+        # Reserve child termination and reaping inside the same absolute
+        # transport deadline; HTTP response time never consumes that reserve.
+        request_deadline = self.deadline - min(0.35, remaining / 2)
+        try:
+            child.start()
+            started = True
+            send.close()
+            # poll() can wake on a partial frame; recv_bytes() may then block
+            # indefinitely. The watchdog also observes exact owner release,
+            # killing the child so a paid timer can drain without waiting for
+            # the old verification deadline.
+            def expire() -> None:
+                while not stop_watchdog.wait(0.02):
+                    if time.monotonic() >= request_deadline or (
+                            self.abort_event is not None and self.abort_event.is_set()):
+                        break
+                if stop_watchdog.is_set():
+                    return
+                try:
+                    if child.is_alive():
+                        child.kill()
+                except (OSError, ValueError):
+                    pass
+            watchdog = threading.Thread(target=expire, daemon=True)
+            watchdog.daemon = True
+            watchdog.start()
+            # recv_bytes may block forever on a partial frame. Run it in a
+            # disposable reader and bound the parent wait independently; this
+            # uses only multiprocessing Pipe APIs supported on Windows too.
+            read_done = threading.Event()
+            received: dict[str, Any] = {}
+            def read_frame() -> None:
+                try:
+                    received["raw"] = recv.recv_bytes(maxlength=2 * 1024 * 1024)
+                except BaseException:
+                    received["error"] = True
+                finally:
+                    read_done.set()
+            reader = threading.Thread(target=read_frame, daemon=True)
+            reader.start()
+            while not read_done.wait(0.02):
+                if self.abort_event is not None and self.abort_event.is_set():
+                    raise RemotePlacementError("bounded pod operation interrupted by exact release")
+                if time.monotonic() >= request_deadline:
+                    raise RemotePlacementError("failure verification deadline expired")
+            if received.get("error") or "raw" not in received:
+                if self.abort_event is not None and self.abort_event.is_set():
+                    raise RemotePlacementError("bounded pod operation interrupted by exact release")
+                raise RemotePlacementError("failure verification deadline expired" if time.monotonic() >= request_deadline
+                                           else "bounded pod operation failed")
+            raw = received["raw"]
+            if self.abort_event is not None and self.abort_event.is_set():
+                raise RemotePlacementError("bounded pod operation interrupted by exact release")
+            if time.monotonic() >= self.deadline:
+                raise RemotePlacementError("failure verification deadline expired")
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or set(payload) != {"ok", "value"} or payload["ok"] is not True:
+                raise RemotePlacementError("bounded pod operation failed")
+            if self.abort_event is not None and self.abort_event.is_set():
+                raise RemotePlacementError("bounded pod operation interrupted by exact release")
+            return payload["value"]
+        except (OSError, EOFError, ValueError, TypeError):
+            raise RemotePlacementError("failure verification deadline expired" if time.monotonic() >= request_deadline
+                                       else "bounded pod operation failed") from None
+        finally:
+            stop_watchdog.set()
+            if watchdog is not None:
+                watchdog.join(timeout=min(0.05, max(0, self.deadline - time.monotonic())))
+            if started:
+                child.join(timeout=min(0.02, max(0, self.deadline - time.monotonic())))
+                if child.is_alive():
+                    try:
+                        child.kill()
+                    except (OSError, ValueError):
+                        pass  # The composite handle below keeps custody pending.
+                    child.join(timeout=min(0.25, max(0, self.deadline - time.monotonic())))
+            if reader is not None:
+                reader.join(timeout=min(0.03, max(0, self.deadline - time.monotonic())))
+            if started and (child.is_alive() or reader is not None and reader.is_alive()
+                            or watchdog is not None and watchdog.is_alive()):
+                self.unreaped_child = _OutstandingObserver(child, reader, watchdog, recv, send)
+                raise BoundedObserverUnreaped("bounded pod observer could not be reaped")
+            if started:
+                child.close()
+            recv.close()
+            send.close()
+
+    def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        return (self._call_direct(name, *args, **kwargs) if self.deadline is None
+                else self._bounded_call(name, *args, **kwargs))
 
     def exec(self, command: str, timeout: float = 600) -> tuple[int, str, str]:
         return self._call("execute_command", command, timeout)
@@ -726,6 +911,25 @@ class _HttpsOps:
 
     def job_cancel(self, job_id: str) -> Mapping[str, Any]:
         return self._call("detached_cancel", job_id)
+
+
+def _bounded_https_call_child(send: Any, pod_id: str, token: str, deadline: float, base_url: str | None,
+                             name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    """One no-journal transport RPC; credentials arrive only on the private spawn pipe."""
+    try:
+        ops = _HttpsOps(pod_id, token, deadline=deadline, base_url=base_url)
+        value = ops._call_direct(name, *args, **kwargs)
+        payload = json.dumps({"ok": True, "value": value}, separators=(",", ":")).encode()
+        if len(payload) > 2 * 1024 * 1024:
+            payload = b'{"ok":false,"value":null}'
+        send.send_bytes(payload)
+    except BaseException:
+        try:
+            send.send_bytes(b'{"ok":false,"value":null}')
+        except Exception:
+            pass
+    finally:
+        send.close()
 
 
 def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:
