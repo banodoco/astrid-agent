@@ -208,6 +208,33 @@ def test_runpod_gpu_flags_map_to_ordered_policy_for_target_describe(monkeypatch,
     assert json.loads(capsys.readouterr().out) == {"offer_digest": "digest"}
 
 
+def test_runpod_datacenter_override_reaches_generate_and_describe(monkeypatch, capsys):
+    calls = _facade(monkeypatch)
+    assert cli.main(["image", "a dog", "--placement", "runpod", "--datacenter", "EU-FAKE",
+                     "--offer-digest", "sha256:" + "b" * 64]) == 0
+    assert calls[0]["datacenter"] == "EU-FAKE"
+    capsys.readouterr()
+
+    described = []
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(
+        describe=lambda **kwargs: (described.append(kwargs) or {"offer_digest": "digest"})))
+    assert cli.main(["describe", "--placement", "runpod", "--datacenter", "EU-FAKE", "--json"]) == 0
+    assert described[0]["datacenter"] == "EU-FAKE"
+    assert json.loads(capsys.readouterr().out) == {"offer_digest": "digest"}
+
+
+def test_runpod_datacenter_requires_runpod_and_disclosed_offer(monkeypatch):
+    calls = _facade(monkeypatch)
+    with pytest.raises(SystemExit):
+        cli.main(["image", "a dog", "--datacenter", "EU-FAKE"])
+    with pytest.raises(SystemExit):
+        cli.main(["describe", "--datacenter", "EU-FAKE"])
+    with pytest.raises(SystemExit):
+        cli.main(["image", "a dog", "--placement", "runpod", "--datacenter", "EU-FAKE"])
+    assert not calls
+
+
 def test_runpod_gpu_requires_runpod_target_and_offer_digest(monkeypatch):
     calls = _facade(monkeypatch)
     with pytest.raises(SystemExit):

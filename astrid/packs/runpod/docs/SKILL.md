@@ -44,6 +44,12 @@ To save the list as the default, use
 `astrid generate targets --placement runpod --save --input 'gpu_types=["RTX 4090"]'`
 or configure it with `runpod.setup`.
 
+For one job, pass `--datacenter <id>` to both `astrid generate describe --placement runpod`
+and the matching `astrid generate` command. The datacenter is included in the offer digest,
+so use the same ID for both commands and review a fresh digest after changing it. This
+override applies only to that job; it does not change saved preferences. A saved network
+volume fixes its datacenter, so a conflicting per-job choice is refused.
+
 ### Machine preferences
 
 Run `astrid machines setup` to choose an existing account network volume (or
