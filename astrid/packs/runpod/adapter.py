@@ -19,6 +19,7 @@ from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
 from astrid.packs.runpod.generation import prepare_retained_generation
 from astrid.packs.runpod.target_selection import (
     OfferObservationError, PaidSelectionError, RunPodOffer, RunPodSelectionOwner, _digest, _number,
+    ordered_runpod_offers,
 )
 from astrid.packs.runpod.worker_owner import _run_sync
 from astrid.packs.runpod.worker_preparation import (
@@ -85,6 +86,16 @@ async def setup_gpu_types(api_key: str, *, datacenter_id: str | None,
 
 
 async def observe_priced_offer(preferences, config) -> RunPodOffer:
+    """Return the best datacenter offer for the user's first available GPU."""
+    return (await _observe_priced_offers(preferences, config, first_gpu_only=True))[0]
+
+
+async def observe_priced_offers(preferences, config) -> tuple[RunPodOffer, ...]:
+    """Observe every allowed GPU/datacenter option for one capacity cycle."""
+    return await _observe_priced_offers(preferences, config, first_gpu_only=False)
+
+
+async def _observe_priced_offers(preferences, config, *, first_gpu_only) -> tuple[RunPodOffer, ...]:
     """Broker provider semantics, without its allocation/retry/credential path."""
     from runpod_lifecycle import gpu_availability
 
@@ -101,6 +112,7 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
             raise PaidSelectionError("exact volume datacenter could not be confirmed")
     unavailable = []
     retry_after = None
+    offers = []
     for gpu in p.gpu_types:
         observed = await asyncio.wait_for(gpu_availability(
             api_key=config.api_key, gpu=gpu,
@@ -137,8 +149,12 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
                         "container_disk_gb": config.container_disk_gb,
                         "allowed_cuda_versions": config.allowed_cuda_versions,
                         "min_cuda_version": config.min_cuda_version}
-            return RunPodOffer(p.provider_account_ref, gpu, rate, _digest(identity),
-                               dc.datacenter_id, observed.gpu_type_id)
+            offers.append(RunPodOffer(p.provider_account_ref, gpu, rate, _digest(identity),
+                                      dc.datacenter_id, observed.gpu_type_id))
+        if first_gpu_only and offers:
+            return ordered_runpod_offers(p, offers)
+    if offers:
+        return ordered_runpod_offers(p, offers)
     # Unknown provider evidence never proves that every selected GPU is sold out.
     # A later confirmed offer still wins, preserving the existing choice order.
     # Lifecycle's aggregate unknown can hide a more useful DC-level reason.
@@ -172,6 +188,7 @@ def broker_selection(preferences, config, *, account_ref, data_root, compatibili
     owner = RunPodSelectionOwner(
         preferences, account_ref=account_ref, config_factory=exact_config,
         observe_offer=lambda: _run_sync(observe_priced_offer(preferences, config)),
+        observe_offers=lambda: _run_sync(observe_priced_offers(preferences, config)),
         observed_hourly_usd=actual_rate, data_root=data_root, compatibility=compatibility,
     )
     owner.https_token_file = owner.path.parent / "https-token"

@@ -269,6 +269,7 @@ def test_generation_policy_waits_for_stock_through_the_real_machine_claim(machin
         c.clock.advance(seconds)
 
     c.owner.observe_offer, c.owner.sleep = observe, sleep
+    c.owner.observe_offers = lambda: (observe(),)
     c.owner.monotonic = c.clock
     monkeypatch.setattr(target_selection.random, "uniform", lambda *args: 0)
     run_on_machine(c.machine, replace(job, policy=policy), destination=job.scratch / "outputs",
