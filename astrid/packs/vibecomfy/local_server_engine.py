@@ -254,7 +254,7 @@ def run_scoped_overrides(workflow: Any, attempt_id: str) -> Any:
 
 
 def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None,
-                        allow_empty_image: bool = False) -> Any:
+                        allow_empty_image: bool = False, run_inputs: Mapping[str, Any] | None = None) -> Any:
     """Derive attempt-owned image bindings and fresh output filenames.
 
     A seedless graph can otherwise reuse SaveImage's cached result from an
@@ -287,6 +287,14 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
                 )
                 changed = True
     if output_identity is not None:
+        output_ids = {str(output.node_id) for output in workflow.outputs}
+        for name, value in (run_inputs or {}).items():
+            spec = workflow.inputs.get(name)
+            if spec is not None and str(spec.node_id) in output_ids and spec.field == "filename_prefix":
+                node = workflow.nodes[str(spec.node_id)]
+                fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
+                fields["filename_prefix"] = value
+                workflow.set_input(name, value)
         changed = changed or any(isinstance(workflow.nodes[output.node_id].inputs.get(
             "filename_prefix", workflow.nodes[output.node_id].widgets.get("filename_prefix")), str)
             and workflow.nodes[output.node_id].inputs.get(
@@ -425,9 +433,16 @@ def run_local_server(
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.
     bundle = local_server_bundle(
-        bundle, destination, output_identity=attempt_identity or task_identity,
+        bundle, destination, output_identity=attempt_identity or task_identity, run_inputs=run_inputs,
     )
     bindings = dict(run_inputs or {})
+    output_ids = {str(output.node_id) for output in bundle.workflow.outputs}
+    original_prefixes = {}
+    for name, value in list(bindings.items()):
+        spec = bundle.workflow.inputs[name]
+        if str(spec.node_id) in output_ids and spec.field == "filename_prefix":
+            original_prefixes[name] = value
+            bindings[name] = spec.value
     for name, value in bindings.items():
         spec = bundle.workflow.inputs[name]
         media = str(getattr(spec, "media_semantics", "") or "").lower()
@@ -502,7 +517,7 @@ def run_local_server(
             # Preserve its evidence, but report the detached invocation values
             # (including the chosen seed) that actually reached /prompt.
             payload = json.loads(result_path.read_text(encoding="utf-8"))
-            payload["inputs"].update(bindings)
+            payload["inputs"].update({**bindings, **original_prefixes})
             if custody is not None:
                 alignment = {"mode": "trust", "status": "unverified", "verified": False}
                 payload["evidence"]["producer"]["alignment"] = alignment
