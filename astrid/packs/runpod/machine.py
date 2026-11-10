@@ -32,6 +32,7 @@ import json
 import os
 import secrets
 import shlex
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -933,11 +934,25 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
         state = lease["state"]
     else:
         state = "unresolved"
+    now = time.time()
+    hourly_usd = lease.get("hourly_usd")
+    cost_usd = float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0)
+    release_at = None
+    minutes_left = None
+    if live:
+        release_at = (lease.get("idle_expires_at") if state == "idle"
+                      else lease.get("paid_expires_at"))
+        accounted_at = lease.get("accounted_at", lease.get("started_at"))
+        if isinstance(hourly_usd, (int, float)) and isinstance(accounted_at, (int, float)):
+            cost_usd += max(0, now - accounted_at) * hourly_usd / 3600
+        if isinstance(release_at, (int, float)):
+            minutes_left = max(0.0, round((release_at - now) / 60, 1))
     return {"id": record.get("pod_id"), "kind": KIND, "lease": record.get("operation_id"),
             "gpu": record.get("gpu_type"), "state": state,
             "live": live, "idle_timeout_s": lease.get("idle_seconds"),
             "idle_expires_at": lease.get("idle_expires_at") if state == "idle" else None,
-            "cost_usd": round(float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0), 4),
+            "release_at": release_at, "minutes_left": minutes_left,
+            "cost_usd": round(cost_usd, 4), "hourly_usd": hourly_usd,
             "ended": None if live else (lease.get("ended") or lease.get("release_reason"))}
 
 
