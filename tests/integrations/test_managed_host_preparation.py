@@ -31,7 +31,7 @@ def _workflow():
 pytestmark = pytest.mark.integration
 
 _SERVER = r'''
-import json,os,sys
+import json,os,sys,uuid
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,HTTPServer
 from urllib.parse import urlsplit,parse_qs
@@ -58,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
  def do_POST(self):
   request=json.loads(self.rfile.read(int(self.headers.get('Content-Length',0))))
   if self.path!='/prompt':return self.send({})
-  key=request['client_id'];filename='cpu-output.png';Image.new('RGB',(16,16),(10,20,30)).save(started.parent/filename)
+  key=uuid.uuid4().hex;filename='cpu-output.png';Image.new('RGB',(16,16),(10,20,30)).save(started.parent/filename)
   with (started.parent/'prompts').open('a') as stream:stream.write(key+'\n')
   outputs={node:{'images':[{'filename':filename,'subfolder':'','type':'output'}]} for node,value in request['prompt'].items() if value['class_type']=='SaveImage'}
   histories[key]={'outputs':outputs,'status':{'completed':True,'status_str':'success'}}
@@ -118,7 +118,8 @@ def artifact_server():
 @pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema'],
                          ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker'])
 def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, real_runtime, managed_install, artifact_server, failure):
-    from vibecomfy.workflow_bundle import emit_bundle
+    from vibecomfy.workflow_bundle import emit_bundle_with_candidate
+    from vibecomfy.security.provenance import Provenance
     from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value
     from astrid.core.generation import engine_custody
     client, payload, recipe, root, started, bootstrap = managed_install
@@ -131,12 +132,17 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     workflow = _canonical_bundle_value(loaded.resolved).workflow
     artifact_url, artifact_bytes, artifact_hits = artifact_server
     artifact = root / 'models/checkpoints/cpu-required.bin'
-    workflow.metadata['model_assets'] = [{'name': artifact.name, 'subdir': 'checkpoints',
-        'url': artifact_url, 'sha256': hashlib.sha256(artifact_bytes).hexdigest(),
-        'size_bytes': len(artifact_bytes)}]
+    from vibecomfy.templates import ReadyMetadata, new_workflow, OutputSpec
+    from vibecomfy.nodes.core import EmptyImage, SaveImage
+    asset = {'name': artifact.name, 'url': artifact_url, 'subdir': 'checkpoints',
+             'sha256': hashlib.sha256(artifact_bytes).hexdigest(), 'size_bytes': len(artifact_bytes)}
+    with new_workflow(ReadyMetadata.build(template_id='plan32-cpu', capability='image', model_assets=[asset])) as workflow:
+        image = EmptyImage(width=16, height=16, batch_size=1, color=0)
+        saved = SaveImage(images=image.out('IMAGE'), filename_prefix='astrid')
+        workflow.finalize({}, outputs=[OutputSpec(node=saved)])
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
-    emit_bundle(workflow, bundle / 'workflow.py', {'operation': 'authored'})
+    emit_bundle_with_candidate(workflow, bundle / 'workflow.py', Provenance.USER_CONFIRMED, None)
     diagnostic = client.run(CommandRequest((str(root / 'runtime/venv/bin/python'), '-I', '-c',
         'import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
         'doctor', str(bundle / 'workflow.py'), '--yes', '--non-interactive', '--json'),
@@ -294,3 +300,29 @@ def test_plain_workflow_preparation_does_not_write_beside_admitted_input(tmp_pat
         assert (tmp_path / 'private-preparation/managed-custom-nodes.lock').is_file()
     finally:
         preparation.close()
+
+
+
+def test_native_node_installer_bootstraps_bundled_pip_without_replacing_base(tmp_path, managed_install):
+    from astrid.packs.vibecomfy.native_preparation import native_pip_program
+    from astrid.core.generation.engine_runner import _Runner, plan_install
+    client, payload, recipe, root, started, bootstrap = managed_install
+    prep = ManagedEnginePreparation(task='pip-task', attempt='pip-attempt', mode='align',
+        deadline=time.monotonic() + 60, cancelled=lambda: False, scratch=tmp_path / 'pip-preparation')
+    lock = prep.adapter.local_install_lock(prep.root, deadline=prep.deadline, cancelled=prep.cancelled)
+    lock.__enter__(); prep.lock = lock
+    try:
+        python = str(root / 'runtime/venv/bin/python')
+        facts = json.loads(prep._native(native_pip_program(), json.dumps({'python_executable': python})).stdout)
+        assert facts['existed'] is False
+        assert len(facts['wheel_sha256']) == 64
+        assert facts['installed']['version'] == facts['bundled_version']
+        assert Path(facts['installed']['location']).is_relative_to(root / 'runtime/venv')
+        repeated = json.loads(prep._native(native_pip_program(), json.dumps({'python_executable': python})).stdout)
+        assert repeated['existed'] is True and repeated['installed'] == facts['installed']
+        runner = _Runner(plan_install(recipe, root=str(root), placement='local'), prep.context, prep.adapter, prep.deadline)
+        runner.check_environment_identities()
+        for step in runner.plan.steps:
+            if step.kind == 'environment': runner.execute(step, readonly=True)
+    finally:
+        prep.close()

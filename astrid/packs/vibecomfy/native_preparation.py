@@ -18,7 +18,7 @@ def prepare_native_workflow(workflow_path, runtime_root, python_executable, uv_e
     from pathlib import Path
     from vibecomfy.commands.runpod_setup import ensure_runtime_layout
     from vibecomfy.runtime.dependencies import (
-        inspect_runtime_target, runtime_requirements_from_workflow, sync_runtime,
+        compare_runtime, inspect_runtime_target, runtime_requirements_from_workflow, sync_runtime,
     )
     from vibecomfy.runtime.prepared import prepare_workflow
     from vibecomfy.security.provenance import Provenance
@@ -67,16 +67,77 @@ def prepare_native_workflow(workflow_path, runtime_root, python_executable, uv_e
     report = sync_runtime(requirements, runtime_root=root, installer=install, verify=observe,
                           launch_flags=list(launch_flags), sync_packages=sync_packages, offline=offline)
     check_capsule()
+    compliance = compare_runtime(requirements, target=observe(), runtime_root=root)
+    if requirements is not None and (compliance.get('status') != 'matching'
+                                    or any(check.get('status') != 'matching' for check in compliance.get('checks', []))):
+        raise ValueError("native preparation dependencies remain noncompliant or unverified")
+    # This fresh complete observation makes a native repeated sync an early
+    # no-op; retain the raw first transaction without changing its synced flag.
+    target = compliance.get('actual', observe())
     prepared = prepare_workflow(bundle.workflow, reference=source, runtime_root=root,
         ensure_models=False, ensure_packs=False, quiet=True, dependency_mode='sync',
-        runtime_target=observe(), runtime_dependency_report=report, offline=offline,
+        runtime_target=target, runtime_dependency_report=report, offline=offline,
         sync_packages=sync_packages)
     check_capsule()
-    return {'synchronization': report, 'observation': observe(), 'preparation': prepared.to_json()}
+    return {'synchronization': report, 'observation': observe(), 'compliance': compliance, 'preparation': prepared.to_json()}
+
+
+def ensure_native_pip(python_executable):
+    """Bootstrap only the verified interpreter's bundled pip, offline and without upgrade."""
+    import hashlib
+    import importlib.metadata
+    import importlib.util
+    import json
+    import subprocess
+    import sys
+    import sysconfig
+    from pathlib import Path
+    import ensurepip
+    if Path(sys.executable).resolve() != Path(python_executable).resolve():
+        raise ValueError("pip bootstrap requires the verified managed interpreter")
+    configured = sysconfig.get_config_var('WHEEL_PKG_DIR')
+    if configured and not Path(configured).resolve().is_relative_to(Path(sys.base_prefix).resolve()):
+        raise ValueError("pip bootstrap wheel directory is outside the verified interpreter")
+    with ensurepip._get_pip_whl_path_ctx() as wheel:
+        wheel = Path(wheel)
+        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        wheel_path = str(wheel)
+        bundled_version = ensurepip.version()
+        spec = importlib.util.find_spec('pip')
+        try: installed = importlib.metadata.version('pip')
+        except importlib.metadata.PackageNotFoundError: installed = None
+        if (spec is None) != (installed is None):
+            raise ValueError("managed pip installation is partial")
+        existed = spec is not None
+        if not existed:
+            subprocess.run([python_executable, '-I', '-m', 'ensurepip', '--default-pip'],
+                           check=True, capture_output=True, text=True)
+        if hashlib.sha256(wheel.read_bytes()).hexdigest() != digest:
+            raise ValueError("pip bootstrap wheel changed during installation")
+    program = "import pip,importlib.metadata,json;print(json.dumps({'version':pip.__version__,'distribution_version':importlib.metadata.version('pip'),'location':pip.__file__}))"
+    probe = json.loads(subprocess.run([python_executable, '-I', '-c', program],
+                                     check=True, capture_output=True, text=True).stdout)
+    if (probe['version'] != probe['distribution_version']
+            or not Path(probe['location']).resolve().is_relative_to(Path(sys.prefix).resolve())):
+        raise ValueError("managed pip identity is inconsistent")
+    help_text = subprocess.run([python_executable, '-I', '-m', 'pip', 'install', '--help'],
+                              check=True, capture_output=True, text=True).stdout
+    if '--dry-run' not in help_text or '--report' not in help_text:
+        raise ValueError("managed pip lacks protected native installation preflight")
+    return {'existed': existed, 'bundled_version': bundled_version, 'wheel_path': wheel_path,
+            'wheel_sha256': digest, 'installed': probe}
+
+
+def _native_program(function):
+    import inspect
+    return (inspect.getsource(function) +
+            "\nimport json,sys\nprint(json.dumps(" + function.__name__ + "(**json.loads(sys.argv[1]))))\n")
+
+
+def native_pip_program():
+    return _native_program(ensure_native_pip)
 
 
 def native_preparation_program():
     """Ship the same helper into an isolated, supervisor-owned engine command."""
-    import inspect
-    return (inspect.getsource(prepare_native_workflow) +
-            "\nimport json,sys\nprint(json.dumps(prepare_native_workflow(**json.loads(sys.argv[1]))))\n")
+    return _native_program(prepare_native_workflow)

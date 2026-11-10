@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from concurrent.futures import CancelledError
+from contextlib import contextmanager
+from contextvars import ContextVar
 import copy
 import hashlib
 import json
@@ -13,6 +15,18 @@ from urllib.parse import urlsplit
 
 PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
 SCHEMA = "astrid.managed-engine-preparation.v1"
+_PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
+
+
+@contextmanager
+def preparation_scope(report):
+    """Project one trusted in-process machine attempt without global environment changes."""
+    token = _PREPARATION_CONTEXT.set(json.dumps(report, sort_keys=True))
+    try:
+        yield
+    finally:
+        _PREPARATION_CONTEXT.reset(token)
+
 
 
 def digest(value: Any) -> str:
@@ -50,7 +64,9 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
                      execution_identity: str | None = None, inputs: Any = None) -> dict[str, Any] | None:
     """Read only the host-projected, attempt-bound preparation, never ambient policy."""
     import os
-    raw = os.environ.get(PREPARATION_ENV)
+    raw = _PREPARATION_CONTEXT.get()
+    if raw is None:
+        raw = os.environ.get(PREPARATION_ENV)
     if raw is None:
         return None
     body = json.loads(raw)
@@ -65,7 +81,9 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
             or execution_identity is not None and body["execution_identity"] != execution_identity):
         raise ValueError("managed engine preparation differs from this attempt")
     from .engine_local_endpoint import _valid_root
-    expected_mode = os.environ.get("ASTRID_ALIGN", "check")
+    from . import target_inventory
+    pod_alignment = getattr(target_inventory, "POD_ALIGN", None)
+    expected_mode = (pod_alignment.get() if pod_alignment is not None else None) or os.environ.get("ASTRID_ALIGN", "check")
     installation = body["installation"]
     health = body["health"]
     if (not isinstance(installation, dict)
@@ -243,6 +261,7 @@ class ManagedEnginePreparation:
         engine = copy.copy(run_action._engine_for({"engine": "comfyui"}))
         manifest = engine.workflow_requirements([canonical_workflow])
         manifest = {**manifest, "engine": "comfyui", "models_root": configured_models_root(root=self.root)}
+        self._has_declared_nodes = bool((manifest.get("extra") or {}).get("nodes"))
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
         self.scratch.mkdir(parents=True, exist_ok=True)
         lockfile = self.scratch / "managed-custom-nodes.lock"
@@ -294,6 +313,8 @@ class ManagedEnginePreparation:
         native_preparation = getattr(self, "native_preparation", None)
         if native_preparation is not None:
             self.report["native_preparation"] = native_preparation
+            if getattr(self, "pip_bootstrap", None) is not None:
+                native_preparation["pip_bootstrap"] = self.pip_bootstrap
         return self.report
 
     def _verify_models(self, manifest):
@@ -319,6 +340,12 @@ class ManagedEnginePreparation:
         self._runtime_requirements = requirements
         self._runtime_launch_flags = list(runner.launch_spec()["argv"])
         self._sync_packages = []
+        primary = next(environment for environment in self.recipe.environments if environment.name == self.recipe.primary_environment)
+        specification = runner.helper("environment-spec", environment=primary.name)["expected"]
+        base_packages = {Requirement(text).name.lower().replace("_", "-") for text in specification["requirements"]}
+        base_packages.update(specification["wheels"])
+        base_packages.update(Requirement(text).name.lower().replace("_", "-") for text in specification["constraints"])
+        self._protected_packages = sorted(base_packages)
         if requirements is None:
             return
         source = next(source for source in self.recipe.sources if source.name == "comfyui")
@@ -327,11 +354,6 @@ class ManagedEnginePreparation:
                 or requirements.comfy_ref and requirements.comfy_ref != source.pin.revision
                 or requirements.extras):
             raise IntegrityError("managed workflow runtime conflicts with the installed recipe")
-        primary = next(environment for environment in self.recipe.environments if environment.name == self.recipe.primary_environment)
-        specification = runner.helper("environment-spec", environment=primary.name)["expected"]
-        base_packages = {Requirement(text).name.lower().replace("_", "-") for text in specification["requirements"]}
-        base_packages.update(specification["wheels"])
-        base_packages.update(Requirement(text).name.lower().replace("_", "-") for text in specification["constraints"])
         self._sync_packages = [name for name, _ in requirements.packages if name.lower().replace("_", "-") not in base_packages]
         program = """import ast,json,sys
 from vibecomfy.runtime.dependencies import inspect_runtime_target,compare_runtime
@@ -372,7 +394,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                "VIBECOMFY_CUSTOM_NODES_DIR": comfy + "/custom_nodes", "VIBECOMFY_HEADLESS": "1",
                "VIBECOMFY_COMFY_CONFIGURATION": json.dumps({"runtime_root": self.root + "/runtime",
                    "comfy_root": comfy, "models_root": models, "python": python}),
-               "PATH": str(Path(python).parent) + ":/usr/local/bin:/usr/bin:/bin"}
+               "PATH": str(Path(python).parent) + ":/usr/local/bin:/usr/bin:/bin",
+               "VIBECOMFY_PROTECTED_RUNTIME_PACKAGES": ",".join(getattr(self, "_protected_packages", ()))}
         result = self.context.run(CommandRequest((python, "-I", "-c", program, *args), comfy, env, self.deadline))
         if result.timed_out:
             raise DeadlineExceeded("managed alignment command timed out")
@@ -392,6 +415,11 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         if any(path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected
                for path, expected in getattr(self, "_canonical_members", {}).items()):
             raise IntegrityError("managed CLI canonical capsule changed before command")
+        if argv[0] == "nodes" and self.mode == "align" and getattr(self, "_has_declared_nodes", False):
+            from astrid.packs.vibecomfy.native_preparation import native_pip_program
+            primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
+            python = self.adapter.venv_python(self.adapter.join(self.root, primary.relative_path))
+            self.pip_bootstrap = json.loads(self._native(native_pip_program(), json.dumps({"python_executable": python})).stdout)
         program = "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))"
         if argv[0] in {"prepare", "doctor", "fetch"}:
             # This is the host's own canonical renderer output, never admitted

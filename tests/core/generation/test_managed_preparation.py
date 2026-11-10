@@ -195,3 +195,39 @@ def test_trust_diagnostics_translate_only_exact_declared_operational_rows():
     assert provider._approval_diagnostics[0]['model_bytes_status'] == 'declared_unverified'
     assert provider._approval_diagnostics[1] == unrelated
     assert diagnostic['model_bytes_status'] == 'verified_target_provisioning'
+
+
+
+def test_native_asset_capsule_authoring(tmp_path):
+    from vibecomfy.templates import ReadyMetadata, new_workflow, OutputSpec
+    from vibecomfy.nodes.core import EmptyImage, SaveImage
+    from vibecomfy.workflow_bundle import emit_bundle_with_candidate, load_bundle
+    from vibecomfy.security.provenance import Provenance
+    # Native ReadyMetadata stores source-backed rows as string witnesses;
+    # author in its normalized key order so publication round-trips exactly.
+    asset = {'name': 'cpu-required.bin', 'url': 'http://127.0.0.1:1234/model', 'subdir': 'checkpoints',
+             'sha256': 'a' * 64, 'size_bytes': 22}
+    with new_workflow(ReadyMetadata.build(template_id='plan32-cpu', capability='image', model_assets=[asset])) as workflow:
+        image = EmptyImage(width=16, height=16, batch_size=1, color=0)
+        saved = SaveImage(images=image.out('IMAGE'), filename_prefix='astrid')
+        workflow.finalize({}, outputs=[OutputSpec(node=saved)])
+    emitted = emit_bundle_with_candidate(workflow, tmp_path / 'workflow.py', Provenance.USER_CONFIRMED, None)
+    loaded = load_bundle(emitted.python_path, trust=Provenance.USER_CONFIRMED)
+    assert loaded.workflow.metadata['model_assets'] == [asset]
+
+
+
+def test_preparation_scope_is_attempt_bound_and_does_not_leak_across_threads(preparation, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from astrid.core.generation.managed_preparation import preparation_scope
+    body, source = preparation
+    other = {**body, 'task_id': 'another-task'}
+    monkeypatch.setenv(PREPARATION_ENV, json.dumps(other))
+    def read():
+        return read_preparation(task='task', attempt='attempt', endpoint=body['endpoint'],
+                                execution_identity='execution', inputs={'workflow': source})
+    with preparation_scope(body):
+        assert read() == body
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with pytest.raises(ValueError): pool.submit(read).result()
+    with pytest.raises(ValueError): read()
