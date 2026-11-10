@@ -33,7 +33,7 @@ def test_reset_cli_reports_only_fixed_substep_reason(tmp_path, monkeypatch, caps
 
     monkeypatch.setattr(pod_reset, "reset_lock", lock)
     monkeypatch.setattr(pod_reset, "realm_root", lambda *a: step("realm_lookup", tmp_path))
-    monkeypatch.setattr(pod_reset, "_token", lambda *a: "unused")
+    monkeypatch.setattr(pod_reset, "_owner_token", lambda *a: "unused")
     monkeypatch.setattr(pod_reset, "take_template", lambda *a, **k: step("template_create", {}))
     monkeypatch.setattr(pod_reset, "replace_realm", lambda *a, **k: step("template_restore", {}))
     monkeypatch.setattr(pod_reset, "sweep", lambda **k: step("sweep", []))
