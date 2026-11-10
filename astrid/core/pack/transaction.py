@@ -1,7 +1,8 @@
 """Dependency-group installation with one durable directory publication.
 
 The collection directory is the commit record, not a list of pack presence.
-A private complete copy is validated/built before an atomic directory exchange.
+A private complete copy is validated/built before directory publication. POSIX
+uses atomic exchange; Windows journals a locked, recoverable sequence of renames.
 The exchanged directory is retained for artifact custody; this module never
 retires another attempt's publication or deletes an admitted generation.
 """
@@ -100,7 +101,7 @@ def _json(value: Any) -> bytes:
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 def _sync_directory(path: Path) -> None:
-    if not hasattr(os, "O_DIRECTORY"):
+    if os.name == "nt" or not hasattr(os, "O_DIRECTORY"):
         # The Windows directory-fsync skip is accepted: Windows cannot open a
         # directory for fsync, and NTFS journals the metadata (including the
         # rename) itself. Nothing is opened here, so no link is followed.
@@ -120,6 +121,125 @@ def _root(value: str | Path) -> Path:
     if root.exists() or root.is_symlink():
         _directory(root)
     return root
+
+
+def _exchange_journal(root: Path) -> Path:
+    # Outside the collection: the commit record/outbox travels with its tree,
+    # but this write-ahead record must survive even when current is absent.
+    return root.parent / ("." + root.name + ".transaction.json")
+
+
+def _exchange_backup(root: Path) -> Path:
+    return root.parent / ("." + root.name + ".exchange-backup")
+
+
+def _write_exchange(root: Path, record: Mapping[str, Any], phase: str) -> None:
+    journal = _exchange_journal(root)
+    fd, name = tempfile.mkstemp(prefix=".group-exchange-", dir=root.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(_json({**record, "phase": phase}) + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, journal)
+        _sync_directory(root.parent)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def _exchange_identity(path: Path) -> list[int]:
+    info = _directory(path).stat()
+    return [info.st_dev, info.st_ino]
+
+
+def _recover_exchange(root: Path) -> None:
+    """Resolve an interrupted Windows exchange under exclusive collection custody.
+
+    Each phase is flushed after the rename. A process can die between the two,
+    so directory identities, rather than the last phase alone, decide whether
+    publication happened. Before publication we restore old; afterward we finish
+    forward. Never delete either admitted generation during recovery.
+    """
+    journal = _exchange_journal(root)
+    if not journal.exists() and not journal.is_symlink():
+        return
+    if not stat.S_ISREG(journal.lstat().st_mode):
+        raise PackInstallError("unsafe_path", "Collection exchange journal must be a regular file.")
+    try:
+        record = json.loads(journal.read_text(encoding="utf-8"))
+        if (not isinstance(record, dict)
+                or set(record) != {"version", "candidate", "old", "new", "phase"}
+                or type(record["version"]) is not int or record["version"] != 1
+                or not isinstance(record["candidate"], str)
+                or len(record["candidate"]) != 32
+                or any(c not in "0123456789abcdef" for c in record["candidate"])
+                or record["phase"] not in {"prepared", "old_moved", "published", "retired"}
+                or any(not isinstance(record[key], list) or len(record[key]) != 2
+                       or any(type(i) is not int for i in record[key]) for key in ("old", "new"))
+                or record["old"] == record["new"]):
+            raise ValueError("malformed exchange record")
+    except (ValueError, TypeError) as exc:
+        raise PackInstallError("invalid_state", "Collection exchange journal is invalid; restore it before retrying.") from exc
+    retired = _directory(root.parent / ".astrid-retired")
+    candidate = retired / record["candidate"]
+    backup = _exchange_backup(root)
+    locations = {}
+    for name, path in (("current", root), ("candidate", candidate), ("backup", backup)):
+        locations[name] = _exchange_identity(path) if path.exists() or path.is_symlink() else None
+    old, new = record["old"], record["new"]
+    if locations == {"current": None, "candidate": new, "backup": old}:
+        os.replace(backup, root)
+        _sync_directory(root.parent)
+        locations = {"current": old, "candidate": new, "backup": None}
+    if locations == {"current": old, "candidate": new, "backup": None}:
+        # The new generation was never published. It belongs to this failed
+        # attempt; the old generation is already completely restored.
+        shutil.rmtree(candidate)
+    elif locations == {"current": new, "candidate": None, "backup": old}:
+        # Remove the temporary backup name by transferring the old generation
+        # to existing retirement custody (rollback/artifact leases still own it).
+        os.replace(backup, candidate)
+    elif locations not in ({"current": new, "candidate": old, "backup": None},
+                           {"current": old, "candidate": None, "backup": None}):
+        raise PackInstallError("invalid_state", "Collection exchange paths changed; restore them before retrying.")
+    _sync_directory(retired)
+    _sync_directory(root.parent)
+    (retired / ("." + record["candidate"] + ".transaction.lock")).unlink(missing_ok=True)
+    journal.unlink()
+    _sync_directory(root.parent)
+
+
+def _publish_collection(candidate: Path, root: Path) -> None:
+    if sys.platform != "win32":
+        _publish(candidate, root)
+        return
+    key = str((root.parent / ("." + root.name + ".transaction.lock")).absolute())
+    if _HELD.get().get(key) is not True:
+        raise PackInstallError("transaction_busy", "Collection exchange requires exclusive custody; retry.")
+    backup = _exchange_backup(root)
+    if backup.exists() or backup.is_symlink():
+        raise PackInstallError("invalid_state", "Unexpected collection backup; restore exchange custody before retrying.")
+    record = {"version": 1, "candidate": candidate.name,
+              "old": _exchange_identity(root), "new": _exchange_identity(candidate)}
+    _write_exchange(root, record, "prepared")
+    os.replace(root, backup)
+    _sync_directory(root.parent)
+    _write_exchange(root, record, "old_moved")
+    os.replace(candidate, root)
+    _sync_directory(candidate.parent)
+    _sync_directory(root.parent)
+    _write_exchange(root, record, "published")
+    os.replace(backup, candidate)
+    _sync_directory(candidate.parent)
+    _sync_directory(root.parent)
+    _write_exchange(root, record, "retired")
+    _exchange_journal(root).unlink()
+    _sync_directory(root.parent)
+
+
+def _require_recovered(root: Path) -> None:
+    if _exchange_journal(root).exists() or _exchange_journal(root).is_symlink():
+        raise PackInstallError("transaction_busy", "Collection exchange needs recovery; retry the transaction or host start.")
 
 
 _SHIPPED_PACKS_ROOT = Path(__file__).resolve().parents[2] / "packs"
@@ -222,6 +342,7 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
     if key in held:
         if exclusive:
             raise PackInstallError("transaction_busy", "Release collection custody before starting another mutation.")
+        _require_recovered(path)
         yield
         return
     flags = _filelock.nofollow_flag(lock) | (os.O_RDWR | os.O_CREAT if exclusive else (os.O_RDONLY if _filelock._fcntl is not None else os.O_RDWR))
@@ -237,9 +358,24 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise PackInstallError("unsafe_path", "Group lock must be a regular file with one link.")
         _filelock.lock_fd(fd, exclusive=exclusive)
+        if not exclusive and _exchange_journal(path).exists():
+            # Initial host discovery reads before it probes the refresh outbox.
+            # Recover here too, before any inventory is exposed. Drop the shared
+            # lock before requesting exclusive custody; another writer may win
+            # the race and recover first, in which case recovery is a no-op.
+            _filelock.unlock_fd(fd)
+            _filelock.lock_fd(fd, exclusive=True)
+            exclusive = True
         token = _HELD.set({**held, key: exclusive})
         custody = _GroupCustody(fd, lock, key, exclusive, token)
         try:
+            if exclusive:
+                try:
+                    _recover_exchange(path)
+                except OSError as exc:
+                    raise PackInstallError("transaction_busy", "Collection exchange recovery is pending; retry the transaction or host start.") from exc
+            else:
+                _require_recovered(path)
             yield custody
         finally:
             if custody.attached:
@@ -262,6 +398,7 @@ def collection_write_custody(root: str | Path):
     root = _root(root)
     key = str((root.parent / ("." + root.name + ".transaction.lock")).absolute())
     if _HELD.get().get(key) is True:
+        _require_recovered(root)
         yield root
         return
     with group_read_lock(root, exclusive=True):
@@ -618,7 +755,7 @@ def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mappi
     If it cannot be moved it stays at ``candidate`` and is appended to
     ``preserve`` so the caller's cleanup leaves it in place.
     """
-    _publish(candidate, root)
+    _publish_collection(candidate, root)
     try:
         _verify_external_root_digests(facts, paths)
         if carried is not None:
@@ -627,7 +764,7 @@ def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mappi
         try:
             # candidate now names the prior complete generation. Exchanging it
             # back restores collection bytes and admission records atomically.
-            _publish(candidate, root)
+            _publish_collection(candidate, root)
         except (OSError, PackInstallError) as exc:
             # The new generation stays live; the prior one (holding any write
             # that triggered this swap-back) is still at candidate.
@@ -897,7 +1034,7 @@ def refresh_pending(*, packs_root: str | Path) -> bool:
     root = Path(packs_root).expanduser()
     if not (root.parent / ("." + root.name + ".transaction.lock")).exists() and not (root / _STATE).exists():
         return False
-    with group_read_lock(root):
+    with group_read_lock(root, exclusive=_exchange_journal(root).exists()):
         return _state(root)["refresh"] is not None
 
 
@@ -1154,10 +1291,20 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 sdk_names=(import_contract.sdk_names if import_contract else frozenset(sdk.__all__)),
                 core_pack_apis=core_apis)
             for pack_id, subpath in sorted(packs.items()):
+                private_options: dict[str, Any] = {}
+                if sys.platform == "win32":
+                    def discard_private_previous(_stage: Path, target: Path = candidate / pack_id) -> None:
+                        # Let the primitive inspect the copied PIN/ownership and
+                        # validate its replacement first. Only then discard the
+                        # copied destination: this entire candidate is private,
+                        # so no per-pack exchange (or journal) is needed here.
+                        if target.exists():
+                            shutil.rmtree(target)
+                    private_options["before_swap"] = discard_private_previous
                 install_pack(source=source, pack_id=pack_id, revision=commit, subpath=subpath, origin=origin,
                              expected_digest=expected_digests.get(pack_id), packs_root=candidate,
                              selected=facts, release_pins=release_pins, import_contract=contract,
-                             python_environment=_running_interpreter_environment(packages))
+                             python_environment=_running_interpreter_environment(packages), **private_options)
             # Validate the resulting closure, including retained dependants after
             # removals. Inventory mode allows intentional edits to installed packs.
             for pack_id, path in _paths(candidate).items():
@@ -1318,7 +1465,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     published = (current.st_dev, current.st_ino) == candidate_identity
                 except OSError:
                     pass
-            if not published and candidate not in preserve:
+            if not published and candidate not in preserve and not _exchange_journal(root).exists():
                 shutil.rmtree(candidate, ignore_errors=True)
             shutil.rmtree(work, ignore_errors=True)
             try:
@@ -1550,7 +1697,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     published = (current.st_dev, current.st_ino) == identity
                 except OSError:
                     pass
-            if not published and candidate not in preserve:
+            if not published and candidate not in preserve and not _exchange_journal(root).exists():
                 shutil.rmtree(candidate, ignore_errors=True)
             try:
                 (retired / ("." + tx + ".transaction.lock")).unlink(missing_ok=True)
