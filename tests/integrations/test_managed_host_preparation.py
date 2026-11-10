@@ -120,8 +120,8 @@ def artifact_server():
         server.shutdown(); server.server_close(); thread.join()
 
 
-@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema', 'trust', 'device-explicit', 'device-default', 'device-ambient'],
-                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker', 'trust-skips-absent-auxiliary', 'device-explicit', 'device-default', 'device-ambient'])
+@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema', 'trust', 'device-explicit', 'device-default', 'device-ambient', 'health', 'receipt-before', 'receipt-after'],
+                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker', 'trust-skips-absent-auxiliary', 'device-explicit', 'device-default', 'device-ambient', 'health', 'receipt-before', 'receipt-after'])
 def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, real_runtime, managed_install, artifact_server, failure):
     from vibecomfy.workflow_bundle import emit_bundle_with_candidate
     from vibecomfy.security.provenance import Provenance
@@ -155,6 +155,7 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         time.monotonic() + 15))
     assert diagnostic.exit_code == 1 and json.loads(diagnostic.stdout).get('missing_models'), diagnostic
     client.stop_owned(deadline=time.monotonic() + 15)
+    original_receipt = (root / '.astrid-engine/install.json').read_bytes()
     started.unlink()
     assert not artifact.exists()
     events = []
@@ -196,6 +197,23 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         if failure == 'schema': (root / 'missing-node').touch()
         return report
     monkeypatch.setattr(ManagedEnginePreparation, 'prepare', prepare)
+    if failure in {'receipt-before', 'receipt-after'}:
+        from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
+        original_write_json = LocalLinuxExecutionContext.write_json_atomic
+        def fail_receipt_write(self, path, value, *, deadline):
+            if path.endswith('/.astrid-engine/install.json'):
+                if failure == 'receipt-after':
+                    original_write_json(self, path, value, deadline=deadline)
+                raise OSError('injected receipt write failure')
+            return original_write_json(self, path, value, deadline=deadline)
+        monkeypatch.setattr(LocalLinuxExecutionContext, 'write_json_atomic', fail_receipt_write)
+    if failure == 'health':
+        original_service = engine_custody.LinuxEngineServiceClient.call
+        def fail_health(self, operation, payload, **kwargs):
+            if operation == 'health':
+                raise ValueError('forced managed health failure')
+            return original_service(self, operation, payload, **kwargs)
+        monkeypatch.setattr(engine_custody.LinuxEngineServiceClient, 'call', fail_health)
     if failure == 'start':
         original_start = engine_custody.LinuxEngineServiceClient.call
         def fail_start(self, operation, payload, **kwargs):
@@ -264,6 +282,9 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         imported = {name: _import_generation_member(path, controls) for name, path in {
             "python": bundle / "workflow.py", "companion": bundle / "workflow.vibe.json", "source": source}.items()}
         if failure in {'device-explicit', 'device-default', 'device-ambient'}:
+            if failure == 'device-explicit':
+                installed = json.loads((root / '.astrid-engine/install.json').read_text())
+                assert next(step for step in installed['steps'] if step['kind'] == 'start')['facts']['cuda_visible_devices'] is None
             from astrid.sdk.generation import GenerationFacade
             from astrid.core.generation import settings
             if failure == 'device-ambient':
@@ -297,6 +318,14 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
                 assert receipt['readiness']['placement'] == 'managed'
                 assert receipt['readiness']['target']['endpoint'] == endpoint
             if failure in {'cancel', 'cancel-after-schema'}: assert receipt['status'] == 'cancelled'
+            installed_bytes = (root / '.astrid-engine/install.json').read_bytes()
+            if failure in {'align', 'start', 'health', 'cancel', 'receipt-before'}:
+                assert installed_bytes == original_receipt
+            if failure in {'schema', 'cancel-after-schema', 'receipt-after'}:
+                assert installed_bytes != original_receipt
+                installed = json.loads(installed_bytes)
+                assert installed['status'] == 'installed'
+                assert next(step for step in installed['steps'] if step['kind'] == 'start')['facts']['owner_id']
             assert not getattr(host, '_uncertain_engine_preparations', []), receipt
         else:
             assert result.ok, str(result.to_dict())[:7000]
@@ -310,6 +339,21 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
                 expected = {'device-explicit': '2', 'device-default': '1', 'device-ambient': '0'}[failure]
                 assert (root / 'device-env').read_text() == expected
                 assert receipt['machine']['device'] == expected
+                if failure == 'device-explicit':
+                    from astrid.core.generation import engine_readiness
+                    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+                    from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+                    installed = engine_readiness.canonical_status(root=str(root), deadline=time.monotonic() + 90)
+                    assert installed.status == 'installed', installed
+                    start = next(step.facts for step in installed.steps if step.kind == 'start')
+                    assert start['cuda_visible_devices'] == '2'
+                    transport = LocalInstalledVibeComfySessionTransport()
+                    observed = transport.read_installed(str(root / 'runtime'))
+                    assert observed['comfy']['pid'] == int(started.read_text().strip())
+                    health, launch = engine_readiness._owned_health(str(root), recipe,
+                        LinuxPlatformAdapter(recipe.platform), start['owner_id'], time.monotonic() + 30,
+                        models_root=installed.models_root, visibility=start['cuda_visible_devices'])
+                    assert health['healthy'] and launch['env']['CUDA_VISIBLE_DEVICES'] == '2'
                 if failure == 'device-ambient':
                     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '1')
                     with pytest.raises(Exception, match='engine supervisor: endpoint_ownership'):
@@ -358,6 +402,47 @@ def test_real_status_and_readiness_use_installed_visibility(managed_install_with
         start['owner_id'], deadline, models_root=receipt.models_root, visibility=start['cuda_visible_devices'])
     assert health['healthy'] and launch['env']['CUDA_VISIBLE_DEVICES'] == '2'
     assert len(started.read_text().splitlines()) == 1
+
+
+def test_legacy_local_server_restart_refreshes_the_receipt(managed_install, monkeypatch):
+    from astrid.core.generation import engine_readiness
+    from astrid.core.generation.engine_local_server import ensure_local_engine_server
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+    from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+    client, payload, recipe, root, started, bootstrap = managed_install
+    old = json.loads((root / '.astrid-engine/install.json').read_text())
+    assert next(step for step in old['steps'] if step['kind'] == 'start')['facts']['cuda_visible_devices'] is None
+    client.stop_owned(deadline=time.monotonic() + 15)
+    started.unlink()
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '2')
+    assert ensure_local_engine_server(root=str(root), deadline_seconds=90) == 'started'
+    monkeypatch.delenv('CUDA_VISIBLE_DEVICES')
+    current = engine_readiness.canonical_status(root=str(root), deadline=time.monotonic() + 90)
+    assert current.status == 'installed', current
+    start = next(step.facts for step in current.steps if step.kind == 'start')
+    assert start['cuda_visible_devices'] == '2'
+    installed = LocalInstalledVibeComfySessionTransport().read_installed(str(root / 'runtime'))
+    assert installed['comfy']['pid'] == int(started.read_text().strip())
+    health, launch = engine_readiness._owned_health(str(root), recipe, LinuxPlatformAdapter(recipe.platform),
+        start['owner_id'], time.monotonic() + 30, models_root=current.models_root,
+        visibility=start['cuda_visible_devices'])
+    assert health['healthy'] and launch['env']['CUDA_VISIBLE_DEVICES'] == '2'
+
+
+def test_legacy_local_server_refuses_modified_base_without_receipt_write(managed_install, monkeypatch):
+    from astrid.core.generation.engine_contracts import IntegrityError
+    from astrid.core.generation.engine_local_server import ensure_local_engine_server
+    client, payload, recipe, root, started, bootstrap = managed_install
+    original = (root / '.astrid-engine/install.json').read_bytes()
+    client.stop_owned(deadline=time.monotonic() + 15)
+    started.unlink()
+    source = root / 'runtime/ComfyUI/tiny.py'
+    source.write_text(source.read_text() + '\n# uncommitted change\n')
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '2')
+    with pytest.raises(IntegrityError, match='uncommitted'):
+        ensure_local_engine_server(root=str(root), deadline_seconds=90)
+    assert (root / '.astrid-engine/install.json').read_bytes() == original
+    assert not started.exists()
 
 
 def test_plain_workflow_preparation_does_not_write_beside_admitted_input(tmp_path, monkeypatch, managed_install):
