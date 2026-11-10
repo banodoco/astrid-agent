@@ -529,8 +529,13 @@ class RunPodSelectionOwner:
                         "RunPod worker did not become ready within the startup timeout; "
                         "the same journal retains exact pod custody for recovery cleanup"
                     ) from None
-                except Exception:
-                    raise AcquisitionUnresolvedError("provider acquisition remains unresolved; reconcile the same journal") from None
+                except Exception as exc:
+                    gate = worker_preparation.observation_failure_gate(exc)
+                    detail = f"; failed gate: {gate}" if gate is not None else ""
+                    raise AcquisitionUnresolvedError(
+                        "provider acquisition remains unresolved; reconcile the same journal" + detail,
+                        gate=gate,
+                    ) from None
                 acquired_record, observation = dict(acquired.attempt), acquired.observation
             try:
                 status, exact = await asyncio.to_thread(read_exact_pod, config.api_key, observation.pod_id)
