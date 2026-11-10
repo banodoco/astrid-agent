@@ -7967,7 +7967,7 @@ class GenericPackHost:
             ) from exc
         return {"registration": registration, "capabilities": [r.manifest() for r in self.capabilities.values()], "withdrawn_capabilities": removed}
 
-    def _renew_executor_registration(self, *, idle: bool = True) -> None:
+    def _renew_executor_registration(self, *, idle: bool = True, deliberate: bool = False) -> None:
         """Refresh runtime executor liveness without replaying a receipt.
 
         A restarted Runtime (new epoch, rotated worker credential) fences this
@@ -7982,7 +7982,10 @@ class GenericPackHost:
             renew = getattr(self.client, "renew_registration_session", None)
             if callable(renew):
                 renew()
-            adopt = idle and self._runtime_restarted
+            # A deliberate renewal is the one validated path that re-registers under a
+            # changed source epoch: the committed pack refresh, while idle. Every other
+            # renewal keeps the source-epoch fence.
+            adopt = idle and (self._runtime_restarted or deliberate)
             self._register_impl(idle_renewal=True, deliberate=adopt)
         except Exception:
             self._registration_refresh_blocked = True
@@ -8025,7 +8028,9 @@ class GenericPackHost:
         def renew(*, transaction_id: str, committed_revision: int, changed_ids: tuple[str, ...]) -> dict[str, Any]:
             try:
                 self.discover()
-                self._renew_executor_registration(idle=True)
+                # The committed refresh is a deliberate source change: re-register under the
+                # newly discovered epoch. Acknowledge only after that registration succeeds.
+                self._renew_executor_registration(idle=True, deliberate=True)
                 # Acknowledge only when the admitted packs match the committed collection: a
                 # changed pack is admitted exactly when its directory is present.
                 unserved = [pack_id for pack_id in changed_ids
@@ -13661,6 +13666,17 @@ class GenericPackHost:
         consecutive_claim_failures = 0
         pack_ack_at = 0.0
         while not self._shutdown.is_set() and (max_tasks is None or len(results) < max_tasks):
+            # Idle point: no claim is in flight. Attempt the pack-refresh ack here, before
+            # the claim, so a claim that keeps failing (blocked or fenced registration)
+            # cannot skip the deliberate re-registration that clears the fence. `once`
+            # leaves the outbox untouched.
+            now = time.monotonic()
+            if not once and now >= pack_ack_at:
+                try:
+                    self.acknowledge_pack_refresh()
+                except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
+                    self._record_pack_refresh_failure(f"{type(exc).__name__}: {exc}")
+                pack_ack_at = time.monotonic() + self._pack_refresh_delay()
             try:
                 if time.monotonic() >= self._registration_refresh_deadline:
                     self._renew_executor_registration()
@@ -13696,17 +13712,6 @@ class GenericPackHost:
                 if once:
                     break
                 continue
-            # Idle, like the parallel loop's `not active`: consume committed
-            # pack-refresh outbox entries so a newly added pack is served
-            # without a restart. `once` is the diagnostic surface and leaves the
-            # outbox untouched. A failure leaves the outbox pending for retry.
-            now = time.monotonic()
-            if not once and now >= pack_ack_at:
-                try:
-                    self.acknowledge_pack_refresh()
-                except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
-                    self._record_pack_refresh_failure(f"{type(exc).__name__}: {exc}")
-                pack_ack_at = time.monotonic() + self._pack_refresh_delay()
             if once:
                 break
             if self._shutdown.is_set():
