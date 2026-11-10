@@ -49,7 +49,7 @@ def _manifest(tmp_path):
 def test_align_fetches_only_missing_rows(tmp_path):
     commands = FakeCommands()
     result = mod.ComfyUIEngine(commands).align(_manifest(tmp_path), "align")
-    assert commands.calls == ["doctor", "prepare --deps sync", "nodes restore", ("fetch", ["need.safetensors"])]
+    assert commands.calls == ["nodes restore", ("fetch", ["need.safetensors"]), "prepare --deps sync", "doctor"]
     assert result["fetched"] == ["vae/need.safetensors"] and result["verified"] is True
 
 
@@ -69,9 +69,9 @@ def test_real_commands_align_the_jobs_workflow_without_changing_manifest(tmp_pat
         monkeypatch.setattr(engine, "probe", lambda endpoint: {"ready": True})
     engine.run(job, FakeLocal(attached))
     argv = [call[3:] for call in calls]
-    assert argv[:2] == [
-        ["doctor", str(workflow), "--non-interactive"],
+    assert argv[-2:] == [
         ["prepare", str(workflow), "--deps", "sync", "--no-models", "--no-packs", "--non-interactive"],
+        ["doctor", str(workflow), "--non-interactive"],
     ]
     assert "workflow" not in manifest
     assert job["manifest"] is manifest
@@ -84,8 +84,8 @@ def test_direct_align_keeps_supporting_a_manifest_workflow(tmp_path, monkeypatch
     monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: calls.append(argv))
     workflow = str(tmp_path / "workflow.py")
     mod.ComfyUIEngine().align({"workflow": workflow, "models": []}, "align")
-    assert calls[0][3:5] == ["doctor", workflow]
-    assert calls[1][3:5] == ["prepare", workflow]
+    assert calls[-2][3:5] == ["prepare", workflow]
+    assert calls[-1][3:5] == ["doctor", workflow]
 
 
 def test_align_with_nothing_missing_does_not_fetch(tmp_path):

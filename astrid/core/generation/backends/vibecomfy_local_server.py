@@ -139,6 +139,12 @@ def cleanup_prompts(url: str, destination: Path, *, confirm: bool = False, timeo
         acceptance = attempt.get("queue_acceptance", {})
         prompt_id = acceptance.get("prompt_id")
         status = acceptance.get("status")
+        if confirm and status == "not_attempted":
+            terminal = attempt.get("terminal") or {}
+            # A prepared journal can survive a signal after POST but before
+            # acceptance is persisted. Absence of a prompt id is no drainage proof.
+            if terminal.get("phase") not in {"dependencies", "reconciliation", "authorization"}:
+                raise ValueError("local_server prepared prompt outcome remains unconfirmed")
         if confirm and (status not in {"not_attempted", "rejected", "accepted"}
                         or status == "accepted" and (not isinstance(prompt_id, str) or not prompt_id)):
             raise ValueError("local_server prompt acceptance remains unconfirmed")

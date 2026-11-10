@@ -213,6 +213,20 @@ class ManagedEnginePreparation:
                 runner.execute(step, readonly=True)
         if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
             raise IntegrityError("managed installation evidence differs from its receipt")
+        self._runtime_requirements = None
+        self._guard_runtime(canonical_workflow, runner, post=False)
+        from vibecomfy.workflow_bundle import emit_bundle_with_candidate, load_bundle
+        from vibecomfy.security.provenance import Provenance
+        canonical_path = self.scratch / "canonical" / "workflow.py"
+        canonical_path.parent.mkdir(parents=True, exist_ok=True)
+        emitted = emit_bundle_with_candidate(canonical_workflow.clone(), canonical_path, Provenance.USER_CONFIRMED, None, source_format="scratchpad")
+        selected = load_bundle(emitted.python_path, trust=Provenance.USER_CONFIRMED)
+        selected.require_canonical_authority("managed engine alignment")
+        # CLI preparation owns only this emitted copy. The admitted source and
+        # the selected workflow remain frozen throughout alignment.
+        native_members = list(canonical_path.parent.iterdir())
+        staged_digests.update({path: hashlib.sha256(path.read_bytes()).hexdigest()
+                               for path in native_members if path.is_file()})
         engine = copy.copy(run_action._engine_for({"engine": "comfyui"}))
         manifest = engine.workflow_requirements([canonical_workflow])
         manifest = {**manifest, "engine": "comfyui", "models_root": configured_models_root(root=self.root)}
@@ -228,15 +242,26 @@ class ManagedEnginePreparation:
                       f"commit = {json.dumps(node['commit'])}"]
         lockfile.write_text("\n".join(lines) + "\n")
         if engine.commands is None:
-            engine.commands = commands_type(str(workflow), str(lockfile), runner=self._command)
+            engine.commands = commands_type(str(canonical_path), str(lockfile), runner=self._command)
         self.check()
-        alignment = engine.align(manifest, self.mode, workflow=workflow)
+        if engine.workflow_requirements([selected.workflow]) != engine.workflow_requirements([canonical_workflow]):
+            raise IntegrityError("managed CLI workflow requirements differ from the admitted workflow")
+        alignment = engine.align(manifest, self.mode, workflow=canonical_path)
         if alignment.get("status") == "missing":
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
         self.check()
         if any(not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected
                for path, expected in staged_digests.items()):
             raise IntegrityError("managed alignment changed the canonical workflow bytes")
+        if self.mode != "trust":
+            self._verify_models(manifest)
+        self._guard_runtime(canonical_workflow, runner, post=True)
+        runner.check_environment_identities()
+        for step in plan.steps:
+            if step.kind in {"source", "environment"}:
+                runner.execute(step, readonly=True)
+        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
+            raise IntegrityError("managed alignment changed the installed base")
         runner.step_id = "start"
         runner.start(readonly=False)
         self.check()
@@ -255,8 +280,61 @@ class ManagedEnginePreparation:
             "placement": "managed", "mode": self.mode, "alignment": alignment, "health": health}
         return self.report
 
-    def _command(self, argv):
-        """VibeComfy's native commands use the installed Python and fixed target paths."""
+    def _verify_models(self, manifest):
+        from ._engine_target_files import _TargetFiles
+        from .engine_contracts import IntegrityError
+        files = _TargetFiles(manifest["models_root"])
+        for model in manifest["models"]:
+            self.check()
+            path = str(Path(manifest["models_root"]) / model["subdir"] / model["name"])
+            fact = files.file_fact(path, hash_bytes=True, deadline=self.deadline)
+            expected = str(model.get("sha256") or "").removeprefix("sha256:")
+            if (not fact.exists or not fact.regular or fact.symlink
+                    or fact.bytes != model["size"] or not re.fullmatch(r"[0-9a-f]{64}", expected)
+                    or fact.sha256 != expected):
+                raise IntegrityError("managed model bytes differ from the declared digest: " + model["name"])
+
+    def _guard_runtime(self, workflow, runner, *, post):
+        """Refuse changes to the receipt-owned base before native synchronization."""
+        from .engine_contracts import IntegrityError
+        from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
+        from packaging.requirements import Requirement
+        requirements = runtime_requirements_from_workflow(workflow)
+        self._runtime_requirements = requirements
+        if requirements is None:
+            return
+        source = next(source for source in self.recipe.sources if source.name == "comfyui")
+        if (requirements.comfy_commit and requirements.comfy_commit != source.pin.revision
+                or requirements.comfy_source and requirements.comfy_source != source.pin.repository
+                or requirements.comfy_ref and requirements.comfy_ref != source.pin.revision
+                or requirements.extras):
+            raise IntegrityError("managed workflow runtime conflicts with the installed recipe")
+        primary = next(environment for environment in self.recipe.environments if environment.name == self.recipe.primary_environment)
+        specification = runner.helper("environment-spec", environment=primary.name)["expected"]
+        base_packages = {Requirement(text).name.lower().replace("_", "-") for text in specification["requirements"]}
+        base_packages.update(specification["wheels"])
+        base_packages.update(Requirement(text).name.lower().replace("_", "-") for text in specification["constraints"])
+        program = """import json,sys
+from vibecomfy.runtime.dependencies import inspect_runtime_target,compare_runtime
+requirements=json.loads(sys.argv[1])
+actual=inspect_runtime_target(runtime_root=sys.argv[2],python_executable=sys.executable,package_names=list(requirements.get('packages',{})))
+actual['launch_flags']=json.loads(sys.argv[3]);actual['managed']=True
+print(json.dumps(compare_runtime(requirements,target=actual)))
+"""
+        report = json.loads(self._native(program, json.dumps(requirements.to_dict()), self.root + "/runtime",
+                                         json.dumps(list(self.recipe.start.argv))).stdout)
+        checks = report.get("checks")
+        if not isinstance(checks, list):
+            raise IntegrityError("managed runtime inspection returned no dependency predicates")
+        for check in checks:
+            path = check["path"]
+            if path in {"models", "custom_nodes"} or path.startswith(("models.", "custom_nodes.")):
+                continue  # The manifest alignment and target schema own these rows.
+            package = path.removeprefix("packages.").lower().replace("_", "-") if path.startswith("packages.") else None
+            if check["status"] != "matching" and (post or package is None or package in base_packages):
+                raise IntegrityError("managed runtime requirement is not satisfied by the installed base: " + path)
+
+    def _native(self, program, *args):
         from .engine_contracts import CommandRequest, DeadlineExceeded, IntegrityError
         self.check()
         primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
@@ -269,17 +347,24 @@ class ManagedEnginePreparation:
                "VIBECOMFY_COMFY_CONFIGURATION": json.dumps({"runtime_root": self.root + "/runtime",
                    "comfy_root": comfy, "models_root": models, "python": python}),
                "PATH": str(Path(python).parent) + ":/usr/local/bin:/usr/bin:/bin"}
-        if argv[0] == "prepare":
-            argv = [*argv, "--runtime-root", self.root + "/runtime"]
-        result = self.context.run(CommandRequest((python, "-I", "-c",
-            "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))", *argv), comfy, env, self.deadline))
+        result = self.context.run(CommandRequest((python, "-I", "-c", program, *args), comfy, env, self.deadline))
         if result.timed_out:
             raise DeadlineExceeded("managed alignment command timed out")
         if result.exit_code != 0:
             import logging
             logging.getLogger(__name__).error(
-                "managed alignment failed task=%s attempt=%s step=%s exit=%s stderr_sha256=%s",
-                self.task, self.attempt, argv[0], result.exit_code,
+                "managed alignment failed task=%s attempt=%s exit=%s stderr_sha256=%s",
+                self.task, self.attempt, result.exit_code,
                 hashlib.sha256(result.stderr.encode()).hexdigest())
             raise IntegrityError("managed alignment command failed; inspect the host log for this attempt")
         self.check()
+        return result
+
+    def _command(self, argv):
+        """Run the pinned CLI in its verified installation, through host custody."""
+        program = "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))"
+        if argv[0] == "prepare":
+            argv = [*argv, "--runtime-root", self.root + "/runtime"]
+            program = ("from pathlib import Path;from vibecomfy.commands.runpod_setup import ensure_runtime_layout;"
+                       f"ensure_runtime_layout(runtime_root=Path({(self.root + '/runtime')!r}));" + program)
+        self._native(program, *argv)

@@ -176,7 +176,7 @@ class ComfyUIEngine:
         """Align this disk to the manifest. Models arrive only through VibeComfy fetch.
 
         ``workflow`` is the executable job path, separate from the portable requirements manifest.
-        align: doctor, prepare --deps sync, nodes restore, then fetch only the missing rows.
+        align: restore declared nodes, fetch missing rows, then dependency preparation and diagnosis.
         check: report the missing rows; touch nothing.
         trust: accept the manifest as declared; the result is marked unverified.
         """
@@ -192,11 +192,11 @@ class ComfyUIEngine:
             result["status"] = "ready" if not missing else "missing"
             return result
         commands = self.commands or VibeComfyCommands(str(workflow or manifest.get("workflow", "")), manifest.get("lockfile"))
-        commands.doctor()
-        commands.prepare_deps_sync()
         commands.nodes_restore((manifest.get("extra") or {}).get("nodes", []))
         if missing:
             commands.fetch(missing)
+        commands.prepare_deps_sync()
+        commands.doctor()
         result.update(fetched=[_key(r) for r in missing], status="ready")
         return result
 

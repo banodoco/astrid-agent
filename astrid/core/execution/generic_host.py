@@ -1453,7 +1453,7 @@ def _prepare_vibecomfy_execution_identity(
             )
     except Exception as exc:
         from concurrent.futures import CancelledError
-        if isinstance(exc, CancelledError):
+        if isinstance(exc, (CancelledError, HostCancelled)):
             raise
         error = HostError(f"vibecomfy.run canonical input preflight failed: {exc}")
         for name in ("code", "field", "fix", "readiness"):
@@ -10693,6 +10693,9 @@ class GenericPackHost:
             receipt["machine"] = dict(terminal["machine"])
         if terminal.get("managed_engine_preparation") is not None:
             receipt["managed_engine_preparation"] = terminal["managed_engine_preparation"]
+        readiness = getattr(terminal.get("error"), "readiness", None)
+        if isinstance(readiness, Mapping):
+            receipt["readiness"] = dict(readiness)
         import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
         if import_reference is not None:
             receipt["child_import_receipt"] = import_reference
@@ -12686,12 +12689,13 @@ class GenericPackHost:
                 retryable=False,
                 attempt_id=attempt_id,
                 fence=fence,
-                failure_diagnostic=(
-                    {**(storage_failure_receipt or evidence_failure_receipt or {}),
-                     "child_import_receipt": original_error.child_import_receipt}
-                    if getattr(original_error, "child_import_receipt", None) is not None
-                    else storage_failure_receipt or evidence_failure_receipt
-                ),
+                failure_diagnostic={
+                    **(storage_failure_receipt or evidence_failure_receipt or {}),
+                    **({"child_import_receipt": original_error.child_import_receipt}
+                       if getattr(original_error, "child_import_receipt", None) is not None else {}),
+                    **({"readiness": original_error.readiness}
+                       if isinstance(getattr(original_error, "readiness", None), Mapping) else {}),
+                } or None,
                 outputs=evidence_outputs,
                 result=evidence_result,
                 **_structured_failure_kwargs(original_error),
@@ -12798,7 +12802,7 @@ class GenericPackHost:
                         cleanup_errors.append(f"managed release: {exc}")
             try:
                 if engine_preparation is not None:
-                    engine_preparation.close(execution_root=output_root,
+                    engine_preparation.close(execution_root=root / "outputs",
                         worker_drained=command_cleanup_error is None and not bool(self._active_processes))
             except Exception as exc:
                 retain_attempt = True

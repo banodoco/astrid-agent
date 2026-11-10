@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -19,7 +20,13 @@ from astrid.sdk import AstridClient
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
 from tests.core.generation.test_engine_custody import session, cpu_h3_install  # noqa: F401
-from tests.packs.vibecomfy.test_local_server_run import _workflow
+from tests.packs.vibecomfy.test_local_server_run import _workflow as _seed_workflow
+
+def _workflow():
+    workflow = _seed_workflow()
+    workflow['nodes'][0].update(type='EmptyImage', widgets_values=[16, 16, 1, 0],
+        properties={'Node name for S&R': 'EmptyImage'})
+    return workflow
 
 pytestmark = pytest.mark.integration
 
@@ -33,7 +40,7 @@ port=int(sys.argv[1]); started=Path(sys.argv[3]); histories={}
 with started.open('a') as stream:stream.write(str(os.getpid())+'\n')
 schema={name:{} for name in ('MiniMaxH3ReferenceToVideo','UNETLoader','VAELoader','VHS_VideoCombine')}
 schema.update({
- 'SeedImage':{'input':{'required':{'seed':['INT',{'default':42}],'ckpt_name':[['installed.safetensors']]}},'output':['IMAGE'],'output_name':['IMAGE'],'output_node':False},
+ 'EmptyImage':{'input':{'required':{'width':['INT',{'default':16}],'height':['INT',{'default':16}],'batch_size':['INT',{'default':1}],'color':['INT',{'default':0}]}},'output':['IMAGE'],'output_name':['IMAGE'],'output_node':False},
  'SaveImage':{'input':{'required':{'images':['IMAGE'],'filename_prefix':['STRING',{'default':'astrid'}]}},'output':[],'output_node':True}})
 class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args):pass
@@ -68,7 +75,7 @@ def managed_install(session, monkeypatch, request, tmp_path):
     """
     root = session[3]
     (root / 'tiny_http.py').write_text(_SERVER)
-    generator = cpu_h3_install.__wrapped__(session, monkeypatch, request)
+    generator = cpu_h3_install.__wrapped__(session, monkeypatch, type('Profile', (), {'param': 'managed_native'})())
     fixture = next(generator)
     monkeypatch.setattr('astrid.core.generation.engine_local_endpoint._engines_dir', lambda: tmp_path / 'roots')
     monkeypatch.setenv('ASTRID_ENGINE_ROOT', str(root))
@@ -81,9 +88,26 @@ def managed_install(session, monkeypatch, request, tmp_path):
             pass
 
 
+@pytest.fixture
+def artifact_server():
+    data, hits = b'CPU required artifact\n', []
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(200); self.send_header('Content-Length', str(len(data))); self.end_headers()
+            self.wfile.write(data)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        yield f'http://127.0.0.1:{server.server_port}/cpu-required.bin', data, hits
+    finally:
+        server.shutdown(); server.server_close(); thread.join()
+
+
 @pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel'],
                          ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker'])
-def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, real_runtime, managed_install, failure):
+def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, real_runtime, managed_install, artifact_server, failure):
     from vibecomfy.workflow_bundle import emit_bundle
     from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value
     from astrid.core.generation import engine_custody
@@ -95,9 +119,10 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     source.write_text(json.dumps(_workflow()))
     loaded = load_workflow_path(source, tmp_path / 'author', comfy_url=endpoint)
     workflow = _canonical_bundle_value(loaded.resolved).workflow
-    artifact, artifact_bytes = root / 'models/checkpoints/cpu-required.bin', b'CPU required artifact\n'
+    artifact_url, artifact_bytes, artifact_hits = artifact_server
+    artifact = root / 'models/checkpoints/cpu-required.bin'
     workflow.metadata['model_assets'] = [{'name': artifact.name, 'subdir': 'checkpoints',
-        'url': 'https://example.invalid/cpu-required.bin', 'sha256': hashlib.sha256(artifact_bytes).hexdigest(),
+        'url': artifact_url, 'sha256': hashlib.sha256(artifact_bytes).hexdigest(),
         'size_bytes': len(artifact_bytes)}]
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
@@ -118,18 +143,12 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         return original_align(self, manifest, mode, **kwargs)
     monkeypatch.setattr(type(engine), 'align', align)
 
-    # The CPU manifest row is provisioned through a real finite owned command;
-    # production alignment's orchestration is unchanged, downloads are a stand-in.
-    class Commands:
-        def doctor(self): pass
-        def prepare_deps_sync(self): pass
-        def nodes_restore(self, rows): pass
-        def fetch(self, rows):
-            code = f"from pathlib import Path;p=Path({str(artifact)!r});p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes({artifact_bytes!r})"
-            result = client.run(CommandRequest((sys.executable, '-I', '-c', code), str(root), {}, time.monotonic() + 30))
-            assert result.exit_code == 0
-            events.append('fetched')
-    monkeypatch.setattr(engine, 'commands', Commands())
+    original_command = ManagedEnginePreparation._command
+    def command(self, argv):
+        events.append('native-' + argv[0])
+        original_command(self, argv)
+        if argv[0] == 'fetch': events.append('fetched')
+    monkeypatch.setattr(ManagedEnginePreparation, '_command', command)
     original_prepare = ManagedEnginePreparation.prepare
     def prepare(self, *args, **kwargs):
         events.append('prepare')
@@ -203,6 +222,9 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
                 assert 'fetched' in events, (events, result.to_dict())
             assert 'worker' not in events and 'ready' not in events, events
             assert not (root / 'prompts').exists()
+            receipt = json.loads((tmp_path / 'attempt/result.json').read_text())
+            assert receipt['machine']['placement'] == 'managed'
+            assert not getattr(host, '_uncertain_engine_preparations', []), receipt
         else:
             assert result.ok, str(result.to_dict())[:7000]
             assert events.index('fetched') < events.index('ready') < events.index('worker')
@@ -211,6 +233,8 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
             receipt = json.loads((tmp_path / 'attempt/result.json').read_text())
             assert receipt['machine']['placement'] == 'managed'
             assert receipt['managed_engine_preparation']['placement'] == 'managed'
+            assert artifact_hits and 'native-doctor' in events and 'native-prepare' in events
+            assert (root / 'runtime/.vibecomfy-managed').is_file()
     finally:
         host._shutdown.set()
         worker.join(timeout=35)
@@ -230,12 +254,6 @@ def test_plain_workflow_preparation_does_not_write_beside_admitted_input(tmp_pat
     workflow.metadata['model_assets'] = []
     client.stop_owned(deadline=time.monotonic() + 15)
     before = {path.name: path.read_bytes() for path in inputs.iterdir()}
-    class Commands:
-        def doctor(self): pass
-        def prepare_deps_sync(self): pass
-        def nodes_restore(self, rows): pass
-        def fetch(self, rows): pytest.fail('workflow with no declared models fetched bytes')
-    monkeypatch.setattr(entries.engine_table()['comfyui'], 'commands', Commands())
     preparation = ManagedEnginePreparation(task='raw-task', attempt='raw-attempt', mode='align',
         deadline=time.monotonic() + 60, cancelled=lambda: False, scratch=tmp_path / 'private-preparation')
     try:

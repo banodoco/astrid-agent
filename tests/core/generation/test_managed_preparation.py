@@ -156,6 +156,10 @@ def test_prompt_cleanup_timeout_and_unknown_acceptance_refuse_release(tmp_path, 
     path.write_text(json.dumps({'queue_acceptance': {'status': 'accepted', 'prompt_id': 'owned'}}))
     with pytest.raises(TimeoutError, match='not drained'):
         cleanup_prompts('http://127.0.0.1:8188', tmp_path, confirm=True, timeout=0)
+    path.write_text(json.dumps({'queue_acceptance': {'status': 'not_attempted', 'prompt_id': None},
+                               'terminal': {'phase': 'prepared'}}))
+    with pytest.raises(ValueError, match='prepared prompt outcome remains unconfirmed'):
+        cleanup_prompts('http://127.0.0.1:8188', tmp_path, confirm=True, timeout=0)
     path.write_text(json.dumps({'queue_acceptance': {'status': 'unknown', 'prompt_id': None}}))
     with pytest.raises(ValueError, match='acceptance remains unconfirmed'):
         cleanup_prompts('http://127.0.0.1:8188', tmp_path, confirm=True, timeout=0)
