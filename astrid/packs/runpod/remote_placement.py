@@ -849,7 +849,10 @@ class _HttpsOps:
                 if time.monotonic() >= request_deadline:
                     raise RemotePlacementError("failure verification deadline expired")
             if received.get("error") or "raw" not in received:
-                raise RemotePlacementError("bounded pod operation failed")
+                if self.abort_event is not None and self.abort_event.is_set():
+                    raise RemotePlacementError("bounded pod operation interrupted by exact release")
+                raise RemotePlacementError("failure verification deadline expired" if time.monotonic() >= request_deadline
+                                           else "bounded pod operation failed")
             raw = received["raw"]
             if self.abort_event is not None and self.abort_event.is_set():
                 raise RemotePlacementError("bounded pod operation interrupted by exact release")
