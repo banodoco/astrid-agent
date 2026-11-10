@@ -338,7 +338,13 @@ def test_runtime_registration_probe_uses_only_the_validated_owner(tmp_path, monk
             self.generated = self
         def handshake(self, name, version, scopes):
             calls.append(scopes)
-            return types.SimpleNamespace(actor_id="owner", scopes=("admin",))
+            # Runtime excludes admin from negotiation even for the owner.
+            owner_scopes = {"handshake", "projects:read", "projects:write", "objects:read",
+                            "objects:write", "tasks:read", "tasks:write", "worker:execute",
+                            "worker:register", "credentials:provision"}
+            if set(scopes) - owner_scopes:
+                raise RuntimeError("credential cannot negotiate requested scopes")
+            return types.SimpleNamespace(actor_id="owner", scopes=scopes)
         def get_executor(self, actor):
             calls.append(actor)
             return types.SimpleNamespace(executor_id=actor, readiness="ready", runtime_epoch=4,
@@ -347,6 +353,11 @@ def test_runtime_registration_probe_uses_only_the_validated_owner(tmp_path, monk
     fake = types.ModuleType("astrid.core.execution.generic_host")
     fake.RuntimeProtocolClient = Client
     monkeypatch.setitem(sys.modules, fake.__name__, fake)
+    contract_client = Client(endpoint, "owner-secret")
+    with pytest.raises(RuntimeError, match="cannot negotiate"):
+        contract_client.handshake("probe", "1", ["admin"])
+    assert contract_client.handshake("probe", "1", ["handshake"]).scopes == ["handshake"]
+    calls.clear()
     def probe(version, code, evidence, name):
         if name != "journey-pack-capability.log":
             return json.dumps({"refresh": None})
@@ -357,7 +368,7 @@ def test_runtime_registration_probe_uses_only_the_validated_owner(tmp_path, monk
     observation = journey._observe_pack_registration(version, tmp_path)
     assert observation["registration_error"] is None
     assert observation["registration"]["id"] == "astrid-pack-host"
-    assert calls == [(endpoint, "owner-secret"), ["admin"], "astrid-pack-host"]
+    assert calls == [(endpoint, "owner-secret"), [], "astrid-pack-host"]
     assert journey.existing_pack_registration_problems("chiptune.sfx", observation) == []
     discovery["endpoint"] = "http://127.0.0.1:1235"
     assert "endpoint or Runtime identity" in journey._observe_pack_registration(version, tmp_path)["registration_error"]
@@ -371,6 +382,28 @@ def test_runtime_registration_probe_uses_only_the_validated_owner(tmp_path, monk
     selection.write_text(json.dumps({"owner": "foreign", "program_root": str(program), "data_root": str(data)}))
     observation = journey._observe_pack_registration(version, tmp_path)
     assert "not owned" in observation["registration_error"] and len(calls) == 3
+
+
+def test_registration_probe_rejects_non_owner_handshake(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    owner = tmp_path / "owner.token"
+    owner.write_text("token")
+    class Client:
+        def __init__(self, endpoint, token):
+            self.generated = self
+        def handshake(self, name, version, scopes):
+            assert scopes == []
+            return types.SimpleNamespace(actor_id="other", scopes=[])
+        def get_executor(self, actor):
+            pytest.fail("foreign actor must not read executor registration")
+    fake = types.ModuleType("astrid.core.execution.generic_host")
+    fake.RuntimeProtocolClient = Client
+    monkeypatch.setitem(sys.modules, fake.__name__, fake)
+    code = journey.RUNTIME_REGISTRATION_PROBE.format(owner_path=str(owner), endpoint="http://127.0.0.1:1234")
+    with pytest.raises(RuntimeError, match="not the owner"):
+        exec(compile(code, "probe", "exec"), {})
 
 
 def test_missing_nested_registration_and_probe_errors_fail_loudly(tmp_path, monkeypatch):
