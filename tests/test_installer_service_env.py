@@ -61,7 +61,7 @@ def test_windows_stop_validation_accepts_exact_canonical_task_action(tmp_path, m
         "owner": LABEL, "program_root": str(root), "data_root": str(tmp_path / "data"),
     })
     manager.path.parent.mkdir(parents=True, exist_ok=True)
-    manager.path.write_text(render("win32", version, tmp_path / "data", tmp_path / "log"), encoding="utf-8")
+    manager.path.write_text(render("win32", version, tmp_path / "data", tmp_path / "log", home=manager.home), encoding="utf-8")
     xml_root = ET.fromstring(manager.path.read_text(encoding="utf-8"))
     namespace = {"task": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
     actions = [{
@@ -90,7 +90,7 @@ def test_windows_stop_validation_rejects_mutated_canonical_task_action(tmp_path,
         "owner": LABEL, "program_root": str(root), "data_root": str(tmp_path / "data"),
     })
     manager.path.parent.mkdir(parents=True, exist_ok=True)
-    manager.path.write_text(render("win32", version, tmp_path / "data", tmp_path / "log"), encoding="utf-8")
+    manager.path.write_text(render("win32", version, tmp_path / "data", tmp_path / "log", home=manager.home), encoding="utf-8")
     xml_root = ET.fromstring(manager.path.read_text(encoding="utf-8"))
     namespace = {"task": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
     action = {
@@ -183,7 +183,7 @@ def test_registration_kill_during_service_replacement_preserves_previous_file(tm
     write_json(manager.env_file, {})
     write_json(manager.selection, {"owner": LABEL})
     version = Version(root / "versions/one", tmp_path / "python", tmp_path / "profile", {})
-    replacement = render("linux", version, tmp_path / "data", manager.log, env_file=manager.env_file).encode()
+    replacement = render("linux", version, tmp_path / "data", manager.log, env_file=manager.env_file, home=manager.home).encode()
     observed = []
     durable_replace = platform.durable_replace
 
@@ -495,7 +495,7 @@ def test_generated_command_rejects_malformed_or_mismatched_journal_before_runtim
     assert not data.exists()
 
 
-@pytest.mark.parametrize("form", ["legacy", "previous-gate", "previous-home", "original-d2", "canonical", "unknown"])
+@pytest.mark.parametrize("form", ["legacy", "previous-gate", "previous-home", "original-d2", "unbound-home", "canonical", "unknown"])
 def test_windows_migrates_only_known_owned_task_action_before_pending_launch(tmp_path, monkeypatch, form):
     import subprocess
 
@@ -528,13 +528,14 @@ def test_windows_migrates_only_known_owned_task_action_before_pending_launch(tmp
         "os.environ.update(settings)\n"
         f"from astrid_runtime.cli import main\nsys.exit(main({['run', '--profile', 'astrid', '--data-root', str(data), '--source-manifest', str(version.profile)]!r}))"
     )
-    canonical = command(version, data, windows=True, log=manager.log, env_file=manager.env_file)
+    unbound = command(version, data, windows=True, log=manager.log, env_file=manager.env_file)
+    canonical = command(version, data, windows=True, log=manager.log, env_file=manager.env_file, home=manager.home)
     if form == "previous-gate":
         from astrid.installer._legacy_launch_prelude import SOURCE
         from astrid.installer.service import _launch_prelude_source
 
         expected_lock = installer_lock_path(Path.home(), sys.platform)
-        legacy = canonical[-1].replace(_launch_prelude_source(), SOURCE, 1).replace(
+        legacy = unbound[-1].replace(_launch_prelude_source(), SOURCE, 1).replace(
             f",expected_lock=Path({str(expected_lock)!r})", "", 1)
     elif form in {"previous-home", "original-d2"}:
         legacy = command(version, data, windows=True, log=manager.log, env_file=manager.env_file,
@@ -543,7 +544,9 @@ def test_windows_migrates_only_known_owned_task_action_before_pending_launch(tmp
             from astrid.installer._d2_launch_prelude import SOURCE
             from astrid.installer.service import _launch_prelude_source
             legacy = legacy.replace(_launch_prelude_source(), SOURCE, 1)
-    task = ET.fromstring(render("win32", version, data, manager.log, user="test-user", env_file=manager.env_file))
+    if form == "unbound-home":
+        legacy = unbound[-1]
+    task = ET.fromstring(render("win32", version, data, manager.log, user="test-user", env_file=manager.env_file, home=manager.home))
     ns = {"task": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
     arguments_node = task.find(".//task:Actions/task:Exec/task:Arguments", ns)
     arguments_node.text = subprocess.list2cmdline(canonical[1:] if form == "canonical" else [*canonical[1:-1], legacy])
@@ -574,9 +577,9 @@ def test_windows_migrates_only_known_owned_task_action_before_pending_launch(tmp
         assert not manager.path.exists()
         return
     manager.publish_launch_admission(version, data)
-    assert len(writes) == (1 if form in {"legacy", "previous-gate", "previous-home", "original-d2"} else 0)
+    assert len(writes) == (1 if form in {"legacy", "previous-gate", "previous-home", "original-d2", "unbound-home"} else 0)
     manager.publish_launch_admission(version, data)
-    assert len(writes) == (1 if form in {"legacy", "previous-gate", "previous-home", "original-d2"} else 0)  # Idempotent no-op.
+    assert len(writes) == (1 if form in {"legacy", "previous-gate", "previous-home", "original-d2", "unbound-home"} else 0)  # Idempotent no-op.
     runtime = ModuleType("astrid_runtime.cli")
     runtime.main = lambda argv: pytest.fail("pending migrated launch entered Runtime")
     monkeypatch.setitem(sys.modules, "astrid_runtime.cli", runtime)

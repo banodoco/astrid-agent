@@ -99,7 +99,7 @@ def test_release0_posix_service_is_adopted_and_freshly_registered(tmp_path, monk
     manager.register(version, data)
 
     assert manager.path.read_text(encoding="utf-8") == render(
-        system, version, data, manager.log, env_file=manager.env_file,
+        system, version, data, manager.log, env_file=manager.env_file, home=manager._launch_home(),
     )
     assert read_json(manager.env_file) == {}
     calls = [call.args[0] for call in manager.run.call_args_list]
@@ -201,7 +201,7 @@ def test_release0_windows_task_is_adopted_and_freshly_registered(tmp_path):
     manager.register(version, data)
 
     assert manager.path.read_text(encoding="utf-8") == render(
-        "win32", version, data, manager.log, user="S-1-5-21-1234", env_file=manager.env_file,
+        "win32", version, data, manager.log, user="S-1-5-21-1234", env_file=manager.env_file, home=manager.home,
     )
     assert read_json(manager.env_file) == {}
     assert len(writes) == 2 and "Register-ScheduledTask" in writes[1]
