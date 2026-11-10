@@ -262,7 +262,7 @@ def test_install_and_paid_run_commands_are_locally_gated_by_the_guide():
         ("https://astrid.haus/install.ps1))) --yes",
          "Run one install command for the user's OS, after consent"),
         ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui',
-         "Offer installation and run the following Linux command only on its own yes", True),
+         "Run the following Linux command only on its own yes", True),
         ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkout',
          "With a separate yes"),
         ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkin',
@@ -278,9 +278,8 @@ def test_install_and_paid_run_commands_are_locally_gated_by_the_guide():
 def test_sensitive_command_gate_assertion_fails_when_yes_wording_is_removed():
     markdown = _SETUP.read_text()
     command = '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui'
-    gate = "Offer installation and run the following Linux command only on its own yes"
+    gate = "Run the following Linux command only on its own yes"
     _assert_command_has_local_gate(markdown, command, gate, exact_line=True)
-    without_gate = markdown.replace("Offer installation and run the following Linux\ncommand only on its own yes",
-                                    "Offer installation and run the following Linux command", 1)
+    without_gate = markdown.replace(gate, "Run the following Linux command", 1)
     with pytest.raises(AssertionError, match="does not govern"):
         _assert_command_has_local_gate(without_gate, command, gate, exact_line=True)
