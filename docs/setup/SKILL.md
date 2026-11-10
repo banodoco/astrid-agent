@@ -29,9 +29,11 @@ PATH entry. Use the path for the user's OS:
 Check the routes in this order. Use the first one that fits, and only that one:
 
 1. **App brief**: the brief lists the setup choices and a command. Show those
-   values back, ask "Install with these choices, or change one?", and on no
-   change run the brief's command exactly as given. If they change one, go to
-   step 1. Then follow step 2's success and failure rules.
+   values back. Recommend the user's current settings: saved choices if Astrid
+   is already installed, or Astrid defaults on a fresh install.
+   Ask "Install with these choices, or change one?"
+   On no change, run the brief's command exactly as given. If they change one,
+   go to step 1. Then follow step 2's success and failure rules.
 2. **Fresh install**: no launcher exists at its path above. Ask the user for
    consent once, unless they have already given it. Then go to step 1.
 3. **Existing install**: the launcher exists. Ask the user for consent, unless
@@ -49,8 +51,10 @@ Check the routes in this order. Use the first one that fits, and only that one:
 
 ## 1. The choices
 
-Show the user the setup choices before you run anything. The recommended
-choices are:
+Show the user the setup choices before you run anything.
+Recommend the user's current settings: saved choices if Astrid is already
+installed, or Astrid defaults on a fresh install. Do not guess saved choices.
+Astrid defaults are:
 
 - Start at sign-in: on (`--autostart on|off`)
 - the `astrid` terminal command: on (`--command on|off`)
@@ -64,7 +68,7 @@ go to step 2.
 
 ## 2. Install
 
-Run one install command for the user's OS, after consent. The full-flag commands below are for a fresh install, or after the choices step only. Existing installs follow route 3 in step 0. The commands use the recommended values. Replace any value the user changed in step 1. On a
+Run one install command for the user's OS, after consent. The full-flag commands below are for a fresh install, or after the choices step only. Existing installs follow route 3 in step 0. The commands use Astrid defaults. Use the approved values from step 1 for every choice. On a
 new machine, the command installs Astrid. On an existing install, it repairs
 or restarts Astrid and keeps existing work. Open Terminal on macOS or Linux,
 or PowerShell on Windows. Read the installer before you run it. `--yes`
