@@ -47,6 +47,20 @@ async def setup_volumes(api_key: str) -> list[dict[str, Any]]:
     return await list_volumes(api_key)
 
 
+async def setup_datacenters(api_key: str) -> list[str]:
+    """Return datacenter IDs observed in RunPod's complete GPU inventory."""
+    from runpod_lifecycle import probe
+
+    observed = await probe.probe(api_key=api_key, min_memory_gb=0)
+    return list(dict.fromkeys(
+        datacenter
+        for item in observed or ()
+        if isinstance(item, dict)
+        for datacenter in item.get("datacenters_available", ())
+        if isinstance(datacenter, str) and datacenter.strip()
+    ))
+
+
 async def setup_gpu_types(api_key: str, *, datacenter_id: str | None,
                           require_network_volume: bool) -> list[str]:
     """Return GPU type names currently offered in the selected datacenter."""
