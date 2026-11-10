@@ -73,6 +73,10 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     c.module = module
     c.dc, c.quote_rate, c.stock, c.actual_rate = "DC-accepted", 1.0, "available", 1.0
     c.actual_gpu_id = "gpu-provider-exact"
+    # Confirmation returns the provider catalog display name, not its GPU ID.
+    from astrid.packs.runpod import worker_preparation
+    monkeypatch.setattr(worker_preparation, "confirm_acquired_machine",
+                        lambda api_key, contract, *, timeout_seconds: (c.prefs.gpu_types[0], contract.datacenter_id))
     c.create_kwargs, c.quotes, c.git_reads = [], [], []
     c.lost_start, c.cancel_unknown, c.dirty_sources = False, False, False
     # Opt-in: the fake pod's install honours the command's own --deadline
@@ -112,10 +116,9 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         assert kw["https_token"] not in c.owner.path.read_text()
         c.create_kwargs.append(kw)
         c.creates += 1
-        # Fresh pod REST omits gpuTypeId; GraphQL confirms the provider ID separately.
         pod = {"id": f"pod-{c.creates}", "name": kw["name"], "desiredStatus": "RUNNING",
                "actualStatus": "RUNNING", "machineType": c.prefs.gpu_types[0],
-               "machine": {"dataCenterId": kw["data_center_id"]},
+               "machine": {"gpuTypeId": c.actual_gpu_id, "dataCenterId": kw["data_center_id"]},
                "imageName": kw["image_name"], "networkVolumeId": kw["network_volume_id"],
                "dataCenterId": kw["data_center_id"]}
         c.pods.append(pod)
