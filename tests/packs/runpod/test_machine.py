@@ -86,6 +86,14 @@ def machine_case(retained, tmp_path, monkeypatch):
     workflow.add_node("SaveImage", _id="1", uid="sink", filename_prefix="proof")
     workflow.register_input("filename_prefix", "1", "filename_prefix", "proof", type="STRING")
     emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+    # The fake pod advertises cpu-image; give the controller the same real,
+    # model-free entry so capacity reads its manifest instead of an unknown ID.
+    from astrid.core.generation import entries
+    original_entries = entries.user_entries
+    monkeypatch.setattr(entries, "user_entries", lambda: [*original_entries(), {
+        "id": "cpu-image", "kind": "image", "modes": ["t2i"],
+        "engine": "comfyui", "bundle": str(root / "workflow.py"),
+    }])
     deadline = (datetime.fromtimestamp(c.clock(), timezone.utc) + timedelta(hours=2)).isoformat()
     monkeypatch.setattr("astrid.packs.runpod.adapter.prevalidate_task", lambda *a, **k: None)
     policy = {"kind": "runpod", "engine": "comfyui", "preferences": c.prefs.as_mapping(),
