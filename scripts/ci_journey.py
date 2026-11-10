@@ -101,6 +101,8 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-packs-list.json",
     # assert_pack_hot_refreshed: the pack host before `packs add` and after the task completed.
     "journey-pack-hot-refresh.json",
+    # wait_pack_registered: every Runtime-side registration poll, plus the outbox on timeout.
+    "journey-pack-registration.json",
 })
 JOURNEY_PACK_LOG = re.compile(r"journey-pack-[A-Za-z0-9_-]+\.log")
 EVIDENCE_LOG_LIMIT = 1024 * 1024
@@ -2528,13 +2530,42 @@ PACK_REFRESH_PROBE = ("from astrid.personal_packs_root import resolve_personal_p
                       "root = resolve_personal_packs_root()\n"
                       "print('pending' if root is not None and refresh_pending(packs_root=root) else 'registered')")
 PACK_REGISTRATION_TIMEOUT = 180
-# Resolves a capability through the public SDK lookup that admission's preflight uses.
-CAPABILITY_PROBE = ("import json\n"
-                    "from astrid.sdk import get_capability\n"
-                    "capability = get_capability({capability_id!r}, kind='executor')\n"
-                    "print(json.dumps({{'id': str(getattr(capability, 'id', ''))}}))")
 # Journey pack id -> the executor capability the journey's task admits.
 JOURNEY_PACK_CAPABILITIES = {"chiptune": "chiptune.sfx"}
+# The Runtime's OWN registration of the pack host's executor (the registry admission reads),
+# read the way astrid.sdk.host_bootstrap attaches a resident host: the pack host's worker
+# credential and endpoint from its ready marker, then generated.get_executor.
+RUNTIME_REGISTRATION_PROBE = (
+    "import json\n"
+    "from pathlib import Path\n"
+    "from astrid.core.execution.generic_host import RuntimeProtocolClient\n"
+    "from astrid.sdk.host_bootstrap import PACK_HOST_ACTOR\n"
+    "ready = json.loads(Path({ready_path!r}).read_text(encoding='utf-8'))\n"
+    "token = Path(ready['credential_file']).read_text(encoding='utf-8').strip()\n"
+    "client = RuntimeProtocolClient(str(ready['endpoint']).rstrip('/'), token)\n"
+    "client._authenticate_worker(PACK_HOST_ACTOR)\n"
+    "registration = client.generated.get_executor(PACK_HOST_ACTOR)\n"
+    "def field(value, name):\n"
+    "    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)\n"
+    "rows = [{{'capability_id': field(c, 'capability_id'), 'status': field(c, 'status')}}\n"
+    "        for c in (field(registration, 'capabilities') or ())]\n"
+    "print(json.dumps({{'id': field(registration, 'id'),\n"
+    "                  'readiness': field(registration, 'readiness'),\n"
+    "                  'max_concurrency': field(registration, 'max_concurrency'),\n"
+    "                  'runtime_epoch': field(registration, 'runtime_epoch'),\n"
+    "                  'capabilities': rows}}, default=str))")
+# The personal packs-root transaction outbox: its committed revision and any pending refresh.
+PACK_OUTBOX_PROBE = (
+    "import json\n"
+    "from pathlib import Path\n"
+    "from astrid.personal_packs_root import resolve_personal_packs_root\n"
+    "root = resolve_personal_packs_root()\n"
+    "path = None if root is None else Path(root) / '.group.json'\n"
+    "state = json.loads(path.read_text(encoding='utf-8')) if path is not None and path.is_file() else {}\n"
+    "print(json.dumps({'packs_root': None if root is None else str(root),\n"
+    "                  'revision': state.get('revision'), 'transaction_id': state.get('transaction_id'),\n"
+    "                  'refresh': state.get('refresh')}, default=str))")
+PACK_REGISTRATION_RECEIPT = "journey-pack-registration.json"
 
 
 PACK_HOST_READY = "generic-host.ready.json"
@@ -2552,14 +2583,19 @@ def _process_command(pid: int) -> str:
                           text=True, timeout=10, check=False).stdout.strip()
 
 
-def pack_host_snapshot() -> dict:
-    """The live pack host's identity, read from its ready marker beside the selected data root."""
+def pack_host_ready_path() -> Path:
+    """The pack host's ready marker beside the selection record's data root."""
     record_path = selection_path()
     record = read_json(record_path) if record_path.is_file() else {}
     data_root = record.get("data_root")
     if not isinstance(data_root, str) or not data_root:
         raise RuntimeError("The selection record names no data root for the pack host")
-    ready = read_json(Path(data_root) / "runtime" / PACK_HOST_READY)
+    return Path(data_root) / "runtime" / PACK_HOST_READY
+
+
+def pack_host_snapshot() -> dict:
+    """The live pack host's identity, read from its ready marker beside the selected data root."""
+    ready = read_json(pack_host_ready_path())
     pid, birth = ready.get("pid"), ready.get("process_birth_id")
     if type(pid) is not int or pid <= 0 or not isinstance(birth, str) or not birth:
         raise RuntimeError("The pack host's ready marker has no process identity")
@@ -2632,28 +2668,57 @@ def installed_routes_packs(version: dict, evidence: Path) -> bool:
 
 def wait_pack_registered(version: dict, evidence: Path, pack_id: str, *,
                          timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0) -> None:
-    """Wait for live capability readiness after `packs add` (no restart, no refresh-outbox gate).
+    """Wait for RUNTIME-SIDE readiness after `packs add`: no restart, no refresh-outbox gate.
 
-    Readiness here is the capability resolving through the installed public SDK; admission
-    AND completion of the journey task, then assert_pack_hot_refreshed, prove the rest.
+    Readiness is the Runtime's own registration of the pack host's executor listing the
+    capability with status ready, polled up to ``timeout``. A local SDK resolve would prove
+    only discovery. Admission AND completion of the journey task, then
+    assert_pack_hot_refreshed, prove the rest. On timeout, the receipt records every
+    observation and the outbox state; the failure staging uploads the host and service logs.
     """
     capability_id = JOURNEY_PACK_CAPABILITIES.get(pack_id)
     if capability_id is None:
         return
-    code = CAPABILITY_PROBE.format(capability_id=capability_id)
+    receipt = {"schema_version": 1, "pack_id": pack_id, "capability_id": capability_id,
+               "timeout_seconds": timeout, "registered": False, "polls": 0, "last": None,
+               "last_error": None, "outbox": None}
     deadline = time.monotonic() + timeout
-    while True:
-        try:
-            resolved = json.loads(_installed_probe(version, code, evidence, "journey-pack-capability.log"))
-        except (RuntimeError, ValueError):
-            resolved = None
-        if isinstance(resolved, dict) and resolved.get("id") == capability_id:
-            return
-        if time.monotonic() >= deadline:
-            # A product finding, not a harness flake: the added pack never became live.
-            raise RuntimeError(f"{capability_id} is not registered within {int(timeout)}s of "
-                               f"`packs add` of {pack_id}")
-        time.sleep(interval)
+    try:
+        while True:
+            receipt["polls"] += 1
+            try:
+                code = RUNTIME_REGISTRATION_PROBE.format(ready_path=str(pack_host_ready_path()))
+                observed = json.loads(_installed_probe(version, code, evidence,
+                                                       "journey-pack-capability.log"))
+                receipt["last"], receipt["last_error"] = observed, None
+            except (RuntimeError, ValueError, OSError) as exc:
+                observed = None
+                receipt["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
+            rows = observed.get("capabilities") if isinstance(observed, dict) else None
+            if isinstance(rows, list) and any(isinstance(row, dict) and row.get("capability_id") == capability_id
+                                              and row.get("status") == "ready" for row in rows):
+                receipt["registered"] = True
+                return
+            if time.monotonic() >= deadline:
+                try:
+                    receipt["outbox"] = json.loads(_installed_probe(version, PACK_OUTBOX_PROBE, evidence,
+                                                                    "journey-pack-outbox.log"))
+                except (RuntimeError, ValueError, OSError) as exc:
+                    receipt["outbox"] = {"error": f"{type(exc).__name__}: {exc}"[:500]}
+                # Upload the host's ready marker beside it, so the refresh state is visible.
+                try:
+                    ready = read_json(pack_host_ready_path())
+                    receipt["pack_host_ready"] = {key: ready.get(key) for key in (
+                        "pid", "process_birth_id", "executor_id", "runtime_instance_id", "ready_capabilities",
+                        "unready_capabilities", "capability_count")}
+                except Exception as exc:  # noqa: BLE001 - diagnostics cannot replace the timeout
+                    receipt["pack_host_ready"] = {"error": f"{type(exc).__name__}: {exc}"[:500]}
+                # A product finding, not a harness flake: the Runtime never registered the added pack.
+                raise RuntimeError(f"The Runtime did not register {capability_id} as ready within "
+                                   f"{int(timeout)}s of `packs add` of {pack_id}")
+            time.sleep(interval)
+    finally:
+        write_json(evidence / PACK_REGISTRATION_RECEIPT, receipt)
 
 
 def invocation_outcome(invocation: dict) -> tuple[bool | None, object]:

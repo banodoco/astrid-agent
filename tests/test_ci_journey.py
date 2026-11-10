@@ -259,13 +259,23 @@ def test_journey_packs_skip_without_a_packs_route_and_wait_for_registration():
     assert calls == [["packs", "list", "--json"]]
 
 
-def test_wait_pack_registered_requires_live_capability_readiness_not_the_refresh_outbox(tmp_path, monkeypatch):
-    def unresolved():
+def _registration(*rows):
+    return json.dumps({"id": "astrid-pack-host", "readiness": "ready", "max_concurrency": 1, "runtime_epoch": 1,
+                       "capabilities": [{"capability_id": cid, "status": status} for cid, status in rows]})
+
+
+def test_wait_pack_registered_requires_the_runtimes_own_ready_registration(tmp_path, monkeypatch):
+    ready = tmp_path / "generic-host.ready.json"
+    monkeypatch.setattr(journey, "pack_host_ready_path", lambda: ready)
+
+    def unreachable():
         raise RuntimeError("journey-pack-capability.log: exit 1")
 
-    answers = iter([unresolved, lambda: json.dumps({"id": "other"}), lambda: json.dumps({"id": "chiptune.sfx"})])
-    seen = []
-    codes = []
+    answers = iter([unreachable,
+                    lambda: _registration(("other.cap", "ready")),
+                    lambda: _registration(("chiptune.sfx", "unavailable")),
+                    lambda: _registration(("chiptune.sfx", "ready"))])
+    seen, codes = [], []
 
     def probe(version, code, evidence, name):
         seen.append(name)
@@ -274,13 +284,37 @@ def test_wait_pack_registered_requires_live_capability_readiness_not_the_refresh
 
     monkeypatch.setattr(journey, "_installed_probe", probe)
     journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
-    # Only the capability resolve gates; refresh_pending is no longer a criterion.
-    assert seen == ["journey-pack-capability.log"] * 3
-    assert "get_capability('chiptune.sfx', kind='executor')" in codes[-1]
+    # The Runtime's own executor registration gates (not the local SDK resolve, not the outbox).
+    assert seen == ["journey-pack-capability.log"] * 4
+    assert "generated.get_executor(PACK_HOST_ACTOR)" in codes[-1] and repr(str(ready)) in codes[-1]
+    assert "get_capability" not in codes[-1]
     compile(codes[-1], "probe", "exec")
-    monkeypatch.setattr(journey, "_installed_probe", lambda *a, **k: json.dumps({"id": "other"}))
-    with pytest.raises(RuntimeError, match="chiptune.sfx is not registered within 0s of `packs add` of chiptune"):
+    receipt = json.loads((tmp_path / journey.PACK_REGISTRATION_RECEIPT).read_text())
+    assert receipt["registered"] is True and receipt["polls"] == 4 and receipt["outbox"] is None
+
+
+def test_wait_pack_registered_timeout_records_the_outbox_and_host_state(tmp_path, monkeypatch):
+    ready = tmp_path / "generic-host.ready.json"
+    ready.write_text(json.dumps({"pid": 10, "process_birth_id": "b10", "executor_id": "astrid-pack-host",
+                                 "ready_capabilities": ["other.cap"], "credential_file": "/secret"}),
+                     encoding="utf-8")
+    monkeypatch.setattr(journey, "pack_host_ready_path", lambda: ready)
+    outbox = {"packs_root": "/p", "revision": 3, "transaction_id": "t3", "refresh": {"revision": 3}}
+
+    def probe(version, code, evidence, name):
+        return json.dumps(outbox) if name == "journey-pack-outbox.log" else _registration(("other.cap", "ready"))
+
+    monkeypatch.setattr(journey, "_installed_probe", probe)
+    with pytest.raises(RuntimeError, match="The Runtime did not register chiptune.sfx as ready within 0s"):
         journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=0, interval=0)
+    receipt = json.loads((tmp_path / journey.PACK_REGISTRATION_RECEIPT).read_text())
+    assert receipt["registered"] is False and receipt["outbox"] == outbox
+    assert receipt["last"]["capabilities"] == [{"capability_id": "other.cap", "status": "ready"}]
+    assert receipt["pack_host_ready"]["ready_capabilities"] == ["other.cap"]
+    # The worker credential path is not copied into the uploaded receipt.
+    assert "credential_file" not in receipt["pack_host_ready"]
+    compile(journey.PACK_OUTBOX_PROBE, "outbox", "exec")
+    assert journey.PACK_REGISTRATION_RECEIPT in journey.JOURNEY_EVIDENCE_NAMES
 
 
 def _pack_host(monkeypatch, tmp_path, hosts):

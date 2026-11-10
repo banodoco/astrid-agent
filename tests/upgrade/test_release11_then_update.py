@@ -83,6 +83,7 @@ def _leg(monkeypatch, tmp_path, *, candidate_release=12, update_exit=0, update_i
         "runtime_instance_id": "new" if state["current"] == "r12" else "old",
         "identity": {"release": release[state["current"]]}})
     monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "agent-r12", "runtime": "runtime-r12"})
+    monkeypatch.setattr(jumps, "add_journey_pack_and_restart_legacy_host", lambda *_a: ["chiptune"])
     monkeypatch.setattr(jumps, "task_after_update", lambda *_args: "task-id")
 
     def assert_seeded_data(before, after):
@@ -168,6 +169,51 @@ def test_leg_passes_only_when_the_update_installs_release_twelve_and_every_check
     assert result["release_transition"] == {"from": 11, "to": 12, "source": "candidate-install-update"}
     assert result["health_transition"]["candidate_live_release"] == 12
     assert all(value == "pass" for value in result["checks"].values()), result["checks"]
+
+
+def test_only_the_release11_baseline_adds_the_pack_and_restarts_its_host_before_its_task(monkeypatch, tmp_path):
+    run, _, _ = _leg(monkeypatch, tmp_path)
+    order = []
+    monkeypatch.setattr(jumps, "add_journey_pack_and_restart_legacy_host",
+                        lambda _root, _data, version, _evidence: order.append(("legacy-pack", version["root"])) or ["chiptune"])
+    monkeypatch.setattr(jumps, "task_after_update",
+                        lambda version, *_args: order.append(("task", version["root"])) or "task-id")
+    assert run()["status"] == "pass"
+    r11 = str(tmp_path / "program" / "versions/r11")
+    # R11 has no single-worker hot refresh: add + restart once, before R11's baseline task only.
+    assert order[:2] == [("legacy-pack", r11), ("task", r11)]
+    assert [entry for entry in order if entry[0] == "legacy-pack"] == [("legacy-pack", r11)]
+
+
+@pytest.mark.parametrize("manager", ["systemd-user", "launchd"])
+def test_legacy_baseline_adds_the_pack_then_restarts_its_owned_host(monkeypatch, tmp_path, manager):
+    events = []
+    owners = iter([[4242], []])
+    monkeypatch.setattr(jumps.journey, "install_journey_packs",
+                        lambda run_cli, **kwargs: events.append(("add", sorted(kwargs))) or ["chiptune"])
+    monkeypatch.setattr(jumps.journey, "assert_direct_service_ownership",
+                        lambda *_a, **_k: events.append("owned") or {"manager": manager, "service_path": "/la.plist"})
+    monkeypatch.setattr(jumps.journey, "run", lambda argv, log, **_k: events.append(tuple(argv[:3])) or "")
+    monkeypatch.setattr(jumps.journey, "runtime_processes", lambda *_a: next(owners))
+    monkeypatch.setattr(jumps.journey, "wait_ready", lambda *_a: events.append("ready"))
+    monkeypatch.setattr(jumps, "selected_data_root", lambda _root, selected, **_k: selected)
+    monkeypatch.setattr(jumps.time, "sleep", lambda *_a: None)
+    assert jumps.add_journey_pack_and_restart_legacy_host(
+        tmp_path / "program", tmp_path / "data", {"root": "/v/r11"}, tmp_path / "ev") == ["chiptune"]
+    stop, start = ((("systemctl", "--user", "stop"), ("systemctl", "--user", "start")) if manager == "systemd-user"
+                   else (("launchctl", "bootout", f"gui/{jumps.os.getuid()}/haus.astrid.runtime"),
+                         ("launchctl", "bootstrap", f"gui/{jumps.os.getuid()}")))
+    # Add first (no hot-refresh hooks: this is the legacy path), then a full owned-host restart.
+    assert events == [("add", ["routes_packs"]), "owned", stop, start, "ready", "owned"]
+
+
+def test_legacy_baseline_restarts_nothing_when_the_pack_is_already_there(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setattr(jumps.journey, "install_journey_packs", lambda run_cli, **kwargs: [])
+    monkeypatch.setattr(jumps.journey, "run", lambda *a, **k: events.append("run"))
+    assert jumps.add_journey_pack_and_restart_legacy_host(
+        tmp_path / "program", tmp_path / "data", {"root": "/v/r11"}, tmp_path / "ev") == []
+    assert events == []
 
 
 def test_update_that_exits_zero_and_installs_nothing_fails(monkeypatch, tmp_path):

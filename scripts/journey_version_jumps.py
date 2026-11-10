@@ -613,6 +613,42 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
         journey.assert_direct_service_ownership(root, owner_data)
 
 
+def add_journey_pack_and_restart_legacy_host(root: Path, data: Path, version: dict, evidence: Path) -> list[str]:
+    """For a LEGACY baseline (R11) only: add the journey pack, then restart the owned host.
+
+    R11 has no single-worker hot refresh, so a pack added under its running host is not
+    registered until the host's next start. The candidate leg's hot-refresh requirement
+    is unchanged; this applies only to seeding the pre-update baseline.
+    """
+    evidence.mkdir(parents=True, exist_ok=True)
+    added = journey.install_journey_packs(
+        lambda argv, name: journey.installed_cli(version, argv, evidence, name, console=True, timeout=600),
+        routes_packs=lambda: journey.installed_routes_packs(version, evidence))
+    if not added:
+        return added
+    service = journey.assert_direct_service_ownership(root, data)
+    manager = service["manager"]
+    if manager == "systemd-user":
+        stop = ["systemctl", "--user", "stop", "astrid.service"]
+        start = ["systemctl", "--user", "start", "astrid.service"]
+    elif manager == "launchd":
+        domain = f"gui/{os.getuid()}"
+        stop = ["launchctl", "bootout", f"{domain}/haus.astrid.runtime"]
+        start = ["launchctl", "bootstrap", domain, service["service_path"]]
+    else:
+        raise RuntimeError(f"Legacy host restart is not supported for service manager {manager}")
+    journey.run(stop, evidence / "legacy-pack-stop-service.log", timeout=120)
+    deadline = time.monotonic() + 120
+    while journey.runtime_processes(selected_data_root(root, data)):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Legacy Runtime did not stop after the journey pack was added")
+        time.sleep(1)
+    journey.run(start, evidence / "legacy-pack-start-service.log", timeout=120)
+    journey.wait_ready(selected_data_root(root, data))
+    journey.assert_direct_service_ownership(root, data)
+    return added
+
+
 def installed_release(version: dict) -> int:
     release = journey.read_json(Path(version["root"]) / "manifest.json").get("release", 0)
     if type(release) is not int:
@@ -1192,6 +1228,9 @@ def execute_release11_then_update(args, root: Path, data: Path, evidence: Path, 
         project = "tst-release11-update"
         keys = live_workspace(root, data, baseline, "seed", {
             "project": project, "generation": "release11", "task_id": None, "create_project": True})
+        # R11 has no single-worker hot refresh: add the pack and restart R11's host before its
+        # baseline task, so that task adds nothing (and so has no hot-refresh check).
+        add_journey_pack_and_restart_legacy_host(root, data, old, baseline / "release11-pack")
         keys["task_id"] = task_after_update(old, baseline / "release11-task", project)
         before = live_workspace(root, data, baseline, "snapshot", keys)
         old_health = journey.healthy(data)
