@@ -906,7 +906,7 @@ LocalLinuxExecutionContext.run=run
             {"cpu": lock_digest}, {s.name: s.pin.revision for s in recipe.sources},
             tuple(model_results),
             tuple(StepReceipt(s.id, s.kind, "executed", "passed", {"owner_id": facts["owner_id"],
-                "launch_sha256": facts["launch_sha256"]} if s.kind == "start" else {}) for s in plan.steps),
+                "launch_sha256": facts["launch_sha256"], "cuda_visible_devices": payload["launch"]["env"]["CUDA_VISIBLE_DEVICES"]} if s.kind == "start" else {}) for s in plan.steps),
             HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None)
         (root / ".astrid-engine/install.json").write_text(_json(_plain(receipt)))
         yield client, payload, recipe, root, started, program_path
@@ -1485,7 +1485,8 @@ def installed_consumer(session, monkeypatch):
         tuple(DownloadResult(m.name, str(root / "models" / m.destination), "skipped",
                              m.bytes, m.sha256, True, 0) for m in models.models),
         tuple(StepReceipt(s.id, s.kind, "executed", "passed",
-                          {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"]}
+                          {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"],
+                           "cuda_visible_devices": payload["launch"]["env"]["CUDA_VISIBLE_DEVICES"]}
                           if s.kind == "start" else {}) for s in plan.steps),
         HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None,
     )

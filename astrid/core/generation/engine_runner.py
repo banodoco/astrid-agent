@@ -710,7 +710,8 @@ class _Runner:
         if probe["state"] == "owned":
             if self.models_config_helper("models-config-check") != {"valid": True}:
                 raise IntegrityError("owned engine models configuration differs", step_id=self.step_id)
-            return "skipped", {"owner_id": self.service_owner, "launch_sha256": _sha(launch)}
+            return "skipped", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
+                               "cuda_visible_devices": self.visibility}
         if readonly:
             raise EndpointHealthError("owned engine server is absent", step_id=self.step_id)
         if self.models_config_helper("models-config") != {"written": True}:
@@ -718,7 +719,8 @@ class _Runner:
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
             raise EndpointOwnershipError("server start did not establish ownership", step_id=self.step_id)
-        return "executed", {"owner_id": self.service_owner, "launch_sha256": _sha(launch)}
+        return "executed", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
+                            "cuda_visible_devices": self.visibility}
 
     def check_health(self):
         if self.models_config_helper("models-config-check") != {"valid": True}:

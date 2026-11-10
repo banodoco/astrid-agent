@@ -333,8 +333,11 @@ def install(setup):
     return runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline)
 
 
-def test_install_writes_private_receipt_per_final_wheel(setup):
-    install(setup)
+def test_install_writes_private_receipt_per_final_wheel(setup, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+    receipt = install(setup)
+    start = next(step for step in receipt.steps if step.kind == "start")
+    assert start.facts["cuda_visible_devices"] == "2"
     context = setup[1]
     wheels = context.recipe.environments[0].final_wheels
     assert wheels
