@@ -1048,3 +1048,101 @@ def test_small_lease_drain_allows_exact_holder_settlement_without_reopening(smal
     owner.quiesce = drain
     owner.release()
     assert c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
+
+
+def manual_claim_grant(c, **changes):
+    return replace(c.grant, preparation_seconds=0, execution_seconds=0, idle_seconds=600,
+                   **changes)
+
+
+def test_manual_claim_waits_then_settles_idle_and_reuses_without_extending_paid_limit(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    observations, waits = [], []
+
+    def observe():
+        observations.append(1)
+        if len(observations) < 3:
+            raise target_selection.OfferObservationError("stock_unavailable")
+        return c.offer
+
+    async def sleep(seconds):
+        waits.append(seconds)
+        c.clock.now += seconds
+
+    c.owner.observe_offer, c.owner.sleep = observe, sleep
+    grant = manual_claim_grant(c, offer_digest=None, deadline=None,
+        policy_digest=target_selection.policy_consent_digest(c.prefs, 1), max_hourly_usd=1)
+    claimed = owner.claim(grant, requested_idle_seconds=600)
+    assert len(observations) == 3 and len(waits) == 2 and c.creates == 1
+    assert claimed["lease"]["state"] == "idle"
+    assert claimed["lease"]["idle_expires_at"] == c.clock() + 600
+    expiry, started = claimed["lease"]["paid_expires_at"], claimed["lease"]["started_at"]
+    # A normal generation admission needs fresh consent but no market stock.
+    c.owner.observe_offer = lambda: pytest.fail("retained reuse observed market stock")
+    later = owner.acquire(replace(c.grant, invocation_id="later-job", idle_seconds=60,
+                                  deadline=utc(c.clock() + 7200)), requested_idle_seconds=60)
+    assert c.creates == 1 and later.claim["pod_id"] == claimed["pod_id"]
+    assert later.claim["lease"]["paid_expires_at"] == expiry
+    assert later.claim["lease"]["started_at"] == started
+    owner.settle(later)
+    # The original claim authority stays used even after later consent replaced it.
+    before = c.owner.path.read_bytes()
+    with pytest.raises(target_selection.PaidSelectionError, match="already used"):
+        owner.acquire(grant, requested_idle_seconds=600)
+    with pytest.raises(target_selection.PaidSelectionError, match="already used"):
+        owner.keep(claimed["pod_id"], replace(grant, policy_digest=None, max_hourly_usd=None,
+                   offer_digest=claimed["paid_limits"]["offer_digest"], deadline=utc(c.clock() + 7200)))
+    assert c.owner.path.read_bytes() == before and c.creates == 1
+
+
+def test_manual_claim_initial_idle_expires_without_generation_or_extra_consent(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    record = owner.claim(manual_claim_grant(c), requested_idle_seconds=600)
+    assert "preparation" not in record["lease"] and "job" not in record["lease"]
+    c.clock.advance(600)
+    assert c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
+
+
+def test_manual_claim_cold_owner_refuses_prior_custody_without_recovery_or_delete(small_lease):
+    c = small_lease
+    old = c.fresh()
+    old.acquire(c.grant)
+    old.close()
+    restored = c.fresh()
+    before = c.owner.path.read_bytes()
+    with pytest.raises(RunPodWorkerOwnerError, match="existing custody pod-1.*astrid machines"):
+        restored.start_fresh_claim()
+    assert c.owner.path.read_bytes() == before and not c.deletes and c.creates == 1
+
+
+def test_manual_claim_rejects_pending_create_even_without_pod(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    c.owner.path.parent.mkdir(parents=True, exist_ok=True)
+    c.owner.path.write_text(json.dumps({"state": "allocation_unknown", "operation_id": "unknown-attempt"}))
+    before = c.owner.path.read_bytes()
+    with pytest.raises(RunPodWorkerOwnerError, match="unknown-attempt.*astrid machines"):
+        owner.start_fresh_claim()
+    assert c.owner.path.read_bytes() == before and c.creates == 0 and not c.deletes
+
+
+def test_manual_claim_cancellation_reaches_capacity_wait(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    stopped = []
+    c.owner.observe_offer = lambda: (_ for _ in ()).throw(target_selection.OfferObservationError("stock_unavailable"))
+
+    async def stop(seconds):
+        stopped.append(True)
+
+    c.owner.sleep = stop
+    grant = manual_claim_grant(c, offer_digest=None, deadline=None,
+        policy_digest=target_selection.policy_consent_digest(c.prefs, 1), max_hourly_usd=1)
+    with pytest.raises(target_selection.CapacityWaitCancelled):
+        owner.claim(grant, requested_idle_seconds=600, cancelled=lambda: bool(stopped))
+    assert c.creates == 0 and not c.owner.path.exists()

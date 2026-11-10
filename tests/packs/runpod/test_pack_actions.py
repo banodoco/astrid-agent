@@ -235,3 +235,161 @@ def test_sdk_keep_sends_exact_machine_consent_and_waits_longer_than_release_time
     assert submitted["machine"] == "pod-owned" and submitted["until_release"] is True
     assert submitted["paid_consent"]["invocation_id"] == "keep-1"
     assert kwargs["wait"] is True and kwargs["timeout_seconds"] == 300
+
+
+def claim_policy():
+    policy = keep_policy()
+    policy.pop("machine")
+    policy.pop("until_release")
+    policy["requested_idle_seconds"] = 120
+    policy["paid_consent"]["invocation_id"] = "claim-1"
+    return policy
+
+
+def test_claim_operation_dispatches_retention_and_cancellation_to_shared_owner():
+    calls = []
+    cancelled = lambda: False
+
+    class Owner:
+        def claim(self, consent, *, requested_idle_seconds, cancelled):
+            calls.append((consent, requested_idle_seconds, cancelled))
+            return {"state": "claimed", "pod_id": "pod-owned", "lease": {"state": "idle", "paid_expires_at": 200},
+                    "paid_limits": {"hourly_usd": 1, "max_usd": consent.max_usd}}
+
+    policy = claim_policy()
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.provider = RunPodAdapter(lease_owner=Owner(), placement=None, installation=None, validate=None)
+    bindings.signature = json.dumps([policy["kind"], policy["engine"], policy["preferences"]])
+    bindings.get = lambda **kwargs: pytest.fail("claim replaced its live owner")
+    result = bindings.operate(policy, "claim", cancelled=cancelled)
+    assert result["pod_id"] == "pod-owned" and result["lease"]["state"] == "idle"
+    assert calls[0][0].invocation_id == "claim-1" and calls[0][1:] == (120, cancelled)
+
+
+def test_claim_and_disclosure_construct_only_a_fresh_guarded_owner(monkeypatch):
+    from astrid.packs.runpod import adapter
+    calls = []
+    policy = claim_policy()
+    provider = SimpleNamespace(operate=lambda *args, **kwargs: {"state": "claimed"})
+
+    def build(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["fresh_claim"] is True
+        return provider
+
+    monkeypatch.setattr(adapter, "build_host_adapter", build)
+    for operation, request in (("claim", policy), ("status", {key: value for key, value in policy.items()
+                                                          if key in {"kind", "engine", "preferences"}})):
+        bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+        if operation == "status":
+            request = {**request, "fresh_claim": True}
+        assert bindings.operate(request, operation, include_quote=operation == "status")["state"] == "claimed"
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("changed_preferences", [{"gpu_types": ["gpu-b"]}, {"datacenter_id": "DC-other"}])
+def test_claim_different_gpu_or_datacenter_policy_refuses_while_held_without_replacement(changed_preferences):
+    policy = claim_policy()
+    owner = SimpleNamespace(lock=threading.RLock(), _read=lambda: {"state": "claimed", "pod_id": "pod-owned"})
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.provider = RunPodAdapter(lease_owner=owner, placement=None, installation=None, validate=None)
+    bindings.signature = json.dumps([policy["kind"], policy["engine"], policy["preferences"]])
+    policy = {**policy, "preferences": {**policy["preferences"], **changed_preferences}}
+    with pytest.raises(ValueError, match="policy differs"):
+        bindings.operate(policy, "claim")
+    assert bindings.provider.lease_owner is owner
+
+
+def test_sdk_claim_requires_ready_host_before_submission_and_serializes_fresh_consent():
+    from astrid.sdk.generation import _runpod_operation
+    calls = []
+    client = SimpleNamespace(invoke_result=lambda *args, **kwargs: calls.append((args, kwargs)),
+                             list_capabilities=lambda **kwargs: [[{"capability_id": "runpod.claim", "status": "ready"}], None],
+                             get_user_app_state=lambda: None)
+    policy = claim_policy()
+    _runpod_operation("claim", client=client, wait=True, preferences=policy["preferences"],
+                       consent=policy["paid_consent"], requested_idle_seconds=120)
+    args, kwargs = calls[0]
+    assert args == ("runpod.claim",) and kwargs["wait"] is True
+    submitted = json.loads(kwargs["inputs"]["placement_policy"])
+    assert submitted["requested_idle_seconds"] == 120 and "machine" not in submitted
+    assert submitted["paid_consent"]["invocation_id"] == "claim-1"
+    client.list_capabilities = lambda **kwargs: [[], None]
+    with pytest.raises(Exception, match="running Astrid host"):
+        _runpod_operation("claim", client=client, wait=True, preferences=policy["preferences"],
+                           consent=policy["paid_consent"], requested_idle_seconds=120)
+    assert len(calls) == 1
+
+
+def test_manifest_claim_routes_to_existing_host_without_media_output():
+    from pathlib import Path
+    import yaml
+    manifest = yaml.safe_load((Path(__file__).parents[3] / "astrid/packs/runpod/pack.yaml").read_text())
+    assert manifest["actions"]["claim"]["metadata"]["host_target_operation"] == "claim"
+    assert manifest["extensions"]["astrid"]["output_result_exemptions"]["actions"]["claim"]["reasons"] == ["no-artifact"]
+
+
+def test_claim_wait_policy_is_recognized_and_ctrl_c_cancels_known_task(monkeypatch):
+    from astrid.sdk import invocation
+    policy = claim_policy()
+    policy["paid_consent"].update(capacity_timeout_seconds=600, wait_for_capacity=True)
+    task = {"spec": {"capability_id": "runpod.claim", "inputs": {"placement_policy": json.dumps(policy)}}}
+    assert invocation._runpod_generation_policy(task) == json.loads(json.dumps(policy["paid_consent"]))
+    cancelled = []
+    client = SimpleNamespace(tasks=SimpleNamespace(cancel=lambda *args, **kwargs: cancelled.append((args, kwargs))))
+
+    def interrupt(*args, **kwargs):
+        kwargs["owner_tick"](task)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(invocation, "_wait_for_kernel_task_loop", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        invocation._wait_for_kernel_task(client, task_id="claim-task", run_id="claim-run",
+                                         timeout_seconds=3600, poll_seconds=0.01)
+    assert len(cancelled) == 1 and cancelled[0][0] == ("claim-task",)
+
+
+def test_claim_policy_without_volume_or_datacenter_observes_all_returned_datacenters(monkeypatch):
+    import asyncio
+    import runpod_lifecycle
+    from astrid.packs.runpod.adapter import observe_priced_offer
+    preferences = RunPodPreferences.from_mapping(raw_preferences(volume=None, datacenter_id=None))
+    seen = []
+
+    async def availability(**kwargs):
+        seen.append(kwargs)
+        return SimpleNamespace(status="available", gpu_type_id="gpu-id", datacenters=[
+            SimpleNamespace(status="unavailable", price_per_hour=None, datacenter_id="CA-ONLY-EMPTY"),
+            SimpleNamespace(status="available", price_per_hour=1.0, datacenter_id="UNRESTRICTED-AVAILABLE"),
+        ])
+
+    monkeypatch.setattr(runpod_lifecycle, "gpu_availability", availability)
+    offer = asyncio.run(observe_priced_offer(preferences, SimpleNamespace(api_key="synthetic-only",
+        container_disk_gb=40, allowed_cuda_versions=("13.0",), min_cuda_version=None)))
+    assert seen[0]["datacenter_ids"] is None and seen[0]["require_network_volume"] is False
+    assert offer.datacenter_id == "UNRESTRICTED-AVAILABLE"
+
+
+@pytest.mark.parametrize("capacity_timeout,complete,limit", [(None, True, None), (10, False, 3610)])
+def test_claim_follow_uses_capacity_timeout_and_heartbeats_without_one_hour_ceiling(
+        monkeypatch, capsys, capacity_timeout, complete, limit):
+    from astrid.sdk import invocation
+    now = [0.0]
+    policy = claim_policy()
+    policy["paid_consent"].update(capacity_timeout_seconds=capacity_timeout, wait_for_capacity=True)
+
+    def show(task_id):
+        state = "succeeded" if complete and now[0] >= 3700 else "running"
+        return SimpleNamespace(ok=True, data={"state": state, "result": {"outputs": []},
+            "spec": {"capability_id": "runpod.claim", "inputs": {"placement_policy": json.dumps(policy)}}})
+
+    monkeypatch.setattr(invocation.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(invocation.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    raw, ok, _ = invocation._wait_for_kernel_task(SimpleNamespace(tasks=SimpleNamespace(show=show)),
+        task_id="claim-task", run_id="claim-run", timeout_seconds=3600, poll_seconds=60)
+    if complete:
+        assert ok and now[0] > 3600
+    else:
+        assert not ok and raw["error"]["code"] == "task_wait_timeout"
+        assert raw["error"]["details"]["timeout_seconds"] == limit and now[0] == limit
+    assert "Still following RunPod task claim-task" in capsys.readouterr().err

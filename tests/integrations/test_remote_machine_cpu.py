@@ -1073,3 +1073,61 @@ def test_machine_cli_keep_then_release_uses_the_retained_owner(journey, monkeypa
     released = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert released["ok"] is True and released["machine"]["state"] == "ended"
     _released(state["provider"], j.record())
+
+
+def test_machine_cli_claim_then_generate_reuses_pod_and_paid_expiry(journey, monkeypatch, capsys):
+    from contextlib import contextmanager
+    from astrid.core import machines_cli
+    from astrid.packs.runpod.machine import lease_row
+    from astrid.sdk import AstridClient
+
+    j = journey
+    state = j.start()
+    bindings = state["host"]._target_bindings
+    # Simulate a running host whose first RunPod request is claim, not setup.
+    bindings.provider.lease_owner.close()
+    bindings.provider = bindings.signature = None
+    opening = []
+
+    @contextmanager
+    def launcher(**kwargs):
+        opening.append(kwargs)
+        yield state["client"]
+
+    monkeypatch.setattr(AstridClient, "open_from_launcher", launcher)
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [lease_row(j.record())] if state["claim_path"].exists() else [])
+    assert machines_cli.main(["claim", "--max-usd", "1.5", "--max-hourly-usd", "1",
+                              "--for", "30m", "--consent", "paid", "--json"]) == 0
+    claimed = json.loads(capsys.readouterr().out.splitlines()[-1])
+    before = j.record()
+    assert opening == [{"start_pack_host": False}]
+    assert claimed["machine"]["id"] == POD and claimed["machine"]["state"] == "idle"
+    assert claimed["machine"]["release_at"] == before["lease"]["idle_expires_at"]
+    assert state["provider"].deploys == 1 and not state["provider"].generations
+    result = GenerationFacade().image(entry="cpu-image", placement="runpod", client=state["client"],
+        project=state["project"], consent=("paid",), max_usd=1.5,
+        deadline=(datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+        offer_digest=GenerationFacade().describe(placement="runpod", client=state["client"])["offer_digest"],
+        preparation_seconds=120, execution_seconds=60, idle_seconds=120, wait=True)
+    assert result.ok, result.to_dict()
+    after = j.record()
+    assert after["pod_id"] == before["pod_id"] and state["provider"].deploys == 1
+    assert after["lease"]["paid_expires_at"] == before["lease"]["paid_expires_at"]
+    assert after["lease"]["started_at"] == before["lease"]["started_at"]
+    _released(state["provider"], j.release())
+
+
+def test_machine_claim_quote_after_owner_loss_refuses_without_releasing_custody(journey):
+    j = journey
+    state = j.start()
+    result = j.image()
+    assert result.ok, result.to_dict()
+    bindings = state["host"]._target_bindings
+    bindings.provider.lease_owner.close()
+    bindings.provider = bindings.signature = None
+    before = j.record()
+    with pytest.raises(Exception, match="target status task failed.*cpupod.*astrid machines"):
+        GenerationFacade().describe(placement="runpod", client=state["client"], max_hourly_usd=1, fresh_claim=True)
+    assert j.record() == before and state["provider"].pods and state["provider"].deploys == 1
+    # Explicit release remains the separately authorized recovery path.
+    _released(state["provider"], j.release())

@@ -338,6 +338,9 @@ class RunPodLeaseOwner:
         with self.lock:
             if self._release_inflight or self._acquisition_cancel.is_set() or not self.started:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
+            if consent.invocation_id in self._paid_consent_ids:
+                from .target_selection import PaidSelectionError
+                raise PaidSelectionError("paid consent was already used; acquire requires fresh consent")
             record = self._read()
             previous = record["lease"] if record is not None else None
             if record is not None and record["state"] == "cleanup_complete":
@@ -400,6 +403,34 @@ class RunPodLeaseOwner:
             self._arm(claimed)
             return RunPodLease(claimed["operation_id"], self.epoch, lease["generation"],
                                consent.invocation_id, claimed)
+
+    def start_fresh_claim(self) -> None:
+        """Admit first manual claim only from empty or verified ended custody."""
+        with self.lock:
+            record = self.selection._read()
+            if record is not None:
+                if record.get("state") != "cleanup_complete":
+                    machine = record.get("pod_id") or record.get("operation_id") or "unknown"
+                    raise RunPodWorkerOwnerError(
+                        f"claim refuses existing custody {machine}; release or reconcile it with `astrid machines`")
+                _validate_completed_release(record)
+            self.started = True
+
+    def claim(self, consent: Any, *, requested_idle_seconds: float,
+              cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
+        """Claim through ordinary acquisition, then retain without a generation job."""
+        with self.lock:
+            if self.closed or not self.started:
+                raise RunPodWorkerOwnerError("claim requires a running host with a live RunPod owner")
+            from .target_selection import PaidRunConsent, PaidSelectionError
+            if (not isinstance(consent, PaidRunConsent) or consent.preparation_seconds != 0
+                    or consent.execution_seconds != 0 or consent.idle_seconds != requested_idle_seconds
+                    or requested_idle_seconds <= 0):
+                raise PaidSelectionError("claim requires fresh paid consent for finite initial idle retention")
+            invocation = self.acquire(consent, requested_idle_seconds=requested_idle_seconds,
+                                      cancelled=cancelled)
+            self.settle(invocation)
+            return self._read()
 
     def keep(self, machine_id: str, consent: Any, until_release: bool = False) -> Mapping[str, Any]:
         """Replace the exact live lease's paid bound using fresh explicit consent."""
