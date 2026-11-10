@@ -203,18 +203,84 @@ def _copy_folder(source: Path, stage: Path) -> None:
             target.chmod(0o755 if path.stat().st_mode & 0o111 else 0o644)
 
 
+# Windows processes need these system variables to start and load DLLs; they
+# carry no Git configuration, so passing them through does not widen trust.
+_WINDOWS_SYSTEM_VARIABLES = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT")
+
+
+def _askpass_program(work: Path, windows: bool) -> str:
+    """A no-op credential helper: it prints nothing and refuses, so Git never prompts.
+
+    The leading dot keeps it from colliding with any pack id, which never starts with a dot.
+    """
+    if windows:
+        path = work / ".askpass.cmd"
+        path.write_text("@echo off\r\nexit /b 1\r\n", encoding="ascii")
+    else:
+        path = work / ".askpass"
+        path.write_text("#!/bin/sh\nexit 1\n", encoding="ascii")
+        path.chmod(0o700)
+    return str(path)
+
+
+def _git_executable(path_value: str, *, windows: bool, cwd: Path) -> str | None:
+    """Find git in absolute PATH entries only; never the current directory.
+
+    shutil.which searches the current directory first on Windows, so a planted
+    git.exe in the working tree would run. Relative entries and entries that
+    resolve to the current directory are skipped here.
+    """
+    names = ("git.exe",) if windows else ("git",)
+    here = os.path.normcase(os.path.abspath(cwd))
+    for entry in path_value.split(os.pathsep):
+        if not entry or not os.path.isabs(entry):
+            continue
+        directory = os.path.abspath(entry)
+        if os.path.normcase(directory) == here:
+            continue
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate) and (windows or os.access(candidate, os.X_OK)):
+                return candidate
+    return None
+
+
+def _git_environment(work: Path, askpass: str, *, windows: bool | None = None,
+                     source: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build the isolated Git environment; ``windows`` defaults to the running OS."""
+    windows = (os.name == "nt") if windows is None else windows
+    source = os.environ if source is None else source
+    # Windows environment names are case-insensitive (``Path`` vs ``PATH``).
+    lookup = {key.upper() if windows else key: value for key, value in source.items()}
+    env = {
+        # The real PATH, so the installed git (and ssh) can be found.
+        "PATH": lookup.get("PATH", os.defpath),
+        "HOME": str(work), "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": askpass,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_SSH_COMMAND": f"ssh -F {os.devnull} -oBatchMode=yes",
+    }
+    if windows:
+        env["USERPROFILE"] = str(work)
+        env["TEMP"] = env["TMP"] = str(work)
+        for name in _WINDOWS_SYSTEM_VARIABLES:
+            if name in lookup:
+                env[name] = lookup[name]
+    return env
+
+
 def _git(work: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     # No inherited Git config, hooks, helpers, filters, alternate object stores,
     # replacement objects, credential prompts or pack-controlled environment.
-    env = {
-        "PATH": os.defpath, "HOME": str(work), "LC_ALL": "C",
-        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/false",
-        "GIT_NO_REPLACE_OBJECTS": "1",
-        "GIT_SSH_COMMAND": "ssh -F /dev/null -oBatchMode=yes",
-    }
+    operation = args[0] if args else "git"
+    askpass = _askpass_program(work, os.name == "nt")
+    env = _git_environment(work, askpass)
+    git = _git_executable(env["PATH"], windows=os.name == "nt", cwd=Path.cwd())
+    if git is None:
+        raise PackInstallError("git_failed", f"Git source operation failed ({operation}; git not found).")
     command = [
-        "git", "-c", "core.hooksPath=" + os.devnull,
+        git, "-c", "core.hooksPath=" + os.devnull,
         "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
         "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
         "--git-dir=" + str(work / "objects.git"), *args,
@@ -223,10 +289,13 @@ def _git(work: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
         process = subprocess.run(command, input=input_bytes, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, env=env, timeout=120, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PackInstallError("git_failed", "Git source operation failed.") from exc
+        # Diagnostic only: the operation and the error class. Never the URL or stderr.
+        raise PackInstallError(
+            "git_failed", f"Git source operation failed ({operation}; {type(exc).__name__}).") from exc
     if process.returncode:
         # Never include arbitrary source URLs, credential-helper output or stderr.
-        raise PackInstallError("git_failed", "Git source operation failed.")
+        raise PackInstallError(
+            "git_failed", f"Git source operation failed ({operation}; exit {process.returncode}).")
     return process.stdout
 
 
