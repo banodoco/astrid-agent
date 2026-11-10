@@ -56,7 +56,7 @@ def test_failed_qwen_default_surfaces_own_error_without_z_image(network, monkeyp
         monkeypatch.setattr(ModelRegistry, 'load_default', classmethod(lambda cls, **kwargs: registry))
     client, calls = install_target(network, info)
     with pytest.raises(AstridError) as caught:
-        GenerationFacade().image(target=client.target.url, prompt='boat', dry_run=True)
+        GenerationFacade().image(placement=client.target.url, prompt='boat', dry_run=True)
     assert caught.value.code == ('input_rejected' if failure == 'pin' else 'missing_model')
     if failure == 'pin':
         assert 'failed its sha256 pin' in str(caught.value)
@@ -86,7 +86,7 @@ def test_audio_preferred_row_owns_its_error(network, monkeypatch, mode, preferre
     monkeypatch.setattr(entries, 'prepare', prepare)
     with pytest.raises(AstridError, match='preferred workflow dependency') as caught:
         GenerationFacade()._generate_on_target(registry=ModelRegistry([]), model=None,
-            mode=mode, modality='audio', target=client.target.url, execution=None,
+            mode=mode, modality='audio', placement=client.target.url, execution=None,
             inputs={}, dry_run=True)
     assert caught.value.code == 'missing_node_pack'
     assert attempted == [Path(row['bundle']).stem]
@@ -132,7 +132,7 @@ def test_no_gpu_envelope_names_target_and_explicit_voice_option(mode, monkeypatc
     assert envelope['status'] == 'blocked' and envelope['task_id'] is None
     assert envelope['issues'][0]['code'] == 'engine_not_found'
     message = envelope['issues'][0]['message']
-    assert 'needs a local GPU or --target runpod' in message
+    assert 'needs a local GPU or --placement runpod' in message
     assert ('Edge TTS' in message) == (mode == 'tts')
     if mode == 'tts':
         assert 'generation.generate_speech with provider=edge-tts' in message
@@ -157,5 +157,5 @@ def test_installed_engine_refusal_retains_default_context(mode, monkeypatch):
     assert envelope['entry'] == {'id': 'preferred', 'mode': mode, 'engine': 'comfyui'}
     assert envelope['issues'][0]['code'] == 'engine_not_found'
     message = envelope['issues'][0]['message']
-    assert 'needs a local GPU or --target runpod' in message
+    assert 'needs a local GPU or --placement runpod' in message
     assert ('Edge TTS' in message) == (mode == 'tts')

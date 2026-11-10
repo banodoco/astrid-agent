@@ -6,14 +6,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.core.generation.backends.vibecomfy_workflow import VibeComfyWorkflowBackend
+from astrid.packs.vibecomfy.workflow_route import WorkflowRunner as VibeComfyWorkflowBackend
 from astrid.core.contracts.managed_generation_result import validate_evidence_reference
 from tests.core.generation.test_producer_result_recovery import compiled, envelope
+from tests.local_engine_stub import LOCAL_ENGINE_URL
 from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401
 
 
-@pytest.mark.parametrize('route', ['embedded', 'attached'])
-def test_native_success_projects_exact_settings_and_preserves_refs(monkeypatch, tmp_path, route):
+# The engine's local run submits as local_server to the installed engine's endpoint (tests/local_engine_stub.py).
+_ENGINE_ROUTE = {'profile_id': 'local_server', 'comfy_url': LOCAL_ENGINE_URL}
+
+def test_native_success_projects_exact_settings_and_preserves_refs(monkeypatch, tmp_path):
     from astrid.packs.vibecomfy import production_engine
     from vibecomfy.testing.canonical import canonical_bytes
     root = tmp_path / 'out'
@@ -29,7 +32,7 @@ def test_native_success_projects_exact_settings_and_preserves_refs(monkeypatch, 
     original = json.loads(path.read_bytes())
     result = SimpleNamespace(managed_generation_result_path=path, managed_generation_result=None)
     monkeypatch.setattr(production_engine, 'run_workflow_result_path', lambda *args, **kwargs: result)
-    kwargs = {'profile_id': 'local_server', 'comfy_url': 'http://127.0.0.1:8188'} if route == 'attached' else {}
+    kwargs = _ENGINE_ROUTE  # the 'embedded' route was retired: the engine's local run is the only no-comfy_url path
     returned = VibeComfyWorkflowBackend().workflow(tmp_path / 'absent.py', root,
         task_identity='task-1', attempt_identity='attempt-1', **kwargs)
     after = json.loads(path.read_bytes())
@@ -93,7 +96,7 @@ def test_native_failure_writes_known_envelope_with_honest_partial_evidence(
     monkeypatch.setattr(production_engine, 'run_workflow_result_path', fail)
     with pytest.raises(type(error)) as caught:
         VibeComfyWorkflowBackend().workflow(bundle.python_path, out,
-            task_identity='task-1', attempt_identity='attempt-1')
+            task_identity='task-1', attempt_identity='attempt-1', **_ENGINE_ROUTE)
     assert caught.value is error
     path = caught.value.managed_generation_result_path
     assert path == out / 'managed-generation-result.json'
@@ -186,7 +189,7 @@ def test_native_partial_hash_checks_survive_materialization_and_harvest(monkeypa
     monkeypatch.setattr(production_engine, 'run_workflow_result_path', fail)
     with pytest.raises(type(error)) as raised:
         VibeComfyWorkflowBackend().workflow(bundle.python_path, out,
-            task_identity='task-1', attempt_identity='attempt-1')
+            task_identity='task-1', attempt_identity='attempt-1', **_ENGINE_ROUTE)
     assert raised.value is error
     run = importlib.import_module('astrid.packs.vibecomfy.actions.run.run')
     spool = tmp_path / 'spool'
@@ -250,7 +253,7 @@ def test_native_cancel_without_outputs_keeps_stop_unknown_and_refuses_stale_rece
     monkeypatch.setattr(production_engine, 'run_workflow_result_path', fail)
     with pytest.raises(SystemExit) as caught:
         VibeComfyWorkflowBackend().workflow(tmp_path / 'absent.py', out,
-            task_identity='task-1', attempt_identity='attempt-1')
+            task_identity='task-1', attempt_identity='attempt-1', **_ENGINE_ROUTE)
     if stale:
         assert not hasattr(caught.value, 'managed_generation_result_path')
         assert not (out / 'managed-generation-result.json').exists()
@@ -262,51 +265,3 @@ def test_native_cancel_without_outputs_keeps_stop_unknown_and_refuses_stale_rece
         assert payload['evidence']['transport']['cancel']['observed_stop'] is None
 
 
-def test_checkout_failure_uses_task_spool_and_verified_host_output_root(monkeypatch, tmp_path):
-    import vibecomfy.schema as schema
-    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
-    from vibecomfy.workflow_bundle import ApprovedProjectionRecord, WorkflowBundle, emit_bundle
-    from astrid.core.generation.backends import vibecomfy as backend
-    from tests.core.generation.backends.test_checkout_server import _hc03_profile, _patch_remote_open
-    monkeypatch.chdir(tmp_path)
-    workflow = VibeWorkflow('checkout-evidence', WorkflowSource('checkout-evidence'))
-    sink = workflow.add_node('SaveImage', _id='1', uid='save', filename_prefix='result')
-    workflow = workflow.finalize({}, output_node=sink, output_type='SaveImage', name='image',
-        artifact_kind='image', mime_type='image/png', filename_prefix='result')
-    (tmp_path / 'source.json').write_bytes(b'{}\r\n')
-    bundle = emit_bundle(workflow, tmp_path / 'workflow.py', {'operation': 'authored'})
-    record = ApprovedProjectionRecord.from_dict({**compiled().to_dict(), 'revision_id': bundle.revision_id})
-    profile = _hc03_profile(tmp_path)
-    monkeypatch.setattr(backend, '_verify_owned_vibe_session', lambda *args: None)
-    _patch_remote_open(monkeypatch, output=b'artifact')
-    monkeypatch.setattr(schema, 'get_target_schema_provider', lambda **kwargs: SimpleNamespace(refresh=lambda: {}))
-    monkeypatch.setattr(WorkflowBundle, 'compile', lambda *args, **kwargs: record)
-    adapter = backend.CheckoutServerAdapter.from_host_session(hc03_profile=profile,
-        model_id='z-image', template_id='image/z_image', invocation_identity='task-1')
-    out = tmp_path / 'outputs' / 'task-1'
-    error = RuntimeError('checkout producer failed after writing partial')
-
-    def fail(pair, *, config):
-        assert pair[0] is record and pair[1] is bundle
-        assert config.runtime_root == out / '.vibecomfy-runtime'
-        run = config.runtime_root / 'out' / 'runs' / 'checkout-native-123'
-        run.mkdir(parents=True)
-        partial = Path(config.extra['output_directory']) / 'result.png'
-        partial.write_bytes(b'verified checkout partial')
-        receipt = run / 'attempt.json'
-        receipt.write_text(json.dumps({'runtime_evidence': {
-            'approved_projection': record.to_dict(), 'api_digest': record.api_digest,
-            'terminal': {'phase': 'verification'}}, 'artifacts': [
-                {'path': str(partial), 'reported_path': 'result.png', 'bytes': partial.stat().st_size,
-                 'sha256': hashlib.sha256(partial.read_bytes()).hexdigest()}]}))
-        error.receipt_path = str(receipt)
-        raise error
-    monkeypatch.setattr(adapter, '_run_workflow', fail)
-    with pytest.raises(RuntimeError) as caught:
-        adapter.run_compiled_workflow(bundle, out, task_identity='task-1', attempt_identity='attempt-1')
-    payload = json.loads(caught.value.managed_generation_result_path.read_bytes())
-    assert payload['producer_run_id'] == 'checkout-native-123'
-    assert payload['outcomes']['verification']['status'] == 'failed'
-    assert len(payload['outputs']) == 1
-    assert (out / payload['outputs'][0]['path']).read_bytes() == b'verified checkout partial'
-    assert payload['inputs']['effective_settings']['sha256'] == record.api_digest

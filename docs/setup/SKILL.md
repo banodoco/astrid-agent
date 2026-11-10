@@ -118,9 +118,20 @@ bundle it makes, and follow [Troubleshooting](https://github.com/banodoco/astrid
 The installer checks that Astrid is healthy. Then it tries to open astrid.haus
 in the browser. If no browser opens, ask the user to open https://astrid.haus.
 If Chrome or Edge asks to reach this computer, tell the user to choose Allow.
-Confirm that astrid.haus shows Connected. When it does, setup is complete.
-(Connecting local engines such as ComfyUI or Wan2GP is not covered here yet.)
+Confirm that astrid.haus shows Connected.
 If it does not, follow [Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md#asking-for-help).
+
+### Set up generation
+
+To connect a ComfyUI the user already runs, or to find their Wan2GP folder,
+use the **Set up my generation** section of the `generation` skill
+(installed name: `generation`;
+[public copy](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/generation/docs/SKILL.md#set-up-my-generation)).
+It reads what is set up, asks before it changes anything, and lists every change
+with how to undo it. Do not start, restart or install anything for ComfyUI or
+Wan2GP during setup. Carry
+out requested checks, report their actual results, and do not claim a check
+passed when it could not be run.
 
 ## Run everything on this computer
 

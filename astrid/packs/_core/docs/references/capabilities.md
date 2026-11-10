@@ -6,7 +6,6 @@
 
 | id | short_description |
 | --- | --- |
-| `comfy_wrap.run` | Generate an image by injecting a prompt into a ComfyUI workflow JSON and running it via vibecomfy. |
 | `generation.generate_audio` | Generate audio from text prompts via local or cloud backends. v2: model→mode→backend with music mode. |
 | `generation.generate_image` | Bounded registry-backed cloud text-to-image generation. |
 | `generation.generate_image_cloud_i2i` | One bounded z-image cloud i2i task with CAS source custody and enforced storage limits. |
@@ -16,12 +15,6 @@
 | `generation.generate_image_upscale` | One bounded SeedVR2 image upscale task. |
 | `generation.generate_speech` | Generate WAV speech from exact text with configurable Edge TTS voice settings. |
 | `generation.generate_video` | Generate videos from text prompts via local or cloud backends. v2: model→mode→backend with t2v/i2v/flf/v2v modes. |
-| `h3_av.compile` | Compile a prepared request into the repaired H3 workflow bindings and managed assets. |
-| `h3_av.compose` | Settle an H3 candidate with explicit changed and protected permissions. |
-| `h3_av.prepare` | Normalize an H3 audiovisual request into masks and asset evidence. |
-| `h3_av.publication_finalizer` | Copy one verified H3 candidate into the Runtime publication spool. |
-| `h3_av.transform` | Prepare, compile, validate, run, compose, and verify one bounded H3 continuation. |
-| `h3_av.verify` | Verify H3 artifact custody and protected-source evidence. |
 | `rendering.assemble_timeline` | Author a canonical two-child timeline from runtime-resolved visual outputs. |
 | `rendering.html_canvas_effect` | Scaffold a local Remotion HTML-in-canvas effect element. |
 | `rendering.render` | Render a hype timeline to opaque MP4 or explicitly stamped alpha MOV through the selected backend. |

@@ -8,7 +8,7 @@
     },
     "comfyui": {
       "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-      "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf"
+      "revision": "423cbd20511becb1f16122ab518e92e58bfa03d9"
     },
     "vibecomfy": {
       "repository": "https://github.com/banodoco/VibeComfy.git",
@@ -21,14 +21,6 @@
     "videohelpersuite": {
       "repository": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
       "revision": "4ee72c065db22c9d96c2427954dc69e7b908444b"
-    },
-    "vibecomfy-h3": {
-      "repository": "https://github.com/banodoco/VibeComfy.git",
-      "revision": "e65f4941d09b1cb4d1dd5aae6171c73e648706f4"
-    },
-    "comfyui-plain": {
-      "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-      "revision": "423cbd20511becb1f16122ab518e92e58bfa03d9"
     },
     "comfyui-hunyuanvideo-foley": {
       "repository": "https://github.com/BobRandomNumber/ComfyUI-HunyuanVideo_Foley.git",

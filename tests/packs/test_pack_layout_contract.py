@@ -399,7 +399,6 @@ def test_v2_integration_packs_are_discoverable() -> None:
         "moirae",
         "runpod",
         "vibecomfy",
-        "comfy_wrap",
     }
     discovered = discover_packs(_PACKS_ROOT)
     discovered_ids = {pack.id for pack in discovered}

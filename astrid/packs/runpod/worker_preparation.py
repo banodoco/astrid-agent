@@ -39,6 +39,16 @@ class TargetObservationError(RuntimeError):
         self.gate = gate
 
 
+def observation_failure_gate(exc: BaseException) -> str | None:
+    """Only fixed names may cross the provider-error/journal boundary."""
+    if not isinstance(exc, TargetObservationError):
+        return None
+    gate = getattr(exc, "gate", None)
+    return gate if isinstance(gate, str) and gate in {
+        "volume", "GPU", "datacenter", "rate", "lifetime", "machine",
+    } else "provider"
+
+
 class AcquisitionUnresolvedError(TargetObservationError):
     """An earlier create/attach may have succeeded and must be reconciled."""
 
@@ -575,7 +585,7 @@ def _target_contract(
     return RunPodTargetContract(
         pod_id=pod_id,
         expected_pod_name=expected_name,
-        gpu_type=config.gpu_type_candidates[0],
+        gpu_type=getattr(config, "gpu_type_id", None) or config.gpu_type_candidates[0],
         worker_image=config.worker_image,
         network_volume_id=_text(volume.get("id")),
         network_volume_name=_text(volume.get("name")),
@@ -619,6 +629,7 @@ def _write_target_failure(
         "state": "allocated_unverified",
         "failure_phase": phase,
         "failure_type": type(exc).__name__,
+        "failure_gate": observation_failure_gate(exc),
         "failed_at": utc_now_iso(),
         "reconciliation_required": True,
     }
@@ -752,8 +763,17 @@ def unactivated_target_quiescence(attempt: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_lease_preparation(attempt: Mapping[str, Any], *, releasing: bool = False) -> None:
-    """Preparation is child custody of A3, never a second release owner."""
+    """Preparation and the machine job are child custody of A3, never a second release owner."""
     lease = attempt.get("lease", {})
+    machine_job = lease.get("job") if isinstance(lease, Mapping) else None
+    if machine_job is not None and (
+        not isinstance(machine_job, Mapping) or set(machine_job) != {"id", "state"}
+        or not isinstance(machine_job.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", machine_job["id"])
+        or machine_job.get("state") not in {"starting", "running", "exited", "cancelled"}
+    ):
+        raise TargetObservationError("invalid exact machine job custody")
+    if releasing and machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}:
+        raise TargetObservationError("machine job remains unresolved; retain the exact lease")
     preparation = lease.get("preparation")
     if preparation is None:
         return
@@ -896,7 +916,7 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
                 or stopped_session.get("config_digest") != managed_session.get("config_digest")
                 or stopped_session.get("gpu_qualified") is not False):
             raise TargetObservationError("release lacks exact managed VibeComfy session stop evidence")
-        if managed_session.get("session_ref") == "vibecomfy-h3":
+        if managed_session.get("session_ref") == "comfyui":
             receipt = managed_session.get("receipt")
             if (not isinstance(receipt, Mapping)
                     or stopped_session.get("supervisor_stop") != "original_installation_owner"
@@ -1221,6 +1241,7 @@ async def acquire_target(
                 "state": "attached_unverified",
                 "requested_pod_id": requested_pod_id,
                 "failure_type": type(exc).__name__,
+                "failure_gate": observation_failure_gate(exc),
                 "failed_at": utc_now_iso(),
                 "reconciliation_required": True,
             }
@@ -1352,6 +1373,7 @@ async def acquire_target(
                         **attempt,
                         "state": "allocated_unverified" if known_pod_id else "allocation_unknown",
                         "failure_type": type(exc).__name__,
+                        "failure_gate": observation_failure_gate(exc),
                         "failed_at": utc_now_iso(),
                         "reconciliation_required": True,
                     }
@@ -1414,6 +1436,7 @@ async def acquire_target(
             "state": "allocated_unverified",
             "failure_phase": "readiness",
             "failure_type": type(exc).__name__,
+            "failure_gate": observation_failure_gate(exc),
             "failed_at": utc_now_iso(),
             "reconciliation_required": True,
         }
@@ -1437,6 +1460,7 @@ async def acquire_target(
             "state": "allocated_unverified",
             "failure_phase": "provider_contract",
             "failure_type": type(exc).__name__,
+            "failure_gate": observation_failure_gate(exc),
             "failed_at": utc_now_iso(),
             "reconciliation_required": True,
         }

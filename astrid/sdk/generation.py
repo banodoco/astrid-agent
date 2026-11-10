@@ -28,48 +28,17 @@ from .results import _reconstruct_generation_result
 if TYPE_CHECKING:
     from .execution_request import ExecutionRequest
     from .results import InvocationResult
-    from astrid.core.generation.engine_contracts import Placement
 
 
 WorkflowFile = str | Path | Mapping[str, Any]
 
 # Accepted for explicit use while its default-route qualification is pending.
 _EXPLICIT_ONLY_ENTRIES = frozenset({"hunyuan-foley-local", "audio/hunyuan_foley_v2a"})
-# Default slots: catalog priority per (modality, mode) for target routes.
-_DEFAULT_ENTRIES = {
-    ("image", "t2i"): ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512"),
-    ("image", "edit"): ("qwen-image-2.1-turbo-edit", "z-image", "qwen-image-2512"),
-    ("audio", "tts"): ("audio/qwen3_tts_custom_voice",),
-    ("audio", "music"): ("audio/minimax_music_3",),
-    ("audio", "sfx"): ("audio/hunyuan_video_foley",),
-}
-
-# A CLI caller can retain the validated action's connection through delivery.
-# Acquisition stays inside the SDK, after the action's preconditions succeed.
-_action_client_connection: ContextVar[Any] = ContextVar('generation_action_client_connection', default=None)
-
+# Default entries are data: packs declare them (generation.defaults, entries[].default_for) and the
+# user pins them in the generation settings document; see astrid.core.generation.defaults.
 
 def _local_template(entry: Any, mode: str) -> str:
     return getattr(entry.modes[mode].backends.get("local"), "template", "")
-
-
-@contextmanager
-def _action_client_scope(factory):
-    with ExitStack() as stack:
-        owner = None
-
-        @contextmanager
-        def connection():
-            nonlocal owner
-            if owner is None:
-                owner = stack.enter_context(factory())
-            yield owner
-
-        token = _action_client_connection.set(connection)
-        try:
-            yield lambda: owner
-        finally:
-            _action_client_connection.reset(token)
 
 
 class WorkflowInvocationClient(Protocol):
@@ -249,7 +218,7 @@ def _prompt_only_video(*, model, entry, inputs):
     return model is None and entry is None and set(inputs) == {"prompt"}
 
 
-_ALIGN_MODES = ('check', 'trust')
+_ALIGN_MODES = ('align', 'check', 'trust')
 
 
 def _align_mode(align):
@@ -301,24 +270,50 @@ def _runpod_paid_controls(controls):
     return dict(consent=consent, max_usd=cap, deadline=deadline)
 
 
-def _runpod_target_policy(controls, *, engine):
-    """Snapshot the user's disclosed offer and preferences into the task."""
+def _runpod_preferences(client):
+    """The saved RunPod placement policy, read from the caller's Runtime connection when it has one."""
+    from astrid.packs.runpod.target_selection import read_runpod_preferences
+
+    from astrid.core.generation import settings
+
+    # Only a connection that serves app-state can hold the settings document.
+    if hasattr(settings.transport_of(client), "get_user_app_state"):
+        return read_runpod_preferences(client=client).as_mapping()
+    return read_runpod_preferences().as_mapping()
+
+
+def _runpod_placement_policy(controls, *, engine, machine=None, placement_policy=None):
+    """Snapshot the user's disclosed offer and preferences into the task.
+
+    ``machine`` pins the job to one live lease (its machine id); by default the
+    host reuses the warm machine with the same custody, or claims one.
+    """
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
     paid = _runpod_paid_controls(controls)
     names = ("offer_digest", "preparation_seconds", "execution_seconds", "idle_seconds")
     if any(controls.get(name) is None for name in names):
         raise GenerationInputError("RunPod requires the disclosed offer digest and preparation, execution and idle bounds")
-    return {"kind": "runpod", "engine": engine, "preferences": read_runpod_preferences().as_mapping(),
-            **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"])}
+    preferences = _runpod_preferences(controls.get("client"))
+    if placement_policy is not None:
+        if placement_policy.gpu_types:
+            preferences["gpu_types"] = list(placement_policy.gpu_types)
+    return {"kind": "runpod", "engine": engine, "preferences": preferences,
+            **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"]),
+            **({"machine": machine} if machine else {}),
+            **({"placement_idle_seconds": placement_policy.idle_timeout_s} if placement_policy is not None else {})}
 
 
-def _runpod_operation(operation, *, client, wait, include_quote=False):
+def _runpod_operation(operation, *, client, wait, include_quote=False, preferences=None, machine_id=None):
     """Submit an ordinary task to the retained host's target owner."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
-    policy = {"kind": "runpod", "engine": "comfyui", "preferences": read_runpod_preferences().as_mapping()}
-    inputs = {"target_policy": json.dumps(policy, sort_keys=True, separators=(',', ':'), allow_nan=False)}
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences if preferences is not None else _runpod_preferences(client)}
+    if machine_id is not None:
+        if operation != "release" or not isinstance(machine_id, str) or not machine_id.strip():
+            raise GenerationInputError("exact machine release requires a nonempty machine id")
+        policy["machine"] = machine_id
+    inputs = {"placement_policy": json.dumps(policy, sort_keys=True, separators=(',', ':'), allow_nan=False)}
     if operation == 'status':
         inputs['include_quote'] = include_quote
     sdk_module = importlib.import_module('astrid.sdk')
@@ -327,8 +322,9 @@ def _runpod_operation(operation, *, client, wait, include_quote=False):
                   wait=wait, read_managed_outputs=False)
 
 
-def _runpod_status(*, client, include_quote):
-    result = _runpod_operation('status', client=client, wait=True, include_quote=include_quote)
+def _runpod_status(*, client, include_quote, preferences=None):
+    result = _runpod_operation('status', client=client, wait=True, include_quote=include_quote,
+                               preferences=preferences)
     if not result.ok:
         raise CapabilityInvocationError('target status task failed', details={'error': result.error})
     settled = result.raw_result.get('result', {})
@@ -337,6 +333,17 @@ def _runpod_status(*, client, include_quote):
     if not isinstance(status, Mapping):
         raise CapabilityInvocationError('target status task omitted its owner evidence')
     return dict(status)
+
+
+def _modality_controls(*, engine, consent, max_usd, deadline, offer_digest, preparation_seconds,
+                       execution_seconds, idle_seconds, align) -> dict[str, Any]:
+    """The controls image, video and audio all build from their public keywords."""
+    controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
+    controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
+                    execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+    if align is not None:
+        controls['align'] = _align_mode(align)
+    return controls
 
 
 def _generation_boundary(method):
@@ -554,7 +561,7 @@ def _validate_catalog_target_request(*, registry, candidate, mode, modality, inp
 def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str,
                                      modality: str, inputs: dict[str, Any],
                                      target_client: Any, backend: Any, retain_source=None,
-                                     defer_target: bool = False):
+                                     defer_target: bool = False, align: str = "check"):
     """Shared installed-catalog resolution and binding, without admission."""
     from astrid.core.generation.preflight import require_generation_target_readiness
     if not defer_target:
@@ -564,6 +571,7 @@ def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str
     workflow, plan, schema = backend.prepare_catalog_workflow(
         candidate, mode, inputs, resolve_target=target_client is not None,
         **({'retain_source': retain_source} if retain_source is not None else {}),
+        **({'align': 'trust'} if align == 'trust' else {}),
     )
     from astrid.core.generation.entries import apply_workflow_inputs
     workflow, bindings, assets = apply_workflow_inputs(workflow, mode=mode, values=inputs,
@@ -715,6 +723,206 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
     return frozen
 
 
+def _no_prompt_check(**_: Any) -> None:
+    return None
+
+
+def _video_prompt_check(*, model: Any, entry: Any, inputs: dict[str, Any]) -> None:
+    if _prompt_only_video(model=model, entry=entry, inputs=inputs):
+        raise GenerationInputError(
+            "Prompt-only video requires a reference. "
+            "Use --image-ref for a video reference, or see 'generate list --kind video'."
+        )
+
+
+def _image_resolve_mode(sdk_module: Any, *, model: Any, mode: Any, execution: Any, inputs: dict[str, Any],
+                        **_: Any) -> tuple[Any, bool]:
+    resolved_mode = sdk_module._infer_image_mode(mode, inputs)
+    explicit_openai = execution == "openai" or (
+        isinstance(model, str) and model.startswith("gpt-image")
+    )
+    if explicit_openai and mode is None and inputs.get("image_ref"):
+        resolved_mode = "edit"
+    if model is not None and mode is None and inputs.get("image_ref"):
+        from astrid.core.generation.entries import find_entry
+        manifest = find_entry(model)
+        if manifest is not None and "edit" in manifest["modes"] and "i2i" not in manifest["modes"]:
+            resolved_mode = "edit"
+    return resolved_mode, explicit_openai
+
+
+def _video_resolve_mode(sdk_module: Any, *, mode: Any, inputs: dict[str, Any], resume: bool,
+                        recovery_path: Any, placement: Any, **_: Any) -> tuple[Any, bool]:
+    if resume or recovery_path is not None and placement != 'runpod':
+        raise CapabilityValidationError("video recovery is supported only for RunPod jobs")
+    return sdk_module._infer_video_mode(mode, inputs), False
+
+
+def _audio_resolve_mode(sdk_module: Any, *, mode: Any, **_: Any) -> tuple[Any, bool]:
+    # The single model mode is resolved after the model lookup (see _audio_finish_mode).
+    return mode, False
+
+
+def _image_finish_mode(sdk_module: Any, *, mode: Any, resolved_mode: Any, explicit_openai: bool,
+                       **_: Any) -> Any:
+    if mode is None and resolved_mode in sdk_module._EXPLICIT_ONLY_IMAGE_MODES and not explicit_openai:
+        raise CapabilityValidationError(
+            f"Mode {resolved_mode!r} requires an explicit 'mode' argument"
+        )
+    return resolved_mode
+
+
+def _audio_finish_mode(sdk_module: Any, *, model: Any, model_entry: Any, mode: Any, **_: Any) -> Any:
+    if mode is not None:
+        return mode
+    # Audio models currently expose one canonical mode (music). Infer it
+    # when omitted so the facade remains ergonomic while still validating
+    # the resolved model -> mode -> backend cell.
+    if len(model_entry.modes) == 1:
+        return next(iter(model_entry.modes))
+    available_modes = ", ".join(sorted(model_entry.modes))
+    raise CapabilityValidationError(
+        f"Ambiguous audio mode for model {model!r}. "
+        f"Available modes: {available_modes}. Please specify mode."
+    )
+
+
+def _no_target_mode_check(**_: Any) -> None:
+    return None
+
+
+def _audio_target_mode_check(*, mode: Any, **_: Any) -> None:
+    if mode is None:
+        raise CapabilityValidationError('mode is required for audio target generation')
+
+
+def _no_explicit_target_check(**_: Any) -> None:
+    return None
+
+
+def _audio_explicit_target_check(*, recovery_path: Any, resume: bool, wait: bool, **_: Any) -> None:
+    if recovery_path is not None or resume or not wait:
+        raise CapabilityValidationError('audio recovery and no-wait require an explicit target')
+
+
+def _no_recipe_check(**_: Any) -> None:
+    return None
+
+
+def _image_recipe_check(*, inputs: dict[str, Any], model: Any, resolved_mode: Any, resolved_execution: Any,
+                        **_: Any) -> None:
+    recipe = inputs.get("shot_generation_recipe")
+    if recipe is None:
+        return
+    from astrid.packs.generation.actions.generate_image.task_adapter import (
+        GenerateImageAdapterError,
+        validate_shot_generation_recipe,
+    )
+
+    try:
+        validate_shot_generation_recipe(
+            recipe,
+            model=model,
+            mode=resolved_mode,
+            execution=resolved_execution,
+            resolved_settings=inputs,
+        )
+    except GenerateImageAdapterError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+
+
+def _image_required_features(*, resolved_mode: Any, inputs: dict[str, Any]) -> tuple[str, ...]:
+    # Image keeps its historic deferred prompt validation (executor-owned prompt
+    # semantics, including prompt-less upscale), so it requires no features.
+    return ()
+
+
+def _video_required_features(*, resolved_mode: Any, inputs: dict[str, Any]) -> tuple[str, ...]:
+    # FLF's defining frame pair is rejected before dry-run/live invocation.
+    if resolved_mode == "flf" and (inputs.get("image_ref") is not None or inputs.get("image_end_ref") is not None):
+        return ("image_ref", "image_end_ref")
+    return ()
+
+
+def _audio_required_features(*, resolved_mode: Any, inputs: dict[str, Any]) -> None:
+    # None lets validation use the mode's own declared requirements.
+    return None
+
+
+def _speech_invoke(facade: Any, *, inputs: dict[str, Any], client: Any, out: Any, project: Any,
+                   project_root: Any, extra_pack_roots: Any, banodoco_config: Any, active_theme: Any,
+                   include_missing_roots: bool, brief: Any, dry_run: bool, check_binaries: bool,
+                   python_exec: Any, verbose: bool, argv: Any) -> Any:
+    speech_inputs = _speech_inputs_from_audio_request(inputs)
+    invoke_out, invoke_project = _resolve_invoke_destination(
+        client=client,
+        out=out,
+        project=project,
+        project_root=project_root,
+    )
+    result = facade._invoke(
+        "generation.generate_speech",
+        kind="executor",
+        client=client,
+        project_root=project_root,
+        extra_pack_roots=extra_pack_roots,
+        banodoco_config=banodoco_config,
+        active_theme=active_theme,
+        include_missing_roots=include_missing_roots,
+        out=invoke_out,
+        project=invoke_project,
+        inputs=speech_inputs,
+        brief=brief,
+        dry_run=dry_run,
+        check_binaries=check_binaries,
+        python_exec=python_exec,
+        verbose=verbose,
+        argv=argv,
+    )
+    if dry_run:
+        return result
+    return _reconstruct_generation_result(result)
+
+
+@dataclass(frozen=True)
+class _MediaKind:
+    """What differs between image, video and audio. The one media body only reads these rules."""
+
+    capability: str
+    retire_inputs_first: bool
+    check_prompt: Any
+    resolve_mode: Any
+    finish_mode: Any
+    check_target_mode: Any
+    check_explicit_target: Any
+    speech_mode: str | None
+    check_recipe: Any
+    required_features: Any
+
+
+_MEDIA_KINDS: dict[str, _MediaKind] = {
+    "image": _MediaKind(
+        capability="generation.generate_image", retire_inputs_first=False,
+        check_prompt=_no_prompt_check, resolve_mode=_image_resolve_mode, finish_mode=_image_finish_mode,
+        check_target_mode=_no_target_mode_check, check_explicit_target=_no_explicit_target_check,
+        speech_mode=None, check_recipe=_image_recipe_check, required_features=_image_required_features,
+    ),
+    "video": _MediaKind(
+        capability="generation.generate_video", retire_inputs_first=False,
+        check_prompt=_video_prompt_check, resolve_mode=_video_resolve_mode,
+        finish_mode=lambda sdk_module, *, resolved_mode, **_: resolved_mode,
+        check_target_mode=_no_target_mode_check, check_explicit_target=_no_explicit_target_check,
+        speech_mode=None, check_recipe=_no_recipe_check, required_features=_video_required_features,
+    ),
+    "audio": _MediaKind(
+        capability="generation.generate_audio", retire_inputs_first=True,
+        check_prompt=_no_prompt_check, resolve_mode=_audio_resolve_mode, finish_mode=_audio_finish_mode,
+        check_target_mode=_audio_target_mode_check, check_explicit_target=_audio_explicit_target_check,
+        speech_mode="tts", check_recipe=_no_recipe_check, required_features=_audio_required_features,
+    ),
+}
+
+
 @dataclass(frozen=True)
 class GenerationFacade:
     """Public typed entrypoint for generation executors."""
@@ -726,7 +934,7 @@ class GenerationFacade:
         return generation_rows(kind)
 
     @_generation_boundary
-    def launch(self, *, target='auto', engine='comfyui', consent=(), timeout=10.0,
+    def launch(self, *, placement='auto', engine='comfyui', consent=(), timeout=10.0,
                project_root=None):
         """Launch/re-probe one selected human ComfyUI with fresh user_env consent.
 
@@ -738,16 +946,16 @@ class GenerationFacade:
         from astrid.core.generation.target_launch import launch_target
 
         _generation_controls(engine=engine, consent=consent, max_usd=None, deadline=None)
-        if target == 'runpod':
+        if placement == 'runpod':
             raise GenerationInputError('launch requires a selected local human ComfyUI')
         try:
-            selection = targets.resolve_target(target, repo=project_root)
+            selection = targets.resolve_target(placement, repo=project_root)
         except (ValueError, OSError) as exc:
             raise GenerationInputError(str(exc)) from exc
         return launch_target(selection, consent=consent, timeout=timeout).readiness
 
     @_generation_boundary
-    def targets(self, *, target='auto', engine='comfyui', save=False, inputs=None,
+    def targets(self, *, placement='auto', engine='comfyui', save=False, inputs=None,
                 project_root=None, client=None):
         """Inspect selection without probing; persist only an explicit save."""
         from astrid.core.generation import targets
@@ -757,34 +965,35 @@ class GenerationFacade:
             if targets.canonical_engine(engine) != 'comfyui':
                 raise ValueError('Phase 1 targets support only comfyui')
             updates = merge_input_values(inputs if inputs is not None else {})
-            if target == 'runpod':
+            if placement == 'runpod':
                 if save:
                     allowed = {'gpu_types', 'datacenter_id', 'volume', 'image', 'idle_timeout_seconds',
                                'provider_account_ref', 'credential_ref'}
                     if updates.keys() - allowed:
                         raise ValueError('unsupported RunPod preference: ' + ', '.join(sorted(updates.keys() - allowed)))
+                    from astrid.core.generation import settings as generation_settings
+
                     def write(document):
-                        preferences = document.setdefault('runpod', {})
-                        if not isinstance(preferences, dict):
-                            raise ValueError('runpod preferences must be a table')
+                        preferences = document['machines'].setdefault('runpod', {})
                         for name, value in updates.items():
                             if value is None:
                                 preferences.pop(name, None)
                             else:
                                 preferences[name] = value
-                    targets.update_config(write)
+                    generation_settings.update(write, client)
                 elif updates:
                     raise ValueError('provider inputs require --save')
                 payload = readiness_envelope()
-                payload['preferences'] = targets.read_config().get('runpod', {})
+                from astrid.core.generation import settings as generation_settings
+                payload['preferences'] = generation_settings.machine_policy('runpod', client) or {}
                 if not save and client is not None:
                     payload['target'] = _runpod_status(client=client, include_quote=False)
                 return payload
             if updates:
                 raise ValueError('local target input updates are not supported; select an explicit URL')
-            selection = targets.resolve_target(target, repo=project_root)
+            selection = targets.resolve_target(placement, repo=project_root)
             record = selection.record
-            if record is None and target == 'managed':
+            if record is None and placement == 'managed':
                 record = targets.TargetRecord(owner='astrid')
             if save:
                 if not selection.bound:
@@ -797,20 +1006,46 @@ class GenerationFacade:
             raise GenerationInputError(str(exc)) from exc
 
     @_generation_boundary
+    def defaults(self, *, client=None):
+        """Every ``(kind, mode)`` slot with its resolved entry, its source and the other candidates."""
+        from astrid.core.generation import defaults as generation_defaults
+        return generation_defaults.listing(client)
+
+    @_generation_boundary
+    def set_default(self, kind, mode, entry, *, pack=None, client=None):
+        """Pin ``entry`` as the default for ``kind``/``mode``; refuses an entry that cannot fill the slot."""
+        from astrid.core.generation import defaults as generation_defaults
+        generation_defaults.set_default(kind, mode, entry, pack=pack, client=client)
+        return generation_defaults.listing(client)
+
+    @_generation_boundary
+    def unset_default(self, kind, mode, *, client=None):
+        """Remove the user's pin for ``kind``/``mode``; the highest-priority pack default applies again."""
+        from astrid.core.generation import defaults as generation_defaults
+        generation_defaults.unset_default(kind, mode, client=client)
+        return generation_defaults.listing(client)
+
+    @_generation_boundary
     def describe(self, entry: str | None = None, *, workflow=None, mode=None,
-                 target=None, engine='comfyui', client=None):
+                 placement=None, engine='comfyui', client=None):
         from astrid.core.generation.entries import describe_entry, describe_workflow
-        if target is not None:
+        if placement is not None:
             _generation_controls(engine=engine, consent=(), max_usd=None, deadline=None)
-            if target != 'runpod' or entry is not None or workflow is not None:
+            from astrid.core.generation import placement as placements
+            resolved = placements.validate_placement(placements.resolve_placement(
+                placements.request_from_selector(placement), client=client))
+            if resolved.kind != 'runpod' or entry is not None or workflow is not None:
                 raise GenerationInputError('target describe requires only target=runpod')
-            return _runpod_status(client=client, include_quote=True)
+            preferences = _runpod_preferences(client)
+            if resolved.policy.gpu_types:
+                preferences['gpu_types'] = list(resolved.policy.gpu_types)
+            return _runpod_status(client=client, include_quote=True, preferences=preferences)
         if bool(entry) == bool(workflow):
             raise GenerationInputError('describe requires an entry or a workflow')
         return describe_entry(entry, mode=mode) if entry else describe_workflow(Path(workflow), mode=mode)
 
     @_generation_boundary
-    def release(self, *, engine: str, target: str, client=None, wait=False):
+    def release(self, *, engine: str, placement: str, machine_id=None, client=None, wait=False):
         """Release a managed engine through its verified owner; never HTTP free an unowned target.
 
         Attached or unmanaged targets are refused and never receive an HTTP free.
@@ -821,15 +1056,17 @@ class GenerationFacade:
         from astrid.core.generation.targets import canonical_engine
         if canonical_engine(engine) != 'comfyui':
             raise GenerationInputError('Phase 1 release supports only comfyui')
-        if target == 'runpod':
-            return _runpod_operation('release', client=client, wait=wait)
+        if placement == 'runpod':
+            return _runpod_operation('release', client=client, wait=wait, machine_id=machine_id)
+        if machine_id is not None:
+            raise GenerationInputError('machine id release requires runpod placement')
         bridge = getattr(client, 'release_generation', None)
         if not callable(bridge):
             raise generation_error(ValueError('The bound host release owner is unavailable'),
                 code='missing_dependency', details={'field': 'target'},
-                fixes=[{'argv': ['astrid', 'generate', 'targets', '--target', target],
+                fixes=[{'argv': ['astrid', 'generate', 'targets', '--placement', placement],
                         'scope': 'read_only', 'details': {}}])
-        result = bridge(engine='comfyui', target=target, wait=wait)
+        result = bridge(engine='comfyui', target=placement, wait=wait)
         if isinstance(result, dict) and result.get('ok') is False:
             raise generation_error(ValueError(str(result.get('reason') or 'release was not proven')),
                 code='release_not_proven', details={'field': 'target'})
@@ -867,7 +1104,7 @@ class GenerationFacade:
     def workflow(
         self, *,
         workflow: WorkflowFile | None = None,
-        target: str | None = None,
+        placement: str | None = None,
         inputs: Mapping[str, Any] | None = None,
         mode: str | None = None,
         engine: str | None = None,
@@ -878,7 +1115,7 @@ class GenerationFacade:
         preparation_seconds: float | None = None,
         execution_seconds: float | None = None,
         idle_seconds: float | None = None,
-        target_policy: Mapping[str, Any] | None = None,
+        placement_policy: Mapping[str, Any] | None = None,
         python: WorkflowFile | None = None,
         companion: WorkflowFile | None = None,
         source: WorkflowFile | None = None,
@@ -886,11 +1123,12 @@ class GenerationFacade:
         source_video_node: str | None = None,
         source_video_widget: str | None = None,
         managed_assets: WorkflowFile | None = None,
+        entry_inputs: WorkflowFile | None = None,
         workflow_inputs: str | None = None,
+        after_outputs_job: str | None = None,
         comfy_url: str | None = None,
         comfy_output_dir: str | None = None,
         generation_intent: Mapping[str, Any] | None = None,
-        placement: Placement | None = None,
         out: Path | str | None = None,
         project: str | None = None,
         client: WorkflowInvocationClient | None = None,
@@ -914,28 +1152,28 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
     ) -> InvocationResult:
         """Invoke the existing workflow action through the supplied client.
 
-        Placement validates scheduling intent; it is never a creative input.
         Omitted domain values stay omitted so the action owns its defaults.
         """
         _require_single_declared_output(workflow=workflow, companion=companion)
-        if target is not None:
+        if placement is not None:
             from astrid.core.generation.entries import resolve_workflow_inputs
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
             controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                             execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-            controls['align'] = _align_mode(align)
+            if align is not None:
+                controls['align'] = _align_mode(align)
             if not isinstance(workflow, (str, Path)) or python is not None or companion is not None:
                 raise GenerationInputError('target workflow requires one local workflow path')
             if inputs is not None and not isinstance(inputs, Mapping):
                 raise GenerationInputError('workflow inputs must be an object')
             if any(value is not None for value in (
-                    execution_request, placement, source, source_video, source_video_node,
-                    source_video_widget, managed_assets, workflow_inputs, comfy_url,
-                    comfy_output_dir, generation_intent, target_policy)):
+                    execution_request, source, source_video, source_video_node,
+                    source_video_widget, managed_assets, entry_inputs, workflow_inputs, comfy_url,
+                    comfy_output_dir, generation_intent, placement_policy)):
                 raise GenerationInputError('a target workflow cannot replace explicit prepared binding or managed source controls')
             source_controls = {'client': client, 'project': project, 'out': out,
                                'project_root': project_root}
@@ -965,7 +1203,7 @@ class GenerationFacade:
                     'binds': {}, 'defaults': {}, 'needs': []}
                 return self._generate_on_target(registry=_load_model_registry(
                     project_root=project_root, extra_pack_roots=extra_pack_roots), model=None,
-                    mode=description['mode'], modality=description['kind'], target=target,
+                    mode=description['mode'], modality=description['kind'], placement=placement,
                     execution=None, inputs=values, dry_run=dry_run, workflow_entry=workflow_entry,
                     retained_source=retained_source,
                     client=client, project=project, out=out, wait=wait,
@@ -979,14 +1217,6 @@ class GenerationFacade:
                     verbose=verbose, argv=argv, **controls)
         if inputs is not None:
             raise GenerationInputError('workflow inputs require an explicit target')
-        from astrid.core.generation.backends.registry import (
-            GenerationBackendRegistry, resolve_workflow_descriptor,
-        )
-
-        resolve_workflow_descriptor(
-            GenerationBackendRegistry(), placement=placement,
-            execution_request=execution_request,
-        )
         from astrid.core.generation.availability import require_bundled_workflow_available
         for member in (workflow, python):
             if isinstance(member, (str, Path)):
@@ -997,10 +1227,11 @@ class GenerationFacade:
                 "source": source, "source_video": source_video,
                 "source_video_node": source_video_node,
                 "source_video_widget": source_video_widget,
-                "managed_assets": managed_assets, "workflow_inputs": workflow_inputs,
+                "managed_assets": managed_assets, "entry_inputs": entry_inputs, "workflow_inputs": workflow_inputs,
+                "after_outputs_job": after_outputs_job,
                 "comfy_url": comfy_url, "comfy_output_dir": comfy_output_dir,
-                "target_policy": (json.dumps(dict(target_policy), sort_keys=True, separators=(',', ':'), allow_nan=False)
-                                  if target_policy is not None else None),
+                "placement_policy": (json.dumps(dict(placement_policy), sort_keys=True, separators=(',', ':'), allow_nan=False)
+                                  if placement_policy is not None else None),
                 "generation_intent": generation_intent,
             }.items() if value is not None
         }
@@ -1022,14 +1253,25 @@ class GenerationFacade:
             python_exec=python_exec, verbose=verbose, argv=argv,
         )
 
-    def _generate_on_target(
+    def _generate_on_target(self, **kwargs: Any) -> Any:
+        """Run ``_generate_on_target_impl``, then remove any hook job directories it made."""
+        import shutil
+        job_dirs: list[Path] = []
+        try:
+            return self._generate_on_target_impl(_job_dirs=job_dirs, **kwargs)
+        finally:
+            for directory in job_dirs:
+                shutil.rmtree(directory, ignore_errors=True)
+
+    def _generate_on_target_impl(
         self,
         *,
+        _job_dirs: list,
         registry: Any,
         model: str | None,
         mode: str,
         modality: str,
-        target: str,
+        placement: str,
         execution: str | None,
         inputs: dict[str, Any],
         dry_run: bool,
@@ -1054,16 +1296,27 @@ class GenerationFacade:
             generation_error, readiness_envelope, compare_versions,
         )
 
-        is_remote_target = target == 'runpod'
+        from astrid.core.generation import placement as placements
+
+        # The one decision site: request -> user default -> built-in, then frozen.
+        placement = placements.validate_placement(placements.resolve_placement(
+            placements.request_from_selector(placement), client=controls.get('client'),
+            repo=controls.get('project_root')))
+        is_managed_target = placement.kind == 'local'
+        is_remote_target = placement.kind not in placements.BUILTIN_KINDS
         if is_remote_target:
             _runpod_paid_controls(controls)
         # Validate paid bounds now; the engine follows the selected entry below.
-        target_policy = _runpod_target_policy(controls, engine=None) if is_remote_target and not dry_run else None
+        placement_policy = (_runpod_placement_policy(controls, engine=None, machine=placement.machine,
+                                                     placement_policy=placement.policy)
+                            if is_remote_target and not dry_run else
+                            {"kind": "local", "device": placement.device} if is_managed_target else None)
         runpod_engine = pending_target = None
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):
             controls.pop(name, None)
-        align = _align_mode(controls.pop('align', 'check'))
+        requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
+        align = _align_mode(requested_align or 'check')
 
         if execution not in {None, "local"}:
             raise CapabilityValidationError(
@@ -1084,7 +1337,12 @@ class GenerationFacade:
 
         # Catalog priority is explicit, stable and per modality/mode. Unknown
         # catalog entries and user entries remain eligible in lexical order.
-        preferred = _DEFAULT_ENTRIES.get((modality, mode), ())
+        from astrid.core.generation import defaults as generation_defaults
+        from astrid.core.generation import settings as generation_settings
+        settings_snapshot = generation_settings.read(controls.get('client'))
+        pinned = (generation_defaults.pinned_entry(modality, mode, settings_snapshot)
+                  if model is None and workflow_entry is None else None)
+        preferred = generation_defaults.ordered_ids(modality, mode, settings_snapshot)
         def rank(candidate: Any) -> tuple[int, str]:
             identifier = candidate[1].id if candidate[0] == "catalog" else candidate[1]["id"]
             return (preferred.index(identifier) if identifier in preferred else len(preferred), identifier)
@@ -1110,6 +1368,11 @@ class GenerationFacade:
                            if entry["kind"] == modality and mode in entry["modes"]
                            and entry["id"] not in _EXPLICIT_ONLY_ENTRIES
                            and not entry.get("registry_id")]
+            if pinned is not None and not any(
+                    (c[1].id if c[0] == "catalog" else c[1]["id"]) == pinned for c in candidates):
+                found = workflow_entries.find_entry(pinned)
+                if found is not None:
+                    candidates.append(("workflow", found))
             candidates.sort(key=rank)
         from astrid.core.generation.availability import (
             require_model_available, require_entry_available,
@@ -1144,8 +1407,10 @@ class GenerationFacade:
         candidates = qualified
         default_id = (candidates[0][1].id if candidates[0][0] == 'catalog'
                       else candidates[0][1]['id']) if candidates else None
-        target_client = (None if is_remote_target else select_generation_target(
-            target, repo=controls.get("project_root"),
+        # Managed and remote workflows are frozen from declarations. The host
+        # validates that exact selection after alignment and engine readiness.
+        target_client = (None if is_remote_target or is_managed_target else select_generation_target(
+            placements.comfy_selector(placement), repo=controls.get("project_root"),
             entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id') or default_id,
             mode=mode))
         backend = VibeComfyBackend(target_client=target_client)
@@ -1167,10 +1432,26 @@ class GenerationFacade:
         for source, candidate in candidates:
             source_ref = retained_source
             identifier = candidate.id if source == "catalog" else candidate["id"]
+            if automatic and identifier != pinned and source == "workflow" and candidate.get('hooks_declared'):
+                # A contributed default may require a different public input shape. Only
+                # skip it for missing required inputs; a chosen candidate's build errors
+                # and explicitly pinned entries remain fail-closed.
+                description = workflow_entries.describe_entry(identifier, mode=mode, _native=True)
+                names = {name for port in description['inputs']
+                         for name in (port['name'], *port.get('aliases', []))}
+                try:
+                    workflow_entries.validate_inputs(description, {k: v for k, v in inputs.items() if k in names})
+                except workflow_entries.MissingRequiredEntryInputsError as exc:
+                    failures.append(f"{identifier}: {exc}")
+                    continue
             try:
                 assets = {}
                 if is_remote_target:
                     template = (None if source == "workflow" else _local_template(candidate, mode))
+                    if source == "workflow" and candidate.get('hooks_declared'):
+                        import tempfile
+                        _job_dirs.append(Path(tempfile.mkdtemp(prefix='astrid-job-')))
+                        candidate = workflow_entries.attach_hooks(candidate, inputs, _job_dirs[-1])
                     runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
                         workflow_entries.find_entry(template) if template else None)
                     pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
@@ -1178,26 +1459,50 @@ class GenerationFacade:
                     workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                         registry=registry, candidate=candidate, mode=mode, modality=modality,
                         inputs=inputs, target_client=target_client, backend=backend,
-                        retain_source=None if dry_run else retain_source, defer_target=is_remote_target)
+                        retain_source=None if dry_run else retain_source,
+                        defer_target=is_remote_target or is_managed_target, align=align)
                 else:
                     from types import SimpleNamespace
                     prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
                         backends={"local": SimpleNamespace(template=str(candidate["bundle"]))})})
-                    if not is_remote_target:
+                    if not is_remote_target and not is_managed_target:
                         require_generation_target_readiness(prerequisite, mode, target_client)
                     if candidate["kind"] != modality or mode not in candidate["modes"]:
                         raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
                     registry_id = candidate.get("registry_id")
                     if registry_id:
                         catalog_entry = registry.get(registry_id)
-                        if not is_remote_target:
+                        if not is_remote_target and not is_managed_target:
                             require_generation_target_readiness(catalog_entry, mode, target_client)
                         validate_generation_request(registry, model=registry_id, mode=mode,
                                                     execution="local", inputs=inputs, modality=modality)
                         workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                             registry=registry, candidate=catalog_entry, mode=mode,
                             modality=modality, inputs=inputs, target_client=target_client, backend=backend,
-                            retain_source=None if dry_run else retain_source, defer_target=is_remote_target)
+                            retain_source=None if dry_run else retain_source,
+                            defer_target=is_remote_target or is_managed_target, align=align)
+                    elif source == "workflow" and candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
+                        # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
+                        # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
+                        if controls.get('wait') is False and not dry_run and not is_remote_target:
+                            # after_outputs reads the build state in this call's job directory, which is
+                            # removed when the call returns; a queued task would find it gone.
+                            raise CapabilityValidationError(
+                                f"entry {identifier!r} runs a post-generation step on this machine; "
+                                "it cannot run with --no-wait (the build state lives only for this call)")
+                        import tempfile
+                        job_dir = candidate.get('job_dir') or Path(tempfile.mkdtemp(prefix='astrid-job-'))
+                        if not candidate.get('job_dir'):
+                            _job_dirs.append(Path(job_dir))
+                        built = workflow_entries.build_entry(candidate, inputs, job_dir)
+                        workflow, assets = built['workflow'], dict(built.get('assets') or {})
+                        plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
+                                'build_plan': built.get('plan'), 'job_dir': str(job_dir)}
+                        if not dry_run and source_ref is None:
+                            retained = Path(built['bundle']) / 'source.json'
+                            retain_source(retained.name, retained.read_bytes())
+                        schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
+                                                                pending_target=pending_target, align=align)
                     else:
                         with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
                             if not dry_run and source_ref is None:
@@ -1267,8 +1572,8 @@ class GenerationFacade:
                 fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
         entry_id, workflow, bundle, plan, schema, approval, assets = selected
-        if target_policy is not None:
-            target_policy["engine"] = runpod_engine
+        if is_remote_target and placement_policy is not None:
+            placement_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
         from astrid.core.generation.targets import TargetRecord
         if target_record is None:
@@ -1310,6 +1615,12 @@ class GenerationFacade:
                 preview.setdefault('workflow', ready_template)
             if approval is not None:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
+            # Report the same built graph's requirements that local alignment will judge.
+            manifest = workflow_entries.engine_table()['comfyui'].requirements({'workflow': workflow}, effective_values)
+            if placement.kind == 'local':
+                from astrid.core.generation.managed_preparation import configured_models_root
+                manifest = {**manifest, 'models_root': configured_models_root()}
+            readiness['entry']['requirements'] = manifest
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
@@ -1333,7 +1644,23 @@ class GenerationFacade:
                     for record in manifest["assets"]:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
+            if is_remote_target and entry_id != 'workflow':
+                from astrid.core.generation.job_inputs import write_archive
+                public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
+                if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
+                    public_values['seed'] = plan['bindings']['seed']
+                archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
+                asset_arguments['entry_inputs'] = import_member(archive)
+            hook_job = None
+            if source == 'workflow' and not is_remote_target and plan and plan.get('job_dir') and 'after_outputs' in (candidate.get('hooks') or workflow_entries.entry_hooks(candidate)):
+                # The hook runs where the job runs, after the outputs are written and before they are sealed.
+                # On a rented machine the pod-side `astrid generate` rebuilds and runs it from the shipped inputs;
+                # this controller's job directory is not shipped.
+                job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
+                hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
+                                       'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
             result = self.workflow(
+                **({'after_outputs_job': hook_job} if hook_job else {}),
                 python=import_member(root / "workflow.py"),
                 companion=import_member(root / "workflow.vibe.json"),
                 source=source_ref,
@@ -1344,15 +1671,18 @@ class GenerationFacade:
                 workflow_inputs=json.dumps({name: value for name, value in
                     (plan or {}).get('bindings', {}).items() if name not in assets},
                     sort_keys=True, allow_nan=False),
-                comfy_url=(target_client.target.url if target_client is not None else None),
-                target_policy=target_policy,
+                # The managed client is for preparation and inventory. Passing its
+                # loopback URL as an attached endpoint bypasses managed alignment
+                # and lifecycle ownership in the action.
+                comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
+                placement_policy=placement_policy,
                 generation_intent={
                     "version": 1, "modality": modality, "partial_success_policy": "reject",
                     "groups": [{"group_key": "main", "selectors": [{
                         "selector": "main-0", "ordinal": 0,
                         "variant_key": "original", "required": True,
                     }]}],
-                    "metadata": {"model": entry_id, "mode": mode, **({"align": "trust"} if align == "trust" else {})},
+                    "metadata": {"model": entry_id, "mode": mode, **({"align": requested_align} if requested_align is not None else {})},
                 },
                 **asset_arguments, **controls,
             )
@@ -1370,40 +1700,47 @@ class GenerationFacade:
             raise CapabilityValidationError("model and entry select different generation entries")
         try:
             description = describe_entry(entry, mode=mode, registry=registry, _native=True)
-            ports = {port["name"]: port for port in description["inputs"]}
-            producer = (description.get("action") == "h3_av.transform"
-                        and all(ports.get(name, {}).get("file_custody") == "producer_local"
-                                for name in ("request", "asset_map")))
-            if producer:
-                # The H3 admission adapter alone reads these owner controls.
-                # Keep its explicit producer boundary while validating each
-                # declared control's type, without changing execution metadata.
-                from astrid.packs.h3_av.actions.transform.run import PUBLIC_CONTROLS
-                controls = {key: value for key, value in inputs.items() if key in PUBLIC_CONTROLS}
-                description, values = resolve_entry_inputs(
-                    entry, {key: value for key, value in inputs.items() if key not in PUBLIC_CONTROLS},
-                    mode=mode, kind=modality, registry=registry,
-                )
-                control_schema = {**description, "inputs": [
-                    {**port, **({"type": "object"} if port["name"] in {"execution_request", "cleanup_receipt"}
-                                and isinstance(controls.get(port["name"]), Mapping) else
-                               {"file_custody": "producer_local"} if port["type"] == "file" else {})}
-                    for port in description["inputs"] if port["name"] in PUBLIC_CONTROLS]}
-                values.update(validate_inputs(control_schema, controls, required=False))
-            else:
-                description, values = resolve_entry_inputs(
-                    entry, dict(inputs), mode=mode, kind=modality, registry=registry,
-                )
+            description, values = resolve_entry_inputs(
+                entry, dict(inputs), mode=mode, kind=modality, registry=registry,
+            )
         except (ValueError, KeyError) as exc:
             raise GenerationInputError(str(exc), entry=locals().get('description')) from exc
         from astrid.core.generation.availability import require_entry_available
         require_entry_available(description, description['mode'])
-        if description.get("action") and (not producer or description.get("runtime_parent_required")):
+        if description.get("action"):
             raise CapabilityPreconditionError(
                 "action-backed generation requires a Runtime-admitted parent; "
                 "the tracked parent interface is not yet available"
             )
         return description, values
+
+    def generate(self, entry: str | None = None, inputs: Mapping[str, Any] | None = None,
+                 placement: str | None = None, **options: Any) -> Any:
+        """The one generation front door: ``generate(entry, inputs, placement)``.
+
+        The kind (image, video or audio) is read from the entry's own declaration, so this is the
+        one place that refuses an unknown entry or malformed inputs. ``image``, ``video`` and
+        ``audio`` remain as the typed aliases that pin a kind.
+        """
+        if entry is None:
+            raise CapabilityValidationError("generate requires an entry")
+        if inputs is not None and not isinstance(inputs, Mapping):
+            raise CapabilityValidationError("generate inputs must be an object")
+        from astrid.core.generation.entries import describe_entry
+
+        sdk_module = importlib.import_module(self.sdk_module_name)
+        try:
+            kind = describe_entry(
+                entry, mode=options.get("mode"),
+                registry=sdk_module._load_model_registry(
+                    project_root=options.get("project_root"),
+                    extra_pack_roots=options.get("extra_pack_roots", ()),
+                ),
+                _native=True,
+            )["kind"]
+        except (KeyError, ValueError) as exc:
+            raise CapabilityValidationError(str(exc)) from exc
+        return getattr(self, kind)(entry=entry, placement=placement, **dict(inputs or {}), **options)
 
     @_generation_boundary
     def image(
@@ -1411,7 +1748,7 @@ class GenerationFacade:
         *,
         model: str | None = None,
         entry: str | None = None,
-        target: str | None = None,
+        placement: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
         engine: str | None = None,
@@ -1438,15 +1775,65 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
         **inputs: Any,
     ) -> Any:
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
+        return self._media_request("image", **arguments, **inputs)
+
+    def _media_request(
+        self,
+        modality: str,
+        *,
+        model: str | None = None,
+        request: str | Mapping[str, Any] | None = None,
+        asset_map: str | Mapping[str, Any] | None = None,
+        resume: bool = False,
+        entry: str | None = None,
+        placement: str | None = None,
+        mode: str | None = None,
+        execution: str | None = None,
+        engine: str | None = None,
+        consent: tuple[str, ...] = (),
+        max_usd: float | None = None,
+        deadline: str | None = None,
+        offer_digest: str | None = None,
+        preparation_seconds: float | None = None,
+        execution_seconds: float | None = None,
+        idle_seconds: float | None = None,
+        wait: bool = True,
+        out: Path | str | None = None,
+        project: str | None = None,
+        client: Any | None = None,
+        recovery_path: Path | str | None = None,
+        project_root: str | Path | None = None,
+        extra_pack_roots: tuple[str, ...] = (),
+        banodoco_config: Any | None = None,
+        active_theme: str | Path | None = None,
+        include_missing_roots: bool = False,
+        brief: Path | str | None = None,
+        dry_run: bool = False,
+        check_binaries: bool = False,
+        python_exec: str | None = None,
+        verbose: bool = False,
+        argv: tuple[str, ...] = (),
+        align: str | None = None,
+        **inputs: Any,
+    ) -> Any:
+        kind = _MEDIA_KINDS[modality]
+        if kind.retire_inputs_first:
+            _reject_retired_generation_inputs(inputs)
         inputs = _public_input_values(inputs)
-        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-        controls['align'] = _align_mode(align)
-        _reject_retired_generation_inputs(inputs)
+        controls = _modality_controls(
+            engine=engine, consent=consent, max_usd=max_usd, deadline=deadline,
+            offer_digest=offer_digest, preparation_seconds=preparation_seconds,
+            execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
+        )
+        if not kind.retire_inputs_first:
+            _reject_retired_generation_inputs(inputs)
+        inputs.update({name: value for name, value in
+                       (("request", request), ("asset_map", asset_map)) if value is not None})
+        kind.check_prompt(model=model, entry=entry, inputs=inputs)
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
         if entry is not None:
@@ -1454,34 +1841,28 @@ class GenerationFacade:
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
             )
             description, inputs = self._resolve_public_entry(
-                entry=entry, model=model, mode=mode, modality="image",
+                entry=entry, model=model, mode=mode, modality=modality,
                 inputs=inputs, registry=registry,
             )
             model, mode = entry, description["mode"]
-            if description["source"] == "workflow" and target is None:
-                target = "auto"
-        resolved_mode = sdk_module._infer_image_mode(mode, inputs)
-        explicit_openai = execution == "openai" or (
-            isinstance(model, str) and model.startswith("gpt-image")
+            if description["source"] == "workflow" and placement is None:
+                placement = "auto"
+        resolved_mode, explicit_openai = kind.resolve_mode(
+            sdk_module, model=model, mode=mode, execution=execution, inputs=inputs,
+            resume=resume, recovery_path=recovery_path, placement=placement,
         )
-        if explicit_openai and mode is None and inputs.get("image_ref"):
-            resolved_mode = "edit"
-        if model is not None and mode is None and inputs.get("image_ref"):
-            from astrid.core.generation.entries import find_entry
-            manifest = find_entry(model)
-            if manifest is not None and "edit" in manifest["modes"] and "i2i" not in manifest["modes"]:
-                resolved_mode = "edit"
         if registry is None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root,
                 extra_pack_roots=extra_pack_roots,
             )
-        if engine is not None and target is None:
-            target = 'auto'
-        if target is not None:
+        if engine is not None and placement is None:
+            placement = 'auto'
+        if placement is not None:
+            kind.check_target_mode(mode=resolved_mode)
             return self._generate_on_target(
-                registry=registry, model=model, mode=resolved_mode, modality="image",
-                target=target, execution=execution, inputs=inputs, dry_run=dry_run,
+                registry=registry, model=model, mode=resolved_mode, modality=modality,
+                placement=placement, execution=execution, inputs=inputs, dry_run=dry_run,
                 client=client, out=out, project=project, project_root=project_root,
                 extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
                 active_theme=active_theme, include_missing_roots=include_missing_roots,
@@ -1489,6 +1870,16 @@ class GenerationFacade:
                 verbose=verbose, argv=argv,
                 **controls, **({'wait': False} if not wait else {}),
                 **({'recovery_path': recovery_path} if recovery_path is not None else {}),
+                **({'resume': True} if resume else {}),
+            )
+        kind.check_explicit_target(recovery_path=recovery_path, resume=resume, wait=wait)
+        if kind.speech_mode is not None and resolved_mode == kind.speech_mode:
+            return _speech_invoke(
+                self, inputs=inputs, client=client, out=out, project=project,
+                project_root=project_root, extra_pack_roots=extra_pack_roots,
+                banodoco_config=banodoco_config, active_theme=active_theme,
+                include_missing_roots=include_missing_roots, brief=brief, dry_run=dry_run,
+                check_binaries=check_binaries, python_exec=python_exec, verbose=verbose, argv=argv,
             )
         if model is None:
             raise CapabilityValidationError("model is required when target is omitted")
@@ -1496,56 +1887,33 @@ class GenerationFacade:
             model_entry = registry.get(model)
         except KeyError as exc:
             raise CapabilityValidationError(str(exc)) from exc
-
-        if (mode is None and resolved_mode in sdk_module._EXPLICIT_ONLY_IMAGE_MODES
-                and not explicit_openai):
-            raise CapabilityValidationError(
-                f"Mode {resolved_mode!r} requires an explicit 'mode' argument"
-            )
-
+        resolved_mode = kind.finish_mode(
+            sdk_module, model=model, model_entry=model_entry, mode=mode,
+            resolved_mode=resolved_mode, explicit_openai=explicit_openai,
+        )
         resolved_execution = sdk_module._resolve_execution(
             model_entry,
             resolved_mode,
             execution,
             model=model,
         )
-        from astrid.core.generation.preflight import validate_generation_request
+        from astrid.core.generation.preflight import (
+            require_local_generation_readiness,
+            validate_generation_request,
+        )
 
-        recipe = inputs.get("shot_generation_recipe")
-        if recipe is not None:
-            from astrid.packs.generation.actions.generate_image.task_adapter import (
-                GenerateImageAdapterError,
-                validate_shot_generation_recipe,
-            )
-
-            try:
-                validate_shot_generation_recipe(
-                    recipe,
-                    model=model,
-                    mode=resolved_mode,
-                    execution=resolved_execution,
-                    resolved_settings=inputs,
-                )
-            except GenerateImageAdapterError as exc:
-                raise CapabilityValidationError(str(exc)) from exc
-
+        kind.check_recipe(inputs=inputs, model=model, resolved_mode=resolved_mode,
+                          resolved_execution=resolved_execution)
         validate_generation_request(
             registry,
             model=model,
             mode=resolved_mode,
             execution=resolved_execution,
             inputs={"model": model, "mode": resolved_mode, **inputs},
-            modality="image",
-            # Keep the image facade's historic deferred prompt validation:
-            # executor-owned prompt semantics (including prompt-less upscale)
-            # remain compatible while matrix/readiness checks happen here.
-            required_features=(),
+            modality=modality,
+            required_features=kind.required_features(resolved_mode=resolved_mode, inputs=inputs),
         )
         if resolved_execution == "local":
-            from astrid.core.generation.preflight import (
-                require_local_generation_readiness,
-            )
-
             # This read-only check must happen before destination resolution
             # and invoke/admission.  It reports missing local installation
             # prerequisites without creating a run, task, or staging tree.
@@ -1561,7 +1929,7 @@ class GenerationFacade:
             project_root=project_root,
         )
         result = self._invoke(
-            "generation.generate_image",
+            kind.capability,
             kind="executor",
             client=client,
             project_root=project_root,
@@ -1590,27 +1958,13 @@ class GenerationFacade:
             return result
         return _reconstruct_generation_result(result)
 
-    @staticmethod
-    def _validate_action_entry(entry: dict[str, Any], *, modality: str,
-                               mode: str | None, inputs: Mapping[str, Any]) -> None:
-        """Check declared bindings without initiating the untracked action route."""
-        if entry["kind"] != modality or (mode is not None and mode not in entry["modes"]):
-            raise CapabilityValidationError(f"entry {entry['id']!r} does not support {modality}/{mode}")
-        if mode is None and len(entry["modes"]) != 1:
-            raise CapabilityValidationError(f"entry {entry['id']!r} requires an explicit mode")
-        from astrid.core.generation.entries import validate_inputs
-        try:
-            validate_inputs({**entry, "source": "action"}, dict(inputs))
-        except ValueError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-
     @_generation_boundary
     def video(
         self,
         *,
         model: str | None = None,
         entry: str | None = None,
-        target: str | None = None,
+        placement: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
         engine: str | None = None,
@@ -1640,178 +1994,11 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
         **inputs: Any,
     ) -> Any:
-        inputs = _public_input_values(inputs)
-        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-        controls['align'] = _align_mode(align)
-        _reject_retired_generation_inputs(inputs)
-        inputs.update({name: value for name, value in
-                       (("request", request), ("asset_map", asset_map)) if value is not None})
-        if _prompt_only_video(model=model, entry=entry, inputs=inputs):
-            raise GenerationInputError(
-                "Prompt-only video requires a reference or an H3 request. "
-                "Use --image-ref for a video reference, or use --entry h3 --inputs-json FILE "
-                "with a JSON object containing request and asset_map file paths. "
-                "See generate video --entry h3 --help."
-            )
-        sdk_module = importlib.import_module(self.sdk_module_name)
-        registry = None
-        action_entry = None
-        if entry is not None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root, extra_pack_roots=extra_pack_roots,
-            )
-            description, inputs = self._resolve_public_entry(
-                entry=entry, model=model, mode=mode, modality="video",
-                inputs=inputs, registry=registry,
-            )
-            model, mode = entry, description["mode"]
-            action_entry = description if description.get("action") else None
-            if description["source"] == "workflow" and target is None:
-                target = "auto"
-        elif model is not None:
-            from astrid.core.generation.entries import find_entry
-            manifest = find_entry(model)
-            if manifest is not None and "action" in manifest:
-                registry = sdk_module._load_model_registry(
-                    project_root=project_root, extra_pack_roots=extra_pack_roots,
-                )
-                action_entry, inputs = self._resolve_public_entry(
-                    entry=model, model=model, mode=mode, modality="video", inputs=inputs, registry=registry,
-                )
-        if action_entry is not None:
-            if action_entry["action"] != "h3_av.transform":
-                raise CapabilityPreconditionError("action-backed generation requires a Runtime-admitted parent")
-            if target not in (None, "auto", "managed", "runpod") or execution not in (None, "local"):
-                raise CapabilityValidationError("tracked H3 requires the default Runtime target")
-            if not inputs.get("request") or not inputs.get("asset_map"):
-                raise CapabilityValidationError("H3 requires request and asset_map")
-            if target == 'runpod':
-                _runpod_paid_controls(controls)
-                if not dry_run:
-                    from astrid.core.generation.entries import runpod_engine
-                    inputs['target_policy'] = _runpod_target_policy(controls, engine=runpod_engine(action_entry))
-            controls = dict(kind="action", inputs=inputs, project=project, out=out,
-                project_root=project_root, extra_pack_roots=extra_pack_roots,
-                banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
-                dry_run=dry_run, wait=wait, read_managed_outputs=True,
-                recovery_path=recovery_path, resume=resume)
-            if client is None and not dry_run:
-                # Reuse the ordinary owner launcher connection; the admitted
-                # parent, including prepared custody, stays in this context.
-                connection = _action_client_connection.get()
-                with (connection() if connection is not None else
-                      sdk_module.AstridClient.open_from_launcher(start_pack_host=False)) as owner:
-                    return owner.invoke_result("h3_av.transform", **controls)
-            invoke = client.invoke_result if client is not None else sdk_module.invoke_result
-            return invoke("h3_av.transform", **controls)
-        if resume or recovery_path is not None and target != 'runpod':
-            raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
-        resolved_mode = sdk_module._infer_video_mode(mode, inputs)
-        if registry is None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root,
-                extra_pack_roots=extra_pack_roots,
-            )
-        if engine is not None and target is None:
-            target = 'auto'
-        if target is not None:
-            return self._generate_on_target(
-                registry=registry, model=model, mode=resolved_mode, modality="video",
-                target=target, execution=execution, inputs=inputs, dry_run=dry_run,
-                client=client, out=out, project=project, project_root=project_root,
-                extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
-                active_theme=active_theme, include_missing_roots=include_missing_roots,
-                brief=brief, check_binaries=check_binaries, python_exec=python_exec,
-                verbose=verbose, argv=argv,
-                **controls, **({'wait': False} if not wait else {}),
-                **({'recovery_path': recovery_path} if recovery_path is not None else {}),
-            )
-        if model is None:
-            raise CapabilityValidationError("model is required when target is omitted")
-        try:
-            model_entry = registry.get(model)
-        except KeyError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-
-        resolved_execution = sdk_module._resolve_execution(
-            model_entry,
-            resolved_mode,
-            execution,
-            model=model,
-        )
-        from astrid.core.generation.preflight import (
-            require_local_generation_readiness,
-            validate_generation_request,
-        )
-
-        # FLF's defining frame pair must be rejected before dry-run/live
-        # invocation.  The prompt remains executor-owned for compatibility
-        # with existing facade callers that only exercise routing.
-        flf_required = None
-        if resolved_mode == "flf" and (
-            inputs.get("image_ref") is not None
-            or inputs.get("image_end_ref") is not None
-        ):
-            flf_required = ("image_ref", "image_end_ref")
-        validate_generation_request(
-            registry,
-            model=model,
-            mode=resolved_mode,
-            execution=resolved_execution,
-            inputs={"model": model, "mode": resolved_mode, **inputs},
-            modality="video",
-            # The typed facade historically defers prompt validation to the
-            # executor; when FLF refs are supplied, however, enforce the
-            # defining frame pair before dry-run/live admission.
-            required_features=flf_required or (),
-        )
-        if resolved_execution == "local":
-            # Keep local video on the same actionable, read-only prerequisite
-            # gate as image generation. No cloud fallback is attempted.
-            require_local_generation_readiness(
-                model_entry,
-                resolved_mode,
-                python_executable=python_exec,
-            )
-        invoke_out, invoke_project = _resolve_invoke_destination(
-            client=client,
-            out=out,
-            project=project,
-            project_root=project_root,
-        )
-        result = self._invoke(
-            "generation.generate_video",
-            kind="executor",
-            client=client,
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-            banodoco_config=banodoco_config,
-            active_theme=active_theme,
-            include_missing_roots=include_missing_roots,
-            out=invoke_out,
-            project=invoke_project,
-            inputs={
-                "model": model,
-                "mode": resolved_mode,
-                "execution": resolved_execution,
-                **inputs,
-            },
-            brief=brief,
-            dry_run=dry_run,
-            check_binaries=check_binaries,
-            python_exec=python_exec,
-            verbose=verbose,
-            argv=argv,
-            **({'wait': False} if not wait else {}),
-        )
-        if dry_run or not wait:
-            return result
-        return _reconstruct_generation_result(result)
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
+        return self._media_request("video", **arguments, **inputs)
 
     @_generation_boundary
     def audio(
@@ -1819,7 +2006,7 @@ class GenerationFacade:
         *,
         model: str | None = None,
         entry: str | None = None,
-        target: str | None = None,
+        placement: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
         engine: str | None = None,
@@ -1847,159 +2034,27 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
         **inputs: Any,
     ) -> Any:
-        """Generate audio through the typed action or a selected workflow target."""
-        _reject_retired_generation_inputs(inputs)
-        inputs = _public_input_values(inputs)
-        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-        controls['align'] = _align_mode(align)
-        sdk_module = importlib.import_module(self.sdk_module_name)
-        registry = None
-        if entry is not None:
-            registry = sdk_module._load_model_registry(project_root=project_root, extra_pack_roots=extra_pack_roots)
-            description, inputs = self._resolve_public_entry(entry=entry, model=model, mode=mode,
-                modality='audio', inputs=inputs, registry=registry)
-            model, mode = entry, description['mode']
-            if description['source'] == 'workflow' and target is None:
-                target = 'auto'
-        if engine is not None and target is None:
-            target = 'auto'
-        if target is not None:
-            if mode is None:
-                raise CapabilityValidationError('mode is required for audio target generation')
-            if registry is None:
-                registry = sdk_module._load_model_registry(project_root=project_root, extra_pack_roots=extra_pack_roots)
-            return self._generate_on_target(
-                registry=registry, model=model, mode=mode, modality='audio', target=target,
-                execution=execution, inputs=inputs, dry_run=dry_run, client=client, out=out,
-                project=project, project_root=project_root, extra_pack_roots=extra_pack_roots,
-                banodoco_config=banodoco_config, active_theme=active_theme,
-                include_missing_roots=include_missing_roots, brief=brief,
-                check_binaries=check_binaries, python_exec=python_exec, verbose=verbose, argv=argv,
-                **controls, **({'wait': False} if not wait else {}),
-                **({'recovery_path': recovery_path} if recovery_path is not None else {}),
-                **({'resume': True} if resume else {}),
-            )
-        if recovery_path is not None or resume or not wait:
-            raise CapabilityValidationError('audio recovery and no-wait require an explicit target')
-        if mode == "tts":
-            speech_inputs = _speech_inputs_from_audio_request(inputs)
-            invoke_out, invoke_project = _resolve_invoke_destination(
-                client=client,
-                out=out,
-                project=project,
-                project_root=project_root,
-            )
-            result = self._invoke(
-                "generation.generate_speech",
-                kind="executor",
-                client=client,
-                project_root=project_root,
-                extra_pack_roots=extra_pack_roots,
-                banodoco_config=banodoco_config,
-                active_theme=active_theme,
-                include_missing_roots=include_missing_roots,
-                out=invoke_out,
-                project=invoke_project,
-                inputs=speech_inputs,
-                brief=brief,
-                dry_run=dry_run,
-                check_binaries=check_binaries,
-                python_exec=python_exec,
-                verbose=verbose,
-                argv=argv,
-            )
-            if dry_run:
-                return result
-            return _reconstruct_generation_result(result)
-        if model is None:
-            raise CapabilityValidationError('model is required when target is omitted')
-        if registry is None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root, extra_pack_roots=extra_pack_roots,
-            )
-        try:
-            model_entry = registry.get(model)
-        except KeyError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-
-        # Audio models currently expose one canonical mode (music). Infer it
-        # when omitted so the facade remains ergonomic while still validating
-        # the resolved model → mode → backend cell.
-        resolved_mode = mode
-        if resolved_mode is None:
-            if len(model_entry.modes) == 1:
-                resolved_mode = next(iter(model_entry.modes))
-            else:
-                available_modes = ", ".join(sorted(model_entry.modes))
-                raise CapabilityValidationError(
-                    f"Ambiguous audio mode for model {model!r}. "
-                    f"Available modes: {available_modes}. Please specify mode."
-                )
-
-        resolved_execution = sdk_module._resolve_execution(
-            model_entry,
-            resolved_mode,
-            execution,
-            model=model,
-        )
-        from astrid.core.generation.preflight import (
-            require_local_generation_readiness,
-            validate_generation_request,
-        )
-
-        validate_generation_request(
-            registry,
-            model=model,
-            mode=resolved_mode,
-            execution=resolved_execution,
-            inputs={"model": model, "mode": resolved_mode, **inputs},
-            modality="audio",
-        )
-        if resolved_execution == "local":
-            require_local_generation_readiness(
-                model_entry,
-                resolved_mode,
-                python_executable=python_exec,
-            )
-
-        invoke_out, invoke_project = _resolve_invoke_destination(
-            client=client,
-            out=out,
-            project=project,
-            project_root=project_root,
-        )
-        result = self._invoke(
-            "generation.generate_audio",
-            kind="executor",
-            client=client,
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-            banodoco_config=banodoco_config,
-            active_theme=active_theme,
-            include_missing_roots=include_missing_roots,
-            out=invoke_out,
-            project=invoke_project,
-            inputs={
-                "model": model,
-                "mode": resolved_mode,
-                "execution": resolved_execution,
-                **inputs,
-            },
-            brief=brief,
-            dry_run=dry_run,
-            check_binaries=check_binaries,
-            python_exec=python_exec,
-            verbose=verbose,
-            argv=argv,
-        )
-        if dry_run:
-            return result
-        return _reconstruct_generation_result(result)
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
+        return self._media_request("audio", **arguments, **inputs)
 
 
 generate = GenerationFacade()
+
+
+def defaults(*, client=None):
+    """Every ``(kind, mode)`` slot with its resolved entry, where it came from, and the other candidates."""
+    return generate.defaults(client=client)
+
+
+def set_default(kind, mode, entry, *, pack=None, client=None):
+    """Pin ``entry`` as the user's default for ``kind``/``mode``."""
+    return generate.set_default(kind, mode, entry, pack=pack, client=client)
+
+
+def unset_default(kind, mode, *, client=None):
+    """Remove the user's pin for ``kind``/``mode``."""
+    return generate.unset_default(kind, mode, client=client)
+

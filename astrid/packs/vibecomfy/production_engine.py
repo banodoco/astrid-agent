@@ -7,15 +7,13 @@ import hashlib
 import importlib
 import json
 import os
-import secrets
 import shutil
 import sys
 import tempfile
 from collections.abc import Mapping
-from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, ContextManager
+from typing import Any
 
 from runtime_protocol import platform
 
@@ -26,24 +24,7 @@ _PROFILE_CONFIGS = {
         "warm_policy": "never",
         "cancellation": "delete-owned-prompt-and-interrupt-if-running",
     },
-    "pip_embedded": {
-        "name": "pip_embedded",
-        "dependency_lock": "vibecomfy-pip-comfyui-0.26.0",
-        "session_kind": "embedded_session",
-        "warm_policy": "never",
-        "cancellation": "owned_process_group",
-    },
-    "checkout_server": {
-        "name": "checkout_server",
-        "dependency_lock": "vibecomfy-checkout-comfyui-0.26.0",
-        "session_kind": "server_session",
-        "warm_policy": "auto",
-        "cancellation": "interrupt-clear-free-then-owned_process_group",
-    },
 }
-
-_EMBEDDED_COMFY_CLIENT = Path("comfy/client/embedded_comfy_client.py")
-
 
 class ProductionEngineError(RuntimeError):
     """The pinned VibeComfy engine rejected or failed a typed workflow."""
@@ -112,39 +93,6 @@ def _profile_comfyui_version_requirement(hc03_profile: Any) -> str | None:
             "worker readiness runtime.comfyui_version must be a non-empty string"
         )
     return declared.strip()
-
-
-def _bootstrap_embedded_comfy_client() -> Path:
-    """Select and import the embedded-client ComfyUI tree for pip execution."""
-    configured = os.environ.get("COMFYUI_PATH")
-    root = Path(configured).expanduser().resolve() if configured else None
-    if root is None or not (root / _EMBEDDED_COMFY_CLIENT).is_file():
-        raise ProductionEngineError(
-            "pip_embedded requires a ComfyUI tree containing "
-            "comfy/client/embedded_comfy_client.py; set COMFYUI_PATH, or use "
-            "local_server mode (comfy_url) with your own ComfyUI"
-        )
-
-    root_string = str(root)
-    sys.path[:] = [entry for entry in sys.path if entry != root_string]
-    sys.path.insert(0, root_string)
-    importlib.invalidate_caches()
-    try:
-        module = importlib.import_module("comfy.client.embedded_comfy_client")
-        getattr(module, "Comfy")
-    except Exception as exc:  # noqa: BLE001 - normalize the third-party import boundary.
-        raise ProductionEngineError(
-            f"pip_embedded cannot import comfy.client.embedded_comfy_client from {root}"
-        ) from exc
-
-    module_path = Path(getattr(module, "__file__", "")).resolve()
-    expected_path = (root / _EMBEDDED_COMFY_CLIENT).resolve()
-    if module_path != expected_path:
-        raise ProductionEngineError(
-            "pip_embedded imported comfy.client.embedded_comfy_client from "
-            f"{module_path}, expected {expected_path}"
-        )
-    return root
 
 
 def _replace_references(value: Any, references: Mapping[str, str]) -> Any:
@@ -669,66 +617,6 @@ def _workflow_comfy_configuration(bundle: Any) -> dict[str, Any]:
     return dict(configured)
 
 
-def _embedded_session_config(
-    bundle: Any,
-    destination: Path,
-    comfy_root: Path,
-    *,
-    task_identity: str,
-    attempt_identity: str | None = None,
-) -> Any:
-    """Build a pinned SessionConfig for the embedded profile.
-
-    The Comfy-specific values remain in VibeComfy's ``extra`` mapping; the
-    runtime-root and cwd fields are typed SessionConfig fields.  This keeps
-    model/configuration identity explicit and prevents the child from
-    inheriting a task worker's ambient cwd or global model registry.
-    """
-    from vibecomfy.runtime.session import SessionConfig
-
-    values = _workflow_comfy_configuration(bundle)
-    values.update(
-        {
-            "base_directory": str(comfy_root.resolve()),
-            "extra_model_paths_config": [
-                str((comfy_root / "extra_model_paths.yaml").resolve())
-            ],
-            "disable_known_models": True,
-            "runtime_root": str((destination / ".vibecomfy-runtime").resolve()),
-            "cwd": str(comfy_root.resolve()),
-            "input_directory": str((destination / "engine-input").resolve()),
-            "port": None,
-            "warm_policy": "never",
-            "quiet_schema_degradation": False,
-        }
-    )
-    config = SessionConfig.from_dict(values)
-    config.extra["output_directory"] = str(
-        (destination / "engine-output").resolve()
-    )
-    config.extra["task_id"] = task_identity
-    if attempt_identity is not None:
-        config.extra["attempt_id"] = attempt_identity
-    return config
-
-
-@contextmanager
-def _checkout_cancellation(control: Any):
-    cancelled = False
-
-    def cancel(signum: int, _frame: Any) -> None:
-        nonlocal cancelled
-        cancelled = True
-        control.cancel()
-        raise SystemExit(128 + signum)
-
-    restore = platform.install_stop_handlers(cancel)
-    try:
-        yield lambda: cancelled
-    finally:
-        restore()
-
-
 def _result_from_runtime_result(
     result: Any,
     outputs: tuple[Path, ...],
@@ -773,15 +661,10 @@ def _run_profile_result(
     comfy_url: str = "",
     comfy_output_dir: str = "",
     workflow_conversion_object_info_sha256: str | None = None,
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
     endpoint_transport: Any = None,
 ) -> ProductionRunResult:
-    if endpoint_checkout is not None and endpoint_transport is not None:
-        raise ProductionEngineError("endpoint_checkout and endpoint_transport are mutually exclusive")
-    if endpoint_transport is not None and profile_id != "checkout_server":
-        raise ProductionEngineError("endpoint_transport requires checkout_server")
-    if endpoint_checkout is not None and profile_id != "checkout_server":
-        raise ProductionEngineError("endpoint_checkout requires checkout_server")
+    if endpoint_transport is not None:
+        raise ProductionEngineError("endpoint_transport was removed with the checkout route")
     if comfy_url and profile_id != "local_server":
         raise ProductionEngineError("comfy_url requires the local_server profile")
     from astrid.core.generation.engine_readiness import current_comfy_provenance
@@ -799,136 +682,7 @@ def _run_profile_result(
             task_identity=task_identity, attempt_identity=attempt_identity, run_inputs=run_inputs,
             workflow_conversion_object_info_sha256=workflow_conversion_object_info_sha256,
         )
-    if profile_id == "pip_embedded":
-        comfy_root = _bootstrap_embedded_comfy_client()
-        from vibecomfy.runtime.run import run_embedded_sync
-
-        if run_inputs is None:
-            # Keep the lightweight test doubles and older internal callers on
-            # the zero-argument seam; real task inputs take the approval path
-            # below and are recorded in the detached projection.
-            record, bundle = _canonical_bundle(resolved)
-        else:
-            record, bundle = _canonical_bundle(resolved, run_inputs=run_inputs)
-        previous_warm = os.environ.get("VIBECOMFY_WARM")
-        previous_warn_only = os.environ.get("VIBECOMFY_SCHEMA_WARN_ONLY")
-        previous_configuration = os.environ.get("VIBECOMFY_COMFY_CONFIGURATION")
-        previous_comfyui_path = os.environ.get("COMFYUI_PATH")
-        previous_attention = os.environ.get("VIBECOMFY_ATTENTION_PROFILE")
-        previous_astrid_attention = os.environ.get("ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE")
-        os.environ["VIBECOMFY_WARM"] = "never"
-        os.environ["VIBECOMFY_SCHEMA_WARN_ONLY"] = "0"
-        # VibeComfy's environment layer otherwise has precedence over the
-        # typed SessionConfig.  Pin the environment layer to the empty
-        # object and the already-selected Comfy tree for this invocation.
-        os.environ["VIBECOMFY_COMFY_CONFIGURATION"] = "{}"
-        os.environ["COMFYUI_PATH"] = str(comfy_root.resolve())
-        os.environ.pop("VIBECOMFY_ATTENTION_PROFILE", None)
-        os.environ.pop("ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE", None)
-        try:
-            result = run_embedded_sync(
-                record,
-                bundle,
-                config=_embedded_session_config(
-                    bundle,
-                    destination,
-                    comfy_root,
-                    task_identity=task_identity,
-                    attempt_identity=attempt_identity,
-                ),
-            )
-        finally:
-            if previous_warm is None:
-                os.environ.pop("VIBECOMFY_WARM", None)
-            else:
-                os.environ["VIBECOMFY_WARM"] = previous_warm
-            if previous_warn_only is None:
-                os.environ.pop("VIBECOMFY_SCHEMA_WARN_ONLY", None)
-            else:
-                os.environ["VIBECOMFY_SCHEMA_WARN_ONLY"] = previous_warn_only
-            if previous_configuration is None:
-                os.environ.pop("VIBECOMFY_COMFY_CONFIGURATION", None)
-            else:
-                os.environ["VIBECOMFY_COMFY_CONFIGURATION"] = previous_configuration
-            if previous_comfyui_path is None:
-                os.environ.pop("COMFYUI_PATH", None)
-            else:
-                os.environ["COMFYUI_PATH"] = previous_comfyui_path
-            if previous_attention is None:
-                os.environ.pop("VIBECOMFY_ATTENTION_PROFILE", None)
-            else:
-                os.environ["VIBECOMFY_ATTENTION_PROFILE"] = previous_attention
-            if previous_astrid_attention is None:
-                os.environ.pop("ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE", None)
-            else:
-                os.environ["ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE"] = previous_astrid_attention
-        raw_outputs = getattr(result, "outputs", None)
-        if not isinstance(raw_outputs, (list, tuple)) or not raw_outputs:
-            raise ProductionEngineError("VibeComfy produced no output artifacts")
-        outputs: list[Path] = []
-        for raw in raw_outputs:
-            outputs.append(Path(raw).resolve(strict=True))
-        return _result_from_runtime_result(result, tuple(outputs))
-
-    if not isinstance(hc03_profile, Mapping):
-        raise ProductionEngineError("checkout_server lacks its verified VibeComfy readiness profile")
-    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-
-    workflow_comfyui_version = _workflow_comfyui_version_requirement(resolved)
-    profile_comfyui_version = _profile_comfyui_version_requirement(hc03_profile)
-    # Workflow versions are declarations. The adapter independently verifies
-    # the installed baseline and retains known workflow drift as a warning.
-    from astrid.core.generation.preflight import compare_versions, readiness_envelope
-
-    # The installed profile carries an exact baseline, often written as ==X.
-    # Compare its version against the workflow constraint without treating the
-    # profile as a live system_stats observation. Unknown versions stay silent.
-    baseline = profile_comfyui_version.removeprefix("==") if profile_comfyui_version else None
-    issues = compare_versions({"comfyui": workflow_comfyui_version}, {"comfyui": baseline})
-    for issue in issues:
-        issue["message"] = (
-            "workflow and worker profile ComfyUI version contracts disagree: "
-            f"workflow={workflow_comfyui_version!r} profile={profile_comfyui_version!r}"
-        )
-        issue["details"].update(workflow=workflow_comfyui_version, profile=profile_comfyui_version,
-                                observation_source="installed_profile")
-        import warnings
-
-        warnings.warn(issue["message"], UserWarning, stacklevel=2)
-    version_readiness = readiness_envelope(issues=issues)
-    if provenance is not None:
-        provenance.add_readiness_issues(issues)
-    factory = endpoint_checkout if endpoint_checkout is not None else CheckoutServerAdapter.from_host_session
-    transport_kwargs = {} if endpoint_transport is None else {"endpoint_transport": endpoint_transport}
-    checkout = factory(
-        hc03_profile=hc03_profile,
-        model_id=model_id,
-        template_id=template_id,
-        invocation_identity=task_identity,
-        expected_comfyui_version=workflow_comfyui_version or profile_comfyui_version,
-        **transport_kwargs,
-    )
-    # The injected context attaches to the original owner and closes only its
-    # transport. Existing local checkout creation and cancellation stay intact.
-    attachment = checkout if endpoint_checkout is not None else nullcontext(checkout)
-    with attachment as adapter, _checkout_cancellation(adapter) as was_cancelled:
-        try:
-            outputs = tuple(
-                adapter.run_compiled_workflow(
-                    resolved,
-                    destination,
-                    task_identity=task_identity,
-                    attempt_identity=attempt_identity,
-                    run_inputs=run_inputs,
-                )
-            )
-            return replace(_result_from_runtime_result(
-                getattr(adapter, "_last_run_result", None), outputs
-            ), readiness=version_readiness)
-        except BaseException:
-            if not was_cancelled():
-                adapter.release(reason="failed")
-            raise
+    raise ProductionEngineError(f"unsupported production profile {profile_id!r}; only local_server runs")
 
 
 def _run_profile(
@@ -945,20 +699,15 @@ def _run_profile(
     comfy_url: str = "",
     comfy_output_dir: str = "",
     workflow_conversion_object_info_sha256: str | None = None,
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
     endpoint_transport: Any = None,
 ) -> tuple[Path, ...]:
     """Compatibility projection for callers that only need output paths."""
     global _LAST_PRODUCTION_RESULT
-    if endpoint_checkout is not None and endpoint_transport is not None:
-        raise ProductionEngineError("endpoint_checkout and endpoint_transport are mutually exclusive")
     from astrid.core.generation.availability import require_bundled_execution_available
     require_bundled_execution_available(resolved)
     local_kwargs: dict[str, Any] = {}
     if endpoint_transport is not None:
         local_kwargs["endpoint_transport"] = endpoint_transport
-    if endpoint_checkout is not None:
-        local_kwargs["endpoint_checkout"] = endpoint_checkout
     if comfy_url:
         local_kwargs["comfy_url"] = comfy_url
     if comfy_output_dir:
@@ -987,7 +736,7 @@ def run_workflow_path(
     destination: str | Path,
     *,
     task_identity: str,
-    profile_id: str = "pip_embedded",
+    profile_id: str = "local_server",
     model_id: str = "vibecomfy",
     template_id: str = "vibecomfy.run",
     hc03_profile: Any = None,
@@ -996,24 +745,19 @@ def run_workflow_path(
     workflow_input_bindings: Mapping[str, Any] | None = None,
     comfy_url: str = "",
     comfy_output_dir: str = "",
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
     endpoint_transport: Any = None,
 ) -> tuple[Path, ...]:
     """Run a file workflow through the reviewed production-engine path.
 
     The registered ``vibecomfy.run`` executor uses this adapter instead of
     importing VibeComfy's low-level runner directly.  Checkout-server callers
-    must supply the host-issued VibeComfy readiness profile; the default embedded profile is
-    intentionally the only implicit profile.
+    must supply the host-issued VibeComfy readiness profile; the implicit profile is local_server,
+    which needs a comfy_url.
     """
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise ProductionEngineError("production engine task_identity is required")
-    if endpoint_checkout is not None and endpoint_transport is not None:
-        raise ProductionEngineError("endpoint_checkout and endpoint_transport are mutually exclusive")
-    if endpoint_transport is not None and profile_id != "checkout_server":
-        raise ProductionEngineError("endpoint_transport requires checkout_server")
-    if endpoint_checkout is not None and profile_id != "checkout_server":
-        raise ProductionEngineError("endpoint_checkout requires checkout_server")
+    if endpoint_transport is not None:
+        raise ProductionEngineError("endpoint_transport was removed with the checkout route")
     destination_path = Path(destination).expanduser().resolve()
     destination_path.mkdir(parents=True, exist_ok=True)
     loaded = load_workflow_path(
@@ -1031,20 +775,18 @@ def run_workflow_path(
     if profile_id == "local_server":
         from astrid.packs.vibecomfy.local_server_engine import local_server_bundle
 
-        resolved = local_server_bundle(resolved, destination_path)
+        resolved = local_server_bundle(resolved, destination_path,
+                                       allow_empty_image="image" in (workflow_input_bindings or {}))
     run_inputs = _validate_workflow_input_bindings(resolved, workflow_input_bindings)
     if profile_id == "local_server":
         bundle = _canonical_bundle_value(resolved)
-        run_inputs = dict(run_inputs or {})
-        if "seed" in bundle.workflow.inputs and "seed" not in run_inputs:
-            run_inputs["seed"] = secrets.randbelow(2**32)
+        from astrid.core.generation.entries import prepare_execution_bindings
+        run_inputs = prepare_execution_bindings(bundle.workflow, run_inputs)
     global _LAST_PRODUCTION_RESULT
     _LAST_PRODUCTION_RESULT = None
     profile_kwargs: dict[str, Any] = {}
     if endpoint_transport is not None:
         profile_kwargs["endpoint_transport"] = endpoint_transport
-    if endpoint_checkout is not None:
-        profile_kwargs["endpoint_checkout"] = endpoint_checkout
     if attempt_identity is not None:
         profile_kwargs["attempt_identity"] = attempt_identity
     if comfy_url:
@@ -1074,7 +816,7 @@ def run_workflow_result_path(
     destination: str | Path,
     *,
     task_identity: str,
-    profile_id: str = "pip_embedded",
+    profile_id: str = "local_server",
     model_id: str = "vibecomfy",
     template_id: str = "vibecomfy.run",
     hc03_profile: Any = None,
@@ -1083,7 +825,6 @@ def run_workflow_result_path(
     workflow_input_bindings: Mapping[str, Any] | None = None,
     comfy_url: str = "",
     comfy_output_dir: str = "",
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
     endpoint_transport: Any = None,
 ) -> ProductionRunResult:
     """Run a workflow while retaining the producer result envelope.
@@ -1091,8 +832,6 @@ def run_workflow_result_path(
     This projects the existing path API so callers and test doubles that still
     replace ``run_workflow_path`` continue to work.
     """
-    if endpoint_checkout is not None and endpoint_transport is not None:
-        raise ProductionEngineError("endpoint_checkout and endpoint_transport are mutually exclusive")
     global _LAST_PRODUCTION_RESULT
     _LAST_PRODUCTION_RESULT = None
     kwargs: dict[str, Any] = {
@@ -1101,8 +840,6 @@ def run_workflow_result_path(
         "hc03_profile": hc03_profile,
         "expected_execution_identity": expected_execution_identity,
     }
-    if endpoint_checkout is not None:
-        kwargs["endpoint_checkout"] = endpoint_checkout
     if endpoint_transport is not None:
         kwargs["endpoint_transport"] = endpoint_transport
     if model_id != "vibecomfy":
@@ -1162,28 +899,11 @@ def execute(request_path: str | Path, out: str | Path, result_path: str | Path) 
     outputs: list[str] = []
     for index, raw in enumerate(raw_outputs):
         candidate = Path(raw)
-        if profile_id == "checkout_server" and candidate.is_symlink():
-            raise ProductionEngineError(
-                "checkout_server output is not a private staged artifact"
-            )
         source = candidate.resolve(strict=True)
-        if profile_id == "checkout_server":
-            try:
-                source.relative_to(destination)
-            except ValueError as exc:
-                raise ProductionEngineError(
-                    "checkout_server output escaped canonical adapter custody"
-                ) from exc
-            if not source.is_file() or source.stat().st_nlink != 1:
-                raise ProductionEngineError(
-                    "checkout_server output is not a private staged artifact"
-                )
-            target = source
-        else:
-            suffix = source.suffix or ".bin"
-            target = destination / f"engine-output-{index:04d}{suffix}"
-            if source != target:
-                shutil.copyfile(source, target)
+        suffix = source.suffix or ".bin"
+        target = destination / f"engine-output-{index:04d}{suffix}"
+        if source != target:
+            shutil.copyfile(source, target)
         outputs.append(str(target))
     Path(result_path).write_text(
         json.dumps({"outputs": outputs}, sort_keys=True, separators=(",", ":")),

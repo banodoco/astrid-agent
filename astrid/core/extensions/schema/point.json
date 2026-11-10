@@ -8,7 +8,7 @@
     "description": {"type": "string", "minLength": 1},
     "version": {"type": "integer", "minimum": 1},
     "min_supported": {"type": "integer", "minimum": 1},
-    "side": {"const": "client"},
+    "side": {"enum": ["client", "agent"]},
     "cardinality": {"enum": ["many", "one"]},
     "effects_allowed": {
       "oneOf": [

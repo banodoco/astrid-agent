@@ -8,6 +8,7 @@ The latter must never acknowledge a detached/unowned process as an owned server.
 from __future__ import annotations
 from ._engine_python_bootstrap import engine_process_env
 
+import copy
 import hashlib
 import json
 import math
@@ -24,12 +25,12 @@ from typing import Mapping
 
 from . import engine_recipe as recipes
 from .engine_contracts import (
+    effective_models_root,
     CommandFailed,
     CommandRequest,
     CustodyUnresolved,
     Deadline,
     DeadlineExceeded,
-    DownloadResult,
     EndpointHealthError,
     EndpointOwnershipError,
     EngineError,
@@ -37,6 +38,7 @@ from .engine_contracts import (
     EngineReinstallRequired,
     EngineRecipe,
     ExecutionContext,
+    DownloadResult,
     HealthEvidence,
     InstallPlan,
     InstallReceipt,
@@ -177,26 +179,6 @@ def _root(root, platform):
     return normalized
 
 
-def validate_model_cache_root(model_cache_root, *, engine_root, platform, placement):
-    """Bind a persistent cache separately from private local engine state.
-
-    This is lexical target validation only. The downloader validates each cache
-    filesystem component before it copies a canonical model-lock destination.
-    """
-    if model_cache_root is None:
-        return None
-    if placement != "local":
-        raise UnsupportedPlacement("mounted model cache requires local execution")
-    if not platform.startswith("linux-"):
-        raise UnsupportedPlatform("mounted model cache requires a local Linux target")
-    cache_root = _root(model_cache_root, platform)
-    if (cache_root == engine_root or cache_root.startswith(engine_root + "/")
-            or engine_root.startswith(cache_root + "/")):
-        raise UnsafePathError("model cache and private engine roots must be disjoint")
-    return cache_root
-
-
-
 def _disk_anchor(root):
     """Open the deepest existing directory without following any symlink."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -218,7 +200,21 @@ def _disk_anchor(root):
         os.close(fd)
 
 
-def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement) -> InstallPlan:
+def _models_root(root: str, models_root: str | None) -> str | None:
+    """An explicit model directory is a normalized absolute path outside the engine's own tree."""
+    if models_root is None:
+        return None
+    if not isinstance(models_root, str) or not models_root.startswith("/") or any(ord(c) < 32 for c in models_root):
+        raise UnsafePathError("models root must be a target-native absolute path")
+    if any(p in {"", ".", ".."} for p in models_root[1:].split("/")) or models_root == "/":
+        raise UnsafePathError("models root must be normalized")
+    if models_root == root or models_root.startswith(root + "/") or root.startswith(models_root + "/"):
+        raise UnsafePathError("models root must not be inside or contain the engine root")
+    return models_root
+
+
+def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement,
+                 models_root: str | None = None) -> InstallPlan:
     if not isinstance(recipe, EngineRecipe):
         raise RecipeValidationError("plan_install requires an EngineRecipe")
     if placement not in {"local", "runpod"}:
@@ -229,7 +225,10 @@ def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement
     if recipes.recipe_digest(recipe) != recipes.recipe_digest(verified):
         raise IntegrityError("recipe differs from the verified packaged recipe")
     root = _root(root, verified.platform)
-    models = recipes.load_model_lock(verified.models_lock)
+    if models_root is not None and placement != "local":
+        # A mounted model cache is bound by a local install; a RunPod pod installs with --placement local.
+        raise UnsupportedPlacement("mounted model cache requires local execution")
+    models_root = _models_root(root, models_root)
     steps = []
     for source in verified.sources:
         parents = tuple("source:" + parent.name for parent in verified.sources
@@ -244,14 +243,13 @@ def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement
         steps.append(InstallStep("environment:" + env.name, "environment", source_ids,
                                  "Verify hash-locked environment " + env.name))
     env_ids = tuple(s.id for s in steps if s.kind == "environment")
-    for model in models.models:
-        steps.append(InstallStep("model:" + model.name, "model", env_ids,
-                                 "Verify locked model " + model.name))
-    prerequisites = tuple(s.id for s in steps if s.kind in {"environment", "model"})
+    # Plan 32 T5h: an install is model-free. Models arrive through align, one manifest row at a time.
+    prerequisites = tuple(s.id for s in steps if s.kind == "environment")
     steps.extend((InstallStep("start", "start", prerequisites, "Start or reuse the owned loopback engine"),
                   InstallStep("health", "health", ("start",), "Validate owned health and required nodes")))
     return InstallPlan("astrid.engine-plan.v1", verified.engine, verified.platform, placement,
-                       root, recipes.recipe_digest(verified), verified.models_lock.sha256, tuple(steps))
+                       root, recipes.recipe_digest(verified), verified.models_lock.sha256, tuple(steps),
+                       models_root=models_root)
 
 
 def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
@@ -271,7 +269,8 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
         path = root / relative
         if path.is_file():
             result[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    result["packs/engine-index.json"] = hashlib.sha256(recipes._INDEX_PATH.read_bytes()).hexdigest()
+    for relative in recipes.declaration_paths():
+        result[relative] = hashlib.sha256((recipes._ROOT / relative).read_bytes()).hexdigest()
     entry = next(e for e in recipes.load_recipe_index().entries
                  if (e.engine, e.platform) == (recipe.engine, recipe.platform))
     refs = [entry.recipe, *recipes.pin_set_refs(recipe.pins), recipe.models_lock]
@@ -285,14 +284,17 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 
 
+_INHERIT_VISIBILITY = object()
+
+
 class _Runner:
-    def __init__(self, plan, context, adapter, deadline, model_cache_root=None,
-                 model_cache_device=None, model_cache_mount_id=None):
+    def __init__(self, plan, context, adapter, deadline, *, device=None, visibility=_INHERIT_VISIBILITY):
         _deadline(deadline)
         if not isinstance(plan, InstallPlan):
             raise RecipeValidationError("install_engine requires an InstallPlan")
         self.recipe = recipes.load_recipe(plan.engine, plan.platform)
-        expected = plan_install(self.recipe, root=plan.root, placement=plan.placement)
+        expected = plan_install(self.recipe, root=plan.root, placement=plan.placement,
+                                models_root=plan.models_root)
         if plan != expected:
             raise IntegrityError("install plan differs from the recomputed verified plan")
         if (context.platform != plan.platform or adapter.key != plan.platform
@@ -302,18 +304,15 @@ class _Runner:
             raise UnsupportedPlatform("Windows runner execution requires the A7 adapter")
         if adapter.validate_root(plan.root) != plan.root:
             raise UnsafePathError("adapter changed the bound install root")
+        if device is not None and (type(device) is not int or device < 0):
+            raise RecipeValidationError("invalid local GPU device")
+        self.device = device
+        self.visibility = (str(device) if device is not None else
+                           os.environ.get("CUDA_VISIBLE_DEVICES") if visibility is _INHERIT_VISIBILITY else visibility)
+        if self.visibility is not None and (not isinstance(self.visibility, str) or "\0" in self.visibility
+                                            or len(self.visibility.encode("utf-8")) > 4096):
+            raise RecipeValidationError("invalid local GPU visibility")
         self.plan, self.context, self.adapter, self.deadline = plan, context, adapter, deadline
-        self.model_cache_root = validate_model_cache_root(
-            model_cache_root, engine_root=plan.root, platform=plan.platform, placement=plan.placement)
-        self.model_cache_binding = {}
-        for key, value in (("model_cache_device", model_cache_device), ("model_cache_mount_id", model_cache_mount_id)):
-            if value is not None:
-                if self.model_cache_root is None or type(value) is not int or value < (1 if key.endswith("mount_id") else 0):
-                    raise UnsafePathError("model cache binding is invalid")
-                self.model_cache_binding[key] = value
-        if len(self.model_cache_binding) not in (0, 2):
-            raise UnsafePathError("model cache requires both device and mount ID")
-        self.models_lock = recipes.load_model_lock(self.recipe.models_lock)
         self.helper_sha256 = _sha(helper_manifest(self.recipe))
         self.env = engine_process_env(adapter.environment(self.recipe, plan.root), plan.root)
         self.step_id = None
@@ -394,6 +393,10 @@ class _Runner:
                 "root": self.plan.root, "recipe_sha256": self.plan.recipe_sha256,
                 "helper_sha256": self.helper_sha256, **extra}
 
+    def models_config_helper(self, operation):
+        """The extra-model-paths helper names this install's model directory, volume cache or <root>/models."""
+        return self.helper(operation, models_root=self.plan.models_root)
+
     def helper(self, operation, **extra):
         result = self.run(("python3", "-I", "-m", "astrid.core.generation.engine_runner_target",
                            operation, _json(self.payload(**extra))))
@@ -452,7 +455,8 @@ class _Runner:
         return value
 
     def launch_spec(self):
-        request = self.adapter.start_request(self.recipe, self.plan.root, deadline=self.deadline)
+        request = self.adapter.start_request(self.recipe, self.plan.root, deadline=self.deadline,
+                                             models_root=self.plan.models_root)
         if request.deadline != self.deadline or not request.argv:
             raise RecipeValidationError("adapter start request violates recipe binding", step_id=self.step_id)
         # Check all launch fields against the verified recipe's closed placeholders.
@@ -464,7 +468,9 @@ class _Runner:
             raise RecipeValidationError("adapter launch differs from verified recipe", step_id=self.step_id)
         if any(request.env.get(k) != v for k, v in expected["env"].items()):
             raise RecipeValidationError("adapter launch environment differs from recipe", step_id=self.step_id)
-        return {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+        env = dict(request.env)
+        env["CUDA_VISIBLE_DEVICES"] = self.visibility
+        return {"argv": list(request.argv), "cwd": request.cwd, "env": env}
 
     def placeholder_values(self, environment=None):
         if environment is None:
@@ -472,7 +478,8 @@ class _Runner:
         return {"install_root": self.plan.root,
                 "python": self.adapter.venv_python(self.path(environment.relative_path)),
                 "comfy_root": self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui")),
-                "models_root": self.path("models"), "models_config": self.path("runtime/extra_model_paths.yaml"),
+                "models_root": self.path("models") if self.plan.models_root is None else self.plan.models_root,
+                "models_config": self.path("runtime/extra_model_paths.yaml"),
                 "host": self.recipe.start.bind_host, "port": str(self.recipe.start.port)}
 
     def source(self, source, *, readonly=False):
@@ -627,7 +634,7 @@ class _Runner:
         wheels = self.path(".astrid-engine/environments", name, "wheels.lock")
         sync = (uv, "--no-config", "pip", "sync", "--python", python,
                 "--index-url", "https://pypi.org/simple", "--require-hashes")
-        if (self.recipe.engine == "vibecomfy-h3" and self.recipe.platform == "linux-x86_64-cu130"
+        if (self.recipe.engine == "comfyui" and self.recipe.platform == "linux-x86_64-cu130"
                 and environment.requirements.mode == "packaged"):
             sync += ("--only-binary", ":all:", "--no-binary", "openai-whisper",
                      "--no-binary", "argbind", "--no-binary", "randomname",
@@ -698,45 +705,26 @@ class _Runner:
         return self.run((uv, "--no-config", "pip", "check", "--python", python),
                         env=env, check=False).exit_code == 0
 
-    def model(self, model, *, readonly=False):
-        path = self.path("models", model.destination)
-        if readonly:
-            fact = self.fact(path, hashed=True)
-            if (not fact.regular or fact.symlink or fact.bytes != model.bytes or fact.sha256 != model.sha256):
-                raise IntegrityError("installed model failed full integrity verification", step_id=self.step_id)
-            result = DownloadResult(model.name, path, "skipped", model.bytes, model.sha256, True, 0)
-        else:
-            _deadline(self.deadline, self.step_id)
-            cache = {} if self.model_cache_root is None else {"model_cache_root": self.model_cache_root, **self.model_cache_binding}
-            result = self.context.download_model(model, models_root=self.path("models"),
-                                                 deadline=self.deadline, **cache)
-            if (not isinstance(result, DownloadResult) or result.model != model.name or result.path != path
-                    or result.bytes != model.bytes or result.sha256 != model.sha256 or result.verified is not True
-                    or result.action not in {"downloaded", "resumed", "skipped"}
-                    or type(result.resumed_from_bytes) is not int
-                    or not 0 <= result.resumed_from_bytes <= model.bytes):
-                raise IntegrityError("model result differs from canonical lock", step_id=self.step_id)
-        self.models.append(result)
-        return ("skipped" if result.action == "skipped" else "executed"), {"bytes": result.bytes, "sha256": result.sha256}
-
     def start(self, *, readonly=False):
         launch = self.launch_spec()
         probe = self.service("probe", launch=launch)
         if probe["state"] == "owned":
-            if self.helper("models-config-check") != {"valid": True}:
+            if self.models_config_helper("models-config-check") != {"valid": True}:
                 raise IntegrityError("owned engine models configuration differs", step_id=self.step_id)
-            return "skipped", {"owner_id": self.service_owner, "launch_sha256": _sha(launch)}
+            return "skipped", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
+                               "cuda_visible_devices": self.visibility}
         if readonly:
             raise EndpointHealthError("owned engine server is absent", step_id=self.step_id)
-        if self.helper("models-config") != {"written": True}:
+        if self.models_config_helper("models-config") != {"written": True}:
             raise IntegrityError("engine models configuration was not written", step_id=self.step_id)
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
             raise EndpointOwnershipError("server start did not establish ownership", step_id=self.step_id)
-        return "executed", {"owner_id": self.service_owner, "launch_sha256": _sha(launch)}
+        return "executed", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
+                            "cuda_visible_devices": self.visibility}
 
     def check_health(self):
-        if self.helper("models-config-check") != {"valid": True}:
+        if self.models_config_helper("models-config-check") != {"valid": True}:
             raise IntegrityError("engine models configuration differs", step_id=self.step_id)
         limit = min(self.deadline, time.monotonic() + self.recipe.health.timeout_seconds)
         value = self.service("health", launch=self.launch_spec(), deadline=limit)
@@ -758,8 +746,6 @@ class _Runner:
             action, facts = self.source(next(s for s in self.recipe.sources if "source:" + s.name == step.id), readonly=readonly)
         elif step.kind == "environment":
             action, facts = self.environment(next(e for e in self.recipe.environments if "environment:" + e.name == step.id), readonly=readonly)
-        elif step.kind == "model":
-            action, facts = self.model(next(m for m in self.models_lock.models if "model:" + m.name == step.id), readonly=readonly)
         elif step.kind == "start":
             action, facts = self.start(readonly=readonly)
         else:
@@ -773,7 +759,8 @@ class _Runner:
                               self.plan.platform, self.plan.placement, self.plan.root, status, False,
                               self.plan.recipe_sha256, self.plan.models_lock_sha256, dict(self.locks),
                               dict(self.commits), tuple(self.models), tuple(self.steps), self.health,
-                              self.started_at, None if status == "installing" else _now(), error_code)
+                              self.started_at, None if status == "installing" else _now(), error_code,
+                              models_root=self.plan.models_root)
 
 
 SANITY_CMD_ENV = "ASTRID_ENGINE_SANITY_CMD"
@@ -787,17 +774,13 @@ def _check_install_identity(plan, *, context, adapter, deadline):
 
 
 def install_engine(plan: InstallPlan, *, context: ExecutionContext,
-                   adapter: PlatformAdapter, deadline: Deadline, sanity_cmd: str | None = None,
-                   model_cache_root: TargetPath | None = None,
-                   model_cache_device: int | None = None, model_cache_mount_id: int | None = None) -> InstallReceipt:
+                   adapter: PlatformAdapter, deadline: Deadline, sanity_cmd: str | None = None) -> InstallReceipt:
     """Install the engine. ``sanity_cmd`` (default: ``ASTRID_ENGINE_SANITY_CMD``) runs once after the
-    last environment step and before the first model step; a failure aborts the install there.
-    ``model_cache_root`` stores exact locked model bytes atomically;
-    installed models and all custody state remain beneath the local plan root.
+    last environment step and before start; a failure aborts the install there. The install is
+    model-free (Plan 32 T5h): align fetches the models a job's manifest needs.
     """
     sanity_cmd = sanity_cmd if sanity_cmd is not None else os.environ.get(SANITY_CMD_ENV, "")
-    runner = _Runner(plan, context, adapter, deadline, model_cache_root=model_cache_root,
-                     model_cache_device=model_cache_device, model_cache_mount_id=model_cache_mount_id)
+    runner = _Runner(plan, context, adapter, deadline)
     with context.acquire_install_lock(plan.root, deadline=deadline):
         # Refuse old environment identity before contacting an owner or
         # publishing an installing receipt. No old facts are re-attested.
@@ -889,16 +872,21 @@ def _parse_receipt(raw, plan):
     """Strict JSON receipt reconstruction; a receipt is evidence, never instructions."""
     def obj(value, cls):
         if cls is InstallReceipt and isinstance(value, Mapping):
-            value = {"failed_step_id": None, **value}
+            value = {"failed_step_id": None, "models_root": None, **value}
         if not isinstance(value, Mapping) or set(value) != {f.name for f in fields(cls)}:
             raise IntegrityError("invalid install receipt fields")
         return dict(value)
     value = obj(raw, InstallReceipt)
     recipe = recipes.load_recipe(plan.engine, plan.platform)
-    models_lock = recipes.load_model_lock(recipe.models_lock)
     for key in ("engine", "platform", "placement", "root", "recipe_sha256", "models_lock_sha256"):
         if value[key] != getattr(plan, key):
             raise IntegrityError("install receipt identity differs")
+    # The receipt records the model directory it bound. A plan that names one must match it; a plan
+    # that names none (readers of an existing install) takes the receipt's record.
+    if value["models_root"] is not None:
+        _models_root(value["root"], value["models_root"])
+    if plan.models_root is not None and value["models_root"] != plan.models_root:
+        raise IntegrityError("install receipt identity differs")
     if (value["schema"] != "astrid.engine-install.v1" or value["qualified"] is not False
             or value["status"] not in ("installing", "installed", "failed")
             or not isinstance(value["receipt_id"], str) or not 1 <= len(value["receipt_id"]) <= 256):
@@ -930,24 +918,33 @@ def _parse_receipt(raw, plan):
             raise ValueError
         if not isinstance(value["models"], (list, tuple)) or not isinstance(value["steps"], (list, tuple)):
             raise ValueError
-        models = tuple(DownloadResult(**obj(v, DownloadResult)) for v in value["models"])
-        steps = tuple(StepReceipt(**obj(v, StepReceipt)) for v in value["steps"])
+        # Plan 32 T5h: a new install writes no model rows; a legacy receipt's verified rows are kept
+        # as the receipt's rows, under <root>/models, exactly as the installer wrote them.
+        models_root = (value["models_root"] if value["models_root"] is not None else plan.root + "/models") + "/"
+        models = []
+        for model_raw in value["models"]:
+            row = obj(model_raw, DownloadResult)
+            if (not isinstance(row["model"], str) or not isinstance(row["path"], str)
+                    or not row["path"].startswith(models_root) or row["verified"] is not True
+                    or row["action"] not in {"downloaded", "resumed", "skipped"}
+                    or type(row["bytes"]) is not int or row["bytes"] < 0
+                    or not isinstance(row["sha256"], str) or not _DIGEST.fullmatch(row["sha256"])
+                    or type(row["resumed_from_bytes"]) is not int or row["resumed_from_bytes"] < 0):
+                raise ValueError
+            models.append(DownloadResult(**row))
+        models = tuple(models)
+        # Legacy receipts also carry one kind == "model" step per model row. Their shape is checked
+        # here, then they are dropped: the plan's expected steps and the installed equality see none.
+        step_rows = [obj(v, StepReceipt) for v in value["steps"]]
+        for row in step_rows:
+            if row["kind"] == "model" and (not isinstance(row["id"], str) or not row["id"].startswith("model:")
+                    or row["action"] not in {"executed", "skipped"} or row["validation"] not in {"passed", "failed"}
+                    or not isinstance(row["facts"], Mapping)):
+                raise ValueError
+        steps = tuple(StepReceipt(**row) for row in step_rows if row["kind"] != "model")
         health = None if value["health"] is None else HealthEvidence(**obj(value["health"], HealthEvidence))
         if len({s.id for s in steps}) != len(steps):
             raise ValueError
-        locked = {m.name: m for m in models_lock.models}
-        if len({m.model for m in models}) != len(models):
-            raise ValueError
-        for model in models:
-            expected_model = locked.get(model.model)
-            if (expected_model is None or model.verified is not True
-                    or model.action not in {"downloaded", "resumed", "skipped"}
-                    or type(model.bytes) is not int or model.bytes != expected_model.bytes
-                    or model.sha256 != expected_model.sha256
-                    or model.path != posixpath.join(plan.root, "models", expected_model.destination)
-                    or type(model.resumed_from_bytes) is not int
-                    or not 0 <= model.resumed_from_bytes <= model.bytes):
-                raise ValueError
         expected = {s.id: s.kind for s in plan.steps}
         for step in steps:
             if (step.id not in expected or step.kind != expected[step.id]
@@ -971,12 +968,58 @@ def _parse_receipt(raw, plan):
                 or not isinstance(health.object_info_sha256, str) or not _DIGEST.fullmatch(health.object_info_sha256)
                 or value["completed_at"] is None or value["error_code"] is not None
                 or set(value["requirements_locks"]) != {e.name for e in recipe.environments}
-                or value["source_commits"] != {s.name: s.pin.revision for s in recipe.sources}
-                or tuple(m.model for m in models) != tuple(m.name for m in models_lock.models)):
+                or value["source_commits"] != {s.name: s.pin.revision for s in recipe.sources}):
             raise ValueError
     except (TypeError, ValueError, KeyError) as exc:
         raise IntegrityError("invalid install receipt evidence") from exc
     return InstallReceipt(**{**value, "models": models, "steps": steps, "health": health})
+
+
+def refresh_installed_launch(runner, raw, *, start_action, start_facts, health_action, health_facts, check):
+    """Commit verified live launch facts while the caller holds the install lock.
+
+    Preserve the raw receipt, including legacy rows that its parsed projection drops.
+    A failed or cancelled pre-commit check leaves it untouched. An exception after
+    atomic replace never restores the stale receipt.
+    """
+    original = _parse_receipt(raw, runner.plan)
+    if original.status != "installed":
+        raise IntegrityError("managed launch requires a completed installation")
+    if (runner.health is None or not isinstance(runner.service_owner, str) or not runner.service_owner
+            or not isinstance(runner.health.object_info_sha256, str)
+            or not _DIGEST.fullmatch(runner.health.object_info_sha256)
+            or start_action not in {"executed", "skipped"}
+            or health_action not in {"executed", "skipped"}
+            or start_facts != {"owner_id": runner.service_owner, "launch_sha256": _sha(runner.launch_spec()),
+                               "cuda_visible_devices": runner.visibility}
+            or health_facts != {"object_info_sha256": runner.health.object_info_sha256,
+                                "required_nodes_present": runner.health.required_nodes_present}
+            or runner.health.status != "healthy" or runner.health.required_nodes_present is not True):
+        raise IntegrityError("live launch evidence is not verified")
+    updated = copy.deepcopy(raw)
+    for step in updated["steps"]:
+        if step["kind"] == "start":
+            step.update(action=start_action, validation="passed", facts={**step["facts"], **start_facts})
+        elif step["kind"] == "health":
+            step.update(action=health_action, validation="passed", facts={**step["facts"], **health_facts})
+    updated["health"] = _plain(runner.health)
+    _parse_receipt(updated, runner.plan)
+    path = runner.path(_RECEIPT)
+    check()
+    if runner.context.read_json(path, deadline=runner.deadline) != raw:
+        raise IntegrityError("installed receipt changed during managed preparation")
+    check()
+    runner.context.write_json_atomic(path, updated, deadline=runner.deadline)
+    committed = runner.context.read_json(path, deadline=runner.deadline)
+    if committed != updated:
+        raise IntegrityError("committed installed receipt differs from verified launch")
+    _parse_receipt(committed, runner.plan)
+    fact = runner.context.file_fact(path, hash_bytes=True, deadline=runner.deadline)
+    expected = _json(committed).encode("utf-8")
+    if (not fact.exists or not fact.regular or fact.symlink or fact.bytes != len(expected)
+            or fact.sha256 != hashlib.sha256(expected).hexdigest()):
+        raise IntegrityError("committed installed receipt bytes differ")
+    return fact.sha256
 
 
 def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placement, root: TargetPath,
@@ -1007,7 +1050,11 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
         from .engine_platforms import platform_adapter
     except ImportError as exc:
         raise UnsupportedPlatform("installed status requires the A2 production Linux adapter") from exc
-    runner = _Runner(plan, context, platform_adapter(platform), deadline)
+    start_facts = next(step.facts for step in receipt.steps if step.kind == "start")
+    if "cuda_visible_devices" not in start_facts:
+        raise IntegrityError("installed launch has no bound GPU visibility")
+    runner = _Runner(plan, context, platform_adapter(platform), deadline,
+                     visibility=start_facts["cuda_visible_devices"])
     runner.receipt_id, runner.started_at = receipt.receipt_id, receipt.started_at
     failed_step_id = "helper-identity"
     try:

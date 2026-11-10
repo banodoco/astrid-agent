@@ -623,13 +623,13 @@ cloudpickle==3.1.2 \
     --hash=sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414 \
     --hash=sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a
     # via joblib
-comfy-aimdo==0.5.3 \
-    --hash=sha256:551f991e6a8a881579906e231e68935fe58c80165eabb4ef7e7e76a4c70bebde \
-    --hash=sha256:5ddc7e12a2120d3e75e31f6dff52448dd0bd3058277f10f7932e99c20d17ae7a \
-    --hash=sha256:b094014439d41a8705103123c97b4ea2a4f8584fae20cb14b9534b6b82b2e97c \
-    --hash=sha256:d3cde0be60d7195136e3a9bfa50d2b804885751d32800234ccff63cd4bda3bd3 \
-    --hash=sha256:d87776cbe59e9bc8ad280a60b108d4bd2ba40af408ba2e5f5c04ad401cf35571
-    # via -r /Users/peteromalley/m-gpu/runs/generation/PINS-a6/src/runtime/ComfyUI/requirements.txt
+comfy-aimdo==0.6.0 \
+    --hash=sha256:0f71c893f030303dea339fdf6e300414661dadabbb3f03d3e7c5b3c4a632c0fb \
+    --hash=sha256:336a96a0aabe690c5955813a7a3013db670a586910ade798cdac4b0864eb22ac \
+    --hash=sha256:45f821b5828c4b38bcac6553f2250b56e6db87bd65334ed37eb938985d809a3c \
+    --hash=sha256:58085b087be9a08c8c5217f0665488fb5a9aaa128f7c207148a5e69c4cb07c95 \
+    --hash=sha256:c7775d6122873a710a375f25a32174ada5f0cdee874932d171104a11708dbe00
+    # via -r requirements.source.txt
 comfy-angle==0.1.1 \
     --hash=sha256:3d2fcab9386ebbb5653d66696fa8bcad329c1d1852ea4b61f286ea99485a840a \
     --hash=sha256:66b7c8909f983279357037ef0f6994fa7e303a41d8a77a0a075a637a4eb3fe6e \
@@ -637,47 +637,51 @@ comfy-angle==0.1.1 \
     --hash=sha256:beddd2e3b9a67e55f5afaef4da73e3ac704fd88f0cbe6a6f67ce5718d7c7edeb \
     --hash=sha256:c0af17e17070cf7af5dbd66c51a1b6cca2820c8611e487e7bd398006a1447124
     # via -r /Users/peteromalley/m-gpu/runs/generation/PINS-a6/src/runtime/ComfyUI/requirements.txt
-comfy-kitchen==0.2.34 \
-    --hash=sha256:14fe9cdeb7de8a7e580d70aeb47ec2fd41061fe51540a6ed54eaec26b6fdf1bf \
-    --hash=sha256:221bad3590722937b2bab828a5bab069408db8ad299e50caea348a912de1d199 \
-    --hash=sha256:29ea5b2d45af49cac390e6fd5fa93d46ff65c822f5b5f32b4d9588f463025636 \
-    --hash=sha256:4637ddd17d8385290f3b4c201def39c9d96eb773fedcf16c825291edae6656eb \
-    --hash=sha256:6f10450d099167a7d4814af1cd80e54f0182ad305e6e6554f51e4391f8897eec \
-    --hash=sha256:71ba8bc72b54f2914b5e15d210eea2e25931006cf57ca14d033ae4050f4b0d1a \
-    --hash=sha256:94341856e7e71ae251dbb6d93b739bc0100f1f45750c824928c098972d65734c \
-    --hash=sha256:ad97812607c658ab2ed493db01f06ecd5f38c6184dabea6dcfdb3352e468edf9 \
-    --hash=sha256:cb393060a09ac94c2142ae5a99498806d76e13a29671d078a04882f139b2f5a6 \
-    --hash=sha256:da69b58e56f25fcd7375d7973eb6184dcbd48c8cb8b202b98cbda625880dd069 \
-    --hash=sha256:df413e3457ca04706a73d71bb6f63fe19276eef13bd88b3b1fccaa6a00cbe6b9
-    # via -r /Users/peteromalley/m-gpu/runs/generation/PINS-a6/src/runtime/ComfyUI/requirements.txt
-comfyui-embedded-docs==0.5.11 \
-    --hash=sha256:0ab3e96253676d05caf84d607b815c43271e50302f3c51ce363cae5479aa697f \
-    --hash=sha256:1deb639a85aa5c563b50b6be226bd33db1bb3a9791788d2c3fb4d888cc2fda7d
-    # via -r /Users/peteromalley/m-gpu/runs/generation/PINS-a6/src/runtime/ComfyUI/requirements.txt
-comfyui-frontend-package==1.52.7 \
-    --hash=sha256:3aa5624fa5085f8461d31b7eb88a42ed69a0e783a35bec1c2a33b90fc7660950 \
-    --hash=sha256:5cb287d82b618a17598ccae641dd56ade87ca5a44ddc854a77256dbde29ada43
-    # via -r /Users/peteromalley/m-gpu/runs/generation/PINS-a6/src/runtime/ComfyUI/requirements.txt
-comfyui-workflow-templates==0.11.62 \
-    --hash=sha256:1d0dc06f0a1df44fab9f395b525ba5cbecd2fdd5d9911beed87355f6b3e93b31 \
-    --hash=sha256:f0d0eeb870d6a6fd200d75c94f33eea8ca644f582d75f3a92a51d0e81cf97652
-    # via -r /Users/peteromalley/m-gpu/runs/generation/PINS-a6/src/runtime/ComfyUI/requirements.txt
-comfyui-workflow-templates-core==0.3.350 \
-    --hash=sha256:39c0e017cd1a463855309305b23bd150804c49d5e449f38433b998fff2a7a405 \
-    --hash=sha256:56b62bb95cf8e25dc7073a81e98ba96ee2c36ee4446e464c365c8cd8726e6db4
-    # via comfyui-workflow-templates
-comfyui-workflow-templates-json==0.1.85 \
-    --hash=sha256:0afc1ee68f6e578ac8cf1736f4a2957d2a99bec8a7449344f358229e4e96b4bf \
-    --hash=sha256:f312e8a7d0481da9d25027a7d3bd6d9ac362eab6df3b720b8073583af73d85a7
-    # via comfyui-workflow-templates
+comfy-kitchen==0.2.40 \
+    --hash=sha256:2ba844655093b8b04e4b09217ba0e565728be27b5ccb581c44dd3138384d743b \
+    --hash=sha256:33bccd3099107742088a637abfff6367b4325356e11aaf9f0e691e2b1833ebb5 \
+    --hash=sha256:3bd596482a4f69a726845ce75fa751896ce7e5c2d210ed3a30794ea17871bebb \
+    --hash=sha256:6a7dbdcaca5c00d5f05ed01ba4cdf4c845a19b62c1ef71ecd9a22b3bcd1013bd \
+    --hash=sha256:7be61f9e0969d2379d257da5ec895f18247133a4ca33dce194b81717dc1987b5 \
+    --hash=sha256:9ca9cb1518604498f914b6419fa3c07d89c9c1d0676dd39ec64bc603820489a2 \
+    --hash=sha256:9f490800ab2d3c165c2b8b8379a78fe2cec9541e63fae62515190e9d9b7cc946 \
+    --hash=sha256:e2294f2c20927ccbe65d3ba90ec56d280e3e594e2789d41aadfb8f48ad299d24 \
+    --hash=sha256:e5834f2ce993c8d5ea8c01650157c639742b5a28ecb0d95253777f31b5248099 \
+    --hash=sha256:eb726664c772189e6ece742876487f1349965808b854742790e9001dbb7c0f9d \
+    --hash=sha256:f40547824b2a0ad3425d10946d2fe2a5ba8595cb53361991c914bda4addccfb5
+    # via -r requirements.source.txt
+comfyui-embedded-docs==0.5.15 \
+    --hash=sha256:695a81fc6da78cbfe2093990486f71a499f455785ae6c1ae735ead54c1657a7f \
+    --hash=sha256:7167e13b0f328a80184e69cd705ea1ff28b8032065517e4ef8293b08d5e528ee
+    # via -r requirements.source.txt
+comfyui-frontend-package==1.57.4 \
+    --hash=sha256:2c4472d5943ac18f9098af3565e319c6ffcc1eca5d873da5d62adc410f8f43bd \
+    --hash=sha256:d0d057982d7a608c45520bc2679dbe7e673b058f4cd200926f81c00ef5b7ee60
+    # via -r requirements.source.txt
+comfyui-workflow-templates==0.11.100 \
+    --hash=sha256:27be1d25e30b94b97af829a42dfbe6092f81123739662b8cfde15fd47de23bb3 \
+    --hash=sha256:75b41109d93915657aba38ba35148fec8b21a166d4585c9f195290cbecad24bb
+    # via -r requirements.source.txt
+comfyui-workflow-templates-core==0.3.391 \
+    --hash=sha256:7478e308ff2f58572dc9b5ed4a48934835c8efbc49dae933d0af310f340044cd \
+    --hash=sha256:d06c83451857f4dd9d8e88c65ae6e15dbbe2bfd3ef0ef2040a09d05aa412e04e
+    # via -r requirements.source.txt
+comfyui-workflow-templates-json==0.1.126 \
+    --hash=sha256:011fec5aaaf649a5c118967e569a7e09a1a231e8889116325972e01d80fd33f0 \
+    --hash=sha256:088726274304fde8ecb8a1beb54bcd4186e1d688788a8d93d4fa6c4a0c3e1d6a
+    # via -r requirements.source.txt
 comfyui-workflow-templates-media-api==0.3.84 \
     --hash=sha256:6bd5c496e368e5e40dd87dfe25f066e24d57f3602888ba3df80013a88d060259 \
     --hash=sha256:c2d6a5999ac39e4f37f47ae231c92557defe5addb2cc6ab5c11410b4d5a2910a
     # via comfyui-workflow-templates
-comfyui-workflow-templates-media-assets-01==0.1.46 \
-    --hash=sha256:84539a04b8f6d569614f0f26541043d3307bd78bb033f266460b0c411a8e8f5d \
-    --hash=sha256:e8d1053b5feed012a2439048b2c231e4a59f808b94a9f2d51621030f53c1f456
-    # via comfyui-workflow-templates
+comfyui-workflow-templates-media-assets-01==0.1.48 \
+    --hash=sha256:7733ed12867e95e6b8b39be20bcc73579c28e97e5a44086ffb977cc2c1c78c43 \
+    --hash=sha256:b12c439f52a8545b0a8e321e8f62d7aa881a4bd8dc9c889c3bbde97b10e7120f
+    # via -r requirements.source.txt
+comfyui-workflow-templates-media-assets-02==0.1.26 \
+    --hash=sha256:0f068dcf20cd3dad9e0ca88194c1ca57fa5e05d0c1f27835af38732c6833822d \
+    --hash=sha256:a18f43ddecfab1240f1cfb8a3ee26837fd65b8b0d06ef8bffc6e7ce31edd2ae0
+    # via -r requirements.source.txt
 comfyui-workflow-templates-media-image==0.3.160 \
     --hash=sha256:88dcf749302c6a12f5b803dfb46724b4c8acc31d1117cecff51672d9bd85eb18 \
     --hash=sha256:d4a5c5541c7088f6adb1c7da41f5d7c1c14a037eda6a61cd8b4b76c251faaa93
@@ -2194,6 +2198,17 @@ opencv-python==5.0.0.93 \
     --hash=sha256:f8b6d0a212253dd26ad338c812f1f23ca118fdf05a9c8c6b9444f161aa8c5881 \
     --hash=sha256:f90ba04b8f73bc5c3814037699739f0156f597338a98f05956c684e7c3ca10d2
     # via -r /Users/peteromalley/m-gpu/runs/generation/PINS-a6/src/runtime/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt
+opencv-python-headless==5.0.0.93 \
+    --hash=sha256:030ca5e0837a2963ab36ef896baa9767eb8d2b83353fb28af5a521e40dd8756f \
+    --hash=sha256:09a872a157c1376ab922a69bbf22f9a95bcc7b658a9d8b436a60212b02b2eeb4 \
+    --hash=sha256:10818d91510e05c04568ae12b5cd120779c70c01bf897b001a6221fe430df80f \
+    --hash=sha256:1e55af3abfb462eeeabe5c775f12bdb36216d8a93a3583d69e6bd6e1d6ba7d00 \
+    --hash=sha256:829717b6a95554f273e49e357cee3b3a2a26b6f4842fbc1bed2b45bdd8f87e0e \
+    --hash=sha256:840bd717c21e5c11cadadc022a823315ea417f961213d06b4df010e019eb16f4 \
+    --hash=sha256:b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c \
+    --hash=sha256:c6bcd96b185975ea240d22cfdb15a1f6d080cc95264cfbe2621f21bb144d89b9 \
+    --hash=sha256:ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37
+    # via -r requirements.source.txt
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c

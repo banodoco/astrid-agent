@@ -15,6 +15,37 @@ LOCK = ROOT / "requirements" / "runtime.lock"
 FORBIDDEN = ("runpod-python", "runpod_python", "1.12.0+astrid", "SETUPTOOLS_SCM", "RUNPOD_PRETEND_VERSION")
 
 
+@pytest.mark.parametrize(
+    ("lifecycle", "source", "expected"),
+    [(0, 0, "skip"), (0, 1, "fresh"), (1, 0, "repair"), (1, 1, "repair")],
+)
+def test_pod_bootstrap_package_check_requires_import_and_source(tmp_path, lifecycle, source, expected):
+    """Execute the shipped package check and install dispatch with controlled probes."""
+    python = tmp_path / "venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f"#!/bin/sh\nexit {lifecycle}\n")
+    python.chmod(0o755)
+    script = pod_bootstrap.SCRIPT
+    start = script.index("have_all() {")
+    end = script.index("\n# pip in the venv.", start)
+    fixture = f'''set -euo pipefail
+VENV="{tmp_path / 'venv'}"
+PACKAGES=(runpod astrid-runtime runpod-lifecycle astrid vibecomfy)
+SRC_DIRS=(fixture)
+uv() {{ printf '%s\\n' runpod==1 astrid-runtime==1 runpod-lifecycle==1 astrid==1 vibecomfy==1; }}
+source_install_current() {{ return {source}; }}
+install_runpod_from_lock() {{ :; }}
+staged_uv_install() {{ echo "selected:$1"; }}
+''' + script[start:end]
+    result = subprocess.run(["bash", "-c", fixture], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    if expected == "skip":
+        assert "skipping install" in result.stdout
+    else:
+        assert f"selected:{expected}" in result.stdout
+        assert "skipping install" not in result.stdout
+
+
 def _installed_layout(tmp_path: Path, monkeypatch, *, manifest: dict | None) -> Path:
     """versions/<id>/{py,manifest.json}: the layout `Installer.stage()` writes."""
     version = tmp_path / "versions" / "v1"

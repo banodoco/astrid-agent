@@ -37,10 +37,10 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from ._engine_target_files import _FILE_FLAGS, _TargetFiles, _check, _parts
-from .engine_contracts import EngineError
+from .engine_contracts import EngineError, effective_models_root
 
 SCHEMA = "hc03-worker-readiness.v1"
-ENGINE = "vibecomfy-h3"
+ENGINE = "comfyui"
 PLATFORM = "linux-x86_64-cu130"
 PROFILE_NAME = "engine-readiness.json"
 # Named only so it can be refused as a target. The producer never opens it.
@@ -68,6 +68,20 @@ _COMFY_PROVENANCE = ContextVar("comfy_provenance", default=None)
 def current_comfy_provenance():
     """The current attempt's evidence collector, never a machine facts cache."""
     return _COMFY_PROVENANCE.get()
+
+
+def engine_identity(engine: str, root: str) -> dict[str, str]:
+    """Engine-neutral identity of an installed engine: its install receipt bytes.
+
+    Replaces the checkout-owned session record. It names the
+    engine, the attested receipt digest and the install root; nothing else.
+    """
+    from .engine_local_endpoint import RECEIPT_RELATIVE_PATH
+
+    receipt = Path(root) / RECEIPT_RELATIVE_PATH
+    return {"engine": engine,
+            "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(),
+            "root": str(root)}
 
 
 def verify_installed_source(recorded_revision, recorded_digest, observed_revision, observed_digest):
@@ -610,7 +624,7 @@ def canonical_status(*, root, deadline, engine=ENGINE):
                          context=context, deadline=deadline)
 
 
-def _owned_health(root, recipe, adapter, owner_id, deadline):
+def _owned_health(root, recipe, adapter, owner_id, deadline, models_root=None, *, visibility):
     """Existing supervisor health; never creates a supervisor or starts an engine."""
     from .engine_custody import LinuxEngineServiceClient, _SCHEMA
     from .engine_recipe import recipe_digest
@@ -619,8 +633,9 @@ def _owned_health(root, recipe, adapter, owner_id, deadline):
     client = LinuxEngineServiceClient(root=root, engine=recipe.engine, platform=PLATFORM,
                                       recipe_sha256=recipe_digest(recipe),
                                       helper_sha256=_sha(helper_manifest(recipe)))
-    request = adapter.start_request(recipe, root, deadline=deadline)
-    launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+    request = adapter.start_request(recipe, root, deadline=deadline, models_root=models_root)
+    launch = {"argv": list(request.argv), "cwd": request.cwd,
+              "env": {**dict(request.env), "CUDA_VISIBLE_DEVICES": visibility}}
     payload = {**client.identity, "schema": _SCHEMA, "launch": launch, "owner_id": owner_id,
                "timeout_seconds": recipe.health.timeout_seconds,
                "poll_interval_seconds": recipe.health.poll_interval_seconds}
@@ -656,20 +671,23 @@ def _comfyui_version(transport, root, comfy_root, port, health_path, deadline):
     return matches[0]
 
 
-def _model_root_binding(root, recipe, deadline):
-    """Canonical model lock inventory, fully byte-verified with no extra files."""
-    from . import engine_recipe
+def _model_root_binding(root, receipt, deadline):
+    """The receipt's verified model rows (none on a model-free install), byte-verified."""
     from .model_root import (ModelRootBindingError, canonical_model_inventory_digest,
                              validate_model_root_binding)
 
     inventory = []
-    for model in engine_recipe.load_model_lock(recipe.models_lock).models:
-        destination = PurePosixPath(model.destination)
+    models_root = effective_models_root(root, getattr(receipt, "models_root", None))
+    prefix = models_root + "/"
+    for model in getattr(receipt, "models", ()) or ():
+        if getattr(model, "verified", None) is not True or not str(getattr(model, "path", "")).startswith(prefix):
+            raise ReadinessError("installed receipt model is not a verified model-root row")
+        destination = PurePosixPath(model.path[len(prefix):])
         subdir = str(destination.parent)
         inventory.append({"name": destination.name, "sha256": "sha256:" + model.sha256,
                           "size": model.bytes, "subdir": "" if subdir == "." else subdir})
     inventory.sort(key=lambda entry: (entry["subdir"], entry["name"]))
-    binding = {"schema_version": 1, "path": root + "/models", "inventory": inventory,
+    binding = {"schema_version": 1, "path": models_root, "inventory": inventory,
                "inventory_digest": canonical_model_inventory_digest(inventory),
                "qualification_identity": None}
     _check(deadline)
@@ -731,7 +749,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
             account_ref="target-local", pod_id="target-local", session_ref=engine,
             python_executable=installed["python_executable"], runtime_root=runtime_root,
             vibecomfy_root=installed["vibecomfy_root"], comfy_root=comfy_root,
-            model_root=root + "/models", output_root=installed["output_root"],
+            model_root=effective_models_root(root, receipt.models_root), output_root=installed["output_root"],
             port=recipe.start.port, config=installed["config"], config_digest=installed["config_digest"],
         )
         live = transport.status(selection)
@@ -742,9 +760,8 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
         # 2. Canonical installed status re-verifies sources, locks, models, ownership, health.
         current = (status(root=root, deadline=deadline) if status is not None
                    else canonical_status(root=root, deadline=deadline, engine=engine))
-        lock = engine_recipe.load_model_lock(recipe.models_lock)
-        expected_models = tuple((m.name, root + "/models/" + m.destination, m.bytes, m.sha256)
-                                for m in lock.models)
+        # The receipt's own verified model rows (none on a model-free install), not the whole lock.
+        expected_models = tuple((m.model, m.path, m.bytes, m.sha256) for m in receipt.models)
         if (current is None or current.status != "installed" or current.qualified is not False
                 or current.receipt_id != receipt.receipt_id or current.root != root
                 or current.recipe_sha256 != receipt.recipe_sha256
@@ -759,7 +776,11 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
 
         # 3. Live owned health through the existing supervisor, bound to the receipt.
         start = next(step.facts for step in receipt.steps if step.kind == "start")
-        health, launch = _owned_health(root, recipe, adapter, token, deadline)
+        if "cuda_visible_devices" not in start:
+            raise ReadinessError("installed launch has no bound GPU visibility")
+        health, launch = _owned_health(root, recipe, adapter, token, deadline,
+                                       models_root=getattr(receipt, "models_root", None),
+                                       visibility=start["cuda_visible_devices"])
         if (health["object_info_sha256"] != receipt.health.object_info_sha256
                 or start.get("owner_id") != token or start.get("launch_sha256") != health["launch_sha256"]):
             raise ReadinessError("live engine health differs from the installed receipt")
@@ -774,8 +795,8 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
         version = _comfyui_version(transport, root, comfy_root, recipe.start.port,
                                    recipe.health.path, deadline)
 
-        # 4. Canonical model lock, fully byte-verified, strict existing binding.
-        model_root = _model_root_binding(root, recipe, deadline)
+        # 4. The receipt's verified model rows, byte-verified (empty on a model-free install).
+        model_root = _model_root_binding(root, receipt, deadline)
 
         # 5. Bounded target hardware and disk probes.
         measured = (hardware or probe_hardware)(deadline)
@@ -842,14 +863,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
                            live["source_revision"], live["source_content_digest"])},
         },
         "launch": {"output_root": output_root, "model_root": model_root},
-        "vibecomfy_session": {
-            "session_dir": registry, "server_url": installed["url"],
-            "pid": installed["daemon"]["pid"], "process_birth_id": installed["daemon"]["birth_id"],
-            "comfy_pid": comfy["pid"], "comfy_process_birth_id": comfy["birth_id"],
-            "launch_token": token, "config_digest": installed["config_digest"],
-            "source_revision": installed["source_revision"],
-            "source_content_digest": installed["source_content_digest"],
-        },
+        "engine_identity": engine_identity(engine, root),
     }
 
 

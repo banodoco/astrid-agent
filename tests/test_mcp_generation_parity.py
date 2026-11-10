@@ -147,16 +147,16 @@ def test_generate_schema_and_argv_for_all_leaves():
                           {"kind": "audio"}, ["generate", "list", "--kind", "audio", "--json"]),
         "generate_describe": ({"workflow": "string", "entry": "string", "mode": "string", "target": "string", "engine": "string"}, [],
                               {"workflow": "bundle/workflow.py", "entry": "entry-a", "mode": "video", "target": "runpod", "engine": "comfyui"},
-                              ["generate", "describe", "bundle/workflow.py", "--entry", "entry-a", "--mode", "video", "--target", "runpod", "--engine", "comfyui", "--json"]),
+                              ["generate", "describe", "bundle/workflow.py", "--entry", "entry-a", "--mode", "video", "--placement", "runpod", "--engine", "comfyui", "--json"]),
         "generate_targets": ({"target": "string", "engine": "string", "save": "boolean", "input": "array"}, [],
                              {"target": "local", "engine": "comfyui", "save": True, "input": ["a=1", "b=true"]},
-                             ["generate", "targets", "--target", "local", "--engine", "comfyui", "--save", "--input", "a=1", "--input", "b=true", "--json"]),
+                             ["generate", "targets", "--placement", "local", "--engine", "comfyui", "--save", "--input", "a=1", "--input", "b=true", "--json"]),
         "generate_launch": ({"target": "string", "engine": "string", "consent": "array", "timeout": "number"}, [],
                             {"target": "managed", "engine": "comfyui", "consent": ["user_env"], "timeout": 5},
-                            ["generate", "launch", "--target", "managed", "--engine", "comfyui", "--consent", "user_env", "--timeout", "5", "--json"]),
+                            ["generate", "launch", "--placement", "managed", "--engine", "comfyui", "--consent", "user_env", "--timeout", "5", "--json"]),
         "generate_release": ({"engine": "string", "target": "string", "no_wait": "boolean"}, ["engine", "target"],
                              {"engine": "engine-a", "target": "local", "no_wait": True},
-                             ["generate", "release", "--engine", "engine-a", "--target", "local", "--no-wait", "--json"]),
+                             ["generate", "release", "--engine", "engine-a", "--placement", "local", "--no-wait", "--json"]),
     }
     for name, (types, required, arguments, argv_expected) in expectations.items():
         schema = tools[name]["definition"]["inputSchema"]
@@ -202,7 +202,7 @@ def test_generate_schema_and_argv_for_all_leaves():
         argv, parsed = _parse_tool(tools[name], arguments)
         assert argv == ["generate", name.removeprefix("generate_"), "portrait", "--prompt", "alternate",
                         "--model", "m", "--entry", "e", "--inputs-json", "declared.json", "--mode", "image",
-                        "--execution", "catalog", "--target", "local", "--project", "p", "--out", "out.png",
+                        "--execution", "catalog", "--placement", "local", "--project", "p", "--out", "out.png",
                         "--dry-run", "--edit", "source.png", "--width", "640", "--height", "480", "--steps", "22",
                         "--seed", "19", "--cfg", "4.5", "--negative-prompt", "blur", "--frames", "9", "--fps", "12.5",
                         "--input", "style=soft", "--input", "count=2", "--engine", "engine-a", "--consent", "user_env",
@@ -235,7 +235,7 @@ def test_generate_schema_and_argv_for_all_leaves():
     mcp_inputs = args.pop("inputs")
     argv, parsed = _parse_tool(workflow, args)
     assert argv == ["generate", "workflow", "bundle.json", "--as-entry", "new", "--replace", "--inputs-json", "in.json",
-                    "--target", "local", "--mode", "video", "--project", "p", "--out", "o.mp4", "--prompt", "p",
+                    "--placement", "local", "--mode", "video", "--project", "p", "--out", "o.mp4", "--prompt", "p",
                     "--negative-prompt", "n", "--edit", "i.png", "--width", "640", "--height", "360", "--seed", "4",
                     "--frames", "12", "--fps", "24.0", "--steps", "30", "--cfg", "7.0", "--dry-run", "--input",
                     "x=1", "--input", "y=2", "--engine", "engine-x", "--consent", "paid", "--max-usd", "3.0",
@@ -251,23 +251,21 @@ def test_engine_install_schema_and_argv_including_defaults():
     assert schema["required"] == ["engine"]
     assert {key: value["type"] for key, value in schema["properties"].items()} == {
         "engine": "string", "platform": "string", "placement": "string", "root": "string",
-        "deadline": "number", "dry_run": "boolean", "model_cache_root": "string",
-        "model_cache_device": "integer", "model_cache_mount_id": "integer"}
+        "deadline": "number", "dry_run": "boolean", "models_root": "string"}
+    # The declared deadline type is the one the CLI parses (float seconds), so schema and argv agree.
+    assert schema["properties"]["deadline"]["type"] == "number"
     assert schema["properties"]["placement"]["enum"] == ["local", "runpod"]
     argv, parsed = _parse_tool(tool, {"engine": "engine-a", "platform": "linux-x86_64-cu130",
                                      "placement": "runpod", "root": "/engine", "deadline": 30.5,
-                                     "dry_run": True, "model_cache_root": "/cache",
-                                     "model_cache_device": 9, "model_cache_mount_id": 42})
+                                     "dry_run": True, "models_root": "/cache"})
     assert argv == ["engines", "install", "engine-a", "--platform", "linux-x86_64-cu130", "--placement", "runpod",
-                    "--root", "/engine", "--deadline", "30.5", "--dry-run", "--model-cache-root", "/cache",
-                    "--model-cache-device", "9", "--model-cache-mount-id", "42"]
+                    "--root", "/engine", "--deadline", "30.5", "--dry-run", "--models-root", "/cache"]
     assert (parsed.platform, parsed.placement, parsed.deadline, parsed.dry_run) == ("linux-x86_64-cu130", "runpod", 30.5, True)
     assert mcp_server.argv_for(tool, {"engine": "e"}) == ["engines", "install", "e"]
     _, defaults = _parse_tool(tool, {"engine": "e"})
     assert (defaults.platform, defaults.placement, defaults.deadline, defaults.dry_run) == (
         "linux-x86_64-cu130", "local", 3600.0, False)
-    assert (defaults.root, defaults.model_cache_root, defaults.model_cache_device,
-            defaults.model_cache_mount_id) == (None, None, None, None)
+    assert (defaults.root, defaults.models_root) == (None, None)
     for invalid in ([], ["e", "--placement", "invalid"]):
         with pytest.raises(SystemExit) as exc:
             _real_leaf(tool).parse_args(invalid)
@@ -327,7 +325,7 @@ def test_target_launch_cli_and_mcp_envelope(monkeypatch):
     assert schema["properties"]["timeout"]["type"] == "number"
     arguments = {"target": "managed", "engine": "comfyui", "consent": ["user_env", "paid"], "timeout": 7}
     argv, parsed = _parse_tool(tool, arguments)
-    expected_argv = ["generate", "launch", "--target", "managed", "--engine", "comfyui",
+    expected_argv = ["generate", "launch", "--placement", "managed", "--engine", "comfyui",
                      "--consent", "user_env", "--consent", "paid", "--timeout", "7", "--json"]
     assert argv == expected_argv
     assert (parsed.target, parsed.engine, parsed.consent, parsed.timeout) == (
@@ -374,7 +372,7 @@ def test_runpod_generation_follow_and_release_cli_and_mcp_envelopes(monkeypatch)
                        "recovery_path": "runpod-receipt.json", "no_wait": False}
     generated = mcp_server.handle({"jsonrpc": "2.0", "id": 32, "method": "tools/call",
                                    "params": {"name": "generate_image", "arguments": generation_args}}, state)["result"]
-    expected_generation = ["generate", "image", "a red paper boat", "--target", "runpod", "--engine", "comfyui",
+    expected_generation = ["generate", "image", "a red paper boat", "--placement", "runpod", "--engine", "comfyui",
                            "--no-wait", "--consent", "paid", "--max-usd", "1.25",
                            "--deadline", "2030-01-01T00:00:00Z", "--recovery-path", "runpod-receipt.json", "--json"]
     assert calls[-1] == expected_generation
@@ -392,7 +390,7 @@ def test_runpod_generation_follow_and_release_cli_and_mcp_envelopes(monkeypatch)
     release_args = {"engine": "comfyui", "target": "runpod", "no_wait": True}
     released = mcp_server.handle({"jsonrpc": "2.0", "id": 34, "method": "tools/call",
                                   "params": {"name": "generate_release", "arguments": release_args}}, state)["result"]
-    expected_release = ["generate", "release", "--engine", "comfyui", "--target", "runpod", "--no-wait", "--json"]
+    expected_release = ["generate", "release", "--engine", "comfyui", "--placement", "runpod", "--no-wait", "--json"]
     assert calls[-1] == expected_release
     assert released == {"content": [{"type": "text", "text": json.dumps(release)}],
                         "isError": False, "structuredContent": release}
@@ -483,11 +481,9 @@ def test_engine_install_success_and_coded_error_envelopes(monkeypatch):
 
     monkeypatch.setattr(engine_cli, "load_recipe", lambda engine, platform: Recipe(id=engine, platform=platform))
     monkeypatch.setattr(engine_cli, "_root", lambda args: "/fake/engine")
-    monkeypatch.setattr(engine_cli, "plan_install", lambda recipe, root, placement: Plan(
+    monkeypatch.setattr(engine_cli, "plan_install", lambda recipe, root, placement, models_root=None: Plan(
         root=root, platform=recipe["platform"], placement=placement))
-    monkeypatch.setattr(engine_cli, "validate_model_cache_root", lambda *args, **kwargs: None)
-    monkeypatch.setattr(engine_cli, "load_model_lock", lambda *args: type("Models", (), {"models": []})())
-    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 100))
+    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 100 * 1024 ** 3))
     monkeypatch.setattr(engine_cli, "_custody_preflight", lambda root: None)
     monkeypatch.setattr(engine_cli, "install_engine", lambda *args, **kwargs: {"status": "installed", "engine": "e"})
     monkeypatch.setattr(engine_cli, "_default_backend", lambda **kwargs: (object(), object()))
@@ -524,5 +520,6 @@ def test_engine_install_success_and_coded_error_envelopes(monkeypatch):
     assert dry_run["structuredContent"] == {
         "plan": {"root": "/fake/engine", "platform": "linux-x86_64-cu130", "placement": "local"},
         "recipe": {"id": "e", "platform": "linux-x86_64-cu130"},
-        "disk_check": {"required_bytes": 0, "free_bytes": 100, "status": "ok", "basis": "locked_model_bytes"},
+        "disk_check": {"required_bytes": engine_cli.ENGINE_INSTALL_MIN_FREE_BYTES, "free_bytes": 100 * 1024 ** 3,
+                       "status": "ok", "basis": "minimum_free_space_floor"},
     }

@@ -1,0 +1,12 @@
+api: 1
+summary: Run generation jobs on ComfyUI (local or pod).
+example: astrid generation engines
+effects: edit
+entry: comfyui_engine.py:ENGINE
+recipes:
+  - platform: linux-x86_64-cu130
+    path: packs/runpod/recipe.linux-cu130.json
+    sha256: "64d22a7c5a856adbafbdafa781db03b3faeb3737da6b2d0545de149918bfe5b1"
+  - platform: windows-x86_64-cu130
+    path: packs/vibecomfy/recipe.windows-cu130.json
+    sha256: "9b62537a89c75a04d3af2288625d72fbf0f3aa2a8a9029d49c8b4856c5be4b1a"

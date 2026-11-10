@@ -98,7 +98,7 @@ def test_fresh_wheel_cli(tmp_path: Path) -> None:
         assert result.returncode == 0, result.stdout + result.stderr
         if "--json" in args:
             assert isinstance(json.loads(result.stdout), (dict, list))
-    result = cli("astrid", "generate", "image", "a red boat", "--entry", "z-image", "--mode", "t2i", "--target", "managed", "--dry-run", "--json")
+    result = cli("astrid", "generate", "image", "a red boat", "--entry", "z-image", "--mode", "t2i", "--placement", "managed", "--dry-run", "--json")
     assert result.returncode == 2, result.stdout + result.stderr
     envelope = json.loads(result.stdout)
     assert envelope["status"] == "blocked"

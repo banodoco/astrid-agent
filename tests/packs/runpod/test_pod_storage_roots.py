@@ -40,4 +40,4 @@ def test_pod_bootstrap_defaults_are_not_under_workspace():
 
 def test_engine_custody_root_is_unchanged():
     assert rp.ENGINE_BASE == "/root/astrid/engines"
-    assert rp.ENGINE_ROOT == "/root/astrid/engines/vibecomfy-h3"
+    assert rp.ENGINE_ROOT == "/root/astrid/engines/comfyui"

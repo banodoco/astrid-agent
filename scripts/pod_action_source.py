@@ -123,11 +123,11 @@ def diagnose_selected(selected):
     result = {"schema": "astrid.pod-h3-install-diagnostic.v1", "mode": "receipt-only",
               "source": {k: selected[k] for k in ("agent_head", "runtime_head", "runtime_lock_sha256")},
               "readiness": "not_checked"}
-    result["registered_root_matches"] = recorded_engine_root("vibecomfy-h3") == root
+    result["registered_root_matches"] = recorded_engine_root("comfyui") == root
     if not result["registered_root_matches"]:
         result["receipt_state"] = "not_read"
         return result
-    recipe = load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    recipe = load_recipe("comfyui", "linux-x86_64-cu130")
     plan = plan_install(recipe, root=root, placement="local")
     result.update(recipe_sha256=plan.recipe_sha256, models_lock_sha256=plan.models_lock_sha256,
                   expected_helper_sha256=_sha(helper_manifest(recipe)))
@@ -167,7 +167,7 @@ def diagnose_selected(selected):
     return result
 
 
-DIAGNOSTIC_ENGINE_ROOT = "/root/astrid/engines/vibecomfy-h3"
+DIAGNOSTIC_ENGINE_ROOT = "/root/astrid/engines/comfyui"
 
 
 def _canonical_failure(text, parsed):
@@ -197,9 +197,9 @@ def install_selected(args, selected, identity):
 
     with _install_phase('registered-root'):
         parsed = engine_cli._parser().parse_args(args[1:])
-        if (args[:3] != ["engines", "install", "vibecomfy-h3"] or parsed.root is None
+        if (args[:3] != ["engines", "install", "comfyui"] or parsed.root is None
                 or parsed.placement != "local" or parsed.dry_run
-                or recorded_engine_root("vibecomfy-h3") != parsed.root):
+                or recorded_engine_root("comfyui") != parsed.root):
             raise ValueError("installer requires the existing registered root")
     with _install_phase('canonical-install'):
         output, errors = io.StringIO(), io.StringIO()
@@ -216,8 +216,8 @@ def install_selected(args, selected, identity):
         receipt_path = Path(parsed.root) / RECEIPT_RELATIVE_PATH
         receipt_bytes = receipt_path.read_bytes()
         if (result != json.loads(receipt_bytes) or result.get("status") != "installed"
-                or result.get("engine") != "vibecomfy-h3" or result.get("root") != parsed.root
-                or recorded_engine_root("vibecomfy-h3") != parsed.root):
+                or result.get("engine") != "comfyui" or result.get("root") != parsed.root
+                or recorded_engine_root("comfyui") != parsed.root):
             raise ValueError("canonical engine receipt differs")
     with _install_phase('readiness'):
         ready = local_engine_endpoint(root=parsed.root, deadline_seconds=parsed.deadline).endpoint
@@ -229,7 +229,7 @@ def install_selected(args, selected, identity):
         _, after = verify_selection(selected)
         if after != identity:
             raise ValueError("installer source identity changed")
-    print(json.dumps({"schema": "astrid.pod-h3-install.v1", "engine": "vibecomfy-h3",
+    print(json.dumps({"schema": "astrid.pod-h3-install.v1", "engine": "comfyui",
                       "root": parsed.root, "status": "ready", "receipt_sha256": digest,
                       "receipt_id": result["receipt_id"]}, sort_keys=True))
 

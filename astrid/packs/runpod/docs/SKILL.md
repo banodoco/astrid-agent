@@ -14,20 +14,20 @@ and tear down with a composite session that guarantees cleanup.
 
 ## Ordinary generation on a RunPod target
 
-`--target runpod` requires an installed layout. The Agent derives its RunPod source root
+`--placement runpod` requires an installed layout. The Agent derives its RunPod source root
 from the release manifest: it populates `<data-root>/runpod/sources` with clean checkouts at the
 pinned commits (Runtime from `runtime.lock.json`, VibeComfy from the recipe pin, and the other
 packages from the installed release manifest), then validates them. There is no developer-checkout
 route and no environment variable to set; outside an installed layout the command fails with a
 `ManagedSourcesError` (see M02-26).
 
-`astrid generate image --target runpod` uses the retained host adapter, its
+`astrid generate image --placement runpod` uses the retained host adapter, its
 single lease owner, and the existing attached ComfyUI transport. The selected
 executor environment must contain the manifest-installed Agent, Runtime,
 VibeComfy, RunPod SDK and lifecycle packages; a source checkout or ambient
 `PYTHONPATH` does not install dependencies into a child interpreter. Use the
 official installer's local-source manifest route to select these packages.
-The default remains `--target auto`; saving RunPod preferences does not replace
+The default remains `--placement auto`; saving RunPod preferences does not replace
 a configured human ComfyUI target.
 
 The prepared RunPod path requires a fresh, explicit paid authorization for
@@ -80,7 +80,7 @@ policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences}
 with AstridClient.open_from_launcher() as client:
     result = client.invoke_result(
         "runpod.setup", kind="action", project=None,
-        inputs={"target_policy": json.dumps(policy, sort_keys=True)},
+        inputs={"placement_policy": json.dumps(policy, sort_keys=True)},
         wait=True, read_managed_outputs=False,
     )
 assert result.ok, result.to_dict()

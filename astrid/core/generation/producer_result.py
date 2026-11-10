@@ -183,10 +183,8 @@ def _complete_evidence(payload: dict, *, source: dict | None,
 
 
 def workflow_transport(profile_id: str, comfy_url: str) -> dict:
-    """Keep route ownership explicit; checkout binding evidence comes from its owner."""
+    """Keep route ownership explicit for the local server profile."""
     from astrid.core.generation.targets import TargetRecord
-    if profile_id == 'checkout_server':
-        return {}
     return {'target': TargetRecord(owner='human' if profile_id == 'local_server' else 'astrid',
                                    endpoint=comfy_url or None).as_dict()}
 

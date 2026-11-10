@@ -183,6 +183,8 @@ astrid = [
     "packs/**/README.md",
     "packs/**/*.yaml",
     "packs/**/*.json",
+    # Extension entry modules (generation.engine, workflows hooks) are loaded from the installed pack.
+    "packs/**/extensions/**/*.py",
     # Runtime mask resources used by the packaged LanPaint compiler.
     "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_full_frame.png",
     "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_preserve.png",

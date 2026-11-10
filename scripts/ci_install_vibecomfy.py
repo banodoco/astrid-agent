@@ -17,7 +17,7 @@ sys.path.insert(0, str(root))
 from astrid.core.generation.engine_recipe import load_recipe  # noqa: E402
 
 # The digest-verified recipe is the one source pin, as in CI and vibecomfy_pin.py.
-source = next(item for item in load_recipe("vibecomfy", "windows-x86_64-cu130").sources
+source = next(item for item in load_recipe("comfyui", "windows-x86_64-cu130").sources
               if item.name == "vibecomfy")
 sha = source.pin.revision
 repository = source.pin.repository

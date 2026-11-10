@@ -37,6 +37,14 @@ MAX_ENGINE_BODY_BYTES = 1024 * 1024 * 1024
 HTTP_TRANSFER_SECONDS = 15
 LOCAL_HTTP_SECONDS = 30
 _CHUNK_BYTES = 1024 * 1024
+# Managed upload kinds: whether the caller must pin the file's SHA-256, and the
+# refusal for a file whose media type does not match the kind (default text
+# when absent).
+_MANAGED_KIND_RULES: dict[str, dict[str, Any]] = {
+    "image": {"hash_required": False, "media_error": "local_server managed assets must be images"},
+    "video": {"hash_required": True},
+    "audio": {"hash_required": True},
+}
 
 
 def validate_attached_url(value: str) -> str:
@@ -56,7 +64,7 @@ def validate_identity(value: str) -> str:
 
 class _NoRedirectHandler(urllib_request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ValueError("checkout_server remote request redirected unexpectedly")
+        raise ValueError("comfy target remote request redirected unexpectedly")
 
 
 def open_comfy_http(request: urllib_request.Request, *, timeout: float) -> Any:
@@ -143,7 +151,7 @@ class ComfyTargetClient:
                 return b"".join(blocks)
             size += len(block)
             if size > limit:
-                raise ValueError("checkout_server response is too large")
+                raise ValueError("comfy target response is too large")
             blocks.append(block)
 
     def _json(self, path, payload=None, *, timeout=10.0, response_limit=64 * 1024,
@@ -165,7 +173,7 @@ class ComfyTargetClient:
         with self._opener(request, timeout=timeout) as response:
             status = getattr(response, "status", 200)
             if not 200 <= status < 300:
-                raise ValueError(f"checkout_server {path} returned a non-2xx status")
+                raise ValueError(f"comfy target {path} returned a non-2xx status")
             raw = self._read_bounded(response, response_limit, deadline)
         if not raw and acknowledge_empty:
             return {"acknowledged": True}
@@ -213,7 +221,7 @@ class ComfyTargetClient:
             return self._json(path, payload, timeout=timeout, response_limit=response_limit,
                               acknowledge_empty=payload is not None)
         except (OSError, urllib_error.URLError) as exc:
-            raise ValueError(f"checkout_server {path} request failed") from exc
+            raise ValueError(f"comfy target {path} request failed") from exc
 
     def object_info(self) -> dict[str, Any]:
         """Capture schema through this target's existing attested transport."""
@@ -300,23 +308,22 @@ class ComfyTargetClient:
 
     def upload_media(self, source: Path, *, task_id: str, kind: str = "image",
                      expected_sha256: str | None = None) -> str:
-        if kind not in {"image", "video", "audio"}:
+        if kind not in _MANAGED_KIND_RULES:
             raise ValueError(f"unsupported local_server managed asset kind: {kind}")
+        rule = _MANAGED_KIND_RULES[kind]
         source = Path(source)
         subfolder = f"astrid/{validate_identity(task_id)}"
         if source.is_symlink() or not source.is_file():
             raise ValueError(f"managed {kind} is not a regular file: {source}")
         media_type = mimetypes.guess_type(source.name)[0] or ""
         if not media_type.startswith(f"{kind}/"):
-            if kind == "image":
-                raise ValueError("local_server managed assets must be images")
-            raise ValueError(f"local_server managed {kind} asset must have a {kind}/* media type")
+            raise ValueError(rule.get("media_error") or f"local_server managed {kind} asset must have a {kind}/* media type")
         with source.open("rb") as handle:
             data = handle.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
             raise ValueError("managed media upload is too large")
         digest = hashlib.sha256(data).hexdigest()
-        if (kind != "image" or expected_sha256 is not None) and (
+        if (rule["hash_required"] or expected_sha256 is not None) and (
                 expected_sha256 is None or digest != _digest_hex(expected_sha256)):
             raise ValueError(f"managed {kind} failed hash verification: {source.name}")
         filename = source.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
@@ -398,7 +405,7 @@ class ComfyTargetClient:
                 deadline = time.monotonic() + LOCAL_HTTP_SECONDS
                 with self._opener(request, timeout=LOCAL_HTTP_SECONDS) as response, temporary_path.open("wb") as temporary:
                     if getattr(response, "status", 200) != 200:
-                        raise ValueError("checkout_server /view returned a non-200 status")
+                        raise ValueError("comfy target /view returned a non-200 status")
                     headers = getattr(response, "headers", {})
                     encoding = headers.get("Content-Encoding", "identity")
                     if encoding.lower() != "identity":
@@ -426,12 +433,12 @@ class ComfyTargetClient:
                     temporary.flush()
                     os.fsync(temporary.fileno())
             if expected is not None and digest.hexdigest() != expected:
-                raise ValueError(f"checkout_server downloaded output {filename!r} changed during custody")
+                raise ValueError(f"comfy target downloaded output {filename!r} changed during custody")
             os.replace(temporary_path, destination)
             temporary_path = None
             return destination
         except (OSError, urllib_error.URLError) as exc:
-            raise ValueError(f"checkout_server could not download output {filename!r}") from exc
+            raise ValueError(f"comfy target could not download output {filename!r}") from exc
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
@@ -462,34 +469,34 @@ def _digest_hex(value: str) -> str:
 def validate_managed_url(server_url: str) -> str:
     """Return a canonical, origin-only HTTP(S) endpoint."""
     if not isinstance(server_url, str) or not server_url:
-        raise ValueError("checkout_server requires an explicit server_url")
+        raise ValueError("comfy target requires an explicit server_url")
     if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in server_url):
-        raise ValueError("checkout_server server_url must not contain whitespace or control characters")
+        raise ValueError("comfy target server_url must not contain whitespace or control characters")
     if "\\" in server_url:
-        raise ValueError("checkout_server server_url must not contain backslashes")
+        raise ValueError("comfy target server_url must not contain backslashes")
     if "?" in server_url or "#" in server_url:
-        raise ValueError("checkout_server server_url must not contain query or fragment")
+        raise ValueError("comfy target server_url must not contain query or fragment")
     parsed = urllib_parse.urlsplit(server_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("checkout_server server_url must be an HTTP(S) URL")
+        raise ValueError("comfy target server_url must be an HTTP(S) URL")
     if parsed.username is not None or parsed.password is not None:
-        raise ValueError("checkout_server server_url must not contain credentials")
+        raise ValueError("comfy target server_url must not contain credentials")
     if parsed.netloc.endswith(":"):
-        raise ValueError("checkout_server server_url has an invalid port")
+        raise ValueError("comfy target server_url has an invalid port")
     if parsed.query or parsed.fragment:
-        raise ValueError("checkout_server server_url must not contain query or fragment")
+        raise ValueError("comfy target server_url must not contain query or fragment")
     if parsed.path not in {"", "/"}:
-        raise ValueError("checkout_server server_url must contain only an origin")
+        raise ValueError("comfy target server_url must contain only an origin")
     try:
         port = parsed.port
     except ValueError as exc:
-        raise ValueError("checkout_server server_url has an invalid port") from exc
+        raise ValueError("comfy target server_url has an invalid port") from exc
     if port is not None and not 1 <= port <= 65535:
-        raise ValueError("checkout_server server_url has an invalid port")
+        raise ValueError("comfy target server_url has an invalid port")
 
     host = parsed.hostname
     if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in host):
-        raise ValueError("checkout_server server_url has an invalid host")
+        raise ValueError("comfy target server_url has an invalid host")
     if ":" in host:
         # IPv6 literals must use the bracketed URL spelling.
         try:
@@ -497,16 +504,16 @@ def validate_managed_url(server_url: str) -> str:
 
             ipaddress.IPv6Address(host)
         except ValueError as exc:
-            raise ValueError("checkout_server server_url has an invalid host") from exc
+            raise ValueError("comfy target server_url has an invalid host") from exc
         host_part = f"[{host.lower()}]"
     else:
         if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", host):
-            raise ValueError("checkout_server server_url has an invalid host")
+            raise ValueError("comfy target server_url has an invalid host")
         if ".." in host or any(
             not label or label.startswith("-") or label.endswith("-")
             for label in host.split(".")
         ):
-            raise ValueError("checkout_server server_url has an invalid host")
+            raise ValueError("comfy target server_url has an invalid host")
         host_part = host.lower()
     return f"{parsed.scheme}://{host_part}{f':{port}' if port is not None else ''}"
 
@@ -519,26 +526,26 @@ def validate_output_field(
     reject_slash: bool = False,
 ) -> str:
     if not isinstance(value, str) or (not value and not allow_empty):
-        raise ValueError(f"checkout_server output descriptor has invalid {field}")
+        raise ValueError(f"comfy target output descriptor has invalid {field}")
     if any(
         char.isspace() or ord(char) < 32 or ord(char) == 127 or char == "\\"
         for char in value
     ):
-        raise ValueError(f"checkout_server output descriptor has unsafe {field}")
+        raise ValueError(f"comfy target output descriptor has unsafe {field}")
     if is_native_absolute_path(value) or value.startswith("~") or has_url_scheme(value):
-        raise ValueError(f"checkout_server output descriptor has unsafe {field}")
+        raise ValueError(f"comfy target output descriptor has unsafe {field}")
     if ".." in value or (reject_slash and "/" in value):
-        raise ValueError(f"checkout_server output descriptor has unsafe {field}")
+        raise ValueError(f"comfy target output descriptor has unsafe {field}")
     if not allow_empty and not value:
-        raise ValueError(f"checkout_server output descriptor has invalid {field}")
+        raise ValueError(f"comfy target output descriptor has invalid {field}")
     return value
 
 
 def validate_output_descriptor(descriptor: object) -> tuple[str, str, str]:
     if not isinstance(descriptor, dict):
-        raise ValueError("checkout_server output descriptor must be an object")
+        raise ValueError("comfy target output descriptor must be an object")
     if not {"filename", "subfolder", "type"}.issubset(descriptor):
-        raise ValueError("checkout_server output descriptor has an invalid schema")
+        raise ValueError("comfy target output descriptor has an invalid schema")
     # All other fields are provenance only: never use them for routing.
     # Bound and validate even descriptors supplied outside the JSON transport.
     info = {key: value for key, value in descriptor.items()
@@ -561,7 +568,7 @@ def validate_output_descriptor(descriptor: object) -> tuple[str, str, str]:
     except (ValueError, TypeError, RecursionError):
         valid_info = False
     if not valid_info:
-        raise ValueError("checkout_server output descriptor has invalid informational fields")
+        raise ValueError("comfy target output descriptor has invalid informational fields")
     filename = validate_output_field(
         descriptor.get("filename"), field="filename", reject_slash=True
     )
@@ -570,7 +577,7 @@ def validate_output_descriptor(descriptor: object) -> tuple[str, str, str]:
     )
     output_type = validate_output_field(descriptor.get("type"), field="type")
     if output_type not in {"output", "temp"}:
-        raise ValueError("checkout_server output descriptor has invalid type")
+        raise ValueError("comfy target output descriptor has invalid type")
     return filename, subfolder, output_type
 
 
@@ -650,13 +657,23 @@ def _resolve_roles(spec: Any, object_info: dict[str, Any]) -> tuple[dict[str, st
 
 
 def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
-                              model_id: str, mode: str) -> tuple[dict[str, Any], dict[str, Any]]:
+                              model_id: str, mode: str, *, align: str = "check") -> tuple[dict[str, Any], dict[str, Any]]:
     """Keep the observed inventory internal; a returned plan grants no authority."""
     entry, mode_spec = registry.get_by_mode(model_id, mode)
     spec = mode_spec.backends.get("local")
     object_info = client.object_info()
     resolved, failures = (_resolve_roles(spec, object_info) if spec and spec.model_roles
                           else ({}, {"catalog_roles": []}))
+    if align == "trust" and spec is not None:
+        # A declaration with alternatives still needs an observed, unambiguous choice.
+        # Trust can supply a missing exact name; it never picks the first alternative.
+        for role in list(failures):
+            declaration = spec.model_roles.get(role)
+            names = tuple(dict.fromkeys(declaration.names)) if declaration is not None else ()
+            if (not failures[role] and len(names) == 1
+                    and declaration.node_class in object_info):
+                resolved[role] = names[0]
+                del failures[role]
     if failures:
         missing_nodes = sorted({spec.model_roles[role].node_class for role in failures
                                 if spec and role in spec.model_roles
@@ -685,7 +702,7 @@ def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
             {role: list(spec.model_roles[role].names) for role in failures if spec and role in spec.model_roles})
     plan = {"model": model_id, "mode": mode, "template": spec.template,
             "target": {"url": client.target.url, "kind": client.target.kind},
-            "roles": resolved, "model_bytes": "unverified_target_inventory"}
+            "roles": resolved, "model_bytes": "unverified_declaration" if align == "trust" else "unverified_target_inventory"}
     return plan, object_info
 
 

@@ -100,18 +100,18 @@ def test_skill_journey_steps_run_in_order():
     assert positions == sorted(positions), positions
 
 
-def test_skill_journey_ends_at_connected():
+def test_install_journey_hands_over_to_generation():
     text = _skill()
     assert sorted(_steps(text)) == [0, 1, 2, 3], sorted(_steps(text))
-    assert "## Set up generation" not in text
+    assert "### Set up generation" in text
     assert "## 4. " not in text and "## 5. " not in text
-    assert "astrid/packs/generation/docs/SKILL.md" not in text
+    assert "astrid/packs/generation/docs/SKILL.md#set-up-my-generation" in text
     assert "coming" not in text.lower()
 
 
-def test_connected_step_says_local_engines_are_not_covered_yet():
+def test_connected_step_points_to_read_only_generation_setup():
     body = _steps(_skill())[3]
-    assert "(Connecting local engines such as ComfyUI or Wan2GP is not covered here yet.)" in body, body
+    assert "Do not start, restart or install anything for ComfyUI or" in body, body
 
 
 def test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallback():

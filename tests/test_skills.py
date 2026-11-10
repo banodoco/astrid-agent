@@ -597,8 +597,8 @@ class GenerationSkillDiscoveryTest(unittest.TestCase):
         self.assertEqual(self._desc.pack_id, "generation")
 
     def test_description_references_facade(self) -> None:
-        """The generation skill summary describes the ``astrid.generate`` facade."""
-        self.assertIn("astrid.generate", self._desc.description)
+        """The generation skill summary names the one front door, ``generate(entry, inputs, placement)``."""
+        self.assertIn("generate(entry, inputs, placement)", self._desc.description)
 
     def test_short_description_includes_facade_or_generation(self) -> None:
         """The short description (what ``astrid skills list`` prints) is non-empty
@@ -611,18 +611,21 @@ class GenerationSkillDiscoveryTest(unittest.TestCase):
         )
 
     def test_skill_text_contains_facade_image_example(self) -> None:
-        """The SKILL.md body contains ``astrid.generate.image(`` examples."""
-        self.assertIn("astrid.generate.image(", self._raw_text)
+        """The SKILL.md body shows the Python front door with an image entry:
+        ``generate.generate("image/...", {...}, placement=...)``."""
+        self.assertIn('generate.generate("image/', self._raw_text)
+        self.assertIn("placement=", self._raw_text)
 
     def test_skill_text_contains_facade_video_example(self) -> None:
-        """The SKILL.md body contains ``astrid.generate.video(`` examples."""
-        self.assertIn("astrid.generate.video(", self._raw_text)
+        """The SKILL.md body shows a video entry through the CLI, which takes the same entry, inputs and placement."""
+        self.assertIn("generate video --entry h3", self._raw_text)
 
     def test_skill_text_contains_openai_exclusion_note(self) -> None:
-        """The SKILL.md body states that ``execution=\"openai\"`` is rejected by the
-        facade and that ``generate_image_openai`` remains CLI/executor-only."""
-        self.assertIn("generate_image_openai", self._raw_text)
-        self.assertIn("execution=\"openai\"", self._raw_text)
+        """The SKILL.md body states that hosted provider APIs, OpenAI among them, are a separate
+        route and not a placement, so the skill never offers one as a placement."""
+        text = " ".join(self._raw_text.split())  # the skill wraps its prose; match across line breaks
+        self.assertIn("OpenAI", text)
+        self.assertIn("are not part of this placement model", text)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 _ROOT = Path(__file__).resolve().parents[2]
-_INDEX_PATH = _ROOT / "packs" / "engine-index.json"
+_ENGINE_POINT = "extensions/generation.engine"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _ENGINE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -326,20 +326,57 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
     return EngineRecipe(top["schema"], engine, platform, pins_ref, tuple(sources), tuple(environments), primary, models_ref, StartSpec(argv, cwd, MappingProxyType(dict(start_env)), "127.0.0.1", port), health)
 
 
+def declaration_paths() -> list[str]:
+    """Package-relative paths of the generation.engine contributions that declare recipe rows."""
+    return [m.relative_to(_ROOT).as_posix() for m in sorted((_ROOT / "packs").glob(f"*/{_ENGINE_POINT}/*.yaml"))]
+
+
+def parse_recipe_declarations(text: str, where: str = "contribution") -> list[dict[str, str]]:
+    """The ``recipes:`` rows of a generation.engine manifest: block-style ``platform``/``path``/``sha256``.
+
+    A fixed-shape reader, so the helper closure needs no YAML library on a fresh release interpreter.
+    """
+    rows: list[dict[str, str]] = []
+    inside = False
+    for line in text.splitlines():
+        if re.fullmatch(r"recipes:\s*", line):
+            inside = True
+        elif inside and line.strip() and not line[0].isspace():
+            inside = False
+        elif inside and line.strip():
+            match = re.fullmatch(r"\s+(- )?(\w+): \"?([^\"\s]+)\"?\s*", line)
+            if match is None: raise RecipeValidationError(f"{where}: unreadable recipes line")
+            dash, key, value = match.groups()
+            if dash: rows.append({})
+            if not rows: raise RecipeValidationError(f"{where}: recipes row must start with '- '")
+            if key not in {"platform", "path", "sha256"}: raise RecipeValidationError(f"{where}: unknown {key}")
+            rows[-1][key] = value
+    for row in rows:
+        if row.keys() != {"platform", "path", "sha256"}: raise RecipeValidationError(f"{where}: recipes row needs platform, path, sha256")
+    return rows
+
+
+def _declared_rows() -> list[dict[str, Any]]:
+    """Recipe rows declared by the generation.engine contributions (``recipes:`` in each manifest)."""
+    rows = []
+    for manifest in sorted((_ROOT / "packs").glob(f"*/{_ENGINE_POINT}/*.yaml")):
+        try:
+            text = manifest.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RecipeValidationError(f"engine contribution is unreadable: {manifest.name}") from exc
+        for row in parse_recipe_declarations(text, manifest.name):
+            rows.append({"engine": manifest.stem, "platform": row["platform"],
+                         "recipe": {"path": row["path"], "sha256": row["sha256"]}})
+    return rows
+
+
 def _index_rows() -> list[dict[str, Any]]:
-    raw = _json(_INDEX_PATH)
-    obj = _object(raw, {"schema", "entries"}, where="engine-index")
-    if obj["schema"] != "astrid.engine-index.v1": raise RecipeValidationError("unknown recipe index schema")
     rows, seen = [], set()
-    prior = None
-    for i, item_raw in enumerate(_array(obj["entries"], "engine-index.entries")):
-        item = _object(item_raw, {"engine", "platform", "recipe"}, where=f"engine-index.entries[{i}]")
+    for item in sorted(_declared_rows(), key=lambda r: (r["engine"], r["platform"])):
         engine, platform = _string(item["engine"], "index.engine"), _string(item["platform"], "index.platform")
         if not _ENGINE.fullmatch(engine) or platform not in _PLATFORMS: raise RecipeValidationError("invalid index engine/platform")
-        key = (engine, platform)
-        if key in seen: raise RecipeValidationError("duplicate engine/platform index entry")
-        if prior is not None and key < prior: raise RecipeValidationError("index entries must be deterministically sorted")
-        seen.add(key); prior = key
+        if platform in {p for _, p in seen}: raise RecipeValidationError("more than one engine row for a platform")
+        seen.add((engine, platform))
         rows.append(item)
     return rows
 

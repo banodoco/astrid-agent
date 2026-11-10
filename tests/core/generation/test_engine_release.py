@@ -124,7 +124,6 @@ def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fi
         }
     assert packaged_locks == {
         'astrid/packs/runpod/requirements.linux-cu130.lock',
-        'astrid/packs/comfyui/requirements.linux-cu130.lock',
     }
     recipe = json.loads((REPO / 'astrid/packs/runpod/recipe.linux-cu130.json').read_text())
     for env in recipe['environments']:
@@ -150,7 +149,7 @@ def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fi
         assert (root / path).is_file()
     assert (root / 'site/astrid/__init__.py').read_bytes() == (REPO / 'astrid/__init__.py').read_bytes()
     result = subprocess.run([sys.executable, '-I', '-S', str(root / 'run.py'), 'cli',
-                             'engines', 'install', 'vibecomfy-h3', '--placement', 'local', '--dry-run'],
+                             'engines', 'install', 'comfyui', '--placement', 'local', '--dry-run'],
                             cwd=root.parent, env={'PATH': os.defpath, 'PYTHONPATH': '/nonexistent'},
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
@@ -188,7 +187,7 @@ print(json.dumps({s.name:{'repository':s.pin.repository,'revision':s.pin.revisio
         'comfyui': {'repository': 'https://github.com/Comfy-Org/ComfyUI.git',
                     'revision': '423cbd20511becb1f16122ab518e92e58bfa03d9', 'path': 'runtime/ComfyUI'},
         'vibecomfy': {'repository': 'https://github.com/banodoco/VibeComfy.git',
-                      'revision': engine_source_revision('vibecomfy', 'windows-x86_64-cu130', 'vibecomfy'), 'path': 'runtime/vibecomfy'},
+                      'revision': engine_source_revision('comfyui', 'windows-x86_64-cu130', 'vibecomfy'), 'path': 'runtime/vibecomfy'},
     }
 
 
@@ -199,14 +198,14 @@ def test_plain_comfyui_release_handoff_requires_the_same_cli_engine():
     assert argv[argv.index('--engine') + 1] == 'comfyui'
     assert argv[-len(args):] == args
     with pytest.raises(release.ReleaseError, match='handoff engine'):
-        release.release_cli_argv(**kwargs, cli_args=('engines', 'status', 'vibecomfy-h3', '--root', '/engine'))
+        release.release_cli_argv(**kwargs, cli_args=('engines', 'status', 'comfyui', '--root', '/engine'))
     with pytest.raises(release.ReleaseError, match='unsupported handoff engine'):
         release._handoff_recipe('/unread', engine='unknown')
 
 
 def test_fixture_cannot_launch_install_or_startup(archive_fixture):
     _, _, _, root = archive_fixture
-    for args in (('cli', 'engines', 'install', 'vibecomfy-h3', '--placement', 'local'),
+    for args in (('cli', 'engines', 'install', 'comfyui', '--placement', 'local'),
                  ('startup', '--root', '/workspace/test', '--attempt', 'test'), ('check',)):
         result = subprocess.run([sys.executable, '-I', '-S', str(root / 'run.py'), *args],
                                 capture_output=True, text=True, timeout=30)

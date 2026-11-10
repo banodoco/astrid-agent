@@ -7,14 +7,12 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from astrid.packs.runpod import remote_placement as rp
 from astrid.packs.runpod.remote_placement import (
     Claim,
-    DigestMismatch,
     Limits,
     RemotePlacement,
     RemotePlacementError,
@@ -41,10 +39,24 @@ class FakePod:
         self.corrupt_get: str | None = None
         self.corrupt_manifest = False
         self.cancelled: list[str] = []
+        self.listed: list[str] = ["cpu-image"]  # entries the pod's runtime lists as ready
+        # The pod's one Runtime (T5f): container-disk state, not the volume.
+        self.pod_state = "absent"  # absent | ready; an active job makes it pending
+        self.active_job: dict | None = None
+        self.template = False
+        self.resets: list[dict] = []
 
     # --- agent surface
     def exec(self, command, timeout=600):
         self.exec_log.append(command)
+        if "pod-state:" in command:
+            state = "pending" if self.active_job is not None else self.pod_state
+            return 0, f"pod-state:{state}\n", ""
+        if command.startswith("rm -rf "):
+            gone = command.split(" ", 2)[2].strip("'")
+            for path in [p for p in self.files if p.startswith(gone + "/")]:
+                del self.files[path]
+            return 0, "", ""
         if command.startswith("test -f "):
             path = command.split(" ", 2)[2].strip("'")
             return (0 if path in self.files else 1), "", ""
@@ -59,6 +71,8 @@ class FakePod:
         if command.startswith("cat ") or command.startswith("tail "):
             path = command.split()[-1].strip("'")
             return 0, self.files.get(path, b"").decode(), ""
+        if "generate list --json" in command:
+            return 0, json.dumps([{"id": entry, "ready": True} for entry in self.listed]), ""
         return 0, "", ""
 
     def put(self, local, remote):
@@ -77,7 +91,11 @@ class FakePod:
         job_id = f"{len(self.job_log):032x}"
         directory = f"/workspace/.astrid-jobs/{job_id}"
         rc = 1 if any(marker in command for marker in self.fail_jobs) else 0
-        stdout = ""
+        stdout, stderr = "", "boom" if rc else ""
+        if "pod_reset reset" in command:
+            stdout = self._reset(command, ok=rc == 0)
+        elif " generate " in command and "--placement local" in command and rc == 0:
+            rc, stderr = self._enter(command, directory)
         if rc == 0:
             if "pod_bootstrap.sh" in command:
                 self.files[self.marker] = b"ok"
@@ -85,13 +103,55 @@ class FakePod:
                 self.installed = True
             if "action run h3_av.transform" in command:
                 stdout = self._transform(command)
+            if " generate " in command and "--placement local" in command:
+                stdout = self._generate(command)
         self.files[f"{directory}/stdout"] = stdout.encode()
-        self.files[f"{directory}/stderr"] = b"boom" if rc else b""
+        self.files[f"{directory}/stderr"] = stderr.encode()
         self.jobs[job_id] = rc
         return {"id": job_id, "dir": directory}
 
     def job_poll(self, job_id):
         return {"id": job_id, "state": "exited", "exit_code": self.jobs[job_id]}
+
+    def _reset(self, command: str, *, ok: bool) -> str:
+        """``pod_reset reset``: template (first) or restore+replace, sweep, ready.json."""
+        import shlex as _shlex
+
+        argv = _shlex.split(command)
+        dirs = [argv[argv.index(flag) + 1] for flag in ("--run-dir", "--job-dir") if flag in argv]
+        if not dirs and self.active_job is not None:
+            # A redo at the claim: pod_reset reads the folders the stuck job recorded.
+            dirs = [self.active_job[key] for key in ("run_dir", "job_dir") if self.active_job.get(key)]
+        self.resets.append({"dirs": dirs, "ok": ok, "active": self.active_job})
+        if not ok:
+            self.pod_state = "absent"
+            return json.dumps({"reset": "failed", "error": "RuntimeError: replace refused"}) + "\n"
+        for gone in dirs:
+            for path in [p for p in self.files if p.startswith(gone + "/")]:
+                del self.files[path]
+        taken = not self.template
+        self.template, self.pod_state, self.active_job = True, "ready", None
+        return json.dumps({"reset": "ok", "removed": len(dirs), "template": "taken" if taken else "restored"}) + "\n"
+
+    def _enter(self, command: str, directory: str) -> tuple[int, str]:
+        """The generation command's own gate: ready, no pending reset, entry listed."""
+        import shlex as _shlex
+
+        assert "ensure_runtime" not in command and "astrid-runtime" not in command, "a warm job ran up/connect"
+        assert "export ASTRID_PREPARED_CONNECTION=/root/astrid/prepared-connection.json" in command
+        assert "flock -s 9" in command and "ASTRID_RUNTIME_DOOR_PORT=0" in command
+        if self.pod_state != "ready" or self.active_job is not None:
+            return 75, "the pod is not ready: a reset is pending"
+        active = next(row for row in command.splitlines()
+                      if row.startswith("/opt/astrid/bin/python -c ") and "active-job.json" in row)
+        argv = _shlex.split(active)
+        assert argv[4] == '$(dirname $0)', argv[4]  # the job's own agent folder (bash "$d/command.sh")
+        self.active_job = {**json.loads(argv[3]), "job_dir": directory}
+        line = next(row for row in command.splitlines() if "--placement local" in row)
+        entry = _shlex.split(line.split(" > ")[0])[2]
+        if entry != "workflow" and entry not in self.listed:
+            return 3, f"entry {entry!r} is not listed by the pod's runtime"
+        return 0, ""
 
     def job_cancel(self, job_id):
         self.cancelled.append(job_id)
@@ -132,6 +192,26 @@ class FakePod:
         self.files[f"{out}/{rp.MANIFEST_NAME}"] = body.encode()
         reported = _sha(body.encode()) if not self.corrupt_manifest else "0" * 64
         return f"{rp.RESULT_MARK}{json.dumps(result)}\n{rp.MANIFEST_MARK}{reported}\n"
+
+
+def _fake_generate(pod: "FakePod", command: str) -> str:
+    """Fake pod-side local run: output tree, result line and digest manifest."""
+    import shlex as _shlex
+
+    line = next(row for row in command.splitlines() if "--placement local" in row)
+    argv = _shlex.split(line.split(" > ")[0])
+    root = argv[argv.index("--job") + 1].rsplit("/", 1)[0]
+    out = f"{root}/out"
+    pod.files[f"{root}/progress.json"] = b'{"phase": "fetch"}'
+    tree = {f"{out}/artifacts/cpu.png": b"png-bytes", f"{out}/manifest.json": b'{"outputs": []}'}
+    pod.files.update(tree)
+    files = {path[len(out) + 1:]: {"sha256": _sha(data), "size": len(data)} for path, data in tree.items()}
+    body = json.dumps({"schema_version": 1, "files": files}, sort_keys=True, indent=2) + "\n"
+    pod.files[f"{out}/{rp.MANIFEST_NAME}"] = body.encode()
+    return f"{rp.RESULT_MARK}{json.dumps({'status': 'succeeded'})}\n{rp.MANIFEST_MARK}{_sha(body.encode())}\n"
+
+
+FakePod._generate = _fake_generate
 
 
 class FakeProvider:
@@ -190,28 +270,10 @@ def sources(tmp_path: Path, monkeypatch) -> Path:
     return root
 
 
-@pytest.fixture
-def inputs(tmp_path: Path):
-    source = tmp_path / "source.mp4"
-    source.write_bytes(b"source-video")
-    request = tmp_path / "request.json"
-    request.write_text('{"request": 1}', encoding="utf-8")
-    asset_map = tmp_path / "asset-map.json"
-    asset_map.write_text(json.dumps({"source": str(source)}), encoding="utf-8")
-    return request, asset_map
-
-
 def _wrapper(provider, sources, **kwargs):
-    kwargs.setdefault("verify_fn", lambda out, result: None)
-    kwargs.setdefault("ffprobe_fn", lambda path: None)
     return RemotePlacement(
         provider, limits=Limits(poll_seconds=0), source_root=sources, sleep=lambda s: None, **kwargs
     )
-
-
-def _go(wrapper, inputs, out):
-    request, asset_map = inputs
-    return wrapper.run(request=request, asset_map=asset_map, out=out)
 
 
 def _provider(sources, volume=None):
@@ -250,27 +312,34 @@ def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp
     assert not any("/01-prepare/" in path for path in claim.ops.files)
 
 
-def test_prepare_claimed_install_uses_the_volume_model_cache_when_saved(tmp_path, sources):
-    provider = _provider(sources)
+def test_changed_source_bootstraps_even_when_previous_product_marker_exists(tmp_path, sources):
+    old = _provider(sources)
+    files = {old.marker: b"ok"}
+    (sources / "src/astrid-agent/mod.py").write_text("# new source install payload\n")
+    provider = _provider(sources, volume=files)
+    assert provider.marker != old.marker
     claim = provider.claim(rp.ClaimSpec())
-    cache = "/workspace/astrid/engines/comfyui/models"
-    state = _wrapper(provider, sources).prepare_claimed(
-        claim, out=tmp_path / "prepare", deadline_seconds=120, model_cache_root=cache,
-    )
-    install = next(c for c in claim.ops.job_log if "engines install" in c)
-    assert f"--model-cache-root {cache}" in install
-    assert "--model-cache-device" not in install and "--model-cache-mount-id" not in install
-    assert state.model_cache_root == cache
-    assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
+    _wrapper(provider, sources).prepare_claimed(claim, out=tmp_path / "prepare", deadline_seconds=120)
+    assert any("pod_bootstrap.sh" in command for command in claim.ops.job_log)
+    assert files[provider.marker] == files[old.marker] == b"ok"
 
 
-def test_prepare_claimed_install_has_no_cache_without_a_volume(tmp_path, sources):
+def test_prepare_claimed_install_is_model_free(tmp_path, sources):
+    """Plan 32 T5h: a claim installs the engine only; no model flag, no model fetch on the pod."""
     provider = _provider(sources)
     claim = provider.claim(rp.ClaimSpec())
     state = _wrapper(provider, sources).prepare_claimed(claim, out=tmp_path / "prepare", deadline_seconds=120)
     install = next(c for c in claim.ops.job_log if "engines install" in c)
-    assert "--model-cache-root" not in install
-    assert state.model_cache_root is None
+    assert "--model-cache" not in install
+    assert not any("fetch" in c or "download" in c for c in claim.ops.job_log)
+    assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
+
+
+def test_volume_is_sized_by_the_job_manifest_rows_not_the_model_lock():
+    installation = rp.RunPodInstallation(compatibility={})
+    rows = ({"name": "a", "size": 100}, {"name": "b", "size": 23})
+    assert installation.model_bytes(rows) == 123
+    assert installation.model_bytes(()) == 1  # a warm job needs no model bytes
 
 
 def test_ordinary_connector_uses_only_the_verified_claim_and_existing_https_ops(monkeypatch):
@@ -303,276 +372,6 @@ def test_prepare_claimed_refuses_missing_paid_lifetime_without_provider_use(tmp_
     assert provider.claims == provider.releases == 0
 
 
-def test_happy_path_runs_all_seven_steps(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    seen = {}
-    wrapper = _wrapper(
-        provider, sources,
-        verify_fn=lambda out, result: seen.setdefault("verify", dict(result)),
-        ffprobe_fn=lambda path: seen.setdefault("ffprobe", path),
-    )
-    out = tmp_path / "out"
-    result = _go(wrapper, inputs, out)
-
-    # 1 claim: https, storage, EUR-NO-1, caps passed through, exactly once
-    assert provider.claims == 1
-    assert (provider.spec.transport, provider.spec.storage_name, provider.spec.datacenter_id) == (
-        "https", "storage", "EUR-NO-1")
-    assert provider.spec.max_spend_eur == rp.DEFAULT_MAX_SPEND_EUR
-    assert provider.spec.deadline_seconds == rp.DEFAULT_DEADLINE_SECONDS
-    steps = {s["step"]: s["status"] for s in result["remote_steps"]}
-    assert steps == {"claim": "done", "bootstrap": "done", "install": "done", "upload": "done",
-                     "job": "done", "download": "done", "verify": "done", "release": "done"}
-    pod = provider.pods[0]
-    # 2 bootstrap ran the script after uploading archives; 3 install deadline 14400
-    assert any("pod_bootstrap.sh" in c for c in pod.job_log)
-    assert any(r.endswith("sources.tar.gz") for r in pod.put_log)
-    install = next(c for c in pod.job_log if "engines install" in c)
-    assert "--placement local" in install and "--deadline 14400" in install
-    assert f"--root {rp.ENGINE_ROOT}" in install
-    # 4 inputs uploaded
-    assert any(r.endswith("request.json") for r in pod.put_log)
-    assert any("000-source.mp4" in r for r in pod.put_log)
-    # 5 the transform ran as one detached job, with the single canonical argv
-    transform = next(c for c in pod.job_log if "action run h3_av.transform" in c)
-    assert "--placement local" in transform and "python -m" not in transform
-    # 6 downloads land in the local out dir; the undeclared intermediate is not pulled
-    assert Path(result["candidate"]).read_bytes() == b"candidate-bytes"
-    assert Path(result["candidate"]).is_relative_to(out.resolve())
-    assert (out / "08-final-receipt.json").is_file() and (out / "operation-state.json").is_file()
-    assert not (out / "04-run").exists()
-    assert seen["verify"]["candidate"] == result["candidate"] and seen["ffprobe"] == Path(result["candidate"])
-    # 7 released, GET 404, shape = local keys + placement and identity
-    assert provider.releases == 1 and provider.existing == set()
-    assert result["placement"] == "runpod"
-    assert result["pod"]["pod_id"] == "pod-1" and result["pod"]["claim"] == {"operation_id": "op-1"}
-    assert result["pod"]["released"] is True
-    assert result["status"] == "candidate_verified" and result["final_receipt"].endswith("08-final-receipt.json")
-
-
-def test_leave_running_skips_release_on_success_only(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    result = _go(_wrapper(provider, sources, leave_running=True), inputs, tmp_path / "out")
-    assert provider.releases == 0 and provider.existing == {"pod-1"}
-    assert result["pod"]["released"] is False and result["pod"]["leave_running"] is True
-
-    failing = _provider(sources)
-    failing.claim_kwargs = {"datacenter_id": "US-TX-3"}
-    with pytest.raises(RemotePlacementError):
-        _go(_wrapper(failing, sources, leave_running=True), inputs, tmp_path / "out2")
-    assert failing.releases == 1 and failing.existing == set()
-
-
-def test_second_run_skips_bootstrap_and_install(tmp_path, sources, inputs):
-    volume: dict[str, bytes] = {}
-    first = _provider(sources, volume)
-    _go(_wrapper(first, sources), inputs, tmp_path / "out1")
-    second = _provider(sources, volume)
-    result = _go(_wrapper(second, sources), inputs, tmp_path / "out2")
-
-    steps = {s["step"]: s["status"] for s in result["remote_steps"]}
-    assert steps["bootstrap"] == "skipped" and steps["install"] == "skipped"
-    pod = second.pods[0]
-    assert not any("pod_bootstrap.sh" in c or "engines install" in c for c in pod.job_log)
-    assert not any(r.endswith("sources.tar.gz") for r in pod.put_log)
-    assert len(pod.job_log) == 1  # only the transform
-    assert second.releases == 1
-
-
-STEP_FAILURES = {
-    "claim_contract": lambda p, pod: p.claim_kwargs.update(datacenter_id="US-TX-3"),
-    "claim_spend": lambda p, pod: p.claim_kwargs.update(cost_per_hr_eur=50.0),
-    "claim_cost_unknown": lambda p, pod: p.claim_kwargs.update(cost_per_hr_eur=None),
-    "claim_transport": lambda p, pod: p.claim_kwargs.update(transport="ssh"),
-    "bootstrap": lambda p, pod: pod.fail_jobs.add("pod_bootstrap.sh"),
-    "install": lambda p, pod: pod.fail_jobs.add("engines install"),
-    "upload": lambda p, pod: setattr(pod, "corrupt_put", True),
-    "job": lambda p, pod: pod.fail_jobs.add("action run h3_av.transform"),
-    "download": lambda p, pod: setattr(pod, "corrupt_get", "candidate.media"),
-}
-
-
-@pytest.mark.parametrize("step", sorted(STEP_FAILURES))
-def test_release_on_error_at_each_step(tmp_path, sources, inputs, step):
-    provider = _provider(sources)
-    original_claim = provider.claim
-
-    def claim(spec):
-        claimed = original_claim(spec)
-        STEP_FAILURES[step](provider, claimed.ops)
-        return claimed
-
-    if step.startswith("claim_"):
-        STEP_FAILURES[step](provider, None)
-    else:
-        provider.claim = claim
-    with pytest.raises(RemotePlacementError):
-        _go(_wrapper(provider, sources), inputs, tmp_path / "out")
-    assert provider.claims == 1
-    assert provider.releases == 1
-    assert provider.existing == set()
-
-
-def test_release_on_verify_error_and_ffprobe_error(tmp_path, sources, inputs):
-    def boom(*_a):
-        raise ValueError("verify refused")
-
-    for kwargs in ({"verify_fn": boom}, {"ffprobe_fn": boom}):
-        provider = _provider(sources)
-        with pytest.raises(ValueError, match="verify refused"):
-            _go(_wrapper(provider, sources, **kwargs), inputs, tmp_path / "out")
-        assert provider.claims == 1 and provider.releases == 1 and provider.existing == set()
-
-
-def test_release_on_deadline(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    ticks = iter(range(0, 10_000_000, 4000))
-    wrapper = RemotePlacement(
-        provider, limits=Limits(deadline_seconds=10, poll_seconds=0), source_root=sources,
-        verify_fn=lambda *_: None, ffprobe_fn=lambda *_: None,
-        clock=lambda: float(next(ticks)), sleep=lambda s: None,
-    )
-    with pytest.raises(RemotePlacementError, match="deadline"):
-        _go(wrapper, inputs, tmp_path / "out")
-    assert provider.releases == 1 and provider.existing == set()
-
-
-def test_running_job_is_cancelled_before_release(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    wrapper = _wrapper(provider, sources)
-
-    def stuck(self, job_id):
-        raise ConnectionError("lost connection")
-
-    original_claim = provider.claim
-
-    def claim(spec):
-        claimed = original_claim(spec)
-        claimed.ops.job_poll = lambda job_id: (_ for _ in ()).throw(ConnectionError("lost"))
-        return claimed
-
-    provider.claim = claim
-    with pytest.raises(ConnectionError):
-        _go(wrapper, inputs, tmp_path / "out")
-    assert provider.pods[0].cancelled and provider.releases == 1
-
-
-def test_sha_mismatch_on_download_refuses(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    original_claim = provider.claim
-
-    def claim(spec):
-        claimed = original_claim(spec)
-        claimed.ops.corrupt_get = "candidate.media"
-        return claimed
-
-    provider.claim = claim
-    out = tmp_path / "out"
-    with pytest.raises(DigestMismatch, match="candidate.media"):
-        _go(_wrapper(provider, sources), inputs, out)
-    assert not (out / "05-compose" / "candidate.media").exists()  # refused copy removed
-    assert provider.releases == 1
-
-
-def test_manifest_digest_mismatch_refuses(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    original_claim = provider.claim
-
-    def claim(spec):
-        claimed = original_claim(spec)
-        claimed.ops.corrupt_manifest = True
-        return claimed
-
-    provider.claim = claim
-    with pytest.raises(DigestMismatch, match="manifest"):
-        _go(_wrapper(provider, sources), inputs, tmp_path / "out")
-    assert provider.releases == 1
-
-
-def test_candidate_must_match_composition_receipt(tmp_path):
-    candidate = tmp_path / "c.media"
-    candidate.write_bytes(b"x")
-    composition = tmp_path / "c.json"
-    composition.write_text(json.dumps({"candidate": {"sha256": "0" * 64}}))
-    with pytest.raises(DigestMismatch):
-        RemotePlacement._check_receipt_digests(
-            {"composition": str(composition), "candidate": str(candidate)})
-
-
-def test_never_a_second_claim(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    wrapper = _wrapper(provider, sources)
-    _go(wrapper, inputs, tmp_path / "out1")
-    with pytest.raises(RemotePlacementError, match="second pod claim"):
-        _go(wrapper, inputs, tmp_path / "out2")
-    assert provider.claims == 1
-
-
-def test_claim_failure_is_not_retried(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    provider.claim_error = RuntimeError("no capacity")
-    with pytest.raises(RuntimeError, match="no capacity"):
-        _go(_wrapper(provider, sources), inputs, tmp_path / "out")
-    assert provider.claims == 1 and provider.releases == 0
-
-
-def test_partial_claim_custody_is_released(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    error = RuntimeError("readiness failed after allocation")
-    error.claim = Claim(pod_id="pod-x", ops=FakePod({}, "m"), identity={})
-    provider.claim_error = error
-    provider.existing.add("pod-x")
-    with pytest.raises(RuntimeError):
-        _go(_wrapper(provider, sources), inputs, tmp_path / "out")
-    assert provider.claims == 1 and provider.releases == 1 and provider.existing == set()
-
-
-def test_release_that_leaves_the_pod_alive_is_an_error(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    provider.leak_after_release = True
-    with pytest.raises(RemotePlacementError, match="still exists"):
-        _go(_wrapper(provider, sources), inputs, tmp_path / "out")
-    assert provider.claims == 1 and provider.releases == 1
-
-
-def test_release_failure_does_not_hide_the_original_error(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    provider.claim_kwargs = {"datacenter_id": "US-TX-3"}
-    provider.release_error = RuntimeError("provider 500")
-    with pytest.raises(RemotePlacementError, match="expected EUR-NO-1") as info:
-        _go(_wrapper(provider, sources), inputs, tmp_path / "out")
-    assert any("provider 500" in note for note in info.value.__notes__)
-    assert provider.claims == 1
-
-
-def test_preflight_refuses_before_any_claim(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    request, asset_map = inputs
-    wrapper = _wrapper(provider, sources)
-    with pytest.raises(RemotePlacementError):
-        wrapper.run(request=request, asset_map=asset_map, out=tmp_path / "o", cleanup_receipt=tmp_path / "r.json")
-    bad = tmp_path / "exec.json"
-    bad.write_text(json.dumps({"target": {"kind": "runpod", "pod_id": "p"}}))
-    with pytest.raises(RemotePlacementError):
-        wrapper.run(request=request, asset_map=asset_map, out=tmp_path / "o", execution_request=bad)
-    assert provider.claims == 0
-
-
-def test_command_is_defined_in_one_swappable_place(tmp_path, sources, inputs):
-    provider = _provider(sources)
-    calls = []
-
-    def custom(remote_args, remote_out, **kwargs):
-        calls.append((dict(remote_args), remote_out))
-        return ["/opt/astrid/bin/astrid", "action", "run", "h3_av.transform", "--out", remote_out, "--swapped"]
-
-    _go(_wrapper(provider, sources, command_argv=custom), inputs, tmp_path / "out")
-    assert calls and any("--swapped" in c for c in provider.pods[0].job_log)
-    default = rp.clip_command_argv({"request": "/r", "asset_map": "/a"}, "/o")
-    assert default[:4] == [f"{rp.POD_VENV}/bin/astrid", "action", "run", "h3_av.transform"]
-    assert "-m" not in default and "--placement" in default and default[default.index("--placement") + 1] == "local"
-
-
 def test_source_digest_matches_pod_bootstrap_script(sources):
     shell = f"""
 set -eu; cd {sources}
@@ -599,43 +398,6 @@ def test_manifest_script_matches_what_the_wrapper_checks(tmp_path):
     files = json.loads(manifest.read_text())["files"]
     assert files["sub/b.bin"] == {"sha256": _sha(b"bbb"), "size": 3}
     assert rp.MANIFEST_NAME not in files
-
-
-def test_transform_runpod_calls_the_wrapper(tmp_path, monkeypatch):
-    from astrid.packs.h3_av.actions.transform import run as transform
-
-    request = tmp_path / "request.json"
-    request.write_text("{}")
-    asset_map = tmp_path / "assets.json"
-    asset_map.write_text("{}")
-    seen = {}
-
-    def fake(args):
-        seen["placement"] = args.placement
-        return {"placement": "runpod", "status": "candidate_verified"}
-
-    monkeypatch.setattr(transform, "_run_remote_placement", fake)
-    args = transform.build_parser().parse_args(
-        ["--request", str(request), "--asset-map", str(asset_map), "--out", str(tmp_path / "o"),
-         "--placement", "runpod"])
-    assert transform.run_transform(args)["placement"] == "runpod"
-    assert seen["placement"] == "runpod"
-    assert not hasattr(transform, "PlacementNotImplemented")
-
-
-def test_run_remote_placement_reads_caps_from_env(tmp_path, sources, inputs, monkeypatch):
-    provider = _provider(sources)
-    request, asset_map = inputs
-    args = SimpleNamespace(request=request, asset_map=asset_map, out=tmp_path / "o", project=None,
-                           editorial_approved=False, execution_request=None, cleanup_receipt=None)
-    env = {"ASTRID_RUNPOD_MAX_SPEND_EUR": "3.5", "ASTRID_RUNPOD_DEADLINE_SECONDS": "7200",
-           "ASTRID_RUNPOD_LEAVE_RUNNING": "1"}
-    monkeypatch.setattr("astrid.packs.runpod.managed_sources.ensure_managed_sources", lambda: sources)
-    result = rp.run_remote_placement(
-        args, provider=provider, env=env, verify_fn=lambda *_: None, ffprobe_fn=lambda *_: None,
-        sleep=lambda s: None)
-    assert (provider.spec.max_spend_eur, provider.spec.deadline_seconds) == (3.5, 7200)
-    assert result["pod"]["leave_running"] is True and provider.releases == 0
 
 
 def test_source_archive_carries_git_and_the_one_identity_manifest_the_verifier_reads(tmp_path, sources):
@@ -669,6 +431,6 @@ def test_engine_custody_root_is_not_on_the_workspace_fuse_mount():
 
     assert not on_workspace(rp.ENGINE_ROOT)
     assert f"ASTRID_ENGINE_ROOT:-{rp.ENGINE_ROOT}}}" in rp.POD_BOOTSTRAP_SCRIPT
-    for engine in ("comfyui", "vibecomfy-h3"):
+    for engine in ("comfyui",):
         assert not on_workspace(f"{rp.ENGINE_BASE}/{engine}")
     assert not on_workspace(rp.RunPodInstallation.root)

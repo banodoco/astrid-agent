@@ -2067,6 +2067,45 @@ def test_terminal_sidecar_progress_is_heartbeated_before_settlement(tmp_path):
     ]
 
 
+def test_child_progress_path_is_the_attempt_root_the_heartbeat_reads(tmp_path):
+    """Plan 32 T5 check: ASTRID_PROGRESS_PATH (child env) and read_progress (terminal root) are one file."""
+    manifest_path = _write_manifest(tmp_path / "echo")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["command"]["argv"] = [
+        "{python_exec}",
+        "-c",
+        "import os, json; from pathlib import Path; out = Path('{out}'); "
+        "(out / 'answer.txt').write_text(json.dumps([os.environ['ASTRID_PROGRESS_PATH'], str(out.resolve())])); "
+        "Path(os.environ['ASTRID_PROGRESS_PATH']).write_text(json.dumps(dict(phase='submit')))",
+    ]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=runtime, attempt_base=tmp_path / "attempts")
+    host.discover()
+    host.register()
+    task = {"task": {"id": "task-progress-path", "capability": "test.echo", "project_id": "demo",
+                     "attempt_id": "attempt-progress-path", "fence": 1, "spec": {"spec": {"inputs": {}}}}}
+    runtime.tasks["task-progress-path"] = task
+    observed = []
+    original = GenericPackHost._prepare_producer_evidence
+
+    def capture(self, output_root, task_data):
+        observed.append(json.loads((output_root / "answer.txt").read_text(encoding="utf-8")))
+        return original(self, output_root, task_data)
+
+    GenericPackHost._prepare_producer_evidence = capture
+    try:
+        settled = host.run_task(task, lease_token="lease-progress-path")
+    finally:
+        GenericPackHost._prepare_producer_evidence = original
+    assert settled["task"]["status"] == "completed"
+    progress_path, out = observed[0]
+    # One directory, the attempt root: outputs/ and .astrid-progress.json are siblings.
+    assert Path(progress_path).parent == Path(out).parent
+    assert Path(progress_path).name == ".astrid-progress.json"
+    assert runtime.heartbeat_progress == [("task-progress-path", {"phase": "submit"})]
+
+
 def test_run_accepts_at_free_disk_floor_without_task_estimate(tmp_path, monkeypatch):
     _write_manifest(tmp_path / "echo")
     runtime = FakeRuntime()
@@ -5208,3 +5247,31 @@ def test_personal_root_is_not_added_to_scoped_host_and_is_added_to_default_host(
 
     default = GenericPackHost(pack_roots=[], personal_collection=True)
     assert personal in default.pack_roots
+
+
+def test_host_admission_reaches_the_child_environment_as_align_and_entry(tmp_path, monkeypatch):
+    """admission {align, entry} -> _run_command_definition -> _child_environment -> the child's env (Plan 32 T4g)."""
+    _write_manifest(tmp_path / "vibecomfy-run", capability_id="vibecomfy.run")
+    host = GenericPackHost(pack_roots=[tmp_path])
+    record = host.discover()[0]
+    monkeypatch.setattr(generic_host, "_network_sandbox_argv", lambda argv, *_args: argv)
+    monkeypatch.setattr(generic_host, "_read_readiness_profile_document", lambda *a, **k: None)
+    monkeypatch.setattr(generic_host, "_verify_admitted_source", lambda admission: None)
+    captured = []
+
+    class ReachedOwnedLaunch(Exception):
+        pass
+
+    def launch(argv, **kwargs):
+        captured.append(kwargs["env"])
+        raise ReachedOwnedLaunch
+
+    monkeypatch.setattr(generic_host, "spawn_task_scope", launch)
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    task = {"generation_intent": {"metadata": {"model": "named-entry", "mode": "t2i", "align": "align"}}}
+    with pytest.raises(ReachedOwnedLaunch):
+        host._run_command_definition(record, {}, attempt / "outputs", attempt,
+                                     admission=generic_host._align_admission(task))
+    assert captured[0]["ASTRID_ALIGN"] == "align"
+    assert captured[0]["ASTRID_GENERATION_ENTRY"] == "named-entry"

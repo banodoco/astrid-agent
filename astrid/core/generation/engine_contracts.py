@@ -1,6 +1,7 @@
 """Typed, immutable contracts shared by packaged engine recipes and adapters."""
 from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass
 from typing import Any, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
 
@@ -309,9 +310,6 @@ class ExecutionContext(Protocol):
                           *, deadline: Deadline) -> None: ...
     def file_fact(self, path: TargetPath, *, hash_bytes: bool,
                   deadline: Deadline) -> FileFact: ...
-    def download_model(self, model: ModelSpec, *, models_root: TargetPath,
-                       deadline: Deadline, model_cache_root: TargetPath | None = None,
-                       model_cache_device: int | None = None, model_cache_mount_id: int | None = None) -> DownloadResult: ...
     def acquire_install_lock(self, root: TargetPath, *,
                              deadline: Deadline) -> ContextManager[None]: ...
 
@@ -329,10 +327,10 @@ class PlatformAdapter(Protocol):
     def environment_commands(self, recipe: EngineRecipe, environment: EnvironmentSpec,
                              root: TargetPath) -> tuple[tuple[str, ...], ...]: ...
     def start_request(self, recipe: EngineRecipe, root: TargetPath,
-                      *, deadline: Deadline) -> CommandRequest: ...
+                      *, deadline: Deadline, models_root: TargetPath | None = None) -> CommandRequest: ...
 
 
-StepKind: TypeAlias = Literal["source", "environment", "model", "start", "health"]
+StepKind: TypeAlias = Literal["source", "environment", "start", "health"]
 
 
 @dataclass(frozen=True)
@@ -353,6 +351,8 @@ class InstallPlan:
     recipe_sha256: Digest
     models_lock_sha256: Digest
     steps: tuple[InstallStep, ...]
+    # Where the engine's model files live; None means <root>/models (the default install).
+    models_root: TargetPath | None = None
 
 
 @dataclass(frozen=True)
@@ -469,6 +469,8 @@ class InstallReceipt:
     error_code: str | None
     # Read-only status diagnostic; absent in receipts written before this field.
     failed_step_id: str | None = None
+    # Model directory the install bound; absent in receipts written before this field (then <root>/models).
+    models_root: TargetPath | None = None
 
 
 @dataclass(frozen=True)
@@ -538,3 +540,12 @@ class PlacementDescriptor:
         if not isinstance(placement, str) or placement not in self.supported:
             raise UnsupportedPlacement("placement is not supported by this backend")
         return placement
+
+
+def effective_models_root(root: str, models_root: str | None) -> str:
+    """The model directory an install binds: its explicit volume cache, else <root>/models."""
+
+    return models_root if models_root is not None else posixpath.join(root, "models")
+
+
+

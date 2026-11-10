@@ -90,7 +90,7 @@ def test_character_swap_revision_remains_pinned():
 
 
 def test_h3_workflow_model_urls_match_lock():
-    lock = load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    lock = load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
     models = {model.destination: model for model in lock.models}
     locked_urls = {_required_locked_url(models, destination) for destination in models}
     assert len(locked_urls) == 5

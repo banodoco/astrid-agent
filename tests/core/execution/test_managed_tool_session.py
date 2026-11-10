@@ -147,11 +147,11 @@ def test_uncertain_cancellation_fences_the_session() -> None:
     manager = ManagedToolSession()
     adapter = _Adapter()
     manager.open(
-        capability=CapabilityDescriptor("checkout_server"),
+        capability=CapabilityDescriptor("comfy_engine"),
         binding=_binding("a"),
         adapter=adapter,
     )
-    token = manager.admit(capability_id="checkout_server", invocation_id="task-a")
+    token = manager.admit(capability_id="comfy_engine", invocation_id="task-a")
     with pytest.raises(UncertainCancellation):
         manager.cancel(token, outcome="uncertain")
     assert manager.generation == 2
@@ -170,11 +170,11 @@ def test_confirmed_cancellation_requires_adapter_evidence() -> None:
     manager = ManagedToolSession()
     adapter = _Adapter()
     manager.open(
-        capability=CapabilityDescriptor("checkout_server"),
+        capability=CapabilityDescriptor("comfy_engine"),
         binding=_binding("a"),
         adapter=adapter,
     )
-    token = manager.admit(capability_id="checkout_server", invocation_id="task-a")
+    token = manager.admit(capability_id="comfy_engine", invocation_id="task-a")
 
     with pytest.raises(UncertainCancellation, match="not verified"):
         manager.cancel(token, outcome="confirmed")
@@ -196,7 +196,7 @@ def test_release_failure_keeps_the_slot_poisoned() -> None:
     manager = ManagedToolSession()
     adapter = _Adapter(fail_release=True)
     manager.open(
-        capability=CapabilityDescriptor("checkout_server"),
+        capability=CapabilityDescriptor("comfy_engine"),
         binding=_binding("a"),
         adapter=adapter,
     )

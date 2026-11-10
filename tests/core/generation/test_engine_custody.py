@@ -56,7 +56,7 @@ class Handler(BaseHTTPRequestHandler):
    time.sleep(2)
   if setting=='redirect':
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
-  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'VHS_VideoCombine':{}}
+  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'UNETLoader':{},'VAELoader':{},'VHS_VideoCombine':{}}
   if self.path=='/queue': value={'queue_running':[[1]] if setting=='busy' else [],'queue_pending':[]}
   if self.path=='/system_stats': value={'system':{'comfyui_version':'0.36.0'},'devices':[{'vram_total':24000,'vram_free':20000}]}
   if self.path.startswith('/history/'):
@@ -86,7 +86,7 @@ def _wait(predicate, seconds=8):
 
 
 def _identity(root, recipe=None):
-    recipe = recipe or load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipe or load_recipe("comfyui", PLATFORM)
     return dict(root=str(root), engine=recipe.engine, platform=recipe.platform,
                 recipe_sha256=recipe_digest(recipe), helper_sha256=_sha(helper_manifest(recipe)))
 
@@ -96,7 +96,8 @@ def _launch(recipe, root):
     from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
 
     request = LinuxPlatformAdapter(recipe.platform).start_request(recipe, str(root), deadline=time.monotonic() + 5)
-    return {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+    return {"argv": list(request.argv), "cwd": request.cwd,
+            "env": {**dict(request.env), "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES")}}
 
 
 def _client(identity):
@@ -141,7 +142,7 @@ def session(tmp_path, monkeypatch):
     with socket.socket() as port_probe:
         port_probe.bind(("127.0.0.1", 0))
         port = port_probe.getsockname()[1]
-    base = load_recipe("vibecomfy-h3", PLATFORM)
+    base = load_recipe("comfyui", PLATFORM)
     recipe = replace(base, sources=tuple(replace(s, pin=replace(s.pin, revision=revision))
                      if s.name == "vibecomfy" else s for s in base.sources),
                      start=StartSpec((sys.executable, str(server), str(port), str(mode), str(started)),
@@ -157,7 +158,7 @@ from dataclasses import replace
 from astrid.core.generation.engine_contracts import StartSpec
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_custody import _serve
-base=load_recipe('vibecomfy-h3',{PLATFORM!r})
+base=load_recipe('comfyui',{PLATFORM!r})
 recipe=replace(base,sources=tuple(replace(s,pin=replace(s.pin,revision={revision!r})) if s.name=='vibecomfy' else s for s in base.sources),start=StartSpec({recipe.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1'}},'127.0.0.1',{port}),health=replace(base.health,timeout_seconds=4,poll_interval_seconds=0.02))
 _serve(json.loads(sys.argv[1]),recipe,int(sys.argv[2]),sys.argv[4])
 '''
@@ -196,7 +197,7 @@ def test_failed_stop_reaps_original_child_without_retiring_custody(tmp_path, mon
     """DEEP-BUG13: a post-TERM error must not leave the retained Popen zombie."""
     from astrid.core.execution import process_group as groups
 
-    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "test-owner")
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "test-owner")
     owned = supervisor.spawn(_request(tmp_path, "import time;time.sleep(60)"))
     original = groups._signal_valid_tree_members
     failure = groups.CleanupUncertainError("injected verification failure after root TERM")
@@ -234,7 +235,7 @@ def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_pa
     from astrid.core.execution import process_group as groups
 
     token, env_secret, arg_secret = "owner-launch-token-value", "private-env-value", "private-arg-value"
-    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), token)
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), token)
     # Exercise secret capture at the real spawn boundary without starting a process.
     process = SimpleNamespace(stdout=None, stderr=None)
     monkeypatch.setattr(groups, "popen_owned_group", lambda *args, **kwargs: process)
@@ -307,7 +308,7 @@ def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_pa
 
 @pytest.mark.parametrize("fail_command", [False, True])
 def test_explicit_stop_shares_caller_budget_across_all_owned_drains(tmp_path, monkeypatch, fail_command):
-    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "owner")
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "owner")
     now, calls, replies = [1000.0], [], []
 
     def owned(name):
@@ -345,7 +346,7 @@ def test_explicit_stop_shares_caller_budget_across_all_owned_drains(tmp_path, mo
 
 @pytest.mark.parametrize("outcome", ["normal", "timeout", "disconnect", "explicit_stop"])
 def test_command_drain_uses_request_or_pending_stop_deadline_and_only_implicit_fallback(tmp_path, monkeypatch, outcome):
-    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "owner")
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "owner")
     output = SimpleNamespace(text=lambda: "", truncated=lambda: False)
     owned = SimpleNamespace(live=lambda: outcome != "normal", process=SimpleNamespace(returncode=0),
                             stdout=output, stderr=output)
@@ -465,7 +466,7 @@ def test_real_local_factory_context_client_default_supervisor(tmp_path, monkeypa
     from astrid.core.generation.engine_execution import create_local_backend, LocalLinuxExecutionContext
 
     root = tmp_path / "factory-install"
-    ctx, adapter = create_local_backend(engine="vibecomfy-h3", platform=PLATFORM,
+    ctx, adapter = create_local_backend(engine="comfyui", platform=PLATFORM,
                                         placement="local", root=str(root),
                                         deadline=time.monotonic() + 10)
     assert isinstance(ctx, LocalLinuxExecutionContext) and ctx.adapter is adapter
@@ -577,7 +578,7 @@ def test_real_context_service_bridge_with_tiny_recipe_fixture(session, monkeypat
         assert second == first
         assert service("start", first["owner_id"])["owner_id"] == first["owner_id"]
         assert len(started.read_text().splitlines()) == 1
-        marker = json.loads((root / "runtime/out/sessions/vibecomfy-h3/launch.json").read_text())
+        marker = json.loads((root / "runtime/out/sessions/comfyui/launch.json").read_text())
         assert marker["pid"] == client._spawned.pid
         assert marker["comfy_pid"] == int(started.read_text().strip())
         assert marker["launch_token"] == first["owner_id"]
@@ -646,7 +647,7 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     assert first["launch_sha256"] == _sha(payload["launch"])
     assert started.read_text().splitlines() == [str(pid)] and _alive(pid)
     assert _call(_client(client.identity), payload, "start")["owner_id"] == first["owner_id"]
-    registry = root / "runtime/out/sessions/vibecomfy-h3"
+    registry = root / "runtime/out/sessions/comfyui"
     marker = json.loads((registry / "launch.json").read_text())
     assert marker["comfy_pid"] == pid and marker["pid"] != pid
     assert marker["launch_token"] == first["owner_id"]
@@ -660,7 +661,7 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     assert (registry / "source_revision").read_text() == next(s.pin.revision for s in recipe.sources if s.name == "vibecomfy")
     expected = hashlib.sha256(b"tiny.py\0" + hashlib.sha256(b"# immutable fixture source\n").digest()).hexdigest()
     assert (registry / "source_content_digest").read_text() == "sha256:" + expected
-    nodes = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}}
+    nodes = {"MiniMaxH3ReferenceToVideo": {}, "UNETLoader": {}, "VAELoader": {}, "VHS_VideoCombine": {}}
     assert first["object_info_sha256"] == _sha(nodes)
     assert len(list(Path(client.control).glob("*.json"))) == 1
 
@@ -682,6 +683,9 @@ def cpu_h3_install(session, monkeypatch, request):
     from astrid.core.generation.engine_runner import _plain, plan_install
 
     _, _, original, root, mode, started = session
+    extra_flags = tuple(getattr(request, 'extra_launch_flags', ()))
+    if extra_flags:
+        original = replace(original, start=replace(original.start, argv=(*original.start.argv, *extra_flags)))
     uv = shutil.which("uv")
     if uv is None and Path(sys.executable).with_name("uv").is_file():
         uv = str(Path(sys.executable).with_name("uv"))
@@ -690,7 +694,9 @@ def cpu_h3_install(session, monkeypatch, request):
     bootstrap_uv = root / "runtime/bootstrap/bin/uv"
     bootstrap_uv.parent.mkdir(parents=True)
     shutil.copy2(uv, bootstrap_uv)
-    environment_root = root / "runtime/cpu-venv"
+    native_cli = getattr(request, "param", None) == "managed_native"
+    environment_relative = "runtime/venv" if native_cli else "runtime/cpu-venv"
+    environment_root = root / environment_relative
     venv.EnvBuilder(with_pip=False, symlinks=False).create(environment_root)
     site = environment_root / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
     packaging = importlib.metadata.distribution("packaging")
@@ -702,9 +708,75 @@ def cpu_h3_install(session, monkeypatch, request):
             target = site.joinpath(*member.parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(packaging.locate_file(member), target)
+    native_distributions = []
+    if native_cli:
+        # Copy real installed distributions from this exact pinned test environment,
+        # including their metadata/RECORD files; no network resolver or fake CLI.
+        from packaging.requirements import Requirement
+        pending = [(name, set()) for name in ("packaging", "httpx", "huggingface_hub", "pyyaml", "websockets", "pillow")]
+        seen = set()
+        while pending:
+            name, extras = pending.pop()
+            distribution = importlib.metadata.distribution(name)
+            key = distribution.metadata["Name"].lower().replace("_", "-")
+            if key in seen:
+                continue
+            seen.add(key)
+            native_distributions.append(distribution)
+            for member in distribution.files or ():
+                if ".." in member.parts or str(member).endswith('.pth'):
+                    continue
+                origin, target = distribution.locate_file(member), site.joinpath(*member.parts)
+                if origin.is_file():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(origin, target)
+            for text in distribution.requires or ():
+                requirement = Requirement(text)
+                if requirement.marker is None or any(requirement.marker.evaluate({"extra": extra}) for extra in ("", *extras)):
+                    pending.append((requirement.name, requirement.extras))
+        import vibecomfy
+        pinned = Path(vibecomfy.__file__).resolve().parent
+        shutil.copytree(pinned, site / "vibecomfy")
+        for name in ("ready_templates", "custom_nodes.lock", "template_index.json"):
+            origin = pinned.parent / name
+            if origin.is_dir(): shutil.copytree(origin, site / "vibecomfy" / name, dirs_exist_ok=True)
+            elif origin.is_file(): shutil.copy2(origin, site / "vibecomfy" / name)
+        # The source checkout's package metadata is real; its editable pointer is
+        # replaced with the frozen copied module tree, so -I imports these bytes.
+        import tomllib
+        project = tomllib.loads((pinned.parent / 'pyproject.toml').read_text())['project']
+        info = site / f"vibecomfy-{project['version']}.dist-info"
+        info.mkdir()
+        metadata_text = f"Metadata-Version: 2.3\nName: vibecomfy\nVersion: {project['version']}\n" + ''.join(
+            f"Requires-Dist: {dependency}\n" for dependency in project['dependencies'])
+        (info / 'METADATA').write_text(metadata_text)
+        (info / 'WHEEL').write_text('Wheel-Version: 1.0\nGenerator: astrid-cpu-fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+        (info / 'direct_url.json').write_text(json.dumps({'url': pinned.parent.as_uri(), 'dir_info': {}}))
+        import base64,csv,io
+        records = []
+        for member in [*(site / 'vibecomfy').rglob('*'), *info.iterdir()]:
+            if member.is_file():
+                payload = member.read_bytes()
+                records.append((str(member.relative_to(site)), 'sha256=' + base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode().rstrip('='), str(len(payload))))
+        records.append((str((info / 'RECORD').relative_to(site)), '', ''))
+        buffer = io.StringIO(); csv.writer(buffer).writerows(records)
+        (info / 'RECORD').write_text(buffer.getvalue())
+        native_distributions.append(importlib.metadata.PathDistribution(info))
+        # Metadata-only CPU stand-ins are never imported by the HTTP fake and
+        # do not claim GPU dependency or inference qualification.
+        for name, version in getattr(request, 'standin_distributions', {}).items():
+            info = site / f"{name.replace('-', '_')}-{version}.dist-info"
+            info.mkdir()
+            (info / 'METADATA').write_text(f"Metadata-Version: 2.3\nName: {name}\nVersion: {version}\n")
+            (info / 'WHEEL').write_text('Wheel-Version: 1.0\nGenerator: astrid-cpu-standin\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+            (info / 'RECORD').write_text('')
+            native_distributions.append(importlib.metadata.PathDistribution(info))
     fixture = root / "cpu-fixture"
     fixture.mkdir()
     lock = f"packaging=={packaging.version} --hash=sha256:{hashlib.sha256(packaging.read_text('METADATA').encode()).hexdigest()}\n".encode()
+    if native_cli:
+        lock = "".join(f"{dist.metadata['Name']}=={dist.version} --hash=sha256:{hashlib.sha256(dist.read_text('METADATA').encode()).hexdigest()}\n"
+                       for dist in sorted(native_distributions, key=lambda d: d.metadata['Name'])).encode()
     (fixture / "requirements.lock").write_bytes(lock)
     model = b"CPU model inventory witness\n"
     model_path = root / "models/diffusion_models/cpu.bin"
@@ -733,17 +805,28 @@ def cpu_h3_install(session, monkeypatch, request):
     (fixture / "models.json").write_bytes(model_bytes)
     source = root / "runtime/vibecomfy"
     comfy = root / "runtime/ComfyUI"
-    shutil.copytree(source / ".git", comfy / ".git")
-    shutil.copy2(source / "tiny.py", comfy / "tiny.py")
+    pinned_comfy = getattr(request, "comfy_source", None)
+    if pinned_comfy is not None:
+        shutil.rmtree(comfy)
+        subprocess.run(["git", "clone", "--quiet", "--shared", str(pinned_comfy), str(comfy)],
+                       check=True, timeout=60)
+    else:
+        shutil.copytree(source / ".git", comfy / ".git")
+        shutil.copy2(source / "tiny.py", comfy / "tiny.py")
     if getattr(request, "param", None) == "outer":
         # ComfyUI's real source excludes its mutable media directories. Give
         # this tiny Git witness the same boundary before the first upload.
         with (comfy / ".git/info/exclude").open("a") as excluded:
             excluded.write("\n/input/\n/output/\n")
     revision = next(s.pin.revision for s in original.sources if s.name == "vibecomfy")
+    comfy_revision = (next(s.pin.revision for s in original.sources if s.name == "comfyui")
+                      if pinned_comfy is not None else revision)
     for spec in original.sources:
         if spec.name in {"comfyui", "vibecomfy"}:
-            subprocess.run(["git", "remote", "add", "origin", spec.pin.repository],
+            command = (["git", "remote", "set-url", "origin", spec.pin.repository]
+                       if spec.name == "comfyui" and pinned_comfy is not None
+                       else ["git", "remote", "add", "origin", spec.pin.repository])
+            subprocess.run(command,
                            cwd=root / spec.relative_path, check=True, capture_output=True, timeout=5)
     program_path = fixture / "bootstrap.py"
     # Real helper dispatch independently recomputes identities against these
@@ -755,10 +838,10 @@ from dataclasses import replace
 from astrid.core.generation import engine_recipe as recipes
 from astrid.core.generation.engine_contracts import DataRef,RequirementsSpec,StartSpec
 from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
-base=recipes.load_recipe('vibecomfy-h3',{PLATFORM!r})
+base=recipes.load_recipe('comfyui',{PLATFORM!r})
 recipe=replace(base,
- sources=tuple(replace(s,pin=replace(s.pin,revision={revision!r})) for s in base.sources if s.name in {{'comfyui','vibecomfy'}}),
- environments=(replace(base.environments[0],name='cpu',relative_path='runtime/cpu-venv',python_version={sys.version.split()[0]!r},uv_version={uv_version!r},requirements=RequirementsSpec('packaged',DataRef('cpu-fixture/requirements.lock',{hashlib.sha256(lock).hexdigest()!r}),(),(),None),final_wheels=(),node_lock=None,source_installs=()),),
+ sources=tuple(replace(s,pin=replace(s.pin,revision=({comfy_revision!r} if s.name=='comfyui' else {revision!r}))) for s in base.sources if s.name in {{'comfyui','vibecomfy'}}),
+ environments=(replace(base.environments[0],name='cpu',relative_path={environment_relative!r},python_version={sys.version.split()[0]!r},uv_version={uv_version!r},requirements=RequirementsSpec('packaged',DataRef('cpu-fixture/requirements.lock',{hashlib.sha256(lock).hexdigest()!r}),(),(),None),final_wheels=(),node_lock=None,source_installs=()),),
  primary_environment='cpu',models_lock=DataRef('cpu-fixture/models.json',{hashlib.sha256(model_bytes).hexdigest()!r}),
  start=StartSpec({original.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1'}},'127.0.0.1',{original.start.port}),
  health=replace(base.health,timeout_seconds=4,poll_interval_seconds=0.02))
@@ -810,7 +893,7 @@ LocalLinuxExecutionContext.run=run
     (state / "lock.json").write_text(_json(lock_identity))
     (state / "receipt.json").write_text(_json({k: v for k, v in lock_identity.items() if k != "schema"}))
     from astrid.core.generation.engine_runner_target import dispatch
-    helper = {**client.identity, "schema": "astrid.engine-runner-helper.v1"}
+    helper = {**client.identity, "schema": "astrid.engine-runner-helper.v1", "models_root": None}
     assert dispatch("models-config", helper)["facts"] == {"written": True}
     try:
         # Installation's finite caller exits before either H3 consumer runs.
@@ -823,7 +906,7 @@ LocalLinuxExecutionContext.run=run
             {"cpu": lock_digest}, {s.name: s.pin.revision for s in recipe.sources},
             tuple(model_results),
             tuple(StepReceipt(s.id, s.kind, "executed", "passed", {"owner_id": facts["owner_id"],
-                "launch_sha256": facts["launch_sha256"]} if s.kind == "start" else {}) for s in plan.steps),
+                "launch_sha256": facts["launch_sha256"], "cuda_visible_devices": payload["launch"]["env"]["CUDA_VISIBLE_DEVICES"]} if s.kind == "start" else {}) for s in plan.steps),
             HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None)
         (root / ".astrid-engine/install.json").write_text(_json(_plain(receipt)))
         yield client, payload, recipe, root, started, program_path
@@ -848,9 +931,9 @@ def observe(self,operation,payload,deadline,*,start=True):
   operations.append('service:'+operation)
  return original_request(self,operation,payload,deadline,start=start)
 custody.LinuxEngineServiceClient._request=observe
-from astrid.packs.h3_av.actions.transform.run import _resolve_local_engine
+from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
 from astrid.core.generation.backends.vibecomfy_local_server import _request
-engine=_resolve_local_engine()
+engine=local_engine_endpoint('comfyui')
 response=_request(engine.endpoint.url,'/prompt',{'client_id':sys.argv[3],'prompt':{'1':{'class_type':'MiniMaxH3ReferenceToVideo','inputs':{}}}})
 history=_request(engine.endpoint.url,'/history/'+response['prompt_id'])
 assert history[response['prompt_id']]['status']['completed'] is True
@@ -864,7 +947,7 @@ print(json.dumps({'url':engine.endpoint.url,'operations':operations,'prompt_id':
 
 def test_two_finite_h3_cpu_preflights_reuse_owned_native_service(cpu_h3_install):
     client, payload, recipe, root, started, program_path = cpu_h3_install
-    marker_path = root / "runtime/out/sessions/vibecomfy-h3/launch.json"
+    marker_path = root / "runtime/out/sessions/comfyui/launch.json"
     marker = marker_path.read_bytes()
     supervisor = json.loads(marker)["pid"]
     first = _finite_h3_cpu_run(program_path, root, "cpu-h3-run-1")
@@ -915,7 +998,7 @@ def test_two_full_h3_runtime_runs_reuse_owned_native_service(cpu_h3_install, tmp
     operations = tmp_path / "native-service-operations.jsonl"
     monkeypatch.setattr(custody.LinuxEngineServiceClient, "_request",
                         observe_requests(custody.LinuxEngineServiceClient._request, operations))
-    registry = root / "runtime/out/sessions/vibecomfy-h3"
+    registry = root / "runtime/out/sessions/comfyui"
     marker = json.loads((registry / "launch.json").read_text())
     supervisor = marker["pid"]
     child = int(started.read_text().strip())
@@ -1069,9 +1152,9 @@ import os,sys
 from pathlib import Path
 exec(Path(sys.argv[1]).read_text())
 os.environ['ASTRID_ENGINE_ROOT']=sys.argv[2]
-from astrid.packs.h3_av.actions.transform.run import _resolve_local_engine
+from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
 try:
- _resolve_local_engine()
+ local_engine_endpoint('comfyui')
 except Exception as exc:
  assert exc.code=='endpoint_ownership', str(exc)
  print(exc.code)
@@ -1181,6 +1264,40 @@ def test_changed_launch_or_installation_cannot_reuse_service(session):
     with pytest.raises(IntegrityError):
         _call(changed, payload)
     assert _call(client, payload, "probe")["owner_id"] == first["owner_id"]
+    assert len(started.read_text().splitlines()) == 1
+
+
+def test_device_launch_is_bound_to_owned_process(session):
+    client, payload, recipe, root, mode, started = session
+    launch = payload["launch"]
+    chosen = {**payload, "launch": {**launch, "env": {**launch["env"], "CUDA_VISIBLE_DEVICES": "2"}}}
+    first = _call(client, chosen)
+    assert _call(client, chosen, "probe")["owner_id"] == first["owner_id"]
+    other = {**chosen, "launch": {**chosen["launch"], "env": {**launch["env"], "CUDA_VISIBLE_DEVICES": "3"}}}
+    with pytest.raises(EndpointOwnershipError):
+        _call(client, other, "probe")
+    injected = {**chosen, "launch": {**chosen["launch"], "env": {**chosen["launch"]["env"], "EVIL": "1"}}}
+    with pytest.raises(EndpointOwnershipError):
+        _call(client, injected, "probe")
+    assert len(started.read_text().splitlines()) == 1
+
+
+def test_ambient_visibility_is_bound_including_unset_and_empty(session, monkeypatch):
+    client, payload, recipe, root, mode, started = session
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    launch = payload["launch"]
+    def requested(value):
+        return {**payload, "launch": {**launch, "env": {**launch["env"], "CUDA_VISIBLE_DEVICES": value}}}
+    first = _call(client, requested("0"))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert _call(client, requested("0"), "probe")["owner_id"] == first["owner_id"]
+    for value in ("1", "", None):
+        with pytest.raises(EndpointOwnershipError):
+            _call(client, requested(value), "probe")
+    legacy_env = dict(launch["env"])
+    legacy_env.pop("CUDA_VISIBLE_DEVICES")
+    with pytest.raises(EndpointOwnershipError):
+        _call(client, {**payload, "launch": {**launch, "env": legacy_env}}, "probe")
     assert len(started.read_text().splitlines()) == 1
 
 
@@ -1368,12 +1485,13 @@ def installed_consumer(session, monkeypatch):
         tuple(DownloadResult(m.name, str(root / "models" / m.destination), "skipped",
                              m.bytes, m.sha256, True, 0) for m in models.models),
         tuple(StepReceipt(s.id, s.kind, "executed", "passed",
-                          {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"]}
+                          {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"],
+                           "cuda_visible_devices": payload["launch"]["env"]["CUDA_VISIBLE_DEVICES"]}
                           if s.kind == "start" else {}) for s in plan.steps),
         HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None,
     )
     (root / ".astrid-engine/install.json").write_text(_json(_plain(receipt)))
-    registry = root / "runtime/out/sessions/vibecomfy-h3"
+    registry = root / "runtime/out/sessions/comfyui"
     # Noncanonical whitespace proves that selection hashes actual bytes.
     config = json.loads((registry / "config.json").read_bytes())
     raw = json.dumps(config, indent=2).encode() + b"\n"
@@ -1382,7 +1500,7 @@ def installed_consumer(session, monkeypatch):
         effective_target={"kind": "runpod", "provider_account_ref": "account-1", "pod_id": "pod-1"},
         executable=SimpleNamespace(path=root / "runtime/venv/bin/python"),
         model_root=root / "models", output_root=Path(config["output_directory"]),
-        session_ref="vibecomfy-h3", session_config_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
+        session_ref="comfyui", session_config_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
     )
     readiness = {
         "status": "cpu_ready", "gpu_qualified": False,
@@ -1480,27 +1598,6 @@ def test_installed_consumer_refuses_changed_evidence_without_legacy_control(inst
     assert _alive(receipt.comfy_pid)
 
 
-@pytest.mark.parametrize("engine", ["vibecomfy-h3", "comfyui"])
-def test_installed_consumer_capacity_replacement_refuses_before_controls(installed_consumer, monkeypatch, engine):
-    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-    from types import SimpleNamespace
-
-    owner, transport, reference, readiness, registry = installed_consumer
-    registry = registry.parent / engine
-    registry.mkdir(exist_ok=True)
-    adapter = object.__new__(CheckoutServerAdapter)
-    adapter._endpoint_transport = None
-    adapter._host_session = {"session_dir": str(registry)}
-    def forbidden(*args, **kwargs):
-        pytest.fail("capacity replacement reached engine/CLI control")
-    adapter._engine = SimpleNamespace(_clear_warm=forbidden, _clear_prepared=forbidden,
-                                      _clear_retention_hint=forbidden, release=forbidden)
-    adapter._control_preflight = forbidden
-    monkeypatch.setattr(subprocess, "run", forbidden)
-    with pytest.raises(ValueError, match="capacity replacement"):
-        adapter.release(reason="capacity_replacement")
-    with pytest.raises(ValueError, match="capacity replacement"):
-        adapter._restart_owned_session()
 
 
 @pytest.mark.parametrize("failure", [None, "wrong_bearer", "denied_file", "corrupt_digest"])
@@ -1737,3 +1834,58 @@ def test_live_supervisor_busy_and_failed_free_are_not_released(session, setting,
     assert result["status"] == expected
     assert result.get("models_unloaded") is not True
     assert not (root / "release-posts").exists()
+
+
+def test_cancel_finite_request_drains_original_before_return_and_keeps_engine(session):
+    from concurrent.futures import CancelledError
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    engine_pid = int(started.read_text().splitlines()[-1])
+    entered = root / "cancel-command-entered"
+    command_pid = root / "cancel-command-pid"
+    cancelled = threading.Event()
+    client.cancelled = cancelled.is_set
+    errors = []
+    def execute():
+        try:
+            client.run(_request(root, f"import os,time;from pathlib import Path;Path({str(command_pid)!r}).write_text(str(os.getpid()));Path({str(entered)!r}).write_text('yes');time.sleep(60)", 30))
+        except BaseException as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=execute)
+    worker.start()
+    _wait(entered.exists)
+    pid = int(command_pid.read_text())
+    cancelled.set()
+    worker.join(timeout=15)
+    assert not worker.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], CancelledError), errors
+    assert not _alive(pid)
+    assert _alive(engine_pid)
+    client.cancelled = None
+    assert _call(client, payload, "health")["healthy"] is True
+
+
+def test_already_cancelled_request_never_creates_supervisor(tmp_path):
+    from concurrent.futures import CancelledError
+    root = tmp_path / "no-owner"
+    root.mkdir()
+    client = _client(_identity(root))
+    client.cancelled = lambda: True
+    with pytest.raises(CancelledError):
+        client.run(_request(root, "raise SystemExit(99)"))
+    assert not (root / ".astrid-engine/session").exists()
+
+
+def test_local_response_deadline_is_uncertain_cleanup(tmp_path, monkeypatch):
+    client = _client(_identity(tmp_path))
+    local, remote = socket.socketpair()
+    monkeypatch.setattr(client, '_connect', lambda *args, **kwargs: local)
+    monkeypatch.setattr(custody, '_send', lambda *args, **kwargs: None)
+    def no_response(*args, **kwargs):
+        raise DeadlineExceeded('local receive deadline')
+    monkeypatch.setattr(custody, '_receive', no_response)
+    try:
+        with pytest.raises(CustodyUnresolved, match='confirm command cleanup'):
+            client.run(_request(tmp_path, 'pass'))
+    finally:
+        remote.close()

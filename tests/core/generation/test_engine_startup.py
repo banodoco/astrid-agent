@@ -66,7 +66,7 @@ raise SystemExit(7 if mode == 'failure' else 0)
 
 def _fixture(tmp_path, mode='success'):
     root = tmp_path / 'engine'
-    recipe = load_recipe('vibecomfy-h3', 'linux-x86_64-cu130')
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     plan = plan_install(recipe, root=str(root), placement='local')
     models = load_model_lock(recipe.models_lock)
     stamp = '2026-10-27T22:00:00+00:00'

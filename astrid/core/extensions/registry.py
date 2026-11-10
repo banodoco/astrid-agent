@@ -603,8 +603,11 @@ class ExtensionRegistry:
             self._protocols[point.id] = proto
         problems: list[str] = []
         fixes: list[str] = []
+        optional = set(getattr(proto, "__optional__", ()))
         for name, names in _protocol_members(proto):
             member = getattr(obj, name, None)
+            if member is None and name in optional:
+                continue  # an optional member may be absent; if present it is checked below
             if member is None or not callable(member):
                 problems.append(f"has no callable {name}()")
                 fixes.append(f"define {name}({', '.join(names)})")

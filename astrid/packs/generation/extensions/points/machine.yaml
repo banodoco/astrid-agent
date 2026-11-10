@@ -1,0 +1,7 @@
+description: A machine a generation job runs on; RunPod is the first rented one, local and attached are built in.
+version: 1
+min_supported: 1
+side: agent
+cardinality: many
+effects_allowed: [read, edit]
+protocol: machine_protocol.py:Machine

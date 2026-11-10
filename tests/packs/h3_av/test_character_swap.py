@@ -10,16 +10,13 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator, ValidationError
 
-from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
-from astrid.packs.h3_av.actions.compile.run import main as compile_executor_main
+from astrid.packs.h3_av.shared.compile import CompilationError, compile_preparation
 from astrid.packs.h3_av.shared.generation import (
     CHARACTER_SWAP_FILENAME,
     CHARACTER_SWAP_REVISION,
     CHARACTER_SWAP_SHA256,
     TURBO_FILENAME,
 )
-from astrid.packs.h3_av.actions.prepare.run import main as prepare_executor_main
-from astrid.packs.h3_av.shared.input_bundle import build_input_bundle
 from astrid.packs.h3_av.shared.request import H3RequestError, load_request_document, load_request, normalize_request
 from astrid.packs.h3_av.shared.request_v2 import REF2VA_MODEL, effective_settings
 
@@ -329,41 +326,6 @@ def test_native_v2_compile_uses_only_the_selected_synthetic_boundary_digest(
     assert connected[CHARACTER_SWAP_FILENAME]["hf_revision"] == CHARACTER_SWAP_REVISION
 
 
-@pytest.mark.integration
-def test_managed_v2_prepare_to_compile_preserves_normalized_request(tmp_path: Path) -> None:
-    """The executor boundary must reuse the sealed v2 request from prepare."""
-    import vibecomfy  # noqa: F401  (a sibling checkout; compile loads it lazily)
-    raw = _request()
-    request_path = tmp_path / "request.json"
-    request_path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
-    files = _files(tmp_path)
-    bundle = build_input_bundle(
-        normalize_request(raw),
-        {name: str(path) for name, path in files.items()},
-        tmp_path / "input-bundle.zip",
-    )
-
-    preparation_path = tmp_path / "prepare" / "preparation.json"
-    assert prepare_executor_main([
-        "--request", str(request_path),
-        "--input-bundle", str(bundle),
-        "--out", str(preparation_path),
-    ]) == 0
-    preparation = json.loads(preparation_path.read_text(encoding="utf-8"))
-    assert {"profile", "output_count", "model_tags"}.issubset(preparation["request"])
-    assert all("path" not in record for record in preparation["assets"])
-
-    compiled_path = tmp_path / "compile"
-    assert compile_executor_main([
-        "--preparation", str(preparation_path),
-        "--input-bundle", str(bundle),
-        "--out", str(compiled_path),
-    ]) == 0
-    compilation = json.loads((compiled_path / "compilation.json").read_text(encoding="utf-8"))
-    assert compilation["profile"] == "h3_av.native.v2"
-    assert compilation["request_digest"] == preparation["request_digest"]
-    assert compilation["workflow_inputs"]["reference_0"]
-    assert compilation["managed_assets"]["sha256"]
 
 
 @pytest.mark.integration
@@ -384,8 +346,8 @@ def test_character_swap_rejects_spatial_and_channel_specific_composition_before_
 def test_character_swap_preserve_only_publishes_authoritative_source_bytes(tmp_path: Path) -> None:
 
     from astrid.packs.h3_av.shared.compose import compose_candidate
-    from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
-    from astrid.packs.h3_av.actions.verify.verify import verify_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.verify import verify_candidate
 
     files = _files(tmp_path, source=True)
     source = tmp_path / "source.mkv"
@@ -455,7 +417,7 @@ def test_character_swap_compilation_accepts_resolved_image_mask_asset(tmp_path: 
 
 
 def test_silent_timeline_source_does_not_claim_an_audio_baseline(monkeypatch, tmp_path: Path) -> None:
-    from astrid.packs.h3_av.actions.prepare import prepare as prepare_module
+    from astrid.packs.h3_av.shared import prepare as prepare_module
 
     raw = _request(source=True)
     files = _files(tmp_path, source=True)
@@ -475,255 +437,23 @@ def test_silent_timeline_source_does_not_claim_an_audio_baseline(monkeypatch, tm
         prepare_module.prepare_request(normalize_request(raw), asset_map=asset_map)
 
 
-def test_finalizer_contract_is_declared_and_copies_candidate_without_claiming_acceptance(tmp_path: Path) -> None:
-    from astrid.packs.h3_av.actions.publication_finalizer.run import main
-
-    source = tmp_path / "candidate.mp4"
-    payload = b"\x00\x00\x00\x18ftypisom" + b"candidate bytes"
-    source.write_bytes(payload)
-    verification = tmp_path / "verification.json"
-    verification.write_text(json.dumps({
-        "schema_version": 1,
-        "kind": "h3_av_verification",
-        "status": "verified",
-        "request_digest": "a" * 64,
-        "candidate_sha256": hashlib.sha256(payload).hexdigest(),
-        "lifecycle": {"prepared": True, "composed": True, "verified": True},
-    }))
-    output = tmp_path / "finalizer"
-    assert main([
-        "--candidate", str(source), "--verification", str(verification),
-        "--expected-request-digest", "a" * 64, "--out", str(output),
-    ]) == 0
-    copied = output / "verified-candidate.media"
-    assert copied.read_bytes() == payload
-    result = json.loads((output / "manifest.json").read_text())
-    row = result["outputs"][0]
-    assert row["name"] == "verified_candidate"
-    assert row["output_port"] == "verified_candidate"
-    assert row["media_type"] == "video/mp4"
-    assert row["content_hash"] == "sha256:" + hashlib.sha256(payload).hexdigest()
-    assert result["inputs"]["candidate_sha256"] == row["content_hash"]
-    assert result["inputs"]["request_digest"] == "a" * 64
-    assert result["inputs"]["verification_sha256"] == hashlib.sha256(verification.read_bytes()).hexdigest()
-
-    executor = yaml.safe_load((PACK / "pack.yaml").read_text())["actions"]["publication_finalizer"]
-    orchestrator = yaml.safe_load((PACK / "pack.yaml").read_text())["actions"]["transform"]
-    pack = yaml.safe_load((PACK / "pack.yaml").read_text())
-    assert "v1 or v2" in orchestrator["inputs"][0]["description"]
-    assert "Character Swap" in orchestrator["inputs"][0]["description"]
-    assert [(item["name"], item["type"], item["required"]) for item in executor["inputs"]] == [
-        ("candidate", "file", True),
-        ("verification", "file", True),
-        ("expected_request_digest", "string", True),
-        ("generation_intent", "json", True),
-    ]
-    assert executor["inputs"][1]["artifact_type"] == "h3_av/verification"
-    assert executor["outputs"][0]["name"] == "verified_candidate"
-    assert executor["metadata"]["generation_publication"]["output_port"] == "verified_candidate"
-    assert "{expected_request_digest}" in executor["invocation"]["command"]["argv"]
-    assert "h3_av.publication_finalizer" in orchestrator["graph"]["child_actions"]
-    assert "finalize_publication" in pack["capabilities"]
-
-    from astrid.core.execution.executor.registry import load_default_registry
-
-    registered = load_default_registry().get("h3_av.publication_finalizer")
-    assert registered.metadata["runtime_module"] == (
-        "astrid.packs.h3_av.actions.publication_finalizer.run"
-    )
-    # h3_av.transform is a metadata.local_orchestrator action: it is registered in the
-    # orchestrator registry, not the executor registry (71d43e00 folded it into pack v3).
-    from astrid.core.execution.orchestrator.registry import load_default_registry as load_orchestrators
-
-    registered_transform = load_orchestrators().get("h3_av.transform")
-    assert registered_transform.metadata["runtime_module"] == (
-        "astrid.packs.h3_av.actions.transform.run"
-    )
 
 
-@pytest.mark.parametrize(("header", "expected_media_type"), [
-    (b"\x00\x00\x00\x18ftypisom", "video/mp4"),
-    (b"\x00\x00\x00\x18ftypqt  ", "video/quicktime"),
-    (b"\x1aE\xdf\xa3", "video/x-matroska"),
-])
-def test_compose_executor_records_container_mime_for_stable_finalizer_republication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, header: bytes, expected_media_type: str
-) -> None:
-    from astrid.packs.h3_av.actions.compose import run as compose_executor
-
-    preparation = tmp_path / "preparation.json"
-    preparation.write_text("{}", encoding="utf-8")
-    candidate_source = tmp_path / "composed-source.bin"
-    candidate_source.write_bytes(header + b"synthetic composed bytes")
-
-    def fake_compose_candidate(*, preparation, generated, source, out_dir, preservation_evidence):
-        out_dir.mkdir(parents=True, exist_ok=True)
-        return {"candidate": {"path": str(candidate_source)}}
-
-    monkeypatch.setattr(compose_executor, "compose_candidate", fake_compose_candidate)
-    output = tmp_path / "compose-output"
-    assert compose_executor.main([
-        "--preparation", str(preparation), "--generated", str(tmp_path / "generated.mp4"),
-        "--out", str(output),
-    ]) == 0
-
-    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    candidate = manifest["outputs"][0]
-    assert candidate["name"] == "candidate"
-    assert candidate["media_type"] == expected_media_type
-    assert candidate["content_hash"] == "sha256:" + hashlib.sha256(
-        (output / "candidate.media").read_bytes()
-    ).hexdigest()
-
-    from astrid.packs.h3_av.actions.publication_finalizer.run import main as finalizer_main
-
-    candidate_bytes = (output / "candidate.media").read_bytes()
-    verification = tmp_path / "verification.json"
-    verification.write_text(json.dumps({
-        "schema_version": 1,
-        "kind": "h3_av_verification",
-        "status": "verified",
-        "request_digest": "a" * 64,
-        "candidate_sha256": hashlib.sha256(candidate_bytes).hexdigest(),
-        "lifecycle": {"prepared": True, "composed": True, "verified": True},
-    }), encoding="utf-8")
-    finalizer_output = tmp_path / "finalizer-output"
-    assert finalizer_main([
-        "--candidate", str(output / "candidate.media"),
-        "--verification", str(verification),
-        "--expected-request-digest", "a" * 64,
-        "--out", str(finalizer_output),
-    ]) == 0
-    finalizer_manifest = json.loads((finalizer_output / "manifest.json").read_text(encoding="utf-8"))
-    assert finalizer_manifest["outputs"][0]["media_type"] == candidate["media_type"]
 
 
-def test_compose_executor_rejects_unknown_container_before_publishing_manifest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from astrid.packs.h3_av.actions.compose import run as compose_executor
-
-    preparation = tmp_path / "preparation.json"
-    preparation.write_text("{}", encoding="utf-8")
-    candidate_source = tmp_path / "composed-source.bin"
-    candidate_source.write_bytes(b"not a recognized video container")
-
-    def fake_compose_candidate(*, preparation, generated, source, out_dir, preservation_evidence):
-        out_dir.mkdir(parents=True, exist_ok=True)
-        return {"candidate": {"path": str(candidate_source)}}
-
-    monkeypatch.setattr(compose_executor, "compose_candidate", fake_compose_candidate)
-    output = tmp_path / "compose-output"
-    with pytest.raises(ValueError, match="must be an MP4/QuickTime or Matroska"):
-        compose_executor.main([
-            "--preparation", str(preparation), "--generated", str(tmp_path / "generated.mp4"),
-            "--out", str(output),
-        ])
-    assert not (output / "manifest.json").exists()
 
 
-def test_transform_declares_the_selected_local_runtime_support_root() -> None:
-    orchestrator = yaml.safe_load(
-        (PACK / "pack.yaml").read_text(encoding="utf-8")
-    )["actions"]["transform"]
-    from astrid.core.subprocess_env import build_child_subprocess_env
-
-    # The orchestrator calls AstridClient.open_from_launcher in its own
-    # isolated subprocess. Its public SDK bootstrap must discover the same
-    # disposable support root used by the host and public workspace fixture.
-    declared = orchestrator["isolation"]["env_passthrough"]
-    support_root = "/tmp/h3-selected-runtime-support"
-    child_environment = build_child_subprocess_env(
-        base={
-            "ASTRID_RUNTIME_DATA_ROOT": support_root,
-            "ASTRID_RUNTIME_HOME": "/tmp/stale-home",
-            "ASTRID_RUNTIME_SOURCE_MANIFEST": "/tmp/stale-source-profile.json",
-        },
-        parent={},
-        passthrough=declared,
-        declared_passthrough=declared,
-    )
-
-    assert child_environment["ASTRID_RUNTIME_DATA_ROOT"] == support_root
-    assert "ASTRID_RUNTIME_HOME" not in child_environment
-    assert "ASTRID_RUNTIME_SOURCE_MANIFEST" not in child_environment
 
 
-def test_finalizer_rejects_verification_for_different_candidate(tmp_path: Path) -> None:
-    from astrid.packs.h3_av.actions.publication_finalizer.run import main
-
-    source = tmp_path / "candidate.mp4"
-    payload = b"\x00\x00\x00\x18ftypisom" + b"candidate bytes"
-    source.write_bytes(payload)
-    verification = tmp_path / "verification.json"
-    verification.write_text(json.dumps({
-        "schema_version": 1,
-        "kind": "h3_av_verification",
-        "status": "verified",
-        "request_digest": "a" * 64,
-        "candidate_sha256": "b" * 64,
-        "lifecycle": {"prepared": True, "composed": True, "verified": True},
-    }))
-    output = tmp_path / "finalizer"
-    with pytest.raises(ValueError, match="candidate digest does not match"):
-        main([
-            "--candidate", str(source), "--verification", str(verification),
-            "--expected-request-digest", "a" * 64, "--out", str(output),
-        ])
-    assert not output.exists()
 
 
-def test_finalizer_rejects_verification_for_different_request(tmp_path: Path) -> None:
-    from astrid.packs.h3_av.actions.publication_finalizer.run import main
-
-    source = tmp_path / "candidate.mp4"
-    source.write_bytes(b"\x00\x00\x00\x18ftypisomcandidate")
-    verification = tmp_path / "verification.json"
-    verification.write_text(json.dumps({
-        "schema_version": 1,
-        "kind": "h3_av_verification",
-        "status": "verified",
-        "request_digest": "a" * 64,
-        "candidate_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-        "lifecycle": {"prepared": True, "composed": True, "verified": True},
-    }))
-    output = tmp_path / "finalizer"
-    with pytest.raises(ValueError, match="verification request digest does not match"):
-        main([
-            "--candidate", str(source), "--verification", str(verification),
-            "--expected-request-digest", "c" * 64, "--out", str(output),
-        ])
-    assert not output.exists()
 
 
-def test_merged_manifest_retains_finalizer_semantics_and_bundle_ports() -> None:
-    from astrid.core.pack.canonical import validate_canonical_pack
-    manifest = yaml.safe_load((PACK / "pack.yaml").read_text())
-    finalizer = manifest["actions"]["publication_finalizer"]
-    assert finalizer["metadata"]["generation_publication"] == {
-        "version": 1, "modality": "video", "output_port": "verified_candidate",
-    }
-    assert finalizer["metadata"]["output_result_manifest"] is True
-    assert finalizer["outputs"][0]["artifact_type"] == "h3_av/candidate"
-    assert [(row["name"], row["type"], row["required"]) for row in finalizer["inputs"]] == [
-        ("candidate", "file", True), ("verification", "file", True),
-        ("expected_request_digest", "string", True), ("generation_intent", "json", True),
-    ]
-    for stage in ("prepare", "compile", "compose", "verify"):
-        action = manifest["actions"][stage]
-        assert action["metadata"]["output_result_manifest"] is True
-        assert any(row["name"] == "input_bundle" and row["type"] == "file" for row in action["inputs"])
-    for stage in ("compose", "verify"):
-        assert {"input": "input_bundle", "flag": "--input-bundle", "optional": True} in manifest["actions"][stage]["invocation"]["command"]["input_args"]
-    transform = manifest["actions"]["transform"]
-    assert "h3_av.publication_finalizer" in transform["graph"]["child_actions"]
-    assert {"input": "prepared_worker", "flag": "--prepared-worker", "optional": True} in transform["invocation"]["command"]["input_args"]
-    validate_canonical_pack(PACK, expected_pack_id="h3_av")
 
 
 @pytest.mark.parametrize("streams", [set(), {"audio"}])
 def test_character_swap_timeline_without_video_fails_before_permissions(monkeypatch, tmp_path: Path, streams: set[str]) -> None:
-    from astrid.packs.h3_av.actions.prepare import prepare as prepare_module
+    from astrid.packs.h3_av.shared import prepare as prepare_module
     from astrid.packs.h3_av.shared.errors import PreparationError
     monkeypatch.setattr(prepare_module, "_video_stream_types", lambda _path: streams)
     with pytest.raises(PreparationError, match="contains no video stream"):
@@ -731,7 +461,7 @@ def test_character_swap_timeline_without_video_fails_before_permissions(monkeypa
 
 
 def test_character_swap_inspection_requires_available_probe(monkeypatch, tmp_path: Path) -> None:
-    from astrid.packs.h3_av.actions.prepare import prepare as prepare_module
+    from astrid.packs.h3_av.shared import prepare as prepare_module
     from astrid.packs.h3_av.shared.errors import PreparationError
     monkeypatch.setattr(prepare_module.shutil, "which", lambda _name: None)
     with pytest.raises(PreparationError, match="requires ffprobe"):

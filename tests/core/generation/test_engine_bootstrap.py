@@ -14,7 +14,7 @@ import pytest
 from astrid.core.generation import engine_bootstrap as bootstrap
 from astrid.core.generation.engine_contracts import IntegrityError, RecipeValidationError
 
-ARGV = ('engines', 'install', 'vibecomfy-h3', '--dry-run', '--root', '/tmp/astrid-plan')
+ARGV = ('engines', 'install', 'comfyui', '--dry-run', '--root', '/tmp/astrid-plan')
 
 
 def run(bundle, env=None, loader=None):
@@ -57,13 +57,12 @@ def test_console_dry_run_and_help_are_isolated_and_exact():
     assert result.returncode == 0, result.stderr
     assert 'ORIGIN=' in result.stderr and 'astrid-engine-cli-' in result.stderr
     plan = json.loads(result.stdout)
-    assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
-    from astrid.core.generation.engine_recipe import load_recipe_model_lock
-    required_bytes = sum(model.bytes for model in load_recipe_model_lock('vibecomfy-h3', 'linux-x86_64-cu130').models)
-    assert required_bytes > 0
+    assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'start', 'health'}
+    # Plan 32 T5h: an install is model-free; the gate is the policy free-space floor, not model bytes.
+    from astrid.core.engine_cli import ENGINE_INSTALL_MIN_FREE_BYTES
     assert plan['disk_check'] == {
-        'required_bytes': required_bytes, 'free_bytes': free_bytes,
-        'status': 'ok', 'basis': 'locked_model_bytes',
+        'required_bytes': ENGINE_INSTALL_MIN_FREE_BYTES, 'free_bytes': free_bytes,
+        'status': 'ok', 'basis': 'minimum_free_space_floor',
     }
     local_code = (
         f"import astrid.core.engine_cli as c; c._disk_anchor = lambda root: (root, 1, 1, {free_bytes}); "
@@ -114,10 +113,10 @@ def test_change_and_missing_source(monkeypatch, tmp_path):
         bootstrap.build_cli_bootstrap(ARGV)
 
 
-@pytest.mark.parametrize('argv', [(), ('status',), ('engines', 'install', 'vibecomfy-h3'),
-    ('engines', 'install', 'vibecomfy-h3', '--dry-run', '--token', 'secret'),
-    ('engines', 'install', 'vibecomfy-h3', '--dry-run', '--root', '/x?token=secret'),
-    ('engines', 'install', 'vibecomfy-h3', '--dry-run', '--dry-run')])
+@pytest.mark.parametrize('argv', [(), ('status',), ('engines', 'install', 'comfyui'),
+    ('engines', 'install', 'comfyui', '--dry-run', '--token', 'secret'),
+    ('engines', 'install', 'comfyui', '--dry-run', '--root', '/x?token=secret'),
+    ('engines', 'install', 'comfyui', '--dry-run', '--dry-run')])
 def test_public_argv_refusal(argv):
     with pytest.raises(RecipeValidationError): bootstrap.build_cli_bootstrap(argv)
 
@@ -170,17 +169,17 @@ def test_bad_zip_members_refused(kind):
 
 def test_execution_is_not_qualified():
     with pytest.raises(RecipeValidationError):
-        bootstrap.build_cli_bootstrap(('engines', 'install', 'vibecomfy-h3'))
+        bootstrap.build_cli_bootstrap(('engines', 'install', 'comfyui'))
 
 
 def test_real_console_execution_refuses_without_a2(tmp_path):
-    # Historical name: the CLI now has a real backend, but this fixture stops at
-    # the locked-model disk gate before backend/custody/install work can begin.
+    # The CLI has a real backend; this fixture stops at the free-space floor gate
+    # before backend/custody/install work can begin.
     b = bootstrap.build_cli_bootstrap(ARGV)
     spec = json.loads(base64.b64decode(b.env['ASTRID_ENGINE_SPEC']))
     root = tmp_path / 'uncreated-engine-root'
     assert not root.exists()
-    spec['argv'] = ['engines', 'install', 'vibecomfy-h3', '--root', str(root)]
+    spec['argv'] = ['engines', 'install', 'comfyui', '--root', str(root)]
     env, loader = repack(b, spec=spec)
     sentinel = tmp_path / 'operation-sentinel'
     loader = loader.replace(
@@ -198,14 +197,12 @@ def test_real_console_execution_refuses_without_a2(tmp_path):
     )
     result = run(b, env, loader)
     assert result.returncode == 1
-    from astrid.core.generation.engine_recipe import load_recipe_model_lock
-    required_bytes = sum(model.bytes for model in load_recipe_model_lock('vibecomfy-h3', 'linux-x86_64-cu130').models)
-    assert required_bytes > 0
+    from astrid.core.engine_cli import ENGINE_INSTALL_MIN_FREE_BYTES
     assert json.loads(result.stderr) == {'error': {
         'code': 'ENGINE_INSTALL_INSUFFICIENT_DISK', 'step': None,
         'retryable': True, 'recovery_handle': None,
         'message': 'Free disk space or choose a different --root, then retry.',
-        'required_bytes': required_bytes, 'free_bytes': 0,
+        'required_bytes': ENGINE_INSTALL_MIN_FREE_BYTES, 'free_bytes': 0,
     }}
     assert not sentinel.exists()
     assert not root.exists()
@@ -242,7 +239,7 @@ def test_real_path_distribution_metadata_forms(monkeypatch, tmp_path, form):
         assert archive.read(f'astrid-{dist.version}.dist-info/entry_points.txt') == entries
     result = run(bundle)
     assert result.returncode == 0, result.stderr
-    assert {s['kind'] for s in json.loads(result.stdout)['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
+    assert {s['kind'] for s in json.loads(result.stdout)['plan']['steps']} == {'source', 'environment', 'start', 'health'}
 
 
 def test_missing_or_unsupported_distribution_metadata(monkeypatch, tmp_path):
@@ -300,8 +297,8 @@ def test_implicit_local_root_planning_in_bootstrap(tmp_path):
     from astrid.core.generation.engine_local_endpoint import record_engine_root
 
     root = str(tmp_path / 'registered')
-    record_engine_root('vibecomfy-h3', root)
-    bundle = bootstrap.build_cli_bootstrap(('engines', 'install', 'vibecomfy-h3', '--dry-run'))
+    record_engine_root('comfyui', root)
+    bundle = bootstrap.build_cli_bootstrap(('engines', 'install', 'comfyui', '--dry-run'))
     result = run(bundle, env={**bundle.env, 'HOME': str(Path.home())})
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['plan']['root'] == root
