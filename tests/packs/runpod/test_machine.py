@@ -269,6 +269,7 @@ def test_generation_policy_waits_for_stock_through_the_real_machine_claim(machin
         c.clock.advance(seconds)
 
     c.owner.observe_offer, c.owner.sleep = observe, sleep
+    c.owner.observe_offers = lambda: (observe(),)
     c.owner.monotonic = c.clock
     monkeypatch.setattr(target_selection.random, "uniform", lambda *args: 0)
     run_on_machine(c.machine, replace(job, policy=policy), destination=job.scratch / "outputs",
@@ -603,16 +604,193 @@ def test_machines_setup_saves_ordered_choices_and_volume(monkeypatch, capsys):
     assert saved_policy["budget_cap_usd"] == 8
 
 
-def test_machines_setup_refuses_missing_pinned_identity(monkeypatch, capsys):
+def test_machines_setup_fresh_uses_pinned_default_and_saved_credential_reference(monkeypatch):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.packs.runpod.target_selection import DEFAULT_RUNPOD_WORKER_IMAGE
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "credential_ref": "env:RUNPOD_API_KEY",
+    })
+    saved = {}
+    result = machines_cli.main(
+        ["setup", "--gpu", "RTX A", "--budget-usd", "7", "--json"],
+        volumes=lambda: [], offered_gpus=lambda *_: ["RTX A"],
+        setup=lambda policy: saved.update(policy) or type("Result", (), {"ok": True})(),
+    )
+    assert result == 0
+    assert saved["image"] == DEFAULT_RUNPOD_WORKER_IMAGE
+    assert saved["provider_account_ref"] == "env:RUNPOD_API_KEY"
+    assert saved["credential_ref"] == "env:RUNPOD_API_KEY"
+
+
+def test_machines_setup_preserves_saved_image_and_accepts_per_setup_override(monkeypatch):
     from astrid.core import machines_cli
     from astrid.core.generation import settings
 
-    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {"gpu_types": ["RTX A"]})
-    assert machines_cli.main(["setup", "--json"], volumes=lambda: [],
-                             offered_gpus=lambda *_: []) == 2
+    stored_image = "registry/saved@sha256:" + "a" * 64
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "provider_account_ref": "account", "credential_ref": "env:RUNPOD_API_KEY",
+        "image": stored_image, "gpu_types": ["RTX A"], "budget_cap_usd": 5,
+    })
+    saved = []
+    kwargs = {"volumes": lambda: [], "offered_gpus": lambda *_: ["RTX A"],
+              "setup": lambda policy: saved.append(policy) or type("Result", (), {"ok": True})()}
+    assert machines_cli.main(["setup", "--json"], **kwargs) == 0
+    assert saved[-1]["image"] == stored_image
+    override = "registry/override@sha256:" + "b" * 64
+    assert machines_cli.main(["setup", "--image", override, "--json"], **kwargs) == 0
+    assert saved[-1]["image"] == override
+
+
+def test_machines_setup_missing_credential_names_credential_command(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.core.util.credentials_scope import CredentialsScope
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {})
+    def missing(*args, **kwargs):
+        raise RuntimeError("credential absent")
+    monkeypatch.setattr(CredentialsScope, "resolve_local", missing)
+    assert machines_cli.main(["setup", "--json"]) == 2
     output = capsys.readouterr().out
-    assert "provider_account_ref" in output and "image" in output
-    assert "astrid machines setup" in output
+    assert "astrid credential set runpod" in output
+    assert "credential absent" not in output
+
+
+def test_machines_setup_never_discloses_resolved_credential_sentinel(monkeypatch, capsys, caplog):
+    import json
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.core.util.credentials_scope import CredentialsScope
+    from astrid.packs.runpod import adapter
+
+    sentinel = "FAKE_RUNPOD_KEY_SENTINEL_DO_NOT_LEAK_73C4"
+    inventory_keys = []
+    saved_preferences = {}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved_preferences)
+    monkeypatch.setattr(CredentialsScope, "resolve_local",
+                        lambda *args, **kwargs: SimpleNamespace(value=sentinel))
+
+    async def fake_volumes(api_key):
+        inventory_keys.append(api_key)
+        return []
+
+    async def fake_gpu_types(api_key, *, datacenter_id, require_network_volume):
+        inventory_keys.append(api_key)
+        return ["RTX A"]
+
+    monkeypatch.setattr(adapter, "setup_volumes", fake_volumes)
+    monkeypatch.setattr(adapter, "setup_gpu_types", fake_gpu_types)
+    assert machines_cli.main(["setup", "--gpu", "RTX A", "--budget-usd", "4", "--json"],
+                             setup=lambda policy: saved_preferences.update(policy)
+                             or SimpleNamespace(ok=True)) == 0
+    setup_output = capsys.readouterr().out
+    assert inventory_keys == [sentinel, sentinel]
+    assert sentinel not in setup_output
+    assert sentinel not in caplog.text
+    assert sentinel not in json.dumps(saved_preferences, sort_keys=True)
+
+    def fail_with_sentinel(_policy):
+        raise RuntimeError(sentinel)
+
+    assert machines_cli.main(["setup", "--gpu", "RTX A", "--budget-usd", "4", "--json"],
+                             setup=fail_with_sentinel) == 1
+    setup_error = capsys.readouterr().out
+    assert sentinel not in setup_error
+    assert sentinel not in caplog.text
+
+    assert machines_cli.main(["setup", "--show", "--json"],
+                             show_location=lambda: {"data_root": "/tmp/astrid-data", "realm": "realm-x"}) == 0
+    shown = capsys.readouterr().out
+    assert sentinel not in shown
+    assert sentinel not in caplog.text
+
+
+def test_machines_setup_show_reports_sanitized_preferences_and_store_location(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "provider_account_ref": "account", "credential_ref": "env:RUNPOD_API_KEY",
+        "gpu_types": ["RTX A"], "image": "registry/x@sha256:" + "a" * 64,
+        "api_key": "must-never-print-this-key",
+    })
+    assert machines_cli.main(["setup", "--show", "--json"],
+                             show_location=lambda: {"data_root": "/tmp/astrid-data", "realm": "realm-x"}) == 0
+    output = capsys.readouterr().out
+    assert "user/generation" in output
+    assert "/tmp/astrid-data" in output and "realm-x" in output
+    assert "env:RUNPOD_API_KEY" in output
+    assert "must-never-print-this-key" not in output
+
+
+def test_machines_setup_datacenter_filters_inventory_and_saves_choice(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    observed = []
+    persisted = {}
+
+    def gpu_inventory(datacenter, has_volume):
+        observed.append((datacenter, has_volume))
+        return ["RTX in region"] if datacenter == "US-TX-1" else ["RTX everywhere"]
+
+    assert machines_cli.main(["setup", "--datacenter", "US-TX-1", "--gpu", "RTX in region",
+                              "--budget-usd", "5", "--json"],
+                             volumes=lambda: [], offered_gpus=gpu_inventory,
+                             setup=lambda policy: persisted.update(policy) or type("Result", (), {"ok": True})()) == 0
+    import json
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert observed == [("US-TX-1", False)]
+    assert persisted["datacenter_id"] == "US-TX-1"
+    assert persisted["gpu_types"] == ["RTX in region"]
+
+
+def test_machines_setup_any_is_unrestricted_and_volume_dc_conflict_refuses(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    observed = []
+    persisted = {}
+    assert machines_cli.main(["setup", "--datacenter", "any", "--gpu", "RTX A",
+                              "--budget-usd", "5", "--json"], volumes=lambda: [],
+                             offered_gpus=lambda dc, has_volume: observed.append((dc, has_volume)) or ["RTX A"],
+                             setup=lambda policy: persisted.update(policy) or type("Result", (), {"ok": True})()) == 0
+    assert observed == [(None, False)]
+    assert "datacenter_id" not in persisted
+    volumes = [{"id": "vol", "name": "data", "dataCenterId": "US-TX-1"}]
+    assert machines_cli.main(["setup", "--volume", "vol", "--datacenter", "EU-RO-1",
+                              "--gpu", "RTX A", "--budget-usd", "5", "--json"],
+                             volumes=lambda: volumes, offered_gpus=lambda *_: ["RTX A"],
+                             setup=lambda *_: None) == 2
+    assert "fixed to a different datacenter" in capsys.readouterr().out
+
+
+def test_machines_setup_interactive_datacenter_keeps_gpu_order(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    answers = iter(("", "US-TX-1", "RTX B, RTX A", "5"))
+    captured = {}
+    offered = []
+    assert machines_cli.main(["setup"], volumes=lambda: [], datacenters=lambda: ["US-TX-1"],
+                             offered_gpus=lambda dc, has_volume: offered.append((dc, has_volume)) or ["RTX A", "RTX B"],
+                             input_fn=lambda _: next(answers),
+                             setup=lambda policy: captured.update(policy) or type("Result", (), {"ok": True})()) == 0
+    capsys.readouterr()
+    assert offered == [("US-TX-1", False)]
+    assert captured["datacenter_id"] == "US-TX-1"
+    assert captured["gpu_types"] == ["RTX B", "RTX A"]
+
+
 def test_machine_keep_for_uses_recorded_consent_data_and_reports_new_limit(monkeypatch, capsys):
     from types import SimpleNamespace
     from astrid.core import machines_cli

@@ -283,6 +283,28 @@ def _runpod_preferences(client):
     return read_runpod_preferences().as_mapping()
 
 
+def _runpod_job_preferences(preferences, datacenter):
+    """Apply a per-job datacenter to a copied preference snapshot."""
+    if datacenter is None:
+        return preferences
+    from astrid.packs.runpod.target_selection import RunPodPreferences, PaidSelectionError
+
+    try:
+        candidate = dict(preferences)
+        selected = RunPodPreferences.from_mapping(candidate)
+        datacenter = datacenter.strip() if isinstance(datacenter, str) else datacenter
+        if (selected.volume_id is not None and selected.datacenter_id is not None
+                and selected.datacenter_id != datacenter):
+            raise GenerationInputError(
+                f"--datacenter {datacenter!r} conflicts with the selected network volume's "
+                f"datacenter {selected.datacenter_id!r}"
+            )
+        candidate["datacenter_id"] = datacenter
+        return RunPodPreferences.from_mapping(candidate).as_mapping()
+    except PaidSelectionError as exc:
+        raise GenerationInputError(str(exc)) from exc
+
+
 def _runpod_placement_policy(controls, *, engine, machine=None, placement_policy=None):
     """Snapshot the user's disclosed offer and preferences into the task.
 
@@ -296,6 +318,7 @@ def _runpod_placement_policy(controls, *, engine, machine=None, placement_policy
     if any(controls.get(name) is None for name in names):
         raise GenerationInputError("RunPod requires preparation, execution and idle bounds")
     preferences = _runpod_preferences(controls.get("client"))
+    preferences = _runpod_job_preferences(preferences, controls.get("datacenter"))
     if placement_policy is not None:
         if placement_policy.gpu_types:
             preferences["gpu_types"] = list(placement_policy.gpu_types)
@@ -369,11 +392,14 @@ def _runpod_status(*, client, include_quote, preferences=None):
 
 def _modality_controls(*, engine, consent, max_usd, deadline, offer_digest, preparation_seconds,
                        execution_seconds, idle_seconds, align, max_hourly_usd=None,
-                       capacity_timeout_seconds=None, wait_for_capacity=True) -> dict[str, Any]:
+                       capacity_timeout_seconds=None, wait_for_capacity=True,
+                       datacenter=None) -> dict[str, Any]:
     """The controls image, video and audio all build from their public keywords."""
     controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
     controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                     execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+    if datacenter is not None:
+        controls['datacenter'] = datacenter
     if max_hourly_usd is not None:
         controls['max_hourly_usd'] = max_hourly_usd
     if capacity_timeout_seconds is not None:
@@ -792,7 +818,9 @@ def _image_resolve_mode(sdk_module: Any, *, model: Any, mode: Any, execution: An
 
 def _video_resolve_mode(sdk_module: Any, *, mode: Any, inputs: dict[str, Any], resume: bool,
                         recovery_path: Any, placement: Any, **_: Any) -> tuple[Any, bool]:
-    if resume or recovery_path is not None and placement != 'runpod':
+    from astrid.core.generation.placement import is_runpod_placement
+
+    if resume or recovery_path is not None and not is_runpod_placement(placement):
         raise CapabilityValidationError("video recovery is supported only for RunPod jobs")
     return sdk_module._infer_video_mode(mode, inputs), False
 
@@ -985,7 +1013,8 @@ class GenerationFacade:
         from astrid.core.generation.target_launch import launch_target
 
         _generation_controls(engine=engine, consent=consent, max_usd=None, deadline=None)
-        if placement == 'runpod':
+        from astrid.core.generation.placement import is_runpod_placement
+        if is_runpod_placement(placement):
             raise GenerationInputError('launch requires a selected local human ComfyUI')
         try:
             selection = targets.resolve_target(placement, repo=project_root)
@@ -1004,7 +1033,8 @@ class GenerationFacade:
             if targets.canonical_engine(engine) != 'comfyui':
                 raise ValueError('Phase 1 targets support only comfyui')
             updates = merge_input_values(inputs if inputs is not None else {})
-            if placement == 'runpod':
+            from astrid.core.generation.placement import is_runpod_placement
+            if is_runpod_placement(placement):
                 if save:
                     allowed = {'gpu_types', 'datacenter_id', 'volume', 'image', 'idle_timeout_seconds',
                                'provider_account_ref', 'credential_ref'}
@@ -1066,16 +1096,18 @@ class GenerationFacade:
 
     @_generation_boundary
     def describe(self, entry: str | None = None, *, workflow=None, mode=None,
-                 placement=None, engine='comfyui', client=None, max_hourly_usd=None):
+                 placement=None, engine='comfyui', client=None, max_hourly_usd=None,
+                 datacenter=None):
         from astrid.core.generation.entries import describe_entry, describe_workflow
         if placement is not None:
             _generation_controls(engine=engine, consent=(), max_usd=None, deadline=None)
             from astrid.core.generation import placement as placements
             resolved = placements.validate_placement(placements.resolve_placement(
                 placements.request_from_selector(placement), client=client))
-            if resolved.kind != 'runpod' or entry is not None or workflow is not None:
+            from astrid.core.generation.placement import is_runpod_placement
+            if not is_runpod_placement(resolved) or entry is not None or workflow is not None:
                 raise GenerationInputError('target describe requires only target=runpod')
-            preferences = _runpod_preferences(client)
+            preferences = _runpod_job_preferences(_runpod_preferences(client), datacenter)
             if resolved.policy.gpu_types:
                 preferences['gpu_types'] = list(resolved.policy.gpu_types)
             from astrid.packs.runpod.target_selection import RunPodPreferences, policy_consent_digest, _number
@@ -1114,7 +1146,8 @@ class GenerationFacade:
         from astrid.core.generation.targets import canonical_engine
         if canonical_engine(engine) != 'comfyui':
             raise GenerationInputError('Phase 1 release supports only comfyui')
-        if placement == 'runpod':
+        from astrid.core.generation.placement import is_runpod_placement
+        if is_runpod_placement(placement):
             return _runpod_operation('release', client=client, wait=wait, machine_id=machine_id)
         if machine_id is not None:
             raise GenerationInputError('machine id release requires runpod placement')
@@ -1377,7 +1410,7 @@ class GenerationFacade:
         runpod_engine = pending_target = None
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds', 'max_hourly_usd', 'capacity_timeout_seconds',
-                     'wait_for_capacity'):
+                     'wait_for_capacity', 'datacenter'):
             controls.pop(name, None)
         requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
         align = _align_mode(requested_align or 'check')
@@ -1843,6 +1876,7 @@ class GenerationFacade:
         verbose: bool = False,
         argv: tuple[str, ...] = (),
         align: str | None = None,
+        datacenter: str | None = None,
         **inputs: Any,
     ) -> Any:
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
@@ -1888,6 +1922,7 @@ class GenerationFacade:
         verbose: bool = False,
         argv: tuple[str, ...] = (),
         align: str | None = None,
+        datacenter: str | None = None,
         **inputs: Any,
     ) -> Any:
         kind = _MEDIA_KINDS[modality]
@@ -1899,7 +1934,7 @@ class GenerationFacade:
             offer_digest=offer_digest, preparation_seconds=preparation_seconds,
             execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
             max_hourly_usd=max_hourly_usd, capacity_timeout_seconds=capacity_timeout_seconds,
-            wait_for_capacity=wait_for_capacity,
+            wait_for_capacity=wait_for_capacity, datacenter=datacenter,
         )
         if not kind.retire_inputs_first:
             _reject_retired_generation_inputs(inputs)
@@ -2070,6 +2105,7 @@ class GenerationFacade:
         verbose: bool = False,
         argv: tuple[str, ...] = (),
         align: str | None = None,
+        datacenter: str | None = None,
         **inputs: Any,
     ) -> Any:
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
@@ -2113,6 +2149,7 @@ class GenerationFacade:
         verbose: bool = False,
         argv: tuple[str, ...] = (),
         align: str | None = None,
+        datacenter: str | None = None,
         **inputs: Any,
     ) -> Any:
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}

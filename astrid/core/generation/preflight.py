@@ -572,7 +572,9 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
     from astrid.core.generation.targets import TargetConfigError, resolve_target
 
-    if target == "runpod":
+    from astrid.core.generation.placement import is_runpod_placement
+
+    if is_runpod_placement(target):
         raise AstridError(
             "RunPod generation requires an explicitly prepared target; automatic provisioning is unavailable",
             code="COMFY_TARGET_UNSUPPORTED", field="target",
@@ -628,7 +630,8 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
                              entry_id: str | None = None, mode: str | None = None):
     """Read/probe the bound target and expose the shared error envelope."""
     try:
-        if target == 'runpod' and runpod_owner is not None:
+        from astrid.core.generation.placement import is_runpod_placement
+        if is_runpod_placement(target) and runpod_owner is not None:
             return call_runpod_owner(runpod_owner.validation_target)
         return _select_generation_target(target, repo=repo,
             **({'entry_id': entry_id} if entry_id is not None else {}))

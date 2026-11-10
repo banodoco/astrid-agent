@@ -199,37 +199,77 @@ def _keep(machine_id: str, *, for_duration: str | None, until_release: bool,
     return 0
 
 
-def _setup(*, volume: str | None, gpu_types: list[str], budget_usd: float | None,
+def _setup_show(*, as_json: bool, location: Callable[[], dict[str, Any]] | None = None) -> int:
+    """Show non-secret RunPod settings and the Runtime app-state location."""
+    from astrid.core.generation import settings
+    from astrid.sdk.storage_root import resolve_runtime_data_root
+
+    raw = settings.machine_policy("runpod") or {}
+    allowed = {"provider_account_ref", "gpu_types", "image", "volume", "datacenter_id",
+               "idle_timeout_seconds", "credential_ref", "budget_cap_usd"}
+    preferences = {key: value for key, value in raw.items() if key in allowed} if isinstance(raw, dict) else {}
+    if location is None:
+        def location():
+            root = resolve_runtime_data_root().expanduser().resolve()
+            realm = None
+            try:
+                catalog = json.loads((root / "runtime" / "catalog.json").read_text(encoding="utf-8"))
+                if isinstance(catalog, dict):
+                    realm = catalog.get("selected_realm_id")
+            except (OSError, ValueError, TypeError):
+                pass
+            return {"data_root": str(root), "realm": realm}
+    store = {"document": "user/generation", **location()}
+    payload = {"preferences": preferences, "runtime_user_app_state": store}
+    print(json.dumps(payload, sort_keys=True, indent=2, default=str) if as_json else
+          "RunPod machine preferences:\n" + json.dumps(preferences, sort_keys=True, indent=2, default=str)
+          + "\nRuntime user app-state: " + store["document"]
+          + "; data root=" + str(store.get("data_root"))
+          + "; realm=" + str(store.get("realm") or "not selected"))
+    return 0
+
+
+def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], budget_usd: float | None,
+           image: str | None,
            as_json: bool, setup: Callable[..., Any] | None = None,
            volumes: Callable[[], list[dict[str, Any]]] | None = None,
+           datacenters: Callable[[], list[str]] | None = None,
            offered_gpus: Callable[[str | None, bool], list[str]] | None = None,
            input_fn: Callable[[str], str] = input) -> int:
     """Save RunPod setup through runpod.setup; inventory is read-only."""
     from astrid.core.generation import settings
-    from astrid.packs.runpod.target_selection import RunPodPreferences, RunPodSetupRequiredError
+    from astrid.packs.runpod.target_selection import (
+        DEFAULT_RUNPOD_WORKER_IMAGE, RunPodPreferences, RunPodSetupRequiredError,
+    )
 
     saved = settings.machine_policy("runpod") or {}
     if not isinstance(saved, dict):
         saved = {}
-    missing_identity = [name for name in ("provider_account_ref", "image") if not saved.get(name)]
-    if missing_identity:
-        error = RunPodSetupRequiredError(tuple(missing_identity))
-        print(json.dumps({"ok": False, "error": str(error)}) if as_json else str(error))
+    credential_ref = saved.get("credential_ref") or "env:RUNPOD_API_KEY"
+    if not isinstance(credential_ref, str) or not credential_ref.startswith("env:"):
+        message = "saved RunPod credential reference is invalid; configure it with `astrid credential set runpod`"
+        print(json.dumps({"ok": False, "error": message}) if as_json else message)
         return 2
+    image_value = image or saved.get("image") or DEFAULT_RUNPOD_WORKER_IMAGE
 
-    if volumes is None or offered_gpus is None:
+    if (volumes is None or offered_gpus is None or
+            (not as_json and volume is None and datacenter is None and datacenters is None)):
         from astrid.core.util.credentials_scope import CredentialsScope
         from astrid.packs.runpod.worker_owner import _run_sync
         from astrid.packs.runpod import adapter
 
-        credential_name = str(saved.get("credential_ref") or "env:RUNPOD_API_KEY").removeprefix("env:")
+        credential_name = credential_ref.removeprefix("env:")
         try:
             api_key = CredentialsScope.resolve_local("runpod", env_var=credential_name).value
-        except Exception as exc:
-            message = f"RunPod account access unavailable; configure credentials and retry `astrid machines setup` ({exc})"
+            if not api_key:
+                raise ValueError
+        except Exception:
+            message = "RunPod credential is missing; run `astrid credential set runpod`"
             print(json.dumps({"ok": False, "error": message}) if as_json else message)
             return 2
         volumes = volumes or (lambda: _run_sync(adapter.setup_volumes(api_key)))
+        if not as_json and volume is None and datacenter is None:
+            datacenters = datacenters or (lambda: _run_sync(adapter.setup_datacenters(api_key)))
         offered_gpus = offered_gpus or (lambda dc, has_volume: _run_sync(adapter.setup_gpu_types(
             api_key, datacenter_id=dc, require_network_volume=has_volume)))
 
@@ -255,7 +295,24 @@ def _setup(*, volume: str | None, gpu_types: list[str], budget_usd: float | None
                                         if row.get("id") == selected or row.get("name") == selected), None)
                 if selected_volume is None:
                     raise ValueError(f"RunPod volume {selected!r} was not found; retry `astrid machines setup`")
-        datacenter = (selected_volume or {}).get("dataCenterId") or saved.get("datacenter_id")
+        volume_datacenter = (selected_volume or {}).get("dataCenterId")
+        requested_datacenter = None if datacenter is not None and datacenter.lower() == "any" else datacenter
+        if requested_datacenter is None and as_json:
+            requested_datacenter = saved.get("datacenter_id")
+        if selected_volume is not None:
+            if requested_datacenter is not None and requested_datacenter != volume_datacenter:
+                raise ValueError("the selected network volume is fixed to a different datacenter")
+            datacenter = volume_datacenter
+        else:
+            if requested_datacenter is None and not as_json:
+                choices = list(dict.fromkeys(datacenters()))
+                print("Datacenters (enter an ID, or press Enter for any):")
+                print("  any" + (("  " + "  ".join(choices)) if choices else ""))
+                selected = input_fn("Datacenter [any]: ").strip()
+                requested_datacenter = None if not selected or selected.lower() == "any" else selected
+                if requested_datacenter is not None and requested_datacenter not in choices:
+                    raise ValueError(f"RunPod datacenter {requested_datacenter!r} was not found; retry `astrid machines setup`")
+            datacenter = requested_datacenter
         candidates = offered_gpus(datacenter, selected_volume is not None)
         if not candidates:
             raise ValueError("no GPU types are offered in that datacenter; retry `astrid machines setup`")
@@ -274,6 +331,9 @@ def _setup(*, volume: str | None, gpu_types: list[str], budget_usd: float | None
         if type(budget) not in (int, float) or not math.isfinite(float(budget)) or float(budget) <= 0:
             raise RunPodSetupRequiredError(("budget_cap_usd",))
         policy = dict(saved)
+        policy["provider_account_ref"] = saved.get("provider_account_ref") or credential_ref
+        policy["image"] = image_value
+        policy["credential_ref"] = credential_ref
         policy.update({"gpu_types": chosen, "budget_cap_usd": float(budget),
                        "datacenter_id": datacenter})
         if selected_volume is None:
@@ -316,7 +376,9 @@ def _setup(*, volume: str | None, gpu_types: list[str], budget_usd: float | None
 def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None = None,
          keep: Callable[..., Any] | None = None, setup: Callable[..., Any] | None = None,
          volumes: Callable[[], list[dict[str, Any]]] | None = None,
+         datacenters: Callable[[], list[str]] | None = None,
          offered_gpus: Callable[[str | None, bool], list[str]] | None = None,
+         show_location: Callable[[], dict[str, Any]] | None = None,
          input_fn: Callable[[str], str] = input) -> int:
     parser = argparse.ArgumentParser(prog="astrid machines", description="Rented generation machines. Automatic release only happens while the owning Astrid host is running.")
     parser.add_argument("--json", action="store_true")
@@ -333,8 +395,11 @@ def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None
     extend.add_argument("--json", action="store_true", dest="keep_json")
     configure = sub.add_parser("setup", help="Choose and save RunPod machine preferences.")
     configure.add_argument("--volume", help="Existing RunPod network volume ID or name; omit for ephemeral disk.")
+    configure.add_argument("--datacenter", help="RunPod datacenter ID, or 'any' for no datacenter restriction.")
     configure.add_argument("--gpu", action="append", dest="gpu_types", default=[], help="Ordered GPU choice; repeat for fallbacks.")
     configure.add_argument("--budget-usd", type=float, help="Maximum paid-run budget in USD.")
+    configure.add_argument("--image", help="Override the pinned worker image for this setup.")
+    configure.add_argument("--show", action="store_true", help="Show saved preferences and Runtime app-state location.")
     configure.add_argument("--json", action="store_true", dest="setup_json")
     parsed = parser.parse_args(list(argv or ()))
     as_json = parsed.json or bool(getattr(parsed, "release_json", False))
@@ -345,9 +410,13 @@ def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None
                      until_release=parsed.until_release, max_usd=parsed.max_usd,
                      as_json=as_json or parsed.keep_json, keep=keep)
     if parsed.command == "setup":
-        return _setup(volume=parsed.volume, gpu_types=parsed.gpu_types,
-                      budget_usd=parsed.budget_usd, as_json=as_json or parsed.setup_json,
-                      setup=setup, volumes=volumes, offered_gpus=offered_gpus, input_fn=input_fn)
+        if parsed.show:
+            return _setup_show(as_json=as_json or parsed.setup_json, location=show_location)
+        return _setup(volume=parsed.volume, datacenter=parsed.datacenter, gpu_types=parsed.gpu_types,
+                      budget_usd=parsed.budget_usd, image=parsed.image,
+                      as_json=as_json or parsed.setup_json,
+                      setup=setup, volumes=volumes, datacenters=datacenters,
+                      offered_gpus=offered_gpus, input_fn=input_fn)
     rows = _leases()
     print(json.dumps(rows, sort_keys=True, indent=2) if as_json else render(rows))
     return 0
