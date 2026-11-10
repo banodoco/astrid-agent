@@ -492,7 +492,10 @@ class RunPodMachine:
         owner.observe_liveness(observe=getattr(adapter, "observe_pod", None))
         pinned = policy.get("machine")
         if pinned is not None:
-            live = [row["id"] for row in lease_rows(owner) if row["live"]]
+            record = owner.selection._read()
+            live = ([record["pod_id"]] if record and record.get("state") == "claimed"
+                    and record.get("lease", {}).get("state") in {"active", "idle"}
+                    and record.get("pod_id") else [])
             if pinned not in live:
                 ended = next((row for row in lease_rows(owner) if row["id"] == pinned), None)
                 reason = f" (ended: {ended['ended']})" if ended and ended.get("ended") else ""
@@ -881,11 +884,21 @@ def lease_rows(owner: Any) -> list[dict[str, Any]]:
 
 def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
     lease = record.get("lease") or {}
-    live = record.get("state") == "claimed" and lease.get("state") in {"active", "idle"}
+    # Live means custody still needs release, not that the pod is ready for reuse.
+    # Only an exact cleanup receipt ends custody; failed preparation may still bill.
+    live = bool(record.get("pod_id")) and record.get("state") != "cleanup_complete"
+    if not live:
+        state = "ended"
+    elif lease.get("state") == "releasing":
+        state = "releasing"
+    elif record.get("state") == "claimed" and lease.get("state") in {"active", "idle", "preparing"}:
+        state = lease["state"]
+    else:
+        state = "unresolved"
     return {"id": record.get("pod_id"), "kind": KIND, "lease": record.get("operation_id"),
-            "gpu": record.get("gpu_type"), "state": lease.get("state") if live else "ended",
+            "gpu": record.get("gpu_type"), "state": state,
             "live": live, "idle_timeout_s": lease.get("idle_seconds"),
-            "idle_expires_at": lease.get("idle_expires_at") if lease.get("state") == "idle" else None,
+            "idle_expires_at": lease.get("idle_expires_at") if state == "idle" else None,
             "cost_usd": round(float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0), 4),
             "ended": None if live else (lease.get("ended") or lease.get("release_reason"))}
 
