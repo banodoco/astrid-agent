@@ -29,7 +29,7 @@ def start_verified_stopped_engine(engine: str, *, root: str, platform: str = DEF
     context, _ = create_local_backend(
         engine=engine, platform=platform, placement="local", root=root, deadline=deadline)
     receipt = engine_status(engine, platform=platform, placement="local", root=root,
-                            context=context, deadline=deadline)
+                            context=context, deadline=deadline, require_installed_receipt=True)
     if (receipt is not None and receipt.status == "failed"
             and receipt.failed_step_id == "start" and receipt.error_code == EndpointHealthError.code):
         ensure_local_engine_server(engine, platform=platform, root=root,

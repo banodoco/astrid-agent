@@ -1792,6 +1792,28 @@ def test_status_checks_receipt_lock_evidence_before_absent_server(setup):
     assert not any(e[0] == "service:start" for e in context.events)
 
 
+def test_persisted_start_failure_never_authorizes_start_of_corrupted_install(setup, monkeypatch):
+    from astrid.core.generation import engine_execution, engine_local_server
+
+    install(setup)
+    plan, context, adapter, _ = setup
+    context.server = None
+    context.sources[ROOT + "/runtime/ComfyUI"]["dirty"] = " M main.py"
+    receipt = context.files[ROOT + "/" + runner._RECEIPT]
+    receipt.update(status="failed", failed_step_id="start", error_code="endpoint_unhealthy")
+    context.events.clear()
+    monkeypatch.setattr(engine_execution, "create_local_backend", lambda **kw: (context, adapter))
+    monkeypatch.setattr(engine_local_server, "ensure_local_engine_server",
+                        lambda *a, **kw: pytest.fail("persisted failure authorized a start"))
+    engine_local_server.start_verified_stopped_engine(plan.engine, root=ROOT, platform=PLATFORM,
+                                                     deadline_seconds=10)
+    assert not any(event[0] == "service:start" for event in context.events)
+    # Ordinary status still exposes the original persisted failure unchanged.
+    report = status(setup)
+    assert (report.status, report.failed_step_id, report.error_code) == (
+        "failed", "start", "endpoint_unhealthy")
+
+
 def test_status_custody_unresolved_preserves_exact_error(setup):
     install(setup)
     error = CustodyUnresolved("exact custody", recovery_handle="/recovery/exact-status-job")

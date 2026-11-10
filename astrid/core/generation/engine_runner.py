@@ -960,7 +960,8 @@ def _parse_receipt(raw, plan):
 
 
 def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placement, root: TargetPath,
-                  context: ExecutionContext, deadline: Deadline) -> InstallReceipt | None:
+                  context: ExecutionContext, deadline: Deadline,
+                  require_installed_receipt: bool = False) -> InstallReceipt | None:
     recipe = recipes.load_recipe(engine, platform)
     plan = plan_install(recipe, root=root, placement=placement)
     # No platform implementation import is needed for a read-only Linux status.
@@ -981,7 +982,9 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
         raise IntegrityError("invalid install receipt file")
     receipt = _parse_receipt(context.read_json(path, deadline=deadline), plan)
     if receipt.status != "installed":
-        return receipt
+        # A persisted failure is not a fresh verification result. Callers deciding
+        # whether to start may only use a result revalidated from an installed receipt.
+        return None if require_installed_receipt else receipt
     # Lazy optional production adapter dependency, absent from lookup/planning.
     try:
         from .engine_platforms import platform_adapter
