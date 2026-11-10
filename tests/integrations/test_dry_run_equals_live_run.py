@@ -328,7 +328,7 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
 
         @contextmanager
         def managed_engine(provider, folder, patch):
-            extra_files = (r"vae/FLUX1\ae.safetensors",) if cell == ("image", "t2i") else ()
+            extra_files = ("vae/ae.safetensors", r"vae/FLUX1\ae.safetensors") if cell == ("image", "t2i") else ()
             with _pinned_owned_cpu_peer(provider, pinned_install, patch, extra_files=extra_files):
                 patch.setenv("HOME", str(folder / "home"))
                 ensure_local_engine_server("comfyui")

@@ -88,8 +88,11 @@ def test_pod_ui_json_is_frozen_before_preparation(tmp_path, managed_install):
 
 def test_managed_dry_preview_uses_receipt_model_root(tmp_path, monkeypatch, managed_install):
     from astrid.core.generation import engine_recipe
-    from astrid.core.generation.managed_preparation import configured_models_root
+    from astrid.core.generation.managed_preparation import ManagedEnginePreparation, configured_models_root
     from astrid.sdk.generation import GenerationFacade
+    from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value, loaded_workflow_execution_identity
+    from tests.integrations.test_dry_run_equals_live_run import Recorder, _built
+    from vibecomfy.workflow_bundle import emit_bundle
 
     client, payload, recipe, root, started, bootstrap = managed_install
     monkeypatch.setattr(engine_recipe, 'load_recipe', lambda engine, platform, **kwargs: recipe)
@@ -102,6 +105,24 @@ def test_managed_dry_preview_uses_receipt_model_root(tmp_path, monkeypatch, mana
         row['path'] = str(custom / str(row['path']).split('/models/', 1)[1])
     receipt_path.write_text(json.dumps(receipt))
     expected = configured_models_root(root=str(root))
+    recorder = Recorder(monkeypatch)
     dry = GenerationFacade().image(placement='managed', prompt='a boat', seed=7, dry_run=True)
+    _, _, workflow = _built(recorder.take())
     assert expected == str(custom)
     assert dry['entry']['requirements']['models_root'] == expected
+    folder = tmp_path / 'custom-workflow'
+    folder.mkdir()
+    emit_bundle(workflow, folder / 'workflow.py', {'operation': 'authored'})
+    (folder / 'source.json').write_text('{}')
+    members = {'python': folder / 'workflow.py', 'companion': folder / 'workflow.vibe.json',
+               'source': folder / 'source.json'}
+    digests = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in members.items()}
+    loaded = load_workflow_path(members['python'], tmp_path / 'custom-load')
+    prepare = ManagedEnginePreparation(task='task', attempt='attempt', mode='trust',
+        deadline=time.monotonic() + 60, cancelled=lambda: False, scratch=tmp_path / 'custom-prepare')
+    try:
+        report = prepare.prepare(members['python'], execution_identity=loaded_workflow_execution_identity(loaded),
+            inputs=members, canonical_workflow=_canonical_bundle_value(loaded.resolved).workflow, input_digests=digests)
+        assert report['manifest'] == dry['entry']['requirements']
+    finally:
+        prepare.close()
