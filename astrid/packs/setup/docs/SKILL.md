@@ -231,8 +231,12 @@ RunPod preferences to be saved before asking the user to approve them. The user
 can decline saving preferences. Set up the retained RunPod owner using [runpod.setup](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/runpod/docs/SKILL.md#replacing-preferences),
 with the user's approved policy, positive `budget_cap_usd` ceiling and credential
 reference, not the key. The policy needs the account reference, ordered GPU
-types, an image pinned by digest and a positive cap; use the user's actual
-choices rather than inventing them. It succeeds when the result is ok and
+types (`gpu_types`, in the user's chosen order), an image pinned by sha256
+digest and a positive cap; use the user's actual choices rather than inventing
+them. Supply these as `preferences` to the linked setup call: set
+`provider_account_ref`, `gpu_types`, `image`, `credential_ref` (for example
+`env:RUNPOD_API_KEY`), and `budget_cap_usd`. The call saves the validated
+policy under `machines.runpod` in generation settings. It succeeds when the result is ok and
 `target_operation.state` is `saved`; otherwise use `--doctor`. Saving preferences
 does not authorize spending.
 

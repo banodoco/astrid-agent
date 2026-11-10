@@ -283,3 +283,77 @@ def test_sensitive_command_gate_assertion_fails_when_yes_wording_is_removed():
     without_gate = markdown.replace(gate, "Run the following Linux command", 1)
     with pytest.raises(AssertionError, match="does not govern"):
         _assert_command_has_local_gate(without_gate, command, gate, exact_line=True)
+
+
+def test_runpod_setup_guide_explains_the_persisted_policy():
+    guide = _SETUP.read_text()
+    assert "`machines.runpod`" in guide
+    assert "`gpu_types`" in guide
+
+
+def test_runpod_setup_from_pristine_settings_preserves_choices_and_quotes_without_claim(
+    small_lease, generation_settings_store, tmp_path, monkeypatch, capsys,
+):
+    from contextlib import nullcontext
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from astrid.core.generation import cli, settings
+    from astrid.packs.runpod.target_selection import PaidSelectionError, RunPodPreferences
+    from astrid.sdk.client import AstridClient
+    from astrid.sdk.generation import GenerationFacade
+
+    c = small_lease
+    raw = {**c.raw, "budget_cap_usd": 5.0}
+    prefs = RunPodPreferences.from_mapping(raw)
+    c.owner.preferences = prefs
+    owner = c.fresh()
+    assert settings.read(legacy_path=tmp_path / "missing").content == settings.empty_document()
+    calls = []
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def invoke_result(self, action, **kwargs):
+            policy = json.loads(kwargs["inputs"]["placement_policy"])
+            assert RunPodPreferences.from_mapping(policy["preferences"]) == prefs
+            calls.append(action)
+            if action == "runpod.setup":
+                result = owner.setup()
+                return SimpleNamespace(ok=True, raw_result={"payload": {"target_operation": result}})
+            assert action == "runpod.status" and kwargs["inputs"]["include_quote"]
+            offer = c.owner.observe_offer()
+            result = {"offer": {"gpu_type": offer.gpu_type, "hourly_usd": offer.hourly_usd},
+                      "offer_digest": offer.digest(prefs)}
+            return SimpleNamespace(ok=True, raw_result={"result": {"payload": {"target_operation": result}}})
+
+    client = Client()
+    monkeypatch.setattr(AstridClient, "open_from_launcher", lambda: client)
+    runpod_doc = _SETUP.parents[2] / "astrid/packs/runpod/docs/SKILL.md"
+    snippet = _guide_command('"runpod.setup", kind="action"', runpod_doc)
+    exec(snippet, {"preferences": raw})
+    saved = settings.read().content["machines"]["runpod"]
+    assert saved == prefs.as_mapping()
+
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(client))
+    monkeypatch.setattr(settings, "transport_of", lambda _: generation_settings_store)
+    path = tmp_path / "generation.json"
+    checkout = _guide_argv("generate settings checkout --file /absolute/path/generation.json")
+    checkin = _guide_argv("generate settings checkin /absolute/path/generation.json")
+    assert cli.main([arg.replace("/absolute/path/generation.json", str(path)) for arg in checkout[1:]]) == 0
+    document = json.loads(path.read_text())
+    document["placement"] = {"kind": "runpod"}
+    path.write_text(json.dumps(document))
+    assert cli.main([arg.replace("/absolute/path/generation.json", str(path)) for arg in checkin[1:]]) == 0
+    assert settings.read().content["machines"]["runpod"] == saved
+    offer_args = cli._parser().parse_args(_guide_argv("generate describe --placement runpod --engine comfyui --json")[1:])
+    quote = GenerationFacade().describe(placement=offer_args.placement, engine=offer_args.engine, client=client)
+    assert quote["offer"]["gpu_type"] == prefs.gpu_types[0]
+    grant = replace(c.grant, offer_digest=quote["offer_digest"], max_usd=5.0)
+    assert c.owner.consented_offer(grant, c.owner.clock())[0] == c.offer
+    with pytest.raises(PaidSelectionError, match="ceiling"):
+        c.owner.consented_offer(replace(grant, max_usd=5.01), c.owner.clock())
+    with pytest.raises(PaidSelectionError, match="consent"):
+        c.owner.consented_offer(replace(grant, consent=()), c.owner.clock())
+    assert calls == ["runpod.setup", "runpod.status"]
+    assert c.creates == 0 and not c.owner.path.exists()
+    capsys.readouterr()
