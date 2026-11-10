@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,8 @@ from astrid.core.generation.local_job import run_job
 from astrid.packs.runpod import machine
 from tests.core.generation.test_runpod_engine_selection import LIVE, NoPodClient, preferences  # noqa: F401
 from tests.integrations.test_dry_run_equals_live_run import Recorder, _built, _graph
-from tests.integrations.test_remote_machine_job_seam_cpu import FileTransport, LeaseOwner, _owned_cpu_engine
+from tests.integrations import test_remote_machine_job_seam_cpu as seam
+from tests.integrations.test_remote_machine_job_seam_cpu import FileTransport, LeaseOwner
 from tests.integrations.test_runpod_slot_path_cpu import (
     H3_REQUEST, PROMPTS, SLOTS, SlotPod, _h3_built_classes, _slot_classes, _video_source,
 )
@@ -145,7 +147,19 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences):
     monkeypatch.setattr(local_server_engine, '_approve_live', spy_approve)
     monkeypatch.setattr(local_server_engine, 'local_server_bundle', spy_bundle)
     provider = SlotPod(tmp_path / 'claim.json', tmp_path / 'attempts', _slot_classes(cell) | extra_classes)
-    with _owned_cpu_engine(provider, tmp_path / 'pod-engine', monkeypatch):
+    if cell in {('audio', 'sfx'), ('audio', 'tts')}:
+        from vibecomfy.model_assets import _referenced_model_values
+        declared = [value for ref in _referenced_model_values(workflow)
+                    for value in (ref['value'], ref['subdir'] + '/' + ref['value'])]
+        provision = seam._managed_local_engine
+        @contextmanager
+        def provision_with_inventory(provider, folder, patch):
+            with provision(provider, folder, patch):
+                installed = provider.comfy.installed_files
+                provider.comfy.installed_files = lambda: [*installed(), *declared]
+                yield
+        monkeypatch.setattr(seam, '_managed_local_engine', provision_with_inventory)
+    with seam._owned_cpu_engine(provider, tmp_path / 'pod-engine', monkeypatch):
         result = run_job(job.entry, job_path, Path(remote.remote_root) / 'out', mode=job.mode)
     assert (Path(remote.remote_root) / 'out' / result['managed_generation_result_path']).is_file()
     assert len(observed) == len(runtime) == len(namespaces) == 1
