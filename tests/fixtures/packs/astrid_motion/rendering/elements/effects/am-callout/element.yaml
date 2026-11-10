@@ -1,0 +1,81 @@
+schema_version: 1
+id: am-callout
+kind: effect
+pack_id: astrid_motion
+short_description: Floating white callout card joined to an anchor by a stepped orange curved connector with dot end-caps.
+description: The site's annotation device. A panel-white card (1px rule border, soft shadow, Gelasio heading at weight 650, Inter body) sits at x, y. An orange curved connector leaves the card's nearest side at the title line and draws in on 2-frame steps over drawFrames to a dot at the anchor. The card appears on the first frame with a cut.
+keywords:
+- callout
+- annotation
+- card
+- connector
+- specimen
+- label
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: Callout overlay.
+metadata:
+  label: AM Callout
+  description: Floating callout card with a stepped orange connector to an anchor point.
+  whenToUse: Use to annotate a thing in a plate or a UI sketch, such as a specimen label or a figure caption. Give x, y and width for the card in canvas px, and anchor for where the connector ends. The connector attaches to the card's left or right edge, depending on which side the anchor is on.
+  role: "label"
+  text: ["title","body"]
+  summary: "{title}"
+  geometry: {"position":["x","y"],"scale":null,"full_frame":false}
+defaults:
+  title: ''
+  body: ''
+  x: 1200
+  y: 160
+  width: 520
+  anchor:
+    x: 960
+    y: 540
+  drawFrames: 12
+  stepFrames: 2
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    title:
+      type: string
+    body:
+      type: string
+    x:
+      type: number
+      description: Canvas px for the card top-left.
+    y:
+      type: number
+      description: Canvas px for the card top-left.
+    width:
+      type: number
+      exclusiveMinimum: 0
+      description: Canvas px.
+    anchor:
+      type: object
+      description: Canvas px where the connector ends.
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+    drawFrames:
+      type: integer
+      minimum: 1
+      description: Frames for the connector to finish drawing.
+    stepFrames:
+      type: integer
+      enum:
+      - 2
+      - 3
+    titleSize:
+      type: number
+      description: Title size in canvas px (default 40).
+    bodySize:
+      type: number
+      description: Body size in canvas px (default 24). Use 32+ for text that must read at review size.

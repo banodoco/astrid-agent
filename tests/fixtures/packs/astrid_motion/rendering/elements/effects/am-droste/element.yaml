@@ -1,0 +1,58 @@
+schema_version: 1
+id: am-droste
+kind: effect
+pack_id: astrid_motion
+short_description: Endless recursive zoom into a screen inside a pixel plate, on stepped moves.
+description: The plate (clip.asset) holds itself inside its own screen rect (screen, logical px), again and again. The camera zooms about the recursion's fixed point, so level n arrives framed exactly as level 0 was. moves [{at, to, frames}] jump between levels on stepFrames steps with ease-out spacing; creep adds a slow stepped drift; depthTint darkens each deeper level.
+keywords:
+- droste
+- recursion
+- zoom
+- screen
+- loop
+- pixel
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: AM Droste overlay.
+metadata:
+  label: AM Droste
+  description: Endless recursive zoom into a screen inside a pixel plate, on stepped moves.
+  whenToUse: Use for recursion beats (tools to build the tool, a screen within a screen). Measure the plate's screen rect on the 320x180 grid first.
+  role: "plate"
+  summary: "Endless recursive zoom into a screen"
+  geometry: {"position":null,"scale":null,"full_frame":true}
+defaults: {}
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    src:
+      type: string
+    screen:
+      type: object
+      description: '{x, y, w, h} logical px of the screen inside the plate.'
+    start:
+      type: number
+    moves:
+      type: array
+      description: '[{at (frame), to (level), frames}]'
+    creep:
+      type: number
+      description: Levels per second between moves.
+    stepFrames:
+      type: integer
+      minimum: 1
+    depthTint:
+      type: number
+      minimum: 0
+      maximum: 0.5
+    maxLevel:
+      type: integer
+      minimum: 0
+    background:
+      type: string

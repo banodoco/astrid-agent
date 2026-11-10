@@ -1,0 +1,62 @@
+schema_version: 1
+id: am-quote
+kind: effect
+pack_id: astrid_motion
+short_description: Quotation card that reveals on the VO's words, strikes through word by word and takes a rubber stamp.
+description: A Gelasio quotation with orange quote marks and a Departure Mono attribution. words ([start_s, end_s] per quote word, the builder's @words helper) reveals each word on its spoken onset. strikeAt runs a rust-and-orange strike through the quote one word per strikeStep frames. stamp slams a rust rubber stamp (scale 1.6, 1.18, 1.0 with a one-frame jolt). mark highlights one attribution word in orange from its frame.
+keywords:
+- quote
+- quotation
+- strike
+- stamp
+- editorial
+- type
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: AM Quote overlay.
+metadata:
+  label: AM Quote
+  description: Quotation card that reveals on the VO's words, strikes through word by word and takes a rubber stamp.
+  whenToUse: Use to put a quotation on screen and then overrule it (strike plus stamp). Quote and attribution must be accurate; use the attribution to correct a misattribution.
+  role: "card"
+  text: ["text","attribution"]
+  summary: "{text}"
+  geometry: {"position":["x","y"],"scale":"width","full_frame":false}
+  units: {"frames":["mark.at","stamp.at","strikeAt"]}
+defaults: {}
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    text:
+      type: string
+    attribution:
+      type: string
+    x:
+      type: number
+    y:
+      type: number
+    width:
+      type: number
+    size:
+      type: number
+    words:
+      type: array
+      description: '[start_s, end_s] per quote word, clip-relative.'
+    strikeAt:
+      type: integer
+      minimum: 0
+    strikeStep:
+      type: integer
+      minimum: 1
+    stamp:
+      type: object
+      description: '{text, at, x, y, rotate (deg, default -4), size}'
+    mark:
+      type: object
+      description: '{word, at}: orange marker on one attribution word.'

@@ -1,0 +1,61 @@
+schema_version: 1
+id: am-orbit
+kind: effect
+pack_id: astrid_motion
+short_description: 'Small pixel orbit HUD: the Earth steps round the Sun past twelve month ticks, with a month readout.'
+description: A dotted orbit on the 6 px grid with twelve month ticks, a pixel Sun and an Earth with a short trail. The Earth travels `months` months from fromMonth over `frames` (from `at`), on stepFrames steps, and the current month's tick is orange. A mono readout below names the month and year.
+keywords:
+- orbit
+- earth
+- sun
+- year
+- hud
+- time
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: AM Orbit overlay.
+metadata:
+  label: AM Orbit
+  description: 'Small pixel orbit HUD: the Earth steps round the Sun past twelve month ticks, with a month readout.'
+  whenToUse: Use as a corner HUD while time passes (seasons, a year of work).
+  role: "card"
+  text: ["caption"]
+  summary: "{caption}"
+  geometry: {"position":["x","y"],"scale":"radius","full_frame":false}
+defaults: {}
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    x:
+      type: number
+    y:
+      type: number
+    radius:
+      type: number
+      description: Logical px.
+    fromMonth:
+      type: integer
+      minimum: 0
+      maximum: 11
+    fromYear:
+      type: integer
+    months:
+      type: number
+    at:
+      type: integer
+    frames:
+      type: integer
+      minimum: 1
+    stepFrames:
+      type: integer
+      minimum: 1
+    dark:
+      type: boolean
+    caption:
+      type: string

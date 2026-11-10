@@ -496,13 +496,13 @@ class AttachedClip(Clip):
             _held()
         if intent.formulas(self.data):
             _held()
-        from astrid.sdk.timeline_address import element_schema
+        from astrid.sdk.timeline_address import declared_element_schema, element_param_names
 
-        declared = element_schema(self.element).get('properties', {})
+        declared = element_param_names(self.element, self.params)
         if any(key not in declared and (key in clip_fields.FIELDS or clip_fields.is_reserved(key))
                for key in params):
             _held()
-        if not allow_new:
+        if not allow_new and declared_element_schema(self.element) is not None:
             self._check_param_keys(list(params))
         if not params:
             return self

@@ -356,13 +356,13 @@ def _cut_targets(sel: Selection, value: Any) -> list[Any]:
 
 def _role_of(tl: Any, clip: Any) -> str | None:
     """The clip's role: its own ``app.role``, else the element's declared role, else (audio) its track's role."""
-    from astrid.sdk.timeline_address import element_schema
+    from astrid.sdk.timeline_address import declared_element_schema
 
     app = read_app(clip.data)
     own = app.get("role")
     if own:
         return str(own)
-    declared = element_schema(clip.element).get("role") if clip.element else None
+    declared = (declared_element_schema(clip.element) or {}).get("role") if clip.element else None
     if declared:
         return str(declared)
     if clip.is_audio:

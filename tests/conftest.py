@@ -32,6 +32,22 @@ from tests.process_groups import ProcessGroups
 
 
 @pytest.fixture(autouse=True)
+def _editing_motion_pack(request, monkeypatch):
+    """Editing fixtures retain R10 motion coverage through real pack discovery.
+
+    Dependency tests can override ASTRID_PACKS_PATH to model absent/broken packs.
+    Keep the collection out of pack-discovery tests, which own their inventories.
+    """
+    relative = request.path.relative_to(Path(__file__).parent)
+    if relative.parts[0] not in {"sdk", "editing_conformance"}:
+        yield
+        return
+    collection = str(Path(__file__).parent / "fixtures" / "packs")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", collection)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _installer_live_identity(request):
     """Hermetic installer runs: the live Runtime reports the selected version's identity.
 

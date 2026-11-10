@@ -1,0 +1,53 @@
+schema_version: 1
+id: am-pixel-wipe
+kind: effect
+pack_id: astrid_motion
+short_description: Pixel-block wipe that covers or reveals the frame in a diagonal, seeded-random or scan order.
+description: A full-frame overlay drawn as a grid of 6 px blocks. In cover mode the colour fills the frame over frames, and in reveal mode it clears away. Order is diagonal (corner to corner), seeded random (deterministic hash of seed and block index, never Math.random), or scan (left to right). The wipe advances one block set per frame, and the blocks are hard-edged with no anti-aliasing.
+keywords:
+  - wipe
+  - transition
+  - pixel
+  - block
+  - cover
+  - reveal
+  - seeded
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: Full-frame block wipe overlay.
+metadata:
+  label: AM Pixel Wipe
+  description: Seeded pixel-block cover or reveal over a set number of frames.
+  whenToUse: Use as a hard transition between beats (the brief's cut language), or to clear a page before the next build. Put it on a track above the content. Use cover to end a beat and reveal to start one. Give the same seed to keep a wipe identical across renders.
+  role: "transition"
+  summary: "Pixel-block {mode} wipe ({pattern})"
+  geometry: {"position":null,"scale":null,"full_frame":true}
+defaults:
+  mode: cover
+  frames: 12
+  color: "#1F1F1F"
+  pattern: diagonal
+  seed: 1
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    mode:
+      type: string
+      enum: [cover, reveal]
+    frames:
+      type: integer
+      minimum: 1
+      description: Frames for the wipe to finish. After that the end state holds.
+    color: {type: string}
+    pattern:
+      type: string
+      enum: [diagonal, random, scan]
+    seed:
+      type: integer
+      description: Seed for the random pattern. Same seed, same order.

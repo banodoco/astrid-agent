@@ -1,0 +1,30 @@
+{
+  "packs": {
+    "astrid_motion": {
+      "elements": [
+        "am-burst",
+        "am-callout",
+        "am-churn",
+        "am-discord",
+        "am-droste",
+        "am-flap",
+        "am-footage",
+        "am-orbit",
+        "am-orgchart",
+        "am-pixel-shape",
+        "am-pixel-wipe",
+        "am-presenter",
+        "am-quote",
+        "am-seasons",
+        "am-snap-plate",
+        "am-sprite",
+        "am-terminal",
+        "am-tweet",
+        "am-type",
+        "am-ui-sketch"
+      ],
+      "install": "astrid packs add astrid_motion",
+      "evidence_reason": "Moved to poms_packs; install with `astrid packs add astrid_motion`."
+    }
+  }
+}

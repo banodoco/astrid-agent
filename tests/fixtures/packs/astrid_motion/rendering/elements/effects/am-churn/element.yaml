@@ -1,0 +1,119 @@
+schema_version: 1
+id: am-churn
+kind: effect
+pack_id: astrid_motion
+short_description: "Ledger of obsession: real git totals count up on a timeline, commits stamp in, a heartbeat grows."
+description: "Full-frame data passage. A split-flap date readout and a timeline track sit top. LINES WRITTEN (ink, orange ticks) and LINES DELETED (rust) count the cumulative daily totals and end exactly on params.totals. Real commits stamp into a column on their day, oldest scrolling out in 6 px steps. A heartbeat draws added up and deleted down. timeline sets the date per frame; freezeAt spotlights a commit."
+keywords:
+  - ledger
+  - churn
+  - git
+  - counter
+  - commits
+  - heartbeat
+  - timeline
+  - data
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: Full-frame ledger overlay.
+metadata:
+  label: AM Churn Ledger
+  description: Data-driven ledger of commits, counters and heartbeat, driven by a date timeline.
+  whenToUse: Use for the churn passage with real repository totals. Pass rows (one per day, contiguous, hand-ish counts), highlights (about 40 real commits), totals (which must equal the row sums), and a timeline of {atFrame, date} keys that ends on endDate. Use variant dark for night frames.
+  role: "card"
+  summary: "Git ledger from {startDate} to {endDate}"
+  geometry: {"position":["x","y"],"scale":"width","full_frame":false}
+dependencies:
+  js_packages: []
+  python_requirements: []
+defaults:
+  rows: []
+  highlights: []
+  totals: {commits: 0, added: 0, deleted: 0}
+  startDate: ""
+  endDate: ""
+  timeline: []
+  freezeAt: null
+  footnote: ""
+  variant: paper
+  layout: full
+  width: 1920
+  height: 1080
+  x: 0
+  y: 0
+  binDays: 11
+  scrollFrames: 14
+schema:
+  type: object
+  additionalProperties: true
+  required: [rows, totals]
+  properties:
+    rows:
+      type: array
+      description: One entry per calendar day from startDate to endDate, ascending, zero-filled. added and deleted are the hand-ish daily counts; commits is optional.
+      items:
+        type: object
+        required: [date, added, deleted]
+        properties:
+          date: {type: string, description: "ISO date, YYYY-MM-DD."}
+          commits: {type: integer, minimum: 0}
+          added: {type: integer, minimum: 0}
+          deleted: {type: integer, minimum: 0}
+    highlights:
+      type: array
+      description: Real commits to stamp in, chronological. subject is the real commit subject.
+      items:
+        type: object
+        required: [date, repo, sha, subject]
+        properties:
+          date: {type: string}
+          repo: {type: string}
+          sha: {type: string}
+          subject: {type: string}
+          added: {type: integer, minimum: 0}
+          deleted: {type: integer, minimum: 0}
+    totals:
+      type: object
+      required: [commits, added, deleted]
+      description: Exact totals; the last row's cumulative values are forced to these at endDate.
+      properties:
+        commits: {type: integer, minimum: 0}
+        added: {type: integer, minimum: 0}
+        deleted: {type: integer, minimum: 0}
+    startDate: {type: string, description: "ISO date of rows[0]. Informational."}
+    endDate: {type: string, description: "ISO date of the last row. Informational; the last timeline key must land here."}
+    timeline:
+      type: array
+      description: Keyframes mapping a clip frame to a date. Linear between keys, so repeat a date to hold, and use close frames to speed up. The date index is floored for display.
+      items:
+        type: object
+        required: [atFrame, date]
+        properties:
+          atFrame: {type: integer, minimum: 0}
+          date: {type: string}
+    freezeAt:
+      type: object
+      description: Pause the timeline at atFrame on a highlight (by sha prefix) and draw a spotlight card around it. The timeline resumes after holdFrames.
+      properties:
+        atFrame: {type: integer, minimum: 0}
+        highlight: {type: string, description: "sha prefix of a highlight."}
+        date: {type: string, description: "Optional override of the spotlight day."}
+        holdFrames: {type: integer, minimum: 0}
+        cardDelay: {type: integer, minimum: 0}
+        label: {type: string}
+    footnote: {type: string, description: Small mono text bottom-left.}
+    variant:
+      type: string
+      enum: [paper, dark]
+    layout:
+      type: string
+      enum: [full, panel]
+      description: Transparent date and counters, contain-fit to the authored box; full keeps the complete ledger.
+    width: {type: number}
+    height: {type: number}
+    x: {type: number}
+    y: {type: number}
+    binDays: {type: integer, minimum: 1, maximum: 60, description: Days per heartbeat bar. 11 gives 34 bars for the 374-day window.}
+    scrollFrames: {type: integer, minimum: 2, maximum: 40, description: Frames a stamp list scroll takes.}
