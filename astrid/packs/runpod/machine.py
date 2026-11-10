@@ -229,9 +229,11 @@ def ensure_pod_ready(placement: RemotePlacement, state: RemoteRun) -> dict[str, 
     if found == "ready":
         state.note("pod_ready", "ready")
         return {"entry": None, "ready": True, "found": found, "reset": "skipped"}
+    from . import pod_reset
+
     result = parse_reset(placement._run_job(state, reset_command(), "pod reset"))
     if result.get("reset") != "ok":
-        raise MachineError(f"pod reset failed: {result.get('error')}")
+        raise MachineError(f"pod reset failed: {pod_reset.reset_failure_reason(result)}")
     state.note("pod_ready", "reset", found=found)
     return {"entry": None, "ready": True, "found": found, "reset": result.get("template") or "restored"}
 
@@ -784,8 +786,12 @@ class RunPodMachine:
         if directory:
             _c, stdout, _e = ops.exec(f"cat {shlex.quote(directory)}/stdout", 120)
         result = parse_reset(stdout)
-        if str(record.get("exit_code")) != "0" or result.get("reset") != "ok":
-            raise MachineError(f"pod reset failed (exit {record.get('exit_code')}): {result.get('error')}")
+        exit_code = record.get("exit_code")
+        if type(exit_code) is not int or exit_code != 0 or result.get("reset") != "ok":
+            from .pod_reset import reset_failure_reason
+
+            safe_code = exit_code if type(exit_code) is int and 0 <= exit_code <= 255 else "unknown"
+            raise MachineError(f"pod reset failed (exit {safe_code}): {reset_failure_reason(result)}")
         if directory:
             ops.exec(f"rm -rf {shlex.quote(directory)}", 120)  # the agent keeps at most 128 job folders
         lease.state.note("reset", "done", removed=result.get("removed"))
