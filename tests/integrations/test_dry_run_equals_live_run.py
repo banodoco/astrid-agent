@@ -31,10 +31,10 @@ CELLS = [pytest.param(cell, target, id=f"{'/'.join(cell)}-{target}",
 H3_CLASSES = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "object_info_h3_runpod_graph_closure.json"
 
 
-def _graph(workflow) -> str:
+def _graph(workflow, *, run_inputs=None) -> str:
     # Compile the built workflow independently of the submitted prompt. This resolves native
     # links/widgets into the API shape without consulting the eventual submission.
-    return json.dumps({"api": workflow.compile("api"),
+    return json.dumps({"api": workflow.compile("api", run_inputs=run_inputs),
                        "outputs": [str(output.node_id) for output in workflow.outputs]}, sort_keys=True)
 
 
@@ -289,9 +289,10 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         for name, value in runtime[0].items():
             if name not in media:
                 assert json.loads(live_bindings).get(name, scoped.inputs[name].value) == value, name
-        for name, value in media.items():
-            scoped.set_input(name, value)
-        expected = _output_reachable(json.loads(_graph(scoped)))
+        # The production approval compiles with these exact witnessed bindings.
+        # Replaying them also applies the already-verified non-media values to
+        # workflows with aliases/defaults, such as H3's duration input.
+        expected = _output_reachable(json.loads(_graph(scoped, run_inputs=runtime[0])))
         assert submitted == expected, (
             "submitted graph differs in nodes, inputs, links or values; "
             f"outputs={[(out.node_id, scoped.nodes[out.node_id].inputs, scoped.nodes[out.node_id].widgets) for out in scoped.outputs]!r}; "
