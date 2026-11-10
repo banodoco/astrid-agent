@@ -102,6 +102,8 @@ class NoPodClient:
 
 def test_managed_preview_and_live_freeze_declarations_with_installed_alternate(monkeypatch):
     from astrid.core.generation import preflight
+    from astrid.core.generation.backends.comfy_target import _resolve_roles
+    from astrid.core.model_catalog.registry import ModelRegistry
 
     # The target has only the second declared VAE choice. Managed selection
     # must freeze the first declaration for both calls and let the host verify
@@ -109,6 +111,9 @@ def test_managed_preview_and_live_freeze_declarations_with_installed_alternate(m
     alternate = SimpleNamespace(target=SimpleNamespace(url='http://127.0.0.1:8188'),
         object_info=lambda: {'VAELoader': {'input': {'required': {
             'vae_name': [[r'FLUX1\ae.safetensors']]}}}})
+    declaration = ModelRegistry.load_default().get('z-image').modes['t2i'].backends['local'].model_roles['vae']
+    resolved, failures = _resolve_roles(SimpleNamespace(model_roles={'vae': declaration}), alternate.object_info())
+    assert resolved == {'vae': r'FLUX1\ae.safetensors'} and not failures
     selections = []
     monkeypatch.setattr(preflight, 'select_generation_target',
                         lambda *args, **kwargs: selections.append(alternate) or alternate)
