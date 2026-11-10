@@ -397,7 +397,12 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
         live.check_selection(data, root, selection)
         raise
     live.check_selection(data, root, selection)
-    journey.assert_direct_service_ownership(root, owner_data, release=release)
+    # The post-check uses the same ownership contract as the pre-check (the autostart-off
+    # leg's detached Runtime check; the direct service-manager check everywhere else).
+    if ownership is None:
+        journey.assert_direct_service_ownership(root, owner_data, release=release)
+    else:
+        ownership(root, owner_data)
     return json.loads(output)
 
 

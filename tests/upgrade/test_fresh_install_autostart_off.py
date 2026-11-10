@@ -383,3 +383,32 @@ def test_the_workflow_leaves_the_build_and_the_capture_browser_to_the_leg(monkey
     build = workflow.split("      - name: Build the candidate's hosted App and the browser that clicks it\n", 1)[1]
     assert build.split("\n", 1)[0] == "        if: matrix.job_id == 'direct-linux-fresh'"
     assert "matrix.leg == 'fresh-install-autostart-off'" in workflow.split("      - name: Set up Node", 1)[1].split("\n", 2)[1]
+
+
+def _live_workspace_host(monkeypatch, tmp_path):
+    calls = []
+    data = tmp_path / "data"
+    monkeypatch.setattr(jumps, "selected_data_root", lambda _root, selected, **_k: selected)
+    monkeypatch.setattr(jumps.journey, "assert_direct_service_ownership",
+                        lambda *_a, **_k: calls.append("direct") or {"manager": "systemd-user"})
+    monkeypatch.setattr(jumps.journey, "healthy", lambda *_a: {"runtime_instance_id": "i1"})
+    monkeypatch.setattr(jumps.live, "selection_for", lambda *_a: {"realm_root": str(tmp_path / "realm")})
+    monkeypatch.setattr(jumps.journey, "workspace_root", lambda *_a: tmp_path / "realm")
+    monkeypatch.setattr(jumps.live, "check_selection", lambda *_a: None)
+    monkeypatch.setattr(jumps.journey, "run", lambda *_a, **_k: json.dumps({"project": "film"}))
+    return calls, data
+
+
+def test_autostart_off_live_workspace_uses_the_detached_check_before_and_after(monkeypatch, tmp_path):
+    calls, data = _live_workspace_host(monkeypatch, tmp_path)
+    result = jumps.live_workspace(tmp_path / "program", data, tmp_path / "ev", "seed", {"project": "film"},
+                                  ownership=lambda root, owner: calls.append("detached"))
+    assert result == {"project": "film"}
+    # Both the pre-check and the post-check use the leg's hook; the foreground-banning check is never reached.
+    assert calls == ["detached", "detached"]
+
+
+def test_ordinary_live_workspace_keeps_the_direct_check_before_and_after(monkeypatch, tmp_path):
+    calls, data = _live_workspace_host(monkeypatch, tmp_path)
+    jumps.live_workspace(tmp_path / "program", data, tmp_path / "ev", "seed", {"project": "film"})
+    assert calls == ["direct", "direct"]
