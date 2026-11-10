@@ -136,7 +136,7 @@ def test_the_install_is_run_with_the_autostart_off_flag_and_never_update(monkeyp
                                                    tmp_path / "program", tmp_path / "data")
     assert calls == [["sh", str(app / "public" / "install"), "--manifest", str(tmp_path / "m.json"),
                       "--root", str(tmp_path / "program"), "--data-root", str(tmp_path / "data"),
-                      "--autostart", "off"]]
+                      "--autostart", "off", "--yes"]]
     assert "--update" not in calls[0]
     assert report["exit_code"] == 0
 

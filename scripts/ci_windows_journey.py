@@ -481,11 +481,16 @@ def assert_installed_profile_binding():
         raise RuntimeError("Installed profile does not bind the selected Python product root")
 
 
-def cli(module, argv, name, *, timeout=300):
+# The `astrid` console entry point (astrid.console:main); only it routes `packs`.
+CONSOLE_ENTRY = "import sys; from astrid.console import main; sys.exit(main(sys.argv[1:]))"
+
+
+def cli(module, argv, name, *, console=False, timeout=300):
     installed = version()
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(installed["env"])
-    return run([installed["python"], "-I", "-m", module, *argv], name, env=env, timeout=timeout)
+    launcher = ["-c", CONSOLE_ENTRY] if console else ["-m", module]
+    return run([installed["python"], "-I", *launcher, *argv], name, env=env, timeout=timeout)
 
 
 def health():
@@ -730,7 +735,11 @@ def install_journey_packs():
     except ImportError:  # imported as scripts.ci_windows_journey
         from scripts import ci_journey
 
-    ci_journey.install_journey_packs(lambda argv, name: cli("astrid", argv, name, timeout=600))
+    installed = version()
+    ci_journey.install_journey_packs(
+        lambda argv, name: cli("astrid", argv, name, console=True, timeout=600),
+        routes_packs=lambda: ci_journey.installed_routes_packs(installed, EVIDENCE),
+        wait_registered=lambda pack_id: ci_journey.wait_pack_registered(installed, EVIDENCE, pack_id))
 
 
 def task(project="windows-journey", *, create_project=True):

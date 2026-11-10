@@ -70,7 +70,7 @@ def test_direct_windows_failure_snapshot_prints_recursive_logs_and_matching_proc
 def test_task_reports_sdk_error_code_before_empty_task_refs(tmp_path, monkeypatch):
     evidence = tmp_path / "release1-working-task"
     evidence.mkdir()
-    monkeypatch.setattr(journey, "install_journey_packs", lambda run_cli: None)
+    monkeypatch.setattr(journey, "install_journey_packs", lambda run_cli, **kwargs: None)
     monkeypatch.setattr(
         journey, "installed_cli_with_capture",
         lambda *args, **kwargs: json.dumps({"ok": False, "error": {"code": "not_found"}}),
@@ -112,6 +112,126 @@ def test_journey_packs_run_through_the_console_entry_point(tmp_path, monkeypatch
     assert seen[0] == ["py", "-I", "-c", journey.CONSOLE_ENTRY, "packs", "list", "--json"]
     assert "from astrid.console import main" in journey.CONSOLE_ENTRY
     assert seen[1] == ["py", "-I", "-m", "astrid", "tasks", "show"]
+
+
+# astrid/console.py at R9 Agent 709492fa5, verbatim: no `packs` branch.
+R9_CONSOLE = '''"""Installed console dispatch, with a lightweight engine route."""
+from __future__ import annotations
+
+import sys
+
+
+def main(argv: list[str] | None = None) -> int:
+    rest = list(sys.argv[1:] if argv is None else argv)
+    if rest and rest[0] == "h3":
+        from .packs.h3_av.cli import main as h3_main
+
+        return h3_main(rest[1:])
+
+    if rest and rest[0] == "generate":
+        from .core.gateway import main as gateway_main
+
+        return gateway_main(rest)
+    if rest and rest[0] == "engines":
+        from .core.engine_cli import main as engines_main
+
+        return engines_main(rest[1:])
+    if rest and rest[0] == "action":
+        from .core.action_cli import main as action_main
+
+        return action_main(rest[1:])
+    from .omp_agent import main as omp_main
+
+    return omp_main(rest)
+'''
+
+
+def test_console_packs_route_detection_covers_old_releases():
+    # R0 fixture Agent 3204bb00: no astrid/console.py at all.
+    assert journey.console_routes_packs(None) is False
+    assert journey.console_routes_packs("") is False
+    # R9: a console module without a packs branch.
+    assert journey.console_routes_packs(R9_CONSOLE) is False
+    # Current release: the console routes packs.
+    current = (journey.ROOT / "astrid" / "console.py").read_text(encoding="utf-8")
+    assert journey.console_routes_packs(current) is True
+
+
+def test_installed_routes_packs_reads_the_installed_console(tmp_path, monkeypatch):
+    origins = {"value": ""}
+    monkeypatch.setattr(journey, "_installed_probe", lambda *a, **k: origins["value"])
+    assert journey.installed_routes_packs({}, tmp_path) is False
+    console = tmp_path / "console.py"
+    console.write_text(R9_CONSOLE, encoding="utf-8")
+    origins["value"] = str(console)
+    assert journey.installed_routes_packs({}, tmp_path) is False
+    console.write_text('if rest and rest[0] == "packs":\n    pass\n', encoding="utf-8")
+    assert journey.installed_routes_packs({}, tmp_path) is True
+
+
+def test_journey_packs_skip_without_a_packs_route_and_wait_for_registration():
+    calls = []
+    journey.install_journey_packs(lambda argv, name: calls.append(argv), routes_packs=lambda: False,
+                                  wait_registered=calls.append)
+    assert calls == []
+
+    def run_cli(argv, name):
+        calls.append(argv)
+        return json.dumps({"packs": []})
+
+    journey.install_journey_packs(run_cli, routes_packs=lambda: True, wait_registered=calls.append)
+    assert [call[:2] if isinstance(call, list) else call for call in calls] == [
+        ["packs", "list"], ["packs", "add"], "chiptune"]
+    calls.clear()
+    journey.install_journey_packs(lambda argv, name: (calls.append(argv), json.dumps(
+        {"packs": [{"id": "chiptune"}]}))[1], routes_packs=lambda: True, wait_registered=calls.append)
+    assert calls == [["packs", "list", "--json"]]
+
+
+def test_wait_pack_registered_polls_the_refresh_outbox(tmp_path, monkeypatch):
+    answers = iter(["pending", "pending", "registered"])
+    seen = []
+    monkeypatch.setattr(journey, "_installed_probe",
+                        lambda version, code, evidence, name: seen.append(name) or next(answers))
+    journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
+    assert seen == ["journey-pack-refresh.log"] * 3
+    assert "refresh_pending" in journey.PACK_REFRESH_PROBE
+    monkeypatch.setattr(journey, "_installed_probe", lambda *a, **k: "pending")
+    with pytest.raises(RuntimeError, match="did not register chiptune .*still pending"):
+        journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=0, interval=0)
+
+
+def test_invocation_outcome_decodes_omp_invoke_content_text():
+    failed = {"content": [{"type": "text", "text": json.dumps(
+        {"ok": False, "error": {"code": "capability_not_found", "message": "chiptune.sfx"}, "result": {}})}],
+        "details": {"astridTaskRefs": []}}
+    assert journey.invocation_outcome(failed) == (
+        False, {"code": "capability_not_found", "message": "chiptune.sfx"})
+    assert journey._invocation_failure(journey.invocation_outcome(failed)[1]) == (
+        "capability_not_found: chiptune.sfx")
+    raised = {"content": [{"type": "text", "text": "Astrid is not running"}], "details": {"astridTaskRefs": []}}
+    assert journey.invocation_outcome(raised) == (None, "Astrid is not running")
+    assert journey.invocation_outcome({"content": 3}) == (None, None)
+
+
+def test_task_reports_the_decoded_admission_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "install_journey_packs", lambda run_cli, **kwargs: None)
+    response = {"content": [{"type": "text", "text": json.dumps(
+        {"ok": False, "error": {"code": "capability_not_found"}, "result": {}})}],
+        "details": {"astridTaskRefs": []}}
+    monkeypatch.setattr(journey, "installed_cli_with_capture", lambda *a, **k: json.dumps(response))
+    with pytest.raises(RuntimeError, match="invocation failed: capability_not_found"):
+        journey.task({}, tmp_path, "fresh-project", create_project=False)
+
+    def exits_one(version, argv, evidence, name, **kwargs):
+        (evidence / name).write_text(json.dumps(
+            {"content": [{"type": "text", "text": "Astrid is not running"}],
+             "details": {"astridTaskRefs": []}}), encoding="utf-8")
+        raise RuntimeError(f"{name}: exit 1; see {evidence / name}")
+
+    monkeypatch.setattr(journey, "installed_cli_with_capture", exits_one)
+    with pytest.raises(RuntimeError, match="invocation failed: Astrid is not running"):
+        journey.task({}, tmp_path, "fresh-project", create_project=False)
 
 
 def test_journey_pack_evidence_is_staged_for_the_failure_upload(tmp_path):

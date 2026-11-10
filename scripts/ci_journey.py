@@ -2282,8 +2282,9 @@ def installed_cli_with_capture(version: dict, argv: list[str], evidence: Path, n
                         value = json.loads(raw.decode("utf-8-sig", errors="replace"))
                         status["json_object"] = isinstance(value, dict)
                         if isinstance(value, dict):
-                            if type(value.get("ok")) is bool:
-                                status["ok"] = value["ok"]
+                            ok, _ = invocation_outcome(value)
+                            if type(ok) is bool:
+                                status["ok"] = ok
                             details = value.get("details")
                             refs = details.get("astridTaskRefs") if isinstance(details, dict) else None
                             if isinstance(refs, list):
@@ -2404,18 +2405,104 @@ def _pack_rows(value):
             yield from _pack_rows(child)
 
 
-def install_journey_packs(run_cli) -> None:
+def install_journey_packs(run_cli, *, routes_packs=None, wait_registered=None) -> None:
     """Install each JOURNEY_PACKS pack from its pinned source through the public `packs add` path.
 
     ``run_cli(argv, name)`` runs the installed ``astrid`` console entry point (the
-    only route to ``packs``) and returns its stdout.
+    only route to ``packs``) and returns its stdout. ``routes_packs()`` says whether
+    the installed release has that route at all: for older releases (no console
+    module, or a console without ``packs``) nothing is added. ``wait_registered(pack_id)``
+    returns once the running host has
+    registered a pack this call added.
     """
+    if routes_packs is not None and not routes_packs():
+        return
     for pack_id, (source, revision) in JOURNEY_PACKS.items():
         listing = json.loads(run_cli(["packs", "list", "--json"], "journey-packs-list.json"))
         if any(row.get("id") == pack_id for row in _pack_rows(listing)):
             continue
         run_cli(["packs", "add", source, "--revision", revision, "--pack-id", pack_id,
                  "--subpath", pack_id, "--yes"], f"journey-pack-{pack_id}.log")
+        if wait_registered is not None:
+            wait_registered(pack_id)
+
+
+_CONSOLE_PACKS_ROUTE = re.compile(r"""\[0\]\s*==\s*["']packs["']""")
+# Prints the installed release's astrid/console.py path, or nothing when it has none.
+CONSOLE_ORIGIN_PROBE = ("import importlib.util as u\n"
+                        "s = u.find_spec('astrid.console')\n"
+                        "print(s.origin if s is not None and s.origin else '')")
+# `packs add` commits and leaves a refresh pending; the running generic host
+# rediscovers, re-registers and only then acknowledges it (acknowledge_pack_refresh).
+PACK_REFRESH_PROBE = ("from astrid.personal_packs_root import resolve_personal_packs_root\n"
+                      "from astrid.core.pack.transaction import refresh_pending\n"
+                      "root = resolve_personal_packs_root()\n"
+                      "print('pending' if root is not None and refresh_pending(packs_root=root) else 'registered')")
+PACK_REGISTRATION_TIMEOUT = 180
+
+
+def console_routes_packs(source: str | None) -> bool:
+    """True when an installed astrid/console.py source routes ``packs``."""
+    return bool(source) and _CONSOLE_PACKS_ROUTE.search(source) is not None
+
+
+def _installed_probe(version: dict, code: str, evidence: Path, name: str) -> str:
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env.update(version["env"])
+    output = run([version["python"], "-I", "-c", code], evidence / name, env=env, timeout=120)
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def installed_routes_packs(version: dict, evidence: Path) -> bool:
+    origin = _installed_probe(version, CONSOLE_ORIGIN_PROBE, evidence, "journey-pack-console.log")
+    if not origin:
+        return False
+    try:
+        return console_routes_packs(Path(origin).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+
+
+def wait_pack_registered(version: dict, evidence: Path, pack_id: str, *,
+                         timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while _installed_probe(version, PACK_REFRESH_PROBE, evidence, "journey-pack-refresh.log") != "registered":
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"The running host did not register {pack_id} within {int(timeout)}s of "
+                               "`packs add`: its pack refresh is still pending")
+        time.sleep(interval)
+
+
+def invocation_outcome(invocation: dict) -> tuple[bool | None, object]:
+    """Return omp_invoke's (ok, error); they live in the JSON of content[].text."""
+    if type(invocation.get("ok")) is bool:
+        return invocation["ok"], invocation.get("error")
+    content = invocation.get("content")
+    for item in content if isinstance(content, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            continue
+        try:
+            payload = json.loads(item["text"])
+        except ValueError:
+            return None, item["text"]
+        if isinstance(payload, dict) and type(payload.get("ok")) is bool:
+            return payload["ok"], payload.get("error")
+    return None, None
+
+
+def _invocation_failure(error: object) -> str:
+    """A bounded, path-scrubbed summary: the raw response stays in local evidence only."""
+    def safe(text: str) -> str:
+        return _WINDOWS_ABSOLUTE_PATH.sub("<path>", text)[:300]
+
+    if isinstance(error, dict):
+        code = error.get("code") or "unknown"
+        message = error.get("message")
+        return f"{code}: {safe(message)}" if isinstance(message, str) and message else str(code)
+    if isinstance(error, str) and error:
+        return safe(error)
+    return "unknown"
 
 
 def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
@@ -2438,15 +2525,27 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
     install_journey_packs(lambda argv, name: installed_cli(version, argv, evidence, name,
-                                                           console=True, timeout=600))
+                                                           console=True, timeout=600),
+                          routes_packs=lambda: installed_routes_packs(version, evidence),
+                          wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
-    invocation = _sdk_result(installed_cli_with_capture(version, [json.dumps(request)], evidence,
-                                          "sdk-invocation.json", module="astrid.omp_invoke",
-                                          status_name="sdk-capture-status.json"))
-    if invocation.get("ok") is False:
-        error = invocation.get("error") or {}
-        raise RuntimeError(f"Installed SDK invocation failed: {error.get('code', 'unknown')}")
+    try:
+        raw = installed_cli_with_capture(version, [json.dumps(request)], evidence,
+                                         "sdk-invocation.json", module="astrid.omp_invoke",
+                                         status_name="sdk-capture-status.json")
+    except RuntimeError as exc:
+        # omp_invoke exits 1 with its exception text in content[0].text.
+        try:
+            _, error = invocation_outcome(_sdk_result(
+                (evidence / "sdk-invocation.json").read_text(encoding="utf-8-sig", errors="replace")))
+        except (OSError, ValueError, AttributeError):
+            raise exc from None
+        raise RuntimeError(f"Installed SDK invocation failed: {_invocation_failure(error)}") from exc
+    invocation = _sdk_result(raw)
+    ok, error = invocation_outcome(invocation)
+    if ok is False:
+        raise RuntimeError(f"Installed SDK invocation failed: {_invocation_failure(error)}")
     refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if len(refs) != 1 or not refs[0].get("task_id"):
         raise RuntimeError("Installed SDK did not admit exactly one task")

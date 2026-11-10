@@ -1293,7 +1293,10 @@ def candidate_install_autostart_off(app: Path, manifest_path: Path, shell: str, 
     log = evidence / "install-bootstrap.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     argv = [shell, str(app / "public" / "install"), "--manifest", str(manifest_path),
-            "--root", str(root), "--data-root", str(data), "--autostart", "off"]
+            "--root", str(root), "--data-root", str(data), "--autostart", "off",
+            # A fresh install asks for setup consent and the journey has no terminal, so it
+            # accepts the recommended choices as a person would (see ci_journey.bootstrap_flags).
+            "--yes"]
     with log.open("w", encoding="utf-8") as stream:
         process = subprocess.run(argv, env=env, stdout=stream, stderr=subprocess.STDOUT,
                                  timeout=3600, check=False)
