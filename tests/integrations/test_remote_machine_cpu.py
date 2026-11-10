@@ -998,3 +998,41 @@ def test_a_workflow_file_job_runs_on_the_machine_without_a_named_entry(journey):
     machine = s["client"].tasks.show(result.task_id).data["result"]["machine"]
     assert machine["id"] == POD
     _released(provider, j.release())
+
+
+@pytest.mark.parametrize("cold_owner", [False, True])
+def test_machine_cli_release_binds_requested_id_through_runtime_to_owner(journey, monkeypatch, capsys, cold_owner):
+    """A stale CLI journal cannot authorize releasing the host's replacement pod."""
+    from contextlib import contextmanager
+    from astrid.core import machines_cli
+    from astrid.packs.runpod.machine import lease_row
+    from astrid.sdk import AstridClient
+
+    j = journey
+    state = j.start()
+    result = j.image()
+    assert result.ok, result.to_dict()
+    current = j.record()
+    if cold_owner:
+        bindings = state["host"]._target_bindings
+        bindings.provider.lease_owner.close()
+        bindings.provider = bindings.signature = None
+
+    @contextmanager
+    def launcher():
+        yield state["client"]
+
+    monkeypatch.setattr(AstridClient, "open_from_launcher", launcher)
+    # The CLI read happened before the retained owner changed to this pod.
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [lease_row({**current, "pod_id": "prior-pod"})])
+    assert machines_cli.main(["release", "prior-pod", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is False
+    assert j.record() == current
+    assert state["provider"].deploys == 1 and state["provider"].pods
+
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [lease_row(j.record())])
+    assert machines_cli.main(["release", current["pod_id"], "--json"]) == 0
+    released = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert released["ok"] is True and released["machine"]["id"] == current["pod_id"]
+    _released(state["provider"], j.record())
+    assert state["provider"].deploys == 1

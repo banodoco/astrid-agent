@@ -111,7 +111,7 @@ class RunPodAdapter:
         return {"offer": asdict(offer),
                 "offer_digest": offer.digest(self.lease_owner.selection.preferences)}
 
-    def operate(self, operation, *, include_quote=False):
+    def operate(self, operation, *, include_quote=False, machine_id=None):
         if operation == "setup":
             if include_quote:
                 raise ValueError("setup does not observe offers")
@@ -121,7 +121,8 @@ class RunPodAdapter:
                 raise ValueError("ls does not observe offers")
             return {"leases": self.lease_owner.ls()}
         if operation == "release":
-            record = self.lease_owner.release(reason="explicit")
+            record = self.lease_owner.release(reason="explicit", **(
+                {"expected_machine_id": machine_id} if machine_id is not None else {}))
         elif operation == "status":
             with self.lease_owner.lock:
                 record = self.lease_owner._read()
@@ -215,7 +216,7 @@ def prevalidate_task(policy, inputs, *, scratch):
         _validate_retained_workflow(request)
 
 
-def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, environ):
+def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, environ, expected_machine_id=None):
     """Construct the retained A3/A4 composition on an explicit host request."""
     from astrid.core.generation import engine_recipe, engine_runner
     from runpod_lifecycle.config import RunPodConfig
@@ -257,7 +258,7 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     owner = RunPodLeaseOwner(selection, holds=holds, quiesce=drain,
                              service_environ=environ)
     try:
-        owner.recover()
+        owner.recover(**({"expected_machine_id": expected_machine_id} if expected_machine_id is not None else {}))
     except BaseException:
         owner.close()
         raise
@@ -287,7 +288,7 @@ class TargetProviderBindings:
         self.constructing = None
         self.operations = 0
 
-    def get(self, *, kind, engine, preferences):
+    def get(self, *, kind, engine, preferences, expected_machine_id=None):
         signature = json.dumps([kind, engine, preferences], sort_keys=True, separators=(",", ":"), allow_nan=False)
         while True:
             with self.lock:
@@ -320,7 +321,9 @@ class TargetProviderBindings:
                 raise ValueError("target provider does not match the admitted pack")
             provider = build_host_adapter(preferences=preferences, engine=engine,
                                           holds=self.holds, quiesce=self._quiesce,
-                                          credentials=self.credentials, environ=self.environ)
+                                          credentials=self.credentials, environ=self.environ, **(
+                                              {"expected_machine_id": expected_machine_id}
+                                              if expected_machine_id is not None else {}))
             with self.lock:
                 self.provider, self.signature = provider, signature
                 return provider
@@ -381,8 +384,12 @@ class TargetProviderBindings:
     def operate(self, policy, operation, *, include_quote=False):
         if operation not in {"setup", "ls", "status", "release"}:
             raise ValueError("unsupported retained target operation")
-        if not isinstance(policy, dict) or set(policy) != {"kind", "engine", "preferences"}:
+        if (not isinstance(policy, dict)
+                or not {"kind", "engine", "preferences"} <= set(policy)
+                <= {"kind", "engine", "preferences"} | ({"machine"} if operation == "release" else set())):
             raise ValueError("target operation requires one explicit provider policy")
+        if "machine" in policy and (not isinstance(policy["machine"], str) or not policy["machine"].strip()):
+            raise ValueError("exact machine release requires a nonempty machine id")
         if policy["kind"] == "runpod":
             from astrid.packs.runpod.target_selection import RunPodPreferences
             # The setup owner signs the representation it persists. Callers
@@ -397,7 +404,8 @@ class TargetProviderBindings:
             # owner, whose custody may use a per-job override of saved preferences.
             # A quote still binds the preferences for the offer it discloses.
         if provider is None:
-            provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"])
+            provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"], **(
+                {"expected_machine_id": policy["machine"]} if "machine" in policy else {}))
         elif (operation == "setup" or operation == "status" and include_quote) and json.loads(self.signature)[2] != policy["preferences"]:
             # get() closes/rebuilds only after the old owner proves no lease is live.
             provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"])
@@ -406,7 +414,8 @@ class TargetProviderBindings:
                 raise ValueError("target provider changed before the operation")
             self.operations += 1
         try:
-            return provider.operate(operation, include_quote=include_quote)
+            return provider.operate(operation, include_quote=include_quote, **(
+                {"machine_id": policy["machine"]} if "machine" in policy else {}))
         finally:
             with self.lock:
                 self.operations -= 1
