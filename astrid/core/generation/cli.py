@@ -89,6 +89,19 @@ def _common_options(command):
     command.add_argument('--recovery-path', action=_Once, help='Save the exact Runtime admission receipt.')
 
 
+def _gpu_placement(placement, gpu_types, parser):
+    """Put a per-job RunPod GPU list into the existing placement policy."""
+    if not gpu_types:
+        return placement
+    if placement != "runpod":
+        parser.error("--gpu requires --placement runpod")
+    if any(not gpu.strip() for gpu in gpu_types):
+        parser.error("--gpu values must be nonempty GPU type names")
+    # Placement resolution merges this policy over the saved policy. Supplying
+    # gpu_types therefore replaces only that ordered list for this job.
+    return {"kind": "runpod", "policy": {"gpu_types": list(gpu_types)}}
+
+
 def _entry_help(description: dict[str, Any]) -> str:
     lines = [f"Entry: {description['id']} ({description['source']}, {description['kind']})",
              "Modes: " + ", ".join(description["modes"])]
@@ -185,6 +198,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
             "--placement", action=_Once, default='auto', metavar="PLACEMENT",
             help="auto (default), managed, a loopback ComfyUI URL, or runpod.",
         )
+        command.add_argument("--gpu", action="append", metavar="GPU_TYPE",
+                             help="RunPod GPU type; repeat in preference order. Pass the same list to generate describe and generate because the offer digest is GPU-bound.")
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
@@ -212,6 +227,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("--mode")
     command.add_argument('--placement', action=_Once, help='Describe the retained RunPod target.')
     command.add_argument('--engine', action=_Once, default='comfyui')
+    command.add_argument("--gpu", action="append", metavar="GPU_TYPE",
+                         help="RunPod GPU type; repeat in preference order. Use the same list for describe and generate because the offer digest is GPU-bound.")
     command.add_argument("--json", action="store_true")
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
@@ -501,11 +518,14 @@ def _main(argv: list[str]) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if parsed.modality == "describe":
+        if parsed.gpu and parsed.placement is None:
+            parser.error("--gpu requires target describe with --placement runpod")
         if parsed.placement is not None:
             if parsed.entry is not None or parsed.workflow is not None:
                 parser.error('target describe cannot also select an entry or workflow')
+            placement = _gpu_placement(parsed.placement, parsed.gpu, parser)
             with _open_client() as client:
-                description = _generate_facade().describe(placement=parsed.placement, engine=parsed.engine, client=client)
+                description = _generate_facade().describe(placement=placement, engine=parsed.engine, client=client)
             print(json.dumps(description, indent=2, sort_keys=True))
             return 0
         from astrid.core.generation.entries import describe_entry
@@ -525,6 +545,8 @@ def _main(argv: list[str]) -> int:
         return _workflow_command(parsed)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
+    if parsed.gpu and parsed.placement == "runpod" and not parsed.offer_digest and not parsed.dry_run:
+        parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu values")
     if parsed.prompt is not None and not parsed.prompt.strip():
         parser.error("prompt must not be empty")
     if (parsed.width is None) != (parsed.height is None):
@@ -559,7 +581,7 @@ def _main(argv: list[str]) -> int:
     from astrid.sdk.exceptions import AstridSDKError
 
     kwargs: dict[str, Any] = {
-        "placement": parsed.placement,
+        "placement": _gpu_placement(parsed.placement, parsed.gpu, parser),
         "dry_run": parsed.dry_run,
         **values,
         **_controls(parsed),
@@ -607,6 +629,8 @@ def _main(argv: list[str]) -> int:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
         from astrid.core.generation.preflight import generation_error
+        if parsed.placement == "runpod" and parsed.offer_digest and "offer or rate changed" in str(exc).lower():
+            exc = ValueError("RunPod offer changed (GPU type or rate). Use the same ordered --gpu values in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
         selector = ['--entry', parsed.entry or parsed.model] if parsed.entry or parsed.model else []
         raise generation_error(exc, fixes=[{
             'argv': ['astrid', 'generate', 'describe', *selector] if selector else
@@ -614,9 +638,11 @@ def _main(argv: list[str]) -> int:
             'scope': 'read_only', 'details': {'guidance': getattr(exc, 'fix', None)}}]) from exc
     if getattr(result, "ok", True) is False:
         from astrid.core.generation.preflight import generation_error
-        raise generation_error(getattr(result, 'error', None) or {
-            'code': 'generation_failed', 'message': 'Generation did not succeed.'},
-            task_id=getattr(result, 'kernel_task_id', None))
+        error = getattr(result, 'error', None) or {
+            'code': 'generation_failed', 'message': 'Generation did not succeed.'}
+        if parsed.placement == "runpod" and parsed.offer_digest and "offer or rate changed" in str(error).lower():
+            error = ValueError("RunPod offer changed (GPU type or rate). Use the same ordered --gpu values in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
+        raise generation_error(error, task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
