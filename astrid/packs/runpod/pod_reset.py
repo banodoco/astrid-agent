@@ -268,8 +268,19 @@ def open_prepared(path: Path | str | None = None, *, opener: Callable[..., Any] 
                   client_version="stage1", protocol_version="workspace.v1")
 
 
-def _token(result: Mapping[str, Any]) -> str:
-    return Path(str(result["credential_file"])).read_text(encoding="utf-8").strip()
+def _owner_token(data_root: Path) -> str:
+    # Backup/restore/replace are admin operations. The launcher's ordinary
+    # credential_file is the scoped Astrid connection saved for generation;
+    # lifecycle control uses the Runtime's existing owner credential instead.
+    from astrid_runtime.paths import RuntimePaths
+    from astrid.sdk.workspace_client import _read_credential
+
+    paths = RuntimePaths.current(data_root=data_root)
+    token = _read_credential(paths.runtime_support / "credentials" / "owner.token")
+    if not token.isascii() or any(character.isspace() or ord(character) < 32 or ord(character) == 127
+                                  for character in token):
+        raise ResetError("Runtime owner credential is invalid")
+    return token
 
 
 def reset(*, run_dir: Path | None = None, job_dir: Path | None = None,
@@ -299,11 +310,11 @@ def reset(*, run_dir: Path | None = None, job_dir: Path | None = None,
             steps: dict[str, Any] = {}
             if template.exists():
                 reason = "template_restore"
-                steps["replace"] = replace_realm(current["endpoint"], _token(current), template=template,
+                steps["replace"] = replace_realm(current["endpoint"], _owner_token(data_root), template=template,
                                                  realm_root=root)
             else:
                 reason = "template_create"
-                steps["template"] = take_template(current["endpoint"], _token(current), template,
+                steps["template"] = take_template(current["endpoint"], _owner_token(data_root), template,
                                                   realm_root=root, active=active)
             reason = "sweep"
             steps["removed"] = sweep(run_dir=run_dir, job_dir=job_dir, data_root=data_root)
