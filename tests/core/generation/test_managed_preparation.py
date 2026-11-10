@@ -127,7 +127,6 @@ def test_preparation_retains_lock_when_worker_or_prompt_drainage_is_unconfirmed(
 
 def test_prompt_cleanup_confirms_owned_absence_and_never_cancels_foreign(tmp_path, monkeypatch):
     from astrid.core.generation.backends.vibecomfy_local_server import cleanup_prompts
-    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
     path = tmp_path / '.vibecomfy-runtime/out/runs/owned/attempt.json'
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({'queue_acceptance': {'status': 'accepted', 'prompt_id': 'owned'}}))
@@ -163,3 +162,36 @@ def test_prompt_cleanup_timeout_and_unknown_acceptance_refuse_release(tmp_path, 
     path.write_text(json.dumps({'queue_acceptance': {'status': 'unknown', 'prompt_id': None}}))
     with pytest.raises(ValueError, match='acceptance remains unconfirmed'):
         cleanup_prompts('http://127.0.0.1:8188', tmp_path, confirm=True, timeout=0)
+
+
+
+@pytest.mark.parametrize('cancel', [False, True])
+def test_host_canonical_preparation_preserves_cancel_and_readiness(tmp_path, monkeypatch, cancel):
+    from astrid.core.execution.generic_host import _prepare_vibecomfy_execution_identity, HostCancelled, HostError
+    from astrid.packs.vibecomfy import production_engine
+    source = tmp_path / 'source.json'; source.write_text('{}')
+    monkeypatch.setattr(production_engine, 'load_workflow_path', lambda *args, **kwargs: object())
+    monkeypatch.setattr(production_engine, 'loaded_workflow_execution_identity', lambda *args: 'identity')
+    error = HostCancelled('cancelled after schema preflight') if cancel else production_engine.ProductionEngineError('missing node')
+    if not cancel:
+        error.code = 'missing_nodes'
+        error.readiness = {'placement': 'managed', 'target': {'kind': 'managed', 'endpoint': 'http://127.0.0.1:8188'}}
+    def prepare(*args): raise error
+    with pytest.raises(HostCancelled if cancel else HostError) as observed:
+        _prepare_vibecomfy_execution_identity({'workflow': str(source)}, tmp_path / 'scratch', None, prepare_engine=prepare)
+    if not cancel:
+        assert observed.value.code == 'missing_nodes'
+        assert observed.value.readiness == error.readiness
+
+
+def test_trust_diagnostics_translate_only_exact_declared_operational_rows():
+    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
+    row = {'name': 'absent.bin', 'subdir': 'aux', 'sha256': 'a' * 64, 'size': 123}
+    provider = TargetSchemaProvider.from_object_info({}, server_url='http://127.0.0.1:8188')
+    provider.trust_model_assets([row])
+    diagnostic = {**row, 'code': 'target_model_asset', 'model_bytes_status': 'verified_target_provisioning'}
+    unrelated = {**diagnostic, 'sha256': 'b' * 64}
+    provider._approval_diagnostics = [diagnostic, unrelated]
+    assert provider._approval_diagnostics[0]['model_bytes_status'] == 'declared_unverified'
+    assert provider._approval_diagnostics[1] == unrelated
+    assert diagnostic['model_bytes_status'] == 'verified_target_provisioning'

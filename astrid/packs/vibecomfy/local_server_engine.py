@@ -123,6 +123,8 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
         read_object_info(), server_url=url, model_availability="target",
         refresh_object_info=read_object_info, **custody,
     )
+    if target_custody is not None:
+        provider.trust_model_assets(target_custody)
     # Force a fresh read, including an empty registry (which VibeComfy's
     # general validator treats as an unavailable, skippable schema).
     provider.object_info()

@@ -615,3 +615,22 @@ def test_managed_preparation_refuses_native_attempt_symlink(comfy, tmp_path, mon
             comfy.workflow, tmp_path / 'attempt' / 'outputs', task_identity='task-managed',
             attempt_identity='attempt-managed', comfy_url=comfy.url, profile_id='local_server')
     assert outside.read_text() == '{"sentinel": true}'
+
+
+
+def test_trust_absent_auxiliary_asset_is_unverified_in_every_astrid_record(comfy, tmp_path, monkeypatch):
+    from vibecomfy.workflow_bundle import emit_bundle
+    loaded = production_engine.load_workflow_path(comfy.workflow, tmp_path / 'author-trust', comfy_url=comfy.url)
+    bundle = production_engine._canonical_bundle_value(loaded.resolved)
+    bundle.workflow.metadata['model_assets'] = [{'name': 'absent-aux.bin', 'subdir': 'auxiliary',
+        'url': 'https://example.invalid/absent-aux.bin', 'sha256': 'a' * 64, 'size_bytes': 123}]
+    canonical = emit_bundle(bundle.workflow, tmp_path / 'trusted-aux/workflow.py', {'operation': 'authored'})
+    monkeypatch.setenv('ASTRID_ALIGN', 'trust')
+    result = production_engine.run_workflow_result_path(
+        canonical.python_path, tmp_path / 'attempt-aux/outputs', task_identity='task-aux',
+        attempt_identity='attempt-aux', comfy_url=comfy.url, profile_id='local_server')
+    assert result.outputs
+    records = list((tmp_path / 'attempt-aux').rglob('*.json'))
+    assert records
+    for path in records:
+        assert 'verified_target_provisioning' not in path.read_text(), path
