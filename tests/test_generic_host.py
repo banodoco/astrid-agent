@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -5348,6 +5349,182 @@ def test_a_claim_blocked_host_still_reaches_the_ack_and_recovers(tmp_path, monke
     assert not refresh_pending(packs_root=personal)
     assert host._registration_refresh_blocked is False
     assert host._registration_admission_reason() is None
+
+
+def _commit_through_the_transaction(tmp_path: Path, personal: Path, pack_id: str, name: str) -> None:
+    """`astrid packs add <folder>`: the real group transaction writes the pack and commits its outbox entry."""
+    from astrid.core.pack.transaction import install_group
+
+    source = tmp_path / "sources" / pack_id
+    _write_v3_pack(source / pack_id, pack_id, name, _CHIPTUNE_ECHO, capabilities=["echo"])
+    install_group(source=source, revision=None, packs={pack_id: pack_id}, packs_root=personal, python_packages={})
+
+
+class _FencedRefreshRuntime(FakeRuntime):
+    """Records every claim; ``fail_registrations`` makes that many registrations fail like an unreachable Runtime."""
+
+    def __init__(self):
+        super().__init__()
+        self.claims: list[list[str]] = []
+        self.fail_registrations = 0
+        self.health_calls = 0
+
+    def health(self):
+        self.health_calls += 1
+        return super().health()
+
+    def register_executor(self, executor_id, **payload):
+        if self.fail_registrations:
+            self.fail_registrations -= 1
+            raise ConnectionError("fixture Runtime unavailable")
+        return super().register_executor(executor_id, **payload)
+
+
+def _transaction_host(tmp_path, monkeypatch):
+    """A running service host: personal_echo was added through the transaction and acknowledged."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    _commit_through_the_transaction(tmp_path, personal, "personal_echo", "Personal Echo")
+    runtime = _FencedRefreshRuntime()
+    host = GenericPackHost(pack_roots=[], client=runtime, personal_collection=True)
+    host.register()
+    assert host.acknowledge_pack_refresh() is True
+    assert not refresh_pending(packs_root=personal)
+    return host, runtime, personal
+
+
+def _serve_until_claimed(host, runtime, capability_id: str, *, polls: int = 2000, seconds: float = 30.0) -> None:
+    """Run the real single-worker loop until a claim offers ``capability_id``.
+
+    The poll budget bounds a loop that keeps claiming; the wall-clock bound ends a fenced loop whose claims never
+    reach the Runtime, so a regression fails here instead of at the suite timeout.
+    """
+    def claim_next(**payload):
+        runtime.claims.append(list(payload["capability_ids"]))
+        if capability_id in payload["capability_ids"] or len(runtime.claims) > polls:
+            host._shutdown.set()
+        return None
+
+    runtime.claim_next = claim_next
+    watchdog = threading.Timer(seconds, host._shutdown.set)
+    watchdog.start()
+    try:
+        assert host.run(poll_seconds=0.005) == []
+    finally:
+        watchdog.cancel()
+
+
+def test_committed_pack_add_changes_the_epoch_and_is_adopted_deliberately_then_claimed(tmp_path, monkeypatch):
+    """A real source-epoch change: a registered host, then `packs add` commits chiptune (outbox entry plus
+    directory). The ack re-registers deliberately under the new epoch and the next claim offers chiptune."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    host, runtime, personal = _transaction_host(tmp_path, monkeypatch)
+    epoch_before = host.source_epoch
+    assert runtime.registrations[-1][1]["source_epoch"] == epoch_before
+    registered_before = len(runtime.registrations)
+
+    _commit_through_the_transaction(tmp_path, personal, "chiptune", "Chiptune")
+    assert refresh_pending(packs_root=personal)
+    assert host.source_epoch == epoch_before  # nothing is adopted until the host consumes the entry
+
+    _serve_until_claimed(host, runtime, "chiptune.echo")
+
+    assert not refresh_pending(packs_root=personal)
+    assert host.source_epoch != epoch_before
+    assert len(runtime.registrations) == registered_before + 1
+    adopted = runtime.registrations[-1][1]
+    assert adopted["source_epoch"] == host.source_epoch
+    assert "chiptune.echo" in {row["capability_id"] for row in adopted["capabilities"]}
+    assert "chiptune.echo" in runtime.claims[-1]
+    assert host._registration_admission_reason() is None
+    # The adopted epoch is now the registered one: an ordinary renewal keeps the fence satisfied.
+    host._renew_executor_registration()
+    assert runtime.registrations[-1][1]["source_epoch"] == host.source_epoch
+
+
+def test_a_real_fence_and_a_failed_refresh_still_reach_the_ack_and_recover(tmp_path, monkeypatch, capsys):
+    """(d) through a real fence. The base sequence fences the host: discover() then a non-deliberate renewal is
+    refused for the changed epoch. The first deliberate attempt then fails (Runtime unreachable) and must leave
+    the entry pending; the loop keeps reaching the ack, re-registers deliberately and claims chiptune."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    host, runtime, personal = _transaction_host(tmp_path, monkeypatch)
+    _commit_through_the_transaction(tmp_path, personal, "chiptune", "Chiptune")
+    host.discover()
+    with pytest.raises(HostError, match="source epoch changed; deliberate re-registration required"):
+        host._renew_executor_registration(idle=True)
+    assert host._registration_admission_reason() == "executor registration refresh is blocked"
+    with pytest.raises(HostError, match="executor registration refresh is blocked"):
+        host.claim_once()
+
+    # Periodic renewals also run on every iteration; until the ack adopts the epoch they are refused too.
+    monkeypatch.setattr(generic_host, "_EXECUTOR_REFRESH_SECONDS", 0.0)
+    host._registration_refresh_deadline = 0.0
+    runtime.fail_registrations = 1
+    acks: list[bool] = []
+    original_ack = host.acknowledge_pack_refresh
+
+    def ack():
+        acks.append(original_ack())
+        if acks == [False]:
+            assert refresh_pending(packs_root=personal), "a failed refresh must leave the outbox pending"
+        return acks[-1]
+
+    monkeypatch.setattr(host, "acknowledge_pack_refresh", ack)
+    _serve_until_claimed(host, runtime, "chiptune.echo", polls=100_000)
+
+    assert acks[0] is False and acks[-1] is True
+    assert not refresh_pending(packs_root=personal)
+    assert host._registration_refresh_blocked is False
+    assert host._registration_admission_reason() is None
+    assert runtime.registrations[-1][1]["source_epoch"] == host.source_epoch
+    assert "chiptune.echo" in runtime.claims[-1]
+    err = capsys.readouterr().err
+    assert "pack refresh not acknowledged (1 consecutive, retrying): HostRegistrationError" in err
+
+
+def test_an_uncommitted_source_change_is_never_adopted_by_the_loop(tmp_path, monkeypatch):
+    """The fence holds without a committed transaction: a pack directory that appears with no outbox entry is
+    neither discovered nor registered, however many renewals and acks the loop runs."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    host, runtime, personal = _transaction_host(tmp_path, monkeypatch)
+    epoch_before = host.source_epoch
+    _write_v3_pack(personal / "chiptune", "chiptune", "Chiptune", _CHIPTUNE_ECHO, capabilities=["echo"])
+    assert not refresh_pending(packs_root=personal)
+    monkeypatch.setattr(generic_host, "_EXECUTOR_REFRESH_SECONDS", 0.0)
+    host._registration_refresh_deadline = 0.0
+
+    _serve_until_claimed(host, runtime, "chiptune.echo", polls=50)
+
+    assert host.source_epoch == epoch_before
+    assert all(payload["source_epoch"] == epoch_before for _, payload in runtime.registrations)
+    assert all("chiptune.echo" not in claim for claim in runtime.claims)
+
+
+def test_the_pre_claim_ack_is_throttled_and_adds_no_runtime_calls(tmp_path, monkeypatch):
+    """Running the ack before every claim reads only the local outbox, at most once per idle cadence."""
+    host, runtime, personal = _transaction_host(tmp_path, monkeypatch)
+    calls = {"ack": 0, "health": runtime.health_calls, "registrations": len(runtime.registrations)}
+    original_ack = host.acknowledge_pack_refresh
+
+    def ack():
+        calls["ack"] += 1
+        return original_ack()
+
+    monkeypatch.setattr(host, "acknowledge_pack_refresh", ack)
+    _serve_until_claimed(host, runtime, "never.offered", polls=100)
+
+    assert len(runtime.claims) > 100
+    assert calls["ack"] == 1  # 100 polls at 5 ms fall inside one 2 s cadence
+    assert runtime.health_calls == calls["health"]
+    assert len(runtime.registrations) == calls["registrations"]
 
 
 def test_failed_registration_leaves_the_packs_add_outbox_pending(tmp_path, monkeypatch):

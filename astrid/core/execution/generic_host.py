@@ -13712,7 +13712,6 @@ class GenericPackHost:
                 if once:
                     break
                 continue
-            # Idle, like the parallel loop's `not active`: consume committed
             if once:
                 break
             if self._shutdown.is_set():
