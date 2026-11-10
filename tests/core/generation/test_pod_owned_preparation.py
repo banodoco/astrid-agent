@@ -55,3 +55,21 @@ def test_pod_cancellation_latches_until_preparation_drains(tmp_path, monkeypatch
 def _scope():
     from contextlib import nullcontext
     return nullcontext()
+
+
+def test_pod_refuses_capsule_mutation_before_preparation(tmp_path, monkeypatch):
+    workflow = tmp_path / 'workflow.py'
+    workflow.write_text('pass')
+    workflow.with_suffix('.vibe.json').write_text('{}')
+    workflow.with_name('source.json').write_text('{}')
+
+    def load(path, scratch):
+        path.write_text('changed')
+        return SimpleNamespace(resolved=object())
+    monkeypatch.setattr(production_engine, 'load_workflow_path', load)
+    monkeypatch.setattr(managed_preparation, 'ManagedEnginePreparation',
+                        lambda **kwargs: pytest.fail('must refuse before engine preparation'))
+    with pytest.raises(local_job.JobFileError, match='changed during loading'):
+        local_job.run_owned_action(workflow, tmp_path / 'out', task_identity='task', attempt_identity='attempt',
+                                   align='trust')
+    assert target_inventory.POD_STOP.get() is None

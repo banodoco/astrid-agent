@@ -68,3 +68,19 @@ def test_pod_job_prepares_once_and_runs_on_owned_engine(tmp_path, monkeypatch, m
     else:
         assert not artifact.exists() and not hits
     client.stop_owned(deadline=time.monotonic() + 15)
+
+
+def test_pod_ui_json_is_frozen_before_preparation(tmp_path, managed_install):
+    client, payload, recipe, root, started, bootstrap = managed_install
+    source = tmp_path / 'input.json'
+    source.write_text(json.dumps(_workflow()))
+    job_path = tmp_path / 'job.json'
+    job_path.write_text(json.dumps({'schema': 'astrid.machine-job.v1', 'entry': None, 'mode': None,
+        'align': 'trust', 'task_identity': 'task', 'attempt_identity': 'attempt', 'inputs': {}, 'bindings': {},
+        'execution': {'workflow': str(source)}}))
+    client.stop_owned(deadline=time.monotonic() + 15)
+    original = source.read_bytes()
+    result = run_job('workflow', job_path, tmp_path / 'out')
+    assert (tmp_path / 'out' / result['managed_generation_result_path']).is_file()
+    assert source.read_bytes() == original
+    client.stop_owned(deadline=time.monotonic() + 15)
