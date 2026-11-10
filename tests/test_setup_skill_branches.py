@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from astrid.core.generation import engine_readiness
-from astrid.packs.vibecomfy.local import scan
+from astrid.packs.vibecomfy import local as local_scan
 from tests.packs.runpod.test_machine import machine_case as machine_case  # noqa: F401
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401
@@ -26,18 +26,27 @@ from tests.packs.test_vibecomfy_local import _ComfyHandler, _server
 
 
 _SETUP = Path(__file__).resolve().parents[1] / "docs" / "setup" / "SKILL.md"
+_GENERATION = (Path(__file__).resolve().parents[1] / "astrid" / "packs" / "generation" /
+               "docs" / "SKILL.md")
 
 
-def _fenced(command_fragment: str) -> str:
-    text = _SETUP.read_text()
-    return next(block.strip() for block in re.findall(r"```sh\s*\n(.*?)\n```", text, re.S)
-                if command_fragment in block)
+def _guide_command(command_fragment: str, document: Path = _SETUP) -> str:
+    text = document.read_text()
+    candidates = re.findall(r"```[^\n]*\n(.*?)\n```", text, re.S)
+    candidates += re.findall(r"`([^`\n]+)`", text)
+    return next(value.strip() for value in candidates if command_fragment in value)
 
 
-def test_discovery_against_fake_comfyui_is_read_only(tmp_path):
+def test_generation_skill_fenced_scan_command_uses_real_cli_parser(tmp_path, monkeypatch, capsys):
     server, thread = _server(tmp_path)
     try:
-        result = scan([server.server_address[1]])
+        # The documented command scans default ports. Add the CLI's documented
+        # testable --ports override so the fake server can use an ephemeral port.
+        monkeypatch.setattr(local_scan, "_PINOKIO_INFO_URL", "http://127.0.0.1:1/pinokio/info")
+        command = _guide_command("python3 -m astrid.packs.vibecomfy.local scan", _GENERATION)
+        argv = shlex.split(command)[3:] + ["--ports", str(server.server_address[1])]
+        assert local_scan.main(argv) == 0
+        result = json.loads(capsys.readouterr().out)
         assert result["errors"] == []
         assert result["servers"][0]["workflows"] == ["portrait_flux.json", "nested/wan_i2v.json"]
         assert result["servers"][0]["url"] == f"http://127.0.0.1:{server.server_address[1]}"
@@ -64,7 +73,7 @@ def test_setup_engine_fenced_command_reaches_real_parser_through_fake_launcher(t
     )
     launcher.chmod(0o755)
     root = tmp_path / "engine"
-    command = _fenced("engines install comfyui --dry-run")
+    command = _guide_command("engines install comfyui --dry-run")
     env = {**os.environ, "XDG_DATA_HOME": str(data), "ASTRID_ENGINE_ROOT": str(root),
            "PYTHONPATH": str(_SETUP.parents[2])}
     result = subprocess.run(command, shell=True, cwd=_SETUP.parents[2], env=env,
@@ -88,7 +97,7 @@ def test_nvidia_fenced_command_and_csv_cross_the_12_decimal_gb_boundary(tmp_path
         f"echo 'Synthetic GPU, {memory_mib} MiB'\n"
     )
     smi.chmod(0o755)
-    command = _fenced("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader")
+    command = _guide_command("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader")
     result = subprocess.run(command, shell=True, env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
                             text=True, capture_output=True, timeout=5)
     assert result.returncode == 0
