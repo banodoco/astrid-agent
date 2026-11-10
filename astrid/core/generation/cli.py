@@ -483,7 +483,10 @@ def _job_command(argv: list[str]) -> int:
     from astrid.core.generation.progress import write_progress
     try:
         result = run_job(parsed.entry, parsed.job, parsed.out, mode=parsed.mode, align=parsed.align)
-    except (JobFileError, AstridError, ValueError) as exc:
+    except AstridError:
+        # Preserve the typed failure for main's structured JSON renderer.
+        raise
+    except (JobFileError, ValueError) as exc:
         parser.error(str(exc))
     write_progress('done')
     print(json.dumps(result, indent=2, sort_keys=True, default=str))

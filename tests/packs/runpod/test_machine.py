@@ -177,7 +177,7 @@ def test_a_failing_runtime_check_releases_the_lease_and_never_settles_warm(machi
     c = machine_case
     c.pod.listed = []  # the pod's runtime does not list the entry from the shipped selection
     job = c.job()
-    with pytest.raises(rm.MachineError, match="not listed by the pod's runtime"):
+    with pytest.raises(rm.MachineError, match="category=unknown; code=unknown"):
         run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                        sleep=lambda s: None)
     record = c.read()
