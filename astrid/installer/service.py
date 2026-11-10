@@ -521,6 +521,80 @@ class Service:
             self.path = Path(os.environ.get("XDG_CONFIG_HOME") or self.home / ".config") / "systemd" / "user" / "astrid.service"
         else:
             self.path = root / "task.xml"
+        self.handed_off = False
+
+    def adopt_handed_off_label(self) -> None:
+        """Operate the R1-labelled service that a finished storage handoff registered.
+
+        After normalisation the install is direct, but its login service keeps
+        the label and definition the handoff published; R0's definition stays
+        untouched for --rollback. The definition runs the fixed program-root
+        launcher, so updates switch ``current`` and restart that same service.
+        """
+        from .r0_stop import R1_LABEL, R1_UNIT
+
+        if self.system not in {"linux", "darwin"}:
+            raise ValueError("Upgraded installs are only qualified on Linux and macOS.")
+        self.handed_off = True
+        self.path = self.path.with_name(R1_UNIT if self.system == "linux" else R1_LABEL + ".plist")
+
+    def _handed_off_registration(self):
+        """The bound R1 registration; refuse when its files changed outside the installer."""
+        from .boundary_registration import BoundaryRegistration, _regular
+
+        registration = BoundaryRegistration(self)
+        bound = read_json(_regular(registration.journal))
+        if bound.get("program_root") != str(self.root) or any(
+                not path.exists() for path in registration._check_files(bound)):
+            raise ValueError(f"The Astrid service {self.path} has an unknown or changed action/owner. "
+                             "Re-run the install line to repair it.")
+        return registration, bound
+
+    def _handed_off_target(self) -> str:
+        from .r0_stop import R1_LABEL
+
+        return f"gui/{platform.current_user()}/{R1_LABEL}"
+
+    def _validate_handed_off_stop(self, *, owner_pid: int | None, expected_identity: dict | None,
+                                  require_stopped: bool) -> dict | None:
+        registration, bound = self._handed_off_registration()
+        if self.system == "linux":
+            if not self.systemd():
+                raise ValueError("Cannot validate the registered systemd manager; refusing to stop it.")
+            value = self.run(["systemctl", "--user", "show", self.path.name,
+                              "--property=MainPID,FragmentPath,LoadState"])
+            fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
+            pid = int(fields.get("MainPID") or 0)
+            if fields.get("LoadState") == "not-found" and pid == 0:
+                return None
+            if fields.get("FragmentPath") != str(self.path) or pid not in {0, owner_pid}:
+                raise ValueError("The systemd service does not match the selected Runtime owner.")
+            self._validated_systemd_stop = True
+            return None
+        # The bound definition's exact action is checked before any state is read.
+        loaded = registration._mac_state(bound)
+        if not loaded:
+            if require_stopped:
+                self._validated_launchd_stop = None
+                self._validated_launchd_stop_checked = True
+            return None
+        value = self.run(["launchctl", "print", self._handed_off_target()])
+        states = re.findall(r"^\tstate = ([^\r\n]+)$", value, re.MULTILINE)
+        pids = [int(found) for found in re.findall(r"^\tpid = (\d+)$", value, re.MULTILINE)]
+        if len(states) != 1 or len(pids) > 1:
+            raise ValueError("The launchd service identity is malformed.")
+        pid = pids[0] if pids else None
+        identity = {"target": self._handed_off_target(), "path": str(self.path)}
+        if expected_identity is not None and identity != expected_identity:
+            raise ValueError("The loaded launchd service changed during Runtime stop.")
+        if require_stopped:
+            if states[0].strip() != "not running" or pid is not None:
+                raise ValueError("The launchd service did not remain stopped after Runtime exit.")
+            self._validated_launchd_stop = identity
+            self._validated_launchd_stop_checked = True
+        elif pid is not None and pid != owner_pid:
+            raise ValueError("The launchd service does not match the selected Runtime owner.")
+        return identity
 
     def recorded(self) -> dict:
         record = read_json(self.selection)
@@ -706,6 +780,9 @@ class Service:
         if self.system == "darwin" and not require_stopped:
             self._validated_launchd_stop = None
             self._validated_launchd_stop_checked = False
+        if self.handed_off:
+            return self._validate_handed_off_stop(owner_pid=owner_pid, expected_identity=expected_identity,
+                                                  require_stopped=require_stopped)
         if self.system == "linux":
             if not self.systemd():
                 foreground = self.recorded().get("foreground")
@@ -1034,6 +1111,10 @@ class Service:
 
     def publish_launch_admission(self, version: Version, data: Path) -> None:
         """Publish the canonical gate for an exactly known owned service action."""
+        if self.handed_off:
+            # The R1 definition runs the version-independent program launcher.
+            self._handed_off_registration()
+            return
         self._reconcile_launch_action(version, data)
 
     def remove_registration(self, version: Version, data: Path) -> None:
@@ -1098,6 +1179,16 @@ class Service:
             self.path.unlink(missing_ok=True)
 
     def disable(self) -> None:
+        if self.handed_off and self.system == "darwin":
+            try:
+                if not getattr(self, "_validated_launchd_stop_checked", False):
+                    raise RuntimeError("LaunchAgent bootout requires the validated Runtime C1 stop callback.")
+                if getattr(self, "_validated_launchd_stop", None) is not None:
+                    self.run(["launchctl", "bootout", self._handed_off_target()])
+            finally:
+                self._validated_launchd_stop = None
+                self._validated_launchd_stop_checked = False
+            return
         if self.system == "darwin":
             try:
                 selected = getattr(self, "_validated_launchd_stop", None)
@@ -1176,7 +1267,7 @@ class Service:
             if getattr(self, "_validated_systemd_stop", False) and not available:
                 raise RuntimeError("The validated systemd manager is no longer available.")
             if available and self.path.exists():
-                self.run(["systemctl", "--user", "stop", "astrid.service"])
+                self.run(["systemctl", "--user", "stop", self.path.name if self.handed_off else "astrid.service"])
         elif self.system == "win32":
             # Runtime's birth-checked down has already drained its children.
             self.powershell(TASK_QUERY + "if ($t -and $t.State -eq 'Running') { $t | Stop-ScheduledTask }")
@@ -1219,7 +1310,11 @@ class Service:
         settings = self.settings()
         enabled = self.autostart_enabled()
         supervised = not enabled or self.system != "linux" or self.systemd()
-        if not enabled or not supervised:
+        if self.handed_off:
+            # Keep the bound R1 definition; only its sign-in enablement follows the choice.
+            registration, _bound = self._handed_off_registration()
+            registration.set_autostart(enabled and supervised)
+        elif not enabled or not supervised:
             self.remove_registration(version, data)
             if enabled and not supervised:
                 self.say(UNSUPERVISED_WARNING)
@@ -1259,13 +1354,25 @@ class Service:
         enabled = self.autostart_enabled()
         prior = resolve_choices(saved=record.get("choices"), existing_install=bool(record))["autostart"]
         return (prior != enabled
-                or (not enabled and self.login_service_exists())
+                or (not enabled and not self.handed_off and self.login_service_exists())
                 or (self.system == "linux" and self.path.exists() and not self.systemd())
                 or record.get("service_settings", {}) != self.settings())
 
     def start(self) -> bool:
         if not self.autostart_enabled():
             return False
+        if self.handed_off:
+            if self.system == "linux":
+                if not self.systemd():
+                    return False
+                self.run(["systemctl", "--user", "start", self.path.name])
+            else:
+                registration, bound = self._handed_off_registration()
+                if registration._mac_state(bound):
+                    self.run(["launchctl", "kickstart", self._handed_off_target()])
+                else:
+                    self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
+            return True
         if self.system == "darwin":
             self.run(["launchctl", "kickstart", f"gui/{platform.current_user()}/{LABEL}"])
         elif self.system == "linux":
@@ -1305,6 +1412,8 @@ class Service:
         write_json(self.selection, {**record, "foreground": foreground})
 
     def unregister(self) -> None:
+        if self.handed_off:
+            raise ValueError("Automatic uninstall after an upgrade isn't supported yet. Both data folders were kept.")
         if self.system == "win32":
             self.powershell(TASK_QUERY + "if ($t) { $t | Unregister-ScheduledTask -Confirm:$false }")
         self.path.unlink(missing_ok=True)

@@ -144,6 +144,21 @@ def _inventory(current_state, harness, descriptor):
     })
 
 
+def _validate_sync_targets(targets, descriptors):
+    """Reject ambiguous destinations before any skill mutation."""
+    for harness_name, adapter in targets.items():
+        destinations = {}
+        for descriptor in descriptors:
+            target = adapter.target_for(descriptor)
+            previous = destinations.get(target)
+            if previous is not None and previous != descriptor.skill_id:
+                raise ValueError(
+                    f"Skill target collision for {harness_name}: {previous} and "
+                    f"{descriptor.skill_id} both target {target}"
+                )
+            destinations[target] = descriptor.skill_id
+
+
 def _ownership_sources(adapter, descriptors, current_state, state_path):
     """Project existing declarations/records into evidence for this operation.
 
@@ -190,6 +205,7 @@ def disable_owned(*, state_path: Path | None = None, dry_run: bool = False) -> d
     initial_installs = copy.deepcopy(current.get("installs", {}))
     mains = list_skills()
     descriptors = mains + discovery.list_extras(mains)
+    _validate_sync_targets(all_adapters(), descriptors)
     report: dict = {"actions": [], "conflicts": [], "ambiguous": []}
     for harness, adapter in all_adapters().items():
         records = current.get("installs", {}).get(harness, {})
@@ -281,6 +297,7 @@ def install(
     descriptors = _units(pack_ids, tuple(skill_names), all_skills, developer=developer, available=available)
     known_units = available + discovery.list_extras(available)
     targets = _resolve_harnesses(harness_names)
+    _validate_sync_targets(targets, known_units)
     current_state = state.load(state_path)
     extras_for_digest = discovery.list_extras([d for d in descriptors if d.skill is None])
 
@@ -361,6 +378,7 @@ def uninstall(
     descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True, developer=developer, available=available)
     known_units = available + discovery.list_extras(available)
     targets = _resolve_harnesses(harness_names)
+    _validate_sync_targets(targets, known_units)
     current_state = state.load(state_path)
 
     report: dict = {"actions": []}
@@ -434,9 +452,16 @@ def sync(
     all_units = all_descriptors + extras
     selected_pack_ids = tuple(selected_pack_ids)
     targets = _resolve_harnesses(harness_names)
+    _validate_sync_targets(targets, all_units)
     if proposed_state is not None and not dry_run:
         raise ValueError("proposed_state is only valid for a dry-run sync")
+    selection_path = state_path or state.state_path()
+    fresh_state = not selection_path.exists()
     current_state = proposed_state if proposed_state is not None else state.load(state_path)
+    if fresh_state and proposed_state is None:
+        defaults = default_descriptors(all_descriptors)
+        for harness_name in targets:
+            _select_units(current_state, harness_name, defaults)
     if developer:
         if dry_run:
             current_state = copy.deepcopy(current_state)
@@ -554,15 +579,28 @@ def sync(
                 disabled_ids = set(current_state.get("disabled_defaults", {}).get(harness_name, []))
                 known_ids = {d.skill_id for d in all_units if d.pack_id not in disabled_ids}
                 prune_conflicts = []
+                # Custom names are candidates only when an install record ties
+                # that exact destination to an exact source.
+                from .harnesses.base import ours_link_to_pack_id
+                prune_sources = {target: sources for target, sources in owned_sources.items()
+                                 if ours_link_to_pack_id(target.name) is not None}
+                for record in current_state["installs"].get(harness_name, {}).values():
+                    if not isinstance(record, dict):
+                        continue
+                    target, source = record.get("target"), record.get("source")
+                    if not isinstance(target, str) or not isinstance(source, str) or not Path(source).is_absolute():
+                        continue
+                    target = Path(target).expanduser()
+                    if ours_link_to_pack_id(target.name) is None:
+                        prune_sources.setdefault(target, set()).add(Path(source))
                 removed_paths = prune_orphan_skill_links(
-                    skills_dir, known_ids, owned_sources=owned_sources,
+                    skills_dir, known_ids, owned_sources=prune_sources,
+                    known_names={adapter.target_for(d).name for d in all_units if d.pack_id not in disabled_ids},
                     declared_sources=_declared, conflicts=prune_conflicts)
                 steps.extend(prune_conflicts)
                 for removed in removed_paths:
                     steps.append(_pruned_step(removed))
-                    removed_id = _link_pack_id(removed.name)
-                    state.record_uninstall(current_state, harness_name, removed_id,
-                        default=removed_id in default_pack_ids(all_descriptors))
+                    # Obsolete records are removed below by their recorded target.
             # Forget only absent obsolete entries. A preserved path keeps its record.
             for skill_id, record in list(current_state["installs"][harness_name].items()):
                 if skill_id in installed_ids or not isinstance(record, dict) or not record.get("target"):
@@ -735,7 +773,7 @@ def check(
             if not entry.is_symlink():
                 continue
             pack_id = ours_link_to_pack_id(name)
-            if pack_id is not None and pack_id not in known_ids:
+            if pack_id is not None and pack_id not in known_ids and name not in {adapter.target_for(d).name for d in [*all_descriptors, *extras]}:
                 report["stale_links"].append(
                     {"harness": harness_name, "link": name, "path": str(entry)}
                 )
@@ -756,6 +794,8 @@ def check(
 def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
     descriptors = list_skills()
     detected = {name: adapter for name, adapter in all_adapters().items() if adapter.detect()}
+    if heal:
+        _validate_sync_targets(detected, descriptors + discovery.list_extras(descriptors))
 
     report: dict = {
         "detected": list(detected.keys()),

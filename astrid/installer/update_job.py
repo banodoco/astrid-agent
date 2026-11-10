@@ -24,6 +24,7 @@ from runtime_protocol import platform
 
 from . import tools
 from .core import TERMINAL_STEPS, current, pending_transaction
+from .installation import Installation, adopt_if_handed_off
 
 if TYPE_CHECKING:
     from .backend import Backend
@@ -53,6 +54,12 @@ class _UnsupportedServiceManager(ValueError):
     reason = "unsupported-service-manager"
 
 
+class _UnsupportedWindowsUpgrade(_UnsupportedServiceManager):
+    """The selected Windows install is an earlier release, which the handoff refuses."""
+
+    reason = "windows-upgrade-unsupported"
+
+
 MINIMUM_SYSTEMD_VERSION = 254
 UNSUPPORTED_SERVICE_MANAGER_MESSAGE = "This update requires user systemd 254 or newer on Linux."
 
@@ -63,9 +70,34 @@ UNSUPPORTED_SERVICE_MANAGER_MESSAGE = "This update requires user systemd 254 or 
 SUPPORTED_ACTIONS = ("availability", "reconcile", "prepare", "accept", "fail", "launch")
 
 
+def _windows_task_query(argv, *, timeout: float = 120) -> str:
+    """The probe's run: the captured output of a Windows query; a failed query raises."""
+    return subprocess.run([str(part) for part in argv], capture_output=True, encoding="utf-8",
+                          errors="replace", check=True, timeout=timeout).stdout
+
+
+def _windows_upgrade_refused() -> bool:
+    """Whether the selected direct install is one the Windows handoff refuses. Doubt reports False."""
+    from .boundary_handoff import windows_upgrade_refused
+    from .service import Service
+
+    try:
+        root = _selected_job_root(None)
+        if root is None:
+            return False
+        return windows_upgrade_refused(
+            root, Service(root, root / "install.log", _windows_task_query, system="win32"))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, subprocess.SubprocessError):
+        return False
+
+
 def update_job_availability(*, system: str | None = None) -> dict:
     """Return whether the selected OS can safely run an update job."""
     actual = sys.platform if system is None else system
+    if actual == "win32":
+        if _windows_upgrade_refused():
+            return {"available": False, "reason": _UnsupportedWindowsUpgrade.reason}
+        return {"available": True}
     if actual != "linux":
         return {"available": True}
     try:
@@ -91,8 +123,13 @@ def update_job_availability(*, system: str | None = None) -> dict:
 
 
 def _require_update_job_available() -> None:
-    if not update_job_availability()["available"]:
-        raise _UnsupportedServiceManager(UNSUPPORTED_SERVICE_MANAGER_MESSAGE)
+    availability = update_job_availability()
+    if availability["available"]:
+        return
+    if availability.get("reason") == _UnsupportedWindowsUpgrade.reason:
+        from .boundary_handoff import WINDOWS_UPGRADE_REFUSAL
+        raise _UnsupportedWindowsUpgrade(WINDOWS_UPGRADE_REFUSAL)
+    raise _UnsupportedServiceManager(UNSUPPORTED_SERVICE_MANAGER_MESSAGE)
 
 class _BusyRefusal(ValueError):
     """A reconciliation refusal that must remain visible as machine reason busy."""
@@ -531,6 +568,11 @@ def _validate_request(request: dict, root: Path) -> dict:
             or absolute(selected.get("data_root", "")) != data_root
             or selected.get("uninstalled")):
         raise ValueError("The selected installer ownership does not match the update request.")
+    # The one resolver decides which data root is live. An unfinished storage
+    # move is normalised by the install line, never by a click-created job.
+    installation = Installation.resolve(Path.home(), root=root, probe=lambda *_: None)
+    if installation.kind != "direct" or installation.active_data_root != data_root:
+        raise ValueError("Run the install line once to finish setting up this Astrid; then Update now works.")
     old = current(root)
     if old is None or not old.python.is_file():
         raise ValueError("The selected Astrid installation is no longer available.")
@@ -889,6 +931,7 @@ def _verify_selected_ready(root: Path, data_root: Path, expected_version: dict,
         raise ValueError("The reconciled update selected an unexpected version.")
     backend = Backend(root, root / "logs" / "install.log", root / "bootstrap" / "uv", say=lambda _line: None,
                       managed_by=None)
+    adopt_if_handed_off(backend, root)
     workspace = backend.workspace(selected, data_root)
     realm_id = workspace.get("realm_id")
     if not isinstance(realm_id, str) or not realm_id:
@@ -1034,7 +1077,8 @@ def _recover_matching_transaction(root: Path, job: dict, journal: dict) -> dict:
     selected = current(root)
     if selected is None or selected.document() not in (old.document(), candidate.document()):
         _busy("The selected version is not part of the matching update transaction.")
-    backend = Backend(root, root / "logs" / "install.log", root / "bootstrap" / "uv", say=lambda _line: None)
+    backend = adopt_if_handed_off(Backend(root, root / "logs" / "install.log", root / "bootstrap" / "uv",
+                                          say=lambda _line: None), root)
     try:
         expected_live_identity = (job.get("old_identity") if selected.document() == old.document()
                                   else {"release": job.get("target_release"), "managed_by": None})
@@ -2270,7 +2314,7 @@ def run_job(root: Path, operation_id: str, epoch: int | None = None,
         claimed = True
         if pending_transaction(root):
             from .backend import Backend
-            backend = Backend(root, root / "logs" / "install.log", root / "bootstrap" / "uv")
+            backend = adopt_if_handed_off(Backend(root, root / "logs" / "install.log", root / "bootstrap" / "uv"), root)
             marker = read_json(root / "install.json")
             from .app_update import locked as app_locked
             from .core import Installer

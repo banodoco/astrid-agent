@@ -198,19 +198,26 @@ def test_real_cli_copy_receipt_activation_rerun_and_rollback_after_work(case, mo
     assert call[6:8] == ['workspace', 'adopt']
     assert all(flag in call for flag in ('--read-only-source', '--no-start', '--json', '--source-manifest'))
     assert call[call.index('--data-root') + 1] == str(c.destination)
-    value = read_json(handoff.journal_path(c.service))
+    # The finished handoff is normalised once: its journal is an archive, and
+    # the marker and selection name R1 as the data root with R0 as provenance.
+    assert not handoff.journal_path(c.service).exists()
+    value = read_json(handoff.archive_path(c.service))
     receipt = read_json(c.destination / adoption_receipt.RECEIPT)
     assert value['phase'] == 'complete' and value['receipt'] == receipt
     assert receipt['source_inventory_sha256'] == adoption_receipt.observe(c.data)['inventory']
     assert receipt['source_manifest_sha256'] == hashlib.sha256(Path(value['candidate']['profile']).read_bytes()).hexdigest()
     assert receipt['started'] is False
-    assert read_json(c.root / 'install.json')['r1_data_root'] == str(c.destination)
+    for record in (read_json(c.root / 'install.json'), read_json(c.service.selection)):
+        assert record['data_root'] == str(c.destination) and record['retained_r0_data_root'] == str(c.data)
+        assert 'r1_data_root' not in record
+    assert read_json(c.service.selection)['realm_root'] == str(c.destination / 'runtime/realms/r0')
     assert read_json(c.service.selection)['version'] == value['candidate']
     assert str(c.destination) in c.service.path.with_name(registration.R1_LINUX).read_text()
-    # A completed rerun selects only R1 and does not invoke the old preflight.
-    monkeypatch.setattr(c.backend, 'verify', lambda version, data, realm_id: c.verified.append(data))
-    assert handoff.handle(c.root, c.data, c.backend)
-    assert c.verified[-1] == c.destination and len(c.runtime_calls) == 1
+    # A rerun is not handled at the boundary: the ordinary install or update
+    # path continues for the live R1 install, without verifying the old candidate.
+    monkeypatch.setattr(c.backend, 'verify', lambda *a, **k: pytest.fail('old handoff candidate re-verified'))
+    assert handoff.handle(c.root, c.data, c.backend) is False
+    assert len(c.runtime_calls) == 1
     r1_work(c)
     retained = snapshot(c.destination)
     c.tx.recover(rollback=True)
@@ -367,11 +374,18 @@ def test_sigkill_each_adoption_and_switch_step_recovers_one_owner(case, monkeypa
         upgrade(c)
     kill_child(child_action)
     assert (snapshot(c.data), c.service.path.read_bytes()) == before
-    # The only committed completion is safe to keep. Every other cut switches
-    # back, even when a plausible published receipt exists.
+    # The only committed completion is safe to keep; the next run normalises it
+    # and continues on the ordinary path. Every other cut switches back, even
+    # when a plausible published receipt exists.
     if cut == 'complete':
-        monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
-        assert handoff.handle(c.root, c.data, c.backend)
+        monkeypatch.setattr(c.backend, 'verify', lambda *a: pytest.fail('old handoff candidate re-verified'))
+        # handle() refuses an un-normalised complete journal (its caller's data root
+        # would be stale); the install line normalises first, then continues.
+        with pytest.raises(ValueError, match='must be finished by the install line first'):
+            handoff.handle(c.root, c.data, c.backend)
+        assert handoff.normalise_completed(c.backend)
+        assert handoff.handle(c.root, c.data, c.backend) is False
+        assert read_json(c.service.selection)['data_root'] == str(c.destination)
         assert state(c.manager)['r1'] == 'active' and not state(c.manager)['running']
         c.tx.recover(rollback=True)
     else:
@@ -468,8 +482,6 @@ def test_cli_serializes_boundary_and_never_calls_legacy_paths(case, monkeypatch)
         return stage(*args, **options)
     monkeypatch.setattr(c.backend, 'stage', under_lock)
     assert cli.main(['--root', str(c.root), '--manifest', str(manifest), '--uv', sys.executable]) == 0
-    monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
-    assert cli.main(['--root', str(c.root)]) == 0
     r1_work(c)
     before = snapshot(c.data), snapshot(c.destination)
     assert cli.main(['--root', str(c.root), '--rollback']) == 0
@@ -794,9 +806,10 @@ def test_mac_uninstall_helper_refuses_without_mutation(case, monkeypatch):
 
 
 def test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy(case, monkeypatch, capsys):
-    # The handled R0->R1 route returns before the installer applies choices, so a
-    # requested change must be refused (never silently dropped) and saved policy
-    # must be carried over and summarised. R0 is an existing install: no prompt.
+    # The R0->R1 handoff never applies choice changes, so a requested change
+    # must be refused (never silently dropped) and saved policy carried over.
+    # R0 is an existing install: no prompt. Choices changed after the handoff
+    # go through the ordinary install path (tests/test_update_from_field_states.py).
     c = case
     manifest = c.root.parent / 'manifest.json'
     write_json(manifest, c.manifest)
@@ -812,174 +825,27 @@ def test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy(case
     assert cli.main([*args, '--autostart', 'on']) == 1
     out = capsys.readouterr().out
     assert 'cannot apply setup choice changes (autostart)' in out
+    assert 'Astrid did NOT update: the installer refused to continue' in out
     assert not handoff.journal_path(c.service).exists() and not c.runtime_calls
     assert (c.service.selection.read_bytes(), snapshot(c.data)) == before
     assert_r0(c)
 
-    # Explicit value equal to the saved policy is no change: handoff completes with a summary.
+    # Explicit value equal to the saved policy is no change: the handoff completes,
+    # and the receipt names the releases instead of the handoff.
     assert cli.main([*args, '--autostart', 'off']) == 0
     out = capsys.readouterr().out
-    assert 'Astrid setup summary:' in out and 'R0 to R1 handoff handled' in out
-    assert 'Astrid will not start at sign-in' in out  # saved policy, not defaults
-    assert read_json(handoff.journal_path(c.service))['phase'] == 'complete'
+    assert 'Astrid updated: Release 0 → Release 1.' in out and 'handoff handled' not in out
+    assert 'Astrid setup summary:' not in out  # the summary is in install.log (card 2)
+    assert 'Your choice: start at sign-in is off.' in out  # saved policy, not defaults
+    assert read_json(handoff.archive_path(c.service))['phase'] == 'complete'
     assert read_json(c.service.selection)['choices'] == saved
 
-    # Completed handoff: a requested change is not refused by handoff; handle()
-    # returns False so the caller's normal install applies it. An incomplete
-    # journal still refuses with the one message and changes nothing.
-    monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
+    # An unfinished journal still refuses a change with the one message and changes nothing.
+    complete = read_json(handoff.archive_path(c.service))
     journal = handoff.journal_path(c.service)
-    complete = read_json(journal)
-    assert handoff.handle(c.root, c.data, c.backend, policy_change={'command': False}) is False
-    assert read_json(journal) == complete
+    handoff.archive_path(c.service).unlink()
     write_json(journal, {**complete, 'phase': 'switching'})
     midway = journal.read_bytes()
     with pytest.raises(ValueError, match=r'cannot apply setup choice changes \(command\)'):
         handoff.handle(c.root, c.data, c.backend, policy_change={'command': False})
     assert journal.read_bytes() == midway
-    write_json(journal, complete)
-    assert cli.main([*args, '--autostart', 'on']) == 0
-    assert read_json(c.service.selection)['choices']['autostart'] is True
-    applied = read_json(c.service.selection)
-    assert cli.main([*args, '--autostart', 'on']) == 0
-    assert read_json(c.service.selection) == applied
-    # Command and skills branches of the same completed-policy apply: R1 operations only, no R0 stop.
-    opened, synced = [], []
-    monkeypatch.setattr(c.backend, 'open', lambda *a, **k: opened.append('open'), raising=False)
-    monkeypatch.setattr(c.backend, 'sync_skills', lambda *a, **k: synced.append(a), raising=False)
-    c.service.choices = {**applied['choices'], 'command': False}
-    assert handoff.apply_completed_policy(c.backend, {'command': False}) == {'command': {'ok': True, 'reason': None}}
-    assert opened == ['open'] and synced == []
-    assert read_json(c.service.selection)['choices']['command'] is False
-    c.service.choices = {**read_json(c.service.selection)['choices'], 'skills': False, 'skill_copies': True}
-    assert handoff.apply_completed_policy(c.backend, {'skills': False, 'skill_copies': True}).keys() == {'skills', 'skill_copies'}
-    assert opened == ['open'] and len(synced) == 1
-    assert read_json(c.service.selection)['choices']['skill_copies'] is True
-    capsys.readouterr()
-    assert cli.main(['--root', str(c.root)]) == 0
-    out = capsys.readouterr().out
-    assert 'Astrid setup summary:' in out
-    assert read_json(c.service.selection)['choices'] == {**saved, 'autostart': True, 'command': False, 'skills': False, 'skill_copies': True}
-
-
-@pytest.fixture
-def completed(case, monkeypatch):
-    c = case
-    manifest = c.root.parent / 'manifest.json'
-    write_json(manifest, c.manifest)
-    saved = {'autostart': False, 'command': True, 'skills': True, 'skill_copies': False}
-    write_json(c.service.selection, {**read_json(c.service.selection), 'choices': saved})
-    monkeypatch.setattr(cli, 'Backend', lambda *a, **kw: c.backend)
-    monkeypatch.setattr(cli, 'validate_manifest', lambda value: value)
-    monkeypatch.setattr(cli, '_prompt_choices', lambda: pytest.fail('no prompt'))
-    args = ['--root', str(c.root), '--manifest', str(manifest), '--uv', sys.executable]
-    assert cli.main(args) == 0
-    assert read_json(handoff.journal_path(c.service))['phase'] == 'complete'
-    monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
-    return c, args, saved
-
-
-def _fail_once(monkeypatch, target, name):
-    calls = []
-
-    def step(*a, **k):
-        calls.append(a)
-        if len(calls) == 1:
-            raise RuntimeError('boom')
-    monkeypatch.setattr(target, name, step, raising=False)
-    return calls
-
-
-def _retry(c, args, flag, value, key, new, old, capsys):
-    capsys.readouterr()
-    assert cli.main([*args, flag, value]) == 1
-    out = capsys.readouterr().out
-    assert f'{key}: failed (boom); not saved, rerun to retry' in out and 'Applied' not in out
-    assert read_json(c.service.selection)['choices'][key] == old
-    assert cli.main([*args, flag, value]) == 0
-    assert f'{key}: applied' in capsys.readouterr().out
-    assert read_json(c.service.selection)['choices'][key] == new
-
-
-def test_completed_policy_autostart_failure_retries(completed, monkeypatch, capsys):
-    c, args, _ = completed
-    calls = _fail_once(monkeypatch, registration.BoundaryRegistration, 'set_autostart')
-    _retry(c, args, '--autostart', 'on', 'autostart', True, False, capsys)
-    assert len(calls) == 2
-
-
-def test_completed_policy_command_failure_retries(completed, monkeypatch, capsys):
-    c, args, _ = completed
-    calls = _fail_once(monkeypatch, c.backend, 'open')
-    _retry(c, args, '--command', 'off', 'command', False, True, capsys)
-    assert len(calls) == 2
-
-
-def test_completed_policy_skills_failure_retries(completed, monkeypatch, capsys):
-    c, args, _ = completed
-    calls = _fail_once(monkeypatch, c.backend, 'sync_skills')
-    _retry(c, args, '--skills', 'off', 'skills', False, True, capsys)
-    assert len(calls) == 2
-
-
-def test_completed_policy_skill_copies_failure_retries(completed, monkeypatch, capsys):
-    c, args, _ = completed
-    calls = _fail_once(monkeypatch, c.backend, 'sync_skills')
-    _retry(c, args, '--skill-copies', 'on', 'skill_copies', True, False, capsys)
-    assert len(calls) == 2
-
-
-def _soft_fail_once(monkeypatch, backend, name, fail_result, ok_result):
-    # The real backend reports failure in its return value or recorded state, not by raising.
-    calls = []
-
-    def step(*a, **k):
-        calls.append(a)
-        return fail_result(backend) if len(calls) == 1 else ok_result(backend)
-    monkeypatch.setattr(backend, name, step, raising=False)
-    return calls
-
-
-def _retry_soft(c, args, flag, value, key, new, old, reason, capsys):
-    capsys.readouterr()
-    assert cli.main([*args, flag, value]) == 1
-    out = capsys.readouterr().out
-    assert f'{key}: failed ({reason}); not saved, rerun to retry' in out
-    assert f'{key}: applied' not in out and 'Applied' not in out
-    assert read_json(c.service.selection)['choices'][key] == old
-    assert cli.main([*args, flag, value]) == 0
-    assert f'{key}: applied' in capsys.readouterr().out
-    assert read_json(c.service.selection)['choices'][key] == new
-
-
-def test_completed_policy_command_error_result_is_a_failed_step_and_retries(completed, monkeypatch, capsys):
-    c, args, _ = completed
-    calls = _soft_fail_once(
-        monkeypatch, c.backend, 'open',
-        lambda b: setattr(b, 'command_result', {'error': 'OSError'}),
-        lambda b: setattr(b, 'command_result', {'error': None}))
-    _retry_soft(c, args, '--command', 'off', 'command', False, True,
-                'command failed (OSError)', capsys)
-    assert len(calls) == 2
-
-
-def test_completed_policy_skills_not_ok_is_a_failed_step_and_retries(completed, monkeypatch, capsys):
-    c, args, _ = completed
-    calls = _soft_fail_once(
-        monkeypatch, c.backend, 'sync_skills',
-        lambda b: {'ok': False, 'destinations': []},
-        lambda b: {'ok': True, 'destinations': []})
-    _retry_soft(c, args, '--skills', 'off', 'skills', False, True,
-                'skill sync failed; see the installer log', capsys)
-    assert len(calls) == 2
-
-
-def test_completed_policy_skill_copies_not_ok_is_a_failed_step_and_retries(completed, monkeypatch, capsys):
-    c, args, _ = completed
-    calls = _soft_fail_once(
-        monkeypatch, c.backend, 'sync_skills',
-        lambda b: {'ok': False, 'destinations': []},
-        lambda b: {'ok': True, 'destinations': []})
-    _retry_soft(c, args, '--skill-copies', 'on', 'skill_copies', True, False,
-                'skill sync failed; see the installer log', capsys)
-    assert len(calls) == 2

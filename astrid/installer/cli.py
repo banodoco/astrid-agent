@@ -8,9 +8,12 @@ import os
 import sys
 import traceback
 from pathlib import Path
+from types import SimpleNamespace
 
 from . import update_job
 from .backend import Backend
+from .installation import Installation
+from .outcome import RECORD, Request, clear_record, receipt_warnings, settle, write_record
 from .choices import (
     CHOICE_NAMES,
     RECOMMENDED_CHOICES,
@@ -116,14 +119,18 @@ def consent_rerun_command(choices, *, windows: bool) -> str:
     return " ".join([line, "--yes", *flags])
 
 
-def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=False,
-                       result_note=None, install_root: Path | None = None):
-    def safe(value):
-        return str(value).encode("ascii", errors="backslashreplace").decode("ascii")
+def _safe(value) -> str:
+    return str(value).encode("ascii", errors="backslashreplace").decode("ascii")
 
-    print("\nAstrid setup summary:")
-    if declined or result_note:
-        print(f"  Result: {result_note or 'setup declined; no installation changes were applied.'}")
+
+def _setup_summary(choices, *, mode, outcome=None, outcomes=None, failure=None,
+                   install_root: Path | None = None) -> list[str]:
+    """The full setup summary. It goes to install.log, never after the receipt in the terminal."""
+    safe = _safe
+    lines = ["Astrid setup summary:"]
+    print = lines.append  # noqa: A001 - every summary line is collected, not printed
+    if outcomes is None and failure is None and outcome is not None:
+        pass  # This run never reached the installer's setup steps.
     else:
         outcomes = outcomes or {}
         print(f"  Startup: {outcomes.get('startup', 'not confirmed')}.")
@@ -206,6 +213,66 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
         print("  Skill copies recovery: to enable skill copies later, rerun the install line with --skill-copies on (replace this flag in the Way back line).")
     print("  Maintenance: rerun the install line to repair or restart; add --update to update, or --uninstall to remove Astrid. Uninstall keeps the workspace unless --delete-data is added.")
     print("  Way back: " + _way_back_command(choices, mode=mode))
+    return lines
+
+# One terminal line for each choice the user changed from the recommended setup.
+CHOICE_LINES = {
+    ("autostart", False): "Your choice: start at sign-in is off. To turn it on, rerun the install line with --autostart on.",
+    ("command", False): "Your choice: the astrid command is off. To turn it on, rerun the install line with --command on.",
+    ("skills", False): "Your choice: Astrid skills are off. To turn them on, rerun the install line with --skills on.",
+    ("skill_copies", True): "Your choice: skills are copies. To use links instead, rerun the install line with --skill-copies off.",
+}
+
+
+def changed_choice_lines(choices, *, install_root: Path | None = None) -> list[str]:
+    """A line only for a choice the user changed; the recommended setup prints none."""
+    selected = resolve_choices(prompt=choices, accept_recommended=choices is None)
+    lines = []
+    for name in CHOICE_NAMES:
+        if selected[name] == RECOMMENDED_CHOICES[name]:
+            continue
+        lines.append(CHOICE_LINES.get((name, selected[name]),
+                                      f"Your choice: {name.replace('_', ' ')} is "
+                                      f"{'on' if selected[name] else 'off'}."))
+        if name == "command" and install_root is not None:
+            launcher = install_root / ("run-astrid.cmd" if sys.platform == "win32" else "run-astrid")
+            if launcher.is_file():
+                lines.append(f"Run Astrid with: {_safe(launcher)}")
+    return lines
+
+
+def _append_log(log: Path | None, lines: list[str]) -> bool:
+    """Append ``lines`` to install.log; False when there is no usable log."""
+    from runtime_protocol import platform
+
+    if log is None:
+        return False
+    try:
+        with Path(log).open("a", encoding="utf-8") as stream:
+            platform.owner_only(stream.fileno())
+            stream.write("\n".join(lines) + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def _print_run_summary(choices, *, mode, outcome=None, outcomes=None, failure=None,
+                       install_root: Path | None = None, log: Path | None = None) -> None:
+    """Point to detail, never dump it: the receipt's outcome lines are the last lines printed.
+
+    The setup summary (startup, command, skill paths, failure class, maintenance and
+    the Way back line) goes to install.log. Without a usable log it is printed first,
+    above the receipt, which then says the details are shown above in this window.
+    """
+    summary = _setup_summary(choices, mode=mode, outcome=outcome, outcomes=outcomes,
+                             failure=failure, install_root=install_root)
+    if not _append_log(log, summary):
+        print("\n" + "\n".join(summary))
+    changed = changed_choice_lines(choices, install_root=install_root)
+    if changed:
+        print("\n" + "\n".join(changed))
+    if outcome is not None:
+        print("\n" + "\n".join(outcome.headline()))
 
 
 class _ChoiceAction(argparse.Action):
@@ -225,6 +292,18 @@ class _ChoiceAction(argparse.Action):
         current_values = dict(getattr(namespace, "choices", None) or {})
         current_values[self.dest] = parsed
         setattr(namespace, "choices", current_values)
+
+
+def normalise_completed(backend) -> bool:
+    from .boundary_handoff import normalise_completed as normalise
+
+    return normalise(backend)
+
+
+def normalised_handoff(service, root: Path):
+    from .installation import normalised_handoff as normalised
+
+    return normalised(service, root)
 
 
 def _pinokio_claim_is_live(recorded: dict) -> bool:
@@ -304,6 +383,85 @@ def _check_installer_state(lock_path: Path, *protected: Path) -> None:
         raise ValueError("The installer lock is not a private regular file.")
 
 
+class _Run:
+    """One install/update/repair/recovery run, settled exactly once by its receipt."""
+
+    def __init__(self, mode: str):
+        self.mode = mode
+        self.target: int | None = None
+        self.target_source: str | None = None
+        self.reason: str | None = None
+        self.refused = False  # the run stopped before doing anything; never reported as reached
+        self.before = None
+        self.home = self.system = self.root = None
+        self.choices = None
+        self.installer = None
+        self.transaction_id = None
+        self.operation_id: str | None = None
+        self.started_at: int | None = None
+        self.protected: list[Path] = []
+        self.log: Path | None = None  # the installer log, once it is known to be outside every root
+
+    def observe(self, home: Path, system: str, root: Path | None) -> None:
+        import secrets
+        import time
+
+        self.home, self.system, self.root = home, system, root
+        self.operation_id = self.operation_id or secrets.token_hex(16)
+        self.started_at = self.started_at or int(time.time())
+        try:
+            self.before = Installation.resolve(home, system=system, root=root)
+            pending = read_json((root or self.before.program_root) / "update-transaction.json")
+            self.transaction_id = pending.get("operation_id")
+        except Exception:  # noqa: BLE001 - observation only; settle re-resolves
+            self.before = None
+
+    def manifest(self, manifest: dict) -> dict:
+        from .core import install_release
+
+        self.target = install_release(manifest)
+        # A manifest that names no release leaves the target to the activated release (see activated()).
+        self.target_source = "manifest" if "release" in manifest else "default"
+        return manifest
+
+    def activated(self, release: int | None) -> None:
+        """The release this run activated; it is the target only when the manifest named none."""
+        if release is not None and self.target_source != "manifest":
+            self.target, self.target_source = release, "activated"
+
+    def _rolled_back(self) -> bool:
+        if self.root is None:
+            return False
+        pending = read_json(self.root / "update-transaction.json")
+        return pending.get("step") == "rolled_back" and pending.get("operation_id") != self.transaction_id
+
+    def finish(self, *, failure: BaseException | None = None) -> int:
+        try:
+            rolled_back = failure is not None and self._rolled_back()
+        except (OSError, ValueError):
+            rolled_back = False
+        request_mode = "update" if self.mode in {"update", "app-update"} else self.mode
+        outcome = settle(Request(request_mode, self.target, self.reason, self.refused, self.target_source),
+                         self.before,
+                         lambda: (None if self.home is None else
+                                  Installation.resolve(self.home, system=self.system, root=self.root)),
+                         failure=failure, rolled_back=rolled_back,
+                         warnings=receipt_warnings(getattr(self.installer, "outcomes", None)),
+                         details=None if self.log is None else str(self.log))
+        from dataclasses import replace
+
+        # Every non-zero outcome ends with Next and Details (outcome.next_steps).
+        outcome = replace(outcome, log=str(self.log) if self.log is not None else None)
+        if self.log is not None:
+            # Beside install.log, which diagnostics already read; never in a selected root.
+            write_record(self.log.with_name(RECORD), outcome, *self.protected,
+                         run={"operation_id": self.operation_id, "started_at": self.started_at})
+        _print_run_summary(self.choices, mode=self.mode, outcome=outcome,
+                           outcomes=getattr(self.installer, "outcomes", None), failure=failure,
+                           install_root=self.root, log=self.log)
+        return outcome.exit_code
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="astrid install", description="Install or update Astrid.")
     mode = result.add_mutually_exclusive_group()
@@ -340,10 +498,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     mode = ("rollback" if args.rollback else "update-recovery" if args.update_recovery else "app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
             else "doctor" if args.doctor is not None else "install")
-    summary_choices = None
-    summary_installer = None
-    summary_root = None
-    declined = False
+    run = _Run(mode)
+    settled = mode in {"install", "update", "app-update"}
     if args.apply and mode != "update-recovery":
         parser().error("--apply is only valid with --update-recovery.")
     if mode == "update-recovery":
@@ -384,10 +540,16 @@ def main(argv: list[str] | None = None) -> int:
         parser().error("--update-job is invalid.")
     from runtime_protocol import platform
     log = None  # Unresolved selection and unsafe/unavailable logs use the console.
+    if settled:
+        # A run that fails before it can write its own receipt must not leave
+        # the previous run's receipt standing as if it were this run's.
+        try:
+            clear_record(platform.log_dir() / RECORD)
+        except (OSError, ValueError, KeyError):
+            pass
     try:
         root = absolute(args.root or default_program_root(Path.home(), sys.platform))
         log_path = platform.log_dir() / "install.log"
-        summary_root = root
         uv = args.uv or default_uv()
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log_path, uv, process_control=process_control)
@@ -395,6 +557,9 @@ def main(argv: list[str] | None = None) -> int:
         if mode != "doctor":
             # Before any selection read, including the Pinokio update path.
             migrate_install_selection(backend.service.home, backend.service.system)
+        if settled:
+            run.observe(backend.service.home, backend.service.system, root if args.root else None)
+            run.root = root
         if mode == "uninstall":
             # This read-only gate precedes installer lock/log creation and all
             # service or selection work. lexists also refuses partial journals.
@@ -421,6 +586,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
             log = _prepare_log(log_path, root, absolute(marker["data_root"]))
+            run.protected, run.log = [root, absolute(marker["data_root"])], log
             backend.console_diagnostics = log is None
             if log is not None:
                 backend.log = log
@@ -447,10 +613,12 @@ def main(argv: list[str] | None = None) -> int:
             if not pending or pending.get("step") in TERMINAL_STEPS:
                 preflight_pinokio_update(root, backend, absolute(marker["data_root"]))
             with operation(root, backend):
+                run.choices = backend.service.choices
                 if pending and pending.get("step") not in TERMINAL_STEPS:
                     recover_app(root, backend)
                     print(RECOVERED_PREVIOUS_VERSION)
-                    return 0
+                    run.reason = "recovered-previous-version"
+                    return run.finish()
                 # Recovery-only invocations return above; fresh operations preflight
                 # once here before downloads or staging. C1 remains stop authority.
                 if not uv.is_absolute() or not uv.is_file():
@@ -458,13 +626,13 @@ def main(argv: list[str] | None = None) -> int:
                 manifest_path = args.manifest or root / "install-manifest.json"
                 if not args.manifest:
                     download("https://astrid.haus/install-manifest.json", manifest_path)
-                manifest = validate_manifest(read_json(manifest_path))
-                if args.update_app:
-                    outcomes = update_app(root, backend, manifest)
-                else:
-                    outcomes = update_pinokio(root, backend, manifest, force=args.update)
-                _print_run_summary(backend.service.choices, mode=mode, outcomes=outcomes)
-                return 0
+                manifest = run.manifest(validate_manifest(read_json(manifest_path)))
+                outcomes = (update_app(root, backend, manifest) if args.update_app
+                            else update_pinokio(root, backend, manifest, force=args.update))
+                run.installer = SimpleNamespace(outcomes=outcomes)
+                # With no release named by the manifest, the receipt targets the release this run activated.
+                run.activated(outcomes.get("release"))
+                return run.finish()
         lock_path = installer_lock_path(Path.home(), sys.platform)
         _check_installer_state(lock_path, *_provisional_roots(root, args.data_root, backend.service, mode))
         platform.private_directory(lock_path.parent)
@@ -544,17 +712,28 @@ def main(argv: list[str] | None = None) -> int:
                     if args.root and recorded_root != root:
                         raise ValueError(f"The login service already belongs to {recorded_root}.")
                     root = recorded_root
+                    run.root = root
                     backend = Backend(root, log_path, uv, process_control=process_control)
                     backend.console_diagnostics = True
                     prior = read_json(root / "install.json")
                 if not recorded and prior.get("owner") == LABEL and prior.get("data_root"):
                     recorded = {"data_root": prior["data_root"]}
                 backend.managed_by = managed_by
+                if mode in {"install", "update"} and managed_by != "pinokio" and normalise_completed(backend):
+                    # The first run after a finished storage move makes R1 the selected
+                    # data root once; from here this is an ordinary direct install.
+                    recorded = backend.service.recorded()
+                handed_off = (managed_by != "pinokio" and mode != "rollback"
+                              and normalised_handoff(backend.service, root) is not None)
+                if handed_off:
+                    backend.service.adopt_handed_off_label()
                 # Preserve the path acquired above even if the process
                 # environment changes before service registration or replay.
                 backend.service.activation_lock_path = absolute(lock_path)
                 data = absolute(recorded.get("data_root") or args.data_root or platform.data_root())
                 protected = [root, data, absolute(str(data) + "-r1"), *_retained_r0_roots(backend.service)]
+                if recorded.get("retained_r0_data_root"):
+                    protected.append(absolute(recorded["retained_r0_data_root"]))
                 _check_installer_state(lock_path, *protected)
                 if not separate_roots(root, data):
                     raise ValueError("Keep program files and the workspace in separate directories.")
@@ -572,6 +751,7 @@ def main(argv: list[str] | None = None) -> int:
                 # resolved. Include the retained source of an interrupted stop:
                 # recovery can precede validating the current data selection.
                 log = _prepare_log(log_path, *protected)
+                run.protected, run.log = protected, log
                 backend.console_diagnostics = log is None
                 if log is not None:
                     backend.log = log
@@ -587,10 +767,9 @@ def main(argv: list[str] | None = None) -> int:
                         and not args.yes and not args.choices and sys.stdin.isatty()):
                     prompt_values, declined = _prompt_choices()
                     if declined:
-                        summary_choices = dict(RECOMMENDED_CHOICES)
-                        _print_run_summary(summary_choices, mode=mode, declined=True,
-                                           install_root=summary_root)
-                        return 0
+                        run.choices = dict(RECOMMENDED_CHOICES)
+                        run.reason = "declined"
+                        return run.finish()
                 matching_selection = (
                     recorded.get("owner") == LABEL
                     and recorded.get("program_root") == str(root)
@@ -616,19 +795,16 @@ def main(argv: list[str] | None = None) -> int:
                         interactive=sys.stdin.isatty()):
                     print(render_plan(resolved_choices))
                     print("Exact rerun command: " + consent_rerun_command(args.choices, windows=backend.service.system == "win32"))
-                    summary_choices = resolved_choices
-                    _print_run_summary(
-                        summary_choices, mode=mode,
-                        result_note="setup not started; interactive consent is required.",
-                        install_root=summary_root)
-                    return 2
+                    run.choices = resolved_choices
+                    run.reason = "consent-required"
+                    return run.finish()
                 if resolved_choices is not None:
                     backend.service.choices = resolved_choices
-                    summary_choices = resolved_choices
+                    run.choices = resolved_choices
                     policy_change = {name: value for name, value in args.choices.items()
                                      if value != previous_skill_policy[name]} or None
-                if mode in {"install", "update", "rollback"} and managed_by != "pinokio":
-                    from .boundary_handoff import apply_completed_policy, handle
+                if mode in {"install", "update", "rollback"} and managed_by != "pinokio" and not handed_off:
+                    from .boundary_handoff import handle
 
                     def candidate_manifest():
                         if not uv.is_absolute() or not uv.is_file():
@@ -636,46 +812,42 @@ def main(argv: list[str] | None = None) -> int:
                         path = args.manifest or root / "install-manifest.json"
                         if not args.manifest:
                             download("https://astrid.haus/install-manifest.json", path)
-                        return validate_manifest(read_json(path))
+                        return run.manifest(validate_manifest(read_json(path)))
 
                     # R0's data stays read-only. This must precede legacy
                     # journal replay, Runtime preflight, staging and claims.
                     if handle(root, data, backend, manifest_loader=candidate_manifest,
                               rollback=mode == "rollback", policy_change=policy_change):
-                        # A handled R0/R1 boundary never reaches the installer's
-                        # consent application below. Saved choices stay in the
-                        # selection the handoff carries over, and a requested
-                        # change was refused inside handle(). Report that.
-                        if mode in {"install", "update"}:
-                            _print_run_summary(
-                                summary_choices, mode=mode, install_root=summary_root,
-                                result_note="R0 to R1 handoff handled; saved setup choices were kept and no command, autostart or skills change was made by it.")
-                        return 0
-                    applied = (apply_completed_policy(backend, policy_change)
-                               if mode in {"install", "update"} else False)
-                    if applied:
-                        # Completed handoff: the changed choices were applied to R1
-                        # in place. The R0 stop path and legacy discovery are not used.
-                        parts = [f"{name}: applied" if item["ok"] else
-                                 f"{name}: failed ({item['reason']}); not saved, rerun to retry"
-                                 for name, item in applied.items()]
-                        failed = any(not item["ok"] for item in applied.values())
-                        # Summary reflects what was persisted, not what was requested.
-                        saved_choices = read_json(backend.service.selection).get("choices", {})
-                        _print_run_summary(
-                            {**summary_choices, **saved_choices}, mode=mode, install_root=summary_root,
-                            result_note="; ".join(parts) + ("." if failed else "; R0 was not touched."))
-                        return 1 if failed else 0
-                else:
+                        # This run performed the copy-only handoff (normalised at its
+                        # end) or recovered one. The receipt reports what is live now.
+                        if mode == "rollback":
+                            return 0
+                        if run.target is None:
+                            run.reason = "recovered-previous-version"
+                        return run.finish()
+                elif not handed_off:
                     from .boundary_registration import journal_path
                     from .r0_stop import refuse_unintegrated_r1_handoff
 
-                    if os.path.lexists(journal_path(backend.service)):
+                    if (os.path.lexists(journal_path(backend.service))
+                            and normalised_handoff(backend.service, root) is None):
                         raise ValueError("An R1 registration needs recovery. Run the install line again before this operation.")
                     if managed_by != "pinokio":
                         refuse_unintegrated_r1_handoff(root, backend.service)
                     elif mode == "rollback":
                         raise ValueError("Copy-only service rollback is available for direct installations.")
+                if handed_off and mode in {"install", "update"}:
+                    from .installation import OtherRuntimeRunning, retire_r0_leftover
+
+                    try:
+                        # Before any stop: a known R0-era leftover is stopped through
+                        # R0's own label (files kept); anything else is refused.
+                        if retire_r0_leftover(backend.service, root):
+                            print("Stopped the earlier Astrid copy that was running again; its files were kept.")
+                    except OtherRuntimeRunning as refusal:
+                        print(str(refusal))
+                        run.reason, run.refused = "other-runtime-running", True
+                        return run.finish()
                 pending_update = pending_transaction(root)
                 if mode in {"install", "update"} and pending_update:
                     if pending_update.get("transaction_kind") == "app":
@@ -697,9 +869,8 @@ def main(argv: list[str] | None = None) -> int:
                         if marker.get("owner") == LABEL:
                             update_job.sweep_owned_jobs(root, locked=True)
                         print(RECOVERED_PREVIOUS_VERSION)
-                    if mode in {"install", "update"}:
-                        _print_run_summary(summary_choices, mode=mode)
-                    return 0
+                    run.reason = "recovered-previous-version"
+                    return run.finish()
                 if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
                     # Sweep only jobs and artifacts named by Astrid's durable
                     # ownership record. Active and unqueryable objects remain.
@@ -742,12 +913,14 @@ def main(argv: list[str] | None = None) -> int:
                         args.manifest = root / "install-manifest.json"
                         download("https://astrid.haus/install-manifest.json", args.manifest)
                     manifest = validate_manifest(read_json(args.manifest))
+                    if settled:
+                        run.manifest(manifest)
                 bundle = None
                 if mode == "doctor":
                     bundle = default_doctor_bundle() if args.doctor == "__default__" else Path(args.doctor)
                 options = {"managed_by": managed_by} if managed_by else {}
                 installer = Installer(root, data, backend, **options)
-                summary_installer = installer
+                run.installer = installer
                 if args.update_job:
                     if update_job_record is None:
                         raise ValueError("The update job could not be admitted.")
@@ -765,10 +938,8 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 if locked:
                     platform.unlock_file(lock.fileno())
-        if mode in {"install", "update"}:
-            _print_run_summary(summary_choices, mode=mode,
-                               outcomes=getattr(summary_installer, "outcomes", None),
-                               install_root=summary_root)
+        if settled:
+            return run.finish()
         return 0
     except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - CLI boundary renders all install failures.
         try:
@@ -780,18 +951,20 @@ def main(argv: list[str] | None = None) -> int:
                     traceback.print_exc(file=stream)
         except OSError:
             log = None
+            run.log = None  # the log became unusable: Details points at this window instead
             traceback.print_exc()
         print(FAILURE_MESSAGE)
         if isinstance(failure, (BackupSpaceError, ValueError, RuntimeOperationError)):
             print(str(failure))
             if isinstance(failure, RuntimeOperationError) and failure.details is not None:
-                print(json.dumps(failure.details, ensure_ascii=False))
+                # Detail goes to install.log; the Details line points there.
+                details = json.dumps(failure.details, ensure_ascii=False)
+                if not _append_log(log, ["Failure details: " + details]):
+                    print(details)
         elif isinstance(failure, VerificationError) and failure.safe_message:
             print(failure.safe_message)
-        if log is not None:
-            print(f"Details: {log}")
-        if mode in {"install", "update"}:
-            _print_run_summary(summary_choices, mode=mode,
-                               outcomes=getattr(summary_installer, "outcomes", None),
-                               failure=failure, install_root=summary_root)
+        if log is not None and not settled:
+            print(f"Details: {log}")  # settled runs name it in the receipt's closing lines
+        if settled:
+            return run.finish(failure=failure)
         return 1

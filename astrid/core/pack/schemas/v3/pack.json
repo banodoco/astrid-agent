@@ -118,6 +118,10 @@
             },
             "path": {
               "const": "docs/SKILL.md"
+            },
+            "sync_name": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]*$"
             }
           }
         },

@@ -341,7 +341,7 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
         "--root", str(root), "--managed-by", "pinokio", "--update",
         "--manifest", str(tmp_path / "unavailable-manifest"),
         "--uv", str(tmp_path / "unavailable-uv"),
-    ]) == 0
+    ]) == 3  # recovery-only --update: the journal restores old, so the release is unchanged (exit 3)
     capsys.readouterr()
     assert events[0] == "down"
     assert "workspace" not in events  # Recovery uses the journal's retained realm identity.
@@ -846,7 +846,7 @@ def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
         "--root", str(root), "--managed-by", "pinokio", "--update",
         "--manifest", str(tmp_path / "unavailable-manifest"),
         "--uv", str(tmp_path / "unavailable-uv"),
-    ]) == 0
+    ]) == 3  # recovery-only --update: the journal restores old, so the release is unchanged (exit 3)
     capsys.readouterr()
     assert events[0] == "down"
     assert "workspace" not in events  # Recovery uses the journal's retained realm identity.

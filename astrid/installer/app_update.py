@@ -621,5 +621,7 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
                 outcomes["skills"] = {"ok": False, "destinations": []}
                 say("Couldn't apply Astrid's skill changes; see the log.")
             backend.persist_identity(current(root))
+        # The release this run activated: the receipt's target, whatever the manifest defaulted to.
+        outcomes["release"] = prepared.release
         say("Astrid is updated and running.")
         return outcomes

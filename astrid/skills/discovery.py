@@ -46,6 +46,7 @@ class SkillDescriptor:
     hermes_metadata: dict = field(default_factory=dict)
     skill: str | None = None
     audience: str = "default"
+    sync_name: str | None = None
 
     @property
     def developer_only(self) -> bool:
@@ -129,6 +130,7 @@ def _try_add_skill(
     pack_id: str,
     *,
     strict_frontmatter: bool = False,
+    sync_name: str | None = None,
 ) -> bool:
     """Parse *skill_md* and append a SkillDescriptor if valid.
 
@@ -168,6 +170,7 @@ def _try_add_skill(
             skill_md=skill_md,
             hermes_metadata=hermes_meta,
             audience=frontmatter_audience(front),
+            sync_name=sync_name,
         )
     )
     return True
@@ -225,6 +228,7 @@ def _scan_discovered_packs(descriptors: list[SkillDescriptor]) -> None:
                 pack_skill,
                 pack.id,
                 strict_frontmatter=strict_frontmatter,
+                sync_name=pack.documentation.get("sync_name"),
             )
         ):
             seen_ids.add(pack.id)
@@ -264,6 +268,7 @@ def list_skills(packs_dir: Path | None = None) -> list[SkillDescriptor]:
                 skill_md,
                 pack.id,
                 strict_frontmatter=strict_frontmatter,
+                sync_name=pack.documentation.get("sync_name"),
             )
             continue
 

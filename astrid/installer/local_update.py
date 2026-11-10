@@ -103,6 +103,23 @@ class LocalUpdateStepError(RuntimeError):
         self.step = step
 
 
+class RecoveredEarlierUpdate(ValueError):
+    """An update found an interrupted local update and restored the version before it."""
+
+
+class LocalUpdateRefusal(ValueError):
+    """Nothing was changed; ``code`` is an ``outcome.REASONS`` key. Exits 3 (not updated)."""
+
+    def __init__(self, step: str, code: str, message: str):
+        super().__init__(message)
+        self.step, self.code = step, code
+
+
+STORAGE_MOVE_REFUSAL = ("Astrid did not update: an earlier storage move on this computer is not "
+                        "finished, so nothing was changed. Run the install line once to finish it, "
+                        "then update again.")
+
+
 def _tag_step(exc: Exception, step: str) -> Exception:
     """Add a machine-readable step while retaining the original exception."""
     label = getattr(exc, "step", None) or step
@@ -200,7 +217,47 @@ def _backend(root: Path) -> Backend:
     backend.service.choices = resolve_choices(
         saved=backend.service.recorded().get("choices"), existing_install=True,
     )
-    return backend
+    from .installation import adopt_if_handed_off
+
+    # After a finished storage move the live Runtime runs under the R1 label;
+    # never operate R0's retained definition from the local update.
+    return adopt_if_handed_off(backend, root)
+
+
+def _finish_storage_move(root: Path, backend: Backend) -> Backend:
+    """Normalise a finished R0 to R1 handoff once, as the installer does, or refuse.
+
+    Runs inside the installer lock, before any selection is read: until the
+    handoff is normalised the marker and selection still name R0's data root,
+    and an update read from them would back up, migrate and start R0's data.
+    A handoff that is not finished, or that cannot be normalised safely, is
+    refused with nothing changed; the install line finishes it.
+    """
+    from .boundary_handoff import normalise_completed
+    import os
+
+    from .installation import Installation, adopt_if_handed_off, handoff_journal
+
+    service = backend.service
+    try:
+        state = Installation.resolve(service.home, system=service.system, root=root,
+                                     probe=lambda *_args: None)
+    except Exception as exc:  # noqa: BLE001 - an unreadable install is refused, never guessed
+        if not os.path.lexists(handoff_journal(service.home, service.system)):
+            return backend  # no storage move; the selection check reports what is wrong
+        raise LocalUpdateRefusal("normalise-handoff", "needs-repair", STORAGE_MOVE_REFUSAL) from exc
+    if state.kind not in {"handoff", "handoff-rolled-back"}:
+        return backend
+    if state.phase != "complete" or backend.managed_by == "pinokio":
+        raise LocalUpdateRefusal("normalise-handoff", "needs-repair", STORAGE_MOVE_REFUSAL)
+    try:
+        normalise_completed(backend)
+    except Exception as exc:  # noqa: BLE001 - normalisation validates before it writes
+        refusal = LocalUpdateRefusal("normalise-handoff", "needs-repair", STORAGE_MOVE_REFUSAL)
+        refusal.add_note(str(exc))
+        raise refusal from exc
+    # Now a direct install: operate the R1 label, never R0's retained definition.
+    return adopt_if_handed_off(backend, root)
 
 
 def _selection(root: Path, backend: Backend) -> tuple[Version, Path, dict]:
@@ -563,18 +620,150 @@ def _execute_locked(action: dict, root: Path, backend: Backend, *,
         raise LocalUpdateStepError("validate-manifest", "The target install manifest is invalid.")
     if app.get("manifest") != manifest:
         raise LocalUpdateStepError("validate-manifest", "The App and Runtime update manifests do not match.")
+    backend = _finish_storage_move(root, backend)
     hooks = HookClient(app, stdin, stdout)
     if pending_transaction(root):
         if _at_step("recover-transaction", _recover, root, backend, hooks, say=say):
-            raise ValueError("An interrupted local update was recovered; retry the update.")
+            raise RecoveredEarlierUpdate("An interrupted local update was recovered; retry the update.")
         raise ValueError("Use the owning installer to recover the interrupted update first.")
     return run_update(root, backend, manifest, app, hooks, say=say)
+
+
+RESTORED_AT_START = "Astrid finished an interrupted update from earlier: it went back to {release} and kept your projects."
+
+
+class _LocalRun:
+    """Settle one local recover/update run through the installer's own receipt.
+
+    The same ``outcome.settle`` and ``last-run.json`` as the CLI: the reply's
+    ``outcome`` and the process exit code come from the observed live Runtime,
+    never from the transaction's own belief. A recover that finds nothing to
+    recover changed nothing and leaves the previous receipt alone.
+    """
+
+    def __init__(self):
+        self.root: Path | None = None
+        self.action: dict = {}
+        self.before = None
+        self.transaction_id = None
+        self.target: int | None = None
+        self.log: Path | None = None
+        self.protected: list[Path] = []
+        self.operation_id: str | None = None
+        self.started_at: int | None = None
+
+    def _resolve(self):
+        from .installation import Installation
+
+        return Installation.resolve(Path.home(), system=sys.platform, root=self.root)
+
+    def observe(self, root: Path, action: dict) -> None:
+        import secrets
+        import time
+
+        from .outcome import RECORD, clear_record
+
+        self.root, self.action = root, action
+        self.operation_id, self.started_at = secrets.token_hex(16), int(time.time())
+        manifest = action.get("manifest")
+        try:
+            self.target = install_release(manifest) if isinstance(manifest, dict) else None
+        except (KeyError, TypeError, ValueError):
+            self.target = None
+        try:
+            self.before = self._resolve()
+        except Exception:  # noqa: BLE001 - observation only; settle re-resolves
+            self.before = None
+        pending = read_json(root / "update-transaction.json")
+        self.transaction_id = pending.get("operation_id") if isinstance(pending, dict) else None
+        try:
+            self.protected, self.log = self._log()
+        except Exception:  # noqa: BLE001 - no usable log: Details points at this window
+            self.protected, self.log = [root], None
+        if self.log is not None and (action.get("action") == "update" or pending_transaction(root)):
+            # This run can change the installation: the previous receipt must not outlive it.
+            clear_record(self.log.with_name(RECORD))
+
+    def _log(self) -> tuple[list[Path], Path | None]:
+        """install.log only when it cannot write into a selected root (the installer's rule)."""
+        from .cli import _prepare_log
+
+        protected = [self.root]
+        marker = read_json(self.root / "install.json")
+        for key in ("data_root", "r1_data_root", "retained_r0_data_root"):
+            if isinstance(marker.get(key), str) and marker[key]:
+                protected.append(absolute(marker[key]))
+        if isinstance(marker.get("data_root"), str) and marker["data_root"]:
+            protected.append(absolute(marker["data_root"] + "-r1"))
+        for path in (getattr(self.before, "active_data_root", None),
+                     getattr(self.before, "retained_r0_data_root", None)):
+            if path is not None:
+                protected.append(absolute(path))
+        try:
+            from runtime_protocol import platform
+
+            log_path = platform.log_dir() / "install.log"
+        except Exception:  # noqa: BLE001 - no usable log: Details points at this window
+            return protected, None
+        return protected, _prepare_log(log_path, *protected)
+
+    def _rolled_back(self) -> bool:
+        pending = read_json(self.root / "update-transaction.json")
+        return pending.get("step") == "rolled_back" and pending.get("operation_id") != self.transaction_id
+
+    def finish(self, *, result: dict | None = None, failure: BaseException | None = None):
+        """Return ``(outcome, lines)``, or ``(None, [])`` when the run changed nothing."""
+        from dataclasses import replace
+
+        from .outcome import RECORD, Request, settle, write_record
+
+        if self.root is None or self.action.get("action") not in {"recover", "update"}:
+            return None, []
+        if failure is None and (result or {}).get("status") == "no-recovery":
+            return None, []
+        recovered = (failure is None and (result or {}).get("status") == "recovered") or isinstance(
+            failure, RecoveredEarlierUpdate)
+        at_start = self.action.get("action") == "recover" and self.action.get("purpose") != "update"
+        if isinstance(failure, LocalUpdateRefusal):
+            # Refused before any change: not updated, with the refusal's own reason (exit 3).
+            request = Request("update", self.target, failure.code, refused=True)
+            failure = None
+        elif recovered:
+            # As the CLI: a recovery during an update is not-updated (exit 3);
+            # the launcher's start-time recovery is a repair (exit 0).
+            request = Request("repair" if at_start else "update", None if at_start else self.target,
+                              "recovered-previous-version")
+            failure = None
+        else:
+            request = Request("update", self.target)
+        try:
+            rolled_back = failure is not None and self._rolled_back()
+        except (OSError, ValueError):
+            rolled_back = False
+        outcome = settle(request, self.before, self._resolve, failure=failure, rolled_back=rolled_back)
+        app = self.action.get("app") if isinstance(self.action.get("app"), dict) else {}
+        old_editor = app.get("oldAppRelease")
+        if (outcome.kind == "already-current" and type(old_editor) is int
+                and old_editor != outcome.target):
+            # The Runtime was already at the target but the editor moved to it.
+            outcome = replace(outcome, kind="updated", start=old_editor)
+        outcome = replace(outcome, log=str(self.log) if self.log is not None else None)
+        if self.log is not None:
+            write_record(self.log.with_name(RECORD), outcome, *self.protected,
+                         run={"operation_id": self.operation_id, "started_at": self.started_at,
+                              "surface": "local-update"})
+        lines = outcome.headline()
+        if recovered and at_start and outcome.exit_code == 0:
+            release = "an unknown release" if outcome.still is None else f"Release {outcome.still}"
+            lines = [RESTORED_AT_START.format(release=release)]
+        return outcome, lines
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m astrid.installer.local_update")
     parser.add_argument("--root", required=True, type=Path)
     args = parser.parse_args(argv)
+    run = _LocalRun()
     try:
         root = absolute(args.root)
         line = sys.stdin.readline()
@@ -583,15 +772,31 @@ def main(argv: list[str] | None = None) -> int:
         action = json.loads(line)
         if not isinstance(action, dict):
             raise ValueError("The local update request must be an object.")
+        run.observe(root, action)
         result = execute(action, root, stdin=sys.stdin, stdout=sys.stdout,
                          say=lambda message: print(message, file=sys.stderr))
-        print(json.dumps({"result": result}, separators=(",", ":")), flush=True)
-        return 0
+        reply, code, failure = {"result": result}, 0, None
+    except LocalUpdateRefusal as exc:
+        # Nothing was changed: the receipt settles it as "not updated" (exit 3) with its reason.
+        reply = {"error": str(exc), "step": exc.step, "code": exc.code, "details": None}
+        code, failure, result = 3, exc, None
     except Exception as exc:  # noqa: BLE001 - protocol boundary returns every failure as JSON
-        print(json.dumps({"error": str(exc), "step": getattr(exc, "step", None),
-                          "details": getattr(exc, "details", None)},
-                         separators=(",", ":")), flush=True)
-        return 1
+        reply = {"error": str(exc), "step": getattr(exc, "step", None),
+                 "details": getattr(exc, "details", None)}
+        code, failure, result = 1, exc, None
+    try:
+        outcome, lines = run.finish(result=result, failure=failure)
+    except Exception as exc:  # noqa: BLE001 - an unsettled run is never reported as success
+        print(f"Could not settle the local update: {exc}", file=sys.stderr)
+        outcome, lines, code = None, [], 1
+    if outcome is not None:
+        # The receipt decides the exit code (0 only when the live release is the
+        # target); ``lines`` are the terminal's plain lines, Next and Details included.
+        reply["outcome"] = outcome.record()
+        reply["lines"] = lines
+        code = outcome.exit_code
+    print(json.dumps(reply, separators=(",", ":")), flush=True)
+    return code
 
 
 if __name__ == "__main__":

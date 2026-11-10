@@ -173,6 +173,100 @@ def test_update_job_availability_action_preserves_get_reason(monkeypatch):
         "actions": list(update_job.SUPPORTED_ACTIONS)}
 
 
+def _selected_windows_install(tmp_path, monkeypatch, *, release):
+    """A selected direct install whose current version has ``release``; no job record."""
+    root, data = tmp_path / "program", tmp_path / "data"
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    folder = root / "versions" / f"release{release}"
+    write_json(folder / "version.json", Version(
+        folder, folder / "py/python.exe", folder / "profile.json", {}, release=release).document())
+    (root / "current").write_text(f"release{release}\n")
+    selection = tmp_path / "selection" / "astrid-install.json"
+    write_json(selection, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
+    monkeypatch.setattr(update_job, "_selection_path", lambda: selection)
+    return root
+
+
+def test_windows_earlier_release_availability_reports_upgrade_reason(tmp_path, monkeypatch):
+    _selected_windows_install(tmp_path, monkeypatch, release=0)
+
+    assert update_job.update_job_availability(system="win32") == {
+        "available": False, "reason": "windows-upgrade-unsupported"}
+
+
+def test_windows_earlier_release_availability_action_reports_upgrade_reason(tmp_path, monkeypatch):
+    _selected_windows_install(tmp_path, monkeypatch, release=0)
+    availability = update_job.update_job_availability
+    monkeypatch.setattr(update_job, "update_job_availability", lambda: availability(system="win32"))
+    monkeypatch.setattr(update_job.sys, "stdin", io.StringIO('{"action":"availability"}'))
+    stdout = io.StringIO()
+    monkeypatch.setattr("builtins.print", lambda value: stdout.write(value))
+
+    update_job.main()
+
+    reply = json.loads(stdout.getvalue())
+    assert reply["available"] is False
+    assert reply["reason"] == "windows-upgrade-unsupported"
+
+
+def test_windows_current_release_availability_remains_supported(tmp_path, monkeypatch):
+    _selected_windows_install(tmp_path, monkeypatch, release=1)
+
+    assert update_job.update_job_availability(system="win32") == {"available": True}
+
+
+def _unpointed_windows_install(tmp_path, monkeypatch):
+    """A selected direct install with no current pointer, the shape an R0 install can have on Windows."""
+    root, data = tmp_path / "program", tmp_path / "data"
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    selection = tmp_path / "selection" / "astrid-install.json"
+    write_json(selection, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
+    monkeypatch.setattr(update_job, "_selection_path", lambda: selection)
+    return root
+
+
+def _task_query_answers(monkeypatch, *, count):
+    """Answer the probe's sign-in task query at the process boundary it really uses."""
+    scripts = []
+
+    def run(argv, **_kwargs):
+        scripts.append(argv[-1])
+        return CompletedProcess(argv, 0, stdout=f"ASTRID_TASK_COUNT={count}\n", stderr="")
+
+    monkeypatch.setattr(update_job.subprocess, "run", run)
+    return scripts
+
+
+def test_windows_r0_without_pointer_but_with_login_task_reports_upgrade_reason(tmp_path, monkeypatch):
+    _unpointed_windows_install(tmp_path, monkeypatch)
+    scripts = _task_query_answers(monkeypatch, count=1)
+
+    assert update_job.update_job_availability(system="win32") == {
+        "available": False, "reason": "windows-upgrade-unsupported"}
+    assert any("Get-ScheduledTask" in script for script in scripts)
+
+
+def test_windows_install_without_pointer_or_login_task_is_not_refused_as_upgrade(tmp_path, monkeypatch):
+    _unpointed_windows_install(tmp_path, monkeypatch)
+    scripts = _task_query_answers(monkeypatch, count=0)
+
+    assert update_job.update_job_availability(system="win32") == {"available": True}
+    assert any("Get-ScheduledTask" in script for script in scripts)
+
+
+def test_windows_upgrade_refusal_gate_names_the_reason_not_the_service_manager(monkeypatch):
+    monkeypatch.setattr(update_job, "update_job_availability", lambda: {
+        "available": False, "reason": "windows-upgrade-unsupported"})
+
+    with pytest.raises(update_job._UnsupportedServiceManager) as raised:
+        update_job._require_update_job_available()
+
+    assert raised.value.reason == "windows-upgrade-unsupported"
+    assert str(raised.value) == (
+        "Upgrading from an earlier Windows version isn't supported yet. "
+        "Your data was kept; reinstall to get the new version.")
+
+
 @pytest.mark.parametrize("system", ["linux", "darwin", "win32"])
 def test_availability_action_lists_supported_actions_on_every_os(monkeypatch, system):
     availability = update_job.update_job_availability

@@ -20,10 +20,12 @@ else:
         from scripts.journey_release2 import RELEASE2_SCENARIOS
 
 _RELEASE1_DIRECT_LEGACY: Final = (
-    {"job_id": "direct-macos", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release0-to-release1"},
-    {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release0-to-release1"},
+    {"job_id": "direct-macos", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "r0-handoff-then-update"},
+    {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "r0-handoff-then-update"},
     {"job_id": "direct-windows", "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "fresh-install"},
 )
+# The macOS and Linux upgrade rows start where real pre-R1 installs are: a
+# frozen R0 handed off to R1 storage, then the candidate's install --update.
 # Fresh install is the main Release-1 path, so Linux and macOS each have a
 # distinct strict fresh-install row beside their release-0 upgrade row.
 RELEASE1_DIRECT_FRESH_MATRIX: Final = (
@@ -142,11 +144,12 @@ END_STATE_INVENTORY: Final = (
                    else f"populated-r0-update:{row['job_id']}"), "phase": "populated-r0-update",
             "job_id": row["job_id"], "os": row["os"], "channel": row["mode"], "owner": "M-QUAL",
             "route": ("journey_version_jumps.py:execute_windows_refusal" if row["job_id"] == "direct-windows"
-                      else "journey_version_jumps.py:execute_release0_to_release1"),
+                      else "journey_version_jumps.py:execute_r0_handoff_then_update"),
             "route_state": "execution-capable", "dependency": "authentic hosted exact-tuple receipt",
             "predicate": ("frozen R0 provenance, refusal, preserved data marker and unchanged scheduled task; Windows upgrade deferred to R1.1"
                           if row["job_id"] == "direct-windows" else
-                          "frozen R0 provenance, seeded semantic data, R1 identity, native service, health, task and cleanup"),
+                          "frozen R0 seeded, handed off by the published Release 9, then the candidate's install --update: "
+                          "exit 0, candidate release installed and live, semantic data, service, health, task and cleanup"),
             "source": "check_journey_evidence.py:evaluate_release1_matrix", "evidence_kind": "release1",
         } for row in _RELEASE1_DIRECT_LEGACY
     ),

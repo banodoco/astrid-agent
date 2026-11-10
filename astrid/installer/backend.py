@@ -1454,7 +1454,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         return BoundaryRegistration(self.service).recover()
 
     def register(self, version: Version, data: Path) -> None:
-        if self.managed_by != "pinokio":
+        # A normalised handed-off install keeps its R0 stop intent and R1
+        # registration journal as rollback evidence; they authorize nothing here.
+        if self.managed_by != "pinokio" and not getattr(self.service, "handed_off", False):
             from .boundary_registration import journal_path
             from .r0_stop import R0StopError, _marker_path
 
@@ -1733,6 +1735,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # Keep the immediately previous program and backup. Failures cleaning an
         # older locked version are residue, not grounds to roll back a good update.
         keep = {candidate.root, old.root if old else candidate.root}
+        if self.managed_by != "pinokio":
+            from .installation import retained_versions
+
+            # The R0 program stays while the earlier storage move can be rolled back.
+            keep |= retained_versions(self.service, self.root)
         for path in (self.root / "versions").iterdir():
             if path not in keep:
                 try:

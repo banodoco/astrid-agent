@@ -694,7 +694,7 @@ def test_cli_recovers_completed_stop_with_fresh_controller(tmp_path, monkeypatch
     assert cli.main([
         *arguments, "--root", str(root), "--uv", str(tmp_path / "unavailable-uv"),
         "--manifest", str(tmp_path / "unavailable-manifest"),
-    ]) == 0
+    ]) == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert current(root) == old
     assert read_json(journal)["step"] == "rolled_back"
     assert ready == [(17, "realm-1")]
@@ -1285,7 +1285,7 @@ def test_pinokio_public_update_recovers_idle_missing_catalog_with_real_backend_c
         "--update", "--managed-by", "pinokio", "--root", str(backend.root),
         "--uv", str(tmp_path / "not-needed-uv"),
         "--manifest", str(tmp_path / "not-needed-manifest"),
-    ]) == 0
+    ]) == 3  # recovery-only --update: the journal restores old, so the release is unchanged (exit 3)
 
     assert lifecycle_calls == {"validate": 1, "stop": 1, "start": 1}
     assert boundary.stop_calls == 0  # No published Runtime owner needed a signal.

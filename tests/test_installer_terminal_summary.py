@@ -111,10 +111,12 @@ def test_fresh_cli_decline_returns_before_setup_effects(tmp_path, monkeypatch, c
     monkeypatch.setattr(cli, "Backend", FakeBackend)
     monkeypatch.setattr(cli, "_prompt_choices", lambda: (None, True))
 
-    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 0
+    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 3
     output = capsys.readouterr().out
-    assert "Result: setup declined" in output
-    assert "Way back:" in output
+    assert "Astrid was NOT installed." in output
+    assert "Why: you declined the setup, so nothing was changed." in output
+    assert "Way back:" not in output  # the setup summary is in install.log, not the terminal
+    assert "Way back:" in (tmp_path / "logs" / "install.log").read_text(encoding="utf-8")
     assert not (root / "install.json").exists()
     assert not (tmp_path / "selection.json").exists()
 
@@ -135,7 +137,7 @@ def test_fresh_unattended_cli_prints_plan_and_stops_before_install_writes(tmp_pa
     assert "Astrid install plan" in output
     assert "autostart: on" in output
     assert "command: off" in output
-    assert "interactive consent is required" in output
+    assert "Why: setup needs your consent; run the exact rerun command shown above." in output
     assert "Absolute Astrid CLI path" not in output
     assert not (root / "install.json").exists()
     assert not install_selection(tmp_path, cli.sys.platform).exists()
@@ -316,3 +318,78 @@ def test_backend_skill_result_marks_subprocess_failure(tmp_path, monkeypatch):
         "python": tmp_path / "python", "env": {},
     })())
     assert result == {"ok": False, "destinations": []}
+
+
+# Card 2 (Plan 29 R11): point to detail, never dump it. The receipt's outcome lines
+# are printed last; the setup summary and the failure's JSON details go to install.log.
+
+def _failing_cli(tmp_path, monkeypatch, custom=None, failure=None):
+    from astrid.installer.core import RuntimeOperationError
+
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    failure = failure or RuntimeOperationError(
+        "The Runtime refused to stop.", details={"safe": True, "probe": "secret-detail-xyz"})
+
+    class FakeBackend:
+        def __init__(self, *_args, **_kwargs):
+            self.managed_by = None
+            self.service = SimpleNamespace(recorded=lambda: {}, choices=None,
+                                           selection=tmp_path / "selection.json",
+                                           home=tmp_path, system="linux", path=tmp_path / "astrid.service")
+
+        def source_checkout_ownership(self, *_args):
+            return False
+
+        def preflight_stop(self, _data):
+            raise failure
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(
+        parents=True, exist_ok=True))
+    monkeypatch.setattr(platform, "data_root", lambda: data)
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(cli, "Backend", FakeBackend)
+    monkeypatch.setattr(cli, "_prompt_choices", lambda: (dict(custom or RECOMMENDED_CHOICES), False))
+    code = cli.main(["--root", str(root), "--data-root", str(data)])
+    return code, tmp_path / "logs" / "install.log"
+
+
+def test_failing_run_ends_with_the_outcome_lines_and_details_last(tmp_path, monkeypatch, capsys):
+    code, log = _failing_cli(tmp_path, monkeypatch)
+    assert code == 1
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert lines[-1] == f"Details: {log.absolute()}"
+    assert lines[-2].startswith("Next: ")
+    assert lines[-4].startswith("Astrid was NOT installed: ")
+    assert lines[-3] == "Nothing was installed."
+
+
+def test_setup_summary_and_failure_json_go_to_install_log_not_the_terminal(tmp_path, monkeypatch, capsys):
+    _failing_cli(tmp_path, monkeypatch)
+    out = capsys.readouterr().out
+    for text in ("Astrid setup summary:", "Way back:", "Maintenance:", "Startup:",
+                 "Command/PATH:", "Skill destinations:", "Failure: RuntimeOperationError",
+                 "secret-detail-xyz"):
+        assert text not in out
+    logged = (tmp_path / "logs" / "install.log").read_text(encoding="utf-8")
+    for text in ("Astrid setup summary:", "Way back:", "Maintenance:",
+                 "Failure: RuntimeOperationError", "secret-detail-xyz"):
+        assert text in logged, text
+
+
+def test_recommended_setup_prints_no_choice_line(tmp_path, monkeypatch, capsys):
+    _failing_cli(tmp_path, monkeypatch)
+    assert "Your choice:" not in capsys.readouterr().out
+
+
+def test_a_changed_choice_still_shows_its_choice_line(tmp_path, monkeypatch, capsys):
+    custom = {**RECOMMENDED_CHOICES, "autostart": False, "skill_copies": True}
+    _failing_cli(tmp_path, monkeypatch, custom=custom)
+    out = capsys.readouterr().out
+    assert ("Your choice: start at sign-in is off. To turn it on, rerun the install line "
+            "with --autostart on.") in out
+    assert "Your choice: skills are copies." in out
+    assert "Your choice: the astrid command is off" not in out
+    lines = [line for line in out.splitlines() if line.strip()]
+    assert lines[-1].startswith("Details: ")  # the choice lines come before the receipt

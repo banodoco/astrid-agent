@@ -29,7 +29,7 @@ def candidate():
 def release1_row(contract, pinned):
     runner_os, image_os = gate.RUNNER_PROVENANCE[contract["runner"]]
     row = {
-        "receipt_kind": "release1-installed-lifecycle", "job_id": contract["job_id"],
+        "receipt_kind": gate.release1_receipt_kind(contract), "job_id": contract["job_id"],
         "mode": contract["mode"], "scenario": contract.get("leg", "fresh-install"),
         "status": "pass", "runner_image": contract["runner"], "shell": contract["shell"],
         "source_override_test_mode": False, "final_cleanup": "pass", "os_build": runner_os + "-test",
@@ -42,18 +42,29 @@ def release1_row(contract, pinned):
         "service_manager_prerequisite": {"required": True, "outcome": "pass", "manager": "native",
                                            "version": "1", "foreground_fallback": False},
         "checks": {name: "pass" for name in ("semantic_data", "release", "service", "health",
-                                                 "task_settled", "unrelated_sentinel")},
+                                                 "task_settled", "unrelated_sentinel",
+                                                 "handed_off_start", "update_exit")},
     }
     if contract["mode"] == "direct":
         row.update(
             service_manager={"manager": "native", "foreground_fallback": False},
-            release_transition={"from": 9, "to": 10, "source": "pinned-release9-plain-install"},
-            release9_source={
+            release_transition={"from": 9, "to": 10, "start_state": "r0-handoff-complete",
+                                "source": "candidate-install-update"},
+            release0_fixture={"fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256,
+                              "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256,
+                              "manifest_sha256": "4" * 64, "provenance_sha256": "5" * 64,
+                              "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+                                          "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"}},
+            handoff_source={
                 "app_commit": gate.RELEASE9_APP_COMMIT, "manifest_sha256": "f" * 64,
                 "bootstrap_sha256": {"public/install": "1" * 64, "public/install.sh": "2" * 64,
                                      "public/install.ps1": "3" * 64},
                 "identity": gate.RELEASE9_IDENTITY,
             },
+            handoff={"phase": "complete", "release": 9, "r0_data_root": "/run/data",
+                     "r1_data_root": "/run/data-r1"},
+            update={"command": "install --update", "exit_code": 0},
+            health_transition={"candidate_live_release": 10},
             semantic_data={"identical": True, "before_sha256": "b" * 64, "after_sha256": "b" * 64},
         )
     else:

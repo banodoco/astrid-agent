@@ -1118,7 +1118,11 @@ def test_cli_explains_backup_space_failure_with_one_sentence(tmp_path, monkeypat
     output = capsys.readouterr()
     lines = output.out.splitlines()
     assert lines[:2] == [FAILURE_MESSAGE, message]
-    assert "Astrid setup summary:" in lines  # the consent summary now follows a failed run
+    # No install.log was used, so the summary is shown above the receipt in this window,
+    # and the receipt's Details line, last, says so.
+    assert "Astrid setup summary:" in lines
+    assert lines.index("Astrid setup summary:") < lines.index("Nothing was installed.")
+    assert lines[-1] == "Details: shown above in this window (the installer log was not used)."
     assert message in output.err
     assert not (tmp_path / "logs").exists()  # selection was never resolved
 
@@ -1170,7 +1174,8 @@ def test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics(
     assert str(tmp_path / "service.log") not in output
     # Backend construction fails before any installer log is selected; pre-main
     # then keeps diagnostics on the console and prints no Details path.
-    assert "Details:" not in output
+    assert not any(line.startswith("Details: /") for line in output.splitlines())
+    assert "Details: shown above in this window (the installer log was not used)." in output
 
 
 @pytest.mark.parametrize(("sandbox_flag", "expected_control"), [(None, "strict"), ("--sandbox", "sandbox")])
@@ -1218,7 +1223,7 @@ def test_cli_loads_manifest_when_current_pointer_targets_missing_interpreter(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     monkeypatch.setattr(cli, "Backend", CliBackend)
-    monkeypatch.setattr(cli, "validate_manifest", lambda _value: {"pinned": True})
+    monkeypatch.setattr(cli, "validate_manifest", lambda _value: {"pinned": True, "release": 1})
     monkeypatch.setattr(cli, "download", lambda *_args: pytest.fail("manifest should be read from disk"))
 
     arguments = ["--root", str(root), "--data-root", str(data),
@@ -1228,7 +1233,7 @@ def test_cli_loads_manifest_when_current_pointer_targets_missing_interpreter(
     result = cli.main(arguments)
 
     assert result == 0
-    assert backend.staged_manifest == {"pinned": True}
+    assert backend.staged_manifest == {"pinned": True, "release": 1}
     assert any(call[0] == "attach" for call in backend.calls)
     assert process_controls == [expected_control, expected_control]
 
@@ -1766,7 +1771,7 @@ def test_installer_cli_recovers_realm_restore_gap_through_real_c1(tmp_path, monk
         "--uv", str(tmp_path / "unavailable-uv"),
     ])
 
-    assert result == 0
+    assert result == 0  # plain install whose recovery ends healthy: repaired (exit 0)
     assert read_json(journal)["step"] == "rolled_back"
     assert current(backend.root).root == old_root
     assert read_json(paths.catalog_path)["selected_realm_id"] == "realm-1"

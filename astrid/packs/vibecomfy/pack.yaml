@@ -1106,6 +1106,8 @@ resources:
   path: src/dimensional_vace.py
 extensions:
   astrid:
+    skills:
+      default: true
     generation_availability:
       actions:
         vibecomfy.character_animation:

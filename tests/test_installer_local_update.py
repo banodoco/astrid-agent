@@ -499,11 +499,157 @@ def test_protocol_error_preserves_c1_report_without_stop_flags(tmp_path, monkeyp
     def refuse(*_args, **_kwargs):
         raise failure
 
+    from runtime_protocol import platform
+
     monkeypatch.setattr(local, "execute", refuse)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(platform, "log_dir", lambda *_args: tmp_path / "logs")
     monkeypatch.setattr(sys, "stdin", __import__("io").StringIO('{"action":"recover"}\n'))
     assert local.main(["--root", str(tmp_path)]) == 1
     result = json.loads(capsys.readouterr().out)
+    assert result["outcome"]["kind"] == "failed" and result["outcome"]["reason"] == "busy"
     assert result["details"] == details
     assert result["step"] == "stop-runtime"
     assert "stop_refused" not in result
     assert "stop_completed" not in result
+
+
+# UR-15l-2: the local path settles through the installer's receipt.
+
+def _main_env(tmp_path, monkeypatch, *, live=None):
+    """Run ``local.main`` end to end over a fake backend; ``live`` is what the Runtime reports."""
+    from astrid.installer import installation
+    from runtime_protocol import platform
+
+    env = _installed(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    logs = tmp_path / "logs"
+    monkeypatch.setattr(platform, "log_dir", lambda *_args: logs)
+    monkeypatch.setattr(local, "installer_lock_path", lambda *_args: tmp_path / "installer.lock")
+    env.backend.service = SimpleNamespace(home=home, system=sys.platform)
+    monkeypatch.setattr(local, "_backend", lambda _root: env.backend)
+    monkeypatch.setattr(installation, "probe_live", lambda *_args: {
+        "release": live(env) if live else current(env.root).release, "managed_by": None})
+    env.logs = logs
+
+    def run(action):
+        replies = "".join(json.dumps({"id": n, "ok": True}) + "\n" for n in range(1, 60))
+        monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(json.dumps(action) + "\n" + replies))
+        return local.main(["--root", str(env.root)])
+
+    env.run = run
+    return env
+
+
+def _reply(capsys):
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert all("hook" in line for line in lines[:-1])
+    return lines[-1]
+
+
+def test_local_update_reaching_the_target_exits_0_with_an_updated_receipt(tmp_path, monkeypatch, capsys):
+    from astrid.installer.outcome import NEXT_STEP, read_record
+
+    env = _main_env(tmp_path, monkeypatch)
+    app = env.hooks.app
+    assert env.run({"action": "update", "manifest": app["manifest"], "app": app}) == 0
+    reply = _reply(capsys)
+    assert reply["result"]["status"] == "updated"
+    record = read_record(env.logs / "last-run.json")
+    assert record["kind"] == "updated" and record["exit_code"] == 0
+    assert (record["start"], record["target"], record["still"]) == (13, 14, 14)
+    assert record["surface"] == "local-update"
+    assert reply["outcome"]["kind"] == "updated"
+    assert reply["lines"] == ["Astrid updated: Release 13 → Release 14."]
+    assert NEXT_STEP not in reply["lines"]
+
+
+def test_local_update_whose_live_runtime_did_not_move_exits_3_not_updated(tmp_path, monkeypatch, capsys):
+    from astrid.installer.outcome import next_step, read_record
+
+    # The transaction believes it worked, but the live Runtime still reports 13.
+    env = _main_env(tmp_path, monkeypatch, live=lambda _env: 13)
+    app = env.hooks.app
+    assert env.run({"action": "update", "manifest": app["manifest"], "app": app}) == 3
+    reply = _reply(capsys)
+    record = read_record(env.logs / "last-run.json")
+    assert record["kind"] == "not-updated" and record["exit_code"] == 3
+    assert reply["outcome"]["kind"] == "not-updated"
+    log = str((env.logs / "install.log").absolute())
+    assert reply["lines"][-2:] == [next_step("runtime-not-running"), f"Details: {log}"]
+
+
+def _interrupted(env):
+    switch(env.root, env.candidate)
+    write_json(env.root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "d" * 32,
+        "transaction_kind": "app", "step": "switched", "data_root": str(env.data),
+        "old": env.old.document(), "candidate": env.candidate.document(),
+        "realm": env.realm, "backup": None,
+        "transaction_context": {"owner": "local-update", "app": env.hooks.app},
+    })
+
+
+def test_local_failures_end_with_next_and_details(tmp_path, monkeypatch, capsys):
+    from astrid.installer.outcome import next_step
+
+    env = _main_env(tmp_path, monkeypatch)
+    log = str((env.logs / "install.log").absolute())
+    app = env.hooks.app
+
+    def stage_fails(*_args):
+        raise ValueError("download failed")
+
+    env.backend.stage = stage_fails
+    assert env.run({"action": "update", "manifest": app["manifest"], "app": app}) == 1
+    failed = _reply(capsys)
+    assert failed["error"] and failed["outcome"]["kind"] == "failed"
+    assert failed["lines"][-2:] == [next_step("refused"), f"Details: {log}"]
+
+    # An update that found an interrupted one restores it and is not-updated (3).
+    _interrupted(env)
+    assert env.run({"action": "update", "manifest": app["manifest"], "app": app}) == 3
+    recovered = _reply(capsys)
+    assert recovered["outcome"]["kind"] == "not-updated"
+    assert recovered["outcome"]["reason"] == "recovered-previous-version"
+    assert recovered["lines"][-2:] == [next_step("recovered-previous-version"), f"Details: {log}"]
+
+    # npm run update's own recover step says the same, with exit 3.
+    _interrupted(env)
+    assert env.run({"action": "recover", "purpose": "update"}) == 3
+    assert _reply(capsys)["lines"][-2:] == [next_step("recovered-previous-version"),
+                                            f"Details: {log}"]
+
+
+def test_local_failure_never_names_an_unsafe_log(tmp_path, monkeypatch, capsys):
+    from astrid.installer.outcome import CONSOLE_DETAILS, next_step
+    from runtime_protocol import platform
+
+    env = _main_env(tmp_path, monkeypatch)
+    # A log directory inside the selected workspace is never used or named.
+    monkeypatch.setattr(platform, "log_dir", lambda *_args: env.data / "logs")
+    app = env.hooks.app
+    env.backend.stage = lambda *_args: (_ for _ in ()).throw(ValueError("download failed"))
+    assert env.run({"action": "update", "manifest": app["manifest"], "app": app}) == 1
+    reply = _reply(capsys)
+    assert reply["lines"][-2:] == [next_step("refused"), CONSOLE_DETAILS]
+    assert str(env.data) not in json.dumps(reply["lines"])
+    assert not (env.data / "logs" / "last-run.json").exists()
+
+
+def test_start_time_recovery_is_announced_once(tmp_path, monkeypatch, capsys):
+    from astrid.installer.outcome import read_record
+
+    env = _main_env(tmp_path, monkeypatch)
+    _interrupted(env)
+    assert env.run({"action": "recover"}) == 0
+    reply = _reply(capsys)
+    assert reply["result"] == {"status": "recovered"}
+    assert reply["lines"] == [local.RESTORED_AT_START.format(release="Release 13")]
+    assert read_record(env.logs / "last-run.json")["reason"] == "recovered-previous-version"
+    # The next start finds nothing to recover and says nothing.
+    assert env.run({"action": "recover"}) == 0
+    again = _reply(capsys)
+    assert again == {"result": {"status": "no-recovery"}}

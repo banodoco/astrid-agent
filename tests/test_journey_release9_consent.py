@@ -1,4 +1,4 @@
-"""The Release 9 bootstrap in the release0-to-release1 leg must reach the consent probe.
+"""The Release 9 bootstrap in the release9-then-install leg must reach the consent probe.
 
 Release 9's plain install stops for setup consent with no terminal unless --yes is
 passed. bootstrap_release9 must hand its Agent checkout to the bootstrap helper, so
@@ -26,7 +26,7 @@ def test_bootstrap_release9_passes_agent_checkout_to_consent_probe(tmp_path, mon
 
 
 def test_ci_leg_flags_reach_the_release9_consent_probe(tmp_path, monkeypatch):
-    """The CI release0-to-release1 step passes --candidate-agent-checkout and no --agent-checkout."""
+    """The CI release9-then-install step passes --candidate-agent-checkout and no --agent-checkout."""
     calls = {}
 
     def fake_bootstrap(app, manifest_path, shell, mode, evidence, root, data, agent=None):

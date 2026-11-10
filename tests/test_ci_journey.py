@@ -215,7 +215,7 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     candidate_path = tmp_path / "candidate.json"
     journey.write_json(candidate_path, candidate)
     args = argparse.Namespace(
-        run_root=run_root, root=root, data_root=data, leg="release0-to-release1", mode="direct",
+        run_root=run_root, root=root, data_root=data, leg="release9-then-install", mode="direct",
         shell="sh", job_id=None, source_override=False, app_checkout=app, candidate=candidate_path,
         candidate_agent_checkout=tmp_path / "agent", candidate_runtime_checkout=tmp_path / "runtime",
         pinokio_checkout=tmp_path / "pinokio", release9_app_checkout=tmp_path / "release9-app",
@@ -241,7 +241,7 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
             args, root, data, fixture_receipt=fixture_receipt, release0_manifest=release0_manifest,
             target_manifest=target_manifest, candidate=candidate, version_path=version_path, version=version,
         )
-    evidence = run_root / "evidence" / "release0-to-release1-diagnostic-release0-api-seed"
+    evidence = run_root / "evidence" / "release9-then-install-diagnostic-release0-api-seed"
     return args, root, data, evidence, version_path
 
 
@@ -313,7 +313,7 @@ def test_diagnostic_release0_admission_uses_explicit_stage_not_a_job_id(tmp_path
 
 def test_diagnostic_stage_start_is_explicit_and_cannot_use_a_qualification_job(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "execute", lambda *unused: pytest.fail("must reject before execution"))
-    base = ["--leg", "release0-to-release1", "--mode", "direct", "--app-checkout", str(tmp_path),
+    base = ["--leg", "release9-then-install", "--mode", "direct", "--app-checkout", str(tmp_path),
             "--run-root", str(tmp_path / "run"), "--root", str(tmp_path / "run" / "program"),
             "--data-root", str(tmp_path / "run" / "data"), "--candidate", str(tmp_path / "candidate.json"),
             "--candidate-agent-checkout", str(tmp_path / "agent"),
@@ -622,6 +622,37 @@ def test_release1_cleanup_host_check_accepts_only_owned_retained_r1_install(
         with pytest.raises(RuntimeError, match="non-journey Astrid login installation|selection is not owned"):
             journey.assert_host_available("cleanup", root, data, release=1)
     assert service_checks == [(root, data, 1)]
+
+
+def test_cleanup_host_check_accepts_a_normalised_handoff_updated_past_release1(tmp_path, monkeypatch):
+    """After UR-15 the candidate normalises the storage move: R1 is data_root, R0 retained."""
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    default = tmp_path / "default" / "astrid"
+    default.parent.mkdir()
+    monkeypatch.setattr(journey, "program_root", lambda: default)
+    root, data = tmp_path / "run" / "program", tmp_path / "run" / "data"
+    r1_data = Path(str(data) + "-r1")
+    version_root = root / "versions" / "r11"
+    version_root.mkdir(parents=True)
+    r1_data.mkdir(parents=True)
+    data.mkdir(parents=True)
+    (root / "current").write_text("r11\n", encoding="utf-8")
+    journey.write_json(root / "install.json", {"data_root": str(r1_data), "retained_r0_data_root": str(data)})
+    identity = {"release": 11, "managed_by": None}
+    journey.write_json(version_root / "version.json", {"root": str(version_root), "identity": identity})
+    journey.write_json(version_root / "manifest.json", {"release": 11})
+    selection = {"owner": "haus.astrid.runtime", "program_root": str(root), "data_root": str(r1_data),
+                 "retained_r0_data_root": str(data), "uninstalled": False, "identity": identity}
+    journey.write_json(default.parent / "astrid-install.json", selection)
+    checks = []
+    monkeypatch.setattr(journey, "assert_direct_service_ownership",
+                        lambda checked_root, checked_data, *, release: checks.append((checked_root, checked_data, release)))
+    journey.assert_host_available("cleanup", root, data, release=1)
+    assert checks == [(root, data, 1)]
+    assert journey.installation(root, data)[1] == data
+    journey.write_json(default.parent / "astrid-install.json", {**selection, "retained_r0_data_root": "/other"})
+    with pytest.raises(RuntimeError, match="non-journey Astrid login installation|selection is not owned"):
+        journey.assert_host_available("cleanup", root, data, release=1)
 
 
 def test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root():
@@ -960,7 +991,7 @@ def test_tst_b1_macos_hosted_runner_identity(monkeypatch, label):
 
 
 @pytest.mark.parametrize("job_id,mode,leg", [
-    ("direct-macos", "direct", "release0-to-release1"),
+    ("direct-macos", "direct", "r0-handoff-then-update"),
     ("pinokio-backend-macos", "pinokio-backend", "fresh-install"),
     ("pinokio-fully-local-macos", "pinokio-fully-local", "fresh-install"),
 ])
@@ -1179,9 +1210,9 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
 
     run_root = tmp_path / "journey"
     root, data = run_root / "program", run_root / "data"
-    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence = run_root / "evidence" / "release9-then-install"
     args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
-                              leg="release0-to-release1", shell="powershell.exe", retain_for_next_leg=False)
+                              leg="release9-then-install", shell="powershell.exe", retain_for_next_leg=False)
     raw = b"first product error\r\n\xff\x00" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 31)
     monkeypatch.setattr(journey.sys, "platform", "win32")
     monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
@@ -1299,7 +1330,7 @@ def test_journey_workflow_selects_five_direct_rows_and_keeps_full_gate(tmp_path)
                WORKFLOW_REPOSITORY="banodoco/astrid-agent",
                OLD_LAUNCHER_REF="bbba620e3d89eeff8021417f365e6ea584203105",
                STOPPED_PATH_AGENT_REF=candidate["agent"], M4_4A_EXECUTOR_CONFIGS='{"linux":{},"macos":{},"windows":{}}',
-               DIAGNOSTIC_KEEP_GOING="false", DIAGNOSTIC_LEG="release0-to-release1",
+               DIAGNOSTIC_KEEP_GOING="false", DIAGNOSTIC_LEG="release9-then-install",
                M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false", M4_5_ONLY="false",
                M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]", M4_4B_ENABLED="false",
                M4_6_ENABLED="false", M4_6_CANDIDATE="", GITHUB_OUTPUT=str(output))
@@ -1318,8 +1349,8 @@ def test_journey_workflow_selects_five_direct_rows_and_keeps_full_gate(tmp_path)
 
     unrestricted = matrix("false")
     expected_direct = {
-        ("direct-linux", "direct", "ubuntu-24.04", "release0-to-release1"),
-        ("direct-macos", "direct", "macos-15", "release0-to-release1"),
+        ("direct-linux", "direct", "ubuntu-24.04", "r0-handoff-then-update"),
+        ("direct-macos", "direct", "macos-15", "r0-handoff-then-update"),
         ("direct-windows", "direct", "windows-2022", "fresh-install"),
         ("direct-linux-fresh", "direct", "ubuntu-24.04", "fresh-install"),
         ("direct-macos-fresh", "direct", "macos-15", "fresh-install"),
@@ -1539,13 +1570,13 @@ def test_windows_diagnostics_expression_preserves_python_traceback(tmp_path, mod
     package.mkdir()
     (package / "__init__.py").write_text("")
     (package / "ci_windows_journey.py").write_text(module_source)
-    env = dict(os.environ, PYTHONPATH=str(tmp_path), RUNNER_TEMP=str(tmp_path), JOURNEY_LEG="release0-to-release1")
+    env = dict(os.environ, PYTHONPATH=str(tmp_path), RUNNER_TEMP=str(tmp_path), JOURNEY_LEG="release9-then-install")
     result = subprocess.run([sys.executable, "-u", "-c", code], cwd=tmp_path,
                             env=env, capture_output=True, text=True)
     assert result.returncode != 0 and "Traceback" in result.stderr and expected in result.stderr
     if "preflight sentinel" in expected:
         assert "partial stdout" in result.stdout
-        assert "preflight leg: release0-to-release1" in result.stdout
+        assert "preflight leg: release9-then-install" in result.stdout
 
 
 @pytest.mark.parametrize("exit_code", [0, 7], ids=["success", "failure"])
@@ -1555,7 +1586,7 @@ def test_seed_diagnostics_survive_cleanup(tmp_path, monkeypatch, exit_code):
     run_root = tmp_path / "run"
     root, data = run_root / "program", run_root / "data"
     args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
-                              leg="release0-to-release1", shell="sh", retain_for_next_leg=False)
+                              leg="release9-then-install", shell="sh", retain_for_next_leg=False)
     script = tmp_path / "driver" / "scripts" / "journey_workspace.py"
     script.parent.mkdir(parents=True)
     script.write_text(
@@ -1614,7 +1645,7 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
     monkeypatch.setattr(journey, "ROOT", script.parent.parent)
     monkeypatch.setattr(journey, "workspace_root", lambda unused: tmp_path / "realm")
     data = tmp_path / "run" / "data"
-    evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
+    evidence = tmp_path / "run" / "evidence" / "release9-then-install"
     for generation in ("one", "two"):
         assert journey_version_jumps.workspace(
             {"python": sys.executable, "env": {}}, data, evidence / "seed", "seed",
@@ -1641,7 +1672,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     candidate = {"manifest_sha256": "digest", "artifacts": {}}
     journey.write_json(candidate_path, candidate)
     manifest = {"release": 10, "agent": {}, "runtime": {}}
-    args = SimpleNamespace(job_id="direct", mode="direct", leg="release0-to-release1", shell="sh",
+    args = SimpleNamespace(job_id="direct", mode="direct", leg="release9-then-install", shell="sh",
                            app_checkout=app, candidate=candidate_path)
     state = {"running": True, "pid": 10, "release": 9, "local": False, "content": None}
     calls = []
@@ -1706,7 +1737,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     monkeypatch.setattr(journey, "selected_manifest", lambda *_args, **_kw: (candidate_path, manifest))
     monkeypatch.setattr(journey, "git_source", lambda _: {"sha": "app"})
     monkeypatch.setattr(journey, "sentinel_observation", lambda *_: {"alive": True})
-    monkeypatch.setattr(jumps, "bootstrap_release9", lambda *_: None)
+    monkeypatch.setattr(jumps, "bootstrap_release9", lambda *_, **__: None)
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_, **_kwargs: None)
     monkeypatch.setattr(journey, "wait_ready", lambda _: assert_running(data))
     monkeypatch.setattr(journey, "installation", lambda *_: (tmp_path / f"v{state['release']}", data,
@@ -1733,7 +1764,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
         if mode == "install":
             journey.write_json(directory / "verify-install.json", {"details": {}})
     monkeypatch.setattr(journey, "verify", verify)
-    result = jumps.execute_release0_to_release1(args, root, data, evidence,
+    result = jumps.execute_release9_then_install(args, root, data, evidence,
                                                 SimpleNamespace(pid=1), "birth")
     assert result["status"] == "pass" and result["semantic_data"]["identical"]
     assert "one_runtime" not in result["checks"]
@@ -1829,7 +1860,7 @@ def test_capture_runtime_service_logs_retains_native_service_log(tmp_path, monke
     log_dir.mkdir(parents=True)
     contents = b"old" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 8)
     (log_dir / "runtime-service.log").write_bytes(contents)
-    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence = run_root / "evidence" / "release9-then-install"
     evidence.mkdir(parents=True)
 
     monkeypatch.setattr(journey.sys, "platform", platform)

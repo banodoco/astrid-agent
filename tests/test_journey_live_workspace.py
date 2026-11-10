@@ -46,11 +46,11 @@ def test_offline_snapshot_failure_retains_only_allowlisted_field_and_frames(tmp_
     assert not live.valid_failure_diagnostic({**diagnostic, "missing_field": [secret]})
 
     run_root = tmp_path / "run"
-    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence = run_root / "evidence" / "release9-then-install"
     source = evidence / "release1-api-observe" / "live-snapshot-failure.json"
     source.parent.mkdir(parents=True)
     source.write_text(json.dumps(offline.failure_diagnostic(caught.value)), encoding="utf-8")
-    (evidence / "journey-result.json").write_text(json.dumps({"scenario": "release0-to-release1"}),
+    (evidence / "journey-result.json").write_text(json.dumps({"scenario": "release9-then-install"}),
                                                    encoding="utf-8")
     monkeypatch.setattr(jumps.journey, "capture_runtime_service_logs", lambda *_: None)
     monkeypatch.setattr(jumps.journey, "capture_manager_state", lambda *_: None)
@@ -238,7 +238,7 @@ def test_snapshot_failure_diagnostic_identifies_each_lookup_without_values(
 def test_snapshot_failure_diagnostic_is_staged_only_when_sanitized(tmp_path):
     from scripts import ci_journey as journey
 
-    evidence = tmp_path / "evidence" / "release0-to-release1"
+    evidence = tmp_path / "evidence" / "release9-then-install"
     source = evidence / "release0-api-seed" / "live-snapshot-failure.json"
     source.parent.mkdir(parents=True)
     safe = {"schema": "astrid.live-workspace-failure.v2", "error_type": "KeyError",
@@ -258,7 +258,7 @@ def test_snapshot_failure_diagnostic_is_staged_only_when_sanitized(tmp_path):
 def test_release1_snapshot_failure_diagnostic_is_staged_only_when_sanitized(tmp_path):
     from scripts import ci_journey as journey
 
-    evidence = tmp_path / "evidence" / "release0-to-release1"
+    evidence = tmp_path / "evidence" / "release9-then-install"
     source = evidence / "release1-api-observe" / "live-snapshot-failure.json"
     source.parent.mkdir(parents=True)
     safe = {"schema": "astrid.live-workspace-failure.v2", "error_type": "KeyError",
@@ -453,7 +453,7 @@ def test_live_seed_failure_is_staged_without_credentials_or_response_body(tmp_pa
                      "active_realm": "realm", "runtime_instance_id": "instance", "pid": 1,
                      "process_birth_id": "birth", "credential_file": str(credential)}
         (data / "runtime/discovery.json").write_text(json.dumps(discovery))
-        evidence = run_root / "evidence" / "release0-to-release1"
+        evidence = run_root / "evidence" / "release9-then-install"
         monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_, release: None)
         monkeypatch.setattr(journey, "healthy", lambda *_: discovery)
         monkeypatch.setattr(journey, "workspace_root", lambda *_: realm)

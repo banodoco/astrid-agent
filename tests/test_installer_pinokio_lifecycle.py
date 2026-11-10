@@ -468,10 +468,11 @@ def test_pinokio_install_saves_explicit_skill_policy(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "download", lambda _url, path: write_json(path, {}))
     monkeypatch.setattr(cli, "validate_manifest", lambda manifest: manifest)
 
+    # The stubbed installer selects no version, so the receipt is "not updated".
     assert cli.main([
         "--managed-by", "pinokio", "--root", str(tmp_path / "pinokio-app"), "--yes",
         "--skills", "off", "--skill-copies", "on",
-    ]) == 0
+    ]) == 3
 
     assert captured["mode"] == "install"
     saved = read_json(selection)["choices"]
@@ -559,7 +560,8 @@ def test_root_marker_retains_pinokio_manager_for_update_and_uninstall(tmp_path, 
             managed_by="pinokio", run="update", adapter=(args, kwargs)))
         argv += ["--manifest", str(manifest), "--uv", str(uv)]
 
-    assert cli.main(argv) == 0
+    # --update with the update stubbed (no release change) is not-updated (exit 3); the others exit 0.
+    assert cli.main(argv) == (3 if mode == ["--update"] else 0)
     if mode == ["--update"]:
         assert captured["managed_by"] == "pinokio"
         assert captured["run"] == "update"

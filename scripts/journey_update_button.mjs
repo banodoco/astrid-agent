@@ -9,12 +9,19 @@
 //
 // Usage: node journey_update_button.mjs <config.json>
 // The config names: app (the App checkout that holds Playwright), origin, entry, spki, door,
-// updatePath, agentMark, timeoutMs, result, screenshot.
+// updatePath, agentMark, timeoutMs, result, screenshot; optionally clicked and liveTimeoutMs.
+//
+// With liveTimeoutMs the browser stays on the page after the click: it writes the click's result to
+// `clicked` at once, then waits for the open page to show the finished update by itself (UR-15k) and
+// records when it did. The journey never reloads the page; the App may reload itself onto the
+// restarted Astrid, and those navigations are counted.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
 export const UPDATE_NOW = 'Update now';
+/** The App's live line once an update has finished under an open page. */
+export const UPDATED_LINE = /Astrid updated: Release \d+ → Release \d+/;
 
 /** Chromium switches: the hosted origin on loopback, its leaf pinned, and the page treated as public. */
 export function chromiumArgs({ origin, spki }) {
@@ -118,6 +125,21 @@ export async function run(config) {
     } catch { result.page_progress = false; }
     // Counted again once the page has settled: a second POST from the same click would show here.
     result.posts = result.door_requests[`POST ${config.updatePath}`] ?? 0;
+    if (config.clicked && config.liveTimeoutMs > 0) {
+      writeFileSync(config.clicked, `${JSON.stringify(result, null, 2)}\n`);
+      let navigations = 0;
+      page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) navigations += 1; });
+      result.stage = 'live';
+      try {
+        const line = page.getByText(UPDATED_LINE).first();
+        await line.waitFor({ state: 'visible', timeout: config.liveTimeoutMs });
+        result.live = { text: (await line.innerText()).trim(), seen_at: Date.now(), navigations };
+      } catch (error) {
+        result.live_error = `${error?.name ?? 'Error'}: ${String(error?.message ?? error).slice(0, 500)}`;
+        result.page_text = (await page.locator('body').innerText().catch(() => '')).slice(0, 4000);
+      }
+      result.posts = result.door_requests[`POST ${config.updatePath}`] ?? 0;
+    }
     if (config.screenshot) await page.screenshot({ path: config.screenshot, fullPage: true }).catch(() => {});
   } catch (error) {
     result.error = `${error?.name ?? 'Error'}: ${String(error?.message ?? error).slice(0, 1000)}`;

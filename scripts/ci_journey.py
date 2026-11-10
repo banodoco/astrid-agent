@@ -61,7 +61,7 @@ JOURNEY_PACKS = {"chiptune": ("https://github.com/banodoco/poms_packs", "2379ab5
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
-                     "release0-to-release1", "windows-upgrade-refusal")
+                     "release9-then-install", "r0-handoff-then-update", "windows-upgrade-refusal")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
@@ -1294,7 +1294,7 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                     }
             if bootstrap_processes:
                 diagnostic["bootstrap_processes"] = bootstrap_processes
-        if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
+        if sys.platform == "win32" and recorded.get("scenario") == "release9-then-install":
             # This log is nested under release0, and must remain byte-for-byte
             # intact rather than taking the usual bounded tail of text logs.
             source = evidence / "release0" / "release0-bootstrap.log"
@@ -1674,17 +1674,23 @@ def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_chec
             marker = read_json(root / "install.json")
             _, selected_data, selected = installation(root, data)
             manifest = read_json(Path(selected["root"]) / "manifest.json")
-            r1_data = marker.get("r1_data_root")
+            # Before UR-15 the handoff's records name R0 as data_root and carry
+            # r1_data_root; after normalisation R1 is data_root and R0 is kept
+            # as retained_r0_data_root.
+            normalised = marker.get("retained_r0_data_root") == str(data)
+            r1_data = marker.get("r1_data_root") or (marker.get("data_root") if normalised else None)
             owned_r1_cleanup = (
                 selection.get("owner") == "haus.astrid.runtime"
                 and selection.get("program_root") == str(root)
-                and selection.get("data_root") == str(data)
+                and (selection.get("data_root") == str(data)
+                     or (normalised and selection.get("retained_r0_data_root") == str(data)
+                         and selection.get("data_root") == str(Path(str(data) + "-r1"))))
                 and selection.get("uninstalled") is not True
                 and not selection.get("foreground")
                 and isinstance(selection.get("identity"), dict)
                 and selection.get("identity") == selected.get("identity")
                 and selected_data == data
-                and manifest.get("release") == 1
+                and type(manifest.get("release")) is int and manifest["release"] >= 1
                 and isinstance(r1_data, str)
                 and Path(r1_data) == Path(str(data) + "-r1")
                 and Path(r1_data).is_dir()
@@ -1968,6 +1974,11 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
         raise RuntimeError("Install marker cannot be a symlink")
     marker = read_json(marker_path)
     data = Path(marker["data_root"])
+    retained = marker.get("retained_r0_data_root")
+    if retained is not None and Path(retained) == expected_data and data == Path(str(expected_data) + "-r1"):
+        # A normalised storage move (UR-15): R1 is the data root and the
+        # journey's R0 root is kept as provenance; the journey names it by R0.
+        data = expected_data
     if data != expected_data:
         raise RuntimeError("Selected data root is outside this journey")
     current_path = root / "current"
@@ -2151,11 +2162,12 @@ def assert_release1_upgrade_uninstall_refusal(installed: dict, root: Path, data:
     if not current.is_file():
         raise RuntimeError("Release-1 uninstall refusal removed the selected version")
     version_path, selected_data, selected = installation(root, data)
+    release = read_json(Path(selected["root"]) / "manifest.json").get("release")
     if (version_path != Path(installed["root"]) / "version.json" or selected_data != data
-            or read_json(Path(selected["root"]) / "manifest.json").get("release") != 1):
+            or type(release) is not int or release < 1):
         raise RuntimeError("Release-1 uninstall refusal changed the selected installation")
     marker = read_json(root / "install.json")
-    r1_data = marker.get("r1_data_root")
+    r1_data = marker.get("r1_data_root") or (marker.get("data_root") if marker.get("retained_r0_data_root") else None)
     if not isinstance(r1_data, str) or not Path(r1_data).is_dir() or not data.is_dir():
         raise RuntimeError("Release-1 uninstall refusal did not retain both data folders")
     service = assert_direct_service_ownership(root, data, release=1)
@@ -2795,36 +2807,49 @@ def execute(args: argparse.Namespace) -> dict:
                     if not getattr(args, "retain_for_next_leg", False):
                         result_path = evidence / "journey-result.json"
                         try:
+                            # A handed-off install keeps both data roots and refuses an
+                            # automatic uninstall; the refusal is the cleanup contract there.
+                            handed_off = False
                             if (root / "current").is_file():
                                 _, _, installed = installation(root, data)
+                                marker = (read_json(root / "install.json")
+                                          if args.leg == "r0-handoff-then-update" else {})
+                                handed_off = bool(marker.get("r1_data_root") or marker.get("retained_r0_data_root"))
                                 if keep_going:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
                                     assert_cleanup_service_ownership(
                                         root, data, release=release,
                                         fresh_install=args.leg == "fresh-install")
-                                # The Release-9 to candidate upgrade is an in-place plain install,
-                                # not the retired R0-to-R1 handoff, so its cleanup is an ordinary uninstall.
-                                installed_cli(installed, ["install", "--uninstall", "--root", str(root),
-                                                          "--data-root", str(data)], evidence,
-                                              "final-uninstall.log", timeout=1800)
-                                if root.joinpath("current").exists():
-                                    raise RuntimeError("Owned installation remained after final uninstall")
-                            if not narrow_refusal and runtime_processes(data):
+                                if handed_off:
+                                    refusal = assert_release1_upgrade_uninstall_refusal(installed, root, data, evidence)
+                                    if result_path.is_file():
+                                        recorded = read_json(result_path)
+                                        recorded["upgrade_uninstall_refusal"] = refusal
+                                        write_json(result_path, recorded)
+                                else:
+                                    installed_cli(installed, ["install", "--uninstall", "--root", str(root),
+                                                              "--data-root", str(data)], evidence,
+                                                  "final-uninstall.log", timeout=1800)
+                                    if root.joinpath("current").exists():
+                                        raise RuntimeError("Owned installation remained after final uninstall")
+                            if not handed_off and not narrow_refusal and runtime_processes(data):
                                 raise RuntimeError("Owned Runtime processes remained after final uninstall")
-                            if sys.platform == "darwin":
+                            if not handed_off and sys.platform == "darwin":
                                 assert_macos_services_removed(data)
                             cleanup_sentinel = None if narrow_refusal else sentinel_observation(sentinel, birth)
                             if result_path.is_file() and not narrow_refusal:
                                 recorded = read_json(result_path)
                                 recorded.setdefault("sentinel", {})["after_cleanup"] = cleanup_sentinel
                                 write_json(result_path, recorded)
-                            if narrow_refusal:
+                            if handed_off:
+                                assert_host_available("cleanup", root, data, release=1)
+                            elif narrow_refusal:
                                 assert_host_available("cleanup", root, data, skip_process_check=True)
                             else:
                                 assert_host_available("cleanup", root, data)
                             if not narrow_refusal and not cleanup_sentinel["alive"]:
                                 raise RuntimeError("Unrelated sentinel did not survive final uninstall")
-                            cleanup_outcome = "pass"
+                            cleanup_outcome = "retained-after-upgrade-refusal" if handed_off else "pass"
                             if result_path.is_file():
                                 recorded = read_json(result_path)
                                 recorded["final_cleanup"] = cleanup_outcome
@@ -3142,7 +3167,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     diagnostic = args.diagnostic_start_at is not None
     if args.diagnostic_keep_going and (diagnostic or args.mode != "direct" or
-            args.leg not in {"release0-to-release1", "fresh-install"} or not args.job_id or args.source_override or args.retain_for_next_leg):
+            args.leg not in {"release9-then-install", "fresh-install"} or not args.job_id or args.source_override or args.retain_for_next_leg):
         parser.error("keep-going requires a disposable direct lifecycle matrix job")
     if (args.leg == "update-over-old-declaration") != (args.old_declaration is not None):
         parser.error("--old-declaration is required only for update-over-old-declaration")
@@ -3151,8 +3176,8 @@ def main(argv: list[str] | None = None) -> int:
     if diagnostic:
         if args.job_id:
             parser.error("diagnostic stage starts cannot use a qualification job id")
-        if args.mode != "direct" or args.leg != "release0-to-release1":
-            parser.error("diagnostic stage starts are limited to the direct release0-to-release1 leg")
+        if args.mode != "direct" or args.leg != "release9-then-install":
+            parser.error("diagnostic stage starts are limited to the direct release9-then-install leg")
         if args.source_override:
             parser.error("diagnostic stage starts never admit --source-override")
         if args.candidate is None or not all((args.candidate_agent_checkout,
@@ -3183,20 +3208,26 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--pinokio-backend-config is only valid for pinokio-backend")
     elif args.old_launcher_ref or args.stopped_path_agent_ref:
         parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
-    if sys.platform == "win32" and args.leg == "release0-to-release1":
+    if sys.platform == "win32" and args.leg in {"release9-then-install", "r0-handoff-then-update"}:
         parser.error("Windows release-0 upgrade only admits the narrowed refusal leg")
-    if args.leg in {"release0-to-release1", "windows-upgrade-refusal"}:
+    if args.leg == "r0-handoff-then-update" and (diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
+        parser.error("r0-handoff-then-update requires a disposable direct qualification job")
+    if args.leg in {"release9-then-install", "r0-handoff-then-update", "windows-upgrade-refusal"}:
         if args.leg == "windows-upgrade-refusal" and (sys.platform != "win32" or args.job_id != "direct-windows" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
             parser.error("windows-upgrade-refusal requires the disposable direct-windows qualification job")
         if not ((diagnostic or args.job_id) and args.mode == "direct" and args.candidate):
-            parser.error("release0-to-release1 requires a frozen direct candidate receipt")
-        if args.leg == "release0-to-release1":
+            parser.error("release9-then-install requires a frozen direct candidate receipt")
+        if args.leg == "release9-then-install":
             if args.release9_app_checkout is None or args.release0_fixture is not None or not args.allow_release0_to_release1:
-                parser.error("release0-to-release1 requires --release9-app-checkout and --allow-release0-to-release1")
+                parser.error("release9-then-install requires --release9-app-checkout and --allow-release0-to-release1")
+        elif args.leg == "r0-handoff-then-update":
+            if args.release9_app_checkout is None or args.release0_fixture is None or not args.allow_release0_to_release1:
+                parser.error("r0-handoff-then-update requires --release0-fixture, --release9-app-checkout "
+                             "and --allow-release0-to-release1")
         elif args.release0_fixture is None or not args.allow_release0_to_release1 or args.release9_app_checkout is not None:
             parser.error("windows-upgrade-refusal requires --release0-fixture and --allow-release0-to-release1")
     elif args.release0_fixture is not None or args.allow_release0_to_release1 or args.release9_app_checkout is not None:
-        parser.error("release-0 and release-9 admission is only valid for release0-to-release1")
+        parser.error("release-0 and release-9 admission is only valid for the release-0 and release-9 legs")
     if sys.platform not in {"linux", "darwin", "win32"}:
         parser.error("unsupported journey operating system")
     if sys.platform == "win32" and args.shell != "powershell.exe":
