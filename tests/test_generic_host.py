@@ -5084,7 +5084,7 @@ def test_host_without_explicit_roots_discovers_the_personal_collection(tmp_path,
     assert "personal.echo" in host.capabilities
 
 
-def _pending_personal_outbox(personal: Path, *, revision: int = 1, changed_ids=("personal.echo",)) -> None:
+def _pending_personal_outbox(personal: Path, *, revision: int = 1, changed_ids=("personal_echo",)) -> None:
     """A committed `packs add` whose host acknowledgment never happened."""
     personal.mkdir(parents=True)
     (personal.parent / ".packs.transaction.lock").touch()  # created by every real transaction writer
@@ -5103,7 +5103,7 @@ def _personal_echo_host(tmp_path, monkeypatch, *, personal_collection: bool = Tr
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
     _pending_personal_outbox(personal)
-    _write_manifest(personal / "personal.echo", capability_id="personal.echo")
+    _write_v3_pack(personal / "personal_echo", "personal_echo", "Personal Echo", {"echo": {"name": "Echo", "version": "1.0", "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; Path('{out}/answer').write_text('ok')"]}}, "outputs": []}}, capabilities=["echo"])
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[], client=runtime, personal_collection=personal_collection)
     return host, runtime, personal
@@ -5116,7 +5116,7 @@ def test_host_acknowledges_a_pending_packs_add_through_its_one_registrar(tmp_pat
     host, runtime, personal = _personal_echo_host(tmp_path, monkeypatch)
     registrations: list[bool] = []
     monkeypatch.setattr(host, "_renew_executor_registration",
-                        lambda *, idle=True: registrations.append("personal.echo" in host.capabilities))
+                        lambda *, idle=True: registrations.append("personal_echo.echo" in host.capabilities))
     assert refresh_pending(packs_root=personal)
 
     assert host.acknowledge_pack_refresh() is True
@@ -5149,7 +5149,7 @@ def test_single_worker_claim_loop_registers_and_acknowledges_a_pending_packs_add
     assert polls >= 1
     assert not refresh_pending(packs_root=personal), "single-worker loop never acknowledged the outbox"
     registered = {row["capability_id"] for row in runtime.registrations[-1][1]["capabilities"]}
-    assert "personal.echo" in registered
+    assert "personal_echo.echo" in registered
 
 
 def test_host_without_the_personal_collection_never_acknowledges_the_outbox(tmp_path, monkeypatch):
@@ -5171,12 +5171,12 @@ def test_refresh_not_matching_the_committed_packs_stays_pending(tmp_path, monkey
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
     _pending_personal_outbox(personal)
-    _write_manifest(personal / "personal.echo", capability_id="other.echo")
+    _write_v3_pack(personal / "personal_echo", "other_echo", "Other Echo", {"echo": {"name": "Echo", "version": "1.0", "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; Path('{out}/answer').write_text('ok')"]}}, "outputs": []}}, capabilities=["echo"])
     host = GenericPackHost(pack_roots=[], client=FakeRuntime(), personal_collection=True)
 
     assert host.acknowledge_pack_refresh() is False
     assert refresh_pending(packs_root=personal)
-    assert "registration does not match committed packs: personal.echo" in capsys.readouterr().err
+    assert "registration does not match committed packs: personal_echo" in capsys.readouterr().err
 
 
 def test_single_worker_loop_acknowledges_a_pack_that_declares_no_actions(tmp_path, monkeypatch):
