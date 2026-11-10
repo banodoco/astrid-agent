@@ -6483,6 +6483,11 @@ class GenericPackHost:
             if any(str(root) not in _runtime_external_sources._launch_roots for root in configured_roots):
                 raise HostError("discovery root is outside retained Runtime source custody")
         self.pack_roots = tuple(dict.fromkeys(configured_roots))
+        # Only a host that serves the personal collection may acknowledge its outbox.
+        self._personal_collection = bool(personal_collection)
+        self._admitted_pack_ids: set[str] = set()
+        self._pack_refresh_failures = 0
+        self._pack_refresh_reason = ""
         self.client = client
         self.executor_id = executor_id
         self.max_concurrency = max(1, int(max_concurrency))
@@ -7309,6 +7314,8 @@ class GenericPackHost:
             bundled_core_root == root or bundled_core_root.is_relative_to(root) for root in self._explicit_pack_roots
         )
         local_orchestrator_ids: set[str] = set()
+        admitted_pack_ids: set[str] = set()
+        self._admitted_pack_ids = admitted_pack_ids
         for discovered_pack in discovered_packs:
             pack = discovered_pack.pack
             pack_root = pack.root.resolve()
@@ -7319,6 +7326,8 @@ class GenericPackHost:
                 for root in self.pack_roots
             ):
                 continue
+            if not _inside_quarantined(pack_root, quarantined_dirs):
+                admitted_pack_ids.add(pack.id)
             for local_id, declaration in pack.actions.items():
                 try:
                     if action_is_local_orchestrator(declaration):
@@ -8006,17 +8015,52 @@ class GenericPackHost:
         from astrid.core.pack.transaction import refresh_pending, retry_refresh
         from astrid.personal_packs_root import resolve_personal_packs_root
 
+        if not self._personal_collection:
+            return False  # a host that does not serve the personal collection never consumes its outbox
         root = resolve_personal_packs_root()
         if root is None or not refresh_pending(packs_root=root):
+            self._pack_refresh_failures = 0
             return False
 
         def renew(*, transaction_id: str, committed_revision: int, changed_ids: tuple[str, ...]) -> dict[str, Any]:
-            self.discover()
-            self._renew_executor_registration(idle=True)
+            try:
+                self.discover()
+                self._renew_executor_registration(idle=True)
+                # Acknowledge only when the admitted packs match the committed collection: a
+                # changed pack is admitted exactly when its directory is present.
+                unserved = [pack_id for pack_id in changed_ids
+                            if (root / pack_id).is_dir() != (pack_id in self._admitted_pack_ids)]
+            except Exception as exc:
+                self._pack_refresh_reason = f"{type(exc).__name__}: {exc}"
+                raise
+            if unserved:
+                reason = f"registration does not match committed packs: {', '.join(unserved)}"
+                self._pack_refresh_reason = reason
+                return {"version": 1, "accepted": False, "revision": committed_revision, "reason": reason}
             return {"version": 1, "accepted": True, "revision": committed_revision,
                     "reason": "registered by the running generic host"}
 
-        return not retry_refresh(packs_root=root, refresh=renew)
+        self._pack_refresh_reason = "registration did not complete"
+        pending = retry_refresh(packs_root=root, refresh=renew)
+        if pending:
+            self._record_pack_refresh_failure(self._pack_refresh_reason)
+            return False
+        self._pack_refresh_failures = 0
+        return True
+
+    def _record_pack_refresh_failure(self, reason: str) -> None:
+        """Count a consecutive pack-refresh failure and log only its first and power-of-two occurrences."""
+        self._pack_refresh_failures += 1
+        count = self._pack_refresh_failures
+        if count == 1 or not (count & (count - 1)):
+            print(f"generic host pack refresh not acknowledged ({count} consecutive, retrying): {reason}",
+                  file=sys.stderr, flush=True)
+
+    def _pack_refresh_delay(self) -> float:
+        """Idle cadence between outbox attempts, backing off while they keep failing."""
+        if not self._pack_refresh_failures:
+            return 2.0
+        return min(30.0, 2.0 * (2 ** min(self._pack_refresh_failures - 1, 4)))
 
     def refresh(self) -> tuple[CapabilityRecord, ...]:
         """Re-scan source and report digest changes; callers must register again."""
@@ -13615,6 +13659,7 @@ class GenericPackHost:
             return self._run_claim_slots(poll_seconds=poll_seconds, max_tasks=max_tasks)
         results: list[Mapping[str, Any]] = []
         consecutive_claim_failures = 0
+        pack_ack_at = 0.0
         while not self._shutdown.is_set() and (max_tasks is None or len(results) < max_tasks):
             try:
                 if time.monotonic() >= self._registration_refresh_deadline:
@@ -13651,6 +13696,17 @@ class GenericPackHost:
                 if once:
                     break
                 continue
+            # Idle, like the parallel loop's `not active`: consume committed
+            # pack-refresh outbox entries so a newly added pack is served
+            # without a restart. `once` is the diagnostic surface and leaves the
+            # outbox untouched. A failure leaves the outbox pending for retry.
+            now = time.monotonic()
+            if not once and now >= pack_ack_at:
+                try:
+                    self.acknowledge_pack_refresh()
+                except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
+                    self._record_pack_refresh_failure(f"{type(exc).__name__}: {exc}")
+                pack_ack_at = time.monotonic() + self._pack_refresh_delay()
             if once:
                 break
             if self._shutdown.is_set():
@@ -13816,11 +13872,11 @@ class GenericPackHost:
                 if max_tasks is not None and len(results) >= max_tasks:
                     break
                 if now >= pack_ack_at and not active:
-                    pack_ack_at = now + 2.0
                     try:
                         self.acknowledge_pack_refresh()
                     except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
-                        report_failure(exc, 1)
+                        self._record_pack_refresh_failure(f"{type(exc).__name__}: {exc}")
+                    pack_ack_at = time.monotonic() + self._pack_refresh_delay()
                 if now >= max(self._registration_refresh_deadline, refresh_retry_at):
                     try:
                         self._renew_executor_registration(idle=not active)
