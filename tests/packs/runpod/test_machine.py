@@ -798,7 +798,7 @@ def test_machines_setup_explicit_any_clears_saved_datacenter(monkeypatch):
 
 
 @pytest.mark.parametrize("json_flag", [[], ["--json"]])
-@pytest.mark.parametrize("failure", ["inventory", "action_exception", "action_result"])
+@pytest.mark.parametrize("failure", ["inventory", "gpu_inventory", "action_exception", "action_result"])
 def test_machines_setup_hides_external_error_details(monkeypatch, capsys, caplog, json_flag, failure):
     from types import SimpleNamespace
     from astrid.core import machines_cli
@@ -816,14 +816,47 @@ def test_machines_setup_hides_external_error_details(monkeypatch, capsys, caplog
     def setup(_policy):
         if failure == "action_exception":
             raise ValueError(secret)
-        return SimpleNamespace(ok=False, error=secret)
+        return SimpleNamespace(ok=False, error={"message": secret})
+    def gpus(*_args):
+        if failure == "gpu_inventory":
+            raise ValueError(secret)
+        return ["RTX A"]
 
     result = machines_cli.main(["setup", "--datacenter", "any", *json_flag],
-        volumes=inventory, offered_gpus=lambda *_: ["RTX A"], setup=setup,
+        volumes=inventory, offered_gpus=gpus, setup=setup,
         input_fn=lambda _: "")
     assert result != 0
-    assert secret not in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err
+    if json_flag:
+        assert json.loads(captured.out)["ok"] is False
     assert secret not in caplog.text
+
+
+def test_machines_setup_hides_async_datacenter_error(monkeypatch, capsys, caplog):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.core.util.credentials_scope import CredentialsScope
+    from astrid.packs.runpod import adapter
+
+    secret = "async-credential-sentinel"
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: {})
+    monkeypatch.setattr(CredentialsScope, "resolve_local", lambda *a, **kw: SimpleNamespace(value=secret))
+    async def volumes(key):
+        assert key == secret
+        return []
+    async def datacenters(key):
+        assert key == secret
+        raise ValueError(secret)
+    async def gpus(*args, **kwargs):
+        pytest.fail("GPU lookup must not follow failed datacenter lookup")
+    monkeypatch.setattr(adapter, "setup_volumes", volumes)
+    monkeypatch.setattr(adapter, "setup_datacenters", datacenters)
+    monkeypatch.setattr(adapter, "setup_gpu_types", gpus)
+    assert machines_cli.main(["setup"], input_fn=lambda _: "") == 1
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err + caplog.text
 
 
 def test_machines_setup_interactive_datacenter_keeps_gpu_order(monkeypatch, capsys):
