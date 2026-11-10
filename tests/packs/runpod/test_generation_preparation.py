@@ -73,6 +73,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     c.module = module
     c.dc, c.quote_rate, c.stock, c.actual_rate = "DC-accepted", 1.0, "available", 1.0
     c.actual_gpu_id = "gpu-provider-exact"
+    c.accepted_gpu_id = "gpu-provider-exact"
     # Confirmation returns the provider catalog display name, not its GPU ID.
     from astrid.packs.runpod import worker_preparation
     monkeypatch.setattr(worker_preparation, "confirm_acquired_machine",
@@ -91,7 +92,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
 
     async def availability(**kw):
         c.quotes.append(kw)
-        return SimpleNamespace(gpu_type_id="gpu-provider-exact", datacenters=[SimpleNamespace(
+        return SimpleNamespace(gpu_type_id=c.accepted_gpu_id, datacenters=[SimpleNamespace(
             status=c.stock, price_per_hour=c.quote_rate, datacenter_id=c.dc)])
 
     monkeypatch.setattr(api, "get_network_volumes", volumes)
@@ -111,7 +112,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         assert journal["state"] == "allocation_pending" and journal["lease"]["state"] == "preparing"
         assert journal["network_volume_id"] == kw["network_volume_id"] == c.prefs.volume_id
         assert journal["network_volume_datacenter_id"] == kw["data_center_id"] == "DC-accepted"
-        assert journal["accepted_gpu_type_id"] == kw["gpu_type_id"] == "gpu-provider-exact"
+        assert journal["accepted_gpu_type_id"] == kw["gpu_type_id"] == c.accepted_gpu_id
         assert https.read_token_file(journal["https_token_file"]) == kw["https_token"]
         assert kw["https_token"] not in c.owner.path.read_text()
         c.create_kwargs.append(kw)
