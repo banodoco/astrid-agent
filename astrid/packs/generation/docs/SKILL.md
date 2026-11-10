@@ -158,24 +158,25 @@ in the environment.
 
 ## RunPod
 
-- **Consent.** RunPod costs money. Each job that uses it needs `--consent paid`, and
-  the budget cap (`--max-usd`) applies. Say what a job will cost before the yes.
-- **Controller.** Astrid's controller starts the pod, drives the job and pulls the result
-  back. The user's files are never uploaded except as the job's inputs.
-- **Lease and warm reuse.** A pod stays warm after a job, for its idle timeout, so the
-  next default job reuses it. The lease is state, not a setting.
-- **A pod that dies.** If the provider reports it terminated, exited or missing, its
-  lease ends with `ended: provider_terminated`, it stops being charged and leaves warm
-  reuse. The next default job claims a fresh pod. A job pinned to a `machine` is
-  refused with the reason and the live leases.
-- **`astrid machines`** lists live and recently ended leases (id, kind, GPU, state, idle
-  expiry, cost so far, end reason). `astrid machines release ID` ends one.
-- **The volume.** An optional network volume keeps models between pods; the user chooses
-  its name in the settings. Deleting it is the user's decision, never yours.
-- **Which machine ran a job.** The task shows a machine column: the placement kind, the
-  pod id or `local`, the lease id and the device.
-- **Preferences.** GPU types, datacenter, image, volume, idle timeout and budget cap are
-  placement policy under `machines.runpod` in the settings document.
+For RunPod setup, GPU and datacenter choices, capacity waiting, paid consent,
+and the complete claim/keep/release workflow, use the
+[RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines)
+(installed name: `runpod`). Start with `astrid machines setup` when the user
+asks to configure RunPod; a missing preference refuses and never launches
+setup automatically.
+
+Each generation needs fresh paid consent. A compatible retained machine is
+reused within its existing paid limit; reuse cannot extend that limit.
+`astrid machines` shows the scheduled release time, minutes left, estimated
+cost and hourly rate. `astrid machines keep` authorizes a separate bounded
+extension, and `astrid machines release ID` ends the machine. Automatic
+release only happens while its owning host is running.
+
+An optional network volume keeps models between pods and is preserved on
+release. The task's machine column records the placement kind, pod ID or
+`local`, lease ID and device. A provider-terminated or missing pod leaves warm
+reuse; a job pinned to that machine is refused with its reason and the live
+leases.
 
 ## Provider APIs
 

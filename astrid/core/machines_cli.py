@@ -270,7 +270,8 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
             raise TimeoutError("host returned no confirmed machine release time")
         print(json.dumps({"ok": True, "machine": machine, "policy": policy}, sort_keys=True) if as_json else
               f"claimed {machine_id}; release scheduled for {_when(machine['release_at'])} UTC "
-              f"(spend cap ${cap:.2f}; hourly ceiling ${ceiling:.2f}).")
+              f"(spend cap ${cap:.2f}; hourly ceiling ${ceiling:.2f}). "
+              "Automatic release only happens while the owning Astrid host is running.")
         return 0
     except ValueError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}) if as_json else str(exc))
@@ -445,7 +446,8 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
             payload["error"] = f"{getattr(result, 'error', None)}; retry `astrid machines setup`"
         print(json.dumps(payload, sort_keys=True, default=str) if as_json else
               (f"Saved RunPod machine policy: GPUs {', '.join(chosen)}; datacenter {datacenter or 'any'}; "
-               f"budget ${float(budget):.2f}/run; volume {selected_volume.get('name') if selected_volume else 'ephemeral disk'}."
+               f"budget ${float(budget):.2f}/run; volume {selected_volume.get('name') if selected_volume else 'ephemeral disk'}. "
+               "No machine was claimed; each paid run still needs consent."
                if ok else f"RunPod setup failed; retry `astrid machines setup` ({payload['error']})."))
         return 0 if ok else 1
     except (ValueError, RunPodSetupRequiredError) as exc:
@@ -479,11 +481,11 @@ def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None
     extend.add_argument("--max-usd", type=float, required=True, help="Additional USD authorized by this keep; required for both forms.")
     extend.add_argument("--json", action="store_true", dest="keep_json")
     configure = sub.add_parser("setup", help="Choose and save RunPod machine preferences.")
-    configure.add_argument("--volume", help="Existing RunPod network volume ID or name; omit for ephemeral disk.")
+    configure.add_argument("--volume", help="Existing network volume ID or name; interactive setup offers ephemeral disk when omitted.")
     configure.add_argument("--datacenter", help="RunPod datacenter ID, or 'any' for no datacenter restriction.")
     configure.add_argument("--gpu", action="append", dest="gpu_types", default=[], help="Ordered GPU choice; repeat for fallbacks.")
     configure.add_argument("--budget-usd", type=float, help="Maximum paid-run budget in USD.")
-    configure.add_argument("--image", help="Override the pinned worker image for this setup.")
+    configure.add_argument("--image", help="Override the worker image with a name@sha256:digest pin for this setup.")
     configure.add_argument("--show", action="store_true", help="Show saved preferences and Runtime app-state location.")
     configure.add_argument("--json", action="store_true", dest="setup_json")
     acquire = sub.add_parser("claim", help="Claim a RunPod machine on saved storage with paid consent.")
@@ -494,7 +496,7 @@ def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None
     acquire.add_argument("--for", dest="claim_for", metavar="DURATION", help="Initial idle retention, capped by the spend limit; defaults to saved idle retention or 30m.")
     capacity = acquire.add_mutually_exclusive_group()
     capacity.add_argument("--capacity-timeout", metavar="DURATION", help="Stop waiting after this duration; default waits until claimed or cancelled.")
-    capacity.add_argument("--no-wait-for-capacity", action="store_true", help="Make one capacity attempt.")
+    capacity.add_argument("--no-wait-for-capacity", action="store_true", help="Make one capacity observation and at most one create attempt.")
     acquire.add_argument("--consent", action="append", choices=("paid",), default=[], help="Approve the displayed paid claim policy without prompting.")
     acquire.add_argument("--json", action="store_true", dest="claim_json")
     parsed = parser.parse_args(list(argv or ()))
