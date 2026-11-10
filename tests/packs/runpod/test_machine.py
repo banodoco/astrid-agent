@@ -460,3 +460,64 @@ def test_claim_sizes_the_volume_by_the_job_manifest_rows(machine_case, monkeypat
         c.machine.claim(c.job())
     assert tuple(captured["manifest_rows"]) == rows
     assert c.machine._require().installation.model_bytes(captured["manifest_rows"]) == 10 ** 12
+
+
+@pytest.mark.parametrize("state,lease_state,display", [
+    ("claimed", "preparing", "preparing"),
+    ("allocated_unverified", "preparing", "unresolved"),
+    ("cleanup_pending", "releasing", "releasing"),
+])
+def test_unfinished_machine_custody_is_live(state, lease_state, display):
+    row = rm.lease_row({"pod_id": "pod-exact", "state": state,
+                        "reconciliation_required": True, "lease": {"state": lease_state}})
+    assert row["live"] is True and row["state"] == display and row["ended"] is None
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_unverified_machine_cli_release_and_recovery_reconcile_exact_pod(small_lease, monkeypatch, capsys, restart):
+    from astrid.core import machines_cli
+    from astrid.packs.runpod.worker_preparation import write_target_record
+
+    c = small_lease
+    owner = c.fresh()
+    owner.acquire(c.grant)
+    record = c.read()
+    record.update(state="allocated_unverified", reconciliation_required=True)
+    record["lease"]["state"] = "preparing"
+    write_target_record(c.owner.path, record)
+    monkeypatch.setattr(machines_cli, "_leases", lambda: rm.lease_rows(owner))
+    assert rm.lease_rows(owner)[0]["live"] is True
+    if restart:
+        owner.close()
+        owner = c.fresh()
+        owner.recover()
+    else:
+        assert machines_cli.main(["release", "foreign", "--json"], release=owner.release) == 2
+        assert c.deletes == []
+        assert machines_cli.main(["release", record["pod_id"], "--json"], release=owner.release) == 0
+        assert json.loads(capsys.readouterr().out.splitlines()[-1])["machine"]["state"] == "ended"
+    assert c.creates == 1 and c.deletes == [record["pod_id"]]
+    ended = c.read()
+    assert ended["state"] == "cleanup_complete"
+    assert ended["cleanup"]["absence"]["pod_id"] == record["pod_id"]
+    assert ended["cleanup"]["absence"]["exact_get_status"] == 404
+    assert ended["cleanup"]["absence"]["account_list_absent"] is True
+    assert rm.lease_rows(owner)[0]["live"] is False
+
+
+def test_unverified_live_machine_still_refuses_pinned_reuse(machine_case):
+    from astrid.packs.runpod.target_selection import PaidSelectionError
+    from astrid.packs.runpod.worker_preparation import write_target_record
+
+    c = machine_case
+    c.host.acquire(c.grant)
+    record = c.read()
+    record.update(state="allocated_unverified", reconciliation_required=True)
+    record["lease"]["state"] = "preparing"
+    write_target_record(c.host.selection.path, record)
+    job = c.job()
+    job = type(job)(**{**job.__dict__, "policy": {**job.policy, "machine": record["pod_id"]}})
+    assert rm.lease_rows(c.host)[0]["live"] is True
+    with pytest.raises(PaidSelectionError, match="no live runpod lease"):
+        c.machine.claim(job)
+    assert c.creates == 1 and c.deletes == []

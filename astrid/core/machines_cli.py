@@ -52,7 +52,7 @@ def _release(machine_id: str, *, as_json: bool, release: Callable[[], Any] | Non
         def release():
             from astrid.sdk import AstridClient
             with AstridClient.open_from_launcher() as client:
-                return GenerationFacade().release(engine="comfyui", placement="runpod", client=client, wait=True)
+                return GenerationFacade().release(engine="comfyui", placement="runpod", machine_id=machine_id, client=client, wait=True)
     result = release()
     ok = bool(getattr(result, "ok", True))
     rows = [row for row in _leases() if row.get("id") == machine_id]
