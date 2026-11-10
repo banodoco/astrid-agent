@@ -89,12 +89,21 @@ def pack_module_path(relative: Path) -> tuple[str, dict[str, str]]:
     return ".".join(names), aliases
 
 
-def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, verify_digests: bool = True) -> dict[str, dict[str, str]]:
-    """Validate exact roots and run digests without scanning other collections."""
+def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, verify_digests: bool = True,
+                               verified_relocations: Mapping[str, Mapping[str, str]] | None = None) -> dict[str, dict[str, str]]:
+    """Validate exact roots and run digests without scanning other collections.
+
+    Relocations are trusted host capture output, keyed by the admitted pack id;
+    manifests and ordinary selections cannot grant themselves this authority.
+    Their snapshot bytes must still match the capture's authenticated digest.
+    """
     from astrid.core.pack.identity import pack_digest
 
     if not isinstance(selected, Mapping) or not selected:
         raise ValueError("selected pack map must be a nonempty mapping")
+    relocations = verified_relocations if verified_relocations is not None else {}
+    if not isinstance(relocations, Mapping) or not relocations.keys() <= selected.keys():
+        raise ValueError("invalid verified pack relocations")
     result = {}
     for pack_id, entry in sorted(selected.items()):
         if (not isinstance(pack_id, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", pack_id)
@@ -105,30 +114,55 @@ def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, ver
         if not root.is_dir() or root.name != pack_id or str(root) != entry["root"]:
             raise ValueError("selected pack id must match its canonical directory name")
         builtin = Path(__file__).resolve().parents[2] / "packs" / pack_id
-        if builtin.is_dir() and builtin.resolve() != root:
+        original = root
+        if pack_id in relocations:
+            relocation = relocations[pack_id]
+            if (not isinstance(relocation, Mapping)
+                    or set(relocation) != {"original_root", "root", "source_digest"}
+                    or any(not isinstance(value, str) for value in relocation.values())
+                    or relocation["root"] != str(root)
+                    or relocation["source_digest"] != entry["source_digest"]):
+                raise ValueError("selected pack differs from verified relocation")
+            original = Path(relocation["original_root"]).resolve(strict=True)
+            if (not original.is_dir() or original.name != pack_id or original == root
+                    or str(original) != relocation["original_root"]):
+                raise ValueError("invalid verified pack original root")
+        if builtin.is_dir() and builtin.resolve() != original:
             raise ValueError("external selected pack collides with an in-tree pack")
         if not re.fullmatch(r"[0-9a-f]{64}", entry["source_digest"]):
             raise ValueError("invalid selected pack source digest")
-        if verify_digests and pack_digest(root) != entry["source_digest"]:
+        # A relocation is a host-issued authorization, bound to the digest
+        # authenticated during capture. Never skip checking its executable bytes,
+        # even for admission callers that defer ordinary source digest checks.
+        if (verify_digests or pack_id in relocations) and pack_digest(root) != entry["source_digest"]:
             raise ValueError("admitted capability source digest changed")
         result[pack_id] = dict(entry)
     return result
 
 
-def selected_pack_environment(selected: Mapping[str, Mapping[str, str]]) -> dict[str, str]:
+def selected_pack_environment(selected: Mapping[str, Mapping[str, str]], *,
+                              verified_relocations: Mapping[str, Mapping[str, str]] | None = None) -> dict[str, str]:
     """Descendant namespace inputs; never add pack collections to PYTHONPATH."""
     import json
 
     builtin = Path(__file__).resolve().parents[2] / "packs"
-    roots = dict.fromkeys(str(Path(entry["root"]).parent) for entry in selected.values()
-                          if Path(entry["root"]).parent != builtin)
+    relocations = verified_relocations if verified_relocations is not None else {}
+    if relocations:
+        validate_selected_pack_map(selected, verified_relocations=relocations)
+    # A bundled snapshot keeps its bundled collection identity. The raw-source
+    # finder binds its executable imports to the snapshot; advertising it as an
+    # external collection would make catalog discovery see two owners for X.
+    roots = dict.fromkeys(str(Path(entry["root"]).parent) for pack_id, entry in selected.items()
+                          if Path(relocations.get(pack_id, {}).get("original_root", entry["root"])).parent != builtin)
     return {"ASTRID_PACKS_PATH": os.pathsep.join(roots),
-            "ASTRID_SELECTED_PACK_MAP": json.dumps(selected, sort_keys=True)}
+            "ASTRID_SELECTED_PACK_MAP": json.dumps(selected, sort_keys=True),
+            "ASTRID_VERIFIED_PACK_RELOCATIONS": json.dumps(verified_relocations or {}, sort_keys=True)}
 
 
 def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str] | None = None,
                          *, source_digest: str | None = None,
-                         selected_map: Mapping[str, Mapping[str, str]] | None = None) -> str:
+                         selected_map: Mapping[str, Mapping[str, str]] | None = None,
+                         verified_relocations: Mapping[str, Mapping[str, str]] | None = None) -> str:
     """Bind this single-run worker to one canonical source identity.
 
     The host creates a fresh interpreter for each action. Keep imported modules
@@ -140,18 +174,16 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
     root = root.resolve(strict=True)
     if not root.is_dir():
         raise ValueError("selected pack root is unavailable")
-    builtin = Path(__file__).resolve().parents[2] / "packs" / pack_id
-    if builtin.is_dir() and builtin.resolve() != root:
-        raise ValueError("external selected pack collides with an in-tree pack")
     if source_digest is None:
         from astrid.core.pack.identity import pack_digest
 
         source_digest = pack_digest(root)
     selected = validate_selected_pack_map(selected_map if selected_map is not None else {
-        pack_id: {"root": str(root), "source_digest": source_digest}})
+        pack_id: {"root": str(root), "source_digest": source_digest}},
+        verified_relocations=verified_relocations)
     if selected.get(pack_id) != {"root": str(root), "source_digest": source_digest}:
         raise ValueError("selected pack differs from admitted map")
-    environment = selected_pack_environment(selected)
+    environment = selected_pack_environment(selected, verified_relocations=verified_relocations)
     previous = {name: os.environ.get(name) for name in environment}
     os.environ.update(environment)
     prefix = "astrid.packs." + pack_id
@@ -159,7 +191,7 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
     try:
         import astrid.packs
 
-        astrid.packs._check_collisions(roots)
+        astrid.packs._check_collisions(roots, selected=selected, verified_relocations=verified_relocations)
     except ImportError as exc:
         # A refused selection leaves no process state behind (PK-4 composition repair).
         for name, value in previous.items():

@@ -1339,3 +1339,138 @@ def test_portable_copy_uses_the_digest_exclusion_rules(tmp_path):
         assert (snapshot / "source.pyc" / "included.py").is_file()
         assert not (snapshot / "__pycache__").exists()
         assert not (snapshot / "ignored.pyc").exists()
+
+
+@pytest.mark.parametrize("simulated_platform", ["darwin", "win32"])
+def test_portable_real_bundled_action_executes(tmp_path, monkeypatch, simulated_platform):
+    import subprocess
+    import sys
+    from astrid.core.pack.imports import selected_pack_environment
+
+    root = Path(generic_host.__file__).resolve().parents[2] / "packs" / "rendering"
+    with monkeypatch.context() as selection:
+        selection.setattr(generic_host.sys, "platform", simulated_platform)
+        host = GenericPackHost(pack_roots=[root])
+    assert host._pack_capture is generic_host._portable_pack_capture
+    host.discover()
+    record = host.capabilities["rendering.html_canvas_effect"]
+    selected = host._selected_pack_map(record)
+    digest = selected["rendering"]["source_digest"]
+    generation = generic_host._selected_pack_generation(record)
+    out = tmp_path / "outputs"
+    out.mkdir()
+    with host._pack_capture(generation, expected_digest=digest) as captured:
+        snapshot = captured[2]
+        selected = {"rendering": {"root": str(snapshot), "source_digest": digest}}
+        relocations = {"rendering": {"original_root": str(root), **selected["rendering"]}}
+        control = {"pack_id": "rendering", **selected["rendering"], "map": selected,
+                   "verified_relocations": relocations,
+                   "argv": ["-m", "astrid.packs.rendering.actions.html_canvas_effect.run",
+                            "--effect-id", "snapshot-proof", "--out", str(out / "report.json"),
+                            "--timeline", str(out / "timeline.json"), "--assets", str(out / "assets.json")]}
+        env = {**os.environ, **selected_pack_environment(selected, verified_relocations=relocations),
+               "ASTRID_INTERNAL_INVOCATION": "1"}
+        result = subprocess.run([sys.executable, "-m", "astrid.core.execution.generic_host_worker",
+                                 "--pack-command", json.dumps(control)],
+                                env=env, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        report = json.loads((out / "report.json").read_text())
+        assert report["ok"] is True
+        assert Path(report["template"]).is_relative_to(snapshot)
+        assert (out / "timeline.json").is_file() and (out / "assets.json").is_file()
+    assert not snapshot.parent.exists()
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_portable_cleanup_precedes_success_publication(tmp_path, monkeypatch, cleanup_fails):
+    monkeypatch.delenv("ASTRID_VIBECOMFY_CHECKOUT", raising=False)
+    root, sentinel, _installed = _composition_pack(tmp_path, "selected-action")
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    host = GenericPackHost(pack_roots=[root], client=runtime, attempt_root=tmp_path / "attempt",
+                           pack_capture=generic_host._portable_pack_capture)
+    host.discover()
+    task = _real_host_task(runtime, "hello_ext.run", "cleanup-order")
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    remove = generic_host._remove_pack_snapshot
+    snapshots = []
+
+    def reclaim(private):
+        snapshots.append(private)
+        assert not runtime.settlements
+        receipt = tmp_path / "attempt" / "result.json"
+        assert not receipt.exists() or json.loads(receipt.read_text())["status"] != "succeeded"
+        if cleanup_fails:
+            raise PermissionError("fixture cleanup denied")
+        remove(private)
+
+    monkeypatch.setattr(generic_host, "_remove_pack_snapshot", reclaim)
+    try:
+        if cleanup_fails:
+            with pytest.raises(generic_host.PackCaptureError, match="snapshot cleanup failed"):
+                host.run_task(task, lease_token="cleanup-lease")
+        else:
+            host.run_task(task, lease_token="cleanup-lease")
+        assert sentinel.exists()  # Cleanup follows actual child execution.
+        assert len(snapshots) == 1
+        receipt = json.loads((tmp_path / "attempt" / "result.json").read_text())
+        if cleanup_fails:
+            assert snapshots[0].exists()
+            assert not runtime.settlements and len(runtime.failures) == 1
+            # Existing receipt semantics retain completed outputs as a partial
+            # failed result; neither Runtime nor the receipt publishes success.
+            assert receipt["status"] == "partial" and receipt["ok"] is False
+            assert receipt["publication"]["status"] == "not_settled"
+            assert runtime.failures[0][3]["structured_error"]["code"] == "selected_pack_capture_failed"
+        else:
+            assert not snapshots[0].exists()
+            assert runtime.settlements and not runtime.failures
+            assert receipt["status"] == "succeeded"
+    finally:
+        for private in snapshots:
+            if private.exists():
+                remove(private)
+
+
+@pytest.mark.parametrize("simulated_platform", ["darwin", "win32"])
+def test_portable_bundled_task_keeps_one_discovery_owner(tmp_path, monkeypatch, simulated_platform):
+    # The real action rediscovers bundled element providers in its worker.
+    monkeypatch.delenv("ASTRID_VIBECOMFY_CHECKOUT", raising=False)
+    root = Path(generic_host.__file__).resolve().parents[2] / "packs" / "rendering"
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    with monkeypatch.context() as selection:
+        selection.setattr(generic_host.sys, "platform", simulated_platform)
+        host = GenericPackHost(pack_roots=[root], client=runtime, attempt_root=tmp_path / "attempt")
+    host.discover()
+    capability = "rendering.timeline_prepare_import"
+    _definition, admission = host.admit("executor", capability)
+    task = _real_host_task(runtime, capability, "bundled-task")
+    task["task"]["spec"]["spec"].update(
+        admitted_source_digest=admission["source_digest"],
+        inputs={"project": "demo", "manifest": {"format": "astrid.timeline/1", "elements": []},
+                "check_only": True},
+    )
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    execute = host._run_command_definition
+    snapshots = []
+
+    def captured_action(record, *args, **kwargs):
+        selected = kwargs["admission"]["selected_pack_map"]["rendering"]
+        relocation = kwargs["admission"]["verified_pack_relocations"]["rendering"]
+        snapshot = Path(selected["root"])
+        assert snapshot != root and snapshot.is_dir()
+        assert relocation == {"original_root": str(root), **selected}
+        assert pack_digest(snapshot) == selected["source_digest"] == admission["source_digest"]
+        assert Path(record.definition.metadata["pack_root"]) == snapshot
+        snapshots.append(snapshot)
+        return execute(record, *args, **kwargs)
+
+    monkeypatch.setattr(host, "_run_command_definition", captured_action)
+    host.run_task(task, lease_token="bundled-lease")
+    assert runtime.settlements and not runtime.failures
+    assert len(snapshots) == 1 and not snapshots[0].parent.exists()
+    summary = json.loads((tmp_path / "attempt" / "outputs" / "result.json").read_text())
+    assert summary["check_only"] is True
+    receipt = json.loads((tmp_path / "attempt" / "result.json").read_text())
+    assert receipt["status"] == "succeeded"
