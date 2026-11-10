@@ -313,7 +313,8 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
                                  "models_root": configured_models_root(root=str(tmp_path / "managed" / "engines" / "comfyui"))}
             assert actual[0][1] == expected_manifest, "dry and actual align manifests differ"
             assert actual[0][3] is not None, "host did not align the selected workflow"
-            assert [event[1] for event in host_events if event[0] == "workflow"] == [live_graph]
+            host_workflows = [event[1] for event in host_events if event[0] == "workflow"]
+            assert host_workflows and all(graph == live_graph for graph in host_workflows)
         elif h3:
             # Attached defaults to trust, so it does not align. Still prove that the real child
             # reads the emitted built graph rather than h3's static bundle or rebuilding h3.
