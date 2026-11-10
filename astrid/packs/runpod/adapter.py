@@ -89,7 +89,11 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
                                dc.datacenter_id, observed.gpu_type_id)
     # Unknown provider evidence never proves that every selected GPU is sold out.
     # A later confirmed offer still wins, preserving the existing choice order.
-    raise OfferObservationError(unavailable[0] if unavailable else "stock_unavailable")
+    # Lifecycle's aggregate unknown can hide a more useful DC-level reason.
+    # Keep the first specific reason in observation order when failures differ.
+    reason = next((item for item in unavailable if item != "provider_observation_unavailable"),
+                  unavailable[0] if unavailable else "stock_unavailable")
+    raise OfferObservationError(reason)
 
 
 def broker_selection(preferences, config, *, account_ref, data_root, compatibility):
