@@ -63,6 +63,35 @@ def test_archive_checks_the_file_map_document_before_reading(tmp_path):
         write_archive(tmp_path / 'inputs.zip', {'assets': str(linked)}, [{'name': 'assets', 'type': 'file_map'}])
 
 
+@pytest.mark.parametrize('cwd_file_exists', [False, True])
+def test_file_map_document_resolves_relative_members_from_document(tmp_path, monkeypatch, cwd_file_exists):
+    document_dir = tmp_path / 'document'
+    document_dir.mkdir()
+    (document_dir / 'source.txt').write_text('document content')
+    document = document_dir / 'map.json'
+    document.write_text(json.dumps({'source': 'source.txt'}))
+    cwd = tmp_path / 'cwd'
+    cwd.mkdir()
+    if cwd_file_exists:
+        (cwd / 'source.txt').write_text('different cwd content')
+    monkeypatch.chdir(cwd)
+    archive = write_archive(tmp_path / 'inputs.zip', {'assets': str(document)},
+                            [{'name': 'assets', 'type': 'file_map'}])
+    values = read_archive(archive, tmp_path / 'pod')
+    from pathlib import Path
+    assert Path(values['assets']['source']).read_text() == 'document content'
+
+
+def test_file_map_document_refuses_relative_symlink_member(tmp_path):
+    source = tmp_path / 'source.txt'
+    source.write_text('content')
+    (tmp_path / 'linked.txt').symlink_to(source)
+    document = tmp_path / 'map.json'
+    document.write_text(json.dumps({'source': 'linked.txt'}))
+    with pytest.raises(ValueError, match='not a regular file'):
+        write_archive(tmp_path / 'inputs.zip', {'assets': str(document)}, [{'name': 'assets', 'type': 'file_map'}])
+
+
 def test_archive_maps_only_declared_file_identities(tmp_path):
     source = tmp_path / 'source.txt'
     source.write_text('content')

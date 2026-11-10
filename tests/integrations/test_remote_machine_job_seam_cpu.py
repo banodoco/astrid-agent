@@ -89,7 +89,7 @@ def _owned_cpu_engine(provider, folder, monkeypatch):
     records.mkdir()
     program = f"""
 import sys,json,threading
-sys.path[:0]={sys.path!r}
+sys.path[:0]={[str(Path(__file__).resolve().parents[2]), *sys.path]!r}
 from pathlib import Path
 from tests.integrations.runpod_slot_pod import PodComfy,pin_object_info
 from tests.integrations.test_runpod_slot_path_cpu import _attached_comfy

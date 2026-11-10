@@ -39,11 +39,19 @@ def write_archive(path: Path, values: Mapping[str, Any], ports: list[dict[str, A
             file_inputs[name] = member(inputs.pop(name))
         elif kind == 'file_map':
             value = inputs.pop(name)
+            document_parent = None
             if isinstance(value, (str, Path)):
-                value = json.loads(regular_file(value).read_text())
+                document = regular_file(value)
+                document_parent = document.parent
+                value = json.loads(document.read_text())
             if not isinstance(value, Mapping):
                 raise ValueError(f'entry input {name!r} must be a file map')
-            file_maps[name] = {key: member(item) for key, item in value.items()}
+            def map_member(item):
+                source = Path(str(item)).expanduser()
+                if document_parent is not None and not source.is_absolute():
+                    source = document_parent / source
+                return member(source)
+            file_maps[name] = {key: map_member(item) for key, item in value.items()}
     if sum(source.stat().st_size for source in files.values()) > MAX_BYTES:
         raise ValueError('entry inputs archive is too large')
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:
