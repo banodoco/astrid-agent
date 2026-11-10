@@ -775,7 +775,8 @@ def run_workflow_path(
     if profile_id == "local_server":
         from astrid.packs.vibecomfy.local_server_engine import local_server_bundle
 
-        resolved = local_server_bundle(resolved, destination_path)
+        resolved = local_server_bundle(resolved, destination_path,
+                                       allow_empty_image="image" in (workflow_input_bindings or {}))
     run_inputs = _validate_workflow_input_bindings(resolved, workflow_input_bindings)
     if profile_id == "local_server":
         bundle = _canonical_bundle_value(resolved)
