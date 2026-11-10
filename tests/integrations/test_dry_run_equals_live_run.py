@@ -1,7 +1,7 @@
 """Dry preparation and real local/attached execution agree on graph, bindings and alignment.
 
-Audio sfx/tts remain GPU cells; every other default runs against the CPU ComfyUI stand-in.
-The local child records the actual engine.align argument while preserving real execution.
+Every default and h3 runs against a CPU ComfyUI stand-in; it does not perform inference.
+The local child records engine events while preserving the execution path.
 """
 from __future__ import annotations
 
@@ -22,11 +22,7 @@ from tests.integrations.test_runpod_slot_path_cpu import (
 
 pytestmark = pytest.mark.integration
 
-# The sound-effects slot and the attached speech slot need real weights the CPU harness keeps none of (Plan 34).
-_NEEDS_WEIGHTS = {("audio", "sfx"), ("audio", "tts")}
-CELLS = [pytest.param(cell, target, id=f"{'/'.join(cell)}-{target}",
-                      marks=[pytest.mark.gpu] if cell in _NEEDS_WEIGHTS or
-                      (cell, target) == (("video", "h3"), "local-managed") else [])
+CELLS = [pytest.param(cell, target, id=f"{'/'.join(cell)}-{target}")
          for target in ("attached", "local-managed") for cell in [*SLOTS, ("video", "h3")]]
 H3_CLASSES = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "object_info_h3_runpod_graph_closure.json"
 
@@ -221,6 +217,9 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         if h3:
             return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(h3_assets), **controls, **extra)
         inputs = dict(PROMPTS[cell])
+        if cell == ("audio", "sfx"):
+            from tests.integrations.test_runpod_slot_path_cpu import _video_source
+            inputs["video_ref"] = str(_video_source(tmp / "source.mp4", "256x144"))
         if replay_seed is not None:
             inputs["seed"] = replay_seed  # reproduce the concrete seed shown by the dry preparation
         if modality == "image" and mode == "edit":
@@ -242,7 +241,8 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         return live
 
     with _drive(cell, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=h3_classes, call=call,
-                machine_identity=h3, target_kind=target_kind, h3_output=h3) as (client, project_id, provider, result):
+                machine_identity=h3, target_kind=target_kind, h3_output=h3,
+                trusted_inventory=not h3) as (client, project_id, provider, result):
         assert result.ok, json.dumps(result.to_dict(), default=str)[:2000]
         (dry, dry_rows), (live, live_rows) = runs["dry"], runs["live"]
         assert isinstance(dry, dict) and dry["status"] == "ready", dry
