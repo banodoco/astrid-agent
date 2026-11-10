@@ -242,7 +242,7 @@ have_all() {
   for p in "${PACKAGES[@]}"; do
     grep -qiE "^${p//-/[-_]}==" <<< "$installed" || return 1
   done
-  "$VENV/bin/python" -c 'import runpod_lifecycle' >/dev/null 2>&1
+  "$VENV/bin/python" -c 'import runpod_lifecycle' >/dev/null 2>&1 || return 1
   source_install_current
 }
 
