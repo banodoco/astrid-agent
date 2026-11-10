@@ -1002,7 +1002,11 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
         from .engine_platforms import platform_adapter
     except ImportError as exc:
         raise UnsupportedPlatform("installed status requires the A2 production Linux adapter") from exc
-    runner = _Runner(plan, context, platform_adapter(platform), deadline)
+    start_facts = next(step.facts for step in receipt.steps if step.kind == "start")
+    if "cuda_visible_devices" not in start_facts:
+        raise IntegrityError("installed launch has no bound GPU visibility")
+    runner = _Runner(plan, context, platform_adapter(platform), deadline,
+                     visibility=start_facts["cuda_visible_devices"])
     runner.receipt_id, runner.started_at = receipt.receipt_id, receipt.started_at
     failed_step_id = "helper-identity"
     try:

@@ -337,6 +337,29 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         daemon.stop()
 
 
+@pytest.fixture
+def managed_install_with_ambient(monkeypatch, request):
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '2')
+    return request.getfixturevalue('managed_install')
+
+
+def test_real_status_and_readiness_use_installed_visibility(managed_install_with_ambient, monkeypatch):
+    from astrid.core.generation import engine_readiness
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+    client, payload, recipe, root, started, bootstrap = managed_install_with_ambient
+    assert payload['launch']['env']['CUDA_VISIBLE_DEVICES'] == '2'
+    monkeypatch.delenv('CUDA_VISIBLE_DEVICES')
+    deadline = time.monotonic() + 90
+    receipt = engine_readiness.canonical_status(root=str(root), deadline=deadline)
+    assert receipt.status == 'installed', receipt
+    start = next(step.facts for step in receipt.steps if step.kind == 'start')
+    assert start['cuda_visible_devices'] == '2'
+    health, launch = engine_readiness._owned_health(str(root), recipe, LinuxPlatformAdapter(recipe.platform),
+        start['owner_id'], deadline, models_root=receipt.models_root, visibility=start['cuda_visible_devices'])
+    assert health['healthy'] and launch['env']['CUDA_VISIBLE_DEVICES'] == '2'
+    assert len(started.read_text().splitlines()) == 1
+
+
 def test_plain_workflow_preparation_does_not_write_beside_admitted_input(tmp_path, monkeypatch, managed_install):
     from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value
     client, payload, recipe, root, started, bootstrap = managed_install
