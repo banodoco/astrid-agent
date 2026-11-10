@@ -193,8 +193,8 @@ def test_generate_and_h3_share_vibecomfy_pin():
     h3 = load_recipe('comfyui', 'linux-x86_64-cu130')
     generate_sources = {s.name: (s.pin.repository, s.pin.revision) for s in generate.sources}
     h3_sources = {s.name: (s.pin.repository, s.pin.revision) for s in h3.sources}
-    assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
-    assert h3_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'
+    assert generate_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'  # v0.36.0
+    assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
     assert generate_sources['vibecomfy'] == (
         'https://github.com/banodoco/VibeComfy.git', VIBECOMFY_ENGINE_REVISION)
     assert h3_sources['vibecomfy'] == (

@@ -102,9 +102,9 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
         assert bindings[0].relative_path == "runtime/vibecomfy"
         assert bindings[0].pin == pins["vibecomfy"]
         assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
-        assert bindings[0].pin.revision == "e65f4941d09b1cb4d1dd5aae6171c73e648706f4"
+        assert bindings[0].pin.revision == "8d065a8fef3dd602d5462e27d8eca088cf4e8262"
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
-            "423cbd20511becb1f16122ab518e92e58bfa03d9")
+            "ee71d5c4993f29086b27fde1629a945ae48425bf")
     declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
                        for path in (recipes._ROOT / "packs").rglob("*.json"))
     assert declarations == 2  # the Windows and Linux recipes' shared pin manifests
@@ -118,8 +118,8 @@ def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
     assert bindings[0].relative_path == "runtime/vibecomfy"
     assert bindings[0].pin == pins["vibecomfy"]
     expected_sources = {
-        "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "423cbd20511becb1f16122ab518e92e58bfa03d9"),
-        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "e65f4941d09b1cb4d1dd5aae6171c73e648706f4"),
+        "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "ee71d5c4993f29086b27fde1629a945ae48425bf"),
+        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "8d065a8fef3dd602d5462e27d8eca088cf4e8262"),
         "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
         "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
         "comfyui-hunyuanvideo-foley": ("https://github.com/BobRandomNumber/ComfyUI-HunyuanVideo_Foley.git", "b94f7aca877ff2be5bc264b057abee3dac682c1b"),
