@@ -380,6 +380,82 @@ def test_pack_hot_refresh_is_checked_on_the_default_single_worker_host_only(tmp_
         journey.before_journey_pack_add(tmp_path / "evidence")
 
 
+def test_every_task_phase_stages_its_follow_and_cancel_files(tmp_path):
+    evidence = tmp_path / "evidence" / "r0-handoff-then-update"
+    phases = {"": "root", "candidate-working-task": "candidate-working-task",
+              "release9-then-install/release1-working-task": "release9-then-install-release1-working-task"}
+    for folder in phases:
+        (evidence / folder).mkdir(parents=True, exist_ok=True)
+        for name in journey.TASK_FOLLOW_FILES:
+            (evidence / folder / name).write_text('{"state": "failed"}\n', encoding="utf-8")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = {path.name for path in (tmp_path / "evidence-upload" / "before-cleanup").iterdir()}
+    expected = {f"journey-task-{phase}--{name}" for phase in phases.values() for name in journey.TASK_FOLLOW_FILES}
+    assert expected <= staged
+    # The workflow guard admits exactly these staged names (and the pattern is anchored).
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text(encoding="utf-8")
+    guard = re.search(r"-cnotmatch '(\^journey-task-[^']+)'", workflow).group(1)
+    assert all(re.fullmatch(guard, name) for name in expected)
+    assert not re.fullmatch(guard, "journey-task-root--secret.json")
+    assert all(journey.TASK_FOLLOW_STAGED.fullmatch(name) for name in expected)
+
+
+def test_failure_capture_keeps_the_journald_unit_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv[:4])
+        out = b"2026-11-10 runtime[1]: pack host exited\n" if argv[3] == "astrid.service" else b"-- No entries --\n"
+        return subprocess.CompletedProcess(argv, 0, out, b"")
+
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    captured = journey.capture_service_manager_output(tmp_path, tmp_path / "run", "before-cleanup")
+    assert captured == ["runtime-service-service-journald-astrid.service.log"]
+    assert b"pack host exited" in (tmp_path / captured[0]).read_bytes()
+    assert ["journalctl", "--user", "-u", "astrid.service"] in seen
+    assert re.fullmatch(r"runtime-service-service-.+\.log", captured[0])
+
+
+def test_failure_capture_keeps_the_launchd_streams(tmp_path, monkeypatch):
+    import plistlib
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    agents = tmp_path / "run" / "home" / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    out, err = tmp_path / "stdout.log", tmp_path / "stderr.log"
+    out.write_text("runtime started\n", encoding="utf-8")
+    err.write_text("pack host crashed\n", encoding="utf-8")
+    (agents / "haus.astrid.runtime.plist").write_bytes(plistlib.dumps(
+        {"Label": "haus.astrid.runtime", "StandardOutPath": str(out), "StandardErrorPath": str(err)}))
+    captured = journey.capture_service_manager_output(tmp_path, tmp_path / "run", "before-cleanup")
+    assert captured == ["runtime-service-service-launchd-haus.astrid.runtime-stdout.log",
+                        "runtime-service-service-launchd-haus.astrid.runtime-stderr.log"]
+    assert (tmp_path / captured[1]).read_text(encoding="utf-8") == "pack host crashed\n"
+
+
+@pytest.mark.parametrize("first_state", ["running", "failed"])
+def test_task_follow_failure_prints_terminal_state_error_and_cancel(tmp_path, monkeypatch, capsys, first_state):
+    monkeypatch.setattr(journey, "submit_task", lambda *a, **k: "task-7")
+    final_state = "cancelled" if first_state == "running" else "failed"
+    rows = {"task-follow-failure.json": {"ok": True, "data": {"state": first_state}},
+            "task-after-cancel.json": {"ok": True, "data": {"state": final_state, "error": {
+                "code": "executor_failed", "message": "chiptune render failed at /tmp/x/out.wav"}}}}
+
+    def cli(version, argv, evidence, name, **kwargs):
+        if argv[1] == "follow" and name == "task-follow.jsonl":
+            raise RuntimeError("task-follow.jsonl: exit 1; see task-follow.jsonl")
+        return json.dumps(rows.get(name, {"ok": True, "data": {}}))
+
+    monkeypatch.setattr(journey, "installed_cli", cli)
+    with pytest.raises(RuntimeError, match="Task follow failed"):
+        journey.task({}, tmp_path, "project")
+    line = [row for row in capsys.readouterr().err.splitlines() if row.startswith("Journey task follow failure: ")][0]
+    fields = json.loads(line.split(": ", 1)[1])
+    assert fields == {"task_id": "task-7", "state_at_follow_failure": first_state, "terminal_state": final_state,
+                      "error_code": "executor_failed", "error_message": "chiptune render failed at <path>",
+                      "cancelled_by_harness": first_state == "running"}
+
+
 def test_task_checks_hot_refresh_after_admission_and_completion(tmp_path, monkeypatch):
     order = []
     monkeypatch.setattr(journey, "submit_task", lambda *a, **k: order.append("admitted") or "task-1")

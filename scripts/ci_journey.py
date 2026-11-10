@@ -14,6 +14,7 @@ import json
 import ntpath
 import os
 import platform
+import plistlib
 import re
 import shlex
 import shutil
@@ -764,9 +765,78 @@ def capture_macos_listing(evidence: Path, run_root: Path, phase: str, home: Path
         print(f"Journey macOS listing ({phase}) failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
+def _write_bounded_tail(data: bytes, target: Path) -> None:
+    target.write_bytes(data[-EVIDENCE_LOG_LIMIT:])
+
+
+def capture_service_manager_output(evidence: Path, run_root: Path, phase: str) -> list[str]:
+    """Retain the installed service's own manager output: the journald user unit or launchd's streams.
+
+    Names fit the existing runtime-service-service-*.log upload pattern. Diagnostics only.
+    """
+    captured = []
+    if sys.platform == "linux":
+        for unit in ("astrid.service", "astrid-r1.service"):
+            try:
+                completed = subprocess.run(["journalctl", "--user", "-u", unit, "--no-pager", "-o", "short-iso",
+                                            "-n", "5000"], capture_output=True, timeout=60, check=False)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"Journey journald capture ({phase}) failed for {unit}: {type(exc).__name__}",
+                      file=sys.stderr, flush=True)
+                continue
+            def as_bytes(value) -> bytes:
+                return value if isinstance(value, bytes) else str(value or "").encode("utf-8", "replace")
+
+            stdout, stderr = as_bytes(completed.stdout), as_bytes(completed.stderr)
+            if not stdout.strip() or stdout.strip() == b"-- No entries --":
+                continue
+            output = stdout + (b"\n[stderr]\n" + stderr if stderr else b"")
+            name = f"runtime-service-service-journald-{unit}.log"
+            try:
+                _write_bounded_tail(output, evidence / name)
+                captured.append(name)
+            except OSError as exc:
+                print(f"Journey journald capture ({phase}) failed for {unit}: {type(exc).__name__}",
+                      file=sys.stderr, flush=True)
+    elif sys.platform == "darwin":
+        agents = run_root / "home" / "Library" / "LaunchAgents"
+        for label in ("haus.astrid.runtime", "haus.astrid.runtime.r1"):
+            plist = agents / f"{label}.plist"
+            if plist.is_symlink() or not plist.is_file():
+                continue
+            try:
+                definition = plistlib.loads(plist.read_bytes())
+            except Exception as exc:  # noqa: BLE001 - an unreadable plist is a diagnostic, not a failure
+                print(f"Journey launchd plist read ({phase}) failed for {label}: {type(exc).__name__}",
+                      file=sys.stderr, flush=True)
+                continue
+            for key, stream in (("StandardOutPath", "stdout"), ("StandardErrorPath", "stderr")):
+                path = definition.get(key) if isinstance(definition, dict) else None
+                if not isinstance(path, str) or not path:
+                    continue
+                source = Path(path)
+                if source.is_symlink() or not source.is_file():
+                    continue
+                name = f"runtime-service-service-launchd-{label}-{stream}.log"
+                try:
+                    with source.open("rb") as handle:
+                        handle.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                        (evidence / name).write_bytes(handle.read(EVIDENCE_LOG_LIMIT))
+                    captured.append(name)
+                except OSError as exc:
+                    print(f"Journey launchd stream capture ({phase}) failed for {label}: "
+                          f"{type(exc).__name__}", file=sys.stderr, flush=True)
+    return captured
+
+
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
     """Retain bounded tails of Runtime logs from the active journey profile."""
     capture_update_transaction_status(evidence, run_root, phase)
+    try:  # Diagnostics only: a capture failure never replaces the journey's own result.
+        capture_service_manager_output(evidence, run_root, phase)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Journey service-manager output capture ({phase}) failed: {type(exc).__name__}",
+              file=sys.stderr, flush=True)
     if sys.platform == "darwin":
         capture_macos_listing(evidence, run_root, phase)
         # The Runtime's own log lives in the data root on macOS, beside its state.
@@ -1076,6 +1146,50 @@ def _capture_windows_pack_host_update_state(evidence: Path, data: Path, phase: s
               file=sys.stderr, flush=True)
 
 
+TASK_FOLLOW_FILES = ("task-follow.jsonl", "task-follow-failure.json", "task-cancel.json",
+                     "task-cancel-follow.jsonl", "task-after-cancel.json")
+# journey-task-<phase>--<file>: <phase> is the task's evidence folder ("root" for the leg's own),
+# with path separators as "-", so every task phase stages flat beside the other names.
+TASK_FOLLOW_STAGED = re.compile(r"journey-task-[A-Za-z0-9_-]+--(?:" +
+                                "|".join(re.escape(name) for name in TASK_FOLLOW_FILES) + r")")
+
+
+def stage_task_follow_diagnostics(evidence: Path, destination: Path) -> list[str]:
+    """Stage every task phase's follow/cancel files (diagnostics only; bounded)."""
+    staged = []
+    for name in TASK_FOLLOW_FILES:
+        for source in sorted(evidence.rglob(name)):
+            if source.is_symlink() or not source.is_file():
+                continue
+            try:
+                relative = source.parent.relative_to(evidence)
+            except ValueError:
+                continue
+            if any(part.is_symlink() for part in [evidence / Path(*relative.parts[:i + 1])
+                                                   for i in range(len(relative.parts))]):
+                continue
+            phase = "root" if not relative.parts else "-".join(relative.parts)
+            phase = re.sub(r"[^A-Za-z0-9_-]", "_", phase)
+            target_name = f"journey-task-{phase}--{name}"
+            if not TASK_FOLLOW_STAGED.fullmatch(target_name):
+                continue
+            try:
+                size = source.stat().st_size
+                if name.endswith(".jsonl"):
+                    with source.open("rb") as stream:  # follow streams: keep the bounded tail
+                        stream.seek(max(0, size - EVIDENCE_LOG_LIMIT))
+                        (destination / target_name).write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+                elif size <= EVIDENCE_LOG_LIMIT:
+                    shutil.copyfile(source, destination / target_name)
+                else:
+                    continue
+                staged.append(target_name)
+            except OSError as exc:
+                print(f"Journey task-follow staging failed for {target_name}: {type(exc).__name__}",
+                      file=sys.stderr, flush=True)
+    return staged
+
+
 def retain_named_evidence(evidence: Path, phase: str) -> None:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
     destination = evidence.parent.parent / "evidence-upload" / phase
@@ -1147,6 +1261,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                 except OSError as exc:
                     print(f"Journey readiness carry-forward failed: {type(exc).__name__}",
                           file=sys.stderr, flush=True)
+
+    stage_task_follow_diagnostics(evidence, destination)
 
     # Never upload the helper's raw stdout, traceback, request, or selection.
     for action in ("seed", "snapshot"):
@@ -2801,6 +2917,33 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
     return refs[0]["task_id"]
 
 
+def _task_error(row: dict) -> tuple[str | None, str | None]:
+    """The terminal task's error code and message, wherever the row carries them."""
+    for candidate in (row.get("error"), (row.get("result") or {}).get("error")
+                      if isinstance(row.get("result"), dict) else None, row.get("failure")):
+        if isinstance(candidate, dict):
+            code = candidate.get("code") or candidate.get("error_code")
+            message = candidate.get("message") or candidate.get("detail")
+            return (str(code) if code is not None else None,
+                    _WINDOWS_ABSOLUTE_PATH.sub("<path>", str(message))[:300] if message is not None else None)
+        if isinstance(candidate, str) and candidate:
+            return None, _WINDOWS_ABSOLUTE_PATH.sub("<path>", candidate)[:300]
+    return None, None
+
+
+def task_follow_failure_summary(task_id: str, observed: dict, final: dict, *, cancelled_by_harness: bool) -> str:
+    """One job-log line naming the task's terminal state, its error and whether the harness cancelled it."""
+    first = observed.get("data") if isinstance(observed.get("data"), dict) else {}
+    row = final.get("data") if isinstance(final.get("data"), dict) else {}
+    code, message = _task_error(row)
+    if code is None and message is None:
+        code, message = _task_error(first)
+    return ("Journey task follow failure: " + json.dumps({
+        "task_id": task_id, "state_at_follow_failure": first.get("state"), "terminal_state": row.get("state"),
+        "error_code": code, "error_message": message, "cancelled_by_harness": cancelled_by_harness},
+        sort_keys=True))
+
+
 def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
     """Exercise the installed SDK through a settled, materialized SFX output."""
     task_id = submit_task(version, evidence, project, create_project=create_project)
@@ -2811,7 +2954,9 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
     except (RuntimeError, subprocess.TimeoutExpired) as exc:
         state = _sdk_result(installed_cli(version, ["tasks", "show", task_id, "--project", project,
                                                  "--json"], evidence, "task-follow-failure.json"))
+        cancelled_by_harness = False
         if (state.get("data") or {}).get("state") not in TERMINAL:
+            cancelled_by_harness = True
             installed_cli(version, ["tasks", "cancel", task_id, "--project", project, "--json"],
                           evidence, "task-cancel.json")
             try:
@@ -2822,6 +2967,8 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
                 pass
         final = _sdk_result(installed_cli(version, ["tasks", "show", task_id, "--project", project,
                                                  "--json"], evidence, "task-after-cancel.json"))
+        print(task_follow_failure_summary(task_id, state, final, cancelled_by_harness=cancelled_by_harness),
+              file=sys.stderr, flush=True)
         if (final.get("data") or {}).get("state") not in TERMINAL:
             raise RuntimeError("Task remained nonterminal after cancellation") from exc
         raise RuntimeError(f"Task follow failed: {exc}") from exc
