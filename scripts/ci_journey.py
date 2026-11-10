@@ -3108,10 +3108,12 @@ def record_existing_pack_gate_skip(evidence: Path, pack_id: str, reason: str) ->
 
 
 def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
-                duration_s: float = 0.1, existing_pack_gate: bool | str = True) -> str:
+                duration_s: float = 0.1, existing_pack_gate: bool | str = True,
+                diagnostic_pack_setup=None) -> str:
     """Admit one chiptune SFX task through the installed SDK and return its id, unfollowed."""
     SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
-    PACK_HOT_REFRESH.pop(evidence.absolute(), None)
+    if diagnostic_pack_setup is None:
+        PACK_HOT_REFRESH.pop(evidence.absolute(), None)
     for name in ("project.json", "sdk-invocation.json"):
         (evidence / name).unlink(missing_ok=True)
     for phase in ("before-cleanup", "after-cleanup"):
@@ -3127,15 +3129,18 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
                                                    status_name="project-create-capture-status.json"))
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
-    install_journey_packs(lambda argv, name: installed_cli(version, argv, evidence, name,
-                                                           console=True, timeout=600),
-                          routes_packs=lambda: installed_routes_packs(version, evidence),
-                          before_add=lambda: before_journey_pack_add(evidence),
-                          wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id),
-                          existing_ready=((lambda pack_id: wait_existing_pack_current(version, evidence, pack_id))
-                                          if existing_pack_gate is True else
-                                          (lambda pack_id: record_existing_pack_gate_skip(
-                                              evidence, pack_id, str(existing_pack_gate)))))
+    if diagnostic_pack_setup is not None:
+        diagnostic_pack_setup()
+    else:
+        install_journey_packs(lambda argv, name: installed_cli(version, argv, evidence, name,
+                                                               console=True, timeout=600),
+                              routes_packs=lambda: installed_routes_packs(version, evidence),
+                              before_add=lambda: before_journey_pack_add(evidence),
+                              wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id),
+                              existing_ready=((lambda pack_id: wait_existing_pack_current(version, evidence, pack_id))
+                                              if existing_pack_gate is True else
+                                              (lambda pack_id: record_existing_pack_gate_skip(
+                                                  evidence, pack_id, str(existing_pack_gate)))))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
     try:

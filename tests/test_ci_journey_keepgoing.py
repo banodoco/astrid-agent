@@ -61,25 +61,15 @@ def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatc
     monkeypatch.setattr(journey.windows, 'EVIDENCE', None)
     monkeypatch.setattr(jumps, 'task_after_update',
                         lambda *a: pytest.fail("fresh-install must seed its project"))
-    monkeypatch.setattr(journey, 'task', lambda *a, **k: task_calls.append(("sdk", a, k)))
-    monkeypatch.setattr(journey.windows, 'wait_for', lambda *a: task_calls.append(("wait", a)))
-    monkeypatch.setattr(journey.windows, 'host_ready', lambda: True)
-    monkeypatch.setattr(journey.windows, 'snapshot', lambda *a: task_calls.append(("snapshot", a)))
-    monkeypatch.setattr(journey.windows, 'task',
-                        lambda *a, **k: task_calls.append(("windows", a, k)))
+    monkeypatch.setattr(keepgoing, "diagnostic_task",
+                        lambda *a, **k: task_calls.append((a, k)) or [])
     evidence = tmp_path / 'evidence'
     report = keepgoing.execute(args, root, data, evidence, SimpleNamespace(pid=1), 'birth')
     assert all(stage['result'] == 'pass' for stage in report['stages'])
     assert [stage['stage'] for stage in report['stages']] == list(keepgoing.FRESH_STAGES)
     assert calls == [((root, data), {})]
-    if platform == "win32":
-        assert task_calls[0][0] == "wait"
-        assert task_calls[1] == ("snapshot", ("processes-host-ready.json",))
-        assert task_calls[-1] == ("windows", ("tst-m4-3b-release0",), {"create_project": True})
-        assert journey.windows.EVIDENCE == evidence / "release1-working-task"
-    else:
-        assert task_calls == [("sdk", (manifest, evidence / "release1-working-task",
-                                        "tst-m4-3b-release0"), {})]
+    assert task_calls == [((manifest, evidence / "release1-working-task",
+                            "tst-m4-3b-release0"), {"create_project": True})]
 
 
 @pytest.mark.parametrize("bad", [True, "1", -1, None])
@@ -169,6 +159,7 @@ def test_release0_live_snapshots_keep_selected_owner_and_guard_selection(
             state["snapshot"] = True
         return {"snapshot": True}
     monkeypatch.setattr(jumps, "live_workspace", live_workspace)
+    monkeypatch.setattr(keepgoing, "diagnostic_task", lambda *a, **k: [])
     monkeypatch.setattr(jumps, "task_after_update", lambda *a: "task")
     monkeypatch.setattr(journey, "healthy", lambda data: calls.append(("health", data)) or
                         {"pid": state["pid"], "runtime_instance_id": str(state["pid"])})
@@ -409,3 +400,94 @@ def test_failed_fresh_bootstrap_capture_preserves_stage_failure(tmp_path, monkey
     assert install['result'] == 'fail' and install['first_error'] == 'ValueError: primary'
     assert calls == ['bootstrap', 'capture']
     assert next(row for row in report['stages'] if row['stage'] == 'release1-start')['result'] == 'not-run'
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_failed_gate_continues_task_and_reports_substeps(tmp_path, monkeypatch, existing):
+    calls = []
+    monkeypatch.setattr(journey, "installed_routes_packs", lambda *a: True)
+    monkeypatch.setattr(journey, "before_journey_pack_add", lambda *a: None)
+    def cli(version, argv, evidence, name, **kwargs):
+        calls.append(argv[:2])
+        if argv[:2] == ["packs", "list"]:
+            return json.dumps({"data": [{"id": "chiptune"}] if existing else []})
+        if argv[:2] == ["tasks", "show"]:
+            return json.dumps({"ok": True, "data": {"state": "succeeded", "result": {"outputs": [
+                {"name": name, "digest": "sha256:" + "a" * 64, "size": 1}
+                for name in ("sfx", "sfx_meta")]}}})
+        return "{}"
+    monkeypatch.setattr(journey, "installed_cli", cli)
+    def fail(*args):
+        raise RuntimeError("gate failed")
+    monkeypatch.setattr(journey, "wait_pack_registered", fail)
+    monkeypatch.setattr(journey, "wait_existing_pack_current", fail)
+    monkeypatch.setattr(journey, "submit_task", lambda *a, **k: calls.append(["submit"]) or "task-1")
+    monkeypatch.setattr(journey, "assert_pack_hot_refreshed", lambda *a: calls.append(["hot-refresh"]))
+    rows = keepgoing.diagnostic_task({}, tmp_path, "p", create_project=False)
+    assert [r["result"] for r in rows] == ["pass", "fail", "pass", "pass", "pass", "pass"]
+    assert rows[1]["forced_continuation_used"] is True
+    assert rows[1]["first_error"] == "RuntimeError: gate failed"
+    assert ["submit"] in calls and ["tasks", "follow"] in calls
+    report = {"stages": [{"stage": "release1-task", "result": "fail", "first_error": rows[1]["first_error"],
+                          "forced_continuation_used": True, "failure_class": "real", "sub_steps": rows}],
+              "status": "fail"}
+    keepgoing.write(tmp_path, report)
+    assert json.loads((tmp_path / "keepgoing-report.json").read_text())["stages"][0]["sub_steps"] == rows
+    markdown = (tmp_path / "keepgoing-report.md").read_text()
+    for row in rows:
+        assert "| " + row["sub_step"] + " | " + row["result"] in markdown
+
+
+def test_proof_gate_failure_does_not_submit(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "installed_routes_packs", lambda *a: True)
+    monkeypatch.setattr(journey, "before_journey_pack_add", lambda *a: None)
+    monkeypatch.setattr(journey, "installed_cli", lambda *a, **k: json.dumps({"data": []}))
+    monkeypatch.setattr(journey, "wait_pack_registered", lambda *a: (_ for _ in ()).throw(RuntimeError("gate failed")))
+    submitted = []
+    monkeypatch.setattr(journey, "installed_cli_with_capture", lambda *a, **k: submitted.append(a))
+    with pytest.raises(RuntimeError, match="gate failed"):
+        journey.task({}, tmp_path, "p", create_project=False)
+    assert submitted == []
+
+
+def test_failed_submit_skips_follow_and_settlement(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "install_journey_packs", lambda *a, **k: k["existing_ready"]("chiptune"))
+    monkeypatch.setattr(journey, "wait_existing_pack_current", lambda *a: None)
+    def fail(*args, **kwargs):
+        raise RuntimeError("submit failed")
+    monkeypatch.setattr(journey, "submit_task", fail)
+    monkeypatch.setattr(journey, "installed_cli", lambda *a, **k: pytest.fail("no task id"))
+    monkeypatch.setattr(journey, "assert_pack_hot_refreshed", lambda *a: None)
+    rows = keepgoing.diagnostic_task({}, tmp_path, "p", create_project=False)
+    assert [row["result"] for row in rows] == ["pass", "pass", "fail", "not-run", "not-run", "pass"]
+
+
+def test_release1_task_stage_stays_failed_after_forced_continuation(tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    app.mkdir()
+    candidate = tmp_path / "candidate.json"
+    candidate.write_text("{}")
+    args = SimpleNamespace(job_id="direct-linux", mode="direct", leg="fresh-install", shell="sh",
+                           app_checkout=app, candidate=candidate)
+    manifest = {"release": 1}
+    monkeypatch.setattr(journey, "selected_manifest", lambda *a, **k: (candidate, manifest))
+    monkeypatch.setattr(keepgoing.gate, "validate_tuple", lambda *a: manifest)
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *a: {"alive": True})
+    monkeypatch.setattr(journey, "bootstrap", lambda *a, **k: None)
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *a: None)
+    monkeypatch.setattr(journey, "wait_ready", lambda *a, **k: None)
+    monkeypatch.setattr(journey, "installation", lambda *a: (candidate, tmp_path / "data", manifest))
+    monkeypatch.setattr(jumps, "installed_release", lambda v: v["release"])
+    monkeypatch.setattr(journey, "selected_tuple", lambda *a: None)
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *a, **k: None)
+    monkeypatch.setattr(journey, "verify", lambda *a: None)
+    monkeypatch.setattr(journey, "capture_failed_release1_task", lambda *a: None)
+    steps = [{"sub_step": "readiness gate", "result": "fail", "first_error": "gate failed",
+              "forced_continuation_used": True},
+             {"sub_step": "task submit", "result": "pass", "first_error": None,
+              "forced_continuation_used": False}]
+    monkeypatch.setattr(keepgoing, "diagnostic_task", lambda *a, **k: steps)
+    report = keepgoing.execute(args, tmp_path / "root", tmp_path / "data", tmp_path / "evidence",
+                               SimpleNamespace(pid=1), "birth")
+    row = next(row for row in report["stages"] if row["stage"] == "release1-task")
+    assert row["result"] == "fail" and row["first_error"] == "gate failed"
+    assert row["forced_continuation_used"] is True and row["sub_steps"] == steps

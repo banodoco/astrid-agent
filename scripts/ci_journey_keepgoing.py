@@ -120,6 +120,14 @@ def write(evidence, report):
         observation = json.dumps(row["observation"], sort_keys=True) if "observation" in row else ""
         observation = observation.replace("|", "\\|").replace("\n", " ")
         lines.append(f"| {row['stage']} | {row['result']} | {observation} | {row['forced_continuation_used']} | {error} |")
+    for row in report["stages"]:
+        if "sub_steps" in row:
+            lines.extend(["", f"{row['stage']} sub-steps", "",
+                          "| sub-step | result | forced-continuation-used | first error |",
+                          "| --- | --- | --- | --- |"])
+            for step in row["sub_steps"]:
+                error = (step.get("first_error") or "").replace("|", "\\|").replace("\n", " ")
+                lines.append(f"| {step['sub_step']} | {step['result']} | {step['forced_continuation_used']} | {error} |")
     lines.extend(["", "| stage | needs | source | result | class |", "| --- | --- | --- | --- | --- |"])
     for row in report["stages"]:
         needs = row.get("preconditions", [])
@@ -167,6 +175,91 @@ def record_expected_nonzero_exit(evidence: Path, command: list[str]) -> bool:
     return True
 
 
+def diagnostic_task(version, evidence, project, *, create_project):
+    """Collect task observations without treating a failed gate as success."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    journey.PACK_HOT_REFRESH.pop(evidence.absolute(), None)
+    rows = [{"sub_step": name, "result": "not-run", "forced_continuation_used": False,
+             "first_error": None} for name in
+            ("pack add", "readiness gate", "task submit", "task follow", "settled outputs", "hot-refresh check")]
+
+    def run_step(index, action, *, gate=False):
+        row = rows[index]
+        try:
+            result = action()
+            row["result"] = "pass"
+            return result
+        except Exception as exc:
+            row.update(result="fail", first_error=f"{type(exc).__name__}: {exc}",
+                       forced_continuation_used=gate)
+            return None
+
+    pending = []
+    def add_packs():
+        if sys.platform == "win32":
+            journey.windows.EVIDENCE = evidence
+            journey.windows.wait_for("pack-host is running with its current ready file", journey.windows.host_ready)
+            journey.windows.snapshot("processes-host-ready.json")
+            journey.windows.assert_installed_profile_binding()
+        journey.install_journey_packs(
+            lambda argv, name: journey.installed_cli(version, argv, evidence, name, console=True, timeout=600),
+            routes_packs=lambda: journey.installed_routes_packs(version, evidence),
+            before_add=lambda: journey.before_journey_pack_add(evidence),
+            wait_registered=lambda pack: pending.append((journey.wait_pack_registered, pack)),
+            existing_ready=lambda pack: pending.append((journey.wait_existing_pack_current, pack)))
+    run_step(0, add_packs)
+    if pending:
+        def gates():
+            for check, pack in pending:
+                check(version, evidence, pack)
+        run_step(1, gates, gate=True)
+    else:
+        rows[1]["first_error"] = "No pack readiness gate available"
+
+    task_id = run_step(2, lambda: journey.submit_task(version, evidence, project,
+                       create_project=create_project, diagnostic_pack_setup=lambda: None))
+    if task_id:
+        def follow():
+            try:
+                journey.installed_cli(version, ["tasks", "follow", task_id, "--project", project,
+                    "--poll-seconds", "2", "--timeout-seconds", "900", "--json"],
+                    evidence, "task-follow.jsonl", timeout=960)
+            except Exception:
+                state = journey._sdk_result(journey.installed_cli(version, ["tasks", "show", task_id,
+                    "--project", project, "--json"], evidence, "task-follow-failure.json"))
+                if (state.get("data") or {}).get("state") not in journey.TERMINAL:
+                    journey.installed_cli(version, ["tasks", "cancel", task_id, "--project", project,
+                        "--json"], evidence, "task-cancel.json")
+                    try:
+                        journey.installed_cli(version, ["tasks", "follow", task_id, "--project", project,
+                            "--poll-seconds", "2", "--timeout-seconds", "300", "--json"],
+                            evidence, "task-cancel-follow.jsonl", timeout=360)
+                    except Exception:
+                        pass
+                    final = journey._sdk_result(journey.installed_cli(version, ["tasks", "show", task_id,
+                        "--project", project, "--json"], evidence, "task-after-cancel.json"))
+                    if (final.get("data") or {}).get("state") not in journey.TERMINAL:
+                        raise RuntimeError("Task remained nonterminal after cancellation")
+                raise
+        run_step(3, follow)
+        def settled():
+            value = journey._sdk_result(journey.installed_cli(version, ["tasks", "show", task_id,
+                "--project", project, "--json"], evidence, "task-settled.json"))
+            row = value.get("data") or {}
+            outputs = {item.get("name"): item for item in (row.get("result") or {}).get("outputs", [])}
+            if (value.get("ok") is not True or row.get("state") != "succeeded" or
+                    not {"sfx", "sfx_meta"} <= outputs.keys() or any(
+                        not re.fullmatch(r"sha256:[0-9a-f]{64}", outputs[name].get("digest", "")) or
+                        outputs[name].get("size", 0) <= 0 for name in ("sfx", "sfx_meta"))):
+                raise RuntimeError("Task did not settle successfully with materialized outputs")
+        run_step(4, settled)
+    else:
+        for row in rows[3:5]:
+            row["first_error"] = "No task id returned by submit"
+    run_step(5, lambda: journey.assert_pack_hot_refreshed(version, evidence))
+    return rows
+
+
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     report = initial(evidence, args)
     state = {}
@@ -197,7 +290,17 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         else:
             try:
                 outcome = action()
-                if isinstance(outcome, dict) and outcome.get("result") in {"observed-passed", "observed-failed"}:
+                if isinstance(outcome, list):
+                    row["sub_steps"] = outcome
+                    failures = [item for item in outcome if item["result"] != "pass"]
+                    row["result"] = "fail" if failures else "pass"
+                    if failures:
+                        row["first_error"] = failures[0]["first_error"]
+                        row["failure_class"] = "real"
+                        if name == "release1-task":
+                            journey.capture_failed_release1_task(evidence, state["version"])
+                    row["forced_continuation_used"] = any(item["forced_continuation_used"] for item in outcome)
+                elif isinstance(outcome, dict) and outcome.get("result") in {"observed-passed", "observed-failed"}:
                     row["result"] = outcome["result"]
                     row["observation"] = outcome["observation"]
                     row["continuation"] = "Observation recorded; subsequent diagnostic stages continue"
@@ -271,13 +374,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         def fresh_task():
             try:
                 task_evidence = evidence / "release1-working-task"
-                if sys.platform == "win32":
-                    journey.windows.EVIDENCE = task_evidence
-                    journey.windows.wait_for("pack-host is running with its current ready file",
-                                             journey.windows.host_ready)
-                    journey.windows.snapshot("processes-host-ready.json")
-                    return journey.windows.task(project, create_project=True)
-                return journey.task(state["version"], task_evidence, project)
+                return diagnostic_task(state["version"], task_evidence, project, create_project=True)
             except Exception:
                 journey.capture_failed_release1_task(evidence, state["version"])
                 raise
@@ -400,6 +497,6 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     stage("release1-verify-install", ["version"], verify_install, evidence / "verify-install.log")
     stage("release1-snapshot", ["version", "task0"], snap1, evidence / "release1-api-observe")
     stage("semantic-preservation", ["before", "after"], preserve, evidence / "release1-api-observe")
-    stage("release1-task", ["version"], lambda: jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
+    stage("release1-task", ["version"], lambda: diagnostic_task(state["version"], evidence / "release1-working-task", project, create_project=False), evidence / "release1-working-task")
     stage("sentinel", [], check_sentinel, evidence)
     return report
