@@ -8,6 +8,26 @@ from vibecomfy.schema.provider import TargetSchemaProvider as _TargetSchemaProvi
 
 
 class TargetSchemaProvider(_TargetSchemaProvider):
+    def trust_model_assets(self, rows):
+        """Mark declaration-supplied diagnostics honestly before native persistence."""
+        self._trusted_model_keys = {(row["name"], row.get("subdir", ""), row["sha256"], row["size"]) for row in rows}
+        self._approval_diagnostics = getattr(self, "_approval_diagnostics", [])
+        return self
+
+    @property
+    def _approval_diagnostics(self):
+        return self.__dict__.get("_astrid_approval_diagnostics", [])
+
+    @_approval_diagnostics.setter
+    def _approval_diagnostics(self, diagnostics):
+        trusted = self.__dict__.get("_trusted_model_keys", set())
+        self.__dict__["_astrid_approval_diagnostics"] = [
+            {**row, "status": "declared_unverified", "model_bytes_status": "declared_unverified"}
+            if (isinstance(row, dict) and row.get("code") == "target_model_asset"
+                and row.get("model_bytes_status") == "verified_target_provisioning"
+                and (row.get("name"), row.get("subdir", ""), row.get("sha256"), row.get("size")) in trusted)
+            else row for row in diagnostics]
+
     def _schema_from_loaded_object_info(self, class_type, info):
         # An Autogrow TemplateNames group is not itself a wire input. Its
         # populated sockets are dotted names; min=0 permits no sockets at all.

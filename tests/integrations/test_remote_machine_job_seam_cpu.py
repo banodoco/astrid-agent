@@ -85,6 +85,10 @@ def _owned_cpu_engine(provider, folder, monkeypatch):
     python.symlink_to(sys.executable)
     subprocess.run(['git', 'clone', '--quiet', '--shared', str(Path(vibecomfy.__file__).resolve().parents[1]),
                     str(runtime / 'vibecomfy')], check=True)
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    revision = next(source.pin.revision for source in recipe.sources if source.name == 'vibecomfy')
+    subprocess.run(['git', 'checkout', '--quiet', '--detach', revision], cwd=runtime / 'vibecomfy', check=True)
+    assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=runtime / 'vibecomfy', text=True).strip() == revision
     records = root / 'peer-records'
     records.mkdir()
     program = f"""

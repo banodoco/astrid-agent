@@ -1001,10 +1001,13 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     if align == 'trust':
         from .target_inventory import declared_rows
         custody = {"auxiliary_model_custody": "target", "target_model_assets": list(declared_rows(workflow))}
-    return TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
+    provider = TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
         model_availability="target",
         refresh_object_info=(lambda: trust_declared_loader_choices(client.object_info(), workflow))
                             if align == 'trust' else client.object_info, **custody)
+    if align == 'trust':
+        provider.trust_model_assets(declared_rows(workflow))
+    return provider
 
 
 def entry_hooks(entry: Mapping[str, Any], registry: Any = None) -> dict[str, Any]:
