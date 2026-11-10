@@ -261,3 +261,16 @@ def test_native_pip_uses_real_python312_and_exact_recipe_selector(tmp_path):
     (wheels / 'pip-99.0-py3-none-any.whl').write_bytes(b'selector-only fixture')
     module._WHEEL_PKG_DIR = str(wheels); module._PACKAGES = None
     assert module._get_packages()['pip'].wheel_path == str(wheels / 'pip-99.0-py3-none-any.whl')
+
+
+
+def test_native_pip_rejects_a_selected_wheel_symlink_escape(tmp_path):
+    import subprocess, sys
+    from astrid.packs.vibecomfy.native_preparation import native_pip_program
+    trusted = tmp_path / 'interpreter'; trusted.mkdir()
+    outside = tmp_path / 'outside.whl'; outside.write_bytes(b'outside wheel')
+    selected = trusted / 'pip.whl'; selected.symlink_to(outside)
+    program = "import ensurepip,sys;from contextlib import nullcontext;sys.base_prefix=" + repr(str(trusted)) + ";ensurepip._get_pip_whl_path_ctx=lambda:nullcontext(" + repr(str(selected)) + ")\n" + native_pip_program()
+    completed = subprocess.run([sys.executable, '-I', '-c', program, json.dumps({'python_executable': sys.executable})],
+                               capture_output=True, text=True, timeout=10)
+    assert completed.returncode != 0 and 'wheel escaped the verified interpreter' in completed.stderr

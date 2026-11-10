@@ -110,6 +110,10 @@ def ensure_native_pip(python_executable):
                          resources.as_file(resources.files('ensurepip').joinpath('_bundled', package.wheel_name)))
     with wheel_context as wheel:
         wheel = Path(wheel)
+        import stat
+        if (wheel.is_symlink() or not stat.S_ISREG(wheel.lstat().st_mode)
+                or not wheel.resolve(strict=True).is_relative_to(Path(sys.base_prefix).resolve(strict=True))):
+            raise ValueError("pip bootstrap wheel escaped the verified interpreter")
         digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
         wheel_path = str(wheel)
         bundled_version = ensurepip.version()

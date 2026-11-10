@@ -115,8 +115,8 @@ def artifact_server():
         server.shutdown(); server.server_close(); thread.join()
 
 
-@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema'],
-                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker'])
+@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema', 'trust'],
+                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker', 'trust-skips-absent-auxiliary'])
 def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, real_runtime, managed_install, artifact_server, failure):
     from vibecomfy.workflow_bundle import emit_bundle_with_candidate
     from vibecomfy.security.provenance import Provenance
@@ -157,7 +157,7 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     original_align = type(engine).align
     def align(self, manifest, mode, **kwargs):
         events.append('align')
-        assert mode == 'align' and manifest['models_root'] == str(root / 'models')
+        assert mode == ('trust' if failure == 'trust' else 'align') and manifest['models_root'] == str(root / 'models')
         assert any(row['name'] == artifact.name for row in manifest['models'])
         assert not started.exists(), 'server started before host alignment'
         if failure == 'align':
@@ -176,7 +176,8 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         events.append('prepare')
         report = original_prepare(self, *args, **kwargs)
         events.append('ready')
-        assert artifact.read_bytes() == artifact_bytes
+        if failure == 'trust': assert not artifact.exists()
+        else: assert artifact.read_bytes() == artifact_bytes
         assert report['placement'] == 'managed' and report['health']['healthy'] is True
         if failure == 'schema': (root / 'missing-node').touch()
         return report
@@ -252,10 +253,10 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
             inputs={**imported, 'workflow_inputs': '{}',
                     'generation_intent': {'version': 1, 'modality': 'image', 'partial_success_policy': 'reject',
                         'groups': [{'group_key': 'main', 'selectors': [{'selector': 'main-0', 'ordinal': 0,
-                            'variant_key': 'original', 'required': True}]}], 'metadata': {'model': 'workflow', 'align': 'align'}}},
+                            'variant_key': 'original', 'required': True}]}], 'metadata': {'model': 'workflow', 'align': 'trust' if failure == 'trust' else 'align'}}},
             wait=True, timeout_seconds=120, poll_seconds=0.05)
         assert receipt_written.wait(10), 'host terminal receipt did not complete after Runtime settlement'
-        if failure:
+        if failure and failure != 'trust':
             assert not result.ok
             assert 'prepare' in events and 'align' in events, (events, result.to_dict())
             if failure != 'align':
@@ -272,14 +273,23 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
             assert not getattr(host, '_uncertain_engine_preparations', []), receipt
         else:
             assert result.ok, str(result.to_dict())[:7000]
-            assert events.index('fetched') < events.index('ready') < events.index('worker')
+            if failure != 'trust': assert events.index('fetched') < events.index('ready') < events.index('worker')
+            else: assert events.index('ready') < events.index('worker')
             assert 'supervisor-denied' in events
             assert (root / 'prompts').is_file()
             receipt = json.loads((tmp_path / 'attempt/result.json').read_text())
             assert receipt['machine']['placement'] == 'managed'
             assert receipt['managed_engine_preparation']['placement'] == 'managed'
-            assert artifact_hits and 'native-doctor' in events and 'native-prepare' in events
-            assert (root / 'runtime/.vibecomfy-managed').is_file()
+            if failure != 'trust':
+                assert artifact_hits and 'native-doctor' in events and 'native-prepare' in events
+                assert (root / 'runtime/.vibecomfy-managed').is_file()
+            else:
+                assert artifact_hits == [] and not artifact.exists()
+                assert receipt['managed_engine_preparation']['alignment']['verified'] is False
+                documents = [*(tmp_path / 'attempt').rglob('*.json'), *(tmp_path / 'attempt').rglob('*.jsonl')]
+                rendered = '\n'.join(path.read_text() for path in documents)
+                assert 'verified_target_provisioning' not in rendered
+                assert 'declared_unverified' in rendered and artifact.name in rendered
     finally:
         host._shutdown.set()
         worker.join(timeout=35)
@@ -373,7 +383,7 @@ def addon_index():
     finally: server.shutdown(); server.server_close(); thread.join()
 
 
-@pytest.mark.parametrize('outcome', ['installed', 'missing', 'changed-capsule'])
+@pytest.mark.parametrize('outcome', ['installed', 'missing', 'changed-capsule', 'partial'])
 def test_native_preparation_installs_only_allowed_addon_or_refuses_before_execution(tmp_path, managed_install, addon_index, outcome):
     from vibecomfy.templates import ReadyMetadata, new_workflow, OutputSpec
     from vibecomfy.nodes.core import EmptyImage, SaveImage
@@ -402,18 +412,23 @@ def test_native_preparation_installs_only_allowed_addon_or_refuses_before_execut
         request = {'workflow_path': str(capsule), 'runtime_root': str(root / 'runtime'),
                    'python_executable': str(root / 'runtime/venv/bin/python'),
                    'uv_executable': str(root / 'runtime/bootstrap/bin/uv'), 'launch_flags': [],
-                   'capsule_sha256': hashes, 'expected_requirements': requirements, 'sync_packages': ['plan32-addon']}
+                   'capsule_sha256': hashes, 'expected_requirements': requirements, 'sync_packages': [] if outcome == 'partial' else ['plan32-addon']}
         def invoke(): return json.loads(prep._native(native_preparation_program(), json.dumps(request)).stdout)
         if outcome == 'installed':
             report = invoke()
             assert report['synchronization']['synced'] is True and report['synchronization']['actions']
             assert report['observation']['packages']['plan32-addon'] == '1.0'
             assert report['compliance']['status'] == 'matching'
+            assert report['preparation']['plan']['workflow'] == str(capsule)
+            unchanged = invoke()
+            assert unchanged['synchronization']['synced'] is False
+            assert unchanged['synchronization']['actions'] == []
+            assert unchanged['preparation']['plan']['workflow'] == str(capsule)
             assert all(hashlib.sha256(Path(path).read_bytes()).hexdigest() == digest for path, digest in hashes.items())
             assert any(path.startswith('/packages/') for path in state['requests'])
         else:
             with pytest.raises(IntegrityError): invoke()
-            if outcome == 'changed-capsule': assert state['requests'] == []
+            if outcome in {'changed-capsule', 'partial'}: assert state['requests'] == []
             assert not list((root / 'runtime/out/preparations').glob('*.json'))
         runner = _Runner(plan_install(recipe, root=str(root), placement='local'), prep.context, prep.adapter, prep.deadline)
         for step in runner.plan.steps:

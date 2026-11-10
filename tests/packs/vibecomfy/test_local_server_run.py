@@ -656,3 +656,20 @@ def test_trust_absent_auxiliary_asset_is_unverified_in_every_astrid_record(comfy
         with pytest.raises(Exception): execute()
     assert observed
     snapshot()
+
+
+
+@pytest.mark.parametrize('gap', ['missing-node', 'scalar-type'])
+def test_explicit_trust_preserves_unrelated_target_schema_refusals(comfy, tmp_path, monkeypatch, gap):
+    from vibecomfy.workflow_bundle import emit_bundle
+    loaded = production_engine.load_workflow_path(comfy.workflow, tmp_path / 'author-schema', comfy_url=comfy.url)
+    bundle = production_engine._canonical_bundle_value(loaded.resolved)
+    canonical = emit_bundle(bundle.workflow, tmp_path / 'trust-schema/workflow.py', {'operation': 'authored'})
+    if gap == 'missing-node': del comfy.schema['SaveImage']
+    else: comfy.schema['SeedImage']['input']['required']['seed'] = ['STRING']
+    monkeypatch.setenv('ASTRID_ALIGN', 'trust')
+    with pytest.raises(production_engine.ProductionEngineError):
+        production_engine.run_workflow_result_path(
+            canonical.python_path, tmp_path / 'trust-schema-attempt/outputs', task_identity='schema-task',
+            attempt_identity='schema-attempt', comfy_url=comfy.url, profile_id='local_server')
+    assert not comfy.prompts
