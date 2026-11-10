@@ -208,7 +208,8 @@ def _capture_live_schemas(bundle: Any, provider: Any) -> None:
             node.metadata['schema'] = schema
 
 
-def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None) -> Any:
+def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None,
+                        allow_empty_image: bool = False) -> Any:
     """Derive attempt-owned image bindings and fresh output filenames.
 
     A seedless graph can otherwise reuse SaveImage's cached result from an
@@ -231,7 +232,7 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
         if nodes:
             node = nodes[0]
             value = node.inputs.get("image", node.widgets.get("image"))
-            if (isinstance(value, str) and value.strip() and not any(
+            if (isinstance(value, str) and (value.strip() or allow_empty_image) and not any(
                     spec.node_id == node.id and spec.field == "image"
                     for spec in workflow.inputs.values())):
                 input_types = dict(zip(node.native_input_names or (), node.native_input_types or ()))
