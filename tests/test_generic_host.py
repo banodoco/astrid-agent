@@ -5084,33 +5084,39 @@ def test_host_without_explicit_roots_discovers_the_personal_collection(tmp_path,
     assert "personal.echo" in host.capabilities
 
 
-def _pending_personal_outbox(personal: Path, *, revision: int = 1) -> None:
+def _pending_personal_outbox(personal: Path, *, revision: int = 1, changed_ids=("personal_echo",)) -> None:
     """A committed `packs add` whose host acknowledgment never happened."""
     personal.mkdir(parents=True)
     (personal.parent / ".packs.transaction.lock").touch()  # created by every real transaction writer
     transaction_id = "a" * 32
     (personal / ".group.json").write_text(json.dumps({
         "version": 1, "revision": revision, "transaction_id": transaction_id, "removals": [], "admissions": {},
-        "refresh": {"transaction_id": transaction_id, "revision": revision, "changed_ids": ["personal"]},
+        "refresh": {"transaction_id": transaction_id, "revision": revision, "changed_ids": sorted(changed_ids)},
     }), encoding="utf-8")
+
+
+def _personal_echo_host(tmp_path, monkeypatch, *, personal_collection: bool = True):
+    """The host the installed service builds: `run --register` passes personal_collection=True."""
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    _pending_personal_outbox(personal)
+    _write_v3_pack(personal / "personal_echo", "personal_echo", "Personal Echo", {"echo": {"name": "Echo", "version": "1.0", "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; Path('{out}/answer').write_text('ok')"]}}, "outputs": []}}, capabilities=["echo"])
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[], client=runtime, personal_collection=personal_collection)
+    return host, runtime, personal
 
 
 def test_host_acknowledges_a_pending_packs_add_through_its_one_registrar(tmp_path, monkeypatch):
     """Running host and cold start both register, then acknowledge, the committed outbox."""
     from astrid.core.pack.transaction import refresh_pending
 
-    home = tmp_path / "home"
-    personal = home / "Astrid" / "packs"
-    _pending_personal_outbox(personal)
-    _write_manifest(personal / "echo", capability_id="personal.echo")
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
-
-    host = GenericPackHost(pack_roots=[])
+    host, runtime, personal = _personal_echo_host(tmp_path, monkeypatch)
     registrations: list[bool] = []
     monkeypatch.setattr(host, "_renew_executor_registration",
-                        lambda *, idle=True: registrations.append("personal.echo" in host.capabilities))
+                        lambda *, idle=True: registrations.append("personal_echo.echo" in host.capabilities))
     assert refresh_pending(packs_root=personal)
 
     assert host.acknowledge_pack_refresh() is True
@@ -5118,6 +5124,117 @@ def test_host_acknowledges_a_pending_packs_add_through_its_one_registrar(tmp_pat
     assert not refresh_pending(packs_root=personal)
     assert host.acknowledge_pack_refresh() is False  # nothing left to acknowledge
     assert registrations == [True]
+
+
+def test_single_worker_claim_loop_registers_and_acknowledges_a_pending_packs_add(tmp_path, monkeypatch):
+    """The ordinary one-worker service consumes the outbox while idle, with no restart and no parallel slots."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    host, runtime, personal = _personal_echo_host(tmp_path, monkeypatch)
+    assert host.max_concurrency == 1
+    assert refresh_pending(packs_root=personal)
+    polls = 0
+
+    def claim_next(**payload):
+        # The real claim_once runs; only the coordinator's empty queue is fake.
+        nonlocal polls
+        polls += 1
+        if not refresh_pending(packs_root=personal) or polls > 200:
+            host._shutdown.set()
+        return None
+
+    runtime.claim_next = claim_next
+    assert host.run(poll_seconds=0.01) == []
+
+    assert polls >= 1
+    assert not refresh_pending(packs_root=personal), "single-worker loop never acknowledged the outbox"
+    registered = {row["capability_id"] for row in runtime.registrations[-1][1]["capabilities"]}
+    assert "personal_echo.echo" in registered
+
+
+def test_host_without_the_personal_collection_never_acknowledges_the_outbox(tmp_path, monkeypatch):
+    from astrid.core.pack.transaction import refresh_pending
+
+    host, runtime, personal = _personal_echo_host(tmp_path, monkeypatch, personal_collection=False)
+    assert host.acknowledge_pack_refresh() is False
+    assert refresh_pending(packs_root=personal)
+    assert runtime.registrations == []
+
+
+def test_refresh_not_matching_the_committed_packs_stays_pending(tmp_path, monkeypatch, capsys):
+    """A pack whose directory exists but is not registered (here: the manifest id differs) is not acknowledged."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    _pending_personal_outbox(personal)
+    _write_v3_pack(personal / "personal_echo", "other_echo", "Other Echo", {"echo": {"name": "Echo", "version": "1.0", "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; Path('{out}/answer').write_text('ok')"]}}, "outputs": []}}, capabilities=["echo"])
+    host = GenericPackHost(pack_roots=[], client=FakeRuntime(), personal_collection=True)
+
+    assert host.acknowledge_pack_refresh() is False
+    assert refresh_pending(packs_root=personal)
+    assert "registration does not match committed packs: personal_echo" in capsys.readouterr().err
+
+
+def test_single_worker_loop_acknowledges_a_pack_that_declares_no_actions(tmp_path, monkeypatch):
+    """A pack with only non-action declarations is admitted, so its outbox entry is consumed."""
+    import json
+
+    from astrid.core.pack.transaction import refresh_pending
+    from astrid.pack_api import VERSION as PACK_API_VERSION
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    _pending_personal_outbox(personal, changed_ids=("notes",))
+    (personal / "notes").mkdir()
+    (personal / "notes" / "pack.yaml").write_text(json.dumps({
+        "schema_version": 3, "id": "notes", "name": "Notes", "version": "1.0.0",
+        "pack_api": f"{PACK_API_VERSION[0]}.{PACK_API_VERSION[1]}",
+        "documentation": {"kind": "none", "reason": "Test fixture."},
+    }), encoding="utf-8")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[], client=runtime, personal_collection=True)
+    polls = 0
+
+    def claim_next(**payload):
+        nonlocal polls
+        polls += 1
+        if not refresh_pending(packs_root=personal) or polls > 200:
+            host._shutdown.set()
+        return None
+
+    runtime.claim_next = claim_next
+    assert host.run(poll_seconds=0.01) == []
+
+    assert "notes" in host._admitted_pack_ids
+    assert not refresh_pending(packs_root=personal), "a pack without actions was never acknowledged"
+
+
+def test_pack_refresh_failures_log_at_powers_of_two_and_back_off(capsys):
+    host = GenericPackHost(pack_roots=[], client=FakeRuntime())
+    delays = []
+    for _ in range(5):
+        host._record_pack_refresh_failure("boom")
+        delays.append(host._pack_refresh_delay())
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 3  # consecutive failures 1, 2 and 4 are logged
+    assert all("pack refresh not acknowledged" in line and "boom" in line for line in lines)
+    assert delays == [2.0, 4.0, 8.0, 16.0, 30.0]
+
+
+def test_run_once_leaves_the_packs_add_outbox_pending(tmp_path, monkeypatch):
+    """`run --once` is the diagnostic surface: it does not acknowledge while idle."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    host, runtime, personal = _personal_echo_host(tmp_path, monkeypatch)
+    assert host.run(once=True) == []
+    assert refresh_pending(packs_root=personal)
 
 
 def test_failed_registration_leaves_the_packs_add_outbox_pending(tmp_path, monkeypatch):
