@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,9 @@ def _executable(path: Path) -> Path:
 
 
 def _run(output: str, calls: list[list[str]]):
-    def run(argv):
+    def run(argv, **kwargs):
         calls.append(list(argv))
+        assert kwargs == {"timeout": 60}
         return output
     return run
 
@@ -72,10 +74,38 @@ def test_install_without_git_records_nothing(tmp_path: Path, monkeypatch: pytest
     assert env == {}
 
 
-def test_install_refuses_a_git_that_does_not_identify_itself(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(("failure", "reason"), [
+    ("not a tool\n", "did not identify itself as Git"),
+    (subprocess.CalledProcessError(1, ["git"]), "failed to report its version (CalledProcessError)"),
+    (subprocess.TimeoutExpired(["git"], 60), "failed to report its version (TimeoutExpired)"),
+    (PermissionError(13, "denied"), "failed to report its version (PermissionError)"),
+])
+def test_install_records_nothing_and_continues_for_a_broken_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                failure, reason) -> None:
     git = _executable(tmp_path / "bin" / "git")
     monkeypatch.setenv("PATH", str(git.parent))
     monkeypatch.chdir(tmp_path)
+    notes: list[str] = []
+    env: dict[str, str] = {}
 
-    with pytest.raises(ValueError, match="did not identify itself as Git"):
-        tools._record_installing_git({}, _run("not a tool\n", []), windows=False)
+    def run(argv, **_kwargs):
+        if isinstance(failure, BaseException):
+            raise failure
+        return failure
+
+    tools._record_installing_git(env, run, windows=False, note=notes.append)
+
+    assert env == {}
+    assert notes == [f"Git for pack installs was not recorded: {git} {reason}."]
+
+
+def test_installer_diagnostic_appends_one_line_to_the_install_log(tmp_path: Path) -> None:
+    from astrid.installer.backend import Backend
+
+    log = tmp_path / "install.log"
+    backend = Backend(tmp_path / "program", log, tmp_path / "uv", say=lambda _line: None)
+
+    backend.diagnostic("Git for pack installs was not recorded: /x/git did not identify itself as Git.")
+
+    assert log.read_text(encoding="utf-8") == (
+        "Git for pack installs was not recorded: /x/git did not identify itself as Git.\n")

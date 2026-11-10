@@ -342,6 +342,18 @@ def test_unusable_recorded_git_falls_back_to_absolute_path_lookup(tmp_path: Path
     assert found == str(real)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX execute permission")
+def test_recorded_git_that_lost_its_execute_bit_falls_back_to_absolute_path_lookup(tmp_path: Path) -> None:
+    recorded = _executable(tmp_path / "Program Files" / "Git" / "cmd" / "git")
+    recorded.chmod(0o644)
+    real = _executable(tmp_path / "bin" / "git")
+
+    found = install._git_executable(str(real.parent), windows=False, cwd=tmp_path, recorded=str(recorded))
+
+    assert found == str(real)
+    assert install._git_executable("", windows=False, cwd=tmp_path, recorded=str(recorded)) is None
+
+
 def test_recorded_git_inside_the_working_directory_is_still_only_a_recorded_path(tmp_path: Path) -> None:
     # A relative recorded value never resolves against the cwd.
     project = tmp_path / "project"

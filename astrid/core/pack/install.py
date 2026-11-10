@@ -258,9 +258,10 @@ def _git_executable(path_value: str, *, windows: bool, cwd: str | os.PathLike[st
 
     shutil.which searches the current directory first on Windows, so a planted
     git.exe in the working tree would run. A recorded path must be absolute and
-    an existing file; anything else falls through to the PATH lookup.
+    an existing executable file; anything else falls through to the PATH lookup.
     """
-    if recorded and os.path.isabs(recorded) and os.path.isfile(recorded):
+    if (recorded and os.path.isabs(recorded) and os.path.isfile(recorded)
+            and (windows or os.access(recorded, os.X_OK))):
         return recorded
     return _find_executable(path_value, ("git.exe",) if windows else ("git",), windows=windows, cwd=cwd)
 
