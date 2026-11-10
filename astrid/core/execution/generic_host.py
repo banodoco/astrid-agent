@@ -6643,6 +6643,11 @@ class GenericPackHost:
         self._registered_digests: dict[str, str] = {}
         self._registered_state: dict[str, dict[str, str]] = {}
         self._registered_runtime_state: dict[str, Any] = {}
+        # Each source path binds its tree digest and capability-definition inventory.
+        self._discovered_source_inventory: dict[str, tuple[str, str]] = {}
+        self._registered_source_inventory: dict[str, tuple[str, str]] = {}
+        self._discovered_source_context: dict[str, Any] = {}
+        self._registered_source_context: dict[str, Any] = {}
         # Idle readiness may reuse only a prior full native validation in the
         # identical host context. Execution never consumes this observation.
         self._remotion_full_preflight: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -7549,12 +7554,35 @@ class GenericPackHost:
                 _runtime_external_sources.select(record)
         self.capabilities = records
         root = self.pack_roots[0] if self.pack_roots else Path.cwd()
-        self.source_epoch = _canonical_digest({
+        self._discovered_source_context = {
             "vcs_revision": _vcs_revision(root),
-            "source_digest": _canonical_digest({key: record.source_digest for key, record in records.items()}),
             "source_inventory_identity": self.source_inventory_identity,
             "matrix_digest": _canonical_digest(self.matrix),
+        }
+        self.source_epoch = _canonical_digest({
+            **self._discovered_source_context,
+            "source_digest": _canonical_digest({key: record.source_digest for key, record in records.items()}),
         })
+        # Retain every admitted source, including packs without actions. This
+        # snapshot belongs to discovery, never to a later read of edited bytes.
+        from astrid.core.pack.identity import pack_digest
+
+        source_roots = {self._pack_source_roots[pack_id] for pack_id in admitted_pack_ids}
+        for record in records.values():
+            source_roots.update(_admitted_source_roots(record.source_root, record.definition))
+        inventory = {str(path): pack_digest(path) for path in source_roots}
+        definitions: dict[str, dict[str, str]] = {path: {} for path in inventory}
+        for record in records.values():
+            roots = _admitted_source_roots(record.source_root, record.definition)
+            measured = [{"root": str(path.resolve()), "digest": inventory[str(path.resolve())]} for path in roots]
+            digest = measured[0]["digest"] if len(measured) == 1 else _canonical_digest(measured)
+            if digest != record.source_digest:
+                raise HostRegistrationError("source changed during discovery", code="source_inventory_changed")
+            for path in roots:
+                definitions[str(path.resolve())][record.id] = record.capability_digest
+        self._discovered_source_inventory = {
+            path: (digest, _canonical_digest(definitions[path])) for path, digest in inventory.items()
+        }
         return tuple(records[key] for key in sorted(records))
 
     def _selected_pack_map(self, record: CapabilityRecord) -> dict[str, dict[str, str]]:
@@ -7972,8 +8000,10 @@ class GenericPackHost:
         finally:
             self._handoff_end_registration()
 
-    def _register_impl(self, *, deliberate: bool = False, idle_renewal: bool = False) -> dict[str, Any]:
-        if self._runtime_registration_fence and not deliberate:
+    def _register_impl(self, *, deliberate: bool = False, idle_renewal: bool = False,
+                       recover_runtime: bool = False,
+                       source_inventory: Mapping[str, tuple[str, str]] | None = None) -> dict[str, Any]:
+        if self._runtime_registration_fence and not (deliberate or recover_runtime):
             raise HostError(self._runtime_registration_fence)
         # A dead/incompatible Runtime must fail before expensive native work.
         runtime_state = self._runtime_compatibility()
@@ -7990,7 +8020,14 @@ class GenericPackHost:
                         "runtime_session_id": "runtime session changed", "coordinator_epoch": "runtime coordinator epoch changed",
                     }[key] for key in changed) + "; deliberate re-registration required"
                 )
-                raise HostError(self._runtime_registration_fence)
+                if not (recover_runtime and self._runtime_restarted):
+                    raise HostError(self._runtime_registration_fence)
+        if recover_runtime:
+            # A Runtime restart can restore registration, but cannot authorize
+            # any new source bytes, even if discovery had not noticed them yet.
+            if not deliberate and self._registered_runtime_state.get("source_epoch") != self.source_epoch:
+                raise HostError("registration invalidated; source epoch changed; deliberate re-registration required")
+            self.discover()
         if not self.capabilities:
             self.discover()
         _emit_startup_phase("preflight_begin")
@@ -7999,6 +8036,9 @@ class GenericPackHost:
         else:
             self.preflight()
         _emit_startup_phase("preflight_done")
+        registered_inventory = dict(self._discovered_source_inventory)
+        source_context = dict(self._discovered_source_context)
+        source_epoch = self.source_epoch
         state = {
             key: {
                 "capability_digest": record.capability_digest,
@@ -8019,20 +8059,33 @@ class GenericPackHost:
                 invalidations.append("runtime protocol changed")
             if self._registered_runtime_state.get("schema_digest") != runtime_state.get("schema_digest"):
                 invalidations.append("runtime schema digest changed")
-            if self._registered_runtime_state.get("runtime_epoch") != runtime_state.get("runtime_epoch"):
+            if not recover_runtime and self._registered_runtime_state.get("runtime_epoch") != runtime_state.get("runtime_epoch"):
                 invalidations.append("runtime epoch changed")
-            if self._registered_runtime_state.get("source_epoch") != self.source_epoch:
+            if self._registered_source_inventory != registered_inventory:
+                invalidations.append("source inventory changed")
+            if self._registered_runtime_state.get("source_epoch") != source_epoch:
                 invalidations.append("source epoch changed")
         if invalidations and not deliberate:
             raise HostError("registration invalidated; " + "; ".join(invalidations) + "; deliberate re-registration required")
+        if source_inventory is not None:
+            from astrid.core.pack.identity import pack_digest
+
+            if (registered_inventory != source_inventory
+                    or (self._registered_runtime_state and source_context != self._registered_source_context)
+                    or any(pack_digest(Path(path)) != identity[0] for path, identity in source_inventory.items())):
+                raise HostRegistrationError("source changed before committed refresh registration",
+                                            code="pack_refresh_source_mismatch")
         verified_facts = _registration_verified_facts()
         if self.client is None:
             with self._handoff_condition:
                 self._registered_digests = {key: record.capability_digest for key, record in self.capabilities.items()}
                 self._registered_state = state
-                self._registered_runtime_state = {**runtime_state, "source_epoch": self.source_epoch}
+                self._registered_source_inventory = registered_inventory
+                self._registered_source_context = source_context
+                self._registered_runtime_state = {**runtime_state, "source_epoch": source_epoch}
                 self.runtime_state = runtime_state
                 self._runtime_registration_fence = None
+                self._runtime_restarted = False
                 self._registration_refresh_blocked = False
             result = {"executor_id": self.executor_id, "capabilities": [r.manifest() for r in self.capabilities.values()], "ready": [r.id for r in self.capabilities.values() if r.ready and not _is_withdrawn(r)], "withdrawn_capabilities": removed}
             self._publish_ready_registration(result)
@@ -8084,7 +8137,7 @@ class GenericPackHost:
             "resource_keys": all_keys,
             "source_digest": _canonical_digest({key: record.source_digest for key, record in self.capabilities.items()}),
             "dependency_digest": _canonical_digest(dependency_digests),
-            "source_epoch": self.source_epoch,
+            "source_epoch": source_epoch,
             "protocol_version": runtime_state.get("protocol", "workspace.v1"),
             "schema_digest": runtime_state.get("schema_digest"),
             "runtime_epoch": runtime_state.get("runtime_epoch"),
@@ -8110,7 +8163,9 @@ class GenericPackHost:
             with self._handoff_condition:
                 self._registered_digests = {key: record.capability_digest for key, record in self.capabilities.items()}
                 self._registered_state = state
-                self._registered_runtime_state = {**runtime_state, "source_epoch": self.source_epoch}
+                self._registered_source_inventory = registered_inventory
+                self._registered_source_context = source_context
+                self._registered_runtime_state = {**runtime_state, "source_epoch": source_epoch}
                 self.runtime_state = runtime_state
                 self._publish_ready_registration(result)
                 self._runtime_registration_fence = None
@@ -8137,7 +8192,8 @@ class GenericPackHost:
             ) from exc
         return result
 
-    def _renew_executor_registration(self, *, idle: bool = True, deliberate: bool = False) -> None:
+    def _renew_executor_registration(self, *, idle: bool = True, deliberate: bool = False,
+                                     source_inventory: Mapping[str, tuple[str, str]] | None = None) -> None:
         """Refresh runtime executor liveness without replaying a receipt.
 
         A restarted Runtime (new epoch, rotated worker credential) fences this
@@ -8152,11 +8208,10 @@ class GenericPackHost:
             renew = getattr(self.client, "renew_registration_session", None)
             if callable(renew):
                 renew()
-            # A deliberate renewal is the one validated path that re-registers under a
-            # changed source epoch: the committed pack refresh, while idle. Every other
-            # renewal keeps the source-epoch fence.
-            adopt = idle and (self._runtime_restarted or deliberate)
-            self._register_impl(idle_renewal=True, deliberate=adopt)
+            # Runtime recovery and source-change authorization are independent.
+            self._register_impl(idle_renewal=True, deliberate=idle and deliberate,
+                                recover_runtime=idle and self._runtime_restarted,
+                                source_inventory=source_inventory)
         except Exception:
             self._registration_refresh_blocked = True
             raise
@@ -8185,7 +8240,7 @@ class GenericPackHost:
         re-registers through the normal renewal path, and only then
         acknowledges. Returns True when an entry was acknowledged.
         """
-        from astrid.core.pack.transaction import refresh_pending, retry_refresh
+        from astrid.core.pack.transaction import group_read_lock, refresh_pending, retry_refresh
         from astrid.personal_packs_root import resolve_personal_packs_root
 
         if not self._personal_collection:
@@ -8197,21 +8252,22 @@ class GenericPackHost:
 
         def renew(*, transaction_id: str, committed_revision: int, changed_ids: tuple[str, ...]) -> dict[str, Any]:
             try:
-                self.discover()
-                # The committed refresh is a deliberate source change: re-register under the
-                # newly discovered epoch. Acknowledge only after that registration succeeds.
-                self._renew_executor_registration(idle=True, deliberate=True)
-                # Acknowledge only when the admitted packs match the committed collection: a
-                # changed pack is admitted exactly when its directory is present.
-                unserved = [pack_id for pack_id in changed_ids
-                            if (root / pack_id).is_dir() != (pack_id in self._admitted_pack_ids)]
+                # Keep the committed generation stable through registration.
+                # retry_refresh releases writer custody before calling us.
+                with group_read_lock(root):
+                    try:
+                        self.discover()
+                        inventory = self._committed_refresh_inventory(
+                            root, transaction_id, committed_revision, changed_ids)
+                    except (OSError, ValueError) as exc:
+                        raise HostRegistrationError("cannot verify committed refresh sources",
+                                                    code="pack_refresh_source_mismatch") from exc
+                    self._renew_executor_registration(idle=True, deliberate=True, source_inventory=inventory)
             except Exception as exc:
-                self._pack_refresh_reason = f"{type(exc).__name__}: {exc}"
+                self._registration_refresh_blocked = True
+                code = getattr(exc, "code", "")
+                self._pack_refresh_reason = f"{type(exc).__name__}: {exc}" + (f" [{code}]" if code else "")
                 raise
-            if unserved:
-                reason = f"registration does not match committed packs: {', '.join(unserved)}"
-                self._pack_refresh_reason = reason
-                return {"version": 1, "accepted": False, "revision": committed_revision, "reason": reason}
             return {"version": 1, "accepted": True, "revision": committed_revision,
                     "reason": "registered by the running generic host"}
 
@@ -8222,6 +8278,56 @@ class GenericPackHost:
             return False
         self._pack_refresh_failures = 0
         return True
+
+    def _committed_refresh_inventory(self, root: Path, transaction_id: str, revision: int,
+                                     changed_ids: tuple[str, ...]) -> dict[str, tuple[str, str]]:
+        """Authorize only this outbox's delta against the last registered sources.
+
+        The caller holds collection custody. Admissions may predate this
+        revision: the outbox carries forward ids from unacknowledged commits.
+        """
+        from astrid.core.pack.canonical import validate_canonical_pack
+        from astrid.core.pack.transaction import read_group
+
+        def refuse(reason: str) -> None:
+            raise HostRegistrationError(reason, code="pack_refresh_source_mismatch")
+
+        group = read_group(root)
+        if (group.transaction_id != transaction_id or group.revision != revision or not group.refresh_pending):
+            refuse("committed refresh transaction changed; retry the pending outbox")
+        if self._registered_runtime_state and self._discovered_source_context != self._registered_source_context:
+            refuse("source epoch context differs outside committed changed_ids")
+        inventory = self._discovered_source_inventory
+        expected = dict(self._registered_source_inventory if self._registered_runtime_state else inventory)
+        for pack_id in changed_ids:
+            path = root.resolve() / pack_id
+            key = str(path)
+            if pack_id not in group.paths:
+                # Reconciliation removals need not leave a tombstone, but a
+                # committed addition always has an admission. Its deletion
+                # after commit must never masquerade as a committed removal.
+                if pack_id in group.admissions or path.exists() or path.is_symlink():
+                    refuse(f"committed removal does not match source: {pack_id}")
+                expected.pop(key, None)
+                continue
+            if (pack_id not in self._admitted_pack_ids or self._pack_source_roots.get(pack_id) != path
+                    or key not in inventory):
+                refuse(f"registration does not match committed packs: {pack_id}")
+            validate_canonical_pack(path, expected_pack_id=pack_id)
+            admission = group.admissions.get(pack_id)
+            if (not isinstance(admission, dict) or admission.get("packId") != pack_id
+                    or admission.get("sourceDigest") != inventory[key][0]
+                    or type(admission.get("committedRevision")) is not int
+                    or not 1 <= admission["committedRevision"] <= revision
+                    or not isinstance(admission.get("transactionId"), str)
+                    or len(admission["transactionId"]) != 32
+                    or any(c not in "0123456789abcdef" for c in admission["transactionId"])
+                    or (admission["committedRevision"] == revision and admission["transactionId"] != transaction_id)):
+                refuse(f"source does not match committed digest: {pack_id}")
+            expected[key] = inventory[key]
+        if inventory != expected:
+            refuse("source inventory differs outside committed changed_ids")
+        return expected
 
     def _record_pack_refresh_failure(self, reason: str) -> None:
         """Count a consecutive pack-refresh failure and log only its first and power-of-two occurrences."""
