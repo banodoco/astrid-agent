@@ -286,6 +286,18 @@ class RunPodOffer:
         return _digest({"preferences": preferences.as_mapping(), "offer": asdict(self)})
 
 
+def ordered_runpod_offers(preferences: RunPodPreferences, offers: Any) -> tuple[RunPodOffer, ...]:
+    """Keep the user's GPU order; price orders datacenter offers for one GPU."""
+    if not isinstance(offers, (list, tuple)):
+        raise PaidSelectionError("RunPod observation must return concrete offers")
+    rank = {gpu: index for index, gpu in enumerate(preferences.gpu_types)}
+    for offer in offers:
+        if not isinstance(offer, RunPodOffer):
+            raise PaidSelectionError("RunPod observation must return concrete offers")
+        offer.digest(preferences)  # Every option remains inside the selected GPU/DC policy.
+    return tuple(sorted(offers, key=lambda offer: (rank[offer.gpu_type], offer.hourly_usd)))
+
+
 @dataclass(frozen=True)
 class PaidRunConsent:
     """Fresh per-invocation approval of a disclosed offer and absolute limits."""
@@ -390,6 +402,7 @@ class RunPodSelectionOwner:
         sleep: Callable[[float], Any] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         progress: Callable[[Mapping[str, Any]], None] | None = None,
+        observe_offers: Callable[[], tuple[RunPodOffer, ...]] | None = None,
     ) -> None:
         if account_ref != preferences.provider_account_ref:
             raise PaidSelectionError("authenticated account differs from selected preferences")
@@ -400,6 +413,7 @@ class RunPodSelectionOwner:
         self.compatibility = compatibility.as_mapping() if compatibility is not None else None
         self.https_token_file = https_token_file
         self.sleep, self.monotonic, self.progress = sleep, monotonic, progress
+        self.observe_offers = observe_offers
 
     def _read(self) -> dict[str, Any] | None:
         # Legacy sibling handles cannot quietly become a second product owner.
@@ -535,6 +549,18 @@ class RunPodSelectionOwner:
             except Exception:
                 raise OfferObservationError("observation_failed") from None
 
+        async def observe_options() -> tuple[RunPodOffer, ...]:
+            try:
+                offers = await asyncio.to_thread(self.observe_offers)
+                ordered = ordered_runpod_offers(self.preferences, offers)
+                if not ordered:
+                    raise OfferObservationError("stock_unavailable")
+                return ordered
+            except PaidSelectionError:
+                raise
+            except Exception:
+                raise OfferObservationError("observation_failed") from None
+
         prefetched_offer = prefetched_failure = None
         initial = self._read()
         if consent.policy_digest is None and (initial is None or initial.get("state") == "cleanup_complete"):
@@ -549,6 +575,7 @@ class RunPodSelectionOwner:
         with nullcontext() if lock_held else target_owner(self.path):
             number = 0
             rate_limit_failures = 0
+            pending_offers: list[RunPodOffer] = []
             while True:
                 check()
                 number += 1
@@ -565,6 +592,10 @@ class RunPodSelectionOwner:
                         raise failure
                     elif prefetched_offer is not None:
                         offer, prefetched_offer = prefetched_offer, None
+                    elif consent.policy_digest is not None and self.observe_offers is not None:
+                        if not pending_offers:
+                            pending_offers.extend(await interruptible(observe_options(), provider_timeout=30.0))
+                        offer = pending_offers.pop(0)
                     else:
                         offer = await interruptible(observe(), provider_timeout=30.0)
                     rate_limit_failures = 0
