@@ -639,7 +639,29 @@ def test_generated_reference_is_a_valid_stopped_reference(tmp_path: Path) -> Non
     described = reference_realm.describe_reference(reference)
     [project] = described["projects"]
     assert project["slug"] == "journey" and project["objects"] == 3
-    assert project["timelines"] == [{"timeline_id": "main", "head": "parent-1"}]
+    [main] = project["timelines"]
+    assert main["timeline_id"] == "main"
+    # The head is the seed commit's accepted revision, one commit after the create_timeline bootstrap.
+    service = runtime_protocol.service.RuntimeService(realm)
+    try:
+        history = service.list_timeline_commits(project["project_id"], "main", authorize=lambda: None)
+        parent = service.get_project_parent_composition_revision(project["project_id"], "main", main["head"])
+        objects = {row["filename"]: row for row in service.list_project_objects(project["project_id"], limit=100)["items"]}
+    finally:
+        service.close()
+    assert len(history["items"]) == 2
+    [bootstrap] = [row for row in history["items"] if row["intent"] == "bootstrap"]
+    [seed] = [row for row in history["items"] if row["revision_id"] == main["head"]]
+    assert history["head"] == {"revision_id": main["head"], "publication_id": seed["publication_id"]}
+    assert seed["previous"] == {"revision_id": bootstrap["revision_id"], "publication_id": bootstrap["publication_id"]}
+    assert (seed["receipt"]["command_kind"], seed["receipt"]["idempotency_key"]) == ("timeline.commit", "journey-publish")
+    # The timeline content is the media-only publication: clips at 0, 4 and 8 s on one visual track, each naming its clip.
+    media = [objects[f"clip{n}.mp4"] for n in (1, 2, 3)]
+    publication = reference_realm.media_only_publication(project["project_id"], media)
+    assert parent["payload"] == reference_realm.seeded_parent(publication)
+    assert [c["at"] for c in parent["payload"]["clips"]] == [0, 4, 8]
+    assert parent["payload"]["config"]["tracks"] == [{"id": "video", "kind": "visual", "label": "Video"}]
+    assert sorted(m["media_id"] for m in parent["dependency_manifest"]["media"]) == sorted(m["object_id"] for m in media)
 
 
 # -- realm selection, doctor, phases, process helpers ------------------------------------------
