@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -25,7 +27,8 @@ WINDOWS_SOURCE = {
 }
 
 POSIX_SOURCE = {
-    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    # Absolute entries that hold no ssh, so the expected ssh program is the bare name.
+    "PATH": "/astrid-test-missing/bin:/astrid-test-missing/sbin",
     "GIT_CONFIG_PARAMETERS": "'core.askpass=evil'",
     "GIT_SSH_COMMAND": "evil-ssh",
     "HOME": "/home/someone",
@@ -48,7 +51,7 @@ def test_posix_environment_is_isolated_and_uses_null_devices(tmp_path: Path) -> 
     env = _git_environment(work, askpass, windows=False, source=POSIX_SOURCE)
 
     assert env == {
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PATH": "/astrid-test-missing/bin:/astrid-test-missing/sbin",
         "HOME": str(work),
         "GIT_ASKPASS": askpass,
         "GIT_SSH_COMMAND": f"ssh -F {os.devnull} -oBatchMode=yes",
@@ -109,7 +112,7 @@ def test_default_platform_follows_os_name_posix(tmp_path: Path, monkeypatch: pyt
     assert "SYSTEMROOT" not in env
     assert "USERPROFILE" not in env
     assert "TEMP" not in env
-    assert env["PATH"] == "/usr/local/bin:/usr/bin:/bin"
+    assert env["PATH"] == "/astrid-test-missing/bin:/astrid-test-missing/sbin"
 
 
 def test_askpass_program_is_a_no_op_for_each_platform(tmp_path: Path) -> None:
@@ -171,7 +174,7 @@ def test_windows_resolver_skips_cwd_and_finds_the_real_git(tmp_path: Path) -> No
     real = tmp_path / "Git" / "cmd"
     real_git = _executable(real / "git.exe")
 
-    found = install._git_executable(os.pathsep.join(("", ".", str(planted_dir), str(real))),
+    found = install._git_executable(";".join(("", ".", str(planted_dir), str(real))),
                                     windows=True, cwd=planted_dir)
 
     assert found == str(real_git)
@@ -242,3 +245,59 @@ def test_git_diagnostic_names_operation_and_exit_or_error_class_only(
     assert "secret" not in message
     assert "example.test" not in message
     assert "fatal" not in message
+
+
+def test_git_child_path_keeps_only_absolute_entries_outside_the_working_directory(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = {"PATH": os.pathsep.join((".", "", str(project), "relative/dir", "/astrid-test-missing/bin"))}
+
+    env = _git_environment(tmp_path, "askpass", windows=False, source=source, cwd=project)
+
+    assert env["PATH"] == "/astrid-test-missing/bin"
+
+
+def test_ssh_is_resolved_to_an_absolute_path_when_found(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    ssh = _executable(bin_dir / "ssh")
+
+    env = _git_environment(tmp_path, "askpass", windows=False, source={"PATH": str(bin_dir)},
+                           cwd=tmp_path / "project")
+
+    assert env["GIT_SSH_COMMAND"] == f"{shlex.quote(str(ssh))} -F {os.devnull} -oBatchMode=yes"
+
+
+def test_planted_windows_ssh_in_working_directory_is_not_resolved(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _executable(project / "ssh.exe")
+    real_ssh = _executable(tmp_path / "Git" / "usr" / "bin" / "ssh.exe")
+    source = {"PATH": ".;;" + str(project) + ";" + str(real_ssh.parent)}
+
+    env = _git_environment(tmp_path, "askpass.cmd", windows=True, source=source, cwd=project)
+
+    assert env["GIT_SSH_COMMAND"] == f'"{real_ssh}" -F {os.devnull} -oBatchMode=yes'
+    assert env["PATH"] == str(real_ssh.parent)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell and planted executable")
+def test_planted_ssh_in_working_directory_never_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real_git = shutil.which("git")
+    if real_git is None:
+        pytest.skip("git is not installed")
+    project = tmp_path / "project"
+    project.mkdir()
+    marker = tmp_path / "planted-ssh-ran"
+    planted = project / "ssh"
+    planted.write_text(f"#!/bin/sh\necho ran > {marker}\nexit 1\n", encoding="ascii")
+    planted.chmod(0o755)
+    monkeypatch.chdir(project)
+    # "." and an empty entry on PATH, plus the real git directory.
+    monkeypatch.setenv("PATH", os.pathsep.join((".", "", os.path.dirname(real_git))))
+    work = tmp_path / "work"
+    work.mkdir()
+    install._git(work, "init", "--bare", "--template=")
+
+    with pytest.raises(PackInstallError):
+        install._git(work, "ls-remote", "ssh://git@127.0.0.1:1/repo.git")
+
+    assert not marker.exists()

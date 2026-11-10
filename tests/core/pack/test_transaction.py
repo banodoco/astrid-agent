@@ -1473,7 +1473,10 @@ def test_real_cli_git_child_receives_only_declared_environment(
         for leaked in ("GIT_CONFIG", "ASTRID_TEST_PARENT_SECRET", "HTTPS_PROXY", "HTTP_PROXY",
                        "SSH_AUTH_SOCK", "USERPROFILE", "TEMP", "TMP"):
             assert leaked not in env
-        assert env["PATH"] == os.environ.get("PATH", os.defpath)
+        # The child's PATH is the filtered resolver PATH: absolute entries only.
+        assert env["PATH"]
+        assert all(entry and os.path.isabs(entry) for entry in env["PATH"].split(os.pathsep))
+        assert "." not in env["PATH"].split(os.pathsep)
         git_dir = next(value.removeprefix("--git-dir=") for value in command
                        if value.startswith("--git-dir="))
         work = Path(git_dir).parent
@@ -1484,7 +1487,7 @@ def test_real_cli_git_child_receives_only_declared_environment(
         assert env["GIT_TERMINAL_PROMPT"] == "0"
         assert env["GIT_ASKPASS"] == str(work / ".askpass")
         assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
-        assert env["GIT_SSH_COMMAND"] == f"ssh -F {os.devnull} -oBatchMode=yes"
+        assert env["GIT_SSH_COMMAND"].endswith(f" -F {os.devnull} -oBatchMode=yes")
         assert Path(command[0]).is_absolute()
 
 
