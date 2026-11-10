@@ -136,6 +136,36 @@ runpy.run_module("astrid.core.execution.generic_host_worker", run_name="__main__
         monkeypatch.setattr(generic_host, name, observe_launch(getattr(generic_host, name)))
 
 
+def _spy_host_align(monkeypatch):
+    """Record the host's real alignment and the selected workflow it derives from."""
+    from astrid.packs.vibecomfy.actions.run import run as action
+
+    events = []
+    original = action._engine_for
+
+    def engine_for(manifest):
+        engine = original(manifest)
+        cls = type(engine)
+        if not getattr(cls, "_d2_host_spy", False):
+            align, requirements = cls.align, cls.workflow_requirements
+
+            def observe_requirements(self, workflows):
+                events.append(("workflow", _graph(workflows[0])))
+                return requirements(self, workflows)
+
+            def observe_align(self, manifest, mode, **kwargs):
+                events.append(("align", dict(manifest), mode, kwargs.get("workflow")))
+                return align(self, manifest, mode, **kwargs)
+
+            monkeypatch.setattr(cls, "workflow_requirements", observe_requirements)
+            monkeypatch.setattr(cls, "align", observe_align)
+            monkeypatch.setattr(cls, "_d2_host_spy", True, raising=False)
+        return engine
+
+    monkeypatch.setattr(action, "_engine_for", engine_for)
+    return events
+
+
 
 class Recorder:
     """Spies the seams a run builds its graph through; each run writes its rows into the current sink."""
@@ -197,6 +227,7 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
     recorder = Recorder(monkeypatch)
     align_log = tmp_path / "actual-align.jsonl"
     _spy_child_align(monkeypatch, align_log)
+    host_events = _spy_host_align(monkeypatch) if target_kind == "local-managed" else []
     if target_kind == "local-managed":
         # Use the same owned CPU engine as the machine job seam. Managed runs
         # must exercise the real supervisor rather than an unowned HTTP thread.
@@ -263,9 +294,14 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         assert align_log.is_file(), "the real child recorded no engine events"
         events = [json.loads(line) for line in align_log.read_text().splitlines()]
         if target_kind == "local-managed":
-            actual = [event["manifest"] for event in events if event["event"] == "align"]
+            from astrid.core.generation.managed_preparation import configured_models_root
+            actual = [event for event in host_events if event[0] == "align"]
             assert len(actual) == 1, actual
-            assert actual[0] == dry["entry"]["requirements"], "dry and actual align manifests differ"
+            expected_manifest = {**dry["entry"]["requirements"], "engine": "comfyui",
+                                 "models_root": configured_models_root(root=str(tmp_path / "managed" / "engines" / "comfyui"))}
+            assert actual[0][1] == expected_manifest, "dry and actual align manifests differ"
+            assert actual[0][3] is not None, "host did not align the selected workflow"
+            assert [event[1] for event in host_events if event[0] == "workflow"] == [live_graph]
         elif h3:
             # Attached defaults to trust, so it does not align. Still prove that the real child
             # reads the emitted built graph rather than h3's static bundle or rebuilding h3.
