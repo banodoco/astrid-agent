@@ -4,7 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from contextlib import contextmanager
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,8 +17,9 @@ from astrid.core.generation.local_job import run_job
 from astrid.packs.runpod import machine
 from tests.core.generation.test_runpod_engine_selection import LIVE, NoPodClient, preferences  # noqa: F401
 from tests.integrations.test_dry_run_equals_live_run import Recorder, _built, _graph
-from tests.integrations import test_remote_machine_job_seam_cpu as seam
 from tests.integrations.test_remote_machine_job_seam_cpu import FileTransport, LeaseOwner
+from tests.integrations.test_managed_host_preparation import managed_install, session  # noqa: F401
+from tests.integrations.runpod_slot_pod import receipt_files
 from tests.integrations.test_runpod_slot_path_cpu import (
     H3_REQUEST, PROMPTS, SLOTS, SlotPod, _h3_built_classes, _slot_classes, _video_source,
 )
@@ -42,7 +44,7 @@ class CaptureClient(NoPodClient):
 
 
 @pytest.mark.parametrize('cell', [*SLOTS, ('video', 'h3')], ids=lambda cell: '/'.join(cell))
-def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences):
+def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences, managed_install):
     recorder = Recorder(monkeypatch)
     client = CaptureClient()
     facade = GenerationFacade()
@@ -153,25 +155,47 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences):
     monkeypatch.setattr(local_server_engine, '_approve_live', spy_approve)
     monkeypatch.setattr(local_server_engine, 'local_server_bundle', spy_bundle)
     provider = SlotPod(tmp_path / 'claim.json', tmp_path / 'attempts', _slot_classes(cell) | extra_classes)
-    if cell in {('audio', 'sfx'), ('audio', 'tts')}:
-        from vibecomfy.model_assets import _referenced_model_values
-        declared = [value for ref in _referenced_model_values(workflow)
-                    for value in (ref['value'], ref['subdir'] + '/' + ref['value'])]
-        provision = seam._managed_local_engine
-        @contextmanager
-        def provision_with_inventory(provider, folder, patch):
-            with provision(provider, folder, patch):
-                installed = provider.comfy.installed_files
-                provider.comfy.installed_files = lambda: [*installed(), *declared]
-                yield
-        monkeypatch.setattr(seam, '_managed_local_engine', provision_with_inventory)
-    with seam._owned_cpu_engine(provider, tmp_path / 'pod-engine', monkeypatch):
+    from astrid.core.generation import entries
+    from vibecomfy.model_assets import _referenced_model_values
+    files = [path for engine in dict.fromkeys(('comfyui', *entries.runpod_engines()))
+             for path in receipt_files(provider._receipt_for(engine))]
+    files += [value for ref in _referenced_model_values(workflow)
+              for value in (ref['value'], ref['subdir'] + '/' + ref['value'])]
+    client_engine, payload, recipe, root, started, bootstrap = managed_install
+    records = tmp_path / 'peer-records'
+    records.mkdir()
+    program = f'''
+import sys,json,threading
+sys.path[:0] = {[str(Path(__file__).resolve().parents[2]), *sys.path]!r}
+from pathlib import Path
+from tests.integrations.runpod_slot_pod import PodComfy,pin_object_info
+from tests.integrations.test_runpod_slot_path_cpu import _attached_comfy
+class Recorded(list):
+ def __init__(self,name): self.path=Path({str(records)!r})/name
+ def append(self,value):
+  with self.path.open('a') as out: out.write(json.dumps(value)+'\\n')
+  super().append(value)
+peer=PodComfy({provider.comfy.classes!r}, lambda: {files!r}, extra=pin_object_info())
+peer.h3_output={h3!r}
+peer.prompts=Recorded('prompts'); peer.views=Recorded('views'); peer.rejections=Recorded('rejections')
+port=int(sys.argv[1]); Path(sys.argv[3]).write_text('started')
+with _attached_comfy(peer,port): threading.Event().wait()
+'''
+    (root / 'tiny_http.py').write_text(program)
+    client_engine.stop_owned(deadline=time.monotonic() + 15)
+    try:
         result = run_job(job.entry, job_path, Path(remote.remote_root) / 'out', mode=job.mode)
+    finally:
+        client_engine.stop_owned(deadline=time.monotonic() + 15)
+    provider.comfy.installed_files = lambda: files
+    for name in ('prompts', 'views', 'rejections'):
+        path = records / name
+        setattr(provider.comfy, name, [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else [])
     assert (Path(remote.remote_root) / 'out' / result['managed_generation_result_path']).is_file()
     assert len(observed) == len(runtime) == len(namespaces) == 1
     assert observed[0][1] == 'trust'
     assert observed[0][0] == {**dry['entry']['requirements'],
-                              'models_root': str(tmp_path / 'pod-engine' / 'managed' / 'engines' / 'comfyui' / 'models')}
+                              'models_root': str(root / 'models')}
     from astrid.packs.vibecomfy.local_server_engine import run_scoped_overrides
     scoped = run_scoped_overrides(workflow, namespaces[0])
     for name, filename in media_bindings.items():
