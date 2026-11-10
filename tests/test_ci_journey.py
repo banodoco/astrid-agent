@@ -373,6 +373,30 @@ def test_existing_pack_gate_times_out_naming_every_problem(tmp_path, monkeypatch
     assert receipt["mode"] == "existing" and receipt["registered"] is False and receipt["problems"]
 
 
+def test_an_approved_existing_pack_gate_skip_is_written_to_the_receipt_and_the_job_log(
+        tmp_path, monkeypatch, capsys):
+    reason = "R11 legacy baseline; candidate client APIs absent"
+    gated = []
+    monkeypatch.setattr(journey, "wait_existing_pack_current", lambda *a, **k: gated.append(a))
+    monkeypatch.setattr(journey, "installed_routes_packs", lambda version, evidence: True)
+    monkeypatch.setattr(journey, "installed_cli", lambda version, argv, evidence, name, **k: json.dumps(
+        {"packs": [{"id": "chiptune"}]}))
+    monkeypatch.setattr(journey, "installed_cli_with_capture", lambda *a, **k: json.dumps(
+        {"content": [{"type": "text", "text": json.dumps({"ok": True, "error": None, "result": {}})}],
+         "details": {"astridTaskRefs": [{"task_id": "task-9"}]}}))
+    assert journey.submit_task({}, tmp_path, "p", create_project=False, existing_pack_gate=reason) == "task-9"
+    assert gated == []  # Skipped, never silently run or silently dropped.
+    line = "existing_pack_gate: skipped (R11 legacy baseline; candidate client APIs absent)"
+    assert f"Journey {line}" in capsys.readouterr().err.splitlines()
+    receipt = json.loads((tmp_path / journey.PACK_REGISTRATION_RECEIPT).read_text())
+    assert receipt["existing_pack_gate"] == line and receipt["mode"] == "existing"
+    # The default keeps the gate, and an unnamed skip is refused.
+    assert journey.submit_task({}, tmp_path, "p", create_project=False) == "task-9"
+    assert len(gated) == 1
+    with pytest.raises(ValueError, match="named skip reason"):
+        journey.task({}, tmp_path, "p", existing_pack_gate=False)
+
+
 def test_already_listed_pack_runs_the_existing_gate_before_submission():
     calls = []
     added = journey.install_journey_packs(

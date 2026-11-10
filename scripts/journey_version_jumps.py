@@ -660,7 +660,10 @@ def semantic_digest(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def task_after_update(version: dict, evidence: Path, project: str, *, existing_pack_gate: bool = True) -> str:
+R11_EXISTING_PACK_GATE_SKIP = "R11 legacy baseline; candidate client APIs absent"
+
+
+def task_after_update(version: dict, evidence: Path, project: str, *, existing_pack_gate: bool | str = True) -> str:
     if sys.platform == "win32":
         journey.windows.EVIDENCE = evidence
         journey.windows.wait_for("pack-host is running with its current ready file", journey.windows.host_ready)
@@ -1233,7 +1236,10 @@ def execute_release11_then_update(args, root: Path, data: Path, evidence: Path, 
         add_journey_pack_and_restart_legacy_host(root, data, old, baseline / "release11-pack")
         # The existing-pack gate reads the Runtime through the candidate's client APIs; the R11
         # baseline host was just restarted, and its admission AND completion prove the pack.
-        keys["task_id"] = task_after_update(old, baseline / "release11-task", project, existing_pack_gate=False)
+        keys["task_id"] = task_after_update(old, baseline / "release11-task", project,
+                                            existing_pack_gate=R11_EXISTING_PACK_GATE_SKIP)
+        # Visible in the leg's own receipt too, so the approved skip cannot hide.
+        result["existing_pack_gate"] = journey.existing_pack_gate_skipped(R11_EXISTING_PACK_GATE_SKIP)
         before = live_workspace(root, data, baseline, "snapshot", keys)
         old_health = journey.healthy(data)
         result["checks"]["release11_install"] = "pass"

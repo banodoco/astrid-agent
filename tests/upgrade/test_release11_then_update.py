@@ -179,12 +179,18 @@ def test_only_the_release11_baseline_adds_the_pack_and_restarts_its_host_before_
     monkeypatch.setattr(jumps, "task_after_update",
                         lambda version, *_args, existing_pack_gate=True: order.append(
                             ("task", version["root"], existing_pack_gate)) or "task-id")
-    assert run()["status"] == "pass"
+    result = run()
+    assert result["status"] == "pass"
     r11 = str(tmp_path / "program" / "versions/r11")
     # R11 has no single-worker hot refresh: add + restart once, before R11's baseline task only.
-    # That baseline task skips the existing-pack gate; every later task keeps it.
-    assert order[:2] == [("legacy-pack", r11), ("task", r11, False)]
+    # That baseline task skips the existing-pack gate BY NAME; every later task keeps it.
+    assert order[:2] == [("legacy-pack", r11), ("task", r11, "R11 legacy baseline; candidate client APIs absent")]
     assert all(entry[2] is True for entry in order[2:] if entry[0] == "task")
+    # The approved skip is visible in the leg's own receipt.
+    assert result["existing_pack_gate"] == (
+        "existing_pack_gate: skipped (R11 legacy baseline; candidate client APIs absent)")
+    assert json.loads((tmp_path / "evidence" / "journey-result.json").read_text())["existing_pack_gate"] == (
+        "existing_pack_gate: skipped (R11 legacy baseline; candidate client APIs absent)")
     assert [entry for entry in order if entry[0] == "legacy-pack"] == [("legacy-pack", r11)]
 
 

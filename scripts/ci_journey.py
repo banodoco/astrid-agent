@@ -3026,8 +3026,23 @@ def _invocation_failure(error: object) -> str:
     return "unknown"
 
 
+def existing_pack_gate_skipped(reason: str) -> str:
+    return f"existing_pack_gate: skipped ({reason})"
+
+
+def record_existing_pack_gate_skip(evidence: Path, pack_id: str, reason: str) -> str:
+    """Make an approved skip of the existing-pack gate visible in the receipt and the job log."""
+    line = existing_pack_gate_skipped(reason)
+    write_json(evidence / PACK_REGISTRATION_RECEIPT, {
+        "schema_version": 2, "mode": "existing", "pack_id": pack_id,
+        "capability_id": JOURNEY_PACK_CAPABILITIES.get(pack_id), "registered": None,
+        "existing_pack_gate": line})
+    print(f"Journey {line}", file=sys.stderr, flush=True)
+    return line
+
+
 def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
-                duration_s: float = 0.1, existing_pack_gate: bool = True) -> str:
+                duration_s: float = 0.1, existing_pack_gate: bool | str = True) -> str:
     """Admit one chiptune SFX task through the installed SDK and return its id, unfollowed."""
     SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
     PACK_HOT_REFRESH.pop(evidence.absolute(), None)
@@ -3052,7 +3067,9 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
                           before_add=lambda: before_journey_pack_add(evidence),
                           wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id),
                           existing_ready=((lambda pack_id: wait_existing_pack_current(version, evidence, pack_id))
-                                          if existing_pack_gate else None))
+                                          if existing_pack_gate is True else
+                                          (lambda pack_id: record_existing_pack_gate_skip(
+                                              evidence, pack_id, str(existing_pack_gate)))))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
     try:
@@ -3127,12 +3144,15 @@ def task_follow_failure_summary(task_id: str, observed: dict, final: dict, *, ca
 
 
 def task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
-         existing_pack_gate: bool = True) -> str:
+         existing_pack_gate: bool | str = True) -> str:
     """Exercise the installed SDK through a settled, materialized SFX output.
 
-    ``existing_pack_gate=False`` is only for a legacy baseline (R11) whose host was just
-    restarted after the pack add; its admission and completion still prove it.
+    ``existing_pack_gate`` is True (the gate runs) or the approved skip reason: only for a
+    legacy baseline (R11) whose host was just restarted after the pack add. A skip is written
+    to the registration receipt and the job log; admission and completion still prove it.
     """
+    if existing_pack_gate is not True and (not isinstance(existing_pack_gate, str) or not existing_pack_gate):
+        raise ValueError("existing_pack_gate is True or a named skip reason")
     task_id = submit_task(version, evidence, project, create_project=create_project,
                           existing_pack_gate=existing_pack_gate)
     try:
