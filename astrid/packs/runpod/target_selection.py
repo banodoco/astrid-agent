@@ -508,6 +508,7 @@ class RunPodSelectionOwner:
                 replace_target_record(self.path, record, operation_id=record["operation_id"])
                 # These are the existing decorated implementations. This scope
                 # already owns their exact .owner.lock; do not acquire it twice.
+                from runpod_lifecycle import NotReadyTimeout
                 try:
                     if record["state"] == "allocation_ready" and record.get("create_attempts") == 0:
                         acquired = await acquire_target.__wrapped__(
@@ -523,6 +524,11 @@ class RunPodSelectionOwner:
                         )
                 except CapacityExhaustedError:
                     raise
+                except NotReadyTimeout:
+                    raise AcquisitionUnresolvedError(
+                        "RunPod worker did not become ready within the startup timeout; "
+                        "the same journal retains exact pod custody for recovery cleanup"
+                    ) from None
                 except Exception:
                     raise AcquisitionUnresolvedError("provider acquisition remains unresolved; reconcile the same journal") from None
                 acquired_record, observation = dict(acquired.attempt), acquired.observation
