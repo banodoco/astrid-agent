@@ -11,8 +11,10 @@ from astrid.packs.vibecomfy.actions.run import run as action
 
 
 def test_pod_cancellation_latches_until_preparation_drains(tmp_path, monkeypatch):
-    workflow = tmp_path / 'workflow.json'
-    workflow.write_text('{}')
+    workflow = tmp_path / 'workflow.py'
+    workflow.write_text('pass')
+    workflow.with_suffix('.vibe.json').write_text('{}')
+    workflow.with_name('source.json').write_text('{}')
     events = []
 
     class Preparation:
@@ -31,6 +33,7 @@ def test_pod_cancellation_latches_until_preparation_drains(tmp_path, monkeypatch
     monkeypatch.setattr(managed_preparation, 'preparation_scope', lambda report: _scope())
     monkeypatch.setattr(production_engine, 'load_workflow_path', lambda *args: SimpleNamespace(resolved=object()))
     monkeypatch.setattr(production_engine, '_canonical_bundle_value', lambda value: SimpleNamespace(workflow=object()))
+    monkeypatch.setattr(production_engine, 'loaded_workflow_execution_identity', lambda value: 'identity')
     def execute(*args, **kwargs):
         stop = target_inventory.POD_STOP.get()
         events.append('execute')
