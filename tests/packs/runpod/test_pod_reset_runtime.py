@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import statistics
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -46,9 +48,9 @@ def _bootstrap_layout(real_runtime, pod: Path):
     catalog (astrid_runtime/workspace.py); the reset finds the realm only there.
     """
     realm, data_root = pod / "realm", pod / "runtime-data"
-    daemon = real_runtime(realm, support_root=pod / "support")
+    daemon = real_runtime(realm, support_root=data_root / "runtime")
     catalog = data_root / "runtime" / "catalog.json"
-    catalog.parent.mkdir(parents=True)
+    catalog.parent.mkdir(parents=True, exist_ok=True)
     catalog.write_text(json.dumps({"version": 1, "selected_realm_id": daemon.service.realm["id"], "realms": [{
         "realm_id": daemon.service.realm["id"], "display_name": "Astrid", "data_root": str(realm),
         "selection_source": "create", "source_profile": "astrid"}], "source_profiles": {}}))
@@ -62,11 +64,16 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
     paths = dict(template=pod / "realm-template", lock=pod / "reset.lock", prepared=pod / "prepared-connection.json",
                  ready=pod / "ready.json", active=pod / "active-job.json", data_root=data_root)
     ensures = []
+    credential = pod / "astrid.json"
+    credential.write_text(json.dumps({"version": 1, "scope": "astrid", "actor_id": "owner", "token": daemon.token},
+                                     indent=2))
 
     def ensure():
         # The launcher's ensure_runtime: the live daemon's connection (its endpoint moves on replace).
         ensures.append(daemon.endpoint)
-        return {"endpoint": daemon.endpoint, "credential_file": str(daemon.credential_path),
+        credential.write_text(json.dumps({"version": 1, "scope": "astrid", "actor_id": "owner", "token": daemon.token},
+                                         indent=2))
+        return {"endpoint": daemon.endpoint, "credential_file": str(credential),
                 "realm_id": daemon.service.realm["id"], "actor_id": "owner"}
 
     # A fresh pod: the realm pod_bootstrap created is empty; the first reset takes the template.
@@ -119,7 +126,8 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
 
     # A dirty realm never becomes the template: not while a job is active, nor once it wrote rows.
     current = ensure()
-    token = Path(current["credential_file"]).read_text().strip()
+    from astrid.sdk.workspace_client import _read_credential
+    token = _read_credential(Path(current["credential_file"]))
     with pytest.raises(pod_reset.ResetError, match="a job was active"):
         pod_reset.take_template(current["endpoint"], token, pod / "dirty-template", realm_root=realm,
                                 active=paths["active"])
@@ -176,6 +184,68 @@ def test_a_missing_prepared_connection_fails_closed_without_up(tmp_path, monkeyp
     with pytest.raises(ServiceUnavailableError) as raised:
         AstridClient.open_from_launcher()
     assert raised.value.details["reason"] == "prepared_connection_unavailable"
+
+
+def test_fresh_reset_uses_launcher_owner_authority_and_preserves_scoped_connection(tmp_path, monkeypatch):
+    """Real launcher credentials: scoped JSON for jobs, owner token for realm reset."""
+    from astrid.sdk.autobootstrap import _launcher_command
+    from tests.helpers.runtime import runtime_checkout
+
+    pod, data = tmp_path / "pod", tmp_path / "pod" / "runtime-data"
+    pod.mkdir()
+    manifest = pod / "source-manifest.json"
+    manifest.write_text(json.dumps({"profile": "astrid", "runtime_checkout": str(runtime_checkout()),
+        "source_checkout": str(Path(__file__).resolve().parents[3]),
+        "runtime_environment": str(Path(sys.prefix).resolve())}))
+    profile = data / "runtime" / "source-profiles" / "astrid.json"
+    profile.parent.mkdir(parents=True)
+    profile.write_bytes(manifest.read_bytes())
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(data))
+    monkeypatch.setenv("ASTRID_RUNTIME_SOURCE_MANIFEST", str(manifest))
+    monkeypatch.setenv("ASTRID_RUNTIME_DOOR_PORT", "0")
+    launcher = _launcher_command()
+
+    def command(*args):
+        return subprocess.run([*launcher, *args, "--data-root", str(data), "--json"],
+                              text=True, capture_output=True, timeout=90)
+
+    created = command("workspace", "create", "--realm-root", str(pod / "realm"))
+    assert created.returncode == 0, created.stderr
+    paths = dict(data_root=data, template=pod / "realm-template", lock=pod / "reset.lock",
+                 prepared=pod / "prepared-connection.json", ready=pod / "ready.json",
+                 active=pod / "active-job.json", runs_root=pod / "runs")
+    try:
+        try:
+            first = pod_reset.reset(**paths)
+            second = pod_reset.reset(**paths)
+        except Exception as exc:
+            # A regression must not print an invalid Authorization header/token.
+            raise AssertionError(f"real-launcher reset failed: {type(exc).__name__}") from None
+        assert "template" in first and second["replace"]["state"] == "complete"
+        connection = json.loads(paths["prepared"].read_text())
+        envelope = json.loads(Path(connection["credential_file"]).read_text())
+        assert envelope["scope"] == "astrid" and envelope["actor_id"] != "owner"
+        assert "token" not in connection
+        client = pod_reset.open_prepared(paths["prepared"])
+        assert client.projects.list().ok
+        client.__exit__(None, None, None)
+    finally:
+        stopped = command("down", "--source-manifest", str(manifest))
+        assert stopped.returncode == 0, stopped.stderr
+
+
+@pytest.mark.parametrize("content", [json.dumps({"token": ""}), json.dumps({"secret": "never-log-this"}),
+                                   '{broken-json\nnever-log-this',
+                                   json.dumps({"token": "never-log-this\nheader"})])
+def test_invalid_owner_credential_fails_closed_without_disclosing_content(tmp_path, content):
+    from tests.helpers.runtime import use_runtime
+    use_runtime()
+    credential = tmp_path / "runtime" / "credentials" / "owner.token"
+    credential.parent.mkdir(parents=True)
+    credential.write_text(content)
+    with pytest.raises(Exception) as caught:
+        pod_reset._owner_token(tmp_path)
+    assert "never-log-this" not in str(caught.value)
 
 
 def test_pending_dirs_only_names_the_jobs_own_folders(tmp_path):
