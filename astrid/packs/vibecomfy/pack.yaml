@@ -458,6 +458,7 @@ actions:
       - source
       - source_video
       - managed_assets
+      - entry_inputs
       provides:
       - vibecomfy_run
       - result_manifest
@@ -484,6 +485,10 @@ actions:
     - description: Optional deterministic ZIP containing manifest.json and runtime-managed
         workflow media inputs.
       name: managed_assets
+      required: false
+      type: file
+    - description: Portable public entry inputs for the pod-side named-entry runner.
+      name: entry_inputs
       required: false
       type: file
     - default: '{}'

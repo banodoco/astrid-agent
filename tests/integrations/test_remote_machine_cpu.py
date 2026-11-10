@@ -1,8 +1,8 @@
 """CPU RunPod-as-a-machine journeys: real Runtime, host, lease owner and HTTPS transport.
 
 Plan 32 T5. Only provider HTTP is doubled: RunPod GraphQL/REST and the pod agent.
-The pod-side generation command is answered by the fake (``T4 STUB`` in
-``astrid.packs.runpod.machine.generation_argv``): it writes the job's output tree,
+These provider journeys answer the pod-side generation command with a fake:
+it writes the job's output tree,
 ``result.json``, a real ``wrapper-manifest.json`` with its sha256 line, and
 ``progress.json`` once per poll. No ``/engines/`` request is ever made.
 
@@ -285,7 +285,8 @@ class MachineProviderHTTP:
                                              "template": "taken" if taken else "restored"}).encode())
 
     def _start_generation(self, directory, detached):
-        # T4 STUB (pod side): `astrid generate <entry> --placement local` is answered here.
+        # Provider-only journeys answer the pod command here; the shipped-job seam
+        # is exercised through real run_job in test_remote_machine_job_seam_cpu.py.
         # T5f: the job's one command opens the prepared connection under the reset lock.
         assert "ensure_runtime" not in detached and "astrid-runtime" not in detached, "a job ran up/connect"
         assert "export ASTRID_PREPARED_CONNECTION=/root/astrid/prepared-connection.json" in detached
@@ -307,11 +308,13 @@ class MachineProviderHTTP:
         if argv[2] != "workflow":
             # The entry resolves from the pod's built-ins or the shipped selection only.
             assert argv[2] in [*self.listed, *shipped], (argv[2], self.listed)
-        assert argv[2] == (job["entry"] or "workflow") and set(job["inputs"]) >= {"python", "companion", "source"}
+        assert argv[2] == (job["entry"] or "workflow")
+        execution = job["execution"]
+        assert set(execution) >= {"python", "companion", "source"}
         for name in ("python", "companion", "source", "managed_assets", "source_video"):
-            if name in job["inputs"]:
+            if name in execution:
                 # Input files ship inside the job directory, digest-checked after upload.
-                assert job["inputs"][name].startswith(root + "/in/") and job["inputs"][name] in self.files
+                assert execution[name].startswith(root + "/in/") and execution[name] in self.files
         self.generations.append(job)
         self.detached[directory] = {"state": "running", "root": root, "polls": 0, "job": job}
         self.files[directory + "/status"] = b"running"
@@ -936,7 +939,7 @@ def test_a_workflow_file_job_runs_on_the_machine_without_a_named_entry(journey):
         preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
     assert result.ok, result.to_dict()
     (job,) = provider.generations
-    assert job["entry"] is None and set(job["inputs"]) >= {"python", "companion", "source"}
+    assert job["entry"] is None and set(job["execution"]) >= {"python", "companion", "source"}
     assert provider.kinds(" generate workflow --placement local ")
     assert not provider.kinds(" generate cpu-image ")
     assert provider.selections[-1]["entry"] is None and provider.selections[-1]["entries"] == []

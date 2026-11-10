@@ -1104,6 +1104,7 @@ class GenerationFacade:
         source_video_node: str | None = None,
         source_video_widget: str | None = None,
         managed_assets: WorkflowFile | None = None,
+        entry_inputs: WorkflowFile | None = None,
         workflow_inputs: str | None = None,
         after_outputs_job: str | None = None,
         comfy_url: str | None = None,
@@ -1152,7 +1153,7 @@ class GenerationFacade:
                 raise GenerationInputError('workflow inputs must be an object')
             if any(value is not None for value in (
                     execution_request, source, source_video, source_video_node,
-                    source_video_widget, managed_assets, workflow_inputs, comfy_url,
+                    source_video_widget, managed_assets, entry_inputs, workflow_inputs, comfy_url,
                     comfy_output_dir, generation_intent, placement_policy)):
                 raise GenerationInputError('a target workflow cannot replace explicit prepared binding or managed source controls')
             source_controls = {'client': client, 'project': project, 'out': out,
@@ -1207,7 +1208,7 @@ class GenerationFacade:
                 "source": source, "source_video": source_video,
                 "source_video_node": source_video_node,
                 "source_video_widget": source_video_widget,
-                "managed_assets": managed_assets, "workflow_inputs": workflow_inputs,
+                "managed_assets": managed_assets, "entry_inputs": entry_inputs, "workflow_inputs": workflow_inputs,
                 "after_outputs_job": after_outputs_job,
                 "comfy_url": comfy_url, "comfy_output_dir": comfy_output_dir,
                 "placement_policy": (json.dumps(dict(placement_policy), sort_keys=True, separators=(',', ':'), allow_nan=False)
@@ -1612,6 +1613,13 @@ class GenerationFacade:
                     for record in manifest["assets"]:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
+            if is_remote_target and entry_id != 'workflow':
+                from astrid.core.generation.job_inputs import write_archive
+                public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
+                if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
+                    public_values['seed'] = plan['bindings']['seed']
+                archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
+                asset_arguments['entry_inputs'] = import_member(archive)
             hook_job = None
             if source == 'workflow' and not is_remote_target and plan and plan.get('job_dir') and 'after_outputs' in (candidate.get('hooks') or workflow_entries.entry_hooks(candidate)):
                 # The hook runs where the job runs, after the outputs are written and before they are sealed.

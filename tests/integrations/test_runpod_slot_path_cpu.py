@@ -400,7 +400,7 @@ def test_default_slot_through_the_runpod_machine(slot, tmp_path, monkeypatch, re
         assert task.ok and task.data["state"] == "succeeded"
         if slot in {("audio", "sfx"), ("image", "edit")}:
             # Media inputs ship inside the job directory; nothing is uploaded to a pod ComfyUI.
-            assert "managed_assets" in provider.generations[0]["inputs"], provider.generations[0]["inputs"]
+            assert "managed_assets" in provider.generations[0]["execution"], provider.generations[0]["execution"]
 
 
 H3_REQUEST = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "request.v2.json"

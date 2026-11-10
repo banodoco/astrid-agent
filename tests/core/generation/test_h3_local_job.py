@@ -10,6 +10,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from astrid.core.generation import entries
 from astrid.core.generation.local_job import run_job
 
@@ -26,14 +28,18 @@ def _video(path, seconds, frames=None):
     return path
 
 
-def test_job_runs_h3_build_and_after_outputs_once_each(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prepared", [False, True], ids=["public-job", "controller-prepared-job"])
+def test_job_runs_h3_build_and_after_outputs_once_each(tmp_path, monkeypatch, prepared):
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     source = _video(tmp_path / "source.mp4", 3, frames=57)
     request = json.loads(REQUEST.read_text())
     asset_map = {request["media"][0]["asset"]["id"]: str(source), "source": str(source)}
     job = tmp_path / "job.json"
-    job.write_text(json.dumps({"schema": "astrid.machine-job.v1", "entry": "h3", "mode": "v2v", "align": "check",
-                               "inputs": {"request": str(REQUEST), "asset_map": asset_map}}))
+    payload = {"schema": "astrid.machine-job.v1", "entry": "h3", "mode": "v2v", "align": "check",
+               "inputs": {"request": str(REQUEST), "asset_map": asset_map}}
+    if prepared:
+        payload.update(execution={"python": str(entries.bundle_path(entries.find_entry("h3")))}, bindings={"seed": 987})
+    job.write_text(json.dumps(payload))
 
     builds, hooks = [], []
     real_build = entries.build_entry
@@ -46,6 +52,14 @@ def test_job_runs_h3_build_and_after_outputs_once_each(tmp_path, monkeypatch):
     def settle(workflow, out, **kwargs):
         """The run action's seam: the hook sees the generated output before it is sealed."""
         sealed["job_dir_during_run"] = json.loads(kwargs["after_outputs_job"])["job_dir"]
+        assert Path(workflow).is_relative_to(sealed["job_dir_during_run"])
+        assert kwargs["manifest"]["engine"] == "comfyui"
+        if prepared:
+            assert json.loads(kwargs["workflow_inputs"])["seed"] == 987
+            from vibecomfy.workflow_bundle import load_bundle
+            from vibecomfy.security.provenance import Provenance
+            built = load_bundle(workflow, trust=Provenance.USER_CONFIRMED).workflow
+            assert built.inputs["seed"].value == 987
         assert Path(sealed["job_dir_during_run"], "h3", "build-state.json").is_file()  # build ran first
         after_outputs = action._after_outputs(kwargs["after_outputs_job"])
         hooks.append(1)
