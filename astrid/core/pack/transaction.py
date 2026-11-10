@@ -168,7 +168,9 @@ def _recover_exchange(root: Path) -> None:
     try:
         record = json.loads(journal.read_text(encoding="utf-8"))
         if (not isinstance(record, dict)
-                or set(record) != {"version", "candidate", "old", "new", "phase"}
+                or set(record) not in ({"version", "candidate", "old", "new", "phase"},
+                                       {"version", "candidate", "old", "new", "phase", "purpose"})
+                or record.get("purpose", "publish") not in {"publish", "restore"}
                 or type(record["version"]) is not int or record["version"] != 1
                 or not isinstance(record["candidate"], str)
                 or len(record["candidate"]) != 32
@@ -180,6 +182,10 @@ def _recover_exchange(root: Path) -> None:
             raise ValueError("malformed exchange record")
     except (ValueError, TypeError) as exc:
         raise PackInstallError("invalid_state", "Collection exchange journal is invalid; restore it before retrying.") from exc
+    if "purpose" not in record:
+        # An older journal cannot distinguish publication from swap-back.
+        # Neither generation can be exposed safely until custody is resolved.
+        raise PackInstallError("invalid_state", "Legacy collection exchange needs manual recovery before retrying.")
     retired = _directory(root.parent / ".astrid-retired")
     candidate = retired / record["candidate"]
     backup = _exchange_backup(root)
@@ -187,13 +193,25 @@ def _recover_exchange(root: Path) -> None:
     for name, path in (("current", root), ("candidate", candidate), ("backup", backup)):
         locations[name] = _exchange_identity(path) if path.exists() or path.is_symlink() else None
     old, new = record["old"], record["new"]
+    if record.get("purpose") == "restore":
+        # A refused publication is being swapped back. Its candidate is an
+        # admitted generation and must be restored, never discarded. Finish
+        # the exchange by identity, including after another recovery crash.
+        if locations == {"current": old, "candidate": new, "backup": None}:
+            os.replace(root, backup)
+            _sync_directory(root.parent)
+            locations = {"current": None, "candidate": new, "backup": old}
+        if locations == {"current": None, "candidate": new, "backup": old}:
+            os.replace(candidate, root)
+            _sync_directory(retired)
+            _sync_directory(root.parent)
+            locations = {"current": new, "candidate": None, "backup": old}
     if locations == {"current": None, "candidate": new, "backup": old}:
         os.replace(backup, root)
         _sync_directory(root.parent)
         locations = {"current": old, "candidate": new, "backup": None}
     if locations == {"current": old, "candidate": new, "backup": None}:
-        # The new generation was never published. It belongs to this failed
-        # attempt; the old generation is already completely restored.
+        # The new generation was never published and belongs to this attempt.
         shutil.rmtree(candidate)
     elif locations == {"current": new, "candidate": None, "backup": old}:
         # Remove the temporary backup name by transferring the old generation
@@ -209,7 +227,7 @@ def _recover_exchange(root: Path) -> None:
     _sync_directory(root.parent)
 
 
-def _publish_collection(candidate: Path, root: Path) -> None:
+def _publish_collection(candidate: Path, root: Path, *, restore: bool = False) -> None:
     if sys.platform != "win32":
         _publish(candidate, root)
         return
@@ -220,7 +238,8 @@ def _publish_collection(candidate: Path, root: Path) -> None:
     if backup.exists() or backup.is_symlink():
         raise PackInstallError("invalid_state", "Unexpected collection backup; restore exchange custody before retrying.")
     record = {"version": 1, "candidate": candidate.name,
-              "old": _exchange_identity(root), "new": _exchange_identity(candidate)}
+              "old": _exchange_identity(root), "new": _exchange_identity(candidate),
+              "purpose": "restore" if restore else "publish"}
     _write_exchange(root, record, "prepared")
     os.replace(root, backup)
     _sync_directory(root.parent)
@@ -351,6 +370,7 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
     except FileNotFoundError:
         if exclusive:
             raise
+        _require_recovered(path)
         yield
         return
     try:
@@ -764,7 +784,7 @@ def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mappi
         try:
             # candidate now names the prior complete generation. Exchanging it
             # back restores collection bytes and admission records atomically.
-            _publish_collection(candidate, root)
+            _publish_collection(candidate, root, restore=True)
         except (OSError, PackInstallError) as exc:
             # The new generation stays live; the prior one (holding any write
             # that triggered this swap-back) is still at candidate.
