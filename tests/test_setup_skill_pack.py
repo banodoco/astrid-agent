@@ -215,7 +215,7 @@ def test_sync_rejects_colliding_names_before_mutation(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, 'home', lambda: home)
     monkeypatch.setattr(skills, 'list_skills', lambda: descriptors)
     for _ in range(2):
-        with pytest.raises(ValueError, match='collid'):
+        with pytest.raises(ValueError, match='collision'):
             skills.sync(harness_names=['claude'], deep=True, state_path=tmp_path / 'state.json')
         assert not (home / '.claude/skills/astrid').exists()
         assert not (tmp_path / 'skills').exists()
@@ -267,3 +267,24 @@ def test_sync_prunes_removed_custom_name_from_record(tmp_path, monkeypatch):
     monkeypatch.setattr(skills, 'list_skills', lambda: [d for d in descriptors if d.pack_id != 'setup'])
     skills.sync(harness_names=['claude'], deep=True, state_path=state_path)
     assert not target.is_symlink()
+
+
+def test_install_and_uninstall_reject_collisions_before_mutation(tmp_path, monkeypatch):
+    import pytest
+    from astrid import skills
+    descriptors = list_skills()
+    home = tmp_path / 'home'
+    (home / '.claude').mkdir(parents=True)
+    monkeypatch.setattr(Path, 'home', lambda: home)
+    state_path = tmp_path / 'state.json'
+    skills.sync(harness_names=['claude'], state_path=state_path)
+    gateway = home / '.claude/skills/astrid'
+    original = gateway.resolve()
+    state_before = state_path.read_bytes()
+    monkeypatch.setattr(skills, 'list_skills', lambda: [
+        replace(d, sync_name='astrid') if d.pack_id == 'setup' else d for d in descriptors])
+    for operation in (skills.install, skills.uninstall):
+        with pytest.raises(ValueError, match='collision'):
+            operation(['setup'], ['claude'], state_path=state_path)
+        assert gateway.resolve() == original
+        assert state_path.read_bytes() == state_before

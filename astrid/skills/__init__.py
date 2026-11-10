@@ -144,6 +144,21 @@ def _inventory(current_state, harness, descriptor):
     })
 
 
+def _validate_sync_targets(targets, descriptors):
+    """Reject ambiguous destinations before any skill mutation."""
+    for harness_name, adapter in targets.items():
+        destinations = {}
+        for descriptor in descriptors:
+            target = adapter.target_for(descriptor)
+            previous = destinations.get(target)
+            if previous is not None and previous != descriptor.skill_id:
+                raise ValueError(
+                    f"Skill target collision for {harness_name}: {previous} and "
+                    f"{descriptor.skill_id} both target {target}"
+                )
+            destinations[target] = descriptor.skill_id
+
+
 def _ownership_sources(adapter, descriptors, current_state, state_path):
     """Project existing declarations/records into evidence for this operation.
 
@@ -190,6 +205,7 @@ def disable_owned(*, state_path: Path | None = None, dry_run: bool = False) -> d
     initial_installs = copy.deepcopy(current.get("installs", {}))
     mains = list_skills()
     descriptors = mains + discovery.list_extras(mains)
+    _validate_sync_targets(all_adapters(), descriptors)
     report: dict = {"actions": [], "conflicts": [], "ambiguous": []}
     for harness, adapter in all_adapters().items():
         records = current.get("installs", {}).get(harness, {})
@@ -281,6 +297,7 @@ def install(
     descriptors = _units(pack_ids, tuple(skill_names), all_skills, developer=developer, available=available)
     known_units = available + discovery.list_extras(available)
     targets = _resolve_harnesses(harness_names)
+    _validate_sync_targets(targets, known_units)
     current_state = state.load(state_path)
     extras_for_digest = discovery.list_extras([d for d in descriptors if d.skill is None])
 
@@ -361,6 +378,7 @@ def uninstall(
     descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True, developer=developer, available=available)
     known_units = available + discovery.list_extras(available)
     targets = _resolve_harnesses(harness_names)
+    _validate_sync_targets(targets, known_units)
     current_state = state.load(state_path)
 
     report: dict = {"actions": []}
@@ -434,18 +452,7 @@ def sync(
     all_units = all_descriptors + extras
     selected_pack_ids = tuple(selected_pack_ids)
     targets = _resolve_harnesses(harness_names)
-    # Reject ambiguous destinations before composing views or changing state.
-    for harness_name, adapter in targets.items():
-        destinations = {}
-        for descriptor in all_units:
-            target = adapter.target_for(descriptor)
-            previous = destinations.get(target)
-            if previous is not None and previous != descriptor.skill_id:
-                raise ValueError(
-                    f"Skill target collision for {harness_name}: {previous} and "
-                    f"{descriptor.skill_id} both target {target}"
-                )
-            destinations[target] = descriptor.skill_id
+    _validate_sync_targets(targets, all_units)
     if proposed_state is not None and not dry_run:
         raise ValueError("proposed_state is only valid for a dry-run sync")
     current_state = proposed_state if proposed_state is not None else state.load(state_path)
@@ -781,6 +788,8 @@ def check(
 def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
     descriptors = list_skills()
     detected = {name: adapter for name, adapter in all_adapters().items() if adapter.detect()}
+    if heal:
+        _validate_sync_targets(detected, descriptors + discovery.list_extras(descriptors))
 
     report: dict = {
         "detected": list(detected.keys()),
