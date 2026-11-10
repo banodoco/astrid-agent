@@ -613,6 +613,51 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
         journey.assert_direct_service_ownership(root, owner_data)
 
 
+def wait_r11_baseline_ready(data: Path, evidence: Path, previous: dict, restart_ns: int, *, timeout: int = 180) -> None:
+    """Wait for R11's own post-registration host marker after the service restart."""
+    path = data / "runtime" / "generic-host.ready.json"
+    receipt = {"schema_version": 2, "mode": "existing", "pack_id": "chiptune",
+               "capability_id": "chiptune.sfx", "registered": None,
+               "r11_baseline_ready": {"marker": str(path), "restart_ns": restart_ns,
+                                      "previous_identity": previous, "polls": []}}
+    detail = receipt["r11_baseline_ready"]
+    deadline = time.monotonic() + timeout
+    while True:
+        poll = {}
+        try:
+            # Read bytes and metadata from the same open file, including across atomic replacement.
+            with path.open(encoding="utf-8") as stream:
+                marker = json.load(stream)
+                poll["mtime_ns"] = os.fstat(stream.fileno()).st_mtime_ns
+            if not isinstance(marker, dict):
+                raise ValueError("marker is not an object")
+            for key in ("status", "pid", "process_birth_id", "ready_capabilities", "unready_capabilities"):
+                poll[key] = marker.get(key)
+            pid, birth = marker.get("pid"), marker.get("process_birth_id")
+            ready = (poll["mtime_ns"] >= restart_ns and marker.get("status") == "ready"
+                     and type(pid) is int and pid > 0 and isinstance(birth, str) and bool(birth)
+                     and (not previous.get("pid") or pid != previous["pid"])
+                     and (not previous.get("process_birth_id") or birth != previous["process_birth_id"])
+                     and isinstance(marker.get("ready_capabilities"), list)
+                     and "chiptune.sfx" in marker["ready_capabilities"])
+        except (OSError, ValueError) as exc:
+            poll["error"] = f"{type(exc).__name__}: {exc}"
+            ready = False
+        poll["ready"] = ready
+        detail["polls"].append(poll)
+        receipt["registered"] = ready
+        journey.write_json(evidence / journey.PACK_REGISTRATION_RECEIPT, receipt)
+        if ready:
+            print(f"Journey r11_baseline_ready: ready pid={pid} birth={birth}", file=sys.stderr, flush=True)
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            message = f"timed out after {timeout}s waiting for fresh R11 chiptune.sfx readiness; last poll: {poll}"
+            print(f"Journey r11_baseline_ready: {message}", file=sys.stderr, flush=True)
+            raise RuntimeError(message)
+        time.sleep(min(1, remaining))
+
+
 def add_journey_pack_and_restart_legacy_host(root: Path, data: Path, version: dict, evidence: Path) -> list[str]:
     """For a LEGACY baseline (R11) only: add the journey pack, then restart the owned host.
 
@@ -637,13 +682,21 @@ def add_journey_pack_and_restart_legacy_host(root: Path, data: Path, version: di
         start = ["launchctl", "bootstrap", domain, service["service_path"]]
     else:
         raise RuntimeError(f"Legacy host restart is not supported for service manager {manager}")
+    marker_path = selected_data_root(root, data) / "runtime" / "generic-host.ready.json"
+    try:
+        marker = journey.read_json(marker_path)
+        previous = {key: marker.get(key) for key in ("pid", "process_birth_id")}
+    except (OSError, ValueError):
+        previous = {}
     journey.run(stop, evidence / "legacy-pack-stop-service.log", timeout=120)
     deadline = time.monotonic() + 120
     while journey.runtime_processes(selected_data_root(root, data)):
         if time.monotonic() >= deadline:
             raise RuntimeError("Legacy Runtime did not stop after the journey pack was added")
         time.sleep(1)
+    restart_ns = time.time_ns()
     journey.run(start, evidence / "legacy-pack-start-service.log", timeout=120)
+    wait_r11_baseline_ready(selected_data_root(root, data), evidence.parent / "release11-task", previous, restart_ns)
     journey.wait_ready(selected_data_root(root, data))
     journey.assert_direct_service_ownership(root, data)
     return added

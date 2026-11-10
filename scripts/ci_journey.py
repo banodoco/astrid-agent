@@ -82,7 +82,9 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
     "update-job-journal.log", "update-job-record.json", "update-transaction.json",
     "update-button.json", "update-button.png",
-    "update-transaction-status.json", "runtime-data-runtime.log", "runtime-real-home-runtime.log", "macos-file-listing.txt",
+    "update-transaction-status.json", "runtime-data-runtime.log", "runtime-data-service-pack-host.log",
+    "runtime-real-home-service-pack-host.log",
+    "runtime-real-home-runtime.log", "macos-file-listing.txt",
     "scheduled-task-before.xml", "scheduled-task-after.xml",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-owner-workspace.json",
@@ -719,7 +721,7 @@ def _listing(root: Path) -> list[str]:
 
 def _account_home() -> Path:
     """The account's real home directory, whatever HOME this process was given."""
-    if sys.platform == "darwin":
+    if sys.platform in {"linux", "darwin"}:
         import pwd
         try:
             return Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -868,6 +870,21 @@ def write_service_log_status(evidence: Path, run_root: Path, phase: str, manager
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
     """Retain bounded tails of Runtime logs from the active journey profile."""
     capture_update_transaction_status(evidence, run_root, phase)
+    # R11's supervisor writes beside its Runtime log; the login service may inherit
+    # the account's real HOME rather than the harness's isolated HOME.
+    host_logs = [(run_root / "data" / "runtime" / "service-pack-host.log", "runtime-data-service-pack-host.log")]
+    if sys.platform == "linux":
+        host_logs.append((_account_home() / ".local" / "state" / "astrid-runtime" / "logs" /
+                          "service-pack-host.log", "runtime-real-home-service-pack-host.log"))
+    for source, name in host_logs:
+        if _regular_file_info(source) is not None:
+            try:
+                with source.open("rb") as stream:
+                    stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                    (evidence / name).write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            except OSError as exc:
+                print(f"Journey Runtime host log capture ({phase}) failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
     manager_output: list[str] = []
     try:  # Diagnostics only: a capture failure never replaces the journey's own result.
         manager_output = capture_service_manager_output(evidence, run_root, phase)
@@ -1190,7 +1207,8 @@ def _capture_windows_pack_host_update_state(evidence: Path, data: Path, phase: s
 
 
 TASK_FOLLOW_FILES = ("task-follow.jsonl", "task-follow-failure.json", "task-cancel.json",
-                     "task-cancel-follow.jsonl", "task-after-cancel.json", "task-settled.json")
+                     "task-cancel-follow.jsonl", "task-after-cancel.json", "task-settled.json",
+                     "task-refusal.json")
 # The pack-activation evidence a task phase writes. The top-level staging copies these only from
 # the leg's own folder, so nested task folders (candidate-working-task, release1-working-task, ...)
 # are promoted here explicitly.
@@ -3033,10 +3051,13 @@ def existing_pack_gate_skipped(reason: str) -> str:
 def record_existing_pack_gate_skip(evidence: Path, pack_id: str, reason: str) -> str:
     """Make an approved skip of the existing-pack gate visible in the receipt and the job log."""
     line = existing_pack_gate_skipped(reason)
-    write_json(evidence / PACK_REGISTRATION_RECEIPT, {
+    path = evidence / PACK_REGISTRATION_RECEIPT
+    prior = read_json(path) if path.is_file() else {}
+    write_json(path, {
         "schema_version": 2, "mode": "existing", "pack_id": pack_id,
-        "capability_id": JOURNEY_PACK_CAPABILITIES.get(pack_id), "registered": None,
-        "existing_pack_gate": line})
+        "capability_id": JOURNEY_PACK_CAPABILITIES.get(pack_id), "registered": prior.get("registered"),
+        "existing_pack_gate": line, **({"r11_baseline_ready": prior["r11_baseline_ready"]}
+                                      if "r11_baseline_ready" in prior else {})})
     print(f"Journey {line}", file=sys.stderr, flush=True)
     return line
 

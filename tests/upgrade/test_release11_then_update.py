@@ -205,6 +205,7 @@ def test_legacy_baseline_adds_the_pack_then_restarts_its_owned_host(monkeypatch,
     monkeypatch.setattr(jumps.journey, "run", lambda argv, log, **_k: events.append(tuple(argv[:3])) or "")
     monkeypatch.setattr(jumps.journey, "runtime_processes", lambda *_a: next(owners))
     monkeypatch.setattr(jumps.journey, "wait_ready", lambda *_a: events.append("ready"))
+    monkeypatch.setattr(jumps, "wait_r11_baseline_ready", lambda *_a: events.append("r11-ready"))
     monkeypatch.setattr(jumps, "selected_data_root", lambda _root, selected, **_k: selected)
     monkeypatch.setattr(jumps.time, "sleep", lambda *_a: None)
     assert jumps.add_journey_pack_and_restart_legacy_host(
@@ -213,7 +214,7 @@ def test_legacy_baseline_adds_the_pack_then_restarts_its_owned_host(monkeypatch,
                    else (("launchctl", "bootout", f"gui/{jumps.os.getuid()}/haus.astrid.runtime"),
                          ("launchctl", "bootstrap", f"gui/{jumps.os.getuid()}")))
     # Add first (no hot-refresh hooks: this is the legacy path), then a full owned-host restart.
-    assert events == [("add", ["routes_packs"]), "owned", stop, start, "ready", "owned"]
+    assert events == [("add", ["routes_packs"]), "owned", stop, start, "r11-ready", "ready", "owned"]
 
 
 def test_legacy_baseline_restarts_nothing_when_the_pack_is_already_there(monkeypatch, tmp_path):
@@ -223,6 +224,71 @@ def test_legacy_baseline_restarts_nothing_when_the_pack_is_already_there(monkeyp
     assert jumps.add_journey_pack_and_restart_legacy_host(
         tmp_path / "program", tmp_path / "data", {"root": "/v/r11"}, tmp_path / "ev") == []
     assert events == []
+
+
+def test_r11_ready_polls_stale_and_unready_markers_before_accepting_new_host(monkeypatch, tmp_path, capsys):
+    marker = tmp_path / "data/runtime/generic-host.ready.json"
+    marker.parent.mkdir(parents=True)
+    evidence = tmp_path / "task"
+    old = {"status": "ready", "pid": 10, "process_birth_id": "old", "ready_capabilities": ["chiptune.sfx"]}
+    marker.write_text(json.dumps(old))
+    restart_ns = marker.stat().st_mtime_ns + 1
+    changes = iter([
+        {"status": "ready", "pid": 11, "process_birth_id": "new", "ready_capabilities": []},
+        {"status": "ready", "pid": 11, "process_birth_id": "new", "ready_capabilities": ["chiptune.sfx"]},
+    ])
+
+    def advance(_seconds):
+        marker.write_text(json.dumps(next(changes)))
+
+    monkeypatch.setattr(jumps.time, "sleep", advance)
+    jumps.wait_r11_baseline_ready(tmp_path / "data", evidence, old, restart_ns)
+    receipt = json.loads((evidence / journey.PACK_REGISTRATION_RECEIPT).read_text())
+    assert [p["ready"] for p in receipt["r11_baseline_ready"]["polls"]] == [False, False, True]
+    assert receipt["registered"] is True
+    journey.record_existing_pack_gate_skip(evidence, "chiptune", jumps.R11_EXISTING_PACK_GATE_SKIP)
+    assert json.loads((evidence / journey.PACK_REGISTRATION_RECEIPT).read_text())["r11_baseline_ready"] == receipt["r11_baseline_ready"]
+    assert "Journey r11_baseline_ready: ready pid=11" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("marker", [None, {"status": "ready", "pid": 10, "process_birth_id": "old",
+                                            "ready_capabilities": ["chiptune.sfx"]},
+                                   {"status": "ready", "pid": 11, "process_birth_id": "new",
+                                    "ready_capabilities": []}])
+def test_r11_ready_timeout_records_what_it_saw(tmp_path, marker, capsys):
+    path = tmp_path / "data/runtime/generic-host.ready.json"
+    if marker is not None:
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(marker))
+    evidence = tmp_path / "task"
+    with pytest.raises(RuntimeError, match="timed out.*last poll"):
+        jumps.wait_r11_baseline_ready(tmp_path / "data", evidence, {"pid": 10, "process_birth_id": "old"}, 0, timeout=0)
+    receipt = json.loads((evidence / journey.PACK_REGISTRATION_RECEIPT).read_text())
+    assert receipt["registered"] is False
+    assert len(receipt["r11_baseline_ready"]["polls"]) == 1
+    assert "Journey r11_baseline_ready: timed out" in capsys.readouterr().err
+
+
+def test_r11_supervised_host_log_is_collected_and_staged(monkeypatch, tmp_path):
+    run_root = tmp_path / "run"
+    evidence, staged = run_root / "evidence" / "leg", run_root / "evidence-upload" / "before-cleanup"
+    log = run_root / "data/runtime/service-pack-host.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("R11 host output")
+    account_home = tmp_path / "account"
+    account_log = account_home / ".local/state/astrid-runtime/logs/service-pack-host.log"
+    account_log.parent.mkdir(parents=True)
+    account_log.write_text("R11 account host output")
+    evidence.mkdir(parents=True)
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "_account_home", lambda: account_home)
+    monkeypatch.setattr(journey, "capture_update_transaction_status", lambda *_: None)
+    monkeypatch.setattr(journey, "capture_service_manager_output", lambda *_: [])
+    monkeypatch.setattr(journey, "write_service_log_status", lambda *_: None)
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    assert (staged / "runtime-data-service-pack-host.log").read_text() == "R11 host output"
+    assert (staged / "runtime-real-home-service-pack-host.log").read_text() == "R11 account host output"
 
 
 def test_update_that_exits_zero_and_installs_nothing_fails(monkeypatch, tmp_path):
