@@ -79,6 +79,10 @@ def autostart_fields():
                         "refused": True, "unchanged": True},
         "capture": {"path": "autostart-off-card.png", "sha256": "c" * 64, "device_scale_factor": 2,
                     "surface": "autostart-off card"},
+        # Autostart off runs one birth-verified detached Runtime and no sign-in registration.
+        "service_manager": {"manager": "detached", "autostart": False, "foreground_fallback": False,
+                            "detached": {"pid": 4242, "birth_verified": True},
+                            "sign_in_registration": {"manager": "systemd-user", "load_state": "not-found"}},
     }
 
 
@@ -254,6 +258,35 @@ def test_macos15_receipt_key_rejects_the_retired_macos14_label(tmp_path):
     write(row)
     assert any('runner image label' in error
                for error in gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'macos-15', 'sh'))
+
+
+def test_detached_runtime_is_admitted_only_on_the_autostart_off_rows(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+
+    def rewrite(job_id, change):
+        path = tmp_path / job_id / "journey-result.json"
+        data = json.loads(path.read_text())
+        change(data)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    # An autostart-off row still needs its detached Runtime assertion, not a generic manager record.
+    rewrite("direct-linux-autostart-off", lambda data: data.update(
+        service_manager={"manager": "native", "foreground_fallback": False}))
+    assert any("direct-linux-autostart-off: autostart-off detached Runtime assertion is absent" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    candidate = release1_receipts(tmp_path)
+    rewrite("direct-macos-autostart-off",
+            lambda data: data["service_manager"]["detached"].update(birth_verified=False))
+    assert any("direct-macos-autostart-off: autostart-off detached Runtime assertion is absent" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    # Every other direct row keeps the foreground ban.
+    candidate = release1_receipts(tmp_path)
+    rewrite("direct-linux-fresh", lambda data: data.update(service_manager={
+        "manager": "detached", "autostart": False, "foreground_fallback": False,
+        "detached": {"birth_verified": True}, "sign_in_registration": {}}))
+    assert any("direct-linux-fresh: a detached Runtime is admitted only on the autostart-off leg" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
 def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_path):

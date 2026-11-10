@@ -351,10 +351,17 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
 
 
 def live_workspace(root: Path, data: Path, evidence: Path, action: str, request: dict,
-                   *, release: int = 0) -> dict:
-    """Observe or seed through the selected live owner without releasing it."""
+                   *, release: int = 0, ownership=None) -> dict:
+    """Observe or seed through the selected live owner without releasing it.
+
+    ``ownership(root, owner_data)`` replaces the direct service-ownership check; only the
+    autostart-off leg passes one (its detached Runtime check).
+    """
     owner_data = selected_data_root(root, data, allow_r1=False)
-    journey.assert_direct_service_ownership(root, owner_data, release=release)
+    if ownership is None:
+        journey.assert_direct_service_ownership(root, owner_data, release=release)
+    else:
+        ownership(root, owner_data)
     discovery = journey.healthy(data)
     selection = live.selection_for(data, root, discovery)
     # The old offline path imposed this gate; also ensure its second discovery
@@ -1453,7 +1460,12 @@ def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: 
         if result["installed_release"] != manifest.get("release"):
             raise RuntimeError(f"fresh install selected release {result['installed_release']}, "
                                f"not the candidate release {manifest.get('release')}")
-        result["service_manager"] = journey.assert_direct_service_ownership(root, selected_data)
+        # Autostart off deliberately runs a detached Runtime with no sign-in registration, so this
+        # leg alone replaces the direct service-manager check (and its foreground ban).
+        def detached(check_root: Path, owner_data: Path) -> dict:
+            return journey.assert_detached_autostart_off_runtime(check_root, owner_data, evidence)
+
+        result["service_manager"] = detached(root, selected_data)
         result["checks"]["service"] = "pass"
         selected = journey.selected_tuple(manifest, version)
         result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
@@ -1471,9 +1483,10 @@ def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: 
         project = "tst-autostart-off"
         baseline = evidence / "autostart-seed"
         keys = live_workspace(root, selected_data, baseline, "seed", {
-            "project": project, "generation": "autostart-off", "task_id": None, "create_project": True})
+            "project": project, "generation": "autostart-off", "task_id": None, "create_project": True},
+            ownership=detached)
         keys["task_id"] = task_after_update(version, baseline / "autostart-task", project)
-        before = live_workspace(root, selected_data, baseline, "snapshot", keys)
+        before = live_workspace(root, selected_data, baseline, "snapshot", keys, ownership=detached)
         before_health = journey.healthy(selected_data)
 
         # 4. The live Runtime reports the autostart-off reason on its update status.
@@ -1488,7 +1501,8 @@ def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: 
         post_code, post_body = runtime_request("POST", UPDATE_PATH)
         after_digest = read_selection()[1]
         after_health = journey.healthy(selected_data)
-        after = live_workspace(root, selected_data, evidence / "autostart-after", "snapshot", keys)
+        after = live_workspace(root, selected_data, evidence / "autostart-after", "snapshot", keys,
+                               ownership=detached)
         semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
         data_same = (semantic_digest({k: before[k] for k in semantic_keys})
                      == semantic_digest({k: after[k] for k in semantic_keys}))

@@ -19,6 +19,11 @@ from scripts import journey_version_jumps as jumps
 
 LEG = "fresh-install-autostart-off"
 ROWS = ("direct-linux-autostart-off", "direct-macos-autostart-off")
+DETACHED = {"manager": "detached", "autostart": False, "foreground_fallback": False,
+            "detached": {"pid": 4242, "birth_verified": True, "workspace": "/w", "version_root": "/v",
+                         "runtime_instance_id": "before"},
+            "sign_in_registration": {"manager": "systemd-user", "unit": "astrid.service",
+                                     "load_state": "not-found"}}
 
 
 def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, status_reason="autostart-off",
@@ -86,8 +91,11 @@ def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, stat
     monkeypatch.setattr(jumps.journey, "installation", lambda *_a: (Path(version["root"]) / "version.json", data,
                                                                      version))
     monkeypatch.setattr(jumps, "installed_release", lambda _version: 12)
-    monkeypatch.setattr(jumps.journey, "assert_direct_service_ownership", lambda *_a, **_k: {
-        "manager": "systemd-user", "foreground_fallback": False})
+    def foreground_banned(*_a, **_k):
+        raise AssertionError("the autostart-off leg must not use the direct service-manager check")
+
+    monkeypatch.setattr(jumps.journey, "assert_direct_service_ownership", foreground_banned)
+    monkeypatch.setattr(jumps.journey, "assert_detached_autostart_off_runtime", lambda *_a, **_k: dict(DETACHED))
     monkeypatch.setattr(jumps.journey, "verify", lambda *_a, **_k: None)
     monkeypatch.setattr(jumps.journey, "selected_tuple", lambda *_: {
         "agent": "e2a7fad07e4a8bef9aa4c6e126911a1c5a29caf2", "runtime": "744cf24874ea851f95949a706725aba19d18222f"})

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 import shutil
@@ -115,6 +116,76 @@ def test_journey_packs_run_through_the_console_entry_point(tmp_path, monkeypatch
 
 
 # astrid/console.py at R9 Agent 709492fa5, verbatim: no `packs` branch.
+def _detached_host(monkeypatch, tmp_path, *, autostart=False, birth="b1", live_birth="b1", owners=None,
+                   unit_state="not-found", unit_file=False, command=None):
+    data = tmp_path / "data"
+    realm = tmp_path / "realm"
+    version_root = tmp_path / "program" / "versions" / "c12"
+    selection = tmp_path / "astrid-install.json"
+    record = {"choices": {"autostart": autostart},
+              "foreground": {"pid": 4242, "birth_id": birth, "realm_id": "r1", "realm_root": str(realm)}}
+    selection.write_text(json.dumps(record), encoding="utf-8")
+    if unit_file:
+        unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text("[Unit]\n", encoding="utf-8")
+    version = {"root": str(version_root), "python": "py", "env": {}}
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "selection_path", lambda: selection)
+    monkeypatch.setattr(journey, "installation", lambda root, expected: (version_root / "version.json", data, version))
+    monkeypatch.setattr(journey, "healthy", lambda selected: {"pid": 4242, "process_birth_id": "b1",
+                                                             "realm_id": "r1", "runtime_instance_id": "i1"})
+    monkeypatch.setattr(journey, "_installed_probe",
+                        lambda version, code, evidence, name: json.dumps({"pid": 4242, "birth_id": live_birth}))
+    monkeypatch.setattr(journey, "runtime_processes", lambda selected: [4242] if owners is None else owners)
+    monkeypatch.setattr(journey, "workspace_root", lambda selected: realm)
+    ps_command = command if command is not None else (
+        f"py -c 'launch_admission(Version.load({{\"root\": \"{version_root}\"}})' run --data-root {data}")
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == "ps":
+            return subprocess.CompletedProcess(argv, 0, ps_command + "\n", "")
+        assert argv[:3] == ["systemctl", "--user", "show"]
+        return subprocess.CompletedProcess(argv, 0, f"LoadState={unit_state}\n", "")
+
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    return tmp_path / "program", data
+
+
+def test_autostart_off_admits_one_birth_verified_detached_runtime(tmp_path, monkeypatch):
+    root, data = _detached_host(monkeypatch, tmp_path)
+    service = journey.assert_detached_autostart_off_runtime(root, data, tmp_path / "evidence")
+    assert service["manager"] == "detached" and service["autostart"] is False
+    assert service["foreground_fallback"] is False
+    assert service["detached"]["birth_verified"] is True and service["detached"]["pid"] == 4242
+    assert service["sign_in_registration"] == {"manager": "systemd-user", "unit": "astrid.service",
+                                               "load_state": "not-found"}
+    assert "process_identity(4242)" in journey.PROCESS_IDENTITY_PROBE.format(pid=4242)
+
+
+@pytest.mark.parametrize(("change", "message"), [
+    ({"autostart": True}, "only when the selection records autostart off"),
+    ({"live_birth": "other"}, "live birth does not match"),
+    ({"birth": "stale"}, "not the recorded detached Runtime"),
+    ({"owners": [4242, 5151]}, "found 2 Runtime owner"),
+    ({"unit_file": True}, "left a sign-in unit"),
+    ({"unit_state": "loaded"}, "left astrid.service loaded"),
+    ({"command": "py -c run --data-root /elsewhere"}, "selected version and data root"),
+])
+def test_autostart_off_detached_runtime_rejects(tmp_path, monkeypatch, change, message):
+    root, data = _detached_host(monkeypatch, tmp_path, **change)
+    with pytest.raises(RuntimeError, match=message):
+        journey.assert_detached_autostart_off_runtime(root, data, tmp_path / "evidence")
+
+
+def test_ordinary_direct_rows_keep_the_foreground_ban(tmp_path, monkeypatch):
+    selection = tmp_path / "astrid-install.json"
+    selection.write_text(json.dumps({"foreground": {"pid": 4242, "birth_id": "b1"}}), encoding="utf-8")
+    monkeypatch.setattr(journey, "selection_path", lambda: selection)
+    with pytest.raises(RuntimeError, match="forbidden foreground fallback"):
+        journey.assert_direct_service_ownership(tmp_path / "program", tmp_path / "data")
+
+
 R9_CONSOLE = '''"""Installed console dispatch, with a lightweight engine route."""
 from __future__ import annotations
 

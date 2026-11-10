@@ -1937,6 +1937,88 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
     raise RuntimeError(f"Unsupported service-manager platform: {sys.platform}")
 
 
+# Prints the live (pid, birth_id) of one process through the installed Runtime's own identity API.
+PROCESS_IDENTITY_PROBE = ("import json\n"
+                          "from runtime_protocol import platform\n"
+                          "identity = platform.process_identity({pid:d})\n"
+                          "print(json.dumps(None if identity is None else "
+                          "{{'pid': identity.get('pid'), 'birth_id': identity.get('birth_id')}}))")
+
+
+def _no_sign_in_registration(data: Path) -> dict:
+    """Prove autostart off left no sign-in registration for the journey's user."""
+    if sys.platform == "linux":
+        unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+        if unit.exists() or unit.is_symlink():
+            raise RuntimeError(f"Autostart-off install left a sign-in unit: {unit}")
+        completed = subprocess.run(["systemctl", "--user", "show", "astrid.service",
+                                    "--property=LoadState,UnitFileState,ActiveState"],
+                                   capture_output=True, text=True, timeout=30, check=False)
+        fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+        if completed.returncode or fields.get("LoadState") != "not-found":
+            raise RuntimeError("Autostart-off install left astrid.service loaded in the user manager "
+                               f"(LoadState={fields.get('LoadState', 'unknown')})")
+        return {"manager": "systemd-user", "unit": "astrid.service", "load_state": "not-found"}
+    if sys.platform == "darwin":
+        label = "haus.astrid.runtime"
+        plist = data.parent / "home" / "Library" / "LaunchAgents" / f"{label}.plist"
+        if plist.exists() or plist.is_symlink():
+            raise RuntimeError(f"Autostart-off install left a sign-in LaunchAgent: {plist}")
+        completed = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                                   capture_output=True, text=True, timeout=30, check=False)
+        if completed.returncode == 0:
+            raise RuntimeError(f"Autostart-off install left {label} loaded in launchd")
+        return {"manager": "launchd", "label": label, "loaded": False}
+    raise RuntimeError(f"Autostart-off detached Runtime is not admitted on {sys.platform}")
+
+
+def assert_detached_autostart_off_runtime(root: Path, data: Path, evidence: Path) -> dict:
+    """The autostart-off service contract: one birth-verified detached Runtime, no sign-in registration.
+
+    With autostart off the product deliberately launches a detached Runtime and records it as
+    `foreground` in the selection record (installer/service.py start_foreground). Only the
+    fresh-install-autostart-off leg admits it; every other direct row keeps the foreground ban.
+    """
+    record_path = selection_path()
+    record = read_json(record_path) if record_path.is_file() else {}
+    choices = record.get("choices") if isinstance(record.get("choices"), dict) else {}
+    if choices.get("autostart") is not False:
+        raise RuntimeError("Detached Runtime admitted only when the selection records autostart off")
+    foreground = record.get("foreground")
+    if not isinstance(foreground, dict):
+        raise RuntimeError("Autostart-off install recorded no detached Runtime")
+    pid, birth = foreground.get("pid"), foreground.get("birth_id")
+    if type(pid) is not int or pid <= 0 or not isinstance(birth, str) or not birth:
+        raise RuntimeError("Autostart-off detached Runtime identity is incomplete")
+    _, selected_data, version = installation(root, data)
+    discovery = healthy(selected_data)
+    if discovery.get("pid") != pid or discovery.get("process_birth_id", birth) != birth:
+        raise RuntimeError("The live Runtime is not the recorded detached Runtime")
+    output = _installed_probe(version, PROCESS_IDENTITY_PROBE.format(pid=pid), evidence,
+                              "detached-runtime-identity.log")
+    identity = json.loads(output) if output else None
+    if not isinstance(identity, dict) or identity.get("pid") != pid or identity.get("birth_id") != birth:
+        raise RuntimeError("The detached Runtime's live birth does not match its record")
+    owners = runtime_processes(selected_data)
+    if owners != [pid]:
+        raise RuntimeError(f"Expected exactly the detached Runtime as owner, found {len(owners)} Runtime owner(s)")
+    realm_root = workspace_root(selected_data)
+    wrong_root = "realm_root" in foreground and Path(foreground["realm_root"]) != realm_root
+    wrong_realm = ("realm_id" in foreground and "realm_id" in discovery
+                   and foreground["realm_id"] != discovery["realm_id"])
+    if wrong_root or wrong_realm:
+        raise RuntimeError("The detached Runtime does not serve the selected workspace")
+    command = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=10, check=False).stdout
+    if str(Path(version["root"])) not in command or str(selected_data) not in command:
+        raise RuntimeError("The detached Runtime does not run the selected version and data root")
+    return {"manager": "detached", "autostart": False, "foreground_fallback": False,
+            "detached": {"pid": pid, "birth_verified": True, "workspace": str(realm_root),
+                         "version_root": str(version["root"]), "runtime_instance_id":
+                         discovery.get("runtime_instance_id")},
+            "sign_in_registration": _no_sign_in_registration(selected_data)}
+
+
 def assert_cleanup_service_ownership(root: Path, data: Path, *, release: int,
                                     fresh_install: bool = False) -> dict:
     """Check the service contract supported by this platform during cleanup.

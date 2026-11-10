@@ -564,6 +564,15 @@ def _release1_row_errors(candidate, contract, row):
         manager = row.get("service_manager")
         if not isinstance(manager, dict) or manager.get("foreground_fallback") is not False:
             errors.append(f"{job_id}: direct service ownership/foreground assertion is absent")
+        elif contract.get("leg") == AUTOSTART_LEG:
+            # Autostart off deliberately runs one detached Runtime and no sign-in registration.
+            detached = manager.get("detached") if isinstance(manager.get("detached"), dict) else {}
+            if (manager.get("manager") != "detached" or manager.get("autostart") is not False
+                    or detached.get("birth_verified") is not True
+                    or not isinstance(manager.get("sign_in_registration"), dict)):
+                errors.append(f"{job_id}: autostart-off detached Runtime assertion is absent")
+        elif manager.get("manager") == "detached":
+            errors.append(f"{job_id}: a detached Runtime is admitted only on the autostart-off leg")
         fresh = contract.get("leg") == "fresh-install"
         if fresh:
             for check in ("task_settled", "workspace_content", "unrelated_sentinel"):
