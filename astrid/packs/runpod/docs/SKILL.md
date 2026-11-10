@@ -30,6 +30,20 @@ official installer's local-source manifest route to select these packages.
 The default remains `--placement auto`; saving RunPod preferences does not replace
 a configured human ComfyUI target.
 
+### Choosing a GPU
+
+For a single job, pass `--gpu <type>` to both `astrid generate describe --placement runpod`
+and the matching `astrid generate ... --placement runpod` command. Repeat `--gpu`
+to set an ordered fallback list. A per-job list replaces the saved GPU list for
+that job. The disclosed offer digest includes the GPU list, so changing the list
+between describe and generation (including omitting an override that differs
+from saved preferences) changes the digest. Describe the target again and use
+the same ordered list before giving paid consent.
+
+To save the list as the default, use
+`astrid generate targets --placement runpod --save --input 'gpu_types=["RTX 4090"]'`
+or configure it with `runpod.setup`.
+
 The prepared RunPod path requires a fresh, explicit paid authorization for
 each invocation, including reuse. Before claiming, disclose the selected
 account, GPU offer and hourly USD rate, pinned image, optional network volume and mount,

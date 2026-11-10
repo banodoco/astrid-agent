@@ -441,6 +441,19 @@ def test_mismatched_digest_refuses_before_any_claim_or_pod_create(case, monkeypa
     assert not case.owner.path.exists() and case.creates == case.configs == 0
 
 
+def test_per_job_gpu_override_refuses_a_digest_from_the_saved_gpu_list(case):
+    per_job = RunPodPreferences.from_mapping({**case.raw, "gpu_types": ["RTX 4090"]})
+    assert per_job.gpu_types == ("RTX 4090",)
+    case.offer = RunPodOffer("account-a", "RTX 4090", 1.0, "offer-1")
+    assert case.grant.offer_digest != case.offer.digest(per_job)
+    case.owner.preferences = per_job
+
+    with pytest.raises(PaidSelectionError, match="offer or rate changed"):
+        asyncio.run(case.owner.select(case.grant))
+
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
 def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
     case.offer = RunPodOffer("account-a", "preferred-gpu", 1.5, "offer-2")
     observed = case.offer.digest(case.prefs)
