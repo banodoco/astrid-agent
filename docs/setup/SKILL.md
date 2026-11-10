@@ -56,6 +56,13 @@ Wan2GP during setup. Carry
 out requested checks, report their actual results, and do not claim a check
 passed when it could not be run.
 
+When the user asks to set up RunPod, use the complete
+[RunPod machine skill](../../astrid/packs/runpod/docs/SKILL.md#runpod-generation-machines)
+(installed name: `runpod`). It covers the credential prompt, `astrid machines
+setup`, saved GPU/storage choices and `setup --show`. Setup saves preferences;
+a paid claim or generation requires separate consent. Do not launch RunPod
+setup or a paid test automatically.
+
 ## Run everything on this computer
 
 After the official install, get the editor from

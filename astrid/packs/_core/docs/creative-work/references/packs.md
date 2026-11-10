@@ -13,7 +13,7 @@
 | h3_av | Request-driven MiniMax H3 audiovisual transformations with explicit video/audio scopes, references, and approval evid... | `astrid/packs/h3_av/docs/SKILL.md` |
 | local | Local rendering elements pack — authored Remotion visual effect elements and immutable assets. | `astrid/packs/local/docs/SKILL.md` |
 | rendering | Render timelines, inspect render output, author worlds and effects, and add generated visual elements. | `astrid/packs/rendering/docs/SKILL.md` |
-| runpod | RunPod pack — provision GPU pods, execute scripts remotely, pull artifacts, and tear down, including a guaranteed-cle... | `astrid/packs/runpod/docs/SKILL.md` |
+| runpod | Set up, claim, inspect, keep and release RunPod generation machines with paid consent; also run remote GPU scripts. | `astrid/packs/runpod/docs/SKILL.md` |
 | timeline | Edit and inspect Astrid video timelines: place, trim, move, and remove clips, then look at the result and report it. | `astrid/packs/timeline/docs/SKILL.md` |
 | timeline / narrated | Place and arrange clips around spoken words, beats, cuts, and music beds.; available: `astrid skills install timeline --skill narrated` | `astrid/packs/timeline/docs/narrated/SKILL.md` |
 | timeline / review | Preview exact timeline changes, get approval, and recover saved edits.; available: `astrid skills install timeline --skill review` | `astrid/packs/timeline/docs/review/SKILL.md` |
