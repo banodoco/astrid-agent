@@ -73,3 +73,30 @@ def test_pod_refuses_capsule_mutation_before_preparation(tmp_path, monkeypatch):
         local_job.run_owned_action(workflow, tmp_path / 'out', task_identity='task', attempt_identity='attempt',
                                    align='trust')
     assert target_inventory.POD_STOP.get() is None
+
+
+def test_pod_preparation_failure_never_executes_and_closes(tmp_path, monkeypatch):
+    workflow = tmp_path / 'workflow.py'
+    workflow.write_text('pass')
+    workflow.with_suffix('.vibe.json').write_text('{}')
+    workflow.with_name('source.json').write_text('{}')
+    calls = []
+
+    class Preparation:
+        def __init__(self, **kwargs): pass
+        def prepare(self, *args, **kwargs):
+            calls.append('prepare')
+            raise ValueError('align failed')
+        def close(self, *, execution_root, worker_drained):
+            assert worker_drained
+            calls.append('close')
+
+    monkeypatch.setattr(managed_preparation, 'ManagedEnginePreparation', Preparation)
+    monkeypatch.setattr(production_engine, 'load_workflow_path', lambda *args: SimpleNamespace(resolved=object()))
+    monkeypatch.setattr(production_engine, '_canonical_bundle_value', lambda value: SimpleNamespace(workflow=object()))
+    monkeypatch.setattr(production_engine, 'loaded_workflow_execution_identity', lambda value: 'identity')
+    monkeypatch.setattr(action, '_run_and_settle', lambda *args, **kwargs: pytest.fail('must not execute'))
+    with pytest.raises(ValueError, match='align failed'):
+        local_job.run_owned_action(workflow, tmp_path / 'out', task_identity='task', attempt_identity='attempt',
+                                   align='align')
+    assert calls == ['prepare', 'close']
