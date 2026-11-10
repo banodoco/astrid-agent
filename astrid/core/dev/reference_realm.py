@@ -64,6 +64,32 @@ def media_only_publication(project_id: str, media: Sequence[Mapping[str, Any]], 
     }
 
 
+def timeline_commit_body(media: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The commit_timeline body that seeds the media-only reference timeline.
+
+    Only the ops the repository already uses are emitted: ``media.admit`` with pins shaped
+    like the publication's dependency manifest (astrid/sdk/timeline/authoring_commit.py).
+    Unconfirmed parts are TODO and must be checked against Runtime 42ae24aff before this
+    seed is trusted. The media-only publication in ``media_only_publication`` is still the
+    reference shape for the clips.
+    """
+    return {
+        "api_version": 1,
+        "timeline_id": TIMELINE_ID,
+        # TODO(unverified): base_revision_id for a fresh, empty timeline; confirm the empty-head value.
+        "base_revision_id": None,
+        # TODO(unverified): the guard field name and shape for a fresh timeline (expected_head in the old publish).
+        "expected_head": None,
+        "commands": [
+            {"schema_version": 1, "op": "media.admit", "version": "1", "select": None,
+             "args": {"inputs": [{"pin": {"media_id": m["object_id"], "content_digest": m["digest"]}}
+                                 for m in media]}},
+            # TODO(unverified): clip placement commands for the three clips at 0, 4 and 8 seconds.
+            # No in-tree EditCommand creates a media clip on a fresh timeline, so none are guessed here.
+        ],
+    }
+
+
 def _run(argv: list[str], env: Mapping[str, str], what: str, timeout: float | None) -> str:
     done = subprocess.run(argv, env=dict(env), capture_output=True, text=True, timeout=timeout, check=False)
     if done.returncode:
@@ -105,8 +131,9 @@ def build_reference(workdir: Path, *, env: Mapping[str, str], source_checkout: P
                  f"ffmpeg clip {index + 1}", None if tiny else FFMPEG_SECONDS)
             media.append(service.ingest(project["id"], clip.read_bytes(), media_type="video/mp4", original_name=clip.name,
                                         idempotency_key=f"journey-clip-{index + 1}")["data"])
-        publication = media_only_publication(project["id"], media, seconds=seconds)
-        service.publish_parent_composition(project["id"], TIMELINE_ID, publication, idempotency_key="journey-publish")
+        # The retired publish_parent_composition route is replaced by the canonical commit route.
+        service.commit_timeline(project["id"], TIMELINE_ID, timeline_commit_body(media),
+                                idempotency_key="journey-publish")
     finally:
         service.close()
     shutil.rmtree(clips, ignore_errors=True)
