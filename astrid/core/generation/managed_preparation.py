@@ -41,7 +41,34 @@ def native_failure_diagnostic(step: str, stdout: str, stderr: str) -> tuple[str,
                 break
     if any(line.startswith("ModuleNotFoundError: ") for line in stderr[-4096:].splitlines()[-32:]):
         reason = "dependency_missing"
+    if step == "doctor":
+        fixed = {"ValueError: managed doctor target schema differs from owned engine health": "owned_schema_changed",
+                 "ValueError: managed doctor target schema is unavailable": "owned_schema_unavailable",
+                 "ValueError: managed doctor target schema exceeds its bound": "owned_schema_too_large"}
+        for line in stderr[-4096:].splitlines()[-32:]:
+            if line in fixed:
+                reason = fixed[line]
+                break
     return step, reason
+
+
+def native_failure_classes(stdout: str, reason: str) -> tuple[str, ...]:
+    """Expose only public class IDs in the pinned dependency's shipped index."""
+    if reason != "schema_reconciliation_failed":
+        return ()
+    try:
+        from importlib.resources import files
+        public = json.loads(files("vibecomfy").joinpath("porting/cache/object_info/index.json").read_text())
+    except (OSError, ValueError, TypeError, ImportError):
+        return ()
+    if not isinstance(public, dict):
+        return ()
+    prefix = "- workflow contains unresolved class types: "
+    for line in stdout[-4096:].splitlines()[-32:]:
+        if line.startswith(prefix):
+            return tuple(sorted({name for name in line[len(prefix):].split(", ")
+                                 if name in public and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name)})[:16])
+    return ()
 
 
 @contextmanager
@@ -306,6 +333,7 @@ class ManagedEnginePreparation:
         self.check()
         if engine.workflow_requirements([selected.workflow]) != engine.workflow_requirements([canonical_workflow]):
             raise IntegrityError("managed CLI workflow requirements differ from the admitted workflow")
+        self._alignment_runner = runner
         alignment = engine.align(manifest, self.mode, workflow=canonical_path)
         if alignment.get("status") == "missing":
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
@@ -433,12 +461,14 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         if result.exit_code != 0:
             import logging
             step, reason = native_failure_diagnostic(step, result.stdout, result.stderr)
+            classes = native_failure_classes(result.stdout, reason)
             logging.getLogger(__name__).error(
-                "managed alignment failed task=%s attempt=%s step=%s reason=%s exit=%s stdout_sha256=%s stderr_sha256=%s",
-                self.task, self.attempt, step, reason, result.exit_code,
+                "managed alignment failed task=%s attempt=%s step=%s reason=%s missing_classes=%s exit=%s stdout_sha256=%s stderr_sha256=%s",
+                self.task, self.attempt, step, reason, json.dumps(classes), result.exit_code,
                 hashlib.sha256(result.stdout.encode()).hexdigest(),
                 hashlib.sha256(result.stderr.encode()).hexdigest())
-            raise IntegrityError(f"managed alignment command failed (step={step}, reason={reason}); "
+            detail = f", missing_classes={json.dumps(classes)}" if classes else ""
+            raise IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); "
                                  "inspect the host log for this attempt")
         self.check()
         return result
@@ -460,6 +490,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             # This is the host's own canonical renderer output, never admitted
             # Python. Its exact bytes are checked before and after the command.
             argv = [*argv, "--yes"]
+        if argv[0] == "doctor":
+            return self._doctor(argv)
         if argv[0] == "prepare":
             from astrid.packs.vibecomfy.native_preparation import native_preparation_program
             primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
@@ -475,3 +507,40 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         else:
             step = "nodes_restore" if argv[0] == "nodes" else argv[0]
             self._native(program, *argv, step=step)
+
+    def _doctor(self, argv):
+        from .engine_contracts import CustodyUnresolved, IntegrityError
+        from astrid.packs.vibecomfy.native_preparation import native_doctor_program
+        runner = self._alignment_runner
+        try:
+            self.check()
+            runner.step_id = "doctor-start"
+            runner.start(readonly=False)
+            runner.step_id = "doctor-health"
+            runner.check_health()
+            expected = runner.health.object_info_sha256
+            request = {"argv": argv, "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
+                       "expected_schema_sha256": expected,
+                       "request_timeout": min(20.0, max(0.001, self.deadline - time.monotonic()))}
+            result = self._native(native_doctor_program(), json.dumps(request), step="doctor")
+            self.check()
+            runner.step_id = "doctor-post-health"
+            runner.check_health()
+            if runner.health.object_info_sha256 != expected:
+                raise IntegrityError("managed doctor target schema changed during diagnosis")
+            return result
+        except BaseException as error:
+            # A failed/cancelled doctor never leaves its exact owned engine
+            # running. Stop has an independent cleanup budget and confirms
+            # process/command drain; uncertainty retains the installation lock.
+            try:
+                runner.step_id = "doctor-failed-health"
+                runner.check_health()
+            except BaseException:
+                pass  # Exact stop below is the authority for failure cleanup.
+            try:
+                self.context.service_client.stop_owned(deadline=time.monotonic() + 5)
+            except BaseException:
+                self.uncertain = True
+                raise CustodyUnresolved("managed doctor failed; exact owned engine stop remains unconfirmed") from error
+            raise
