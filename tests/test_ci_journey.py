@@ -102,6 +102,30 @@ def test_journey_packs_install_from_the_pinned_source_through_packs_add():
     assert calls == [["packs", "list", "--json"]]
 
 
+def test_journey_packs_run_through_the_console_entry_point(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(journey, "run", lambda argv, log, **kw: seen.append(argv) or "")
+    version = {"python": "py", "env": {}}
+    journey.installed_cli(version, ["packs", "list", "--json"], tmp_path, "journey-packs-list.json",
+                          console=True)
+    journey.installed_cli(version, ["tasks", "show"], tmp_path, "task.json")
+    assert seen[0] == ["py", "-I", "-c", journey.CONSOLE_ENTRY, "packs", "list", "--json"]
+    assert "from astrid.console import main" in journey.CONSOLE_ENTRY
+    assert seen[1] == ["py", "-I", "-m", "astrid", "tasks", "show"]
+
+
+def test_journey_pack_evidence_is_staged_for_the_failure_upload(tmp_path):
+    evidence = tmp_path / "work" / "evidence"
+    evidence.mkdir(parents=True)
+    for name in ("journey-packs-list.json", "journey-pack-chiptune.log", "journey-pack-x.txt"):
+        (evidence / name).write_text("stderr", encoding="utf-8")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = tmp_path / "evidence-upload" / "before-cleanup"
+    assert (staged / "journey-packs-list.json").is_file()
+    assert (staged / "journey-pack-chiptune.log").read_text(encoding="utf-8") == "stderr"
+    assert not (staged / "journey-pack-x.txt").exists()
+
+
 def test_tst_b1_production_uses_shipped_manifest_bytes_without_source_override(tmp_path):
     app, shipped = app_checkout(tmp_path)
     original = shipped.read_bytes()

@@ -97,7 +97,10 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "windows-real-profile-pack-host-after-cleanup.json",
     "windows-pack-host-update-before.json", "windows-pack-host-update-after.json",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
+    # install_journey_packs: `packs list` output; per-pack `packs add` logs match JOURNEY_PACK_LOG.
+    "journey-packs-list.json",
 })
+JOURNEY_PACK_LOG = re.compile(r"journey-pack-[A-Za-z0-9_-]+\.log")
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 WINDOWS_PROFILE_SERVICE_LOG_LIMIT = 64 * 1024
 WINDOWS_PACK_HOST_STATE_LIMIT = 64 * 1024
@@ -1092,7 +1095,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         name = source.name
         if (name not in JOURNEY_EVIDENCE_NAMES and
                 not (name.startswith("runtime-service-service-") and name.endswith(".log")) and
-                not re.fullmatch(r"keepgoing-stage-[0-9]{2}\.log", name)):
+                not re.fullmatch(r"keepgoing-stage-[0-9]{2}\.log", name) and
+                not JOURNEY_PACK_LOG.fullmatch(name)):
             continue
         if not source.is_file() or source.is_symlink():
             continue
@@ -2124,11 +2128,17 @@ def verify(mode: str, version_path: Path, data: Path, evidence: Path,
     return output
 
 
+# The `astrid` console entry point (pyproject: astrid.console:main). Only it routes
+# `packs`; `python -m astrid` goes to the gateway, which has no `packs` route.
+CONSOLE_ENTRY = "import sys; from astrid.console import main; sys.exit(main(sys.argv[1:]))"
+
+
 def installed_cli(version: dict, argv: list[str], evidence: Path, name: str,
-                  *, module: str = "astrid", timeout: int = 300) -> str:
+                  *, module: str = "astrid", console: bool = False, timeout: int = 300) -> str:
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(version["env"])
-    return run([version["python"], "-I", "-m", module, *argv], evidence / name,
+    launcher = ["-c", CONSOLE_ENTRY] if console else ["-m", module]
+    return run([version["python"], "-I", *launcher, *argv], evidence / name,
                env=env, timeout=timeout)
 
 
@@ -2397,7 +2407,8 @@ def _pack_rows(value):
 def install_journey_packs(run_cli) -> None:
     """Install each JOURNEY_PACKS pack from its pinned source through the public `packs add` path.
 
-    ``run_cli(argv, name)`` runs the installed ``astrid`` CLI and returns its stdout.
+    ``run_cli(argv, name)`` runs the installed ``astrid`` console entry point (the
+    only route to ``packs``) and returns its stdout.
     """
     for pack_id, (source, revision) in JOURNEY_PACKS.items():
         listing = json.loads(run_cli(["packs", "list", "--json"], "journey-packs-list.json"))
@@ -2426,7 +2437,8 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
                                                    status_name="project-create-capture-status.json"))
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
-    install_journey_packs(lambda argv, name: installed_cli(version, argv, evidence, name, timeout=600))
+    install_journey_packs(lambda argv, name: installed_cli(version, argv, evidence, name,
+                                                           console=True, timeout=600))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
     invocation = _sdk_result(installed_cli_with_capture(version, [json.dumps(request)], evidence,
