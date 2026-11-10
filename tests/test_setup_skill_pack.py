@@ -37,7 +37,7 @@ def test_generic_sync_name_preserves_existing_targets(tmp_path):
     adapters = [ClaudeAdapter(tmp_path / 'claude'), CodexAdapter(tmp_path / 'codex'), HermesAdapter(tmp_path / 'hermes')]
     mains = list_skills()
     units = [d for d in [*mains, *list_extras(mains)] if d.pack_id != "setup"]
-    expected_ids = {"_core", "comfy_wrap", "developer", "developer-fast-iteration",
+    expected_ids = {"_core", "developer", "developer-fast-iteration",
                     "developer-releasing", "generation", "h3_av", "local", "rendering",
                     "runpod", "timeline", "timeline-narrated", "timeline-review",
                     "timeline-series", "timeline-shots", "training", "vibecomfy", "wan2gp"}
