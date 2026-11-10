@@ -527,6 +527,12 @@ def _json_from_output(output: str) -> dict[str, Any]:
     raise ArtifactIdentityError("installed identity probe did not emit a JSON object")
 
 
+def _failure_detail(error: str | None, stderr: str, *, lines: int = 40) -> str:
+    """Name the failure and carry the tail of the lane's stderr, so a failed check is diagnosable."""
+    tail = "\n".join(stderr.strip().splitlines()[-lines:])
+    return f"{error}\n--- lane stderr (last {lines} lines) ---\n{tail}" if tail else str(error)
+
+
 def _redact_output(text: str) -> str:
     # The harness never passes secrets to a child, but redacting assignment-like
     # output keeps a lane record safe if a caller's command prints one anyway.
@@ -1073,7 +1079,7 @@ class InstalledArtifactHarness:
         )
         self.last_record = record
         if check and not record.passed:
-            raise LaneExecutionError(f"installed lane {lane!r} failed: {error}", record)
+            raise LaneExecutionError(f"installed lane {lane!r} failed: {_failure_detail(error, stderr)}", record)
         return record
 
     def run_module(
@@ -1147,7 +1153,7 @@ class InstalledArtifactHarness:
         )
         self.last_record = record
         if check and not record.passed:
-            raise LaneExecutionError(f"installed lane {lane!r} failed: {error}", record)
+            raise LaneExecutionError(f"installed lane {lane!r} failed: {_failure_detail(error, stderr)}", record)
         return record
 
     def close(self) -> None:
