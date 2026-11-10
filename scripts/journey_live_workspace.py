@@ -191,6 +191,9 @@ def seed(client, project, generation, task_id=None, create_project=False):
             "object_digest": hashlib.sha256(payload).hexdigest(), "generation": generation}
 
 
+R11_PACK_REFUSAL = "stable selected pack capture requires Linux file lease support"
+
+
 def snapshot(client, keys):
     project = client.request("GET", path("projects", keys["project"]))
     base = path("projects", keys["project"], "timelines", keys["timeline"])
@@ -215,7 +218,11 @@ def snapshot(client, keys):
     if hashlib.sha256(payload).hexdigest() != keys["object_digest"]:
         raise ValueError("Seeded object bytes do not match their digest")
     task = client.request("GET", path("tasks", keys["task_id"]))
-    if task["state"] != "succeeded" or "result" not in task:
+    if keys.get("r11_selected_pack_refusal") is True and keys.get("generation") == "release11":
+        error = (task.get("result") or {}).get("error") or {}
+        if task.get("state") != "failed" or error.get("code") != "executor_failed" or error.get("message") != R11_PACK_REFUSAL:
+            raise ValueError("Seeded R11 task no longer has the expected selected-pack refusal")
+    elif task["state"] != "succeeded" or "result" not in task:
         raise ValueError("Seeded task is no longer settled successfully with a result")
     health = client.request("GET", path("health"))
     expected_schema_digest = keys.get("expected_schema_digest")

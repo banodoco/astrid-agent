@@ -343,3 +343,79 @@ def test_driver_hands_the_release11_leg_to_execution_on_its_row(tmp_path, monkey
             "--release11-app-checkout", str(tmp_path / "release11"), "--allow-release11-to-candidate"]
     assert journey.main(argv) == 0
     assert recorded == [LEG]
+
+
+def test_macos_baseline_records_refusal_and_candidate_keeps_its_gate(monkeypatch, tmp_path, capsys):
+    run, _, receipt = _leg(monkeypatch, tmp_path)
+    monkeypatch.setattr(jumps.sys, "platform", "darwin")
+    calls = []
+    monkeypatch.setattr(jumps, "r11_refused_pack_task", lambda *args: calls.append("refusal") or "old-task")
+    monkeypatch.setattr(jumps, "task_after_update", lambda version, *args, existing_pack_gate=True:
+                        calls.append((version["root"], existing_pack_gate)) or "new-task")
+    result = run()
+    assert calls == ["refusal", (str(tmp_path / "program/versions/r12"), True)]
+    assert result["r11_baseline_task"] == "expected refusal: " + jumps.live.R11_PACK_REFUSAL
+    assert json.loads(receipt.read_text())["r11_baseline_task"] == result["r11_baseline_task"]
+    assert result["r11_baseline_task"] in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("state,code,message,ok", [
+    ("failed", "executor_failed", jumps.live.R11_PACK_REFUSAL, True),
+    ("succeeded", "executor_failed", jumps.live.R11_PACK_REFUSAL, False),
+    ("failed", "other", jumps.live.R11_PACK_REFUSAL, False),
+    ("failed", "executor_failed", "another failure", False),
+    ("running", "executor_failed", jumps.live.R11_PACK_REFUSAL, False),
+])
+def test_r11_refusal_requires_the_exact_terminal_failure(monkeypatch, tmp_path, state, code, message, ok):
+    monkeypatch.setattr(jumps.journey, "submit_task", lambda *a, **k: "task-id")
+    def cli(_version, argv, *_args, **_kwargs):
+        if argv[1] == "follow":
+            raise RuntimeError("follow failed")
+        return json.dumps({"ok": True, "data": {"task_id": "task-id", "state": state,
+                           "result": {"error": {"code": code, "message": message}}}})
+    monkeypatch.setattr(jumps.journey, "installed_cli", cli)
+    if ok:
+        assert jumps.r11_refused_pack_task({}, tmp_path, "p") == "task-id"
+    else:
+        with pytest.raises(RuntimeError, match="expected selected-pack refusal"):
+            jumps.r11_refused_pack_task({}, tmp_path, "p")
+
+
+@pytest.mark.parametrize("changed", [None, "state", "code", "message", "scope"])
+def test_r11_refusal_snapshot_requires_exact_failure_and_scope(changed):
+    import hashlib
+    payload = b"seed"
+    digest = "sha256:" + "9" * 64
+    keys = {"project": "p", "timeline": "t", "head": None, "generation": "release11",
+            "object_digest": hashlib.sha256(payload).hexdigest(), "task_id": "task",
+            "expected_schema_digest": digest, "r11_selected_pack_refusal": True}
+    task = {"task_id": "task", "state": "failed", "spec": {}, "result": {"error": {
+        "code": "executor_failed", "message": jumps.live.R11_PACK_REFUSAL}}}
+    if changed == "state":
+        task["state"] = "succeeded"
+    elif changed == "code":
+        task["result"]["error"]["code"] = "other"
+    elif changed == "message":
+        task["result"]["error"]["message"] = "other"
+    elif changed == "scope":
+        keys["r11_selected_pack_refusal"] = False
+    class Client:
+        def request(self, method, path, **kwargs):
+            if path == "/v1/projects/p":
+                return {"project_id": "p", "slug": "p", "name": "p", "metadata": {}}
+            if path == "/v1/projects/p/timelines/t":
+                return {"name": "User edit release11", "head_revision_id": None}
+            if path.startswith("/v1/preferences/project?"):
+                return {"content": "Keep user changes release11", "version": 1}
+            if path.startswith("/v1/objects/"):
+                return payload
+            if path == "/v1/tasks/task":
+                return task
+            if path == "/v1/health":
+                return {"protocol": "workspace.v1", "schema_digest": digest}
+            raise AssertionError(path)
+    if changed is None:
+        assert jumps.live.snapshot(Client(), keys)["task"] == task
+    else:
+        with pytest.raises(ValueError, match="Seeded"):
+            jumps.live.snapshot(Client(), keys)

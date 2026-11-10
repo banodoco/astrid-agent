@@ -663,6 +663,27 @@ def semantic_digest(value: dict) -> str:
 R11_EXISTING_PACK_GATE_SKIP = "R11 legacy baseline; candidate client APIs absent"
 
 
+def r11_refused_pack_task(version: dict, evidence: Path, project: str) -> str:
+    """Require the precise shipped non-Linux R11 failure, retaining its task history."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    task_id = journey.submit_task(version, evidence, project, create_project=False,
+                                  existing_pack_gate=R11_EXISTING_PACK_GATE_SKIP)
+    try:
+        journey.installed_cli(version, ["tasks", "follow", task_id, "--project", project,
+                                       "--poll-seconds", "2", "--timeout-seconds", "900", "--json"],
+                              evidence, "task-follow.jsonl", timeout=960)
+    except RuntimeError:
+        pass  # The task itself must prove the exact terminal failure below.
+    observed = journey._sdk_result(journey.installed_cli(
+        version, ["tasks", "show", task_id, "--project", project, "--json"],
+        evidence, "task-refusal.json"))
+    row = observed.get("data") or {}
+    if (observed.get("ok") is not True or row.get("task_id") != task_id or row.get("state") != "failed"
+            or journey._task_error(row) != ("executor_failed", live.R11_PACK_REFUSAL)):
+        raise RuntimeError("R11 baseline did not produce the expected selected-pack refusal")
+    return task_id
+
+
 def task_after_update(version: dict, evidence: Path, project: str, *, existing_pack_gate: bool | str = True) -> str:
     if sys.platform == "win32":
         journey.windows.EVIDENCE = evidence
@@ -1236,8 +1257,14 @@ def execute_release11_then_update(args, root: Path, data: Path, evidence: Path, 
         add_journey_pack_and_restart_legacy_host(root, data, old, baseline / "release11-pack")
         # The existing-pack gate reads the Runtime through the candidate's client APIs; the R11
         # baseline host was just restarted, and its admission AND completion prove the pack.
-        keys["task_id"] = task_after_update(old, baseline / "release11-task", project,
-                                            existing_pack_gate=R11_EXISTING_PACK_GATE_SKIP)
+        if sys.platform == "linux":
+            keys["task_id"] = task_after_update(old, baseline / "release11-task", project,
+                                                existing_pack_gate=R11_EXISTING_PACK_GATE_SKIP)
+        else:
+            keys["task_id"] = r11_refused_pack_task(old, baseline / "release11-task", project)
+            keys["r11_selected_pack_refusal"] = True
+            result["r11_baseline_task"] = "expected refusal: " + live.R11_PACK_REFUSAL
+            print("Journey r11_baseline_task: " + result["r11_baseline_task"], file=sys.stderr, flush=True)
         # Visible in the leg's own receipt too, so the approved skip cannot hide.
         result["existing_pack_gate"] = journey.existing_pack_gate_skipped(R11_EXISTING_PACK_GATE_SKIP)
         before = live_workspace(root, data, baseline, "snapshot", keys)
