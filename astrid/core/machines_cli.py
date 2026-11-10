@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+import math
+import re
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Sequence
 
 
@@ -75,17 +78,149 @@ def _release(machine_id: str, *, as_json: bool, release: Callable[[], Any] | Non
     return 0 if ok else 1
 
 
-def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None = None) -> int:
+def _duration_seconds(value: str) -> float:
+    parts = list(re.finditer(r"(\d+(?:\.\d+)?)([smhd])", value.strip().lower()))
+    if not parts or "".join(part.group(0) for part in parts) != value.strip().lower():
+        raise ValueError("duration must use s, m, h or d units (for example 30m or 2h)")
+    scales = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    seconds = sum(float(part.group(1)) * scales[part.group(2)] for part in parts)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("duration must be a finite positive value")
+    return seconds
+
+
+def _keep_consent_data(machine_id: str, hourly_usd: float):
+    """Read the private offer digest bound to this exact locally journaled lease."""
+    from astrid.packs.runpod.target_selection import canonical_claim_path, read_runpod_preferences
+
+    preferences = read_runpod_preferences()
+    path = canonical_claim_path(preferences.provider_account_ref)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise ValueError("could not read the machine's local lease journal") from None
+    limits = record.get("paid_limits") if isinstance(record, dict) else None
+    if (not isinstance(record, dict) or record.get("pod_id") != machine_id
+            or record.get("state") != "claimed" or not isinstance(limits, dict)
+            or limits.get("hourly_usd") != hourly_usd
+            or not isinstance(limits.get("offer_digest"), str)):
+        raise ValueError("machine lease changed; check `astrid machines` and try again")
+    return preferences, limits["offer_digest"]
+
+
+def _keep(machine_id: str, *, for_duration: str | None, until_release: bool,
+          max_usd: float, as_json: bool, keep: Callable[..., Any] | None) -> int:
+    rows = _leases()
+    machine = next((row for row in rows if row.get("id") == machine_id and row.get("live")), None)
+    if machine is None:
+        live_ids = ", ".join(row["id"] for row in rows if row.get("live")) or "none"
+        message = f"no live machine {machine_id!r}; live machines: {live_ids}"
+        print(json.dumps({"ok": False, "error": message}) if as_json else message)
+        return 2
+    try:
+        seconds = _duration_seconds(for_duration) if for_duration is not None else None
+        cap = float(max_usd)
+        if not math.isfinite(cap) or cap <= 0:
+            raise ValueError("--max-usd must be a finite positive amount")
+        rate_value = machine.get("hourly_usd")
+        if type(rate_value) not in (int, float):
+            raise ValueError("machine's recorded hourly rate is unavailable")
+        rate = float(rate_value)
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError("machine's recorded hourly rate is unavailable")
+        _preferences, offer_digest = _keep_consent_data(machine_id, rate)
+        from astrid.packs.runpod.target_selection import PaidRunConsent
+
+        now = datetime.now(timezone.utc)
+        requested_seconds = seconds if seconds is not None else cap / rate * 3600
+        if not math.isfinite(requested_seconds) or requested_seconds <= 0:
+            raise ValueError("requested keep limit is outside the supported range")
+        effective_cap = min(cap, requested_seconds * rate / 3600)
+        consent_seconds = min(requested_seconds, effective_cap / rate * 3600)
+        # Host-side consent validation happens after the task reaches the retained host.
+        # Give that handoff a short grace period; the paid cap still bounds the expiry.
+        deadline = (now + timedelta(seconds=consent_seconds + 60)).isoformat().replace("+00:00", "Z")
+        consent = PaidRunConsent(
+            invocation_id=f"astrid-machines-keep-{uuid.uuid4().hex}",
+            offer_digest=offer_digest,
+            max_usd=effective_cap,
+            deadline=deadline,
+            consent=("paid",),
+            preparation_seconds=0,
+            execution_seconds=0,
+            idle_seconds=consent_seconds,
+        )
+        if keep is None:
+            from astrid.sdk import AstridClient
+            from astrid.sdk.generation import GenerationFacade
+
+            def keep(**kwargs):
+                with AstridClient.open_from_launcher() as client:
+                    return GenerationFacade().keep(client=client, wait=True, timeout_seconds=300.0, **kwargs)
+
+        result = keep(machine_id=machine_id, consent=consent, until_release=until_release)
+    except TimeoutError as exc:
+        message = f"keep result is unknown after a timeout; check `astrid machines` ({exc})"
+        print(json.dumps({"ok": False, "error": message, "unknown": True}) if as_json else message)
+        return 1
+    except ValueError as exc:
+        message = str(exc)
+        print(json.dumps({"ok": False, "error": message}) if as_json else message)
+        return 2
+    except Exception as exc:
+        if "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
+            message = f"keep result is unknown after a timeout; check `astrid machines` ({exc})"
+            print(json.dumps({"ok": False, "error": message, "unknown": True}) if as_json else message)
+            return 1
+        message = f"keep failed: {exc}"
+        print(json.dumps({"ok": False, "error": message}) if as_json else message)
+        return 1
+
+    if not bool(getattr(result, "ok", True)):
+        error = getattr(result, "error", None)
+        if "timeout" in str(error).lower() or "timed out" in str(error).lower():
+            message = "keep result is unknown after a timeout; check `astrid machines`"
+            print(json.dumps({"ok": False, "error": message, "unknown": True}) if as_json else message)
+            return 1
+        message = f"keep failed: {error}"
+        print(json.dumps({"ok": False, "error": message}) if as_json else message)
+        return 1
+    updated = next((row for row in _leases() if row.get("id") == machine_id), None)
+    if updated is None or updated.get("release_at") is None:
+        message = "keep result is unknown; check `astrid machines`"
+        print(json.dumps({"ok": False, "error": message, "unknown": True}) if as_json else message)
+        return 1
+    payload = {"ok": True, "machine": updated, "max_usd": effective_cap,
+               "requested_max_usd": cap, "until_release": until_release}
+    print(json.dumps(payload, sort_keys=True, default=str) if as_json else
+          f"kept {machine_id} until {_when(updated.get('release_at') if updated else None)} "
+          f"(effective cap ${effective_cap:.2f}; requested cap ${cap:.2f})")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None = None,
+         keep: Callable[..., Any] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="astrid machines", description="Rented generation machines.")
     parser.add_argument("--json", action="store_true")
     sub = parser.add_subparsers(dest="command")
     stop = sub.add_parser("release", help="Release one live machine.")
     stop.add_argument("machine_id")
     stop.add_argument("--json", action="store_true", dest="release_json")
+    extend = sub.add_parser("keep", help="Keep a live machine with fresh paid consent.")
+    extend.add_argument("machine_id")
+    duration = extend.add_mutually_exclusive_group(required=True)
+    duration.add_argument("--for", dest="keep_for", metavar="DURATION", help="Keep for a duration such as 30m or 2h.")
+    duration.add_argument("--until-release", action="store_true", help="Disable idle release until the paid cap expires.")
+    extend.add_argument("--max-usd", type=float, required=True, help="Maximum additional spend in USD.")
+    extend.add_argument("--json", action="store_true", dest="keep_json")
     parsed = parser.parse_args(list(argv or ()))
     as_json = parsed.json or bool(getattr(parsed, "release_json", False))
     if parsed.command == "release":
         return _release(parsed.machine_id, as_json=as_json, release=release)
+    if parsed.command == "keep":
+        return _keep(parsed.machine_id, for_duration=parsed.keep_for,
+                     until_release=parsed.until_release, max_usd=parsed.max_usd,
+                     as_json=as_json or parsed.keep_json, keep=keep)
     rows = _leases()
     print(json.dumps(rows, sort_keys=True, indent=2) if as_json else render(rows))
     return 0

@@ -546,6 +546,115 @@ def test_machines_table_and_json_show_lifetime_fields(monkeypatch, capsys):
     assert payload[0]["hourly_usd"] == 1.2
 
 
+def test_machine_keep_for_uses_recorded_consent_data_and_reports_new_limit(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+
+    row = {"id": "pod-keep", "state": "idle", "live": True, "hourly_usd": 2.0,
+           "release_at": 2_600.0, "minutes_left": 10.0}
+    updated = {**row, "release_at": 7_200.0, "minutes_left": 120.0}
+    lease_calls = iter(([row], [updated]))
+    monkeypatch.setattr(machines_cli, "_leases", lambda: next(lease_calls))
+    monkeypatch.setattr(machines_cli, "_keep_consent_data", lambda machine_id, rate:
+                        (object(), "sha256:" + "a" * 64))
+    captured = {}
+
+    def keep(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(ok=True)
+
+    assert machines_cli.main(["keep", "pod-keep", "--for", "2h", "--max-usd", "4", "--json"], keep=keep) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True and payload["max_usd"] == 4.0
+    assert payload["machine"]["release_at"] == 7_200.0
+    assert captured["machine_id"] == "pod-keep" and captured["until_release"] is False
+    assert captured["consent"].offer_digest == "sha256:" + "a" * 64
+    assert captured["consent"].max_usd == 4.0
+    assert captured["consent"].idle_seconds == 7200
+
+
+def test_machine_keep_until_release_requires_cap_and_refuses_unknown_or_ended(monkeypatch, capsys):
+    from astrid.core import machines_cli
+
+    with pytest.raises(SystemExit):
+        machines_cli.main(["keep", "pod-keep", "--until-release"])
+
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [
+        {"id": "pod-ended", "live": False, "state": "ended"},
+    ])
+    assert machines_cli.main(["keep", "pod-ended", "--until-release", "--max-usd", "5"],
+                             keep=lambda **kwargs: pytest.fail("ended machine was kept")) == 2
+    assert "no live machine" in capsys.readouterr().out
+    assert machines_cli.main(["keep", "unknown", "--until-release", "--max-usd", "5"],
+                             keep=lambda **kwargs: pytest.fail("unknown machine was kept")) == 2
+    assert "no live machine" in capsys.readouterr().out
+
+
+def test_machine_keep_until_release_passes_required_cap(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+
+    row = {"id": "pod-keep", "state": "idle", "live": True, "hourly_usd": 2.0,
+           "release_at": 2_600.0}
+    updated = {**row, "release_at": 11_600.0}
+    lease_calls = iter(([row], [updated]))
+    monkeypatch.setattr(machines_cli, "_leases", lambda: next(lease_calls))
+    monkeypatch.setattr(machines_cli, "_keep_consent_data", lambda machine_id, rate:
+                        (None, "sha256:" + "b" * 64))
+    captured = {}
+    assert machines_cli.main(["keep", "pod-keep", "--until-release", "--max-usd", "5"],
+                             keep=lambda **kwargs: (captured.update(kwargs), SimpleNamespace(ok=True))[1]) == 0
+    capsys.readouterr()
+    assert captured["until_release"] is True
+    assert captured["consent"].max_usd == 5.0
+    assert captured["consent"].idle_seconds == pytest.approx(9000.0)
+
+
+def test_machine_keep_for_shortens_to_a_lower_spend_cap(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+
+    row = {"id": "pod-keep", "state": "idle", "live": True, "hourly_usd": 2.0,
+           "release_at": 2_600.0}
+    updated = {**row, "release_at": None}
+    lease_calls = iter(([row], [updated]))
+    monkeypatch.setattr(machines_cli, "_leases", lambda: next(lease_calls))
+    monkeypatch.setattr(machines_cli, "_keep_consent_data", lambda machine_id, rate:
+                        (None, "sha256:" + "c" * 64))
+    captured = {}
+    started = datetime.now(timezone.utc).timestamp()
+
+    def keep(**kwargs):
+        captured.update(kwargs)
+        updated["release_at"] = started + kwargs["consent"].idle_seconds
+        return SimpleNamespace(ok=True)
+
+    assert machines_cli.main(["keep", "pod-keep", "--for", "2h", "--max-usd", "1", "--json"],
+                             keep=keep) == 0
+    payload = json.loads(capsys.readouterr().out)
+    consent = captured["consent"]
+    assert payload["ok"] is True and payload["max_usd"] == 1.0
+    assert payload["machine"]["release_at"] == started + 1800
+    assert payload["machine"]["release_at"] <= started + 2 * 3600
+    assert consent.max_usd == 1.0 and consent.idle_seconds == pytest.approx(1800.0)
+    assert consent.idle_seconds * 2.0 / 3600 <= consent.max_usd
+
+
+def test_machine_keep_timeout_reports_unknown_and_points_to_machine_list(monkeypatch, capsys):
+    from astrid.core import machines_cli
+
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [
+        {"id": "pod-keep", "state": "idle", "live": True, "hourly_usd": 2.0},
+    ])
+    monkeypatch.setattr(machines_cli, "_keep_consent_data", lambda machine_id, rate:
+                        (object(), "sha256:" + "a" * 64))
+    result = machines_cli.main(["keep", "pod-keep", "--until-release", "--max-usd", "5", "--json"],
+                               keep=lambda **kwargs: (_ for _ in ()).throw(TimeoutError("host wait expired")))
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1 and payload["unknown"] is True
+    assert "unknown" in payload["error"] and "astrid machines" in payload["error"]
+
+
 @pytest.mark.parametrize("restart", [False, True])
 def test_unverified_machine_cli_release_and_recovery_reconcile_exact_pod(small_lease, monkeypatch, capsys, restart):
     from astrid.core import machines_cli

@@ -1036,3 +1036,40 @@ def test_machine_cli_release_binds_requested_id_through_runtime_to_owner(journey
     assert released["ok"] is True and released["machine"]["id"] == current["pod_id"]
     _released(state["provider"], j.record())
     assert state["provider"].deploys == 1
+
+
+def test_machine_cli_keep_then_release_uses_the_retained_owner(journey, monkeypatch, capsys):
+    from contextlib import contextmanager
+    from astrid.core import machines_cli
+    from astrid.packs.runpod.machine import lease_row
+    from astrid.sdk import AstridClient
+
+    j = journey
+    state = j.start()
+    result = j.image()
+    assert result.ok, result.to_dict()
+    current = j.record()
+
+    @contextmanager
+    def launcher():
+        yield state["client"]
+
+    monkeypatch.setattr(AstridClient, "open_from_launcher", launcher)
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [lease_row(j.record())])
+    monkeypatch.setattr(machines_cli, "_keep_consent_data", lambda machine_id, rate:
+                        (None, current["paid_limits"]["offer_digest"]))
+    assert machines_cli.main(["keep", current["pod_id"], "--for", "10m", "--max-usd", "1.5", "--json"]) == 0
+    kept = json.loads(capsys.readouterr().out.splitlines()[-1])
+    after_keep = j.record()
+    assert kept["ok"] is True
+    assert kept["machine"]["release_at"] == after_keep["lease"]["idle_expires_at"]
+    hourly_usd = after_keep["lease"]["hourly_usd"]
+    assert after_keep["paid_limits"]["max_usd"] == pytest.approx(min(1.5, 600 * hourly_usd / 3600))
+    authorized_at = datetime.fromisoformat(after_keep["paid_limits"]["authorized_at"].replace("Z", "+00:00"))
+    assert after_keep["lease"]["paid_expires_at"] <= (authorized_at + timedelta(minutes=10)).timestamp()
+    assert after_keep["pod_id"] == current["pod_id"] and state["provider"].deploys == 1
+
+    assert machines_cli.main(["release", current["pod_id"], "--json"]) == 0
+    released = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert released["ok"] is True and released["machine"]["state"] == "ended"
+    _released(state["provider"], j.record())
