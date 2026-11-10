@@ -556,6 +556,7 @@ def sync(
                 prune_conflicts = []
                 removed_paths = prune_orphan_skill_links(
                     skills_dir, known_ids, owned_sources=owned_sources,
+                    known_names={adapter.target_for(d).name for d in all_units if d.pack_id not in disabled_ids},
                     declared_sources=_declared, conflicts=prune_conflicts)
                 steps.extend(prune_conflicts)
                 for removed in removed_paths:
@@ -735,7 +736,7 @@ def check(
             if not entry.is_symlink():
                 continue
             pack_id = ours_link_to_pack_id(name)
-            if pack_id is not None and pack_id not in known_ids:
+            if pack_id is not None and pack_id not in known_ids and name not in {adapter.target_for(d).name for d in [*all_descriptors, *extras]}:
                 report["stale_links"].append(
                     {"harness": harness_name, "link": name, "path": str(entry)}
                 )

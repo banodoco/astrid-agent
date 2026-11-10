@@ -1,3 +1,5 @@
+<!-- Generated from astrid/packs/setup/docs/SKILL.md; do not edit. -->
+
 ---
 name: astrid-setup
 description: Set up Astrid on a new or existing machine, verify its Runtime connection, and help the user begin.
@@ -109,7 +111,7 @@ agrees.
 
 If the install fails, read the log at the printed `Details:` path. To get help,
 run the install command for the user's OS with `--doctor` added. Attach the
-bundle it makes, and follow [Troubleshooting](troubleshooting.md#make-a-support-bundle).
+bundle it makes, and follow [Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md#make-a-support-bundle).
 
 ## 3. Connected
 
@@ -118,7 +120,7 @@ in the browser. If no browser opens, ask the user to open https://astrid.haus.
 If Chrome or Edge asks to reach this computer, tell the user to choose Allow.
 Confirm that astrid.haus shows Connected. When it does, setup is complete.
 (Connecting local engines such as ComfyUI or Wan2GP is not covered here yet.)
-If it does not, follow [Troubleshooting](troubleshooting.md#asking-for-help).
+If it does not, follow [Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md#asking-for-help).
 
 ## Run everything on this computer
 
@@ -158,10 +160,10 @@ check you could not run.
 
 If the installer fails, read the log at the printed `Details:` path. For help,
 run the same install line with `--doctor`, attach the bundle, and follow
-[Troubleshooting](troubleshooting.md#asking-for-help). For updates, see
-[Troubleshooting](troubleshooting.md#update-astrid).
+[Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md#asking-for-help). For updates, see
+[Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md#update-astrid).
 
 Once setup is complete, give outside agents the launcher path for their OS
-listed above. Then follow [Astrid’s core skill](../../astrid/packs/_core/docs/SKILL.md) and
+listed above. Then follow [Astrid’s core skill](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/_core/docs/SKILL.md) and
 the relevant pack for the work they want to do. Guide any provider credential
 entry locally; never ask the user to paste a secret into chat.

@@ -155,6 +155,7 @@ class Documentation:
     kind: str
     path: str | None = None
     reason: str | None = None
+    sync_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +265,7 @@ class CanonicalPackDefinition:
                 "kind": self.documentation.kind,
                 **({"path": self.documentation.path} if self.documentation.path else {}),
                 **({"reason": self.documentation.reason} if self.documentation.reason else {}),
+                **({"sync_name": self.documentation.sync_name} if self.documentation.sync_name else {}),
             }
         if self.astrid_version:
             result["astrid_version"] = self.astrid_version
@@ -579,7 +581,7 @@ def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
     if data.get("documentation") is not None:
         x = _mapping(data["documentation"], "documentation")
         kind = _text(x.get("kind"), "documentation.kind")
-        documentation = Documentation(kind, x.get("path"), x.get("reason"))
+        documentation = Documentation(kind, x.get("path"), x.get("reason"), x.get("sync_name"))
     agent = _mapping(data.get("agent", {}), "agent")
     agent_norm = dict(agent)
     if "required_context" in agent_norm:

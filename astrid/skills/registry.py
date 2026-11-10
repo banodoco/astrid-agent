@@ -20,6 +20,7 @@ from astrid.core.foundation.paths import CORE_SKILLS_DIR, REPO_ROOT
 
 from .commands import rewrite_commands
 from .discovery import SkillDescriptor, list_extras, list_skills
+from .harnesses.base import sync_target_name
 
 BEGIN_MARKER = "<!-- PACKS:BEGIN (managed by `astrid skills sync`) -->"
 END_MARKER = "<!-- PACKS:END -->"
@@ -102,7 +103,7 @@ def render_registry_block(
         skill_path = _repo_relative(descriptor.skill_md, view_root=view_root)
         path_cell = f"`{skill_path}`"
         if deep:
-            skill_name = f"`astrid-{descriptor.skill_id}`"
+            skill_name = f"`{sync_target_name(descriptor)}`"
             lines.append(f"| {descriptor.pack_id} | {skill_name} | {summary} | {path_cell} |")
         else:
             pack_cell = descriptor.pack_id
