@@ -68,5 +68,5 @@ def test_public_generate_audio_uses_audio_parser_and_admits_runpod_sfx(
     assert gateway.main([
         "generate", "audio", "waves", "--mode", "sfx", "--placement", "runpod", "--dry-run", "--json",
     ]) == 0
-    assert calls and calls[0]["mode"] == "sfx" and calls[0]["target"] == "runpod"
+    assert calls and calls[0]["mode"] == "sfx" and calls[0]["placement"] == "runpod"
     capsys.readouterr()
