@@ -5,7 +5,7 @@ name: CI
 
 on:
   push:
-    branches: [main, release-1, "int/**"]
+    branches: [main, release-1]
   workflow_dispatch:
 
 concurrency:
