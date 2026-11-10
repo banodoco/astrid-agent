@@ -1,11 +1,18 @@
 """Four-file renderer scaffold for pluggable timeline renderers.
 
 ``create_renderer_scaffold`` writes a complete, self-contained renderer pack
-into a destination directory: ``pack.yaml``, ``renderer.yaml``, ``render.py``,
-and ``test_renderer.py`` — never more.  The generated ``render.py`` is a thin
-pure-stdlib raw-command backend (the Batch-2 raw fixture pattern) that
-validates the v1 request statically and writes a deterministic
-``RenderResult``-shaped result JSON without ffmpeg, remotion, or a GPU.
+into a destination directory: ``pack.yaml``, ``rendering/renderer.yaml``,
+``render.py``, and ``test_renderer.py`` — never more.  The generated
+``render.py`` is a thin pure-stdlib raw-command backend (the Batch-2 raw
+fixture pattern) that validates the v1 request statically and writes a
+deterministic ``RenderResult``-shaped result JSON without ffmpeg, remotion,
+or a GPU.
+
+``pack.yaml`` is a schema v3 manifest (discovery quarantines v1/v2) that
+declares this Astrid's pack API version and the renderer under
+``rendering``; v3 requires the descriptor beneath ``rendering/``.  The
+renderer command runs with the pack root as its working directory, so
+``render.py`` stays at the root.
 
 Files are created with the caller's uid/gid via plain ``Path.write_text``
 (no sudo, no chown).  Collisions refuse to overwrite unless ``force=True``.
@@ -19,23 +26,27 @@ import re
 from pathlib import Path
 
 from astrid.core.pack._common import _PACK_ID_RE
+from astrid.pack_api import VERSION as PACK_API_VERSION
 
 SCAFFOLD_FILES: tuple[str, ...] = (
     "pack.yaml",
-    "renderer.yaml",
+    "rendering/renderer.yaml",
     "render.py",
     "test_renderer.py",
 )
 
 # The same qualified-id pattern the rendering wire contract enforces.
 _QUALIFIED_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+$")
+# A v3 rendering declaration key (the renderer id's local part).
+_V3_LOCAL_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _DEFAULT_PACK_ID = "rendering"
 
 _PACK_YAML = """\
-schema_version: 2
+schema_version: 3
 id: __PACK_ID__
 name: __DISPLAY_NAME__ Renderer Pack
 version: 1.0.0
+pack_api: "__PACK_API__"
 description: >-
   Scaffolded pack for the __RENDERER_ID__ renderer.  render.py is a
   pure-stdlib raw-command backend: it parses argv, reads --request JSON,
@@ -46,10 +57,10 @@ permissions:
   - id: project_files
     reason: Read the invocation request JSON and write the generated output into the request workspace.
 aliases: []
-extensions:
-  rendering:
-    renderers:
-      - renderer.yaml
+rendering:
+  __RENDERER_KEY__:
+    type: renderer
+    path: rendering/renderer.yaml
 """
 
 _RENDERER_YAML = """\
@@ -281,6 +292,13 @@ def create_renderer_scaffold(
                 "requires root.name == pack id — use a matching directory"
             )
     renderer_id = _qualified_renderer_id(name, renderer_id, pack_id)
+    renderer_key = renderer_id.partition(".")[2]
+    if not _V3_LOCAL_ID_RE.fullmatch(renderer_key):
+        raise ValueError(
+            f"invalid renderer id {renderer_id!r}; a schema v3 pack declares the "
+            "renderer as '<pack>.<name>' with one name segment matching "
+            f"[a-z][a-z0-9_-]* (e.g. '{pack_id}.wave')"
+        )
     display = _display_name(name)
 
     if target.exists() and not target.is_dir():
@@ -306,11 +324,13 @@ def create_renderer_scaffold(
     substitutions = {
         "__PACK_ID__": pack_id,
         "__RENDERER_ID__": renderer_id,
+        "__RENDERER_KEY__": renderer_key,
+        "__PACK_API__": "%d.%d" % PACK_API_VERSION,
         "__DISPLAY_NAME__": display,
     }
     templates = {
         "pack.yaml": _PACK_YAML,
-        "renderer.yaml": _RENDERER_YAML,
+        "rendering/renderer.yaml": _RENDERER_YAML,
         "render.py": _RENDER_PY,
         "test_renderer.py": _TEST_RENDERER_PY,
     }
@@ -318,6 +338,8 @@ def create_renderer_scaffold(
         content = template
         for token, value in substitutions.items():
             content = content.replace(token, value)
+        path = target / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
         # Plain write_text creates the file with the caller's uid/gid.
-        (target / filename).write_text(content, encoding="utf-8")
+        path.write_text(content, encoding="utf-8")
     return target
