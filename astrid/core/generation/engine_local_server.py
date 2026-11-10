@@ -44,9 +44,19 @@ def ensure_local_engine_server(
             raw = context.read_json(posixpath.join(root, RECEIPT_RELATIVE_PATH), deadline=deadline)
             plan = plan_install(load_recipe(engine, platform), root=root, placement="local",
                                 models_root=raw.get("models_root"))
-            if _parse_receipt(raw, plan).status != "installed":
+            receipt = _parse_receipt(raw, plan)
+            if receipt.status != "installed":
                 raise IntegrityError("local engine requires a completed installation")
             runner = _Runner(plan, context, adapter, deadline)
+            runner.check_environment_identities()
+            runner.step_id = "helper-identity"
+            if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
+                raise IntegrityError("local engine helper identity differs")
+            for step in plan.steps:
+                if step.kind in {"source", "environment"}:
+                    runner.execute(step, readonly=True)
+            if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
+                raise IntegrityError("local engine installation evidence differs from its receipt")
             runner.step_id = "start"
             action, facts = runner.start(readonly=False)
             runner.step_id = "health"

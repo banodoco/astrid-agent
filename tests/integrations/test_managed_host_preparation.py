@@ -429,6 +429,22 @@ def test_legacy_local_server_restart_refreshes_the_receipt(managed_install, monk
     assert health['healthy'] and launch['env']['CUDA_VISIBLE_DEVICES'] == '2'
 
 
+def test_legacy_local_server_refuses_modified_base_without_receipt_write(managed_install, monkeypatch):
+    from astrid.core.generation.engine_contracts import IntegrityError
+    from astrid.core.generation.engine_local_server import ensure_local_engine_server
+    client, payload, recipe, root, started, bootstrap = managed_install
+    original = (root / '.astrid-engine/install.json').read_bytes()
+    client.stop_owned(deadline=time.monotonic() + 15)
+    started.unlink()
+    source = root / 'runtime/ComfyUI/tiny.py'
+    source.write_text(source.read_text() + '\n# uncommitted change\n')
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '2')
+    with pytest.raises(IntegrityError, match='uncommitted'):
+        ensure_local_engine_server(root=str(root), deadline_seconds=90)
+    assert (root / '.astrid-engine/install.json').read_bytes() == original
+    assert not started.exists()
+
+
 def test_plain_workflow_preparation_does_not_write_beside_admitted_input(tmp_path, monkeypatch, managed_install):
     from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value
     client, payload, recipe, root, started, bootstrap = managed_install
