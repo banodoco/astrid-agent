@@ -3397,8 +3397,12 @@ def _runpod_generation_policy(task: Mapping[str, Any]) -> Mapping[str, Any] | No
         policy = json.loads(policy) if isinstance(policy, str) else policy
     except (ValueError, TypeError):
         return None
-    return (policy if isinstance(spec, Mapping) and spec.get("capability_id") == "vibecomfy.run"
-            and isinstance(policy, Mapping) and policy.get("kind") == "runpod" else None)
+    if not isinstance(spec, Mapping) or not isinstance(policy, Mapping) or policy.get("kind") != "runpod":
+        return None
+    if spec.get("capability_id") == "runpod.claim":
+        paid = policy.get("paid_consent")
+        return paid if isinstance(paid, Mapping) else None
+    return policy if spec.get("capability_id") == "vibecomfy.run" else None
 
 
 def _wait_for_kernel_task(

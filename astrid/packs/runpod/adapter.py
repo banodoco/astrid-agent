@@ -185,7 +185,8 @@ class RunPodAdapter:
         return {"offer": asdict(offer),
                 "offer_digest": offer.digest(self.lease_owner.selection.preferences)}
 
-    def operate(self, operation, *, include_quote=False, machine_id=None, consent=None, until_release=False):
+    def operate(self, operation, *, include_quote=False, machine_id=None, consent=None, until_release=False,
+                requested_idle_seconds=None, cancelled=None):
         if operation == "setup":
             if include_quote:
                 raise ValueError("setup does not observe offers")
@@ -194,7 +195,12 @@ class RunPodAdapter:
             if include_quote:
                 raise ValueError("ls does not observe offers")
             return {"leases": self.lease_owner.ls()}
-        if operation == "keep":
+        if operation == "claim":
+            if include_quote:
+                raise ValueError("claim observes capacity through the shared acquisition loop")
+            record = self.lease_owner.claim(consent, requested_idle_seconds=requested_idle_seconds,
+                                            cancelled=cancelled)
+        elif operation == "keep":
             if include_quote:
                 raise ValueError("keep uses the rented machine's recorded offer")
             record = self.lease_owner.keep(machine_id, consent, until_release)
@@ -214,7 +220,7 @@ class RunPodAdapter:
             result["lease"] = {key: lease.get(key) for key in
                                ("state", "owner_epoch", "generation", "invocation_id", "paid_expires_at", "idle_expires_at")}
             result["lease"]["idle_timeout_s"] = lease.get("idle_seconds")
-            if operation == "keep":
+            if operation in {"keep", "claim"}:
                 result["paid_limits"] = {key: record["paid_limits"].get(key) for key in
                                          ("hourly_usd", "max_usd", "expires_at", "offer_digest")}
         if include_quote:
@@ -307,7 +313,8 @@ def prevalidate_task(policy, inputs, *, scratch):
         _validate_retained_workflow(request)
 
 
-def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, environ, expected_machine_id=None):
+def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, environ, expected_machine_id=None,
+                       fresh_claim=False):
     """Construct the retained A3/A4 composition on an explicit host request."""
     from astrid.core.generation import engine_recipe, engine_runner
     from runpod_lifecycle.config import RunPodConfig
@@ -349,7 +356,10 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     owner = RunPodLeaseOwner(selection, holds=holds, quiesce=drain,
                              service_environ=environ)
     try:
-        owner.recover(**({"expected_machine_id": expected_machine_id} if expected_machine_id is not None else {}))
+        if fresh_claim:
+            owner.start_fresh_claim()
+        else:
+            owner.recover(**({"expected_machine_id": expected_machine_id} if expected_machine_id is not None else {}))
     except BaseException:
         owner.close()
         raise
@@ -379,7 +389,7 @@ class TargetProviderBindings:
         self.constructing = None
         self.operations = 0
 
-    def get(self, *, kind, engine, preferences, expected_machine_id=None):
+    def get(self, *, kind, engine, preferences, expected_machine_id=None, fresh_claim=False):
         signature = json.dumps([kind, engine, preferences], sort_keys=True, separators=(",", ":"), allow_nan=False)
         while True:
             with self.lock:
@@ -413,6 +423,7 @@ class TargetProviderBindings:
             provider = build_host_adapter(preferences=preferences, engine=engine,
                                           holds=self.holds, quiesce=self._quiesce,
                                           credentials=self.credentials, environ=self.environ, **(
+                                              {"fresh_claim": True} if fresh_claim else {}), **(
                                               {"expected_machine_id": expected_machine_id}
                                               if expected_machine_id is not None else {}))
             with self.lock:
@@ -472,29 +483,37 @@ class TargetProviderBindings:
                 return None
         return provider.lease_owner.observe_liveness(observe=getattr(provider, "observe_pod", None))
 
-    def operate(self, policy, operation, *, include_quote=False):
-        if operation not in {"setup", "ls", "status", "release", "keep"}:
+    def operate(self, policy, operation, *, include_quote=False, cancelled=None):
+        if operation not in {"setup", "ls", "status", "release", "keep", "claim"}:
             raise ValueError("unsupported retained target operation")
         allowed = {"kind", "engine", "preferences"}
+        if operation == "status":
+            allowed.add("fresh_claim")
         if operation in {"release", "keep"}:
             allowed.add("machine")
         if operation == "keep":
             allowed.update({"paid_consent", "until_release"})
+        if operation == "claim":
+            allowed.update({"paid_consent", "requested_idle_seconds"})
         if (not isinstance(policy, dict)
                 or not {"kind", "engine", "preferences"} <= set(policy)
                 <= allowed):
             raise ValueError("target operation requires one explicit provider policy")
         if "machine" in policy and (not isinstance(policy["machine"], str) or not policy["machine"].strip()):
             raise ValueError("exact machine operation requires a nonempty machine id")
+        if "fresh_claim" in policy and policy["fresh_claim"] is not True:
+            raise ValueError("fresh claim disclosure must be explicit")
+        fresh_claim = operation == "claim" or policy.get("fresh_claim", False)
         consent = None
-        if operation == "keep":
+        if operation in {"keep", "claim"}:
             from .target_selection import PaidRunConsent
 
-            if (set(policy) != allowed or type(policy["until_release"]) is not bool or include_quote
+            if (set(policy) != allowed or include_quote
+                    or operation == "keep" and type(policy["until_release"]) is not bool
                     or not isinstance(policy["paid_consent"], dict)
                     or set(policy["paid_consent"]) != set(PaidRunConsent.__dataclass_fields__)
                     or not isinstance(policy["paid_consent"]["consent"], (list, tuple))):
-                raise ValueError("keep requires an exact machine and fresh paid consent")
+                raise ValueError(f"{operation} requires fresh paid consent and explicit retention")
             consent = PaidRunConsent(**{**policy["paid_consent"],
                                         "consent": tuple(policy["paid_consent"]["consent"])})
         if policy["kind"] == "runpod":
@@ -514,10 +533,12 @@ class TargetProviderBindings:
             if operation == "keep":
                 raise ValueError("keep requires a running host that owns this machine")
             provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"], **(
+                {"fresh_claim": True} if fresh_claim else {}), **(
                 {"expected_machine_id": policy["machine"]} if "machine" in policy else {}))
-        elif (operation == "setup" or operation == "status" and include_quote) and json.loads(self.signature)[2] != policy["preferences"]:
+        elif (fresh_claim or operation == "setup" or operation == "status" and include_quote) and json.loads(self.signature)[2] != policy["preferences"]:
             # get() closes/rebuilds only after the old owner proves no lease is live.
-            provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"])
+            provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"], **(
+                {"fresh_claim": True} if fresh_claim else {}))
         with self.lock:
             if provider is not self.provider:
                 raise ValueError("target provider changed before the operation")
@@ -525,7 +546,9 @@ class TargetProviderBindings:
         try:
             return provider.operate(operation, include_quote=include_quote, **(
                 {"machine_id": policy["machine"]} if "machine" in policy else {}), **(
-                {"consent": consent, "until_release": policy["until_release"]} if operation == "keep" else {}))
+                {"consent": consent, "until_release": policy["until_release"]} if operation == "keep" else
+                {"consent": consent, "requested_idle_seconds": policy["requested_idle_seconds"],
+                 "cancelled": cancelled} if operation == "claim" else {}))
         finally:
             with self.lock:
                 self.operations -= 1
