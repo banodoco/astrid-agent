@@ -24,10 +24,11 @@ def case(tmp_path, monkeypatch, request):
     folder = root / "orchestrators/demo"
     folder.mkdir(parents=True)
     (root / "external_pkg").mkdir()
+    # Schema v3: discovery quarantines v1/v2 manifests. The folder orchestrator
+    # below is found by the host's folder scan, so v3 needs no content map.
     (root / "pack.yaml").write_text(
-        "schema_version: 2\nid: external_pack\nname: External Pack\nversion: '1.0'\n"
-        "status: active\ndocumentation:\n  kind: none\n  reason: test fixture\n"
-        "content:\n  orchestrators: orchestrators\n")
+        "schema_version: 3\nid: external_pack\nname: External Pack\nversion: 1.0.0\npack_api: '2.0'\n"
+        "status: active\ndocumentation:\n  kind: none\n  reason: test fixture\n")
     (folder / "orchestrator.yaml").write_text(
         "schema_version: 1\nid: external_pack.demo\nname: Demo\nkind: external\nversion: '1.0'\n"
         f"runtime:\n  kind: python\n  module: {getattr(request, 'param', 'external_pkg.run')}\n  function: run\n")
