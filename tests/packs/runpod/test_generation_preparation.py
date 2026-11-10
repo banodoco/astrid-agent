@@ -112,9 +112,10 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         assert kw["https_token"] not in c.owner.path.read_text()
         c.create_kwargs.append(kw)
         c.creates += 1
+        # Fresh pod REST omits gpuTypeId; GraphQL confirms the provider ID separately.
         pod = {"id": f"pod-{c.creates}", "name": kw["name"], "desiredStatus": "RUNNING",
                "actualStatus": "RUNNING", "machineType": c.prefs.gpu_types[0],
-               "machine": {"gpuTypeId": c.actual_gpu_id, "dataCenterId": kw["data_center_id"]},
+               "machine": {"dataCenterId": kw["data_center_id"]},
                "imageName": kw["image_name"], "networkVolumeId": kw["network_volume_id"],
                "dataCenterId": kw["data_center_id"]}
         c.pods.append(pod)
