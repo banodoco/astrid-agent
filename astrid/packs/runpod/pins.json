@@ -8,11 +8,11 @@
     },
     "comfyui": {
       "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-      "revision": "423cbd20511becb1f16122ab518e92e58bfa03d9"
+      "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf"
     },
     "vibecomfy": {
       "repository": "https://github.com/banodoco/VibeComfy.git",
-      "revision": "e65f4941d09b1cb4d1dd5aae6171c73e648706f4"
+      "revision": "8d065a8fef3dd602d5462e27d8eca088cf4e8262"
     },
     "h3-motion-context": {
       "repository": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
