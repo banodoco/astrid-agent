@@ -129,10 +129,11 @@ def test_preinstalled_managed_setup_copy_is_adopted_by_sync(tmp_path):
         assert not any('conflict' in str(row).lower() for row in report.get('conflicts', []))
 
 
-def test_preinstall_helper_writes_durable_marker_and_default_sync_preserves_it(tmp_path, monkeypatch):
+def test_preinstall_helper_writes_durable_marker_and_default_sync_adopts_it(tmp_path, monkeypatch):
     import importlib.util
     import json
     from astrid import skills
+    from astrid.skills import cli, state
     from astrid.skills.harnesses.base import is_managed_copy
     helper = ROOT / 'scripts/preinstall_setup_skill.py'
     spec = importlib.util.spec_from_file_location('preinstall_setup_skill', helper)
@@ -157,10 +158,15 @@ def test_preinstall_helper_writes_durable_marker_and_default_sync_preserves_it(t
     with monkeypatch.context() as patch:
         patch.setenv('HOME', str(home))
         patch.setattr(Path, 'home', lambda: home)
-        skills.sync(harness_names=['claude'], mechanism='copy', state_path=tmp_path / 'state.json')
+        assert cli.main(['sync', '--skills', 'on', '--skill-copies', 'on', '--harness', 'claude', '--json']) == 0
     assert is_managed_copy(target)
-    assert json.loads((target / '.astrid-managed-skill.json').read_text()) == marker
-    assert (tmp_path / 'skills/claude/packs/setup/SKILL.md').is_file()
+    view = state.state_path().parent / 'skills/claude/packs/setup'
+    assert json.loads((target / '.astrid-managed-skill.json').read_text())['source'] == str(view.resolve())
+    assert (view / 'SKILL.md').is_file()
+    selected = state.load()['skills']['claude']['skills']
+    assert all(selected[pack]['selected'] for pack in ('setup', 'rendering', 'vibecomfy'))
+    assert (home / '.claude/skills/astrid-rendering').exists()
+    assert (home / '.claude/skills/astrid-vibecomfy').exists()
     assert len(list((home / '.claude/skills').glob('astrid-setup'))) == 1
 
 

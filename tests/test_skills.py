@@ -87,6 +87,37 @@ def test_fresh_sync_preserves_an_explicit_empty_selection():
         fx.close()
 
 
+def test_installer_sync_preserves_default_opt_out():
+    fx = _Tmp()
+    try:
+        args = ["sync", "--skills", "on", "--skill-copies", "off", "--harness", "claude", "--json"]
+        assert skills_cli.main(args) == 0
+        assert skills_cli.main(["uninstall", "vibecomfy", "--harness", "claude", "--json"]) == 0
+        assert skills_cli.main(args) == 0
+        data = state.load()
+        assert "vibecomfy" in data["disabled_defaults"]["claude"]
+        descriptors = {d.pack_id: d for d in _descriptors()}
+        adapter = ClaudeAdapter()
+        assert not adapter.target_for(descriptors["vibecomfy"]).exists()
+        assert adapter.target_for(descriptors["rendering"]).exists()
+    finally:
+        fx.close()
+
+
+def test_installer_sync_preserves_existing_selection():
+    fx = _Tmp()
+    try:
+        assert skills_cli.main(["install", "generation", "--harness", "claude", "--json"]) == 0
+        assert skills_cli.main(["sync", "--skills", "on", "--skill-copies", "off", "--harness", "claude", "--json"]) == 0
+        selected = state.load()["skills"]["claude"]["skills"]
+        assert selected["generation"]["selected"]
+        assert not any(selected.get(pack, {}).get("selected") for pack in ("setup", "rendering", "vibecomfy"))
+        descriptors = {d.pack_id: d for d in _descriptors()}
+        assert ClaudeAdapter().target_for(descriptors["generation"]).exists()
+    finally:
+        fx.close()
+
+
 def _subparser(parser: argparse.ArgumentParser, name: str) -> argparse.ArgumentParser:
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):

@@ -75,12 +75,10 @@ only; Astrid and its Runtime are not installed.
 - macOS or Linux: `python3 -c 'import urllib.request; exec(urllib.request.urlopen("https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py").read())'`
 - Windows PowerShell: `python -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py').read())"`
 
-The current default sync composes this skill into Astrid's writable view and
-preserves the preinstalled harness copy. It does not yet adopt or refresh that
-copy automatically. After Astrid is installed, the user can select the setup
-skill through Astrid's skills controls to have sync manage it. Unmanaged skill
-folders are preserved. The command downloads only the setup skill source and
-helper; it does not request credentials.
+On a fresh install, default sync adopts the preinstalled managed copy and
+refreshes it from Astrid's writable view. Unmanaged skill folders are preserved.
+The command downloads only the setup skill source and helper; it does not request
+credentials.
 
 Ask the user whether they want to change any choice. If they change one, use
 its new value in step 2. If the user approved an App brief, keep the brief's values,
