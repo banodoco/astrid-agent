@@ -13,7 +13,6 @@ import hashlib
 import json
 import logging
 import os
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable, Mapping
 
 from astrid.core.foundation.atomic_io import read_json, write_json_atomic
+from astrid.installer._pack_cleanup import remove_pack_tree
 from astrid.core.pack.canonical import (
     CanonicalPackValidationError,
     ExternalPackSource,
@@ -309,12 +309,12 @@ def _stage_checkout(declaration: SourceDeclaration, *, data_root: Path) -> Insta
         final = _cached_checkout(declaration, data_root=data_root)
         if final.exists() or final.is_symlink():
             existing = _validate_checkout(final, declaration)
-            shutil.rmtree(temporary)
+            remove_pack_tree(temporary)
             return existing
         temporary.replace(final)
         return _validate_checkout(final, declaration)
     except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+        remove_pack_tree(temporary, ignore_errors=True)
         raise
 
 

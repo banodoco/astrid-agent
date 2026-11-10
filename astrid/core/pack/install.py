@@ -28,6 +28,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from astrid import pack_api, sdk
+from astrid.installer._pack_cleanup import remove_pack_tree
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import _entry_path, pack_digest, read_pin, write_pin
 from astrid.core.pack.personal import resolve_personal_packs_root
@@ -578,7 +579,12 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                 if origin == "default" and (existing_pin is None or existing_pin["origin"] != "default"):
                     raise PackInstallError("default_pin_conflict", "A release default cannot overwrite a user-owned pack.")
             phase = "create_stage"
-            work = Path(tempfile.mkdtemp(prefix=".install-", dir=root))
+            # Keep temporary Git objects outside the collection. If cleanup fails,
+            # the named residue remains discoverable without entering a future
+            # collection copy or durability flush. It is on the same filesystem
+            # as the destination, as required by atomic publication.
+            work_parent = root.parent if root.parent.stat().st_dev == root.stat().st_dev else root
+            work = Path(tempfile.mkdtemp(prefix=".install-", dir=work_parent))
             try:
                 stage = work / pack_id
                 stage.mkdir()
@@ -646,7 +652,12 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                 # install into a reported failure (or roll it back piecemeal).
                 return result
             finally:
-                shutil.rmtree(work, ignore_errors=True)
+                try:
+                    remove_pack_tree(work)
+                except OSError:
+                    # The residue itself records the path for later reclamation.
+                    # Never mask a publication result or an earlier failure.
+                    _LOG.warning("Pack install cleanup deferred; retained %s", work)
     except PackInstallError:
         raise
     except (OSError, ValueError) as exc:

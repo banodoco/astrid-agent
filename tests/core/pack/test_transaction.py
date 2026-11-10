@@ -2849,3 +2849,25 @@ def test_retained_admission_that_is_not_an_object_is_refused_by_name(tmp_path: P
     with pytest.raises(PackInstallError) as refusal:
         _retained_build_records(tmp_path, {"alpha": ["not", "an", "object"]}, 1)
     assert refusal.value.code == "incomplete_artifacts"
+
+
+def test_group_add_survives_deferred_install_cleanup(repo, packs_root, monkeypatch, caplog):
+    from astrid.core.pack import install as installer
+
+    real_remove = installer.remove_pack_tree
+
+    def refuse_install_cleanup(path, **kwargs):
+        if path.name.startswith(".install-"):
+            raise PermissionError("object store is locked")
+        return real_remove(path, **kwargs)
+
+    monkeypatch.setattr(installer, "remove_pack_tree", refuse_install_cleanup)
+    result = install(repo, packs_root, refresh=accepted_refresh)
+    assert set(result.paths) == set(GROUP)
+    assert read_group(packs_root).transaction_id == result.transaction_id
+    residues = list((packs_root.parent / ".astrid-retired").glob(".install-*"))
+    assert len(residues) == len(GROUP)
+    assert all((path / "objects.git").is_dir() and str(path) in caplog.text for path in residues)
+    assert not list(packs_root.glob(".install-*"))
+    for path in residues:
+        real_remove(path)

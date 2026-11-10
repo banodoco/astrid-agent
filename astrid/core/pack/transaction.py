@@ -25,6 +25,7 @@ from uuid import uuid4
 
 from astrid import pack_api, sdk
 from astrid.core.pack import _filelock
+from astrid.installer._pack_cleanup import remove_pack_tree
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import pack_digest, read_pin
 from astrid.core.pack.definitions import definitions_record, pack_definitions
@@ -194,7 +195,7 @@ def _recover_exchange(root: Path) -> None:
     if locations == {"current": old, "candidate": new, "backup": None}:
         # The new generation was never published. It belongs to this failed
         # attempt; the old generation is already completely restored.
-        shutil.rmtree(candidate)
+        remove_pack_tree(candidate)
     elif locations == {"current": new, "candidate": None, "backup": old}:
         # Remove the temporary backup name by transferring the old generation
         # to existing retirement custody (rollback/artifact leases still own it).
@@ -1221,7 +1222,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     pin = read_pin(target / "PIN") if (target / "PIN").exists() else {}
                     if pin.get("origin") == "personal":
                         raise PackInstallError("reserved_id", "Personal packs cannot be removed.")
-                    shutil.rmtree(target)
+                    remove_pack_tree(target)
             # Everything the candidate carries over unchanged, as copied. Live
             # writes after this point (fetch, consent, build) must not be lost.
             carried_ids = frozenset(packs) | frozenset(remove)
@@ -1299,7 +1300,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                         # copied destination: this entire candidate is private,
                         # so no per-pack exchange (or journal) is needed here.
                         if target.exists():
-                            shutil.rmtree(target)
+                            remove_pack_tree(target)
                     private_options["before_swap"] = discard_private_previous
                 install_pack(source=source, pack_id=pack_id, revision=commit, subpath=subpath, origin=origin,
                              expected_digest=expected_digests.get(pack_id), packs_root=candidate,
@@ -1354,7 +1355,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 generated = candidate / pack_id / ".build"
                 if generated.exists() or generated.is_symlink():
                     _tree(generated)
-                    shutil.rmtree(generated)
+                    remove_pack_tree(generated)
                 spec = builds.get(pack_id, {})
                 if not isinstance(spec, dict) or set(spec) - {"entry", "extension_manifest"}:
                     raise PackInstallError("invalid_request", "Use the frozen entry/extension_manifest build inputs.")
@@ -1466,8 +1467,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 except OSError:
                     pass
             if not published and candidate not in preserve and not _exchange_journal(root).exists():
-                shutil.rmtree(candidate, ignore_errors=True)
-            shutil.rmtree(work, ignore_errors=True)
+                remove_pack_tree(candidate, ignore_errors=True)
+            remove_pack_tree(work, ignore_errors=True)
             try:
                 (retired / ("." + tx + ".transaction.lock")).unlink(missing_ok=True)
             except OSError:
@@ -1584,7 +1585,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             for pack_id in ids:
                 target = candidate / pack_id
                 if target.exists():
-                    shutil.rmtree(target)
+                    remove_pack_tree(target)
                 admissions.pop(pack_id, None)
                 if pack_id not in tombstones and pack_id in prior_paths:
                     # Preserve the complete installed tree. In particular,
@@ -1698,7 +1699,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                 except OSError:
                     pass
             if not published and candidate not in preserve and not _exchange_journal(root).exists():
-                shutil.rmtree(candidate, ignore_errors=True)
+                remove_pack_tree(candidate, ignore_errors=True)
             try:
                 (retired / ("." + tx + ".transaction.lock")).unlink(missing_ok=True)
             except OSError:
