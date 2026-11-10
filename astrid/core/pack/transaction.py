@@ -370,6 +370,7 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
     except FileNotFoundError:
         if exclusive:
             raise
+        _require_recovered(path)
         yield
         return
     try:

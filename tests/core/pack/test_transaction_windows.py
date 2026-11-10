@@ -142,6 +142,7 @@ def test_windows_legacy_journal_blocks_ambiguous_recovery(tmp_path, windows, pha
     (candidate / "late-user-write").write_text("must survive")
     record = {"version": 1, "candidate": candidate.name,
               "old": txn._exchange_identity(root), "new": txn._exchange_identity(candidate)}
+    (tmp_path / ".packs.transaction.lock").touch()
     txn._write_exchange(root, record, phase)
     if phase == "old_moved":
         windows.replace(root, txn._exchange_backup(root))
