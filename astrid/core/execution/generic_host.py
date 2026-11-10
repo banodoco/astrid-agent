@@ -45,7 +45,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
@@ -355,9 +355,18 @@ class _RuntimeSourceCustody:
                      if path == Path(source["root"]) or path.is_relative_to(source["root"])), None)
 
     def descriptor(self, record: Any, *, capability_kind: str = "executor"):
-        selected = self.select(record, capability_kind=capability_kind)
+        original = getattr(record, "captured_from", None)
+        selected = self.select(original or record, capability_kind=capability_kind)
         if selected is None:
             return None
+        if original is not None:
+            # Keep the Runtime grant unchanged. The private descriptor also
+            # names the host copy; the worker proves its bytes against that
+            # grant before accepting the relocated definition or import root.
+            from runtime_protocol.verified_host_launch import canonical
+
+            selected = canonical({**json.loads(selected),
+                                  "snapshot_root": record.definition.metadata["pack_root"]})
         channel = tempfile.TemporaryFile()
         channel.write(selected)
         channel.seek(0)
@@ -4650,10 +4659,15 @@ def _admitted_python_roots(root: Path, definition: Any) -> tuple[Path, ...]:
     return (pack_root.resolve(),)
 
 
-def _source_digest_for_roots(roots: tuple[Path, ...] | list[Path]) -> str:
+def _source_digest_for_roots(
+    roots: tuple[Path, ...] | list[Path], *, captured_roots: Mapping[Path, Path] | None = None,
+) -> str:
     from astrid.core.pack.identity import pack_digest
 
-    measured = [{"root": str(root.resolve()), "digest": pack_digest(root.resolve())} for root in roots]
+    # Relocation preserves legacy multi-root identity labels while measuring
+    # independent captured bytes with the same pack-tree-v1 identity function.
+    measured = [{"root": str(root.resolve()),
+                 "digest": pack_digest((captured_roots or {}).get(root, root).resolve())} for root in roots]
     return measured[0]["digest"] if len(measured) == 1 else _canonical_digest(measured)
 
 
@@ -4715,6 +4729,126 @@ def _pack_capture_inventory(root: Path) -> dict[Path, tuple[int, ...]]:
     return entries
 
 
+class PackCaptureError(HostError):
+    code = "selected_pack_capture_failed"
+    fix = "Restore the selected pack and writable private runtime storage, then retry."
+
+
+def _remove_pack_snapshot(private: Path) -> None:
+    # copy2 preserves read-only install attributes. Make only our independent
+    # copy removable, including on Windows; never chmod a source tree or link.
+    def failed_walk(error):
+        raise error
+
+    for directory, _dirs, files in os.walk(private, followlinks=False, onerror=failed_walk):
+        platform.owner_only(directory)
+        for name in files:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                path.chmod(0o600)
+    shutil.rmtree(private)
+
+
+@contextmanager
+def _portable_pack_capture(generation, *, expected_digest=None):
+    """Acquire independent bytes, then authenticate them before any execution.
+
+    Unlike a second hash of live source, hashing a private copy authenticates
+    the bytes the child will actually read. No hard links, caches or symlinks
+    can carry mutable/unauthenticated source into that copy. The caller must
+    retain this scope through execution and bind every source path to the copy.
+    """
+    if generation is None:
+        yield None
+        return
+    from astrid.core.pack.identity import _EXCLUDED_DIRS, pack_digest
+    from astrid.sdk.storage_root import resolve_runtime_data_root
+
+    pack_id, declared_root, source, root_identity, pin_identity = generation
+    private = None
+    try:
+        inventory = _pack_capture_inventory(source)
+        expected_digest = expected_digest if expected_digest is not None else pack_digest(source)
+        parent = resolve_runtime_data_root() / "runtime" / "pack-captures"
+        if parent.is_symlink():
+            raise OSError("snapshot storage must be a real directory")
+        platform.private_directory(parent)
+        if not platform.is_owner_only(parent):
+            raise OSError("snapshot storage is not owner-only")
+        private = parent / secrets_module.token_hex(16)
+        platform.private_directory(private)
+        if not platform.is_owner_only(private):
+            raise OSError("snapshot directory is not owner-only")
+        snapshot = private / source.name
+
+        def ignore(directory, names):
+            ignored = []
+            for name in names:
+                mode = (Path(directory) / name).lstat().st_mode
+                if ((stat.S_ISDIR(mode) and name in _EXCLUDED_DIRS)
+                        or (stat.S_ISREG(mode) and (name == ".git" or name.endswith((".pyc", ".pyo"))))):
+                    ignored.append(name)
+            return ignored
+
+        # Preserve links as links so pack_digest rejects them, rather than
+        # following a link raced into the source. copy2 creates new file bytes.
+        shutil.copytree(source, snapshot, symlinks=True, ignore=ignore)
+        if pack_digest(snapshot) != expected_digest:
+            raise PackCaptureError("selected pack snapshot digest mismatch; refusing execution")
+        if (declared_root.resolve() != source
+                or _pack_stat_identity(source) != root_identity
+                or _pack_stat_identity(source / "PIN") != pin_identity
+                or _pack_capture_inventory(source) != inventory):
+            raise PackCaptureError("selected pack changed during snapshot capture; refusing execution")
+        captured = (pack_id, snapshot, snapshot, _pack_stat_identity(snapshot),
+                    _pack_stat_identity(snapshot / "PIN"))
+    except BaseException as exc:
+        if private is not None:
+            try:
+                _remove_pack_snapshot(private)
+            except OSError as cleanup:
+                raise PackCaptureError("selected pack snapshot cleanup failed") from cleanup
+        if isinstance(exc, PackCaptureError):
+            raise
+        if isinstance(exc, (OSError, ValueError, HostError)):
+            raise PackCaptureError("cannot make or verify selected pack snapshot; refusing execution") from exc
+        raise
+    try:
+        yield captured
+    finally:
+        try:
+            _remove_pack_snapshot(private)
+        except OSError as exc:
+            raise PackCaptureError("selected pack snapshot cleanup failed") from exc
+
+
+def _relocate_pack_definition(definition, source: Path, snapshot: Path):
+    """Rebind source paths without reloading an admitted manifest."""
+    def relocate(value):
+        if not isinstance(value, str):
+            return value
+        path = Path(value)
+        if path.is_absolute() and path.is_relative_to(source):
+            return str(snapshot / path.relative_to(source))
+        return value
+
+    metadata = {key: relocate(value) for key, value in definition.metadata.items()}
+    command = definition.command
+    if command is not None:
+        command = replace(command, argv=tuple(relocate(arg) for arg in command.argv),
+                          cwd=relocate(command.cwd),
+                          env={key: relocate(value) for key, value in command.env.items()})
+    return replace(definition, metadata=metadata, command=command)
+
+
+def _relocate_pack_record(record, source: Path, snapshot: Path):
+    return replace(record, definition=_relocate_pack_definition(record.definition, source, snapshot),
+                   source_root=snapshot / record.source_root.relative_to(source),
+                   manifest_path=(snapshot / record.manifest_path.relative_to(source)
+                                  if record.manifest_path is not None else None),
+                   captured_from=record)
+
+
 @contextmanager
 def _unavailable_pack_capture(generation):
     if generation is not None:
@@ -4728,10 +4862,10 @@ def _select_pack_capture():
         try:
             import fcntl
         except ImportError:
-            pass
+            return _unavailable_pack_capture
         else:
             return partial(_selected_pack_capture, lease_api=fcntl)
-    return _unavailable_pack_capture
+    return _portable_pack_capture
 
 
 @contextmanager
@@ -4818,7 +4952,12 @@ def _run_pack_provenance(
     """Capture identity, PIN and observed digest from one stable selected generation."""
     if selected_generation is _UNSET_PACK_GENERATION:
         generation = _selected_pack_generation(record)
-        with _standalone_pack_capture(generation):
+        with _standalone_pack_capture(generation) as captured:
+            if captured is not None:
+                generation = captured
+                record = SimpleNamespace(definition=SimpleNamespace(metadata={
+                    **record.definition.metadata, "pack_root": str(captured[2]),
+                }))
             provenance = _run_pack_provenance(record, observed_digest, generation)
         return provenance
     generation = selected_generation
@@ -5039,6 +5178,8 @@ class CapabilityRecord:
     approval_reason: str | None = None
     adapter_spec: AdapterSpec | None = None
     adapter_error: str | None = None
+    # Host-only authority for a verified portable relocation; never serialized.
+    captured_from: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Cloned records pass through __dict__, so derive this from the current
@@ -10138,7 +10279,8 @@ class GenericPackHost:
             if child_bridge is None:
                 from astrid.core.pack.identity import pack_digest
 
-                captured_root = Path(record.source_root)
+                captured_root = (Path(record.definition.metadata["pack_root"])
+                                 if record.captured_from is not None else Path(record.source_root))
                 argv = [sys.executable, "-m", "astrid.core.execution.generic_host_worker",
                         "--pack-command", json.dumps({
                             "pack_id": captured_root.name, "root": str(captured_root),
@@ -10411,6 +10553,7 @@ class GenericPackHost:
         network_broker_required: bool = False,
         storage_estimate: Mapping[str, int] | None = None,
         child_bridge: Any | None = None,
+        captured_record: CapabilityRecord | None = None,
     ) -> Any:
         """Run one pack capability in a dedicated child process.
 
@@ -10507,8 +10650,8 @@ class GenericPackHost:
         inherited_fds: tuple[int, ...] = ()
         source_channel = None
         if _runtime_external_sources is not None:
-            record = (self._orchestrators.get(capability_id) if capability_kind == "orchestrator"
-                      else self.capabilities.get(capability_id))
+            record = captured_record or (self._orchestrators.get(capability_id) if capability_kind == "orchestrator"
+                                         else self.capabilities.get(capability_id))
             if record is None:
                 raise HostError("external execution requires a discovered definition")
             if definition != record.definition.to_dict():
@@ -11598,11 +11741,13 @@ class GenericPackHost:
                 lifetime.assert_deadline()
                 if abort.is_set() or self._shutdown.is_set():
                     raise HostCancelled("session wait cancelled")
-                return self._run_task_impl(
-                    task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
-                    keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
-                    _terminal=terminal,
-                )
+                with ExitStack() as pack_captures:
+                    terminal["pack_captures"] = pack_captures
+                    return self._run_task_impl(
+                        task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
+                        keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
+                        _terminal=terminal,
+                    )
             finally:
                 self._session_task_lock.release()
         except BaseException as exc:
@@ -11754,10 +11899,48 @@ class GenericPackHost:
                 ) from runtime_exc
             raise HostError(str(error)) from error
 
+        captured_record = None
+        captured_pack_map = None
+        execution_source_digest = None
         try:
             selected_generation = _selected_pack_generation(record)
-            with self._pack_capture(selected_generation):
+            if self._pack_capture is _portable_pack_capture and selected_generation is not None:
+                from astrid.core.pack.identity import pack_digest
+
+                source = selected_generation[2]
+                source_roots = _admitted_source_roots(record.source_root, record.definition)
                 run_source_digest = _run_source_digest(record)
+                selected = self._selected_pack_map(record)
+                pack_id = selected_generation[0]
+                expected = selected.get(pack_id, {}).get("source_digest") or pack_digest(source)
+                selected_generation = _terminal["pack_captures"].enter_context(
+                    self._pack_capture(selected_generation, expected_digest=expected))
+                snapshot = selected_generation[2]
+                relocated_roots = {path: snapshot / path.relative_to(source) for path in source_roots}
+                if _source_digest_for_roots(source_roots, captured_roots=relocated_roots) != run_source_digest:
+                    raise PackCaptureError("admitted capability source digest changed; snapshot digest mismatch")
+                record = _relocate_pack_record(record, source, snapshot)
+                captured_record = record
+                captured_pack_map = {}
+                for dependency, selection in selected.items():
+                    if dependency == pack_id:
+                        dependency_snapshot = snapshot
+                    else:
+                        dependency_record = SimpleNamespace(definition=SimpleNamespace(metadata={
+                            "source_pack": dependency, "pack_root": selection["root"],
+                        }))
+                        dependency_generation = _selected_pack_generation(dependency_record)
+                        captured = _terminal["pack_captures"].enter_context(
+                            self._pack_capture(dependency_generation, expected_digest=selection["source_digest"]))
+                        dependency_snapshot = captured[2]
+                    captured_pack_map[dependency] = {**selection, "root": str(dependency_snapshot)}
+                # Child admission uses physical roots. Receipts retain the
+                # original admission digest, including legacy root labels.
+                execution_source_digest = _source_digest_for_roots(
+                    _admitted_source_roots(record.source_root, record.definition))
+            with (nullcontext() if captured_record is not None else self._pack_capture(selected_generation)):
+                if captured_record is None:
+                    run_source_digest = _run_source_digest(record)
                 # A delegated child carries the digest its parent bridge admitted.
                 # Admission observes live source, so an edit after that must
                 # not reach execution under the admitted identity.
@@ -11769,6 +11952,8 @@ class GenericPackHost:
                 if isinstance(raw_spec, Mapping) and "delegated_parent" in raw_spec and not admitted_source:
                     raise HostError("delegated child spec lacks admitted_source_digest; refusing before launch")
                 if admitted_source is not None and admitted_source != run_source_digest:
+                    if captured_record is not None:
+                        raise PackCaptureError("admitted capability source digest changed; snapshot digest mismatch")
                     raise HostError("admitted capability source digest changed")
                 # Capture the selected identity, PIN and observed tree together
                 # before execution. Publish only after the fence validates.
@@ -11781,6 +11966,10 @@ class GenericPackHost:
                 if provenance is not None else None
             )
         except Exception as exc:
+            if (self._pack_capture is _portable_pack_capture
+                    and record.definition.metadata.get("pack_root")
+                    and not isinstance(exc, PackCaptureError)):
+                exc = PackCaptureError(f"selected pack snapshot capture refused: {exc}")
             fail_admission(exc)
 
         registration_error = self._registration_admission_reason()
@@ -11801,7 +11990,9 @@ class GenericPackHost:
                 from astrid.core.generation.availability import require_action_available
                 require_action_available(capability_id)
             self.preflight(capability_id)
-            record = self.capabilities[capability_id]
+            live_record = self.capabilities[capability_id]
+            record = (replace(captured_record, preflight=live_record.preflight, ready=live_record.ready)
+                      if captured_record is not None else live_record)
             _terminal["record"] = record
             if not record.ready:
                 raise HostError(
@@ -11931,10 +12122,12 @@ class GenericPackHost:
             "task_id": task_id,
             "attempt_id": attempt_id,
             "fence": fence,
-            "capability_digest": record.capability_digest,
-            "source_digest": run_source_digest,
+            "capability_digest": (_capability_digest(record.definition.to_dict())
+                                  if captured_record is not None else record.capability_digest),
+            "source_digest": execution_source_digest or run_source_digest,
             "dependency_digest": record.dependency_digest,
-            "selected_pack_map": self._selected_pack_map(record),
+            "selected_pack_map": (captured_pack_map if captured_pack_map is not None
+                                  else self._selected_pack_map(record)),
             "version": record.definition.version,
             "source_root": str(record.source_root),
             "source_roots": [str(root) for root in _admitted_source_roots(record.source_root, record.definition)],
@@ -12791,6 +12984,7 @@ class GenericPackHost:
                             network_broker_required=network_broker is not None,
                             storage_estimate=storage_estimate,
                             child_bridge=child_bridge,
+                            **({"captured_record": captured_record} if captured_record is not None else {}),
                         )
                     finally:
                         worker_env.clear()

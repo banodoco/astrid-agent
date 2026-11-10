@@ -1,0 +1,535 @@
+{
+  "schema_version": 3,
+  "pack_api": "2.0",
+  "dependencies": {"python_requirements": ["Pillow"]},
+  "id": "astrid_motion",
+  "name": "Astrid Motion Pack",
+  "version": "0.1.0",
+  "status": "experimental",
+  "domain": "media",
+  "stability": "experimental",
+  "support": "project",
+  "visibility": "visible",
+  "description": "Reusable Remotion elements for the Pixel Modernism explainer look: stepped pixel plates and sprites, editorial type, callouts, wipes, and motion graphics.",
+  "keywords": [
+    "motion",
+    "pixel",
+    "remotion",
+    "element",
+    "explainer",
+    "callout"
+  ],
+  "permissions": [
+    {
+      "id": "project_files",
+      "reason": "Provides render-time visual element definitions consumed by the rendering pack; managed media arrives through clip asset keys."
+    }
+  ],
+  "documentation": {
+    "kind": "skill",
+    "path": "docs/SKILL.md"
+  },
+  "agent": {
+    "purpose": "Use when a timeline needs a Pixel Modernism motion building block such as pixel plates, stepped transparent sprites, editorial type, floating callouts, or pixel-block wipes.",
+    "do_not_use_for": "This pack provides effect elements only. Use pixel or generation packs to prepare artwork and the rendering pack to render the timeline.",
+    "normal_entrypoints": [
+
+    ]
+  },
+  "rendering": {
+    "effects/am-burst": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-burst/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-burst/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-burst/element.yaml"
+        }
+      ]
+    },
+    "effects/am-callout": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-callout/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-callout/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-callout/element.yaml"
+        }
+      ]
+    },
+    "effects/am-churn": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-churn/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-churn/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-churn/element.yaml"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-churn/ledger.ts"
+        }
+      ]
+    },
+    "effects/am-discord": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-discord/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-discord/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-discord/discord-core.ts"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-discord/element.yaml"
+        }
+      ]
+    },
+    "effects/am-droste": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-droste/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-droste/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-droste/element.yaml"
+        }
+      ]
+    },
+    "effects/am-flap": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-flap/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-flap/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-flap/element.yaml"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-flap/flap.tsx"
+        }
+      ]
+    },
+    "effects/am-footage": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-footage/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-footage/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-footage/helper.ts"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-footage/scene.ts"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-footage/element.yaml"
+        }
+      ]
+    },
+    "effects/am-orbit": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-orbit/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-orbit/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-orbit/element.yaml"
+        }
+      ]
+    },
+    "effects/am-orgchart": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-orgchart/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-orgchart/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-orgchart/element.yaml"
+        }
+      ]
+    },
+    "effects/am-pixel-wipe": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-pixel-wipe/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-pixel-wipe/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-pixel-wipe/element.yaml"
+        }
+      ]
+    },
+    "effects/am-pixel-shape": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-pixel-shape/element.yaml",
+      "resources": [
+        {"kind": "implementation", "path": "rendering/elements/_shared/am.tsx"},
+        {"kind": "implementation", "path": "rendering/elements/effects/am-pixel-shape/component.tsx"},
+        {"kind": "implementation", "path": "rendering/elements/effects/am-pixel-shape/shape-cells.ts"},
+        {"kind": "implementation", "path": "rendering/elements/effects/am-pixel-shape/element.yaml"}
+      ]
+    },
+    "effects/am-presenter": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-presenter/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-presenter/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-presenter/element.yaml"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-presenter/motion.ts"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-presenter/presenter-core.ts"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-presenter/scene.ts"
+        }
+      ]
+    },
+    "effects/am-quote": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-quote/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-quote/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-quote/element.yaml"
+        }
+      ]
+    },
+    "effects/am-seasons": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-seasons/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-seasons/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-seasons/element.yaml"
+        }
+      ]
+    },
+    "effects/am-snap-plate": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-snap-plate/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-snap-plate/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-snap-plate/element.yaml"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-snap-plate/motion.ts"
+        }
+      ]
+    },
+    "effects/am-sprite": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-sprite/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-sprite/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-sprite/element.yaml"
+        }
+      ]
+    },
+    "effects/am-terminal": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-terminal/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-terminal/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-terminal/element.yaml"
+        }
+      ]
+    },
+    "effects/am-tweet": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-tweet/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-tweet/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-tweet/element.yaml"
+        }
+      ]
+    },
+    "effects/am-type": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-type/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-type/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-type/position-keys.ts"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-type/element.yaml"
+        }
+      ]
+    },
+    "effects/am-ui-sketch": {
+      "type": "element",
+      "path": "rendering/elements/effects/am-ui-sketch/element.yaml",
+      "resources": [
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/am.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/_shared/mosaic.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-ui-sketch/component.tsx"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-ui-sketch/element.yaml"
+        }
+      ]
+    }
+  },
+  "resources": [
+    {
+      "kind": "fixture",
+      "path": "preview/scenes.json"
+    },
+    {
+      "kind": "fixture",
+      "path": "preview/render.mjs"
+    },
+    {
+      "kind": "fixture",
+      "path": "preview/make_art.py"
+    },
+    {
+      "kind": "fixture",
+      "path": "preview/src/Preview.tsx"
+    },
+    {
+      "kind": "fixture",
+      "path": "preview/src/Root.tsx"
+    },
+    {
+      "kind": "fixture",
+      "path": "preview/src/index.ts"
+    }
+  ]
+}

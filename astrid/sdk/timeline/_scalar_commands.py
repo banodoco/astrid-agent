@@ -85,12 +85,16 @@ def clip_set_params(ctx, command):
     else:
         if 'schema_source' in command['args']:
             raise CommandError('schema_source requires a selected project pack element', ref=ref)
-        schema = element_schema(element)
+        # An equal value leaves params unchanged; a changed value or removal needs the element's schema.
+        schema = element_schema(element) if changed or clear else {}
     _validate_param_values(ref, changed, schema)
     if values:
         ctx.object(ref, ['params'])
     for key in sorted(values):
-        ctx.write(ref, ['params', key], values[key])
+        # Keep the literal stored representation on an equal write (e.g. 1 versus 1.0),
+        # while recording the write so inverse/intervening-write guards still apply.
+        value = values[key] if key in changed else ctx.state.get(ref, ['params', key])['value']
+        ctx.write(ref, ['params', key], value)
     for key in sorted(clear):
         ctx.clear(ref, ['params', key])
 

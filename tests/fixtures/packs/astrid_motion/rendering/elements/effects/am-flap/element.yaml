@@ -1,0 +1,83 @@
+schema_version: 1
+id: am-flap
+kind: effect
+pack_id: astrid_motion
+short_description: "Split-flap readout that flips through a drum to each target, left to right."
+description: "Dark split-flap tiles with a 1 px split line and Departure Mono glyphs. values is a keyframed list of targets; each tile flips through the intermediate glyphs on two-frame steps, and tiles start one stagger apart (left to right). Positions snap to the 6 px grid. Use it for dates, counters and short words. Optional accentIndex paints characters orange, and an optional caption sits above the strip."
+keywords:
+  - flap
+  - split-flap
+  - departure-board
+  - readout
+  - date
+  - counter
+  - pixel
+  - mono
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: Split-flap readout overlay.
+metadata:
+  label: AM Flap
+  description: Split-flap readout with stepped drum flips and staggered tiles.
+  whenToUse: Use for a date, number or short word that changes on screen, such as a days-since counter or a date that ticks day by day. Keep every value the same length (shorter values are padded with spaces). Flip steps are two frames by default.
+  role: "card"
+  text: ["values[].text"]
+  summary: "Split-flap readout"
+  geometry: {"position":["x","y"],"scale":null,"full_frame":false}
+  units: {"frames":["values[].at"]}
+dependencies:
+  js_packages: []
+  python_requirements: []
+defaults:
+  values:
+    - {text: "26.10.25", at: 0}
+  tileW: 60
+  tileH: 84
+  gap: 6
+  color: "#F7F4ED"
+  tileColor: "#25241F"
+  accentIndex: []
+  accentColor: "#ED6B23"
+  x: 96
+  y: 96
+  align: left
+  label: ""
+  labelColor: "#615E55"
+  stagger: 2
+  stepFrames: 2
+schema:
+  type: object
+  additionalProperties: false
+  properties:
+    values:
+      type: array
+      minItems: 1
+      description: Keyframed targets. at is the frame (relative to the clip) when the flip toward text begins.
+      items:
+        type: object
+        required: [text, at]
+        properties:
+          text: {type: string}
+          at: {type: number}
+    tileW: {type: number, minimum: 6, description: Tile width in px. Snaps to 6.}
+    tileH: {type: number, minimum: 6, description: Tile height in px. Snaps to 6.}
+    gap: {type: number, minimum: 0, description: Gap between tiles in px.}
+    color: {type: string, description: Glyph colour.}
+    tileColor: {type: string, description: Tile plate colour.}
+    accentIndex:
+      type: array
+      items: {type: integer, minimum: 0}
+      description: Character positions (0-based) painted in accentColor.
+    accentColor: {type: string}
+    x: {type: number, description: Anchor x in px. Its meaning follows align.}
+    y: {type: number, description: Top of the readout in px.}
+    align:
+      type: string
+      enum: [left, center, right]
+      description: Which edge or centre of the strip sits at x.
+    label: {type: string, description: Small mono caption above the strip.}
+    labelColor: {type: string}
+    stagger: {type: integer, minimum: 0, maximum: 12, description: Frames between neighbouring tiles starting to flip.}
+    stepFrames: {type: integer, minimum: 1, maximum: 12, description: Frames per drum step.}

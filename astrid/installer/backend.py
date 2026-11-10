@@ -1277,8 +1277,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         self.run([self.uv, "pip", "install", *link_mode, "--python", python, "--no-deps", runtime,
                   runtime / "packages" / "python", agent, vibecomfy, *sibling_sources],
                  extra_env=source_install_env)
-        env = install_tools(manifest, folder / "tools", platform_target(), self.run, note=self.diagnostic)
         prior = current(root) or self.existing(data)
+        env = install_tools(manifest, folder / "tools", platform_target(), self.run, note=self.diagnostic,
+                            recorded_git=prior.env.get("ASTRID_GIT_EXECUTABLE") if prior else None)
         env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
                     "ASTRID_INSTALL_UV": str(self.uv),
                     "ASTRID_RUNTIME_DOOR_PORT": os.environ.get(

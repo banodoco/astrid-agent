@@ -1,0 +1,150 @@
+schema_version: 1
+id: am-footage
+kind: effect
+pack_id: astrid_motion
+short_description: 'Real-footage slot: a filmed shot with crop, push and pixelate in/out; a slot card when the media is missing.'
+description: Plays a real shot from clip.asset (video via OffthreadVideo, or a still) cover-fitted to the frame. zoom and focus (fractions of the source) crop it, push.to slowly zooms over the clip, and mosaicIn / mosaicOut pixelate it into 6, 12, 24 and 48 px blocks on hard steps (the move between real footage and the 320x180 pixel world). faceZone and handMark declare where the face and the palm must sit, in canvas px, so overlays and lint can keep them clear.
+keywords:
+- footage
+- video
+- slot
+- a-roll
+- b-roll
+- placeholder
+- pixelate
+- mosaic
+- transition
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: Full-frame footage plate.
+metadata:
+  label: AM Footage
+  description: Real-footage slot with crop, push, pixelate transition and a slot card when the media is missing.
+  whenToUse: Use for any shot that will be filmed for real (talking head, desk time-lapse, a hand, a screen recording). Put the take on clip.asset; until it exists, leave the asset off and the slot card stands in. Declare faceZone (talking head) or handMark (hand) so overlays avoid the face and composites land on the palm. Use mosaicOut on the last frames before a cut into pixel art, and mosaicIn on the first frames after one.
+  coverage: "picture"
+defaults:
+  zoom: 1
+  focus:
+    x: 0.5
+    y: 0.5
+  volume: 0
+  background: '#1F1F1F'
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    src:
+      type: string
+      description: Static URL or public path. Managed media goes on clip.asset.
+    slot:
+      type: string
+      description: Slot id (for example A-01)
+      shown on the label and the slot card.: null
+    kind:
+      type: string
+      description: a-roll, b-roll, hand, window or screen (slot card heading).
+    label:
+      type: string
+      description: Corner label. Default PLACEHOLDER · REAL FOOTAGE · <slot>.
+    placeholder:
+      type: boolean
+      description: True while the media is a stand-in; shows the label.
+    spec:
+      type: string
+      description: Framing note for the slot card.
+    zoom:
+      type: number
+      minimum: 1
+      description: Crop zoom about focus (1 = cover fit).
+    focus:
+      type: object
+      description: Fractions of the source (0..1) placed at the frame centre, clamped to the source.
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+    push:
+      type: object
+      description: Linear zoom to `to` over the clip.
+      properties:
+        to:
+          type: number
+          minimum: 1
+    mosaicIn:
+      type: object
+      description: 'Pixelate in: {frames (8), from (48), steps?}. Starts at the coarsest block and resolves on hard steps.'
+    mosaicOut:
+      type: object
+      description: 'Pixelate out: {frames (8), to (48), steps?}. Coarsens over the clip''s last frames.'
+    faceZone:
+      type: object
+      description: Canvas px box the talking head's face must sit in. Overlays must not cover it.
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+        w:
+          type: number
+        h:
+          type: number
+    handMark:
+      type: object
+      description: Canvas px of the palm centre (and palm width `size`) for a composite such as the mink on the hand.
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+        size:
+          type: number
+    guides:
+      type: boolean
+      description: Draw the face zone and hand mark over real media too.
+    in:
+      type: number
+      minimum: 0
+      description: Seconds into the media where the clip starts.
+    volume:
+      deprecated: true
+      type: number
+      minimum: 0
+      maximum: 1
+      description: 'Deprecated: set the clip-level volume (`--volume`, clip.look(volume=...)); this param is read only when the clip has none.'
+    sourceSize:
+      type: string
+      description: Source WxH when the registry has no resolution.
+    background:
+      type: string
+      description: The field behind the picture (and around the inset).
+    inset:
+      type: object
+      description: 'Place the picture in a framed rect on the background field instead of filling the frame (a real screenshot shown as a document on the page). Canvas px {x, y, w, h}, radius (12), shadow (true = soft drop shadow, false, or a CSS box-shadow), border (CSS colour for a 1 px ring). zoom, focus, push and mosaic work inside the rect; the label hangs under it.'
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+        w:
+          type: number
+        h:
+          type: number
+        radius:
+          type: number
+        border:
+          type: string
+    tint:
+      type: object
+      properties:
+        color:
+          type: string
+        opacity:
+          type: number
+          minimum: 0
+          maximum: 1

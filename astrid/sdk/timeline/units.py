@@ -165,9 +165,11 @@ _DONOR_UNIT_DECLARATIONS = {
 
 
 def _declared_units(element: str) -> Mapping[str, Any]:
-    from astrid.sdk.timeline_address import element_schema
+    # Units convert values for display as well as for writes; every write is refused by the key and
+    # value checks (element_schema) before it converts, so an undeclared element only reads here.
+    from astrid.sdk.timeline_address import declared_element_schema
 
-    return element_schema(element).get("units") or _DONOR_UNIT_DECLARATIONS.get(element, {})
+    return (declared_element_schema(element) or {}).get("units") or _DONOR_UNIT_DECLARATIONS.get(element, {})
 
 
 def element_units(element: str) -> tuple[float, frozenset[str]]:

@@ -547,10 +547,10 @@ class Clip(_Suggest):
 
         A key the element does not declare (its element.yaml) is refused with the keys it takes; timing is
         not a param (``.hold_for(0.6)``, ``.until(…)``, ``.on(…)``). ``_allow_new=True`` adds one on purpose."""
-        from astrid.sdk.timeline_address import element_schema
+        from astrid.sdk.timeline_address import declared_element_schema, element_param_names, element_schema
 
         allow_new = bool(params.pop("_allow_new", False))
-        declared = set(element_schema(self.element).get("properties") or {})
+        declared = element_param_names(self.element, self.params)
         look: dict[str, Any] = {}
         for key in list(params):  # a clip-level field the element does not declare is written with clip.look
             if key in declared:
@@ -559,6 +559,10 @@ class Clip(_Suggest):
                 look[key] = params.pop(key)
             elif cf.is_reserved(key):
                 raise TimelineEditError(f"{self.address}: {key} is a clip-level field that is not available yet")
+        if params and declared_element_schema(self.element) is None:
+            if any(not self._param_unchanged(key, value) for key, value in params.items()):
+                element_schema(self.element)  # refuse before writing even the clip-level fields
+            params = {}  # leave opaque values in place, including their original numeric representation
         if look:
             self.set_look(**look)  # validated and written before any element param: all-or-nothing across both
             for key in look:
@@ -647,11 +651,23 @@ class Clip(_Suggest):
                      "on": ".on(MOMENT)", "at": ".on(MOMENT) or .enter_at(TIME)", "start": ".on(MOMENT)",
                      "end": ".until(MOMENT)", "asset": ".swap_asset(KEY)"}
 
+    def _param_unchanged(self, path: str, value: Any) -> bool:
+        from ._command_state import equal
+
+        full = f"params.{path}"
+        if value is None or any(p == full or p.startswith((full + "[", full + "."))
+                                for p in intent.formulas(self.data)):
+            return False  # null removes a value; a literal also removes an existing formula
+        stored = _get_path(self.data, full)
+        shown = to_canvas(self.element, path, stored) if path in self.params else stored
+        return equal(shown, value)
+
     def _check_param_keys(self, keys: list[str]) -> None:
-        from astrid.sdk.timeline_address import declared_params, element_schema, unknown_params
+        from astrid.sdk.timeline_address import declared_params, element_param_names, unknown_params
 
         tops = [re.split(r"[.\[]", k, maxsplit=1)[0] for k in keys]
-        timing = [k for k in tops if k in self._TIMING_WORDS and k not in (element_schema(self.element).get("properties") or {})]
+        declared = element_param_names(self.element, self.params)
+        timing = [k for k in tops if k in self._TIMING_WORDS and k not in declared]
         if timing:
             raise TimelineEditError(f"{self.address}: {', '.join(timing)} is not a param: use "
                                     + "; ".join(f"{k} → {self._TIMING_WORDS[k]}" for k in timing))
@@ -665,6 +681,14 @@ class Clip(_Suggest):
 
     def set_param(self, path: str, value: Any) -> "Clip":
         """Set one param by its address inside the clip (``x``, ``states[3].at``, ``stamp.at``)."""
+        from astrid.sdk.timeline_address import ElementSchemaUnavailable, element_schema
+
+        try:
+            element_schema(self.element)
+        except ElementSchemaUnavailable:
+            if self._param_unchanged(path, value):
+                return self
+            raise
         top = re.split(r"[.\[]", path, maxsplit=1)[0]
         formulas = intent.formulas(self.data)
         full = f"params.{path}"

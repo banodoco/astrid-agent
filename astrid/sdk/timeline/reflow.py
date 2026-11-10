@@ -859,11 +859,16 @@ class _ReflowMixin:
         words = self.words()
         by_id = {w.id: w for w in words}
         slots = self.slots
+        from astrid.sdk.timeline_address import declared_element_schema
+
         for clip in self.clips():
             formulas = intent.formulas(clip.data)
             if not formulas:
                 continue
+            params_resolve = declared_element_schema(clip.element) is not None
             for path, expr in formulas.items():
+                if not params_resolve and (path == "params" or path.startswith(("params.", "params["))):
+                    continue  # unresolved element params and their formula declarations stay opaque
                 try:
                     value = self._evaluate(clip, expr, by_id, words, slots, path)
                 except (TimelineEditError, mo.MomentError, ValueError, KeyError, TypeError) as exc:
