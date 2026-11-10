@@ -23,6 +23,7 @@ from typing import Any
 
 from astrid.core.timeline import moments as mo
 from astrid.sdk import timeline_intent as intent
+from astrid.sdk.timeline._common import TimelineEditError
 
 TIME_RE = re.compile(r"^@?(?:(\d+):)?(\d+(?:\.\d+)?)s?$")
 CLIP_ADDR_RE = re.compile(r"^(c\d+[a-z]?)\.(\S+)$")
@@ -157,7 +158,8 @@ def _drawn_size(clip: Any, entry: dict[str, Any]) -> str:
         return ""
     w, h = int(m.group(1)), int(m.group(2))
     if clip.element == "am-sprite":
-        scale = int((clip.data.get("params") or {}).get("scale") or element_schema(clip.element).get("defaults", {}).get("scale") or 6)
+        declared = declared_element_schema(clip.element) or {}
+        scale = int((clip.data.get("params") or {}).get("scale") or declared.get("defaults", {}).get("scale") or 6)
         return f"drawn {w * scale}×{h * scale} canvas px (scale {scale}: one art px = {scale}×{scale} canvas px)"
     return ""
 
@@ -273,34 +275,80 @@ def _nothing(tl: Any, raw: str) -> str:
 
 _SCHEMAS: dict[str, Any] = {}
 
+# A media clip (footage or audio file) is not an element: it has no element manifest, and the only
+# params it carries are its audio fades (``MEDIA_PARAMS``).
+MEDIA_CLIP_TYPE = "media"
+
+
+class ElementSchemaUnavailable(TimelineEditError):
+    """A clip's element has no declaration Astrid can read, so its params cannot be checked: refuse.
+
+    Raised instead of treating the element as schema-less, which would accept any key or value."""
+
+    code = "element_schema_unavailable"
+
+    def __init__(self, element: str, reason: str = "") -> None:
+        self.element = element
+        self.reason = reason
+        self.cause = {"code": self.code, "message": f"element {element!r} is not declared by any installed pack",
+                      "details": {"element": element, **({"reason": reason} if reason else {})}}
+        super().__init__(
+            f"[{self.code}] {element}: no installed pack declares this element, so its params cannot be "
+            "checked and nothing was written. Install the pack that provides it (`astrid packs add <pack>`; "
+            "`astrid packs list` shows what is installed), then retry."
+            + (f" ({reason})" if reason else ""))
+
+
+def _registered_element(element: str) -> Any:
+    """The element registry's winning declaration for clip type ``element`` (effects first), or None.
+
+    The registry resolves every discovery layer (source, ``local``, managed, personal, extra and
+    ``ASTRID_PACKS_PATH`` roots), so an element that moved to an installable pack resolves from there."""
+    from astrid.core.element.registry import load_default_registry
+
+    try:
+        registry = load_default_registry()
+        candidates = [item for item in registry.list() if item.id == element]
+    except Exception as exc:  # noqa: BLE001 - an unreadable corpus refuses below; it never means "schema-less"
+        raise ElementSchemaUnavailable(element, f"the element registry could not be loaded: {exc}") from exc
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (item.kind != "effects", item.kind))[0]
+
 
 def element_schema(element: str) -> dict[str, Any]:
-    """The element's declared params (``element.yaml`` schema properties), or {} if unknown."""
+    """The element's declared params (``element.yaml`` schema properties) as the element registry resolves it.
+
+    A ``media`` clip is not an element and has an empty schema (its params are ``MEDIA_PARAMS``). Any other
+    clip type no installed pack declares raises :class:`ElementSchemaUnavailable`; it is never schema-less."""
     if element in _SCHEMAS:
         return _SCHEMAS[element]
-    from pathlib import Path
+    if element == MEDIA_CLIP_TYPE:
+        return {}
+    definition = _registered_element(element)
+    if definition is None:
+        raise ElementSchemaUnavailable(element)
+    from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES
 
-    import yaml
-
-    root = Path(__file__).resolve().parents[1] / "packs"
-    found: dict[str, Any] = {}
-    # V3 packs keep rendering elements under <pack>/rendering/elements, while
-    # older packs used <pack>/elements. Search the sealed pack tree by the
-    # element's canonical directory name so both layouts resolve the same YAML.
-    for path in root.rglob("element.yaml"):
-        if path.parent.name != element:
-            continue
-        try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:  # noqa: BLE001 - an unreadable manifest just means "unknown"
-            continue
-        schema = doc.get("schema") or {}
-        found = {"properties": dict(schema.get("properties") or {}), "defaults": dict(doc.get("defaults") or {}),
-                 "additional": bool(schema.get("additionalProperties", True)), "path": str(path),
-                 "units": dict((doc.get("metadata") or {}).get("units") or {})}
-        break
+    schema = definition.schema or {}
+    manifest = next((definition.root / name for name in ELEMENT_MANIFEST_NAMES
+                     if (definition.root / name).is_file()), definition.root / ELEMENT_MANIFEST_NAMES[0])
+    found = {"properties": dict(schema.get("properties") or {}), "defaults": dict(definition.defaults or {}),
+             "additional": bool(schema.get("additionalProperties", True)), "path": str(manifest),
+             "units": dict((definition.metadata or {}).get("units") or {})}
     _SCHEMAS[element] = found
     return found
+
+
+def declared_element_schema(element: str) -> dict[str, Any] | None:
+    """:func:`element_schema` for read-only views, or None when no installed pack declares the element.
+
+    Showing a timeline must not need every element installed. Every validation and write path uses
+    :func:`element_schema`, which refuses instead."""
+    try:
+        return element_schema(element)
+    except ElementSchemaUnavailable:
+        return None
 
 
 def formula_text(expr: Any) -> str:
@@ -337,13 +385,12 @@ def _type_of(spec: dict[str, Any]) -> str:
     return str(kind)
 
 
-# A media clip (footage or audio file) has no element manifest; the only params it carries are its audio fades.
 MEDIA_PARAMS = frozenset({"fadeIn", "fadeOut", "fadeInCurve", "fadeOutCurve"})
 
 
 def declared_params(element: str) -> list[str]:
     """The param names the element takes, sorted (a media clip takes only its fade params)."""
-    if element == "media":
+    if element == MEDIA_CLIP_TYPE:
         return sorted(MEDIA_PARAMS)
     return sorted(element_schema(element).get("properties") or {})
 

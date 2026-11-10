@@ -354,9 +354,9 @@ class _CheckMixin:
             if "scale" in clip.data:
                 value = clip.data["scale"]
             else:
-                from astrid.sdk.timeline_address import element_schema
+                from astrid.sdk.timeline_address import declared_element_schema
 
-                schema = element_schema(clip.element)
+                schema = declared_element_schema(clip.element) or {}  # an undeclared element blocks in _type_mismatches
                 default = (((schema.get("properties") or {}).get("scale") or {}).get("default", 1))
                 value = params.get("scale", default)
             try:
@@ -578,7 +578,7 @@ class _CheckMixin:
 
     def _type_mismatches(self) -> list[str]:
         """Params whose value has the wrong type: text where the element (or a formula) wants a number."""
-        from astrid.sdk.timeline_address import element_schema
+        from astrid.sdk.timeline_address import ElementSchemaUnavailable, element_schema
 
         out = []
         for clip in self.clips():
@@ -592,7 +592,11 @@ class _CheckMixin:
                             validate_audio_curve(params[key])
                         except (TypeError, ValueError) as exc:
                             out.append(f"{clip.address}.{key} is invalid: {exc}")
-            props = (element_schema(clip.element).get("properties") or {}) if params else {}
+            try:
+                props = (element_schema(clip.element).get("properties") or {}) if params else {}
+            except ElementSchemaUnavailable as exc:  # its params cannot be checked: blocking, never schema-less
+                out.append(f"{clip.address}: {exc}")
+                continue
             for key, value in params.items():
                 for path, text, want in _text_where_number(key, value, props.get(key) or {}):
                     stripped = text.strip()
