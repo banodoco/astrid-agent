@@ -285,6 +285,7 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
         args = ["systemd-run", "--user", "--no-block", "--expand-environment=no",
                 f"--unit={name}", "--collect", "--property=Type=oneshot",
                 "--property=Restart=no",
+                f"--setenv=HOME={descriptor['home']}",
                 f"--property=StandardOutput=append:{_systemd_path(log)}",
                 f"--property=StandardError=append:{_systemd_path(log)}",
                 "--", *command]
