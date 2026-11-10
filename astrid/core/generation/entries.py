@@ -15,6 +15,10 @@ _KINDS = frozenset({'image', 'video', 'audio'})
 _DEFAULT_MODE_CANDIDATES = {'image': ('t2i',), 'video': ('t2v',), 'audio': ('music',)}
 
 
+class MissingRequiredEntryInputsError(ValueError):
+    """Entry validation failed because one or more required inputs are absent."""
+
+
 def user_entries() -> list[dict[str, Any]]:
     """Saved entries (``VIBECOMFY_ENTRIES_DIR``), then entries contributed through ``vibecomfy.workflows``."""
     try:
@@ -715,7 +719,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                    and (name in values and (values[name] is None or isinstance(values[name], str) and not values[name].strip())
                         or name not in values and (port.get('_explicit_required') or port.get('default') in (None, '')))]
         if missing:
-            raise ValueError('missing required entry inputs: ' + ', '.join(missing))
+            raise MissingRequiredEntryInputsError('missing required entry inputs: ' + ', '.join(missing))
     return values
 
 
@@ -950,6 +954,9 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     observed = client.object_info()
     if not isinstance(observed, dict):
         raise ValueError("target model inventory is malformed")
+    if align == 'trust':
+        from .target_inventory import trust_declared_loader_choices
+        observed = trust_declared_loader_choices(observed, workflow)
     from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
     issues = []
     for class_type in sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys()):
@@ -983,7 +990,7 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
             fixes=[{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
                     'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]))
     custody = {}
-    if client.target.kind == "managed" and client.target.facts.get("model_root") is not None:
+    if align != 'trust' and client.target.kind == "managed" and client.target.facts.get("model_root") is not None:
         from .model_root import validate_model_root_binding
         # This selected local managed target was provisioned through its lock.
         # Re-verify local bytes before projecting its inventory; no host registry
@@ -995,7 +1002,9 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         from .target_inventory import declared_rows
         custody = {"auxiliary_model_custody": "target", "target_model_assets": list(declared_rows(workflow))}
     return TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
-        model_availability="target", refresh_object_info=client.object_info, **custody)
+        model_availability="target",
+        refresh_object_info=(lambda: trust_declared_loader_choices(client.object_info(), workflow))
+                            if align == 'trust' else client.object_info, **custody)
 
 
 def entry_hooks(entry: Mapping[str, Any], registry: Any = None) -> dict[str, Any]:

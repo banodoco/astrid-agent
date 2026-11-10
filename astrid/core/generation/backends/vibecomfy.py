@@ -482,6 +482,7 @@ class VibeComfyBackend(BackendAdapter):
         *,
         resolve_target: bool = False,
         retain_source: Any = None,
+        align: str = "check",
     ) -> tuple[Any, dict[str, Any] | None, Any | None]:
         """Resolve and bind a pinned graph for the existing workflow route."""
         # Lazy-import VibeComfy, and snapshot only its repository
@@ -506,7 +507,8 @@ class VibeComfyBackend(BackendAdapter):
             entries = [candidate for candidate in registry.list_all(include_closed=True)
                        if candidate.id != entry.id]
             registry = ModelRegistry([entry, *entries])
-            plan, observed = _capture_model_resolution(client, registry, entry.id, mode)
+            plan, observed = _capture_model_resolution(client, registry, entry.id, mode,
+                                                       **({"align": "trust"} if align == "trust" else {}))
             target_schema = TargetSchemaProvider.from_object_info(
                 observed, server_url=client.http_origin, model_availability="target",
                 refresh_object_info=client.object_info,
@@ -554,6 +556,13 @@ class VibeComfyBackend(BackendAdapter):
         if plan is not None:
             _bind_target_model_roles(wf, backend_spec, plan["roles"])
         if target_schema is not None:
+            if align == "trust":
+                from astrid.core.generation.target_inventory import declared_rows, trust_declared_loader_choices
+                observed = trust_declared_loader_choices(observed, wf)
+                target_schema = TargetSchemaProvider.from_object_info(
+                    observed, server_url=client.http_origin, model_availability="target",
+                    auxiliary_model_custody="target", target_model_assets=declared_rows(wf),
+                    refresh_object_info=lambda: trust_declared_loader_choices(client.object_info(), wf))
             from astrid.core.generation.asset_gaps import require_workflow_assets
             require_workflow_assets(wf, observed, entry.id)
 
