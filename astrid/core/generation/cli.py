@@ -109,6 +109,16 @@ def _gpu_placement(placement, gpu_types, parser):
     return {"kind": "runpod", "policy": {"gpu_types": list(gpu_types)}}
 
 
+def _validate_datacenter(placement, datacenter, parser):
+    """A datacenter is a one-job RunPod choice, never a saved preference edit."""
+    if datacenter is None:
+        return
+    if placement != "runpod":
+        parser.error("--datacenter requires --placement runpod")
+    if not datacenter.strip():
+        parser.error("--datacenter must be a nonempty datacenter ID")
+
+
 def _entry_help(description: dict[str, Any]) -> str:
     lines = [f"Entry: {description['id']} ({description['source']}, {description['kind']})",
              "Modes: " + ", ".join(description["modes"])]
@@ -207,6 +217,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         )
         command.add_argument("--gpu", action="append", metavar="GPU_TYPE",
                              help="RunPod GPU type; repeat in preference order. Pass the same list to generate describe and generate because the offer digest is GPU-bound.")
+        command.add_argument("--datacenter", action=_Once, metavar="ID",
+                             help="Use this RunPod datacenter for this job. Pass the same ID to describe and generate because the offer digest is datacenter-bound.")
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
@@ -236,6 +248,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument("--gpu", action="append", metavar="GPU_TYPE",
                          help="RunPod GPU type; repeat in preference order. Use the same list for describe and generate because the offer digest is GPU-bound.")
+    command.add_argument("--datacenter", action=_Once, metavar="ID",
+                         help="Use this RunPod datacenter for this job. Use the same ID for describe and generate because the offer digest is datacenter-bound.")
     command.add_argument('--max-hourly-usd', action=_Once, type=float,
                          help='Disclose a waiting-policy hourly ceiling even when the GPU is out of stock.')
     command.add_argument("--json", action="store_true")
@@ -333,7 +347,7 @@ def _controls(parsed):
         controls['wait'] = False
     if getattr(parsed, 'resume', False):
         controls['resume'] = True
-    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path', 'offer_digest',
+    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path', 'offer_digest', 'datacenter',
                  'preparation_seconds', 'execution_seconds', 'idle_seconds', 'align', 'max_hourly_usd'):
         value = getattr(parsed, name, None)
         if value is not None and value != []:
@@ -534,12 +548,16 @@ def _main(argv: list[str]) -> int:
     if parsed.modality == "describe":
         if parsed.gpu and parsed.placement is None:
             parser.error("--gpu requires target describe with --placement runpod")
+        _validate_datacenter(parsed.placement, parsed.datacenter, parser)
+        if parsed.datacenter and parsed.placement is None:
+            parser.error("--datacenter requires target describe with --placement runpod")
         if parsed.placement is not None:
             if parsed.entry is not None or parsed.workflow is not None:
                 parser.error('target describe cannot also select an entry or workflow')
             placement = _gpu_placement(parsed.placement, parsed.gpu, parser)
             with _open_client() as client:
                 description = _generate_facade().describe(placement=placement, engine=parsed.engine, client=client,
+                    **({"datacenter": parsed.datacenter} if parsed.datacenter is not None else {}),
                     **({'max_hourly_usd': parsed.max_hourly_usd} if parsed.max_hourly_usd is not None else {}))
             print(json.dumps(description, indent=2, sort_keys=True))
             return 0
@@ -563,8 +581,9 @@ def _main(argv: list[str]) -> int:
     if ((parsed.max_hourly_usd is not None or parsed.capacity_timeout is not None or parsed.no_wait_for_capacity)
             and parsed.placement != 'runpod'):
         parser.error('capacity waiting controls require --placement runpod')
-    if parsed.gpu and parsed.placement == "runpod" and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
-        parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu values")
+    _validate_datacenter(parsed.placement, parsed.datacenter, parser)
+    if (parsed.gpu or parsed.datacenter) and parsed.placement == "runpod" and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
+        parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu and --datacenter values")
     if parsed.prompt is not None and not parsed.prompt.strip():
         parser.error("prompt must not be empty")
     if (parsed.width is None) != (parsed.height is None):
@@ -648,7 +667,7 @@ def _main(argv: list[str]) -> int:
         # gateway boundary instead of treating a typed SDK failure as a bug.
         from astrid.core.generation.preflight import generation_error
         if parsed.placement == "runpod" and parsed.offer_digest and "offer or rate changed" in str(exc).lower():
-            exc = ValueError("RunPod offer changed (GPU type or rate). Use the same ordered --gpu values in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
+            exc = ValueError("RunPod offer changed (GPU type or rate; datacenter is also included in the digest). Use the same ordered --gpu values and --datacenter ID in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
         selector = ['--entry', parsed.entry or parsed.model] if parsed.entry or parsed.model else []
         raise generation_error(exc, fixes=[{
             'argv': ['astrid', 'generate', 'describe', *selector] if selector else

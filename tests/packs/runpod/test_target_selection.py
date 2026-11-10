@@ -473,6 +473,117 @@ def fake_capacity_clock(case, monkeypatch):
     return sleeps
 
 
+def capacity_offer_provider(case, monkeypatch, request, *, rejections=0, ambiguous=False):
+    """Real journaled acquisition with only POST and provider reads faked."""
+    import runpod_lifecycle
+    from runpod_lifecycle.errors import ProviderCapacityUnavailable
+    from astrid.packs.runpod import worker_preparation
+    from astrid.packs.runpod.worker_owner import RunPodLeaseOwner
+    from astrid.core.execution.warm_hold import WarmHolds
+
+    case.owner.preferences = RunPodPreferences.from_mapping({**case.raw, "volume": None})
+    factory = case.owner.config_factory
+    attempts = []
+
+    def config(offer):
+        case.rate = offer.hourly_usd
+        return factory(offer)
+
+    async def launch(config, *, name, **kwargs):
+        attempts.append((config.gpu_type_candidates[0], config.data_center_id))
+        case.creates += 1
+        journal = json.loads(case.owner.path.read_text())
+        assert journal["state"] == "allocation_pending"
+        assert journal["consented_offer"]["datacenter_id"] == config.data_center_id
+        if len(attempts) <= rejections:
+            raise runpod_lifecycle.LaunchFailure("fake definite capacity rejection") from ProviderCapacityUnavailable(503, "fake capacity")
+        pod = {"id": "pod-1", "name": name, "desiredStatus": "RUNNING", "actualStatus": "RUNNING",
+               "machineType": config.gpu_type_candidates[0], "imageName": config.worker_image,
+               "networkVolumeId": config.network_volume_id, "volumeMountPath": config.volume_mount_path}
+        case.pods.append(pod)
+        if ambiguous:
+            raise TimeoutError("fake lost POST response")
+
+        async def ready(**kwargs):
+            pass
+
+        return SimpleNamespace(id=pod["id"], name=name, wait_ready=ready)
+
+    def exact(key, pod_id):
+        pod = next((pod for pod in case.pods if pod["id"] == pod_id), None)
+        return (200, dict(pod)) if pod is not None else (404, None)
+
+    case.owner.config_factory = config
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
+    monkeypatch.setattr(selection, "read_exact_pod", exact)
+    monkeypatch.setattr(worker_preparation, "read_exact_pod", exact)
+    case.owner.compatibility = selection.RunPodLeaseCompatibility(
+        "sha256:" + "a" * 64, "sha256:" + "b" * 64, "a" * 40, "b" * 40).as_mapping()
+
+    def timer(seconds, callback):
+        handle = SimpleNamespace(cancelled=False)
+        handle.cancel = lambda: setattr(handle, "cancelled", True)
+        return handle
+
+    clock = lambda: case.now.timestamp()
+    owner = RunPodLeaseOwner(case.owner, holds=WarmHolds(clock=clock, timer=timer),
+                            quiesce=lambda record: None, clock=clock, timer=timer, environ={})
+    request.addfinalizer(owner.close)
+    return attempts, owner
+
+
+def test_definite_capacity_rejection_rotates_datacenters_without_reobserving(case, monkeypatch, request):
+    attempts, owner = capacity_offer_provider(case, monkeypatch, request, rejections=1)
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    offers = (replace(case.offer, datacenter_id="DC-A", hourly_usd=1.0),
+              replace(case.offer, datacenter_id="DC-B", hourly_usd=1.1))
+    observations = []
+    case.owner.observe_offers = lambda: (observations.append(1) or offers)
+    result = owner.acquire(waiting_grant(case), requested_idle_seconds=0).claim
+    assert attempts == [("preferred-gpu", "DC-A"), ("preferred-gpu", "DC-B")]
+    assert len(observations) == 1 and sleeps == [5]
+    assert result["network_volume_datacenter_id"] == "DC-B" and case.creates == 2
+
+
+def test_exhausted_offer_list_reobserves_and_restarts_the_user_gpu_order(case, monkeypatch, request):
+    attempts, owner = capacity_offer_provider(case, monkeypatch, request, rejections=3)
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    preferred_a = replace(case.offer, datacenter_id="DC-A", hourly_usd=1.0)
+    preferred_b = replace(case.offer, datacenter_id="DC-B", hourly_usd=1.1)
+    cheaper_fallback = replace(case.offer, gpu_type="fallback-gpu", datacenter_id="DC-C", hourly_usd=0.5)
+    observations = []
+
+    def observe():
+        observations.append(1)
+        return (cheaper_fallback, preferred_b, preferred_a)
+
+    case.owner.observe_offers = observe
+    owner.acquire(waiting_grant(case), requested_idle_seconds=0)
+    assert attempts == [("preferred-gpu", "DC-A"), ("preferred-gpu", "DC-B"),
+                        ("fallback-gpu", "DC-C"), ("preferred-gpu", "DC-A")]
+    assert len(observations) == 2 and sleeps == [5, 5, 5] and case.creates == 4
+
+
+def test_ambiguous_create_never_advances_to_another_observed_offer(case, monkeypatch, request):
+    attempts, owner = capacity_offer_provider(case, monkeypatch, request, ambiguous=True)
+    case.owner.observe_offers = lambda: (replace(case.offer, datacenter_id="DC-A"),
+                                         replace(case.offer, datacenter_id="DC-B"))
+    with pytest.raises(AcquisitionUnresolvedError, match="remains unresolved"):
+        owner.acquire(waiting_grant(case), requested_idle_seconds=0)
+    assert attempts == [("preferred-gpu", "DC-A")] and case.creates == 1
+    assert json.loads(case.owner.path.read_text())["state"] == "allocation_pending"
+
+
+def test_rotated_offer_still_requires_the_same_policy_hourly_ceiling(case, monkeypatch, request):
+    attempts, owner = capacity_offer_provider(case, monkeypatch, request, rejections=1)
+    fake_capacity_clock(case, monkeypatch)
+    case.owner.observe_offers = lambda: (replace(case.offer, datacenter_id="DC-A", hourly_usd=1.0),
+                                         replace(case.offer, datacenter_id="DC-B", hourly_usd=2.0))
+    with pytest.raises(PaidSelectionError, match="hourly ceiling"):
+        owner.acquire(waiting_grant(case), requested_idle_seconds=0)
+    assert attempts == [("preferred-gpu", "DC-A")] and case.creates == 1
+
+
 def test_policy_wait_observes_stock_again_and_starts_paid_clock_at_post(case, monkeypatch):
     sleeps = fake_capacity_clock(case, monkeypatch)
     attempts = []
@@ -650,6 +761,38 @@ def test_sdk_policy_consent_binds_saved_preferences_without_an_exact_offer(case,
     assert policy["offer_digest"] is None and policy["deadline"] is None
     assert policy["policy_digest"] == selection.policy_consent_digest(case.prefs, 1.5)
     assert policy["wait_for_capacity"] is True
+
+
+def test_sdk_job_datacenter_is_copied_into_policy_consent(case, monkeypatch):
+    from astrid.sdk import generation
+
+    saved = case.prefs.as_mapping()
+    monkeypatch.setattr(generation, "_runpod_preferences", lambda client: dict(saved))
+    policy = generation._runpod_placement_policy({
+        "consent": ("paid",), "max_usd": 4.0, "deadline": "2030-01-01T00:00:00+00:00",
+        "preparation_seconds": 1, "execution_seconds": 2, "idle_seconds": 3,
+        "max_hourly_usd": 1.5, "datacenter": "EU-FAKE",
+    }, engine="comfyui")
+
+    assert policy["preferences"]["datacenter_id"] == "EU-FAKE"
+    assert policy["policy_digest"] == selection.policy_consent_digest(
+        RunPodPreferences.from_mapping({**saved, "datacenter_id": "EU-FAKE"}), 1.5)
+    assert saved == case.prefs.as_mapping()
+
+
+def test_sdk_job_datacenter_refuses_conflict_with_saved_volume(case, monkeypatch):
+    from astrid.sdk import generation
+
+    saved = {**case.prefs.as_mapping(), "volume": {
+        "id": "volume-1", "name": "shared", "size_gb": 100, "mount_path": "/workspace"},
+        "datacenter_id": "VOLUME-DC"}
+    monkeypatch.setattr(generation, "_runpod_preferences", lambda client: dict(saved))
+    with pytest.raises(generation.GenerationInputError, match="conflicts with the selected network volume"):
+        generation._runpod_placement_policy({
+            "consent": ("paid",), "max_usd": 4.0, "deadline": "2030-01-01T00:00:00+00:00",
+            "preparation_seconds": 1, "execution_seconds": 2, "idle_seconds": 3,
+            "offer_digest": "sha256:" + "c" * 64, "datacenter": "OTHER-DC",
+        }, engine="comfyui")
 
 
 def test_stockless_description_keeps_policy_disclosure_and_exact_quote_unchanged(case, monkeypatch):
@@ -854,6 +997,80 @@ def test_pricing_mixed_datacenters_selects_healthy_offer_and_requires_consent(ca
     assert offer.datacenter_id == 'B' and offer.hourly_usd == 1.0
     with pytest.raises(PaidSelectionError, match='offer or rate changed'):
         case.owner.consented_offer(case.grant, case.now)
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
+@pytest.mark.parametrize("selected_datacenter", [None, "DC-B"])
+def test_offer_order_preserves_user_gpu_priority_then_price_within_gpu(case, monkeypatch, selected_datacenter):
+    import runpod_lifecycle
+    from astrid.packs.runpod.adapter import observe_priced_offer, observe_priced_offers
+
+    preferences = RunPodPreferences.from_mapping({**case.raw, "volume": None, "datacenter_id": selected_datacenter})
+    config = SimpleNamespace(api_key="fake-only", container_disk_gb=40,
+                             allowed_cuda_versions=("13.0",), min_cuda_version=None)
+    queried = []
+
+    async def observe(**kwargs):
+        queried.append((kwargs["gpu"], kwargs["datacenter_ids"]))
+        rate = 1.0 if kwargs["gpu"] == "preferred-gpu" else 0.1
+        # Return the more expensive DC first and include an outside DC even
+        # when a provider response ignores the requested explicit restriction.
+        return SimpleNamespace(status="available", gpu_type_id=kwargs["gpu"], datacenters=[
+            SimpleNamespace(status="available", datacenter_id="DC-A", price_per_hour=rate + 0.2),
+            SimpleNamespace(status="available", datacenter_id="DC-B", price_per_hour=rate)])
+
+    monkeypatch.setattr(runpod_lifecycle, "gpu_availability", observe)
+    offers = asyncio.run(observe_priced_offers(preferences, config))
+    expected_dcs = ["DC-B", "DC-A"] if selected_datacenter is None else ["DC-B"]
+    assert [(offer.gpu_type, offer.datacenter_id) for offer in offers] == [
+        (gpu, dc) for gpu in preferences.gpu_types for dc in expected_dcs]
+    assert offers[0].gpu_type == "preferred-gpu" and offers[-1].hourly_usd < offers[0].hourly_usd
+    assert queried == [(gpu, None if selected_datacenter is None else ["DC-B"]) for gpu in preferences.gpu_types]
+    assert asyncio.run(observe_priced_offer(preferences, config)) == offers[0]
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
+@pytest.mark.parametrize("available_datacenter", ["EU-FAKE", "US-FAKE", "AP-FAKE", "CN-FAKE"])
+def test_unrestricted_pricing_observes_every_returned_datacenter(case, monkeypatch, available_datacenter):
+    import runpod_lifecycle
+    from runpod_lifecycle import availability
+    from astrid.packs.runpod.adapter import observe_priced_offer
+
+    preferences = RunPodPreferences.from_mapping({**case.raw, "volume": None, "datacenter_id": None})
+    config = SimpleNamespace(api_key="fake-only", container_disk_gb=40,
+                             allowed_cuda_versions=("13.0",), min_cuda_version=None)
+    datacenters = ["EU-FAKE", "US-FAKE", "AP-FAKE", "CN-FAKE"]
+    filters, observed_datacenters = [], []
+    real_observe = runpod_lifecycle.gpu_availability
+
+    def post(*args, **kwargs):
+        query = kwargs["json"]["query"]
+        if "GpuCatalogue" in query:
+            data = {"gpuTypes": [{"id": "gpu-id", "displayName": "preferred-gpu"}]}
+        elif "DataCenterStock" in query:
+            data = {"dataCenters": [{"id": dc, "gpuAvailability": [
+                {"gpuTypeId": "gpu-id", "available": True, "stockStatus": "High"}]} for dc in datacenters]}
+        else:
+            assert "DataCenterPrices" in query
+            data = {"gpuTypes": [{"id": "gpu-id", **{
+                f"dc{index}": ({"stockStatus": "High", "uninterruptablePrice": 1.0}
+                               if dc == available_datacenter else None)
+                for index, dc in enumerate(datacenters)}}]}
+        return SimpleNamespace(status_code=200, json=lambda: {"data": data})
+
+    async def observe(**kwargs):
+        filters.append(kwargs["datacenter_ids"])
+        assert kwargs["require_network_volume"] is False
+        result = await real_observe(**kwargs)
+        observed_datacenters.append({dc.datacenter_id for dc in result.datacenters})
+        return result
+
+    monkeypatch.setattr(availability.httpx, "post", post)
+    monkeypatch.setattr(runpod_lifecycle, "gpu_availability", observe)
+    offer = asyncio.run(observe_priced_offer(preferences, config))
+    assert filters == [None]
+    assert observed_datacenters == [set(datacenters)]
+    assert offer.datacenter_id == available_datacenter and offer.hourly_usd == 1.0
     assert case.creates == case.configs == 0 and not case.owner.path.exists()
 
 
