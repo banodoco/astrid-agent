@@ -30,9 +30,6 @@ class Backend:
         self.fail_polls = 0
         self.claim_entries = 0
         self.uncertain = False
-        # Test-owned per-host state stands in for the retired VibeComfy warmth
-        # fields. The production contract here is slot/session/attempt isolation.
-        self.slot_state = {}
 
     def wait(self, predicate):
         with self.condition:
@@ -108,27 +105,20 @@ def world(tmp_path, monkeypatch):
             return None
         slot.client.heartbeat(task_id, lease_token, attempt_id=attempt_id, fence=fence)
         owned = SimpleNamespace(task_id=task_id, killed=False, finished=False)
-        # Record process ownership plus test-local state for each serving slot.
+        # Record process ownership for each serving slot.
         with slot._process_lock:
             slot._active_processes.add(OwnedProcess(owned))
-        state = backend.slot_state.setdefault(id(slot), {"warmth": None, "current": None,
-                                                          "cleanup": None})
-        state["current"] = task_id
-        previous = state["warmth"]
         with backend.condition:
             backend.active += 1
             backend.peak = max(backend.peak, backend.active)
             backend.started.append({"host": slot, "task": task_id, "attempt": attempt_id,
-                                    "session": slot.managed_tool_session, "previous_warmth": previous,
+                                    "session": slot.managed_tool_session,
                                     "thread": threading.get_ident(), "owned": owned})
             backend.condition.notify_all()
         try:
             while not backend.release.wait(0.01):
                 if slot._shutdown.is_set():
                     break
-            assert state["current"] == task_id
-            state["warmth"] = task_id
-            state["cleanup"] = {"path": task_id, "status": "deleted"}
             return {"task_id": task_id}
         finally:
             owned.finished = True
@@ -185,14 +175,9 @@ def test_capacity_and_finite_claim_allowance_isolate_session_and_attempt_owners(
         assert len(outcome["result"]) == capacity * 2
         assert backend.peak == capacity and len(backend.tasks) == 1
         assert host._claim_slots == ()
-        last_task_by_host = {id(row["host"]): row["task"] for row in backend.started}
         for row in backend.started:
             assert row["attempt"] in row["host"].client.attempts
             assert row["host"]._active_processes == set()
-        assert len(backend.slot_state) == capacity
-        for host_id, task_id in last_task_by_host.items():
-            state = backend.slot_state[host_id]
-            assert state["warmth"] == task_id and state["cleanup"]["path"] == task_id
     finally:
         backend.release.set()
         host.shutdown()
@@ -210,10 +195,6 @@ def test_single_slot_and_once_keep_synchronous_compatibility(world, once, limit)
         assert len(result) == (1 if once else 2)
         assert backend.peak == 1 and backend.clients == []
         assert {row["thread"] for row in backend.started} == {caller}
-        if not once:
-            host_state = backend.slot_state[id(host)]
-            assert host_state["warmth"] == "1"
-            assert host_state["cleanup"]["path"] == "1"
     finally:
         host.shutdown()
 
