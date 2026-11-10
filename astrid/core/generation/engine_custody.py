@@ -363,6 +363,8 @@ class LinuxEngineServiceClient:
                         if not isinstance(barrier, dict) or barrier.get("exit_code") != 0 or barrier.get("timed_out") is not False:
                             raise CustodyUnresolved("cancelled engine command drainage is unconfirmed")
                         raise
+                    except DeadlineExceeded as exc:
+                        raise CustodyUnresolved("supervisor did not confirm command cleanup before the response deadline") from exc
                 if (not isinstance(response, dict) or response.get("identity") != self.identity
                         or set(response) not in ({"identity", "result"}, {"identity", "error"},
                                                  {"identity", "error", "cleanup_failure"})):

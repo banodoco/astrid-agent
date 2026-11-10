@@ -19,6 +19,33 @@ def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def configured_models_root(engine: str = "comfyui", *, root: str | None = None) -> str:
+    """Read the installed cache binding without starting or contacting its owner.
+
+    No receipt means the proposed default root, not a readiness assertion.
+    Existing malformed/unsafe receipts fail closed, including on a cold install.
+    """
+    from ._engine_target_files import _TargetFiles
+    from .engine_contracts import effective_models_root, IntegrityError
+    from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
+    from .engine_recipe import load_recipe
+    from .engine_runner import _parse_receipt, plan_install
+    root = root or default_engine_root(engine)
+    files = _TargetFiles(root)
+    path = str(Path(root) / ".astrid-engine/install.json")
+    deadline = time.monotonic() + 10
+    fact = files.file_fact(path, hash_bytes=False, deadline=deadline)
+    if not fact.exists:
+        return effective_models_root(root, None)
+    if fact.symlink or not fact.regular or fact.bytes is None or fact.bytes > 1024 * 1024:
+        raise IntegrityError("managed install receipt is not a safe regular file")
+    raw = files.read_json(path, deadline=deadline)
+    recipe = load_recipe(engine, DEFAULT_PLATFORM)
+    plan = plan_install(recipe, root=root, placement="local", models_root=raw.get("models_root"))
+    receipt = _parse_receipt(raw, plan)
+    return effective_models_root(root, receipt.models_root)
+
+
 def read_preparation(*, task: str, attempt: str | None, endpoint: str,
                      execution_identity: str | None = None, inputs: Any = None) -> dict[str, Any] | None:
     """Read only the host-projected, attempt-bound preparation, never ambient policy."""
@@ -104,12 +131,13 @@ class ManagedEnginePreparation:
     The install lock excludes another host's preparation and installation while
     the HTTP worker runs. No worker receives this object or its control socket.
     """
-    def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any):
+    def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any, scratch: Path):
         from .engine_execution import create_local_backend
         from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
         from .engine_recipe import load_recipe
 
         self.task, self.attempt, self.mode = task, attempt, mode
+        self.scratch = scratch
         self.deadline, self.cancelled = deadline, cancelled
         self.root = default_engine_root("comfyui")
         self.recipe = load_recipe("comfyui", DEFAULT_PLATFORM)
@@ -178,9 +206,10 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed installation evidence differs from its receipt")
         engine = copy.copy(run_action._engine_for({"engine": "comfyui"}))
         manifest = engine.workflow_requirements([canonical_workflow])
-        manifest = {**manifest, "engine": "comfyui", "models_root": effective_models_root(self.root, receipt.models_root)}
+        manifest = {**manifest, "engine": "comfyui", "models_root": configured_models_root(root=self.root)}
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
-        lockfile = workflow.parent / "managed-custom-nodes.lock"
+        self.scratch.mkdir(parents=True, exist_ok=True)
+        lockfile = self.scratch / "managed-custom-nodes.lock"
         lines = []
         for node in (manifest.get("extra") or {}).get("nodes", []):
             name = Path(urlsplit(node["repo"]).path).name.removesuffix(".git")

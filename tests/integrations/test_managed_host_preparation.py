@@ -216,3 +216,33 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         worker.join(timeout=35)
         host.shutdown()
         daemon.stop()
+
+
+def test_plain_workflow_preparation_does_not_write_beside_admitted_input(tmp_path, monkeypatch, managed_install):
+    from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value
+    client, payload, recipe, root, started, bootstrap = managed_install
+    inputs = tmp_path / 'admitted'
+    inputs.mkdir()
+    source = inputs / 'workflow.json'
+    source.write_text(json.dumps(_workflow()))
+    loaded = load_workflow_path(source, tmp_path / 'author', comfy_url=f'http://127.0.0.1:{recipe.start.port}')
+    workflow = _canonical_bundle_value(loaded.resolved).workflow
+    workflow.metadata['model_assets'] = []
+    client.stop_owned(deadline=time.monotonic() + 15)
+    before = {path.name: path.read_bytes() for path in inputs.iterdir()}
+    class Commands:
+        def doctor(self): pass
+        def prepare_deps_sync(self): pass
+        def nodes_restore(self, rows): pass
+        def fetch(self, rows): pytest.fail('workflow with no declared models fetched bytes')
+    monkeypatch.setattr(entries.engine_table()['comfyui'], 'commands', Commands())
+    preparation = ManagedEnginePreparation(task='raw-task', attempt='raw-attempt', mode='align',
+        deadline=time.monotonic() + 60, cancelled=lambda: False, scratch=tmp_path / 'private-preparation')
+    try:
+        report = preparation.prepare(source, execution_identity='raw-execution', inputs={'workflow': str(source)},
+            canonical_workflow=workflow, input_digests={'workflow': hashlib.sha256(source.read_bytes()).hexdigest()})
+        assert report['placement'] == 'managed' and report['health']['healthy'] is True
+        assert {path.name: path.read_bytes() for path in inputs.iterdir()} == before
+        assert (tmp_path / 'private-preparation/managed-custom-nodes.lock').is_file()
+    finally:
+        preparation.close()

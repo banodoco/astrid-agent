@@ -1756,3 +1756,18 @@ def test_already_cancelled_request_never_creates_supervisor(tmp_path):
     with pytest.raises(CancelledError):
         client.run(_request(root, "raise SystemExit(99)"))
     assert not (root / ".astrid-engine/session").exists()
+
+
+def test_local_response_deadline_is_uncertain_cleanup(tmp_path, monkeypatch):
+    client = _client(_identity(tmp_path))
+    local, remote = socket.socketpair()
+    monkeypatch.setattr(client, '_connect', lambda *args, **kwargs: local)
+    monkeypatch.setattr(custody, '_send', lambda *args, **kwargs: None)
+    def no_response(*args, **kwargs):
+        raise DeadlineExceeded('local receive deadline')
+    monkeypatch.setattr(custody, '_receive', no_response)
+    try:
+        with pytest.raises(CustodyUnresolved, match='confirm command cleanup'):
+            client.run(_request(tmp_path, 'pass'))
+    finally:
+        remote.close()
