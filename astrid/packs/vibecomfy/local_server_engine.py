@@ -311,8 +311,8 @@ def _trust_from_environment(bundle: Any) -> tuple[dict[str, Any], ...] | None:
     from astrid.core.generation import target_inventory
 
     child_trust = os.environ.pop(target_inventory.TRUST_ENV, None) == "trust"
-    pod_trust = target_inventory.POD_TRUST.get()
-    if not (child_trust if pod_trust is None else pod_trust):
+    pod_align = target_inventory.POD_ALIGN.get()
+    if not (child_trust if pod_align is None else pod_align == "trust"):
         return None
     return target_inventory.declared_rows(bundle.workflow)
 

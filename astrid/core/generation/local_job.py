@@ -39,16 +39,16 @@ def read_job(path: str | Path) -> dict[str, Any]:
 def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | None = None,
             align: str | None = None) -> dict[str, Any]:
     """Run with this job's validated trust choice scoped to the execution."""
-    from .target_inventory import POD_TRUST
+    from .target_inventory import POD_ALIGN
 
     job = read_job(job_path)
     if align is not None and align not in ALIGN_MODES:
         raise JobFileError(f"align must be one of {', '.join(ALIGN_MODES)}")
-    token = POD_TRUST.set((align or job['align']) == 'trust')
+    token = POD_ALIGN.set(align or job['align'])
     try:
         return _run_job(entry, job, out, mode=mode, align=align)
     finally:
-        POD_TRUST.reset(token)
+        POD_ALIGN.reset(token)
 
 
 def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | None = None,
