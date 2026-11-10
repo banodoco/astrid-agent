@@ -8,10 +8,16 @@ the workflow's own declared rows and marks the result unverified.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
 from typing import Any
 
 #: The child environment flag the host sets for ``--align trust`` (value ``trust``).
 TRUST_ENV = "ASTRID_ALIGN"
+
+# A pod job runs in-process, rather than in a host-launched action child. Keep
+# its validated alignment choice local to that execution context.
+POD_ALIGN = ContextVar("astrid_pod_align", default=None)
+POD_STOP = ContextVar("astrid_pod_stop", default=None)
 
 
 def declared_rows(workflow: Any) -> tuple[dict[str, Any], ...]:

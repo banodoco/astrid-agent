@@ -7,11 +7,127 @@ from typing import Any
 
 from astrid.core.generation.local_job import JobFileError
 
+
+def run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
+                     align: str, **kwargs: Any) -> dict[str, Any]:
+    """Prepare under owned custody, then execute once against its HTTP endpoint."""
+    import hashlib
+    import shutil
+    import signal
+    import tempfile
+    import threading
+    import time
+
+    from astrid.core.generation.managed_preparation import ManagedEnginePreparation, preparation_scope
+    from astrid.core.generation.target_inventory import POD_STOP
+    from astrid.packs.vibecomfy.actions.run import run as run_action
+    from astrid.packs.vibecomfy.production_engine import (
+        _canonical_bundle_value, load_workflow_path, loaded_workflow_execution_identity,
+    )
+
+    if threading.current_thread() is not threading.main_thread():
+        raise JobFileError("pod generation requires the main thread for cancellation custody")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="astrid-pod-preparation-", dir=out.parent))
+    cancelled = threading.Event()
+    state = {"phase": "prepare", "signum": None}
+
+    def stop(signum, _frame):
+        if state["signum"] is not None:
+            return
+        # Latch before Event.set and before raising: repeated signals must not
+        # re-enter Event's lock or interrupt the subsequent drainage.
+        state["signum"] = signum
+        cancelled.set()
+        if state["phase"] == "execute":
+            state["phase"] = "drain"
+            raise SystemExit(128 + signum)
+
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    stop_token = POD_STOP.set(stop)
+    preparation = None
+    closed = False
+    try:
+        original = ({"python": workflow, "companion": workflow.with_suffix(".vibe.json"),
+                     "source": workflow.with_name("source.json")}
+                    if workflow.suffix == ".py" else {"workflow": workflow})
+        selected = scratch / "selected"
+        selected.mkdir()
+        names = {"python": "workflow.py", "companion": "workflow.vibe.json", "source": "source.json",
+                 "workflow": "workflow.json"}
+        members = {}
+        for name, path in original.items():
+            if path.is_symlink() or not path.is_file():
+                raise JobFileError("pod workflow member is not a regular file")
+            data = path.read_bytes()
+            target = selected / names[name]
+            target.write_bytes(data)
+            if path.is_symlink() or path.read_bytes() != data:
+                raise JobFileError("pod workflow member changed during staging")
+            members[name] = target
+        digests = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in members.items()}
+        workflow = members.get("python", members.get("workflow"))
+        loaded = load_workflow_path(workflow, scratch / "load")
+        if any(path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digests[name]
+               for name, path in members.items()):
+            raise JobFileError("pod workflow member changed during loading")
+        canonical = _canonical_bundle_value(loaded.resolved).workflow
+        if workflow.suffix != ".py":
+            # Freeze a canonical capsule once; execution must not re-convert UI
+            # JSON against a later target schema.
+            from vibecomfy.security.provenance import Provenance
+            from vibecomfy.workflow_bundle import WorkflowBundleError, emit_bundle_with_candidate
+            capsule = scratch / "capsule"
+            capsule.mkdir()
+            for source_format in ("ready_template", "scratchpad"):
+                try:
+                    emit_bundle_with_candidate(canonical.clone(), capsule / "workflow.py",
+                                               Provenance.USER_CONFIRMED, None, source_format=source_format)
+                    break
+                except WorkflowBundleError:
+                    if source_format == "scratchpad":
+                        raise
+            (capsule / "source.json").write_bytes(workflow.read_bytes())
+            members = {"python": capsule / "workflow.py", "companion": capsule / "workflow.vibe.json",
+                       "source": capsule / "source.json"}
+            digests = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in members.items()}
+            workflow = members["python"]
+            loaded = load_workflow_path(workflow, scratch / "capsule-load")
+            canonical = _canonical_bundle_value(loaded.resolved).workflow
+        identity = loaded_workflow_execution_identity(loaded)
+        preparation = ManagedEnginePreparation(task=task_identity, attempt=attempt_identity, mode=align,
+            deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine")
+        report = preparation.prepare(workflow, execution_identity=identity, inputs=members,
+                                     canonical_workflow=canonical, input_digests=digests)
+        if any(path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digests[name]
+               for name, path in members.items()):
+            raise JobFileError("pod workflow member changed during preparation")
+        state["phase"] = "execute"
+        if state["signum"] is not None:
+            state["phase"] = "drain"
+            raise SystemExit(128 + state["signum"])
+        with preparation_scope(report):
+            return run_action._run_and_settle(workflow, out, task_identity=task_identity,
+                attempt_identity=attempt_identity, execution_identity=identity,
+                align=align, comfy_url=report["endpoint"], **kwargs)
+    finally:
+        state["phase"] = "drain"
+        try:
+            if preparation is not None:
+                preparation.close(execution_root=out, worker_drained=True)
+            closed = True
+        finally:
+            POD_STOP.reset(stop_token)
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+            if closed:
+                shutil.rmtree(scratch, ignore_errors=True)
+
+
 def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, Any], bindings: dict[str, Any], out: Path,
                       *, task: str, attempt: str, mode: str | None, align: str) -> dict[str, Any]:
     """Execute a controller-prepared bundle; public inputs never include transport controls."""
     from astrid.core.generation import entries
-    from astrid.packs.vibecomfy.actions.run import run as run_action
 
     workflow = execution.get("python") or execution.get("workflow") or execution.get("source")
     if not isinstance(workflow, str):
@@ -46,7 +162,7 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
     with staged_workflow_path(workflow=execution.get("workflow"), python=execution.get("python"),
                               companion=execution.get("companion"), source=execution.get("source")) as (workflow, _):
-        return run_action._run_and_settle(
+        return run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt, entry=named,
             workflow_inputs=json.dumps(bindings, sort_keys=True), align=align, **files)
 
@@ -71,7 +187,6 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
 
     from astrid.core.generation import entries
     from astrid.core.generation.preflight import require_generation_target_readiness
-    from astrid.packs.vibecomfy.actions.run import run as run_action
 
     try:
         description, inputs = entries.resolve_entry_inputs(named, inputs, mode=mode)
@@ -143,7 +258,7 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
             hook_job = {"after_outputs_job": json.dumps(
                 {"entry": described["id"], "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"]},
                 sort_keys=True, default=str)}
-        result = run_action._run_and_settle(
+        result = run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt,
             workflow_inputs=json.dumps(workflow_inputs, sort_keys=True, default=str), entry=named,
             align=align, manifest=manifest, **hook_job, **run_files)

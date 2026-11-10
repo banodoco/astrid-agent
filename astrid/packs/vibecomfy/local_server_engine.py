@@ -229,8 +229,32 @@ def _capture_live_schemas(bundle: Any, provider: Any) -> None:
             node.metadata['schema'] = schema
 
 
+def run_scoped_overrides(workflow: Any, attempt_id: str, *, empty_prefix_nodes: frozenset[str] = frozenset()) -> Any:
+    """Clone the built graph and namespace only its declared output prefixes for this attempt.
+
+    This is the sole run-scoped graph transform shared by every local-server placement.
+    Its attempt identity is assigned by the host, never generated during submission.
+    """
+    from astrid.core.generation.backends.vibecomfy_local_server import validate_identity
+
+    validate_identity(attempt_id)
+    workflow = workflow.clone()
+    for output in workflow.outputs:
+        node = workflow.nodes[output.node_id]
+        prefix = node.inputs.get("filename_prefix", node.widgets.get("filename_prefix"))
+        if isinstance(prefix, str) and (prefix or str(output.node_id) in empty_prefix_nodes):
+            fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
+            scoped_prefix = f"{prefix}_astrid_{attempt_id}"
+            fields["filename_prefix"] = scoped_prefix
+            # Compilation reapplies public input values to the execution graph.
+            for name, spec in getattr(workflow, "inputs", {}).items():
+                if str(spec.node_id) == str(output.node_id) and spec.field == "filename_prefix":
+                    workflow.set_input(name, scoped_prefix)
+    return workflow
+
+
 def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None,
-                        allow_empty_image: bool = False) -> Any:
+                        allow_empty_image: bool = False, run_inputs: Mapping[str, Any] | None = None) -> Any:
     """Derive attempt-owned image bindings and fresh output filenames.
 
     A seedless graph can otherwise reuse SaveImage's cached result from an
@@ -262,13 +286,25 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
                     type=input_types.get("image", "STRING"), media_semantics="image",
                 )
                 changed = True
-    for output in workflow.outputs:
-        node = workflow.nodes[output.node_id]
-        prefix = node.inputs.get("filename_prefix", node.widgets.get("filename_prefix"))
-        if output_identity is not None and isinstance(prefix, str) and prefix:
-            fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
-            fields["filename_prefix"] = f"{prefix}_astrid_{output_identity}"
-            changed = True
+    if output_identity is not None:
+        output_ids = {str(output.node_id) for output in workflow.outputs}
+        empty_prefix_nodes = set()
+        for name, value in (run_inputs or {}).items():
+            spec = workflow.inputs.get(name)
+            if spec is not None and str(spec.node_id) in output_ids and spec.field == "filename_prefix":
+                node = workflow.nodes[str(spec.node_id)]
+                fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
+                fields["filename_prefix"] = value
+                workflow.set_input(name, value)
+                changed = True
+                if value == "":
+                    empty_prefix_nodes.add(str(spec.node_id))
+        changed = changed or any(isinstance(workflow.nodes[output.node_id].inputs.get(
+            "filename_prefix", workflow.nodes[output.node_id].widgets.get("filename_prefix")), str)
+            and workflow.nodes[output.node_id].inputs.get(
+                "filename_prefix", workflow.nodes[output.node_id].widgets.get("filename_prefix"))
+            for output in workflow.outputs)
+        workflow = run_scoped_overrides(workflow, output_identity, empty_prefix_nodes=frozenset(empty_prefix_nodes))
     if not changed:
         return bundle
     root = destination / "local-server-workflow"
@@ -315,7 +351,9 @@ def _trust_from_environment(bundle: Any) -> tuple[dict[str, Any], ...] | None:
     """``--align trust`` on an attached ComfyUI: the workflow's declared rows; otherwise none."""
     from astrid.core.generation import target_inventory
 
-    if os.environ.pop(target_inventory.TRUST_ENV, None) != "trust":
+    child_trust = os.environ.pop(target_inventory.TRUST_ENV, None) == "trust"
+    pod_align = target_inventory.POD_ALIGN.get()
+    if not (child_trust if pod_align is None else pod_align == "trust"):
         return None
     return target_inventory.declared_rows(bundle.workflow)
 
@@ -399,9 +437,16 @@ def run_local_server(
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.
     bundle = local_server_bundle(
-        bundle, destination, output_identity=attempt_identity or task_identity,
+        bundle, destination, output_identity=attempt_identity or task_identity, run_inputs=run_inputs,
     )
     bindings = dict(run_inputs or {})
+    output_ids = {str(output.node_id) for output in bundle.workflow.outputs}
+    original_prefixes = {}
+    for name, value in list(bindings.items()):
+        spec = bundle.workflow.inputs[name]
+        if str(spec.node_id) in output_ids and spec.field == "filename_prefix":
+            original_prefixes[name] = value
+            bindings[name] = spec.value
     for name, value in bindings.items():
         spec = bundle.workflow.inputs[name]
         media = str(getattr(spec, "media_semantics", "") or "").lower()
@@ -418,7 +463,13 @@ def run_local_server(
                 )
     record = _approve_live(bundle, bindings, provider)
 
+    from astrid.core.generation.target_inventory import POD_STOP
+    pod_stop = POD_STOP.get()
+
     def stop(signum: int, _frame: Any) -> None:
+        if pod_stop is not None:
+            pod_stop(signum, _frame)
+            return
         raise SystemExit(128 + signum)
 
     pins = {"VIBECOMFY_COMFY_CONFIGURATION": "{}", "VIBECOMFY_WARM": "never",
@@ -470,7 +521,7 @@ def run_local_server(
             # Preserve its evidence, but report the detached invocation values
             # (including the chosen seed) that actually reached /prompt.
             payload = json.loads(result_path.read_text(encoding="utf-8"))
-            payload["inputs"].update(bindings)
+            payload["inputs"].update({**bindings, **original_prefixes})
             if custody is not None:
                 alignment = {"mode": "trust", "status": "unverified", "verified": False}
                 payload["evidence"]["producer"]["alignment"] = alignment

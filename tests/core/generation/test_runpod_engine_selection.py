@@ -100,6 +100,44 @@ class NoPodClient:
                                 kernel_task_id='task-a', raw_result={'state': 'queued'})
 
 
+def test_managed_preview_and_live_freeze_declarations_with_installed_alternate(monkeypatch):
+    from astrid.core.generation import preflight
+    from astrid.core.generation.backends.comfy_target import _resolve_roles
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    # The target has only the second declared VAE choice. Managed selection
+    # must freeze the first declaration for both calls and let the host verify
+    # that exact selection after alignment, without consulting this inventory.
+    alternate = SimpleNamespace(target=SimpleNamespace(url='http://127.0.0.1:8188'),
+        object_info=lambda: {'VAELoader': {'input': {'required': {
+            'vae_name': [[r'FLUX1\ae.safetensors']]}}}})
+    declaration = ModelRegistry.load_default().get('z-image').modes['t2i'].backends['local'].model_roles['vae']
+    resolved, failures = _resolve_roles(SimpleNamespace(model_roles={'vae': declaration}), alternate.object_info())
+    assert resolved == {'vae': r'FLUX1\ae.safetensors'} and not failures
+    selections = []
+    monkeypatch.setattr(preflight, 'select_generation_target',
+                        lambda *args, **kwargs: selections.append(alternate) or alternate)
+    graphs = []
+    prepare = generation._prepare_catalog_target_workflow
+    def capture(**kwargs):
+        result = prepare(**kwargs)
+        graphs.append(result[0].compile('api'))
+        return result
+    monkeypatch.setattr(generation, '_prepare_catalog_target_workflow', capture)
+    facade = GenerationFacade()
+    args = dict(entry='z-image', prompt='a boat', seed=7, placement='managed')
+    dry = facade.image(**args, dry_run=True)
+    client = NoPodClient()
+    facade.image(**args, client=client, project='demo', wait=False)
+    assert dry['status'] == 'ready'
+    assert not selections
+    assert len(graphs) == 2 and graphs[0] == graphs[1]
+    vaes = [node['inputs']['vae_name'] for node in graphs[0].values()
+            if node['class_type'] == 'VAELoader']
+    assert vaes == ['ae.safetensors']
+    assert 'comfy_url' not in client.calls[0][1]['inputs']
+
+
 def _expected_engine(entry_id, mode):
     entry = entries.find_entry(entry_id)
     if entry is None:  # a catalog id: its local template owns the models

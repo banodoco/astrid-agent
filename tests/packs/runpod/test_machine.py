@@ -236,6 +236,36 @@ def test_a_crash_after_job_start_is_cancelled_by_recover_before_delete(machine_c
     assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
 
 
+def test_uncertain_job_stop_fences_reuse_until_exact_cancel_and_delete(machine_case):
+    """A lost pod worker may have an unconfirmed preparation or prompt."""
+    from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    run = c.machine.start(lease, c.job())
+    c.host.close()
+    replacement = c.fresh()
+    cancel = c.pod.job_cancel
+    attempted = []
+
+    def uncertain(job_id):
+        attempted.append(job_id)
+        return {"id": job_id, "state": "running"}
+
+    c.pod.job_cancel = uncertain
+    with pytest.raises(AcquisitionUnresolvedError, match="exact machine job stop remains unresolved"):
+        replacement.recover()
+    record = c.read()
+    assert attempted == [run.job_id]
+    assert record["state"] != "cleanup_complete" and record["lease"]["state"] != "idle"
+    assert c.deletes == [] and c.creates == 1
+    c.pod.job_cancel = cancel
+    replacement.recover()
+    record = c.read()
+    assert c.pod.cancelled == [run.job_id]
+    assert record["lease"]["job"] == {"id": run.job_id, "state": "cancelled"}
+    assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
 def test_a_tampered_output_is_refused_and_the_pod_released(machine_case):
     c = machine_case
     c.pod.corrupt_get = "cpu.png"

@@ -38,14 +38,27 @@ def read_job(path: str | Path) -> dict[str, Any]:
 
 def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | None = None,
             align: str | None = None) -> dict[str, Any]:
+    """Run with this job's validated trust choice scoped to the execution."""
+    from .target_inventory import POD_ALIGN
+
+    job = read_job(job_path)
+    if align is not None and align not in ALIGN_MODES:
+        raise JobFileError(f"align must be one of {', '.join(ALIGN_MODES)}")
+    token = POD_ALIGN.set(align or job['align'])
+    try:
+        return _run_job(entry, job, out, mode=mode, align=align)
+    finally:
+        POD_ALIGN.reset(token)
+
+
+def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | None = None,
+             align: str | None = None) -> dict[str, Any]:
     """Run one job file locally; returns the run's manifest. ``align`` overrides the job's."""
     from astrid.core.generation import entries
     from astrid.core.generation.progress import write_progress
-    from astrid.packs.vibecomfy.actions.run import run as run_action
-    from astrid.packs.vibecomfy.local_job import run_named_entry, run_prepared_job
+    from astrid.packs.vibecomfy.local_job import run_named_entry, run_owned_action, run_prepared_job
 
     write_progress("prepare")
-    job = read_job(job_path)
     if align is not None and align not in ALIGN_MODES:
         raise JobFileError(f"align must be one of {', '.join(ALIGN_MODES)}")
     inputs = dict(job["inputs"])
@@ -77,7 +90,7 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     # File inputs ride the job directory; they reach the run as its own file arguments.
     files = {name: str(inputs.pop(name)) for name in ("managed_assets", "source_video") if name in inputs}
     if named is None:
-        return run_action._run_and_settle(
+        return run_owned_action(
             workflow, Path(out), task_identity=task, attempt_identity=attempt,
             workflow_inputs=json.dumps(inputs, sort_keys=True), entry=None,
             align=align or job["align"], **files)

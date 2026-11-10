@@ -1284,6 +1284,7 @@ class GenerationFacade:
         placement = placements.validate_placement(placements.resolve_placement(
             placements.request_from_selector(placement), client=controls.get('client'),
             repo=controls.get('project_root')))
+        is_managed_target = placement.kind == 'local'
         is_remote_target = placement.kind not in placements.BUILTIN_KINDS
         if is_remote_target:
             _runpod_paid_controls(controls)
@@ -1386,7 +1387,9 @@ class GenerationFacade:
         candidates = qualified
         default_id = (candidates[0][1].id if candidates[0][0] == 'catalog'
                       else candidates[0][1]['id']) if candidates else None
-        target_client = (None if is_remote_target else select_generation_target(
+        # Managed and remote workflows are frozen from declarations. The host
+        # validates that exact selection after alignment and engine readiness.
+        target_client = (None if is_remote_target or is_managed_target else select_generation_target(
             placements.comfy_selector(placement), repo=controls.get("project_root"),
             entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id') or default_id,
             mode=mode))
@@ -1436,26 +1439,28 @@ class GenerationFacade:
                     workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                         registry=registry, candidate=candidate, mode=mode, modality=modality,
                         inputs=inputs, target_client=target_client, backend=backend,
-                        retain_source=None if dry_run else retain_source, defer_target=is_remote_target, align=align)
+                        retain_source=None if dry_run else retain_source,
+                        defer_target=is_remote_target or is_managed_target, align=align)
                 else:
                     from types import SimpleNamespace
                     prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
                         backends={"local": SimpleNamespace(template=str(candidate["bundle"]))})})
-                    if not is_remote_target:
+                    if not is_remote_target and not is_managed_target:
                         require_generation_target_readiness(prerequisite, mode, target_client)
                     if candidate["kind"] != modality or mode not in candidate["modes"]:
                         raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
                     registry_id = candidate.get("registry_id")
                     if registry_id:
                         catalog_entry = registry.get(registry_id)
-                        if not is_remote_target:
+                        if not is_remote_target and not is_managed_target:
                             require_generation_target_readiness(catalog_entry, mode, target_client)
                         validate_generation_request(registry, model=registry_id, mode=mode,
                                                     execution="local", inputs=inputs, modality=modality)
                         workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                             registry=registry, candidate=catalog_entry, mode=mode,
                             modality=modality, inputs=inputs, target_client=target_client, backend=backend,
-                            retain_source=None if dry_run else retain_source, defer_target=is_remote_target, align=align)
+                            retain_source=None if dry_run else retain_source,
+                            defer_target=is_remote_target or is_managed_target, align=align)
                     elif source == "workflow" and candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
                         # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
                         # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
@@ -1590,6 +1595,12 @@ class GenerationFacade:
                 preview.setdefault('workflow', ready_template)
             if approval is not None:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
+            # Report the same built graph's requirements that local alignment will judge.
+            manifest = workflow_entries.engine_table()['comfyui'].requirements({'workflow': workflow}, effective_values)
+            if placement.kind == 'local':
+                from astrid.core.generation.managed_preparation import configured_models_root
+                manifest = {**manifest, 'models_root': configured_models_root()}
+            readiness['entry']['requirements'] = manifest
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
@@ -1640,7 +1651,10 @@ class GenerationFacade:
                 workflow_inputs=json.dumps({name: value for name, value in
                     (plan or {}).get('bindings', {}).items() if name not in assets},
                     sort_keys=True, allow_nan=False),
-                comfy_url=(target_client.target.url if target_client is not None else None),
+                # The managed client is for preparation and inventory. Passing its
+                # loopback URL as an attached endpoint bypasses managed alignment
+                # and lifecycle ownership in the action.
+                comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
                 placement_policy=placement_policy,
                 generation_intent={
                     "version": 1, "modality": modality, "partial_success_policy": "reject",

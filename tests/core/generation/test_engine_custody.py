@@ -682,6 +682,9 @@ def cpu_h3_install(session, monkeypatch, request):
     from astrid.core.generation.engine_runner import _plain, plan_install
 
     _, _, original, root, mode, started = session
+    extra_flags = tuple(getattr(request, 'extra_launch_flags', ()))
+    if extra_flags:
+        original = replace(original, start=replace(original.start, argv=(*original.start.argv, *extra_flags)))
     uv = shutil.which("uv")
     if uv is None and Path(sys.executable).with_name("uv").is_file():
         uv = str(Path(sys.executable).with_name("uv"))
@@ -758,6 +761,15 @@ def cpu_h3_install(session, monkeypatch, request):
         buffer = io.StringIO(); csv.writer(buffer).writerows(records)
         (info / 'RECORD').write_text(buffer.getvalue())
         native_distributions.append(importlib.metadata.PathDistribution(info))
+        # Metadata-only CPU stand-ins are never imported by the HTTP fake and
+        # do not claim GPU dependency or inference qualification.
+        for name, version in getattr(request, 'standin_distributions', {}).items():
+            info = site / f"{name.replace('-', '_')}-{version}.dist-info"
+            info.mkdir()
+            (info / 'METADATA').write_text(f"Metadata-Version: 2.3\nName: {name}\nVersion: {version}\n")
+            (info / 'WHEEL').write_text('Wheel-Version: 1.0\nGenerator: astrid-cpu-standin\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+            (info / 'RECORD').write_text('')
+            native_distributions.append(importlib.metadata.PathDistribution(info))
     fixture = root / "cpu-fixture"
     fixture.mkdir()
     lock = f"packaging=={packaging.version} --hash=sha256:{hashlib.sha256(packaging.read_text('METADATA').encode()).hexdigest()}\n".encode()
@@ -792,17 +804,28 @@ def cpu_h3_install(session, monkeypatch, request):
     (fixture / "models.json").write_bytes(model_bytes)
     source = root / "runtime/vibecomfy"
     comfy = root / "runtime/ComfyUI"
-    shutil.copytree(source / ".git", comfy / ".git")
-    shutil.copy2(source / "tiny.py", comfy / "tiny.py")
+    pinned_comfy = getattr(request, "comfy_source", None)
+    if pinned_comfy is not None:
+        shutil.rmtree(comfy)
+        subprocess.run(["git", "clone", "--quiet", "--shared", str(pinned_comfy), str(comfy)],
+                       check=True, timeout=60)
+    else:
+        shutil.copytree(source / ".git", comfy / ".git")
+        shutil.copy2(source / "tiny.py", comfy / "tiny.py")
     if getattr(request, "param", None) == "outer":
         # ComfyUI's real source excludes its mutable media directories. Give
         # this tiny Git witness the same boundary before the first upload.
         with (comfy / ".git/info/exclude").open("a") as excluded:
             excluded.write("\n/input/\n/output/\n")
     revision = next(s.pin.revision for s in original.sources if s.name == "vibecomfy")
+    comfy_revision = (next(s.pin.revision for s in original.sources if s.name == "comfyui")
+                      if pinned_comfy is not None else revision)
     for spec in original.sources:
         if spec.name in {"comfyui", "vibecomfy"}:
-            subprocess.run(["git", "remote", "add", "origin", spec.pin.repository],
+            command = (["git", "remote", "set-url", "origin", spec.pin.repository]
+                       if spec.name == "comfyui" and pinned_comfy is not None
+                       else ["git", "remote", "add", "origin", spec.pin.repository])
+            subprocess.run(command,
                            cwd=root / spec.relative_path, check=True, capture_output=True, timeout=5)
     program_path = fixture / "bootstrap.py"
     # Real helper dispatch independently recomputes identities against these
@@ -816,7 +839,7 @@ from astrid.core.generation.engine_contracts import DataRef,RequirementsSpec,Sta
 from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
 base=recipes.load_recipe('comfyui',{PLATFORM!r})
 recipe=replace(base,
- sources=tuple(replace(s,pin=replace(s.pin,revision={revision!r})) for s in base.sources if s.name in {{'comfyui','vibecomfy'}}),
+ sources=tuple(replace(s,pin=replace(s.pin,revision=({comfy_revision!r} if s.name=='comfyui' else {revision!r}))) for s in base.sources if s.name in {{'comfyui','vibecomfy'}}),
  environments=(replace(base.environments[0],name='cpu',relative_path={environment_relative!r},python_version={sys.version.split()[0]!r},uv_version={uv_version!r},requirements=RequirementsSpec('packaged',DataRef('cpu-fixture/requirements.lock',{hashlib.sha256(lock).hexdigest()!r}),(),(),None),final_wheels=(),node_lock=None,source_installs=()),),
  primary_environment='cpu',models_lock=DataRef('cpu-fixture/models.json',{hashlib.sha256(model_bytes).hexdigest()!r}),
  start=StartSpec({original.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1'}},'127.0.0.1',{original.start.port}),

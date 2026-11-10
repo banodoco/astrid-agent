@@ -289,6 +289,47 @@ def test_build_and_after_outputs_share_one_job_dir(tmp_path):
     assert seen == [("build", tmp_path), ("after_outputs", tmp_path)]
 
 
+def test_catalog_requirements_use_the_resolved_workflow_not_the_first_mode(tmp_path, monkeypatch):
+    from astrid.core.generation import entries
+    from astrid.packs.vibecomfy.actions.run import run as action
+
+    monkeypatch.setattr(entries, "find_entry", lambda identifier: None)
+    seen = []
+    class Engine:
+        def requirements(self, entry, inputs):
+            seen.append((entry, inputs))
+            return {"engine": "comfyui", "base": None, "models": [], "extra": {"nodes": []}}
+    monkeypatch.setattr(entries, "engine_table", lambda: {"comfyui": Engine()})
+    resolved = tmp_path / "selected-second-mode" / "workflow.py"
+    manifest = action._entry_manifest("multi-mode-catalog", {"prompt": "selected"}, workflow_path=resolved)
+    assert seen == [({"engine": "comfyui", "bundle": str(resolved)}, {"prompt": "selected"})]
+    assert manifest["engine"] == "comfyui"
+    with pytest.raises(ValueError, match="resolved workflow path"):
+        action._entry_manifest("multi-mode-catalog", {})
+
+
+def test_requirements_of_built_entries_read_selected_graph_without_rebuilding(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.generation import entries
+    from astrid.packs.vibecomfy.actions.run import run as action
+
+    def unexpected_build(*args, **kwargs):
+        raise AssertionError("requirements reran the build hook")
+    monkeypatch.setattr(entries, "find_entry", lambda identifier: {
+        "id": identifier, "hooks": {"build": unexpected_build},
+        "requirements": {"engine": "comfyui", "base": None, "models": ["stale"], "extra": {"nodes": []}}})
+    workflows = {str(tmp_path / f"{name}.py"): SimpleNamespace(metadata={
+        "model_assets": [{"name": f"{name}.bin", "subdir": "checkpoints", "sha256": "a" * 64, "size_bytes": 1}]})
+        for name in ("first", "second")}
+    monkeypatch.setattr(entries, "_load_entry_workflow", lambda entry: workflows[entry["bundle"]])
+    engine = entries.engine_table()["comfyui"]
+    for path, selected in workflows.items():
+        dry = engine.requirements({"workflow": selected}, {})
+        live = action._entry_manifest("input-dependent-hook", {}, workflow_path=Path(path))
+        assert live == dry
+        assert live["models"][0]["name"] == Path(path).with_suffix(".bin").name
+
+
 def test_prepared_random_seed_is_fresh_recorded_and_replayable(monkeypatch):
     from types import SimpleNamespace
     from astrid.core.generation.entries import prepare_execution_bindings
@@ -302,3 +343,38 @@ def test_prepared_random_seed_is_fresh_recorded_and_replayable(monkeypatch):
     assert second == {"prompt": "exact prompt", "seed": 456}
     assert prepare_execution_bindings(workflow, first) == first
     assert prepare_execution_bindings(workflow, {"seed": 0}) == {"seed": 0}
+
+
+def test_run_scoped_overrides_preserve_built_graph_and_only_namespace_declared_outputs():
+    import copy
+    from types import SimpleNamespace
+    from astrid.packs.vibecomfy.local_server_engine import run_scoped_overrides
+
+    class Workflow:
+        def __init__(self):
+            self.nodes = {"save": SimpleNamespace(inputs={"filename_prefix": "chosen", "images": ["decode", 0]}, widgets={}),
+                          "other": SimpleNamespace(inputs={"filename_prefix": "untouched", "seed": 7}, widgets={})}
+            self.outputs = [SimpleNamespace(node_id="save")]
+            self.metadata = {"model_assets": [{"name": "chosen.bin"}]}
+        def clone(self):
+            return copy.deepcopy(self)
+    built = Workflow()
+    scoped = run_scoped_overrides(built, "attempt-123")
+    assert built.nodes["save"].inputs["filename_prefix"] == "chosen"
+    assert scoped.nodes["save"].inputs == {"filename_prefix": "chosen_astrid_attempt-123", "images": ["decode", 0]}
+    assert scoped.nodes["other"].inputs == built.nodes["other"].inputs
+    assert scoped.metadata == built.metadata
+
+
+def test_run_scoped_prefix_survives_public_input_compilation():
+    from vibecomfy.workflow import VibeNode, VibeOutput, VibeWorkflow, WorkflowSource
+    from astrid.packs.vibecomfy.local_server_engine import run_scoped_overrides
+
+    built = VibeWorkflow(id="scope", source=WorkflowSource(id="scope"),
+                         nodes={"1": VibeNode(id="1", class_type="SaveImage",
+                                              inputs={"filename_prefix": "chosen"})},
+                         outputs=[VibeOutput(node_id="1", output_type="SaveImage")])
+    built.register_input("filename_prefix", "1", "filename_prefix", "chosen", type="STRING")
+    scoped = run_scoped_overrides(built, "attempt-123")
+    assert scoped.compile("api")["1"]["inputs"]["filename_prefix"] == "chosen_astrid_attempt-123"
+    assert built.compile("api")["1"]["inputs"]["filename_prefix"] == "chosen"
