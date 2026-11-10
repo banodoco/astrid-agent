@@ -229,6 +229,11 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         def detached_cancel(self, *a): return pod.job_cancel(*a)
         def disconnect(self): pass
     monkeypatch.setattr(https, "HttpsPodTransport", Transport)
+    # The in-memory pod lives in this process. Real HTTPS deadline behavior is
+    # covered separately through a spawned observer and localhost transport.
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+    c.real_bounded_call = _HttpsOps._bounded_call
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", _HttpsOps._call_direct)
     c.host = c.fresh()
     c.installation, c.placement, c.pod, c.provider, c.context = installation, placement, pod, provider, context
     c.adapter = module.build_adapter(lease_owner=c.host, placement=placement, installation=installation,

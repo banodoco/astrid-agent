@@ -127,7 +127,6 @@ def prepare_retained_generation(
             return lease_owner._save(current, {**current["lease"], "preparation": preparation})
 
         save()
-        installation_started = False
         try:
             claim = connect_claimed_for_preparation(claimed)
             # Preparation (bootstrap and the model-free engine install) is
@@ -165,7 +164,6 @@ def prepare_retained_generation(
                 raise CustodyChanged("warm machine custody differs: "
                                      + ", ".join(custody_differences(previous.get("custody"), custody)))
             save(custody=custody, storage=storage)
-            installation_started = True
             state = placement.prepare_claimed(
                 claim, out=out,
                 deadline_seconds=remaining, installation=installation,
@@ -182,20 +180,12 @@ def prepare_retained_generation(
                 raise PreparedWorkerError("preparation consumed its paid lifetime or source bytes changed")
             saved = save(state="prepared", installed=dict(state.installed))
         except BaseException:
-            # Before any installation mutation, a previously attested snapshot
-            # is still safe. Once preparation may have touched the pod, keep
-            # the unresolved state for exact release/recovery instead.
+            # A failed current mount/custody observation cannot prove that an
+            # old installed snapshot is still safe, even before installation.
+            # Preserve exact custody for immediate release/recovery.
             current = lease_owner._read()
-            if (not installation_started and previous is not None and previous.get("state") == "prepared"
-                    and isinstance(previous.get("installed"), dict)
-                    and current is not None and current.get("state") == "claimed"
-                    and current.get("operation_id") == invocation.operation_id
-                    and current.get("lease", {}).get("state") == "active"
-                    and current.get("pod_id") == claimed.get("pod_id")):
-                lease_owner._save(current, {**current["lease"], "preparation": previous})
-            else:
-                lease_owner._save(current, {**current["lease"], "preparation": {**preparation, "state": "unresolved"}},
-                                  state="cleanup_pending", reconciliation_required=True)
+            lease_owner._save(current, {**current["lease"], "preparation": {**preparation, "state": "unresolved"}},
+                              state="cleanup_pending", reconciliation_required=True)
             raise
         return PreparedRunPodLease(
             RunPodLease(invocation.operation_id, invocation.owner_epoch, invocation.generation,

@@ -22,11 +22,13 @@ import hashlib
 import io
 import json
 import math
+import multiprocessing
 import os
 import re
 import shlex
 import subprocess
 import tarfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -727,24 +729,89 @@ class RemotePlacement:
 
 
 class _HttpsOps:
-    def __init__(self, pod_id: str, token: str, *, deadline: float | None = None) -> None:
-        self.pod_id, self.token, self.deadline = pod_id, token, deadline
+    def __init__(self, pod_id: str, token: str, *, deadline: float | None = None,
+                 base_url: str | None = None) -> None:
+        self.pod_id, self.token, self.deadline, self.base_url = pod_id, token, deadline, base_url
 
     def bounded(self, deadline: float) -> "_HttpsOps":
-        return type(self)(self.pod_id, self.token, deadline=deadline)
+        return type(self)(self.pod_id, self.token, deadline=deadline, base_url=self.base_url)
 
     def _transport(self):
         from runpod_lifecycle.https import HttpsPodTransport
 
         return HttpsPodTransport(self.pod_id, self.token,
-                                 **({"deadline": self.deadline} if self.deadline is not None else {}))
+                                 **({"deadline": self.deadline} if self.deadline is not None else {}),
+                                 **({"base_url": self.base_url} if self.base_url is not None else {}))
 
-    def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+    def _call_direct(self, name: str, *args: Any, **kwargs: Any) -> Any:
         transport = self._transport()
         try:
             return getattr(transport, name)(*args, **kwargs)
         finally:
             transport.disconnect()
+
+    def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """Kill a slow-drip caller before it can hold the host's drain forever."""
+        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
+            raise RemotePlacementError("unsupported bounded pod operation")
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise RemotePlacementError("failure verification deadline expired")
+        context = multiprocessing.get_context("spawn")
+        recv, send = context.Pipe(duplex=False)
+        child = context.Process(target=_bounded_https_call_child,
+                                args=(send, self.pod_id, self.token, self.deadline, self.base_url, name, args, kwargs))
+        child.daemon = True
+        started = False
+        watchdog = None
+        try:
+            child.start()
+            started = True
+            send.close()
+            # poll() can wake on a partial frame; recv_bytes() may then block
+            # indefinitely. A separate timer must stop the local caller even
+            # while this thread is inside the framed receive.
+            def expire() -> None:
+                try:
+                    if child.is_alive():
+                        child.kill()
+                except (OSError, ValueError):
+                    pass
+            watchdog = threading.Timer(max(0, self.deadline - time.monotonic()), expire)
+            watchdog.daemon = True
+            watchdog.start()
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0 or not recv.poll(remaining):
+                raise RemotePlacementError("failure verification deadline expired")
+            raw = recv.recv_bytes(maxlength=2 * 1024 * 1024)
+            if time.monotonic() >= self.deadline:
+                raise RemotePlacementError("failure verification deadline expired")
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or set(payload) != {"ok", "value"} or payload["ok"] is not True:
+                raise RemotePlacementError("bounded pod operation failed")
+            return payload["value"]
+        except (OSError, EOFError, ValueError, TypeError):
+            raise RemotePlacementError("failure verification deadline expired" if time.monotonic() >= self.deadline
+                                       else "bounded pod operation failed") from None
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
+            try:
+                if started:
+                    child.join(timeout=0.02)
+                    if child.is_alive():
+                        child.kill()
+                        child.join(timeout=0.2)
+                    if child.is_alive():
+                        raise RemotePlacementError("bounded pod observer could not be reaped")
+                    child.close()
+            finally:
+                recv.close()
+                send.close()
+
+    def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        return (self._call_direct(name, *args, **kwargs) if self.deadline is None
+                else self._bounded_call(name, *args, **kwargs))
 
     def exec(self, command: str, timeout: float = 600) -> tuple[int, str, str]:
         return self._call("execute_command", command, timeout)
@@ -763,6 +830,25 @@ class _HttpsOps:
 
     def job_cancel(self, job_id: str) -> Mapping[str, Any]:
         return self._call("detached_cancel", job_id)
+
+
+def _bounded_https_call_child(send: Any, pod_id: str, token: str, deadline: float, base_url: str | None,
+                             name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    """One no-journal transport RPC; credentials arrive only on the private spawn pipe."""
+    try:
+        ops = _HttpsOps(pod_id, token, deadline=deadline, base_url=base_url)
+        value = ops._call_direct(name, *args, **kwargs)
+        payload = json.dumps({"ok": True, "value": value}, separators=(",", ":")).encode()
+        if len(payload) > 2 * 1024 * 1024:
+            payload = b'{"ok":false,"value":null}'
+        send.send_bytes(payload)
+    except BaseException:
+        try:
+            send.send_bytes(b'{"ok":false,"value":null}')
+        except Exception:
+            pass
+    finally:
+        send.close()
 
 
 def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:

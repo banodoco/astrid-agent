@@ -398,7 +398,7 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         "rc=$?\n"
         f"if [ $rc -ne 0 ]; then {POD_VENV}/bin/python -c "
         f"{shlex.quote(Path(__file__).with_name('failure_diagnostics.py').read_text(encoding='utf-8'))} "
-        f"{result}; exit $rc; fi\n"
+        f"{result} {shlex.quote(f'{remote_root}/{JOB_NAME}')}; exit $rc; fi\n"
         f"printf '%s' {shlex.quote(RESULT_MARK)}; tr -d '\\n' < {result}; echo\n"
         f"{manifest_command(f'{remote_root}/out')}\n"
     )
@@ -422,6 +422,7 @@ class MachineLease:
     #: The job's run directory and detached job directory, removed by the reset.
     run_dir: str | None = None
     job_dir: str | None = None
+    node_ids: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -669,6 +670,8 @@ class RunPodMachine:
                 "inputs": public_inputs, "bindings": bindings, "execution": shipped}
         local_job = staging / JOB_NAME
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        from .failure_diagnostics import graph_node_ids
+        lease.node_ids = graph_node_ids(job.inputs.get("source"))
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
         # The active pack selection and the user entry ship with the job; the
         # pod-side run resolves its entry from them only.
@@ -769,7 +772,7 @@ class RunPodMachine:
                     raise MachineError("remote failure diagnostic unavailable") from None
                 raise
         if failed:
-            diagnostic = parse_frame(stdout)
+            diagnostic = parse_frame(stdout, node_ids=getattr(run.lease, "node_ids", frozenset()))
             run.lease.failure_diagnostic = diagnostic
             exit_code = record.get("exit_code")
             safe_exit = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else "unknown"
@@ -871,13 +874,30 @@ class RunPodMachine:
         if lease.released:
             return
         owner = adapter.lease_owner
+        paid_expiry = None
+        verify_deadline = None
+        if failure is not None:
+            try:
+                with owner.lock:
+                    initial = owner.preparation_claim(lease.lease)
+                    paid_expiry = initial["lease"]["paid_expires_at"]
+                remaining = max(0, paid_expiry - owner.clock())
+                bounded = getattr(lease.claim.ops, "bounded", None)
+                if remaining > 0 and bounded is not None:
+                    # The first cancellation is part of the same one-shot
+                    # observation budget as status, receipt and reset.
+                    verify_deadline = time.monotonic() + min(FAILURE_VERIFY_SECONDS, remaining)
+                    lease.claim.ops = bounded(verify_deadline)
+            except Exception:
+                pass  # Exact release below reconciles any unresolved job.
         # Poll/transport failures can leave a job running. Stop that exact
         # checkpointed job before deciding whether warm reuse is possible.
         try:
             with owner.lock:
                 current = owner.preparation_claim(lease.lease)
                 pending = current["lease"].get("job")
-            if pending is not None and pending.get("state") in {"starting", "running"}:
+            if (pending is not None and pending.get("state") in {"starting", "running"}
+                    and (failure is None or verify_deadline is not None)):
                 stopped = lease.claim.ops.job_cancel(pending["id"])
                 if stopped.get("id") == pending["id"] and stopped.get("state") in {"exited", "cancelled"}:
                     self._checkpoint(lease, {"id": pending["id"], "state": stopped["state"]})
@@ -899,17 +919,8 @@ class RunPodMachine:
                 paid_expiry = record["lease"]["paid_expires_at"]
             except Exception:
                 safe = False
-        verify_deadline = (time.monotonic() + min(FAILURE_VERIFY_SECONDS, max(0, paid_expiry - owner.clock()))
-                           if failure is not None and safe else None)
-        if verify_deadline is not None:
-            # The pinned lifecycle transport clips every request and retry to
-            # this one absolute deadline. Exact release uses its own transport
-            # and remains available after this observer expires.
-            bounded = getattr(lease.claim.ops, "bounded", None)
-            if bounded is None:
-                safe = False
-            else:
-                lease.claim.ops = bounded(verify_deadline)
+        if failure is not None and verify_deadline is None:
+            safe = False
         if safe and failure is not None and job is not None:
             try:
                 remaining = min(paid_expiry - owner.clock(), verify_deadline - time.monotonic())
@@ -944,18 +955,19 @@ class RunPodMachine:
                 warm, reason = False, "reset_failed"
         from .failure_diagnostics import host_summary
         from astrid.core.execution.machine_run import MachineRunCancelled
-        summary = host_summary(failure, getattr(lease, "failure_diagnostic", None), stage=stage) if failure else None
+        summary = host_summary(failure, getattr(lease, "failure_diagnostic", None),
+                               stage=stage, node_ids=lease.node_ids) if failure else None
         outcome = ("cancelled" if isinstance(failure, MachineRunCancelled) else
                    "failed" if failure else "success")
         if not warm and summary is not None:
             try:
-                owner.note_failed_job(lease.lease, summary, outcome=outcome)
+                owner.note_failed_job(lease.lease, summary, outcome=outcome, node_ids=lease.node_ids)
             except Exception:
                 pass  # Unsafe release still has priority over a diagnostic read/write.
         self._finish(lease.lease)
         if warm:
             try:
-                owner.settle(lease.lease, outcome=outcome, failure=summary)
+                owner.settle(lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids)
             except Exception:
                 owner.release(reason="settlement_unverified", _expected_operation=lease.lease.operation_id,
                               expected_machine_id=lease.claim.pod_id)
@@ -1003,10 +1015,19 @@ class RunPodMachine:
             if record.get("state") in {"missing", "cancelled"}:
                 raise MachineError(f"reset job is {record.get('state')}")
             if time.monotonic() > limit:
-                ops.job_cancel(job_id)
-                self._checkpoint(lease, {"id": job_id, "state": "cancelled"})
+                stopped = ops.job_cancel(job_id)
+                if stopped.get("id") != job_id or stopped.get("state") not in {"exited", "cancelled"}:
+                    raise MachineError("exact reset job stop could not be verified")
+                self._checkpoint(lease, {"id": job_id, "state": stopped["state"]})
                 raise MachineError(f"reset did not finish in {RESET_SECONDS:.0f}s")
-            time.sleep(poll)
+            sleep_for = poll
+            if verify_deadline is not None:
+                sleep_for = min(sleep_for, max(0, verify_deadline - time.monotonic()))
+            if paid_expiry is not None:
+                sleep_for = min(sleep_for, max(0, paid_expiry - self._require().lease_owner.clock()))
+            if sleep_for <= 0:
+                raise MachineError("failure reset exceeded the original paid limit")
+            time.sleep(sleep_for)
         self._checkpoint(lease, {"id": job_id, "state": "exited"})
         directory = str(started.get("dir") or "")
         stdout = ""
@@ -1116,13 +1137,15 @@ def lease_rows(owner: Any) -> list[dict[str, Any]]:
 
 
 def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
-    from .failure_diagnostics import safe_stored_summary
+    from .failure_diagnostics import safe_stored_summary, stored_node_ids
     lease = record.get("lease") or {}
     last = lease.get("last_job")
     last = last if isinstance(last, Mapping) else {}
     outcome = last.get("outcome") if last.get("outcome") in {"success", "failed", "cancelled"} else None
     safe_last = ({"outcome": outcome, "generation": last.get("generation") if type(last.get("generation")) is int else None,
-                  "failure": safe_stored_summary(last.get("failure")) if outcome != "success" else None}
+                  "failure": safe_stored_summary(last.get("failure"),
+                                                 node_ids=stored_node_ids(last.get("structural_node_ids")))
+                  if outcome != "success" else None}
                  if outcome else None)
     # Live means custody still needs release, not that the pod is ready for reuse.
     # Only an exact cleanup receipt ends custody; failed preparation may still bill.

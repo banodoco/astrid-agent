@@ -532,7 +532,8 @@ class RunPodLeaseOwner:
             return record
 
     def settle(self, invocation: RunPodLease, *, outcome: str = "success",
-               failure: Mapping[str, Any] | None = None) -> None:
+               failure: Mapping[str, Any] | None = None,
+               node_ids: frozenset[str] = frozenset()) -> None:
         """Called by the host after that exact invocation has settled."""
         with self.lock:
             record = self._read()
@@ -554,15 +555,18 @@ class RunPodLeaseOwner:
                 raise RunPodWorkerOwnerError("unresolved preparation cannot enter warm retention")
             if outcome not in {"success", "failed", "cancelled"}:
                 raise RunPodWorkerOwnerError("invalid job outcome")
+            from .failure_diagnostics import safe_stored_summary
             lease.update(last_job={"outcome": outcome, "generation": lease["generation"],
-                                   "failure": dict(failure or {}) if outcome != "success" else None},
+                                   "failure": safe_stored_summary(failure, node_ids=node_ids)
+                                   if outcome != "success" else None,
+                                   "structural_node_ids": sorted(node_ids) if outcome != "success" else []},
                          state="idle", idle_expires_at=(lease["paid_expires_at"] if lease.get("keep_until_release")
                          else min(self.clock() + lease["idle_seconds"], lease["paid_expires_at"])))
             record = self._save(record, lease)
             self._arm(record)
 
     def note_failed_job(self, invocation: RunPodLease, failure: Mapping[str, Any], *,
-                        outcome: str = "failed") -> None:
+                        outcome: str = "failed", node_ids: frozenset[str] = frozenset()) -> None:
         """Keep bounded last-job facts even when unsafe custody must be released."""
         from .failure_diagnostics import safe_stored_summary
 
@@ -577,7 +581,8 @@ class RunPodLeaseOwner:
                     or outcome not in {"failed", "cancelled"}):
                 return
             lease["last_job"] = {"outcome": outcome, "generation": lease["generation"],
-                                 "failure": safe_stored_summary(failure)}
+                                 "failure": safe_stored_summary(failure, node_ids=node_ids),
+                                 "structural_node_ids": sorted(node_ids)}
             self._save(record, lease)
 
     def preparation_claim(self, invocation: RunPodLease) -> dict[str, Any]:

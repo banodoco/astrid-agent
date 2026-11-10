@@ -254,13 +254,25 @@ def test_recoverable_claim_preparation_failure_keeps_attested_pod(machine_case, 
     assert record["lease"]["last_job"]["outcome"] == "failed"
     assert record["lease"]["last_job"]["failure"]["stage"] == "preparation"
     assert c.creates == 1 and c.deletes == []
-    with monkeypatch.context() as patch:
-        patch.setattr(c.placement, "begin_claimed", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("probe unavailable")))
-        with pytest.raises(RuntimeError, match="probe unavailable"):
-            c.machine.claim(c.job(3))
-    assert c.read()["lease"]["state"] == "idle" and c.read()["lease"]["preparation"]["state"] == "prepared"
-    assert c.creates == 1 and c.deletes == []
     assert original is not None
+
+
+@pytest.mark.parametrize("unsafe", ["probe_unavailable", "changed_mount"])
+def test_unverified_current_storage_probe_releases_previous_warm_pod(machine_case, monkeypatch, unsafe):
+    c = machine_case
+    first = c.machine.claim(c.job())
+    c.host.settle(first.lease)
+    if unsafe == "probe_unavailable":
+        monkeypatch.setattr(c.placement, "begin_claimed",
+                            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("probe unavailable")))
+        expected = "probe unavailable"
+    else:
+        c.mount_id += 1
+        expected = "warm machine custody differs"
+    with pytest.raises(Exception, match=expected):
+        c.machine.claim(c.job(2))
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.creates == 1
 
 
 def test_unverified_installation_failure_releases_exact_pod(machine_case, monkeypatch):
@@ -345,6 +357,65 @@ def test_blocked_failure_verifier_does_not_hold_owner_lock_or_revive_lease(machi
     assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
 
 
+def test_paid_timer_drains_real_https_slow_drip_without_late_warm_settlement(machine_case, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+    import time
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "d" * 32, "state": "exited"})
+    with c.host.lock:
+        current = c.host._read()
+        shortened = {**current["lease"], "paid_expires_at": c.clock() + 10}
+        c.host._arm(c.host._save(current, shortened))
+
+    entered = Event()
+    class Slow(BaseHTTPRequestHandler):
+        def do_POST(self):
+            entered.set()
+            self.send_response(200)
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            for _ in range(1000):
+                try:
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                time.sleep(0.025)
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", c.real_bounded_call)
+    lease.claim.ops = _HttpsOps("pod1", "x" * 32,
+                               base_url=f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(c.placement, "_canonical_installed",
+                        lambda state, **kwargs: state.claim.ops.job_poll("d" * 32))
+    errors = []
+    def release_failure():
+        try:
+            c.machine.release(lease, False, failure=rm.MachineError("private failure"))
+        except Exception as exc:
+            errors.append(exc)
+    verifier = Thread(target=release_failure)
+    try:
+        verifier.start()
+        assert entered.wait(5)
+        c.clock.advance(10)  # Real fake timer invokes exact release during the HTTP drip.
+        verifier.join(3)
+        assert not verifier.is_alive() and not errors
+        assert c.read()["state"] == "cleanup_complete"
+        assert c.deletes == ["pod-1"] and c.creates == 1
+        assert c.read()["lease"]["state"] == "releasing"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_paid_expiry_during_failure_reset_stdout_read_prevents_settlement(machine_case, monkeypatch):
     c = machine_case
     c.pod.listed = []
@@ -362,6 +433,41 @@ def test_paid_expiry_during_failure_reset_stdout_read_prevents_settlement(machin
                        sleep=lambda s: None)
     assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
     assert c.read()["lease"]["ended"] == "reset_failed"
+
+
+def test_lost_reset_start_ack_keeps_exact_job_for_release_reconciliation(machine_case, monkeypatch):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "e" * 32, "state": "exited"})
+    original = c.pod.job_start
+
+    def lost_ack(command, *, job_id=None):
+        result = original(command, job_id=job_id)
+        if "pod_reset reset" in command:
+            raise TimeoutError("private reset response")
+        return result
+
+    monkeypatch.setattr(c.pod, "job_start", lost_ack)
+    c.machine.release(lease, False, failure=rm.MachineError("generation failed"))
+    record = c.read()
+    assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "reset_failed"
+    reset_id = record["lease"]["job"]["id"]
+    assert reset_id in c.pod.cancelled and c.deletes == ["pod-1"] and c.creates == 1
+
+
+def test_structural_node_fact_survives_owner_journal_and_machine_listing(machine_case):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    lease.node_ids = frozenset({"17"})
+    lease.failure_diagnostic = {"code": "generation_failed", "category": "execution",
+                                "node_id": "17", "node_class": "KSampler", "field": "seed"}
+    c.machine._checkpoint(lease, {"id": "c" * 32, "state": "exited"})
+    c.machine.release(lease, False, failure=rm.MachineError("private output"), stage="fetch")
+    record = c.read()
+    summary = record["lease"]["last_job"]["failure"]
+    assert summary["node_id"] == "17" and summary["field"] == "seed"
+    assert rm.lease_row(record)["last_job"]["failure"] == summary
+    assert "private output" not in json.dumps(record) and c.creates == 1
 
 
 def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
