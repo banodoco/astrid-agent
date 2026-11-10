@@ -214,10 +214,13 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             return {"id": job_id, "state": "missing" if c.cancel_unknown else "cancelled"}
 
     pod = RetainedPod({}, provider.marker)
+    c.transport_deadlines = []
     class Transport:
-        def __init__(self, pod_id, token):
+        def __init__(self, pod_id, token, *, deadline=None):
             assert pod_id == "pod-1"
             assert token == https.read_token_file(c.read()["https_token_file"])
+            self.deadline = deadline
+            c.transport_deadlines.append(deadline)
         def execute_command(self, *a): return pod.exec(*a)
         def put(self, *a): return pod.put(*a)
         def get(self, *a): return pod.get(*a)
@@ -226,6 +229,11 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         def detached_cancel(self, *a): return pod.job_cancel(*a)
         def disconnect(self): pass
     monkeypatch.setattr(https, "HttpsPodTransport", Transport)
+    # The in-memory pod lives in this process. Real HTTPS deadline behavior is
+    # covered separately through a spawned observer and localhost transport.
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+    c.real_bounded_call = _HttpsOps._bounded_call
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", _HttpsOps._call_direct)
     c.host = c.fresh()
     c.installation, c.placement, c.pod, c.provider, c.context = installation, placement, pod, provider, context
     c.adapter = module.build_adapter(lease_owner=c.host, placement=placement, installation=installation,

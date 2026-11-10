@@ -11990,7 +11990,8 @@ class GenericPackHost:
                     include_quote = inputs.get("include_quote", False)
                     if type(include_quote) is not bool:
                         raise HostError("target quote selection must be boolean")
-                    target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote)
+                    target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote, **(
+                        {"cancelled": cancelled} if policy.get("kind") == "runpod" and target_operation == "claim" else {}))
                     inputs.pop("include_quote", None)
                 elif target_context is not None:
                     # A rented placement is a generation.machine: the whole local

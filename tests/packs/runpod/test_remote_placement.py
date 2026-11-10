@@ -49,6 +49,12 @@ class FakePod:
     # --- agent surface
     def exec(self, command, timeout=600):
         self.exec_log.append(command)
+        if "O_NOFOLLOW" in command and "1048577" in command:
+            import base64, shlex
+            path = shlex.split(command)[-1]
+            if path not in self.files or len(self.files[path]) > 1024 * 1024:
+                return 1, "", "invalid receipt"
+            return 0, base64.b64encode(self.files[path]).decode() + "\n", ""
         if "pod-state:" in command:
             state = "pending" if self.active_job is not None else self.pod_state
             return 0, f"pod-state:{state}\n", ""

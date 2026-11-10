@@ -2,16 +2,16 @@
 
 The controller rents the pod, ships the job, runs the same local command there
 (``astrid generate <entry> --placement local``), copies the job's progress file
-back on each poll, copies the outputs back under a digest manifest and releases
-the pod. Cancel is ``job_cancel``, then release. Nothing about the pod's models or
+back on each poll, copies the outputs back under a digest manifest and settles
+the pod idle when verification succeeds. Cancel is ``job_cancel``. Nothing about the pod's models or
 nodes travels back to the controller: the pod aligns its own disk.
 
 Money rules (pinned by ``tests/packs/runpod/test_machine.py``):
 
 * one claim per job, under the existing paid-consent and lease owner
   (``RunPodLeaseOwner``); this module never retries a claim;
-* any failure after the claim releases the pod; only a successful job settles
-  it warm, and only when its machine custody matches the warm lease's;
+* a failed job settles idle only after exact job stop, installation verification
+  and in-place reset; unknown custody or preparation releases the exact pod;
 * the detached job id is checkpointed in the lease journal before the job
   starts, so a crashed host's job is cancelled by ``recover()``.
 * the pod keeps one long-lived Runtime (T5f): after the digest-verified fetch a
@@ -32,6 +32,7 @@ import json
 import os
 import secrets
 import shlex
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,11 +55,11 @@ LOCAL_FOOTPRINT_BYTES = 20 * 10**9
 
 
 class MachineError(RemotePlacementError):
-    """A remote-machine step failed; the machine has been released unless stated."""
+    """A remote-machine step failed; retention follows exact custody checks."""
 
 
 class MachineCancelled(MachineError):
-    """The local run was cancelled; the remote job was stopped and the machine released."""
+    """The local run was cancelled; the remote job was stopped."""
 
 
 class CustodyChanged(MachineError):
@@ -176,6 +177,7 @@ def extract_selection_command(remote_root: str) -> str:
 POD_STATE_MARK = "pod-state:"
 #: Bound on one detached reset (restore + replace + one ensure) before the pod is released.
 RESET_SECONDS = 600.0
+FAILURE_VERIFY_SECONDS = 120.0
 
 
 def pod_paths() -> dict[str, str]:
@@ -394,7 +396,9 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         f"{POD_VENV}/bin/python -c {shlex.quote(_ENTRY_CHECK)} {listing} {shlex.quote(check_entry)} {shlex.quote(mode or '')} || exit 3\n"
         f"{line} > {result}\n"
         "rc=$?\n"
-        "if [ $rc -ne 0 ]; then exit $rc; fi\n"
+        f"if [ $rc -ne 0 ]; then {POD_VENV}/bin/python -c "
+        f"{shlex.quote(Path(__file__).with_name('failure_diagnostics.py').read_text(encoding='utf-8'))} "
+        f"{result} {shlex.quote(f'{remote_root}/{JOB_NAME}')}; exit $rc; fi\n"
         f"printf '%s' {shlex.quote(RESULT_MARK)}; tr -d '\\n' < {result}; echo\n"
         f"{manifest_command(f'{remote_root}/out')}\n"
     )
@@ -418,6 +422,7 @@ class MachineLease:
     #: The job's run directory and detached job directory, removed by the reset.
     run_dir: str | None = None
     job_dir: str | None = None
+    node_ids: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -490,8 +495,8 @@ class RunPodMachine:
 
     # -- claim ---------------------------------------------------------------
 
-    def claim(self, job: Any) -> MachineLease:
-        """Rent or reuse one pod for ``job``; release it on any failure after the claim."""
+    def claim(self, job: Any, *, cancelled: Callable[[], bool] | None = None) -> MachineLease:
+        """Rent or reuse one pod for ``job``; retain only verified preparation."""
         from astrid.core.generation.interfaces import RunPodPreparationRequest
         from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
         from .generation import prepare_retained_generation
@@ -515,9 +520,18 @@ class RunPodMachine:
             deadline=policy["deadline"], consent=tuple(policy["consent"]),
             preparation_seconds=policy["preparation_seconds"], execution_seconds=policy["execution_seconds"],
             idle_seconds=policy["idle_seconds"],
+            policy_digest=policy.get("policy_digest"), max_hourly_usd=policy.get("max_hourly_usd"),
+            capacity_timeout_seconds=policy.get("capacity_timeout_seconds"),
+            wait_for_capacity=policy.get("wait_for_capacity", True),
         )
-        # Refuse a changed offer first: before staging, the account lock or any create.
-        owner.selection.consented_offer(consent, owner.selection.clock())
+        # Validate authority without market stock; _select first checks retained
+        # custody, then owns observation/retry under the existing owner lock.
+        consent.validate_authority(owner.selection.preferences, owner.selection.clock())
+        prior = owner.selection._read()
+        if consent.policy_digest is None and (prior is None or prior.get("state") == "cleanup_complete"):
+            # Exact quoted offers retain their early refusal before source staging.
+            # A retained machine is checked through its own recorded offer instead.
+            owner.selection.consented_offer(consent, owner.selection.clock())
         # A warm machine is reused only while the provider still runs it.
         owner.observe_liveness(observe=getattr(adapter, "observe_pod", None))
         pinned = policy.get("machine")
@@ -554,6 +568,7 @@ class RunPodMachine:
                                                policy["idle_seconds"]), on_acquired=on_acquired,
                     entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
                     manifest_rows=manifest_rows,
+                    **({"cancelled": cancelled} if cancelled is not None else {}),
                 )
                 # Preparation and execution have separate disclosed budgets. Arm once
                 # at handoff, clipped to this lease's original paid expiry.
@@ -561,11 +576,47 @@ class RunPodMachine:
                     consent.execution_seconds,
                     prepared.lease.claim["lease"]["paid_expires_at"] - owner.clock(),
                 ))
-            except BaseException:
+            except BaseException as exc:
                 if acquired:
-                    # A failed preparation never settles warm: release the exact pod.
+                    # Only a fully attested preparation can be reused. Failure
+                    # before or during installation leaves unknown pod state.
                     self._finish(acquired[0])
-                    owner.release(reason="preparation_failed", _expected_operation=acquired[0].operation_id)
+                    try:
+                        with owner.lock:
+                            record = owner.preparation_claim(acquired[0])
+                            prepared = record["lease"].get("preparation") or {}
+                            safe = (not owner.closed and prepared.get("state") == "prepared"
+                                    and isinstance(prepared.get("installed"), dict)
+                                    and record.get("pod_id") == acquired[0].claim.get("pod_id"))
+                    except Exception:
+                        safe = False
+                    if safe:
+                        from .failure_diagnostics import host_summary
+                        try:
+                            owner.settle(acquired[0], outcome="failed",
+                                         failure=host_summary(exc, stage="preparation"))
+                        except Exception:
+                            owner.release(reason="preparation_settlement_unverified",
+                                          _expected_operation=acquired[0].operation_id,
+                                          expected_machine_id=acquired[0].claim.get("pod_id"))
+                            raise
+                    else:
+                        from .failure_diagnostics import host_summary
+                        try:
+                            owner.note_failed_job(acquired[0], host_summary(exc, stage="preparation"))
+                        except Exception:
+                            pass
+                        owner.release(reason="preparation_unverified",
+                                      _expected_operation=acquired[0].operation_id,
+                                      expected_machine_id=acquired[0].claim.get("pod_id"))
+                else:
+                    # acquire failed before on_acquired. Its locked failure
+                    # snapshot names only an exact journal-created pod; this
+                    # caller is outside generation's preparation lock.
+                    identity = getattr(exc, "release_identity", None)
+                    if identity is not None:
+                        owner.release(reason="custody_changed", _expected_operation=identity[0],
+                                      expected_machine_id=identity[1])
                 raise
         return MachineLease(prepared.lease, prepared.claim, prepared.state, prepared.custody, prepared.reused)
 
@@ -619,6 +670,8 @@ class RunPodMachine:
                 "inputs": public_inputs, "bindings": bindings, "execution": shipped}
         local_job = staging / JOB_NAME
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        from .failure_diagnostics import graph_node_ids
+        lease.node_ids = graph_node_ids(job.inputs.get("source"))
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
         # The active pack selection and the user entry ship with the job; the
         # pod-side run resolves its entry from them only.
@@ -689,12 +742,14 @@ class RunPodMachine:
     # -- cancel --------------------------------------------------------------
 
     def cancel(self, run: MachineRun) -> dict[str, Any]:
-        """Stop the remote job, checkpoint its stop, then release the machine."""
+        """Stop the remote job and checkpoint its verified stop."""
         stopped = run.lease.claim.ops.job_cancel(run.job_id)
-        if stopped.get("state") in {"exited", "cancelled"}:
+        if stopped.get("id") == run.job_id and stopped.get("state") in {"exited", "cancelled"}:
             self._checkpoint(run.lease, {"id": run.job_id, "state": stopped["state"]})
-        run.state = "cancelled"
-        self.release(run.lease, False, reason="cancelled")
+            run.state = "cancelled"
+        else:
+            run.lease.unsafe_job_stop = True
+            raise MachineError("exact remote job stop could not be verified")
         return dict(stopped)
 
     # -- fetch ---------------------------------------------------------------
@@ -705,12 +760,24 @@ class RunPodMachine:
         placement, state, ops = adapter.placement, run.lease.state, run.lease.claim.ops
         record = ops.job_poll(run.job_id)
         self._checkpoint(run.lease, {"id": run.job_id, "state": "exited"})
-        stdout = stderr = ""
+        from .failure_diagnostics import MAX_FRAME_BYTES, parse_frame
+        failed = type(record.get("exit_code")) is not int or record["exit_code"] != 0
+        stdout = ""
         if run.directory:
-            _c, stdout, _e = ops.exec(f"cat {shlex.quote(run.directory)}/stdout", 120)
-            _c, stderr, _e = ops.exec(f"tail -c 4000 {shlex.quote(run.directory)}/stderr", 120)
-        if str(record.get("exit_code")) not in {"0"}:
-            raise MachineError(f"remote generation exited {record.get('exit_code')}: {stderr[-800:]}")
+            command = (f"tail -c {MAX_FRAME_BYTES + 1}" if failed else "cat")
+            try:
+                _c, stdout, _e = ops.exec(f"{command} {shlex.quote(run.directory)}/stdout", 120)
+            except Exception:
+                if failed:
+                    raise MachineError("remote failure diagnostic unavailable") from None
+                raise
+        if failed:
+            diagnostic = parse_frame(stdout, node_ids=getattr(run.lease, "node_ids", frozenset()))
+            run.lease.failure_diagnostic = diagnostic
+            exit_code = record.get("exit_code")
+            safe_exit = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else "unknown"
+            raise MachineError(f"remote generation failed (exit {safe_exit}; "
+                               f"category={diagnostic['category']}; code={diagnostic['code']})")
         lines = stdout.splitlines()
         result_line = next((line for line in lines if line.startswith(RESULT_MARK)), None)
         manifest_line = next((line for line in lines if line.startswith(MANIFEST_MARK)), None)
@@ -798,31 +865,143 @@ class RunPodMachine:
 
     # -- release -------------------------------------------------------------
 
-    def release(self, lease: MachineLease, warm: bool, *, reason: str = "task_failed") -> None:
-        """Reset the pod's Runtime, then settle warm; otherwise release the exact pod (idempotent).
+    def release(self, lease: MachineLease, warm: bool, *, reason: str = "task_failed",
+                failure: BaseException | None = None, stage: str = "execution") -> None:
+        owner = self._require().lease_owner
+        observer_key = abort_event = None
+        if failure is not None and not lease.released:
+            try:
+                observer_key, abort_event = owner.begin_failure_observation(lease.lease, lease.claim.pod_id)
+            except Exception:
+                pass  # _release_impl still fences unsafe custody and reconciles exact release.
+        try:
+            self._release_impl(lease, warm, reason=reason, failure=failure, stage=stage,
+                               abort_event=abort_event, observer_key=observer_key)
+        finally:
+            if observer_key is not None:
+                owner.end_failure_observation(observer_key)
 
-        Only a successful job settles warm, and only after its in-place reset
-        (after the digest-verified fetch); a failed reset releases the pod.
-        """
+    def _release_impl(self, lease: MachineLease, warm: bool, *, reason: str,
+                      failure: BaseException | None, stage: str,
+                      abort_event: Any = None, observer_key: Any = None) -> None:
+        """Reset a verified job's Runtime, then settle idle; release unsafe custody."""
         from .worker_preparation import AcquisitionUnresolvedError
 
         adapter = self._require()
         if lease.released:
             return
         owner = adapter.lease_owner
-        if warm:
+        paid_expiry = None
+        verify_deadline = None
+        if failure is not None:
             try:
-                self._reset(lease)
+                with owner.lock:
+                    initial = owner.preparation_claim(lease.lease)
+                    paid_expiry = initial["lease"]["paid_expires_at"]
+                remaining = max(0, paid_expiry - owner.clock())
+                bounded = getattr(lease.claim.ops, "bounded", None)
+                if remaining > 0 and bounded is not None:
+                    # The first cancellation is part of the same one-shot
+                    # observation budget as status, receipt and reset.
+                    verify_deadline = time.monotonic() + min(FAILURE_VERIFY_SECONDS, remaining)
+                    lease.claim.ops = bounded(verify_deadline, abort_event=abort_event)
+            except Exception:
+                pass  # Exact release below reconciles any unresolved job.
+        # Poll/transport failures can leave a job running. Stop that exact
+        # checkpointed job before deciding whether warm reuse is possible.
+        try:
+            with owner.lock:
+                current = owner.preparation_claim(lease.lease)
+                pending = current["lease"].get("job")
+            if (pending is not None and pending.get("state") in {"starting", "running"}
+                    and (failure is None or verify_deadline is not None)):
+                stopped = lease.claim.ops.job_cancel(pending["id"])
+                if stopped.get("id") == pending["id"] and stopped.get("state") in {"exited", "cancelled"}:
+                    self._checkpoint(lease, {"id": pending["id"], "state": stopped["state"]})
+        except Exception:
+            pass  # Unknown stop is classified unsafe below; exact release reconciles it.
+        # A stopped or exited job can reuse the pod only after its canonical
+        # installation and Runtime reset have both been verified. An unknown
+        # job stop, custody change, lost lease or host shutdown is never warm.
+        with owner.lock:
+            try:
+                record = owner.preparation_claim(lease.lease)
+                job = record["lease"].get("job")
+                preparation = record["lease"].get("preparation") or {}
+                expected_install = dict(preparation.get("installed") or {})
+                safe = (not owner.closed and record.get("pod_id") == lease.claim.pod_id
+                        and preparation.get("state") == "prepared"
+                        and bool(expected_install) and lease.state.installed == expected_install
+                        and (job is None or job.get("state") in {"exited", "cancelled"}))
+                paid_expiry = record["lease"]["paid_expires_at"]
+            except Exception:
+                safe = False
+        if failure is not None and verify_deadline is None:
+            safe = False
+        if safe and failure is not None and job is not None:
+            try:
+                remaining = min(paid_expiry - owner.clock(), verify_deadline - time.monotonic())
+                safe = (remaining > 0 and adapter.placement._canonical_installed(
+                    lease.state, verification_seconds=remaining) and lease.state.installed == expected_install
+                        and owner.clock() < paid_expiry and time.monotonic() < verify_deadline)
+                # A concurrent paid/idle release can fence us while the remote
+                # receipt download is in flight. Recheck exact custody before reset.
+                if safe:
+                    with owner.lock:
+                        latest = owner.preparation_claim(lease.lease)
+                        safe = (latest["lease"].get("preparation") == preparation
+                                and latest.get("pod_id") == lease.claim.pod_id
+                                and latest["lease"].get("job") == job
+                                and owner.clock() < latest["lease"]["paid_expires_at"])
+            except Exception:
+                safe = False
+        if ((not warm and failure is None) or getattr(lease, "unsafe_job_stop", False)
+                or isinstance(failure, (DigestMismatch, CustodyChanged))):
+            safe = False
+        if not safe:
+            warm, reason = False, "unsafe_job_state"
+        else:
+            warm = True
+        if warm and job is not None:
+            try:
+                self._reset(lease, verify_deadline=verify_deadline, paid_expiry=paid_expiry)
+                if (verify_deadline is not None and time.monotonic() >= verify_deadline) or owner.clock() >= paid_expiry:
+                    raise MachineError("failure reset exceeded the original paid limit")
             except Exception as exc:  # noqa: BLE001 (any failed reset releases the pod)
-                lease.state.note("reset", "failed", error=f"{type(exc).__name__}: {exc}"[:400])
+                lease.state.note("reset", "failed", error=type(exc).__name__)
                 warm, reason = False, "reset_failed"
+        unreaped = getattr(lease.claim.ops, "unreaped_child", None)
+        if unreaped is not None:
+            owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)
+            raise AcquisitionUnresolvedError("bounded pod observer remains alive; exact custody is pending")
+        from .failure_diagnostics import host_summary
+        from astrid.core.execution.machine_run import MachineRunCancelled
+        summary = host_summary(failure, getattr(lease, "failure_diagnostic", None),
+                               stage=stage, node_ids=lease.node_ids) if failure else None
+        outcome = ("cancelled" if isinstance(failure, MachineRunCancelled) else
+                   "failed" if failure else "success")
+        if not warm and summary is not None:
+            try:
+                owner.note_failed_job(lease.lease, summary, outcome=outcome, node_ids=lease.node_ids)
+            except Exception:
+                pass  # Unsafe release still has priority over a diagnostic read/write.
         self._finish(lease.lease)
         if warm:
-            owner.settle(lease.lease)
+            try:
+                owner.settle(lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids)
+            except Exception:
+                if observer_key is not None:
+                    owner.end_failure_observation(observer_key)
+                owner.release(reason="settlement_unverified", _expected_operation=lease.lease.operation_id,
+                              expected_machine_id=lease.claim.pod_id)
+                raise
             lease.released = True
             return
         try:
-            owner.release(reason=reason, _expected_operation=lease.lease.operation_id)
+            if observer_key is not None:
+                owner.end_failure_observation(observer_key)
+            owner.release(reason=reason, _expected_operation=lease.lease.operation_id,
+                          expected_machine_id=lease.claim.pod_id)
         except AcquisitionUnresolvedError:
             # A deadline or explicit release may already own the one terminal
             # transition while it waits for this exact drain.
@@ -834,11 +1013,15 @@ class RunPodMachine:
                     raise
         lease.released = True
 
-    def _reset(self, lease: MachineLease) -> dict[str, Any]:
+    def _reset(self, lease: MachineLease, *, verify_deadline: float | None = None,
+               paid_expiry: float | None = None) -> dict[str, Any]:
         """The detached in-place reset of the pod's one Runtime, checkpointed like a job."""
         import time
 
         ops = lease.claim.ops
+        if (verify_deadline is not None and time.monotonic() >= verify_deadline) or (
+                paid_expiry is not None and self._require().lease_owner.clock() >= paid_expiry):
+            raise MachineError("failure verification exceeded the original paid limit")
         job_id = uuid.uuid4().hex
         self._checkpoint(lease, {"id": job_id, "state": "starting"})
         started = ops.job_start(reset_command(run_dir=lease.run_dir, job_dir=lease.job_dir), job_id=job_id)
@@ -848,16 +1031,30 @@ class RunPodMachine:
         limit = time.monotonic() + RESET_SECONDS
         poll = min(POLL_SECONDS, float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 1.0))
         while True:
+            if (verify_deadline is not None and time.monotonic() >= verify_deadline) or (
+                    paid_expiry is not None and self._require().lease_owner.clock() >= paid_expiry):
+                raise MachineError("failure reset exceeded the original paid limit")
             record = ops.job_poll(job_id)
+            if record.get("id") != job_id:
+                raise MachineError("reset poll differs from the checkpointed job custody")
             if record.get("state") == "exited":
                 break
             if record.get("state") in {"missing", "cancelled"}:
                 raise MachineError(f"reset job is {record.get('state')}")
             if time.monotonic() > limit:
-                ops.job_cancel(job_id)
-                self._checkpoint(lease, {"id": job_id, "state": "cancelled"})
+                stopped = ops.job_cancel(job_id)
+                if stopped.get("id") != job_id or stopped.get("state") not in {"exited", "cancelled"}:
+                    raise MachineError("exact reset job stop could not be verified")
+                self._checkpoint(lease, {"id": job_id, "state": stopped["state"]})
                 raise MachineError(f"reset did not finish in {RESET_SECONDS:.0f}s")
-            time.sleep(poll)
+            sleep_for = poll
+            if verify_deadline is not None:
+                sleep_for = min(sleep_for, max(0, verify_deadline - time.monotonic()))
+            if paid_expiry is not None:
+                sleep_for = min(sleep_for, max(0, paid_expiry - self._require().lease_owner.clock()))
+            if sleep_for <= 0:
+                raise MachineError("failure reset exceeded the original paid limit")
+            time.sleep(sleep_for)
         self._checkpoint(lease, {"id": job_id, "state": "exited"})
         directory = str(started.get("dir") or "")
         stdout = ""
@@ -967,7 +1164,16 @@ def lease_rows(owner: Any) -> list[dict[str, Any]]:
 
 
 def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
+    from .failure_diagnostics import safe_stored_summary, stored_node_ids
     lease = record.get("lease") or {}
+    last = lease.get("last_job")
+    last = last if isinstance(last, Mapping) else {}
+    outcome = last.get("outcome") if last.get("outcome") in {"success", "failed", "cancelled"} else None
+    safe_last = ({"outcome": outcome, "generation": last.get("generation") if type(last.get("generation")) is int else None,
+                  "failure": safe_stored_summary(last.get("failure"),
+                                                 node_ids=stored_node_ids(last.get("structural_node_ids")))
+                  if outcome != "success" else None}
+                 if outcome else None)
     # Live means custody still needs release, not that the pod is ready for reuse.
     # Only an exact cleanup receipt ends custody; failed preparation may still bill.
     live = bool(record.get("pod_id")) and record.get("state") != "cleanup_complete"
@@ -979,12 +1185,27 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
         state = lease["state"]
     else:
         state = "unresolved"
+    now = time.time()
+    hourly_usd = lease.get("hourly_usd")
+    cost_usd = float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0)
+    release_at = None
+    minutes_left = None
+    if live:
+        release_at = (lease.get("idle_expires_at") if state == "idle"
+                      else lease.get("paid_expires_at"))
+        accounted_at = lease.get("accounted_at", lease.get("started_at"))
+        if isinstance(hourly_usd, (int, float)) and isinstance(accounted_at, (int, float)):
+            cost_usd += max(0, now - accounted_at) * hourly_usd / 3600
+        if isinstance(release_at, (int, float)):
+            minutes_left = max(0.0, round((release_at - now) / 60, 1))
     return {"id": record.get("pod_id"), "kind": KIND, "lease": record.get("operation_id"),
             "gpu": record.get("gpu_type"), "state": state,
             "live": live, "idle_timeout_s": lease.get("idle_seconds"),
             "idle_expires_at": lease.get("idle_expires_at") if state == "idle" else None,
-            "cost_usd": round(float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0), 4),
-            "ended": None if live else (lease.get("ended") or lease.get("release_reason"))}
+            "release_at": release_at, "minutes_left": minutes_left,
+            "cost_usd": round(cost_usd, 4), "hourly_usd": hourly_usd,
+            "ended": None if live else (lease.get("ended") or lease.get("release_reason")),
+            "last_job": safe_last}
 
 
 def journal_leases(account: str | None = None) -> list[dict[str, Any]]:

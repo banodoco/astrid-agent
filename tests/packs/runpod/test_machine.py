@@ -1,7 +1,7 @@
 """Plan 32 T5: RunPod as a machine on the real lease owner, with the pod and provider faked.
 
-Money rules ported from the remote placement wrapper: one claim per job; any
-failure after the claim releases the pod; only a successful job settles warm;
+Money rules ported from the remote placement wrapper: one claim per job; a
+verified failed job settles warm within the original limits;
 the detached job is checkpointed before start, so a crash is cancelled by
 ``recover()`` before the pod is deleted.
 """
@@ -24,6 +24,19 @@ from tests.packs.runpod.test_warm_session import (  # noqa: F401  (fixtures)
 BASE = dict(account="acct", gpu_type="NVIDIA RTX 5090", image="img@sha256:" + "1" * 64,
             volume={"id": "vol", "mount_path": "/workspace", "cache_device": 64768, "mount_id": 7},
             source_digest="0123456789abcdef")
+
+
+def test_host_shutdown_releases_before_closing_owner():
+    from types import SimpleNamespace
+    from astrid.packs.runpod.adapter import TargetProviderBindings
+
+    calls = []
+    bindings = TargetProviderBindings(pack_roots=(), holds=None, credentials=None, environ={})
+    owner = SimpleNamespace(release=lambda **kw: calls.append(("release", kw)),
+                            close=lambda: calls.append(("close", None)))
+    bindings.provider = SimpleNamespace(lease_owner=owner)
+    bindings.close()
+    assert calls == [("release", {"reason": "host_shutdown"}), ("close", None)]
 
 
 # ----------------------------------------------------------------------------
@@ -173,18 +186,44 @@ def test_claim_caps_idle_and_reports_the_acquired_timeout(machine_case, requeste
         c.machine.release(lease, False)
 
 
-def test_a_failing_runtime_check_releases_the_lease_and_never_settles_warm(machine_case):
+def test_a_failing_runtime_check_keeps_the_verified_machine_for_retry(machine_case):
     c = machine_case
     c.pod.listed = []  # the pod's runtime does not list the entry from the shipped selection
     job = c.job()
-    with pytest.raises(rm.MachineError, match="not listed by the pod's runtime"):
+    with pytest.raises(rm.MachineError, match="category=unknown; code=unknown"):
         run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                        sleep=lambda s: None)
     record = c.read()
-    assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
-    assert record["lease"].get("ended") == "task_failed"
+    assert record["state"] == "claimed" and record["lease"]["state"] == "idle"
+    assert record["lease"]["last_job"]["outcome"] == "failed" and c.deletes == []
+    assert any(deadline is not None for deadline in c.transport_deadlines)
     # The check is the job command's first step: the run itself never produced outputs.
-    assert not any("/out/" in path for path in c.pod.files) and len(c.pod.resets) == 1
+    assert not any("/out/" in path for path in c.pod.files) and len(c.pod.resets) == 2
+    c.pod.listed = ["cpu-image"]
+    retry = c.job(2)
+    run_on_machine(c.machine, retry, destination=retry.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    assert c.creates == 1 and c.read()["lease"]["last_job"]["outcome"] == "success"
+
+
+def test_diagnostic_read_failure_still_settles_and_never_records_secret(machine_case, monkeypatch):
+    c = machine_case
+    c.pod.listed = []
+    secret = "SENTINEL_TOKEN https://private.example/secret"
+    original = c.pod.exec
+
+    def unreadable(command, timeout=600):
+        if command.startswith("tail -c") and command.endswith("/stdout"):
+            raise RuntimeError(secret)
+        return original(command, timeout)
+
+    monkeypatch.setattr(c.pod, "exec", unreadable)
+    job = c.job()
+    with pytest.raises(rm.MachineError, match="remote failure diagnostic unavailable") as caught:
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                       sleep=lambda s: None)
+    assert secret not in str(caught.value) and secret not in json.dumps(c.read())
+    assert c.read()["lease"]["state"] == "idle" and c.creates == 1 and c.deletes == []
 
 
 def test_a_failed_reset_releases_the_pod_instead_of_settling_it(machine_case):
@@ -199,6 +238,443 @@ def test_a_failed_reset_releases_the_pod_instead_of_settling_it(machine_case):
     assert [r["ok"] for r in c.pod.resets] == [True, False]
     assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "reset_failed"
     assert record["lease"]["job"]["state"] == "exited" and c.deletes == ["pod-1"]
+
+
+def test_recoverable_claim_preparation_failure_keeps_attested_pod(machine_case, monkeypatch):
+    c = machine_case
+    first = c.machine.claim(c.job())
+    c.host.settle(first.lease)
+    original = c.placement.begin_execution
+    with monkeypatch.context() as patch:
+        patch.setattr(c.placement, "begin_execution", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("ordinary failure")))
+        with pytest.raises(RuntimeError, match="ordinary failure"):
+            c.machine.claim(c.job(2))
+    record = c.read()
+    assert record["state"] == "claimed" and record["lease"]["state"] == "idle"
+    assert record["lease"]["last_job"]["outcome"] == "failed"
+    assert record["lease"]["last_job"]["failure"]["stage"] == "preparation"
+    assert c.creates == 1 and c.deletes == []
+    assert original is not None
+
+
+@pytest.mark.parametrize("unsafe", ["probe_unavailable", "changed_mount"])
+def test_unverified_current_storage_probe_releases_previous_warm_pod(machine_case, monkeypatch, unsafe):
+    c = machine_case
+    first = c.machine.claim(c.job())
+    c.host.settle(first.lease)
+    if unsafe == "probe_unavailable":
+        monkeypatch.setattr(c.placement, "begin_claimed",
+                            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("probe unavailable")))
+        expected = "probe unavailable"
+    else:
+        c.mount_id += 1
+        expected = "warm machine custody differs"
+    with pytest.raises(Exception, match=expected):
+        c.machine.claim(c.job(2))
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.creates == 1
+
+
+def test_unverified_installation_failure_releases_exact_pod(machine_case, monkeypatch):
+    c = machine_case
+    with monkeypatch.context() as patch:
+        patch.setattr(c.placement, "prepare_claimed", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad install")))
+        with pytest.raises(RuntimeError, match="bad install"):
+            c.machine.claim(c.job())
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.read()["lease"]["ended"] == "preparation_unverified"
+
+
+@pytest.mark.parametrize("unsafe", ["paid_expired", "changed_receipt"])
+def test_unsafe_failed_job_verification_releases_exact_pod(machine_case, monkeypatch, unsafe):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "f" * 32, "state": "exited"})
+    paid = c.read()["lease"]["paid_expires_at"]
+
+    def unverified(*args, **kwargs):
+        if unsafe == "paid_expired":
+            c.clock.now = paid
+        else:
+            lease.state.installed = {**lease.state.installed, "receipt_sha256": "sha256:" + "f" * 64}
+        return True
+
+    monkeypatch.setattr(c.placement, "_canonical_installed", unverified)
+    c.machine.release(lease, False, failure=rm.MachineError("job failed"))
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["lease"]["ended"] == "unsafe_job_state"
+    assert c.creates == 1 and c.deletes == ["pod-1"]
+
+
+def test_unreadable_invocation_lease_releases_known_exact_pod(machine_case, monkeypatch):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    monkeypatch.setattr(c.host, "preparation_claim", lambda invocation: (_ for _ in ()).throw(RuntimeError("lost lease")))
+    c.machine.release(lease, False, failure=rm.MachineError("job failed"))
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.creates == 1
+
+
+def test_blocked_failure_verifier_does_not_hold_owner_lock_or_revive_lease(machine_case, monkeypatch):
+    import threading
+    import time
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "a" * 32, "state": "exited"})
+    entered, resume = threading.Event(), threading.Event()
+    errors = []
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert resume.wait(5)
+        return True
+
+    monkeypatch.setattr(c.placement, "_canonical_installed", blocked)
+
+    def settle_failure():
+        try:
+            c.machine.release(lease, False, failure=rm.MachineError("job failed"))
+        except Exception as exc:
+            errors.append(exc)
+
+    verifier = threading.Thread(target=settle_failure)
+    verifier.start()
+    assert entered.wait(5)
+    releaser = threading.Thread(target=lambda: c.host.release(
+        reason="paid_deadline", _expected_operation=lease.lease.operation_id,
+        expected_machine_id=lease.claim.pod_id))
+    releaser.start()
+    for _ in range(100):
+        if c.read()["lease"]["state"] == "releasing":
+            break
+        time.sleep(0.01)
+    assert c.read()["lease"]["state"] == "releasing"
+    resume.set()
+    verifier.join(5)
+    releaser.join(5)
+    assert not verifier.is_alive() and not releaser.is_alive() and not errors
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_paid_timer_drains_real_https_slow_drip_without_late_warm_settlement(machine_case, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+    import time
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "d" * 32, "state": "exited"})
+    with c.host.lock:
+        current = c.host._read()
+        shortened = {**current["lease"], "paid_expires_at": c.clock() + 10}
+        c.host._arm(c.host._save(current, shortened))
+
+    entered = Event()
+    requests, writes = [], []
+    class Slow(BaseHTTPRequestHandler):
+        def do_POST(self):
+            try:
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            except (ValueError, TypeError):
+                body = {}
+            requests.append((self.path, body.get('path')))
+            entered.set()
+            self.send_response(200)
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            for _ in range(1000):
+                try:
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                    writes.append(1)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                time.sleep(0.025)
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", c.real_bounded_call)
+    lease.claim.ops = _HttpsOps("pod1", "x" * 32,
+                               base_url=f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(c.placement, "_canonical_installed",
+                        lambda state, **kwargs: state.claim.ops.job_poll("d" * 32))
+    errors = []
+    def release_failure():
+        try:
+            c.machine.release(lease, False, failure=rm.MachineError("private failure"))
+        except Exception as exc:
+            errors.append(exc)
+    verifier = Thread(target=release_failure)
+    try:
+        verifier.start()
+        assert entered.wait(5)
+        for _ in range(100):
+            if len(writes) > 1:
+                break
+            time.sleep(0.01)
+        assert requests and requests[0][0] == '/download-chunk'
+        assert isinstance(requests[0][1], str) and ('d' * 32) in requests[0][1]
+        assert len(writes) > 1
+        c.clock.advance(10)  # Real fake timer invokes exact release during the HTTP drip.
+        verifier.join(3)
+        assert not verifier.is_alive() and not errors
+        assert c.read()["state"] == "cleanup_complete"
+        assert c.deletes == ["pod-1"] and c.creates == 1
+        assert c.read()["lease"]["state"] == "releasing"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_exact_cleanup_has_its_own_finite_budget_and_keeps_pending_custody(machine_case, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+    from types import SimpleNamespace
+    import multiprocessing
+    import time
+    from astrid.packs.runpod import remote_placement, worker_owner
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "e" * 32, "state": "running"})
+    operation = lease.lease.operation_id
+    entered = Event()
+
+    class Slow(BaseHTTPRequestHandler):
+        def do_POST(self):
+            entered.set()
+            self.send_response(200)
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            for _ in range(1000):
+                try:
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                time.sleep(0.025)
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(remote_placement._HttpsOps, "_bounded_call", c.real_bounded_call)
+    monkeypatch.setattr(worker_owner, "EXACT_CLEANUP_SECONDS", 10.0)
+    ops = remote_placement._HttpsOps("pod1", "x" * 32,
+                                    base_url=f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(remote_placement, "connect_claimed_for_preparation",
+                        lambda record: SimpleNamespace(ops=ops))
+    children_before = {child.pid for child in multiprocessing.active_children()}
+    try:
+        start = time.monotonic()
+        with pytest.raises(remote_placement.RemotePlacementError) as caught:
+            c.host.release(reason="paid_deadline", _expected_operation=operation,
+                           expected_machine_id=lease.claim.pod_id)
+        assert entered.is_set() and time.monotonic() - start < 11.5, str(caught.value)
+        record = c.read()
+        assert record["operation_id"] == operation and record["state"] == "cleanup_pending"
+        assert record["lease"]["state"] == "releasing"
+        assert record["lease"]["job"] == {"id": "e" * 32, "state": "running"}
+        assert c.deletes == [] and c.creates == 1
+        assert {child.pid for child in multiprocessing.active_children()} == children_before
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_unreaped_observer_fences_custody_until_it_is_gone(machine_case, monkeypatch):
+    from astrid.packs.runpod import remote_placement
+    from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "d" * 32, "state": "exited"})
+
+    class Child:
+        alive = True
+        closed = False
+        def is_alive(self): return self.alive
+        def join(self, timeout=0): pass
+        def close(self): self.closed = True
+
+    child = Child()
+    def unreaped(self, *_args, **_kwargs):
+        self.unreaped_child = child
+        raise remote_placement.BoundedObserverUnreaped("observer could not be reaped")
+
+    monkeypatch.setattr(remote_placement._HttpsOps, "_bounded_call", unreaped)
+    monkeypatch.setattr(c.placement, "_canonical_installed",
+                        lambda state, **kwargs: state.claim.ops.job_poll("d" * 32))
+    with pytest.raises(AcquisitionUnresolvedError, match="custody is pending"):
+        c.machine.release(lease, False, failure=rm.MachineError("private failure"))
+    record = c.read()
+    assert record["state"] == "cleanup_pending" and record["lease"]["state"] == "releasing"
+    assert c.deletes == [] and c.creates == 1
+    with pytest.raises(AcquisitionUnresolvedError, match="observer still lives"):
+        c.host.release(reason="recovery", _expected_operation=lease.lease.operation_id)
+    child.alive = False
+    c.host.release(reason="recovery", _expected_operation=lease.lease.operation_id)
+    assert child.closed and c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_stale_release_identity_cannot_abort_another_observer(machine_case):
+    from threading import Event
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    stale = c.read()
+    old_key, old_event = c.host.begin_failure_observation(lease.lease, lease.claim.pod_id)
+    replacement_key = ("f" * 32, "e" * 32, lease.lease.generation + 1, "pod-replacement")
+    replacement_event = Event()
+    with c.host._observer_lock:
+        c.host._failure_observers[replacement_key] = replacement_event
+    try:
+        c.host._abort_failure_observation(stale)
+        assert old_event.is_set() and not replacement_event.is_set()
+        c.host._abort_failure_observation({**stale, "operation_id": replacement_key[0],
+                                           "pod_id": replacement_key[3],
+                                           "lease": {**stale["lease"], "owner_epoch": replacement_key[1],
+                                                     "generation": replacement_key[2]}})
+        assert replacement_event.is_set()
+    finally:
+        c.host.end_failure_observation(old_key)
+        c.host.end_failure_observation(replacement_key)
+        c.host.release()
+
+
+def test_exact_cleanup_cancel_does_not_hold_owner_lock(machine_case, monkeypatch):
+    from threading import Event, Thread
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "e" * 32, "state": "running"})
+    entered, resume = Event(), Event()
+    original = c.pod.job_cancel
+    errors = []
+
+    def blocked(job_id):
+        entered.set()
+        assert resume.wait(5)
+        return original(job_id)
+
+    monkeypatch.setattr(c.pod, "job_cancel", blocked)
+    def cleanup():
+        try:
+            c.host.release(reason="paid_deadline", _expected_operation=lease.lease.operation_id,
+                           expected_machine_id=lease.claim.pod_id)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = Thread(target=cleanup)
+    try:
+        thread.start()
+        assert entered.wait(5)
+        assert c.host.lock.acquire(timeout=0.5)
+        try:
+            assert c.read()["state"] == "cleanup_pending"
+        finally:
+            c.host.lock.release()
+    finally:
+        resume.set()
+        thread.join(5)
+    assert not thread.is_alive() and not errors
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_exact_cleanup_shares_one_deadline_across_both_job_cancels(machine_case):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    with c.host.lock:
+        record = c.host._read()
+        current = record["lease"]
+        preparation = {**current["preparation"], "state": "unresolved",
+                       "job": {"id": "a" * 32, "state": "running"}}
+        c.host._save(record, {**current, "preparation": preparation,
+                              "job": {"id": "b" * 32, "state": "running"}})
+    before = len(c.transport_deadlines)
+    c.host.release(reason="explicit", _expected_operation=lease.lease.operation_id,
+                   expected_machine_id=lease.claim.pod_id)
+    scoped = [deadline for deadline in c.transport_deadlines[before:] if deadline is not None]
+    assert len(scoped) == 2 and scoped[0] == scoped[1]
+    assert c.pod.cancelled[-2:] == ["a" * 32, "b" * 32]
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_paid_expiry_during_failure_reset_stdout_read_prevents_settlement(machine_case, monkeypatch):
+    c = machine_case
+    c.pod.listed = []
+    original = c.pod.exec
+
+    def expiry_at_stdout(command, timeout=600):
+        if command.startswith("cat ") and "/stdout" in command and len(c.pod.resets) >= 2:
+            c.clock.now = c.read()["lease"]["paid_expires_at"]
+        return original(command, timeout)
+
+    monkeypatch.setattr(c.pod, "exec", expiry_at_stdout)
+    job = c.job()
+    with pytest.raises(rm.MachineError, match="remote generation failed"):
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                       sleep=lambda s: None)
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.read()["lease"]["ended"] == "reset_failed"
+
+
+def test_lost_reset_start_ack_keeps_exact_job_for_release_reconciliation(machine_case, monkeypatch):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "e" * 32, "state": "exited"})
+    original = c.pod.job_start
+
+    def lost_ack(command, *, job_id=None):
+        result = original(command, job_id=job_id)
+        if "pod_reset reset" in command:
+            raise TimeoutError("private reset response")
+        return result
+
+    monkeypatch.setattr(c.pod, "job_start", lost_ack)
+    c.machine.release(lease, False, failure=rm.MachineError("generation failed"))
+    record = c.read()
+    assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "reset_failed"
+    reset_id = record["lease"]["job"]["id"]
+    assert reset_id in c.pod.cancelled and c.deletes == ["pod-1"] and c.creates == 1
+
+
+def test_wrong_reset_poll_identity_cannot_mark_the_journaled_job_exited(machine_case, monkeypatch):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {"id": "e" * 32, "state": "exited"})
+    original = c.pod.job_poll
+
+    def wrong_reset_poll(job_id):
+        result = original(job_id)
+        return {**result, "id": "f" * 32} if job_id != "e" * 32 else result
+
+    monkeypatch.setattr(c.pod, "job_poll", wrong_reset_poll)
+    c.machine.release(lease, False, failure=rm.MachineError("generation failed"))
+    record = c.read()
+    assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "reset_failed"
+    reset_id = record["lease"]["job"]["id"]
+    assert reset_id != "e" * 32 and reset_id in c.pod.cancelled
+    assert c.deletes == ["pod-1"] and c.creates == 1
+
+
+def test_structural_node_fact_survives_owner_journal_and_machine_listing(machine_case):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    lease.node_ids = frozenset({"17"})
+    lease.failure_diagnostic = {"code": "generation_failed", "category": "execution",
+                                "node_id": "17", "node_class": "KSampler", "field": "seed"}
+    c.machine._checkpoint(lease, {"id": "c" * 32, "state": "exited"})
+    c.machine.release(lease, False, failure=rm.MachineError("private output"), stage="fetch")
+    record = c.read()
+    summary = record["lease"]["last_job"]["failure"]
+    assert summary["node_id"] == "17" and summary["field"] == "seed"
+    assert rm.lease_row(record)["last_job"]["failure"] == summary
+    assert "private output" not in json.dumps(record) and c.creates == 1
 
 
 def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
@@ -222,25 +698,84 @@ def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
     assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
 
 
-def test_cancel_stops_the_job_checkpoints_it_then_releases(machine_case):
+def test_cancel_stops_the_job_checkpoints_it_then_keeps_verified_machine(machine_case):
     c = machine_case
     job = c.job()
     original = c.pod.job_poll
+    generation_job = [None]
     def running(job_id):  # the generation job keeps running; preparation jobs finish
-        if c.read()["lease"].get("job", {}).get("id") == job_id:
+        if generation_job[0] is None and c.read()["lease"].get("job", {}).get("id") == job_id:
+            generation_job[0] = job_id
+        if generation_job[0] == job_id:
             return {"id": job_id, "state": "running", "exit_code": ""}
         return original(job_id)
     c.pod.job_poll = running
-    polls = iter([False, False, True])
+    polls = iter([False, True])
+    def cancelled():
+        if c.owner.path.exists() and c.read()["lease"].get("job"):
+            return next(polls, True)
+        return False
     with pytest.raises(MachineRunCancelled):
-        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: next(polls),
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=cancelled,
                        sleep=lambda s: None)
     c.pod.job_poll = original
     record = c.read()
     generation = next(line for line in c.pod.job_log if " generate " in line)
     assert generation and c.pod.cancelled, "the remote job was not cancelled"
-    assert record["lease"]["job"] == {"id": c.pod.cancelled[0], "state": "cancelled"}
-    assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert record["lease"]["job"]["state"] == "exited"  # verified reset followed the exact stop
+    assert record["state"] == "claimed" and record["lease"]["state"] == "idle"
+    assert record["lease"]["last_job"]["outcome"] == "cancelled" and c.deletes == []
+
+
+@pytest.mark.parametrize("bad_ack", [{"id": "other-job", "state": "cancelled"},
+                                         {"state": "cancelled"}])
+def test_unverified_cancel_ack_never_settles_warm(machine_case, monkeypatch, bad_ack):
+    c = machine_case
+    job = c.job()
+    lease = c.machine.claim(job)
+    run = c.machine.start(lease, job)
+    original = c.pod.job_cancel
+    replies = [bad_ack]
+
+    def cancel(job_id):
+        return replies.pop(0) if replies else original(job_id)
+
+    monkeypatch.setattr(c.pod, "job_cancel", cancel)
+    with pytest.raises(rm.MachineError, match="exact remote job stop could not be verified"):
+        c.machine.cancel(run)
+    c.machine.release(lease, False, failure=rm.MachineError("unverified stop"), stage="cancel")
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.creates == 1
+
+
+def test_generation_policy_waits_for_stock_through_the_real_machine_claim(machine_case, monkeypatch):
+    from dataclasses import replace
+    from astrid.packs.runpod import target_selection
+
+    c = machine_case
+    job = c.job()
+    policy = {**job.policy, "offer_digest": None, "deadline": None, "max_hourly_usd": 1.5,
+              "policy_digest": target_selection.policy_consent_digest(c.owner.preferences, 1.5),
+              "capacity_timeout_seconds": 30, "wait_for_capacity": True}
+    calls = []
+    original = c.owner.observe_offer
+
+    def observe():
+        calls.append(1)
+        if len(calls) < 3:
+            raise target_selection.OfferObservationError("stock_unavailable")
+        return original()
+
+    async def sleep(seconds):
+        c.clock.advance(seconds)
+
+    c.owner.observe_offer, c.owner.sleep = observe, sleep
+    c.owner.observe_offers = lambda: (observe(),)
+    c.owner.monotonic = c.clock
+    monkeypatch.setattr(target_selection.random, "uniform", lambda *args: 0)
+    run_on_machine(c.machine, replace(job, policy=policy), destination=job.scratch / "outputs",
+                   cancelled=lambda: False, sleep=lambda seconds: None)
+    assert len(calls) == 3 and c.creates == 1 and c.read()["lease"]["state"] == "idle"
 
 
 def test_a_crash_after_job_start_is_cancelled_by_recover_before_delete(machine_case):
@@ -481,6 +1016,497 @@ def test_unfinished_machine_custody_is_live(state, lease_state, display):
     assert row["live"] is True and row["state"] == display and row["ended"] is None
 
 
+def test_live_machine_row_shows_idle_release_and_accrued_estimated_cost(monkeypatch):
+    monkeypatch.setattr(rm.time, "time", lambda: 2_000.0)
+    row = rm.lease_row({"pod_id": "pod-idle", "state": "claimed", "estimated_cost_usd": 2.5,
+                        "lease": {"state": "idle", "paid_expires_at": 5_000.0,
+                                  "idle_expires_at": 2_600.0, "hourly_usd": 1.2,
+                                  "accounted_at": 1_100.0}})
+
+    assert row["release_at"] == 2_600.0
+    assert row["minutes_left"] == 10.0
+    assert row["cost_usd"] == 2.8
+    assert row["hourly_usd"] == 1.2
+
+
+def test_active_machine_uses_paid_limit_and_cost_grows_with_clock(monkeypatch):
+    record = {"pod_id": "pod-active", "state": "claimed", "estimated_cost_usd": 3.0,
+              "lease": {"state": "active", "paid_expires_at": 3_800.0,
+                        "idle_expires_at": 2_100.0, "hourly_usd": 3.6,
+                        "accounted_at": 1_900.0}}
+    monkeypatch.setattr(rm.time, "time", lambda: 2_000.0)
+    first = rm.lease_row(record)
+    monkeypatch.setattr(rm.time, "time", lambda: 2_300.0)
+    second = rm.lease_row(record)
+
+    assert first["release_at"] == 3_800.0
+    assert first["minutes_left"] == 30.0
+    assert first["cost_usd"] == 3.1
+    assert second["cost_usd"] == 3.4
+
+
+def test_ended_machine_row_keeps_recorded_cost_without_live_deadline(monkeypatch):
+    monkeypatch.setattr(rm.time, "time", lambda: 2_000.0)
+    row = rm.lease_row({"pod_id": "pod-ended", "state": "cleanup_complete",
+                        "estimated_cost_usd": 7.25,
+                        "lease": {"state": "releasing", "paid_expires_at": 3_800.0,
+                                  "idle_expires_at": 2_100.0, "hourly_usd": 3.6,
+                                  "accounted_at": 1_900.0, "ended": "released"}})
+
+    assert row["live"] is False and row["state"] == "ended"
+    assert row["cost_usd"] == 7.25
+    assert row["release_at"] is None and row["minutes_left"] is None
+    assert row["ended"] == "released"
+
+
+def test_machines_table_and_json_show_lifetime_fields(monkeypatch, capsys):
+    from astrid.core import machines_cli
+
+    row = {"id": "pod-idle", "kind": "runpod", "gpu": "RTX 5090", "state": "idle",
+           "live": True, "release_at": 2_600.0, "minutes_left": 10.0,
+           "cost_usd": 2.8, "hourly_usd": 1.2, "ended": None}
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [row])
+
+    assert machines_cli.main([]) == 0
+    table = capsys.readouterr().out
+    assert "RELEASES (UTC)" in table and "MIN LEFT" in table
+    assert "COST EST. (USD)" in table and "RATE (USD/HR)" in table
+    assert "10.0" in table and "2.80" in table and "1.20" in table
+
+    assert machines_cli.main(["--json"]) == 0
+    import json
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["release_at"] == 2_600.0
+    assert payload[0]["minutes_left"] == 10.0
+    assert payload[0]["cost_usd"] == 2.8
+    assert payload[0]["hourly_usd"] == 1.2
+
+
+def test_machines_setup_saves_ordered_choices_and_volume(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    saved_policy = {}
+    volumes = [{"id": "vol-1", "name": "data", "dataCenterId": "US-GA-1",
+                "size_gb": 100}]
+    assert machines_cli.main(["setup", "--volume", "data", "--gpu", "RTX A", "--gpu", "RTX B",
+                              "--budget-usd", "8", "--json"],
+                             volumes=lambda: volumes,
+                             offered_gpus=lambda dc, has_volume: ["RTX A", "RTX B"],
+                             setup=lambda policy: saved_policy.update(policy) or type("Result", (), {"ok": True})()) == 0
+    import json
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is True
+    assert saved_policy["gpu_types"] == ["RTX A", "RTX B"]
+    assert saved_policy["datacenter_id"] == "US-GA-1"
+    assert saved_policy["volume"]["id"] == "vol-1"
+    assert saved_policy["budget_cap_usd"] == 8
+
+
+def test_machines_setup_fresh_uses_pinned_default_and_saved_credential_reference(monkeypatch):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.packs.runpod.target_selection import DEFAULT_RUNPOD_WORKER_IMAGE
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "credential_ref": "env:RUNPOD_API_KEY",
+    })
+    saved = {}
+    result = machines_cli.main(
+        ["setup", "--gpu", "RTX A", "--budget-usd", "7", "--json"],
+        volumes=lambda: [], offered_gpus=lambda *_: ["RTX A"],
+        setup=lambda policy: saved.update(policy) or type("Result", (), {"ok": True})(),
+    )
+    assert result == 0
+    assert saved["image"] == DEFAULT_RUNPOD_WORKER_IMAGE
+    assert saved["provider_account_ref"] == "env:RUNPOD_API_KEY"
+    assert saved["credential_ref"] == "env:RUNPOD_API_KEY"
+
+
+def test_machines_setup_preserves_saved_image_and_accepts_per_setup_override(monkeypatch):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    stored_image = "registry/saved@sha256:" + "a" * 64
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "provider_account_ref": "account", "credential_ref": "env:RUNPOD_API_KEY",
+        "image": stored_image, "gpu_types": ["RTX A"], "budget_cap_usd": 5,
+    })
+    saved = []
+    kwargs = {"volumes": lambda: [], "offered_gpus": lambda *_: ["RTX A"],
+              "setup": lambda policy: saved.append(policy) or type("Result", (), {"ok": True})()}
+    assert machines_cli.main(["setup", "--json"], **kwargs) == 0
+    assert saved[-1]["image"] == stored_image
+    override = "registry/override@sha256:" + "b" * 64
+    assert machines_cli.main(["setup", "--image", override, "--json"], **kwargs) == 0
+    assert saved[-1]["image"] == override
+
+
+def test_machines_setup_missing_credential_names_credential_command(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.core.util.credentials_scope import CredentialsScope
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {})
+    def missing(*args, **kwargs):
+        raise RuntimeError("credential absent")
+    monkeypatch.setattr(CredentialsScope, "resolve_local", missing)
+    assert machines_cli.main(["setup", "--json"]) == 2
+    output = capsys.readouterr().out
+    assert "astrid credential set runpod" in output
+    assert "credential absent" not in output
+
+
+def test_machines_setup_never_discloses_resolved_credential_sentinel(monkeypatch, capsys, caplog):
+    import json
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.core.util.credentials_scope import CredentialsScope
+    from astrid.packs.runpod import adapter
+
+    sentinel = "FAKE_RUNPOD_KEY_SENTINEL_DO_NOT_LEAK_73C4"
+    inventory_keys = []
+    saved_preferences = {}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved_preferences)
+    monkeypatch.setattr(CredentialsScope, "resolve_local",
+                        lambda *args, **kwargs: SimpleNamespace(value=sentinel))
+
+    async def fake_volumes(api_key):
+        inventory_keys.append(api_key)
+        return []
+
+    async def fake_gpu_types(api_key, *, datacenter_id, require_network_volume):
+        inventory_keys.append(api_key)
+        return ["RTX A"]
+
+    monkeypatch.setattr(adapter, "setup_volumes", fake_volumes)
+    monkeypatch.setattr(adapter, "setup_gpu_types", fake_gpu_types)
+    assert machines_cli.main(["setup", "--gpu", "RTX A", "--budget-usd", "4", "--json"],
+                             setup=lambda policy: saved_preferences.update(policy)
+                             or SimpleNamespace(ok=True)) == 0
+    setup_output = capsys.readouterr().out
+    assert inventory_keys == [sentinel, sentinel]
+    assert sentinel not in setup_output
+    assert sentinel not in caplog.text
+    assert sentinel not in json.dumps(saved_preferences, sort_keys=True)
+
+    def fail_with_sentinel(_policy):
+        raise RuntimeError(sentinel)
+
+    assert machines_cli.main(["setup", "--gpu", "RTX A", "--budget-usd", "4", "--json"],
+                             setup=fail_with_sentinel) == 1
+    setup_error = capsys.readouterr().out
+    assert sentinel not in setup_error
+    assert sentinel not in caplog.text
+
+    assert machines_cli.main(["setup", "--show", "--json"],
+                             show_location=lambda: {"data_root": "/tmp/astrid-data", "realm": "realm-x"}) == 0
+    shown = capsys.readouterr().out
+    assert sentinel not in shown
+    assert sentinel not in caplog.text
+
+
+def test_machines_setup_show_reports_sanitized_preferences_and_store_location(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "provider_account_ref": "account", "credential_ref": "env:RUNPOD_API_KEY",
+        "gpu_types": ["RTX A"], "image": "registry/x@sha256:" + "a" * 64,
+        "api_key": "must-never-print-this-key",
+    })
+    assert machines_cli.main(["setup", "--show", "--json"],
+                             show_location=lambda: {"data_root": "/tmp/astrid-data", "realm": "realm-x"}) == 0
+    output = capsys.readouterr().out
+    assert "user/generation" in output
+    assert "/tmp/astrid-data" in output and "realm-x" in output
+    assert "env:RUNPOD_API_KEY" in output
+    assert "must-never-print-this-key" not in output
+
+
+def test_machines_setup_datacenter_filters_inventory_and_saves_choice(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    observed = []
+    persisted = {}
+
+    def gpu_inventory(datacenter, has_volume):
+        observed.append((datacenter, has_volume))
+        return ["RTX in region"] if datacenter == "US-TX-1" else ["RTX everywhere"]
+
+    assert machines_cli.main(["setup", "--datacenter", "US-TX-1", "--gpu", "RTX in region",
+                              "--budget-usd", "5", "--json"],
+                             volumes=lambda: [], offered_gpus=gpu_inventory,
+                             setup=lambda policy: persisted.update(policy) or type("Result", (), {"ok": True})()) == 0
+    import json
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert observed == [("US-TX-1", False)]
+    assert persisted["datacenter_id"] == "US-TX-1"
+    assert persisted["gpu_types"] == ["RTX in region"]
+
+
+def test_machines_setup_any_is_unrestricted_and_volume_dc_conflict_refuses(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    observed = []
+    persisted = {}
+    assert machines_cli.main(["setup", "--datacenter", "any", "--gpu", "RTX A",
+                              "--budget-usd", "5", "--json"], volumes=lambda: [],
+                             offered_gpus=lambda dc, has_volume: observed.append((dc, has_volume)) or ["RTX A"],
+                             setup=lambda policy: persisted.update(policy) or type("Result", (), {"ok": True})()) == 0
+    assert observed == [(None, False)]
+    assert "datacenter_id" not in persisted
+    volumes = [{"id": "vol", "name": "data", "dataCenterId": "US-TX-1"}]
+    assert machines_cli.main(["setup", "--volume", "vol", "--datacenter", "EU-RO-1",
+                              "--gpu", "RTX A", "--budget-usd", "5", "--json"],
+                             volumes=lambda: volumes, offered_gpus=lambda *_: ["RTX A"],
+                             setup=lambda *_: None) == 2
+    assert "fixed to a different datacenter" in capsys.readouterr().out
+
+
+def test_machines_setup_explicit_any_clears_saved_datacenter(monkeypatch):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: {
+        "provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+        "datacenter_id": "US-TX-1", "gpu_types": ["RTX A"], "budget_cap_usd": 5,
+    })
+    for json_flag in ([], ["--json"]):
+        saved, observed = {}, []
+        assert machines_cli.main(["setup", "--datacenter", "any", *json_flag],
+            volumes=lambda: [], datacenters=lambda: pytest.fail("unexpected datacenter lookup"),
+            offered_gpus=lambda dc, volume: observed.append((dc, volume)) or ["RTX A"],
+            setup=lambda policy: saved.update(policy),
+            input_fn=lambda prompt: "" if prompt.startswith("Volume") else pytest.fail("unexpected prompt")) == 0
+        assert observed == [(None, False)]
+        assert "datacenter_id" not in saved
+
+    saved = {}
+    assert machines_cli.main(["setup", "--volume", "vol", "--datacenter", "any", "--json"],
+        volumes=lambda: [{"id": "vol", "name": "data", "dataCenterId": "US-TX-1", "size_gb": 50}],
+        offered_gpus=lambda *_: ["RTX A"], setup=lambda policy: saved.update(policy)) == 0
+    assert saved["datacenter_id"] == "US-TX-1"
+
+
+@pytest.mark.parametrize("json_flag", [[], ["--json"]])
+@pytest.mark.parametrize("failure", ["inventory", "gpu_inventory", "action_exception", "action_result"])
+def test_machines_setup_hides_external_error_details(monkeypatch, capsys, caplog, json_flag, failure):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    secret = "credential-sentinel-never-disclose"
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: {
+        "provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+        "gpu_types": ["RTX A"], "budget_cap_usd": 5,
+    })
+    def inventory():
+        if failure == "inventory":
+            raise ValueError(secret)
+        return []
+    def setup(_policy):
+        if failure == "action_exception":
+            raise ValueError(secret)
+        return SimpleNamespace(ok=False, error={"message": secret})
+    def gpus(*_args):
+        if failure == "gpu_inventory":
+            raise ValueError(secret)
+        return ["RTX A"]
+
+    result = machines_cli.main(["setup", "--datacenter", "any", *json_flag],
+        volumes=inventory, offered_gpus=gpus, setup=setup,
+        input_fn=lambda _: "")
+    assert result != 0
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err
+    if json_flag:
+        assert json.loads(captured.out)["ok"] is False
+    assert secret not in caplog.text
+
+
+def test_machines_setup_hides_async_datacenter_error(monkeypatch, capsys, caplog):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.core.util.credentials_scope import CredentialsScope
+    from astrid.packs.runpod import adapter
+
+    secret = "async-credential-sentinel"
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: {})
+    monkeypatch.setattr(CredentialsScope, "resolve_local", lambda *a, **kw: SimpleNamespace(value=secret))
+    async def volumes(key):
+        assert key == secret
+        return []
+    async def datacenters(key):
+        assert key == secret
+        raise ValueError(secret)
+    async def gpus(*args, **kwargs):
+        pytest.fail("GPU lookup must not follow failed datacenter lookup")
+    monkeypatch.setattr(adapter, "setup_volumes", volumes)
+    monkeypatch.setattr(adapter, "setup_datacenters", datacenters)
+    monkeypatch.setattr(adapter, "setup_gpu_types", gpus)
+    assert machines_cli.main(["setup"], input_fn=lambda _: "") == 1
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err + caplog.text
+
+
+def test_machines_setup_failed_action_keeps_saved_policy(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+             "gpu_types": ["RTX A"], "budget_cap_usd": 5}
+    before = dict(saved)
+    secret = "failed-action-sentinel"
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: saved)
+    assert machines_cli.main(["setup", "--datacenter", "any", "--json"], volumes=lambda: [],
+        offered_gpus=lambda *_: ["RTX A"],
+        setup=lambda _: SimpleNamespace(ok=False, error={"message": secret})) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["ok"] is False
+    assert secret not in captured.out + captured.err
+    assert saved == before
+
+
+def test_machines_setup_interactive_datacenter_keeps_gpu_order(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    answers = iter(("", "US-TX-1", "RTX B, RTX A", "5"))
+    captured = {}
+    offered = []
+    assert machines_cli.main(["setup"], volumes=lambda: [], datacenters=lambda: ["US-TX-1"],
+                             offered_gpus=lambda dc, has_volume: offered.append((dc, has_volume)) or ["RTX A", "RTX B"],
+                             input_fn=lambda _: next(answers),
+                             setup=lambda policy: captured.update(policy) or type("Result", (), {"ok": True})()) == 0
+    capsys.readouterr()
+    assert offered == [("US-TX-1", False)]
+    assert captured["datacenter_id"] == "US-TX-1"
+    assert captured["gpu_types"] == ["RTX B", "RTX A"]
+
+
+def test_machine_keep_for_uses_recorded_consent_data_and_reports_new_limit(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+
+    row = {"id": "pod-keep", "state": "idle", "live": True, "hourly_usd": 2.0,
+           "release_at": 2_600.0, "minutes_left": 10.0}
+    updated = {**row, "release_at": 7_200.0, "minutes_left": 120.0}
+    lease_calls = iter(([row], [updated]))
+    monkeypatch.setattr(machines_cli, "_leases", lambda: next(lease_calls))
+    monkeypatch.setattr(machines_cli, "_keep_consent_data", lambda machine_id, rate:
+                        (object(), "sha256:" + "a" * 64))
+    captured = {}
+
+    def keep(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(ok=True)
+
+    assert machines_cli.main(["keep", "pod-keep", "--for", "2h", "--max-usd", "4", "--json"], keep=keep) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True and payload["max_usd"] == 4.0
+    assert payload["machine"]["release_at"] == 7_200.0
+    assert captured["machine_id"] == "pod-keep" and captured["until_release"] is False
+    assert captured["consent"].offer_digest == "sha256:" + "a" * 64
+    assert captured["consent"].max_usd == 4.0
+    assert captured["consent"].idle_seconds == 7200
+
+
+def test_machine_keep_until_release_requires_cap_and_refuses_unknown_or_ended(monkeypatch, capsys):
+    from astrid.core import machines_cli
+
+    with pytest.raises(SystemExit):
+        machines_cli.main(["keep", "pod-keep", "--until-release"])
+
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [
+        {"id": "pod-ended", "live": False, "state": "ended"},
+    ])
+    assert machines_cli.main(["keep", "pod-ended", "--until-release", "--max-usd", "5"],
+                             keep=lambda **kwargs: pytest.fail("ended machine was kept")) == 2
+    assert "no live machine" in capsys.readouterr().out
+    assert machines_cli.main(["keep", "unknown", "--until-release", "--max-usd", "5"],
+                             keep=lambda **kwargs: pytest.fail("unknown machine was kept")) == 2
+    assert "no live machine" in capsys.readouterr().out
+
+
+def test_machine_keep_until_release_passes_required_cap(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+
+    row = {"id": "pod-keep", "state": "idle", "live": True, "hourly_usd": 2.0,
+           "release_at": 2_600.0}
+    updated = {**row, "release_at": 11_600.0}
+    lease_calls = iter(([row], [updated]))
+    monkeypatch.setattr(machines_cli, "_leases", lambda: next(lease_calls))
+    monkeypatch.setattr(machines_cli, "_keep_consent_data", lambda machine_id, rate:
+                        (None, "sha256:" + "b" * 64))
+    captured = {}
+    assert machines_cli.main(["keep", "pod-keep", "--until-release", "--max-usd", "5"],
+                             keep=lambda **kwargs: (captured.update(kwargs), SimpleNamespace(ok=True))[1]) == 0
+    capsys.readouterr()
+    assert captured["until_release"] is True
+    assert captured["consent"].max_usd == 5.0
+    assert captured["consent"].idle_seconds == pytest.approx(9000.0)
+
+
+def test_machine_keep_for_shortens_to_a_lower_spend_cap(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+
+    row = {"id": "pod-keep", "state": "idle", "live": True, "hourly_usd": 2.0,
+           "release_at": 2_600.0}
+    updated = {**row, "release_at": None}
+    lease_calls = iter(([row], [updated]))
+    monkeypatch.setattr(machines_cli, "_leases", lambda: next(lease_calls))
+    monkeypatch.setattr(machines_cli, "_keep_consent_data", lambda machine_id, rate:
+                        (None, "sha256:" + "c" * 64))
+    captured = {}
+    started = datetime.now(timezone.utc).timestamp()
+
+    def keep(**kwargs):
+        captured.update(kwargs)
+        updated["release_at"] = started + kwargs["consent"].idle_seconds
+        return SimpleNamespace(ok=True)
+
+    assert machines_cli.main(["keep", "pod-keep", "--for", "2h", "--max-usd", "1", "--json"],
+                             keep=keep) == 0
+    payload = json.loads(capsys.readouterr().out)
+    consent = captured["consent"]
+    assert payload["ok"] is True and payload["max_usd"] == 1.0
+    assert payload["machine"]["release_at"] == started + 1800
+    assert payload["machine"]["release_at"] <= started + 2 * 3600
+    assert consent.max_usd == 1.0 and consent.idle_seconds == pytest.approx(1800.0)
+    assert consent.idle_seconds * 2.0 / 3600 <= consent.max_usd
+
+
+def test_machine_keep_timeout_reports_unknown_and_points_to_machine_list(monkeypatch, capsys):
+    from astrid.core import machines_cli
+
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [
+        {"id": "pod-keep", "state": "idle", "live": True, "hourly_usd": 2.0},
+    ])
+    monkeypatch.setattr(machines_cli, "_keep_consent_data", lambda machine_id, rate:
+                        (object(), "sha256:" + "a" * 64))
+    result = machines_cli.main(["keep", "pod-keep", "--until-release", "--max-usd", "5", "--json"],
+                               keep=lambda **kwargs: (_ for _ in ()).throw(TimeoutError("host wait expired")))
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1 and payload["unknown"] is True
+    assert "unknown" in payload["error"] and "astrid machines" in payload["error"]
+
+
 @pytest.mark.parametrize("restart", [False, True])
 def test_unverified_machine_cli_release_and_recovery_reconcile_exact_pod(small_lease, monkeypatch, capsys, restart):
     from astrid.core import machines_cli
@@ -557,12 +1583,11 @@ def test_warm_gpu_id_uses_confirmed_display_and_refuses_mismatch(machine_case, m
     second = c.job(2)
     second = replace(second, policy={**second.policy, "preferences": c.prefs.as_mapping(), "offer_digest": c.grant.offer_digest})
     if mismatch:
-        with pytest.raises(Exception, match="GPU mismatch"):
+        with pytest.raises(Exception, match="custody could not be verified"):
             run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
                            sleep=lambda s: None)
-        assert c.read()["state"] == "cleanup_pending"
+        assert c.read()["state"] == "cleanup_complete"
         assert sum(" generate cpu-image " in line for line in c.pod.job_log) == 1
-        c.host.release()
         assert c.deletes == ["pod-1"]
     else:
         run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
@@ -602,7 +1627,7 @@ def test_execution_gets_its_own_deadline_after_preparation(machine_case, monkeyp
         c.machine.poll(run)
 
 
-def test_execution_timeout_cancels_and_releases_without_another_claim(machine_case, monkeypatch):
+def test_execution_timeout_stops_job_and_keeps_verified_machine(machine_case, monkeypatch):
     c = machine_case
     ticks = [0.0]
     c.placement._clock = lambda: ticks[0]
@@ -618,9 +1643,10 @@ def test_execution_timeout_cancels_and_releases_without_another_claim(machine_ca
         run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                        sleep=lambda s: None)
     record = c.read()
-    assert record["lease"]["job"] == {"id": c.pod.cancelled[0], "state": "cancelled"}
-    assert record["state"] == "cleanup_complete"
-    assert c.deletes == ["pod-1"] and c.creates == 1
+    assert c.pod.cancelled and record["lease"]["job"]["state"] == "exited"
+    assert record["state"] == "claimed" and record["lease"]["state"] == "idle"
+    assert record["lease"]["last_job"]["outcome"] == "failed"
+    assert c.deletes == [] and c.creates == 1
 
 
 @pytest.mark.parametrize("entry,mode,template", [
@@ -722,6 +1748,93 @@ def test_claim_reads_workflow_bundle_before_preparing(machine_case, monkeypatch)
         machine_case.machine.claim(replace(job, inputs={"workflow_inputs": "{}"}))
 
 
+def _claim_cli_case(monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from tests.packs.runpod.test_pack_actions import raw_preferences
+
+    preferences = raw_preferences()
+    rows, calls = [], []
+    monkeypatch.setattr(machines_cli, "_leases", lambda: rows)
+
+    def describe(**kwargs):
+        calls.append(("describe", kwargs))
+        selected = {**preferences, "gpu_types": kwargs["placement"]["policy"]["gpu_types"]} if isinstance(kwargs["placement"], dict) else preferences
+        if kwargs.get("datacenter"):
+            selected = {**selected, "datacenter_id": kwargs["datacenter"]}
+        return {"waiting_policy": {"preferences": selected}, "offer": {"hourly_usd": 1.5}}
+
+    def claim(**kwargs):
+        calls.append(("claim", kwargs))
+        rows.append({"id": "manual-pod", "state": "idle", "live": True, "release_at": 1800000600.0})
+        return SimpleNamespace(ok=True, raw_result={"result": {"payload": {"target_operation": {"pod_id": "manual-pod"}}}})
+
+    return machines_cli, preferences, rows, calls, describe, claim
+
+
+def test_machine_claim_real_parser_discloses_gpu_storage_and_fresh_policy_consent(monkeypatch, capsys):
+    cli, saved, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
+    assert cli.main(["claim", "--gpu", "gpu-b", "--datacenter", "DC-OVERRIDE", "--max-usd", "2", "--max-hourly-usd", "2",
+                     "--for", "20m", "--capacity-timeout", "10m", "--consent", "paid", "--json"],
+                    claim=claim, describe=describe) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] and payload["machine"]["release_at"] == rows[0]["release_at"]
+    assert payload["policy"]["preferences"]["datacenter_id"] == "DC-OVERRIDE"
+    assert "datacenter_id" not in saved
+    grant = calls[-1][1]["consent"]
+    assert grant.consent == ("paid",) and grant.offer_digest is None and grant.deadline is None
+    assert grant.policy_digest and grant.max_hourly_usd == 2 and grant.idle_seconds == 1200
+    assert grant.capacity_timeout_seconds == 600 and grant.wait_for_capacity is True
+    assert calls[-1][1]["placement"] == {"kind": "runpod", "policy": {"gpu_types": ["gpu-b"]}}
+    assert saved["gpu_types"] == ["gpu-a", "gpu-b"] and saved["volume"]["id"] == "volume-a"
+
+
+def test_machine_claim_prompt_and_default_retention_and_one_attempt(monkeypatch, capsys):
+    cli, saved, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
+    prompts = []
+    assert cli.main(["claim", "--max-usd", "2", "--no-wait-for-capacity"],
+                    claim=claim, describe=describe,
+                    input_fn=lambda prompt: (prompts.append(prompt), "yes")[1]) == 0
+    grant = calls[-1][1]["consent"]
+    assert prompts and grant.max_hourly_usd == 1.5
+    assert grant.idle_seconds == saved["idle_timeout_seconds"] == 120
+    assert grant.wait_for_capacity is False
+    assert "claimed manual-pod" in capsys.readouterr().out
+
+
+def test_machine_claim_refuses_missing_paid_consent_or_stockless_missing_ceiling(monkeypatch, capsys):
+    cli, saved, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
+    assert cli.main(["claim", "--max-usd", "2", "--json"], claim=claim, describe=describe) == 2
+    assert "--consent paid" in capsys.readouterr().out
+    assert not rows and all(name != "claim" for name, _ in calls)
+    stockless = lambda **kwargs: {"waiting_policy": {"preferences": saved}}
+    assert cli.main(["claim", "--max-usd", "2", "--consent", "paid", "--json"], claim=claim, describe=stockless) == 2
+    assert "--max-hourly-usd" in capsys.readouterr().out and not rows
+
+
+def test_machine_claim_stockless_policy_and_cap_shortens_retention(monkeypatch, capsys):
+    cli, saved, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
+    stockless = lambda **kwargs: {"waiting_policy": {"preferences": saved}, "availability": {"reason": "stock_unavailable"}}
+    assert cli.main(["claim", "--max-usd", "0.1", "--max-hourly-usd", "2", "--for", "2h",
+                     "--consent", "paid", "--json"], claim=claim, describe=stockless) == 0
+    grant = calls[-1][1]["consent"]
+    assert grant.idle_seconds == 180 and grant.max_usd == 0.1
+    assert json.loads(capsys.readouterr().out)["policy"]["retention_seconds"] == 180
+
+
+def test_machine_claim_without_host_refuses_without_bootstrapping(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.sdk import AstridClient
+    calls = []
+
+    def unavailable(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("no running host")
+
+    monkeypatch.setattr(AstridClient, "open_from_launcher", unavailable)
+    assert machines_cli.main(["claim", "--max-usd", "2", "--max-hourly-usd", "2", "--consent", "paid", "--json"]) == 1
+    assert calls == [{"start_pack_host": False}]
+    assert "no running host" in capsys.readouterr().out
 @pytest.mark.parametrize("tamper", [None, "receipt", "report"])
 def test_two_jobs_retain_verified_managed_launch_refresh(machine_case, monkeypatch, tamper):
     """An untouched controller reuses the receipt legitimately refreshed by job one."""

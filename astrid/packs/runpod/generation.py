@@ -49,6 +49,7 @@ def prepare_retained_generation(
     pod_ready: bool = False,
     observe_mounts: Callable[[str, str], Mapping[str, Any]] | None = None,
     manifest_rows: tuple[Mapping[str, Any], ...] = (),
+    cancelled: Callable[[], bool] | None = None,
 ) -> PreparedRunPodLease:
     """Prepare one machine under A3's existing lock and journal, without a worker on pod.
 
@@ -106,7 +107,9 @@ def prepare_retained_generation(
                 source_digest=bootstrap_digest)
             if custody_differences(prior_preparation.get("custody"), expected):
                 lease_owner.release(reason="custody_changed", _expected_operation=prior["operation_id"])
-        invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds)
+        invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds,
+                                         defer_unsafe_release=True,
+                                         **({"cancelled": cancelled} if cancelled is not None else {}))
         if on_acquired is not None:
             on_acquired(invocation)
         claimed = lease_owner.preparation_claim(invocation)
@@ -177,8 +180,9 @@ def prepare_retained_generation(
                 raise PreparedWorkerError("preparation consumed its paid lifetime or source bytes changed")
             saved = save(state="prepared", installed=dict(state.installed))
         except BaseException:
-            # Failure never re-arms warm retention. Preserve any pre-start job
-            # identity for the same A3 release/restart reconciliation path.
+            # A failed current mount/custody observation cannot prove that an
+            # old installed snapshot is still safe, even before installation.
+            # Preserve exact custody for immediate release/recovery.
             current = lease_owner._read()
             lease_owner._save(current, {**current["lease"], "preparation": {**preparation, "state": "unresolved"}},
                               state="cleanup_pending", reconciliation_required=True)

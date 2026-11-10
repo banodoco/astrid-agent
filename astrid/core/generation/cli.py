@@ -81,12 +81,46 @@ def _common_options(command):
     command.add_argument('--no-wait', action='store_true', help='Return the admitted task; follow it separately.')
     command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
     command.add_argument('--max-usd', action=_Once, type=float)
+    command.add_argument('--max-hourly-usd', action=_Once, type=float,
+                         help='Approve waiting for the selected GPUs and saved storage below this hourly USD ceiling.')
+    capacity = command.add_mutually_exclusive_group()
+    capacity.add_argument('--capacity-timeout', action=_Once, metavar='DURATION',
+                          help='Stop waiting for capacity after a duration such as 10m; default waits until claimed or cancelled.')
+    capacity.add_argument('--no-wait-for-capacity', action='store_true',
+                          help='Make one capacity observation and at most one create attempt.')
     command.add_argument('--deadline', action=_Once, help='Absolute UTC execution deadline.')
     command.add_argument('--offer-digest', action=_Once, help='Accept the digest returned by target description.')
     command.add_argument('--preparation-seconds', action=_Once, type=float)
     command.add_argument('--execution-seconds', action=_Once, type=float)
     command.add_argument('--idle-seconds', action=_Once, type=float)
     command.add_argument('--recovery-path', action=_Once, help='Save the exact Runtime admission receipt.')
+
+
+def _gpu_placement(placement, gpu_types, parser):
+    """Put a per-job RunPod GPU list into the existing placement policy."""
+    from astrid.core.generation.placement import is_runpod_placement
+
+    if not gpu_types:
+        return placement
+    if not is_runpod_placement(placement):
+        parser.error("--gpu requires --placement runpod")
+    if any(not gpu.strip() for gpu in gpu_types):
+        parser.error("--gpu values must be nonempty GPU type names")
+    # Placement resolution merges this policy over the saved policy. Supplying
+    # gpu_types therefore replaces only that ordered list for this job.
+    return {"kind": "runpod", "policy": {"gpu_types": list(gpu_types)}}
+
+
+def _validate_datacenter(placement, datacenter, parser):
+    """A datacenter is a one-job RunPod choice, never a saved preference edit."""
+    from astrid.core.generation.placement import is_runpod_placement
+
+    if datacenter is None:
+        return
+    if not is_runpod_placement(placement):
+        parser.error("--datacenter requires --placement runpod")
+    if not datacenter.strip():
+        parser.error("--datacenter must be a nonempty datacenter ID")
 
 
 def _entry_help(description: dict[str, Any]) -> str:
@@ -185,6 +219,10 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
             "--placement", action=_Once, default='auto', metavar="PLACEMENT",
             help="auto (default), managed, a loopback ComfyUI URL, or runpod.",
         )
+        command.add_argument("--gpu", action="append", metavar="GPU_TYPE",
+                             help="RunPod GPU type; repeat in preference order. Pass the same list to generate describe and generate because the offer digest is GPU-bound.")
+        command.add_argument("--datacenter", action=_Once, metavar="ID",
+                             help="Use this RunPod datacenter for this job. Pass the same ID to describe and generate because the offer digest is datacenter-bound.")
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
@@ -212,6 +250,12 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("--mode")
     command.add_argument('--placement', action=_Once, help='Describe the retained RunPod target.')
     command.add_argument('--engine', action=_Once, default='comfyui')
+    command.add_argument("--gpu", action="append", metavar="GPU_TYPE",
+                         help="RunPod GPU type; repeat in preference order. Use the same list for describe and generate because the offer digest is GPU-bound.")
+    command.add_argument("--datacenter", action=_Once, metavar="ID",
+                         help="Use this RunPod datacenter for this job. Use the same ID for describe and generate because the offer digest is datacenter-bound.")
+    command.add_argument('--max-hourly-usd', action=_Once, type=float,
+                         help='Disclose a waiting-policy hourly ceiling even when the GPU is out of stock.')
     command.add_argument("--json", action="store_true")
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
@@ -221,6 +265,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
                          help='With --as-entry: save the entry and queue nothing on any target.')
     command.add_argument('--inputs-json', action=_Once, metavar='FILE')
     command.add_argument("--placement", action=_Once, default="auto")
+    command.add_argument("--gpu", action="append", metavar="GPU_TYPE", help="RunPod GPU type; repeat in preference order.")
+    command.add_argument("--datacenter", action=_Once, metavar="ID", help="RunPod datacenter for this job.")
     command.add_argument("--mode", action=_Once, help="Workflow mode, when it cannot be inferred.")
     command.add_argument("--project")
     command.add_argument("--out")
@@ -307,11 +353,16 @@ def _controls(parsed):
         controls['wait'] = False
     if getattr(parsed, 'resume', False):
         controls['resume'] = True
-    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path', 'offer_digest',
-                 'preparation_seconds', 'execution_seconds', 'idle_seconds', 'align'):
+    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path', 'offer_digest', 'datacenter',
+                 'preparation_seconds', 'execution_seconds', 'idle_seconds', 'align', 'max_hourly_usd'):
         value = getattr(parsed, name, None)
         if value is not None and value != []:
             controls[name] = value
+    if getattr(parsed, 'capacity_timeout', None) is not None:
+        from astrid.core.machines_cli import _duration_seconds
+        controls['capacity_timeout_seconds'] = _duration_seconds(parsed.capacity_timeout)
+    if getattr(parsed, 'no_wait_for_capacity', False):
+        controls['wait_for_capacity'] = False
     return controls
 
 
@@ -452,7 +503,10 @@ def _job_command(argv: list[str]) -> int:
     from astrid.core.generation.progress import write_progress
     try:
         result = run_job(parsed.entry, parsed.job, parsed.out, mode=parsed.mode, align=parsed.align)
-    except (JobFileError, AstridError, ValueError) as exc:
+    except AstridError:
+        # Preserve the typed failure for main's structured JSON renderer.
+        raise
+    except (JobFileError, ValueError) as exc:
         parser.error(str(exc))
     write_progress('done')
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
@@ -472,6 +526,7 @@ def _main(argv: list[str]) -> int:
                     configure(child)
     configure(parser)
     parsed = parser.parse_args(argv)
+    from astrid.core.generation.placement import is_runpod_placement
     if parsed.modality == 'list':
         from astrid.core.generation.listing import main as list_main
         return list_main(argv)
@@ -501,11 +556,19 @@ def _main(argv: list[str]) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if parsed.modality == "describe":
+        if parsed.gpu and parsed.placement is None:
+            parser.error("--gpu requires target describe with --placement runpod")
+        _validate_datacenter(parsed.placement, parsed.datacenter, parser)
+        if parsed.datacenter and parsed.placement is None:
+            parser.error("--datacenter requires target describe with --placement runpod")
         if parsed.placement is not None:
             if parsed.entry is not None or parsed.workflow is not None:
                 parser.error('target describe cannot also select an entry or workflow')
+            placement = _gpu_placement(parsed.placement, parsed.gpu, parser)
             with _open_client() as client:
-                description = _generate_facade().describe(placement=parsed.placement, engine=parsed.engine, client=client)
+                description = _generate_facade().describe(placement=placement, engine=parsed.engine, client=client,
+                    **({"datacenter": parsed.datacenter} if parsed.datacenter is not None else {}),
+                    **({'max_hourly_usd': parsed.max_hourly_usd} if parsed.max_hourly_usd is not None else {}))
             print(json.dumps(description, indent=2, sort_keys=True))
             return 0
         from astrid.core.generation.entries import describe_entry
@@ -522,9 +585,22 @@ def _main(argv: list[str]) -> int:
         print(json.dumps(description, indent=2, sort_keys=True) if parsed.json else _entry_help(description))
         return 0
     if parsed.modality == "workflow":
+        if ((parsed.max_hourly_usd is not None or parsed.capacity_timeout is not None or parsed.no_wait_for_capacity)
+                and not is_runpod_placement(parsed.placement)):
+            parser.error("capacity waiting controls require --placement runpod")
+        _validate_datacenter(parsed.placement, parsed.datacenter, parser)
+        if (parsed.gpu or parsed.datacenter) and is_runpod_placement(parsed.placement) and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
+            parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu and --datacenter values")
+        parsed.placement = _gpu_placement(parsed.placement, parsed.gpu, parser)
         return _workflow_command(parsed)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
+    if ((parsed.max_hourly_usd is not None or parsed.capacity_timeout is not None or parsed.no_wait_for_capacity)
+            and not is_runpod_placement(parsed.placement)):
+        parser.error('capacity waiting controls require --placement runpod')
+    _validate_datacenter(parsed.placement, parsed.datacenter, parser)
+    if (parsed.gpu or parsed.datacenter) and is_runpod_placement(parsed.placement) and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
+        parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu and --datacenter values")
     if parsed.prompt is not None and not parsed.prompt.strip():
         parser.error("prompt must not be empty")
     if (parsed.width is None) != (parsed.height is None):
@@ -559,7 +635,7 @@ def _main(argv: list[str]) -> int:
     from astrid.sdk.exceptions import AstridSDKError
 
     kwargs: dict[str, Any] = {
-        "placement": parsed.placement,
+        "placement": _gpu_placement(parsed.placement, parsed.gpu, parser),
         "dry_run": parsed.dry_run,
         **values,
         **_controls(parsed),
@@ -585,7 +661,7 @@ def _main(argv: list[str]) -> int:
                 model=parsed.model, entry=parsed.entry, inputs=values)):
             # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)
-        elif description is not None and description["source"] == "action" and parsed.placement != 'runpod':
+        elif description is not None and description["source"] == "action" and not is_runpod_placement(parsed.placement):
             # Action-backed entries are validated (and refused, fail-closed) by the SDK
             # before any Runtime is needed; never open one ahead of that.
             result = generate(**kwargs)
@@ -593,7 +669,7 @@ def _main(argv: list[str]) -> int:
             try:
                 client_scope = _open_client()
             except AstridSDKError:
-                if parsed.placement != 'runpod' and _no_generation_target(parsed.placement, repo=kwargs.get('project_root'), client=None):
+                if not is_runpod_placement(parsed.placement) and _no_generation_target(parsed.placement, repo=kwargs.get('project_root'), client=None):
                     # No workspace and no engine or ComfyUI: the target guidance
                     # (the refusal a dry run gives) is the actionable answer.
                     generate(**{**kwargs, "dry_run": True})
@@ -607,6 +683,8 @@ def _main(argv: list[str]) -> int:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
         from astrid.core.generation.preflight import generation_error
+        if is_runpod_placement(parsed.placement) and parsed.offer_digest and "offer or rate changed" in str(exc).lower():
+            exc = ValueError("RunPod offer changed (GPU type or rate; datacenter is also included in the digest). Use the same ordered --gpu values and --datacenter ID in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
         selector = ['--entry', parsed.entry or parsed.model] if parsed.entry or parsed.model else []
         raise generation_error(exc, fixes=[{
             'argv': ['astrid', 'generate', 'describe', *selector] if selector else
@@ -614,9 +692,11 @@ def _main(argv: list[str]) -> int:
             'scope': 'read_only', 'details': {'guidance': getattr(exc, 'fix', None)}}]) from exc
     if getattr(result, "ok", True) is False:
         from astrid.core.generation.preflight import generation_error
-        raise generation_error(getattr(result, 'error', None) or {
-            'code': 'generation_failed', 'message': 'Generation did not succeed.'},
-            task_id=getattr(result, 'kernel_task_id', None))
+        error = getattr(result, 'error', None) or {
+            'code': 'generation_failed', 'message': 'Generation did not succeed.'}
+        if is_runpod_placement(parsed.placement) and parsed.offer_digest and "offer or rate changed" in str(error).lower():
+            error = ValueError("RunPod offer changed (GPU type or rate). Use the same ordered --gpu values in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
+        raise generation_error(error, task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -632,9 +712,40 @@ def _main(argv: list[str]) -> int:
     return 0
 
 
+def _kept_failure(before: set[tuple[str, int]]) -> None:
+    """Read only the bounded owner result after a failed RunPod command."""
+    try:
+        from astrid.packs.runpod.machine import journal_leases
+        from astrid.core.machines_cli import _when
+        for row in journal_leases():
+            last = row.get('last_job') or {}
+            identity = (row.get('lease'), last.get('generation'))
+            if (identity in before or not row.get('live') or row.get('state') != 'idle'
+                    or last.get('outcome') != 'failed'):
+                continue
+            facts = last.get('failure') or {}
+            summary = ', '.join(f'{name}={facts[name]}' for name in
+                                ('exception', 'stage', 'code', 'category', 'node_id', 'node_class', 'field', 'constraint')
+                                if name in facts)
+            print(f"Failure: {summary or 'unknown'}. machine {row['id']} kept until "
+                  f"{_when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
+                  f"reuse it or run `astrid machines release {row['id']}`", file=sys.stderr)
+    except Exception:
+        pass  # Diagnostic reads cannot change settlement or mask the original error.
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error
+    before = set()
+    runpod = '--placement' in argv and argv[argv.index('--placement') + 1:][:1] == ['runpod']
+    if runpod:
+        try:
+            from astrid.packs.runpod.machine import journal_leases
+            before = {(row.get('lease'), (row.get('last_job') or {}).get('generation'))
+                      for row in journal_leases()}
+        except Exception:
+            pass
     try:
         scope = nullcontext()
         if '--dry-run' in argv:
@@ -643,11 +754,17 @@ def main(argv: list[str] | None = None) -> int:
         with scope:
             return _main(argv)
     except (RuntimeError, ValueError, OSError, ImportError) as exc:
+        if runpod:
+            _kept_failure(before)
         error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:
             print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
             return 2
         raise error from exc
+    except BaseException:
+        if runpod:
+            _kept_failure(before)
+        raise
 
 
 if __name__ == "__main__":
