@@ -1418,10 +1418,9 @@ class GenerationFacade:
                          for name in (port['name'], *port.get('aliases', []))}
                 try:
                     workflow_entries.validate_inputs(description, {k: v for k, v in inputs.items() if k in names})
-                except ValueError as exc:
-                    if str(exc).startswith('missing required entry inputs:'):
-                        failures.append(f"{identifier}: {exc}")
-                        continue
+                except workflow_entries.MissingRequiredEntryInputsError as exc:
+                    failures.append(f"{identifier}: {exc}")
+                    continue
             try:
                 assets = {}
                 if is_remote_target:

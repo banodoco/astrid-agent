@@ -15,6 +15,10 @@ _KINDS = frozenset({'image', 'video', 'audio'})
 _DEFAULT_MODE_CANDIDATES = {'image': ('t2i',), 'video': ('t2v',), 'audio': ('music',)}
 
 
+class MissingRequiredEntryInputsError(ValueError):
+    """Entry validation failed because one or more required inputs are absent."""
+
+
 def user_entries() -> list[dict[str, Any]]:
     """Saved entries (``VIBECOMFY_ENTRIES_DIR``), then entries contributed through ``vibecomfy.workflows``."""
     try:
@@ -715,7 +719,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                    and (name in values and (values[name] is None or isinstance(values[name], str) and not values[name].strip())
                         or name not in values and (port.get('_explicit_required') or port.get('default') in (None, '')))]
         if missing:
-            raise ValueError('missing required entry inputs: ' + ', '.join(missing))
+            raise MissingRequiredEntryInputsError('missing required entry inputs: ' + ', '.join(missing))
     return values
 
 
