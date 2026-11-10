@@ -240,11 +240,19 @@ def ensure_pod_ready(placement: RemotePlacement, state: RemoteRun) -> dict[str, 
 
 _ENTRY_CHECK = (
     "import json,sys\n"
-    "rows=json.load(open(sys.argv[1],encoding='utf-8'));entry=sys.argv[2] or None\n"
-    "if not isinstance(rows,list): sys.exit('the pod runtime did not list entries as JSON')\n"
-    "rows=[r for r in rows if isinstance(r,dict) and r.get('id')==entry]\n"
-    "if entry is not None and not rows: sys.exit(f\"entry {entry!r} is not listed by the pod's runtime\")\n"
-    "if any(r.get('ready') is False for r in rows): sys.exit(f\"entry {entry!r} is not ready on the pod's runtime\")\n"
+    "rows=json.load(open(sys.argv[1],encoding='utf-8'));entry=sys.argv[2] or None;mode=sys.argv[3] or None\n"
+    "if not isinstance(rows,list) or any(not isinstance(r,dict) for r in rows): sys.exit('the pod runtime did not list entries as JSON')\n"
+    "if entry is None: sys.exit(0)\n"
+    "rows=[r for r in rows if r.get('id')==entry]\n"
+    "if not rows: sys.exit(f\"entry {entry!r} is not listed by the pod's runtime\")\n"
+    "rows=[r for r in rows if r.get('backend')=='local' and (mode is None or r.get('mode')==mode)]\n"
+    "if not rows: sys.exit(f\"entry {entry!r} has no local declaration for the requested mode\")\n"
+    "if any(not isinstance(r.get('mode'),str) or not r['mode'] or type(r.get('ready')) is not bool for r in rows): sys.exit('the pod runtime listed an invalid entry declaration')\n"
+    "if mode is None and len({r['mode'] for r in rows})!=1: sys.exit('the pod entry requires an explicit mode')\n"
+    # Listing readiness probes attached targets before the managed job starts
+    # its engine and aligns missing models. Declaration availability gates the
+    # selected local route here; the actual job owns execution readiness.
+    "if any(r.get('availability')!='available' for r in rows): sys.exit(f\"entry {entry!r} is unavailable on the pod's runtime\")\n"
 )
 
 
@@ -383,7 +391,7 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         f"export {selection_env(remote_root)}\n"
         f"{extract_selection_command(remote_root)} || exit 3\n"
         f"{POD_VENV}/bin/astrid generate list --json > {listing} || exit 3\n"
-        f"{POD_VENV}/bin/python -c {shlex.quote(_ENTRY_CHECK)} {listing} {shlex.quote(check_entry)} || exit 3\n"
+        f"{POD_VENV}/bin/python -c {shlex.quote(_ENTRY_CHECK)} {listing} {shlex.quote(check_entry)} {shlex.quote(mode or '')} || exit 3\n"
         f"{line} > {result}\n"
         "rc=$?\n"
         "if [ $rc -ne 0 ]; then exit $rc; fi\n"
