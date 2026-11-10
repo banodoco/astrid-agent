@@ -613,6 +613,73 @@ def test_machines_setup_refuses_missing_pinned_identity(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "provider_account_ref" in output and "image" in output
     assert "astrid machines setup" in output
+
+
+def test_machines_setup_datacenter_filters_inventory_and_saves_choice(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    observed = []
+    persisted = {}
+
+    def gpu_inventory(datacenter, has_volume):
+        observed.append((datacenter, has_volume))
+        return ["RTX in region"] if datacenter == "US-TX-1" else ["RTX everywhere"]
+
+    assert machines_cli.main(["setup", "--datacenter", "US-TX-1", "--gpu", "RTX in region",
+                              "--budget-usd", "5", "--json"],
+                             volumes=lambda: [], offered_gpus=gpu_inventory,
+                             setup=lambda policy: persisted.update(policy) or type("Result", (), {"ok": True})()) == 0
+    import json
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert observed == [("US-TX-1", False)]
+    assert persisted["datacenter_id"] == "US-TX-1"
+    assert persisted["gpu_types"] == ["RTX in region"]
+
+
+def test_machines_setup_any_is_unrestricted_and_volume_dc_conflict_refuses(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    observed = []
+    persisted = {}
+    assert machines_cli.main(["setup", "--datacenter", "any", "--gpu", "RTX A",
+                              "--budget-usd", "5", "--json"], volumes=lambda: [],
+                             offered_gpus=lambda dc, has_volume: observed.append((dc, has_volume)) or ["RTX A"],
+                             setup=lambda policy: persisted.update(policy) or type("Result", (), {"ok": True})()) == 0
+    assert observed == [(None, False)]
+    assert "datacenter_id" not in persisted
+    volumes = [{"id": "vol", "name": "data", "dataCenterId": "US-TX-1"}]
+    assert machines_cli.main(["setup", "--volume", "vol", "--datacenter", "EU-RO-1",
+                              "--gpu", "RTX A", "--budget-usd", "5", "--json"],
+                             volumes=lambda: volumes, offered_gpus=lambda *_: ["RTX A"],
+                             setup=lambda *_: None) == 2
+    assert "fixed to a different datacenter" in capsys.readouterr().out
+
+
+def test_machines_setup_interactive_datacenter_keeps_gpu_order(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    answers = iter(("", "US-TX-1", "RTX B, RTX A", "5"))
+    captured = {}
+    offered = []
+    assert machines_cli.main(["setup"], volumes=lambda: [], datacenters=lambda: ["US-TX-1"],
+                             offered_gpus=lambda dc, has_volume: offered.append((dc, has_volume)) or ["RTX A", "RTX B"],
+                             input_fn=lambda _: next(answers),
+                             setup=lambda policy: captured.update(policy) or type("Result", (), {"ok": True})()) == 0
+    capsys.readouterr()
+    assert offered == [("US-TX-1", False)]
+    assert captured["datacenter_id"] == "US-TX-1"
+    assert captured["gpu_types"] == ["RTX B", "RTX A"]
+
+
 def test_machine_keep_for_uses_recorded_consent_data_and_reports_new_limit(monkeypatch, capsys):
     from types import SimpleNamespace
     from astrid.core import machines_cli
