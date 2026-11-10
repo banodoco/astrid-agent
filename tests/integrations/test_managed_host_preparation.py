@@ -75,7 +75,9 @@ def managed_install(session, monkeypatch, request, tmp_path):
     """
     root = session[3]
     (root / 'tiny_http.py').write_text(_SERVER)
-    generator = cpu_h3_install.__wrapped__(session, monkeypatch, type('Profile', (), {'param': 'managed_native'})())
+    profile = type('Profile', (), {'param': 'managed_native',
+                                   'comfy_source': getattr(request, 'comfy_source', None)})()
+    generator = cpu_h3_install.__wrapped__(session, monkeypatch, profile)
     fixture = next(generator)
     installed_python = root / "runtime/venv/bin/python"
     import vibecomfy

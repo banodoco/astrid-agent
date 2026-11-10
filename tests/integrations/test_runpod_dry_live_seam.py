@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -28,6 +29,26 @@ from tests.integrations.test_dry_run_equals_live_run import H3_CLASSES
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture
+def pinned_managed_install(session, monkeypatch, request, tmp_path):
+    source = Path(os.environ.get('ASTRID_TEST_COMFY_SOURCE',
+                                str(Path(__file__).resolve().parents[3] / 'comfyui-pinned')))
+    assert source.is_dir(), 'provide the clean recipe-pinned ComfyUI checkout in ASTRID_TEST_COMFY_SOURCE'
+    pin = '423cbd20511becb1f16122ab518e92e58bfa03d9'
+    assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == pin
+    assert not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'], text=True).strip()
+    profile = SimpleNamespace(comfy_source=source)
+    generator = managed_install.__wrapped__(session, monkeypatch, profile, tmp_path)
+    fixture = next(generator)
+    try:
+        yield fixture
+    finally:
+        try:
+            next(generator)
+        except StopIteration:
+            pass
+
+
 class CaptureClient(NoPodClient):
     def __init__(self):
         super().__init__()
@@ -44,7 +65,7 @@ class CaptureClient(NoPodClient):
 
 
 @pytest.mark.parametrize('cell', [*SLOTS, ('video', 'h3')], ids=lambda cell: '/'.join(cell))
-def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences, managed_install):
+def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences, pinned_managed_install):
     recorder = Recorder(monkeypatch)
     client = CaptureClient()
     facade = GenerationFacade()
@@ -161,7 +182,7 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences, m
              for path in receipt_files(provider._receipt_for(engine))]
     files += [value for ref in _referenced_model_values(workflow)
               for value in (ref['value'], ref['subdir'] + '/' + ref['value'])]
-    client_engine, payload, recipe, root, started, bootstrap = managed_install
+    client_engine, payload, recipe, root, started, bootstrap = pinned_managed_install
     from astrid.core.generation import engine_recipe
     from astrid.core.generation.engine_local_endpoint import record_engine_root
     monkeypatch.setattr(engine_recipe, 'load_recipe', lambda engine, platform, **kwargs: recipe)
