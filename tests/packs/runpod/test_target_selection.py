@@ -652,6 +652,38 @@ def test_sdk_policy_consent_binds_saved_preferences_without_an_exact_offer(case,
     assert policy["wait_for_capacity"] is True
 
 
+def test_sdk_job_datacenter_is_copied_into_policy_consent(case, monkeypatch):
+    from astrid.sdk import generation
+
+    saved = case.prefs.as_mapping()
+    monkeypatch.setattr(generation, "_runpod_preferences", lambda client: dict(saved))
+    policy = generation._runpod_placement_policy({
+        "consent": ("paid",), "max_usd": 4.0, "deadline": "2030-01-01T00:00:00+00:00",
+        "preparation_seconds": 1, "execution_seconds": 2, "idle_seconds": 3,
+        "max_hourly_usd": 1.5, "datacenter": "EU-FAKE",
+    }, engine="comfyui")
+
+    assert policy["preferences"]["datacenter_id"] == "EU-FAKE"
+    assert policy["policy_digest"] == selection.policy_consent_digest(
+        RunPodPreferences.from_mapping({**saved, "datacenter_id": "EU-FAKE"}), 1.5)
+    assert saved == case.prefs.as_mapping()
+
+
+def test_sdk_job_datacenter_refuses_conflict_with_saved_volume(case, monkeypatch):
+    from astrid.sdk import generation
+
+    saved = {**case.prefs.as_mapping(), "volume": {
+        "id": "volume-1", "name": "shared", "size_gb": 100, "mount_path": "/workspace"},
+        "datacenter_id": "VOLUME-DC"}
+    monkeypatch.setattr(generation, "_runpod_preferences", lambda client: dict(saved))
+    with pytest.raises(generation.GenerationInputError, match="conflicts with the selected network volume"):
+        generation._runpod_placement_policy({
+            "consent": ("paid",), "max_usd": 4.0, "deadline": "2030-01-01T00:00:00+00:00",
+            "preparation_seconds": 1, "execution_seconds": 2, "idle_seconds": 3,
+            "offer_digest": "sha256:" + "c" * 64, "datacenter": "OTHER-DC",
+        }, engine="comfyui")
+
+
 def test_stockless_description_keeps_policy_disclosure_and_exact_quote_unchanged(case, monkeypatch):
     from astrid.packs.runpod.adapter import RunPodAdapter
     from astrid.sdk import generation
