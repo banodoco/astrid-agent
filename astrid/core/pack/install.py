@@ -209,15 +209,40 @@ _WINDOWS_SYSTEM_VARIABLES = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "
 
 
 def _askpass_program(work: Path, windows: bool) -> str:
-    """A no-op credential helper: it prints nothing and refuses, so Git never prompts."""
+    """A no-op credential helper: it prints nothing and refuses, so Git never prompts.
+
+    The leading dot keeps it from colliding with any pack id, which never starts with a dot.
+    """
     if windows:
-        path = work / "askpass.cmd"
+        path = work / ".askpass.cmd"
         path.write_text("@echo off\r\nexit /b 1\r\n", encoding="ascii")
     else:
-        path = work / "askpass"
+        path = work / ".askpass"
         path.write_text("#!/bin/sh\nexit 1\n", encoding="ascii")
         path.chmod(0o700)
     return str(path)
+
+
+def _git_executable(path_value: str, *, windows: bool, cwd: Path) -> str | None:
+    """Find git in absolute PATH entries only; never the current directory.
+
+    shutil.which searches the current directory first on Windows, so a planted
+    git.exe in the working tree would run. Relative entries and entries that
+    resolve to the current directory are skipped here.
+    """
+    names = ("git.exe",) if windows else ("git",)
+    here = os.path.normcase(os.path.abspath(cwd))
+    for entry in path_value.split(os.pathsep):
+        if not entry or not os.path.isabs(entry):
+            continue
+        directory = os.path.abspath(entry)
+        if os.path.normcase(directory) == here:
+            continue
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate) and (windows or os.access(candidate, os.X_OK)):
+                return candidate
+    return None
 
 
 def _git_environment(work: Path, askpass: str, *, windows: bool | None = None,
@@ -251,7 +276,7 @@ def _git(work: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     operation = args[0] if args else "git"
     askpass = _askpass_program(work, os.name == "nt")
     env = _git_environment(work, askpass)
-    git = shutil.which("git", path=env["PATH"])
+    git = _git_executable(env["PATH"], windows=os.name == "nt", cwd=Path.cwd())
     if git is None:
         raise PackInstallError("git_failed", f"Git source operation failed ({operation}; git not found).")
     command = [
