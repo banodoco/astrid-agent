@@ -7991,6 +7991,12 @@ class GenericPackHost:
         }
         _write_ready_marker(self._ready_marker_path, payload)
 
+    def _invalidate_ready_registration(self) -> None:
+        # Some readiness consumers use file existence, so a non-ready payload
+        # would still advertise this host. Unlink is atomic for readers.
+        if self._ready_marker_path is not None:
+            self._ready_marker_path.unlink(missing_ok=True)
+
     def register(self, *, deliberate: bool = False) -> dict[str, Any]:
         # Cover discovery, preflight, the Runtime transaction, and local state
         # publication as one registration operation. In particular, a fenced
@@ -8022,6 +8028,7 @@ class GenericPackHost:
                         "runtime_session_id": "runtime session changed", "coordinator_epoch": "runtime coordinator epoch changed",
                     }[key] for key in changed) + "; deliberate re-registration required"
                 )
+                self._invalidate_ready_registration()
                 if not (recover_runtime and self._runtime_restarted):
                     raise HostError(self._runtime_registration_fence)
         if recover_runtime:
@@ -8215,7 +8222,9 @@ class GenericPackHost:
                                 recover_runtime=idle and self._runtime_restarted,
                                 source_inventory=source_inventory)
         except Exception:
-            self._registration_refresh_blocked = True
+            with self._handoff_condition:
+                self._registration_refresh_blocked = True
+                self._invalidate_ready_registration()
             raise
         finally:
             self._handoff_end_registration()
@@ -8266,7 +8275,9 @@ class GenericPackHost:
                                                     code="pack_refresh_source_mismatch") from exc
                     self._renew_executor_registration(idle=True, deliberate=True, source_inventory=inventory)
             except Exception as exc:
-                self._registration_refresh_blocked = True
+                with self._handoff_condition:
+                    self._registration_refresh_blocked = True
+                    self._invalidate_ready_registration()
                 code = getattr(exc, "code", "")
                 self._pack_refresh_reason = f"{type(exc).__name__}: {exc}" + (f" [{code}]" if code else "")
                 raise
@@ -8417,6 +8428,7 @@ class GenericPackHost:
             reason = "runtime compatibility blocked: " + "; ".join(mismatches)
             if self._registered_runtime_state:
                 self._runtime_registration_fence = reason
+                self._invalidate_ready_registration()
             raise HostError(reason)
         return {
             "protocol": actual_protocol,

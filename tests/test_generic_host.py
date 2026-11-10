@@ -5499,6 +5499,9 @@ def test_committed_refresh_refuses_sources_outside_its_committed_delta(tmp_path,
     from astrid.core.pack.transaction import refresh_pending
 
     host, runtime, personal = _transaction_host(tmp_path, monkeypatch)
+    marker = tmp_path / "generic-host.ready.json"
+    host._ready_marker_path, host._ready_marker_context = marker, {"status": "ready"}
+    host._publish_ready_registration({})
     registered_before = len(runtime.registrations)
     registered_epoch = host.source_epoch
     registered_inventory = dict(host._registered_source_inventory)
@@ -5533,6 +5536,7 @@ def test_committed_refresh_refuses_sources_outside_its_committed_delta(tmp_path,
     assert host._registered_runtime_state["source_epoch"] == registered_epoch
     assert host._registered_source_inventory == registered_inventory
     assert host._registration_refresh_blocked is True
+    assert not marker.exists()
     with pytest.raises(HostError, match="executor registration refresh is blocked"):
         host.claim_once()
 
@@ -5810,3 +5814,23 @@ def test_failed_registration_does_not_publish_ready_marker(tmp_path, monkeypatch
         host.register(deliberate=True)
 
     assert marker.read_bytes() == before
+
+
+@pytest.mark.parametrize("change", ["runtime_epoch", "schema_digest"])
+def test_runtime_registration_fence_removes_ready_marker(tmp_path, monkeypatch, change):
+    _write_manifest(tmp_path / "packs" / "echo")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path / "packs"], client=runtime)
+    result = host.register()
+    marker = tmp_path / "generic-host.ready.json"
+    host._ready_marker_path, host._ready_marker_context = marker, {"status": "ready"}
+    host._publish_ready_registration(result)
+    health = runtime.health()
+    health[change] = 2 if change == "runtime_epoch" else "incompatible-schema"
+    monkeypatch.setattr(runtime, "health", lambda: health)
+
+    with pytest.raises(HostError):
+        host.register()
+
+    assert host._registration_admission_reason()
+    assert not marker.exists()

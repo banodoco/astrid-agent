@@ -144,7 +144,8 @@ def refreshed_registration(tmp_path, monkeypatch):
     monkeypatch.setattr("astrid.core._shared.boot_manifest.load_boot_manifest_hash",
                         lambda *_args, **_kw: current["boot_manifest_hash"])
     return SimpleNamespace(current=current, ready=json.loads(marker.read_text()), expected=expected,
-                           worker=worker, owner=owner, runtime=runtime, calls=calls)
+                           worker=worker, owner=owner, runtime=runtime, calls=calls,
+                           host=host, marker=marker, packs=packs)
 
 
 def _attach_refreshed(value, rejections):
@@ -167,6 +168,40 @@ def test_attach_observes_current_structured_refresh_with_runtime_owner(refreshed
     assert registration["source_epoch"] == value.runtime.registration.source_epoch
     assert registration["source_digest"] == value.runtime.registration.source_digest
     assert registration["dependency_digest"] == value.runtime.registration.dependency_digest
+
+
+def test_failed_renewal_removes_ready_until_recovery(refreshed_registration, monkeypatch):
+    from astrid.core.execution.generic_host import HostError
+    from tests.test_generic_host import _write_manifest
+
+    value = refreshed_registration
+    previous = json.loads(value.marker.read_text())
+    assert _attach_refreshed(value, []) is not None
+    original_register = value.runtime.register_executor
+    with monkeypatch.context() as patch:
+        def fail(*_args, **_kwargs):
+            raise HostError("registration lost or replaced")
+        patch.setattr(value.runtime, "register_executor", fail)
+        with pytest.raises(HostError, match="registration lost or replaced"):
+            value.host._renew_executor_registration()
+
+    assert value.host._registration_admission_reason()
+    value.ready = host_bootstrap._read_object(value.marker) or {}
+    assert _attach_refreshed(value, []) is None
+    assert not value.marker.exists()
+
+    _write_manifest(value.packs / "recovered", capability_id="test.recovered")
+    value.host.refresh()
+    assert value.runtime.register_executor == original_register
+    value.host._renew_executor_registration(deliberate=True)
+    value.ready = json.loads(value.marker.read_text())
+    assert value.ready["status"] == "ready"
+    assert value.ready["source_epoch"] != previous["source_epoch"]
+    assert value.ready["registration"]["registration"]["source_digest"] != previous["registration"]["registration"]["source_digest"]
+    assert value.ready["pid"] == value.current["pid"]
+    assert value.ready["process_birth_id"] == value.current["process_birth_id"]
+    assert value.ready["runtime_epoch"] == value.runtime.registration.runtime_epoch
+    assert _attach_refreshed(value, []) is not None
 
 
 @pytest.mark.parametrize("field", ["source_epoch", "source_digest", "dependency_digest"])
