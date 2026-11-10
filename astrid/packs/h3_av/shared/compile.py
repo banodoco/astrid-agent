@@ -635,6 +635,9 @@ def _compile_character_swap_v2(
     graph receives only the typed Character Swap references, so composition
     continues to own the exact source audio and delivery-mask permissions.
     """
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import emit_bundle
+
     from .generation import (
         CHARACTER_SWAP_FILENAME,
         CHARACTER_SWAP_REPOSITORY,
