@@ -772,6 +772,60 @@ def test_machines_setup_any_is_unrestricted_and_volume_dc_conflict_refuses(monke
     assert "fixed to a different datacenter" in capsys.readouterr().out
 
 
+def test_machines_setup_explicit_any_clears_saved_datacenter(monkeypatch):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: {
+        "provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+        "datacenter_id": "US-TX-1", "gpu_types": ["RTX A"], "budget_cap_usd": 5,
+    })
+    for json_flag in ([], ["--json"]):
+        saved, observed = {}, []
+        assert machines_cli.main(["setup", "--datacenter", "any", *json_flag],
+            volumes=lambda: [], datacenters=lambda: pytest.fail("unexpected datacenter lookup"),
+            offered_gpus=lambda dc, volume: observed.append((dc, volume)) or ["RTX A"],
+            setup=lambda policy: saved.update(policy),
+            input_fn=lambda prompt: "" if prompt.startswith("Volume") else pytest.fail("unexpected prompt")) == 0
+        assert observed == [(None, False)]
+        assert "datacenter_id" not in saved
+
+    saved = {}
+    assert machines_cli.main(["setup", "--volume", "vol", "--datacenter", "any", "--json"],
+        volumes=lambda: [{"id": "vol", "name": "data", "dataCenterId": "US-TX-1", "size_gb": 50}],
+        offered_gpus=lambda *_: ["RTX A"], setup=lambda policy: saved.update(policy)) == 0
+    assert saved["datacenter_id"] == "US-TX-1"
+
+
+@pytest.mark.parametrize("json_flag", [[], ["--json"]])
+@pytest.mark.parametrize("failure", ["inventory", "action_exception", "action_result"])
+def test_machines_setup_hides_external_error_details(monkeypatch, capsys, caplog, json_flag, failure):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    secret = "credential-sentinel-never-disclose"
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: {
+        "provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+        "gpu_types": ["RTX A"], "budget_cap_usd": 5,
+    })
+    def inventory():
+        if failure == "inventory":
+            raise ValueError(secret)
+        return []
+    def setup(_policy):
+        if failure == "action_exception":
+            raise ValueError(secret)
+        return SimpleNamespace(ok=False, error=secret)
+
+    result = machines_cli.main(["setup", "--datacenter", "any", *json_flag],
+        volumes=inventory, offered_gpus=lambda *_: ["RTX A"], setup=setup,
+        input_fn=lambda _: "")
+    assert result != 0
+    assert secret not in capsys.readouterr().out
+    assert secret not in caplog.text
+
+
 def test_machines_setup_interactive_datacenter_keeps_gpu_order(monkeypatch, capsys):
     from astrid.core import machines_cli
     from astrid.core.generation import settings

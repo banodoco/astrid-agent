@@ -358,8 +358,15 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         offered_gpus = offered_gpus or (lambda dc, has_volume: _run_sync(adapter.setup_gpu_types(
             api_key, datacenter_id=dc, require_network_volume=has_volume)))
 
+    def inventory(call, *args):
+        # Provider failures may include credentials in their exception text.
+        try:
+            return call(*args)
+        except Exception:
+            raise RuntimeError("RunPod inventory failed") from None
+
     try:
-        account_volumes = volumes()
+        account_volumes = inventory(volumes)
         selected_volume = None
         requested_volume = volume
         if requested_volume is None and as_json:
@@ -382,15 +389,15 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
                     raise ValueError(f"RunPod volume {selected!r} was not found; retry `astrid machines setup`")
         volume_datacenter = (selected_volume or {}).get("dataCenterId")
         requested_datacenter = None if datacenter is not None and datacenter.lower() == "any" else datacenter
-        if requested_datacenter is None and as_json:
+        if datacenter is None and as_json:
             requested_datacenter = saved.get("datacenter_id")
         if selected_volume is not None:
             if requested_datacenter is not None and requested_datacenter != volume_datacenter:
                 raise ValueError("the selected network volume is fixed to a different datacenter")
             datacenter = volume_datacenter
         else:
-            if requested_datacenter is None and not as_json:
-                choices = list(dict.fromkeys(datacenters()))
+            if datacenter is None and not as_json:
+                choices = list(dict.fromkeys(inventory(datacenters)))
                 print("Datacenters (enter an ID, or press Enter for any):")
                 print("  any" + (("  " + "  ".join(choices)) if choices else ""))
                 selected = input_fn("Datacenter [any]: ").strip()
@@ -398,7 +405,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
                 if requested_datacenter is not None and requested_datacenter not in choices:
                     raise ValueError(f"RunPod datacenter {requested_datacenter!r} was not found; retry `astrid machines setup`")
             datacenter = requested_datacenter
-        candidates = offered_gpus(datacenter, selected_volume is not None)
+        candidates = inventory(offered_gpus, datacenter, selected_volume is not None)
         if not candidates:
             raise ValueError("no GPU types are offered in that datacenter; retry `astrid machines setup`")
         chosen = list(gpu_types or saved.get("gpu_types") or ())
@@ -428,22 +435,25 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
                                 "size_gb": selected_volume.get("size_gb", selected_volume.get("size")),
                                 "mount_path": saved.get("volume", {}).get("mount_path", "/workspace")}
         validated = RunPodPreferences.from_mapping(policy).as_mapping()
-        if setup is None:
-            from astrid.sdk import AstridClient
-            import json as _json
+        try:
+            if setup is None:
+                from astrid.sdk import AstridClient
+                import json as _json
 
-            with AstridClient.open_from_launcher() as client:
-                result = client.invoke_result("runpod.setup", kind="action", project=None,
-                                              inputs={"placement_policy": _json.dumps(
-                                                  {"kind": "runpod", "engine": "comfyui",
-                                                   "preferences": validated}, sort_keys=True)},
-                                              wait=True, read_managed_outputs=False)
-        else:
-            result = setup(validated)
+                with AstridClient.open_from_launcher() as client:
+                    result = client.invoke_result("runpod.setup", kind="action", project=None,
+                                                  inputs={"placement_policy": _json.dumps(
+                                                      {"kind": "runpod", "engine": "comfyui",
+                                                       "preferences": validated}, sort_keys=True)},
+                                                  wait=True, read_managed_outputs=False)
+            else:
+                result = setup(validated)
+        except Exception:
+            raise RuntimeError("RunPod setup action failed") from None
         ok = bool(getattr(result, "ok", True))
         payload = {"ok": ok, "preferences": validated}
         if not ok:
-            payload["error"] = f"{getattr(result, 'error', None)}; retry `astrid machines setup`"
+            payload["error"] = "could not save preferences; retry `astrid machines setup`"
         print(json.dumps(payload, sort_keys=True, default=str) if as_json else
               (f"Saved RunPod machine policy: GPUs {', '.join(chosen)}; datacenter {datacenter or 'any'}; "
                f"budget ${float(budget):.2f}/run; volume {selected_volume.get('name') if selected_volume else 'ephemeral disk'}. "
