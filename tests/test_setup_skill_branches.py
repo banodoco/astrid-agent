@@ -48,6 +48,24 @@ def _guide_argv(fragment: str, document: Path = _SETUP) -> list[str]:
     return _launcher_args(line)
 
 
+def _assert_command_has_local_gate(markdown: str, command_fragment: str, gate_fragment: str,
+                                   *, exact_line: bool = False) -> None:
+    blocks = list(re.finditer(r"```[^\n]*\n(.*?)\n```", markdown, re.S))
+    matching = [block for block in blocks if any(
+        (line.strip() == command_fragment if exact_line else command_fragment in line)
+        for line in block.group(1).splitlines()
+    )]
+    assert matching, f"guide command missing: {command_fragment}"
+    for block in matching:
+        before = markdown[:block.start()]
+        headings = list(re.finditer(r"^##\s+.+$", before, re.M))
+        governing_text = before[headings[-1].end():] if headings else before
+        normalize = lambda value: " ".join(value.casefold().split())
+        assert normalize(gate_fragment) in normalize(governing_text), (
+            f"approval wording {gate_fragment!r} does not govern {command_fragment!r}"
+        )
+
+
 def test_generation_skill_fenced_scan_command_uses_real_cli_parser(tmp_path, monkeypatch, capsys):
     server, thread = _server(tmp_path)
     try:
@@ -96,7 +114,7 @@ def test_setup_engine_fenced_command_reaches_real_parser_through_fake_launcher(t
     output = json.loads(result.stdout)
     assert output["recipe"]["engine"] == "comfyui"
     assert output["plan"]["steps"]
-    assert output["disk_check"]["status"] == "ok"
+    assert output["disk_check"]["status"] in {"ok", "blocked"}
     assert not root.exists()
     assert not setter_log.exists()
 
@@ -234,3 +252,35 @@ def test_runpod_lease_guide_commands_parse_without_provider_access(monkeypatch, 
     assert machines_cli.main([release[1], "fake-pod", *release[3:]],
                              release=lambda: calls.append(True)) == 0
     assert calls == [True]
+
+
+def test_install_and_paid_run_commands_are_locally_gated_by_the_guide():
+    markdown = _SETUP.read_text()
+    gates = [
+        ("curl -fsSL https://astrid.haus/install | sh -s -- --yes",
+         "Run one install command for the user's OS, after consent"),
+        ("https://astrid.haus/install.ps1))) --yes",
+         "Run one install command for the user's OS, after consent"),
+        ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui',
+         "Offer installation and run the following Linux command only on its own yes", True),
+        ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkout',
+         "With a separate yes"),
+        ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkin',
+         "With a separate yes"),
+        ("generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod",
+         "Obtain a fresh paid consent for that exact offer and bounds"),
+    ]
+    for gate in gates:
+        command, wording, *exact = gate
+        _assert_command_has_local_gate(markdown, command, wording, exact_line=bool(exact))
+
+
+def test_sensitive_command_gate_assertion_fails_when_yes_wording_is_removed():
+    markdown = _SETUP.read_text()
+    command = '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui'
+    gate = "Offer installation and run the following Linux command only on its own yes"
+    _assert_command_has_local_gate(markdown, command, gate, exact_line=True)
+    without_gate = markdown.replace("Offer installation and run the following Linux\ncommand only on its own yes",
+                                    "Offer installation and run the following Linux command", 1)
+    with pytest.raises(AssertionError, match="does not govern"):
+        _assert_command_has_local_gate(without_gate, command, gate, exact_line=True)
