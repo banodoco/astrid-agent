@@ -577,7 +577,7 @@ def _record_installing_git(env: dict[str, str], run, *, windows: bool, note=None
     nothing is recorded, the install continues, and pack installs from git
     report that Git is missing.
     """
-    from astrid.core.pack.install import _git_executable
+    from .git_lookup import _git_executable
 
     git = _git_executable(os.environ.get("PATH", os.defpath), windows=windows, cwd=os.getcwd())
     if git is None:
