@@ -39,6 +39,7 @@ changed price or fallback offer needs new consent. Unknown rates, insufficient
 cap or deadline, and replayed consent block the claim or reuse. The paid bound
 includes preparation and idle as well as execution; reuse cannot extend the
 existing bound. A denied reuse must not postpone an existing idle deadline.
+`astrid machines keep` changes a live machine's paid limit with fresh consent; `--until-release` disables idle release within the required USD cap, and release requires the owning host to stay running.
 
 Validate the entry or workflow and its inputs before claim. The journal owns
 only the exact pod it created; it must not adopt or terminate another broker's

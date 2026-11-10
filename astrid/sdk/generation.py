@@ -11,7 +11,7 @@ import importlib
 import json
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import wraps
 from pathlib import Path
 from typing import Any, Mapping, Protocol, TYPE_CHECKING
@@ -304,22 +304,36 @@ def _runpod_placement_policy(controls, *, engine, machine=None, placement_policy
             **({"placement_idle_seconds": placement_policy.idle_timeout_s} if placement_policy is not None else {})}
 
 
-def _runpod_operation(operation, *, client, wait, include_quote=False, preferences=None, machine_id=None):
+def _runpod_operation(operation, *, client, wait, include_quote=False, preferences=None, machine_id=None,
+                      consent=None, until_release=False, timeout_seconds=None):
     """Submit an ordinary task to the retained host's target owner."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
     policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences if preferences is not None else _runpod_preferences(client)}
     if machine_id is not None:
-        if operation != "release" or not isinstance(machine_id, str) or not machine_id.strip():
-            raise GenerationInputError("exact machine release requires a nonempty machine id")
+        if operation not in {"release", "keep"} or not isinstance(machine_id, str) or not machine_id.strip():
+            raise GenerationInputError("exact machine operation requires a nonempty machine id")
         policy["machine"] = machine_id
+    if operation == "keep":
+        from astrid.packs.runpod.target_selection import PaidRunConsent
+
+        if machine_id is None or type(until_release) is not bool:
+            raise GenerationInputError("keep requires an exact machine and a boolean until-release selection")
+        if isinstance(consent, PaidRunConsent):
+            consent = asdict(consent)
+        if not isinstance(consent, Mapping):
+            raise GenerationInputError("keep requires fresh paid consent")
+        policy.update(paid_consent=dict(consent), until_release=until_release)
+    elif consent is not None or until_release:
+        raise GenerationInputError("paid keep consent requires the keep operation")
     inputs = {"placement_policy": json.dumps(policy, sort_keys=True, separators=(',', ':'), allow_nan=False)}
     if operation == 'status':
         inputs['include_quote'] = include_quote
     sdk_module = importlib.import_module('astrid.sdk')
     invoke = client.invoke_result if client is not None else sdk_module.invoke_result
     return invoke('runpod.' + operation, kind='action', inputs=inputs, client=client,
-                  wait=wait, read_managed_outputs=False)
+                  wait=wait, read_managed_outputs=False, **(
+                      {"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}))
 
 
 def _runpod_status(*, client, include_quote, preferences=None):
@@ -1043,6 +1057,14 @@ class GenerationFacade:
         if bool(entry) == bool(workflow):
             raise GenerationInputError('describe requires an entry or a workflow')
         return describe_entry(entry, mode=mode) if entry else describe_workflow(Path(workflow), mode=mode)
+
+    @_generation_boundary
+    def keep(self, *, machine_id, consent, until_release=False, client=None, wait=False,
+             timeout_seconds=300.0):
+        """Keep the exact rented RunPod machine with fresh paid consent."""
+        return _runpod_operation('keep', client=client, wait=wait, machine_id=machine_id,
+                                 consent=consent, until_release=until_release,
+                                 timeout_seconds=timeout_seconds)
 
     @_generation_boundary
     def release(self, *, engine: str, placement: str, machine_id=None, client=None, wait=False):

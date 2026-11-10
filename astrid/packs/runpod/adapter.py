@@ -141,7 +141,7 @@ class RunPodAdapter:
         return {"offer": asdict(offer),
                 "offer_digest": offer.digest(self.lease_owner.selection.preferences)}
 
-    def operate(self, operation, *, include_quote=False, machine_id=None):
+    def operate(self, operation, *, include_quote=False, machine_id=None, consent=None, until_release=False):
         if operation == "setup":
             if include_quote:
                 raise ValueError("setup does not observe offers")
@@ -150,7 +150,11 @@ class RunPodAdapter:
             if include_quote:
                 raise ValueError("ls does not observe offers")
             return {"leases": self.lease_owner.ls()}
-        if operation == "release":
+        if operation == "keep":
+            if include_quote:
+                raise ValueError("keep uses the rented machine's recorded offer")
+            record = self.lease_owner.keep(machine_id, consent, until_release)
+        elif operation == "release":
             record = self.lease_owner.release(reason="explicit", **(
                 {"expected_machine_id": machine_id} if machine_id is not None else {}))
         elif operation == "status":
@@ -166,6 +170,9 @@ class RunPodAdapter:
             result["lease"] = {key: lease.get(key) for key in
                                ("state", "owner_epoch", "generation", "invocation_id", "paid_expires_at", "idle_expires_at")}
             result["lease"]["idle_timeout_s"] = lease.get("idle_seconds")
+            if operation == "keep":
+                result["paid_limits"] = {key: record["paid_limits"].get(key) for key in
+                                         ("hourly_usd", "max_usd", "expires_at", "offer_digest")}
         if include_quote:
             if operation != "status":
                 raise ValueError("offer observation requires status")
@@ -412,14 +419,30 @@ class TargetProviderBindings:
         return provider.lease_owner.observe_liveness(observe=getattr(provider, "observe_pod", None))
 
     def operate(self, policy, operation, *, include_quote=False):
-        if operation not in {"setup", "ls", "status", "release"}:
+        if operation not in {"setup", "ls", "status", "release", "keep"}:
             raise ValueError("unsupported retained target operation")
+        allowed = {"kind", "engine", "preferences"}
+        if operation in {"release", "keep"}:
+            allowed.add("machine")
+        if operation == "keep":
+            allowed.update({"paid_consent", "until_release"})
         if (not isinstance(policy, dict)
                 or not {"kind", "engine", "preferences"} <= set(policy)
-                <= {"kind", "engine", "preferences"} | ({"machine"} if operation == "release" else set())):
+                <= allowed):
             raise ValueError("target operation requires one explicit provider policy")
         if "machine" in policy and (not isinstance(policy["machine"], str) or not policy["machine"].strip()):
-            raise ValueError("exact machine release requires a nonempty machine id")
+            raise ValueError("exact machine operation requires a nonempty machine id")
+        consent = None
+        if operation == "keep":
+            from .target_selection import PaidRunConsent
+
+            if (set(policy) != allowed or type(policy["until_release"]) is not bool or include_quote
+                    or not isinstance(policy["paid_consent"], dict)
+                    or set(policy["paid_consent"]) != set(PaidRunConsent.__dataclass_fields__)
+                    or not isinstance(policy["paid_consent"]["consent"], (list, tuple))):
+                raise ValueError("keep requires an exact machine and fresh paid consent")
+            consent = PaidRunConsent(**{**policy["paid_consent"],
+                                        "consent": tuple(policy["paid_consent"]["consent"])})
         if policy["kind"] == "runpod":
             from astrid.packs.runpod.target_selection import RunPodPreferences
             # The setup owner signs the representation it persists. Callers
@@ -434,6 +457,8 @@ class TargetProviderBindings:
             # owner, whose custody may use a per-job override of saved preferences.
             # A quote still binds the preferences for the offer it discloses.
         if provider is None:
+            if operation == "keep":
+                raise ValueError("keep requires a running host that owns this machine")
             provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"], **(
                 {"expected_machine_id": policy["machine"]} if "machine" in policy else {}))
         elif (operation == "setup" or operation == "status" and include_quote) and json.loads(self.signature)[2] != policy["preferences"]:
@@ -445,7 +470,8 @@ class TargetProviderBindings:
             self.operations += 1
         try:
             return provider.operate(operation, include_quote=include_quote, **(
-                {"machine_id": policy["machine"]} if "machine" in policy else {}))
+                {"machine_id": policy["machine"]} if "machine" in policy else {}), **(
+                {"consent": consent, "until_release": policy["until_release"]} if operation == "keep" else {}))
         finally:
             with self.lock:
                 self.operations -= 1
