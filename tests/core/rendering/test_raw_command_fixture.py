@@ -161,7 +161,8 @@ def test_fixture_pack_validates_and_inspects_without_importing_backend(
     permission_ids = {permission.id for permission in pack.permissions}
     assert permission_ids == {"subprocess", "project_files"}
     assert all(permission.reason for permission in pack.permissions)
-    assert pack.extensions["rendering"]["renderers"] == ["renderer.yaml"]
+    assert pack.schema_version == "3"
+    assert pack.rendering == {"renderer": {"type": "renderer", "path": "rendering/renderer.yaml"}}
     assert pack.aliases == (
         {"kind": "renderer", "alias": ALIAS_ID, "canonical_id": BACKEND_ID},
     )

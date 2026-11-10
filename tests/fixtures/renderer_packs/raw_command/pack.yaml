@@ -1,7 +1,8 @@
-schema_version: 2
+schema_version: 3
 id: raw_command
 name: Raw Command Fixture Pack
 version: 1.0.0
+pack_api: "2.0"
 description: >-
   Committed raw-command renderer fixture for the frozen v1 wire protocol
   (render-backend-v1.md). backend.py is a plain stdlib script that parses
@@ -16,7 +17,7 @@ aliases:
   - kind: renderer
     alias: raw_command.legacy
     canonical_id: raw_command.renderer
-extensions:
-  rendering:
-    renderers:
-      - renderer.yaml
+rendering:
+  renderer:
+    type: renderer
+    path: rendering/renderer.yaml
