@@ -540,6 +540,132 @@ def test_small_lease_restart_terminates_even_unexpired_custody(small_lease):
     restored = c.fresh()
     restored.recover()
     assert c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
+
+
+def keep_grant(c, **changes):
+    values = {"invocation_id": "keep-1", "deadline": utc(c.clock() + 7200), "max_usd": 2,
+              "preparation_seconds": 0, "execution_seconds": 0, "idle_seconds": 60, **changes}
+    return replace(c.grant, **values)
+
+
+def test_small_lease_keep_extends_paid_limit_accrues_cost_and_rearms(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    invocation = owner.acquire(c.grant, requested_idle_seconds=10)
+    owner.settle(invocation)
+    previous_expiry = c.read()["lease"]["paid_expires_at"]
+    old_timers = list(c.clock.timers)
+    c.clock.advance(5)
+    kept = owner.keep("pod-1", keep_grant(c))
+    assert kept["lease"]["paid_expires_at"] == c.clock() + 7200 > previous_expiry
+    assert kept["lease"]["idle_expires_at"] == c.clock() + 60
+    assert kept["lease"]["estimated_cost_usd"] == pytest.approx(5 / 3600)
+    assert kept["lease"]["accounted_at"] == c.clock()
+    assert kept["lease"]["invocation_id"] == invocation.invocation_id
+    assert kept["paid_limits"]["invocation_id"] == "keep-1"
+    assert all(timer.cancelled for timer in old_timers)
+    assert any(not timer.cancelled and timer.due == c.clock() + 7200 for timer in c.clock.timers)
+    c.clock.advance(5)  # The cancelled idle timer must not release the extended lease.
+    assert not c.deletes and c.creates == 1
+
+
+@pytest.mark.parametrize("state", ["active", "idle"])
+def test_small_lease_keep_until_release_disables_idle_but_releases_at_cap(small_lease, state):
+    c = small_lease
+    owner = c.fresh()
+    invocation = owner.acquire(c.grant, requested_idle_seconds=2)
+    if state == "idle":
+        owner.settle(invocation)
+    grant = keep_grant(c, max_usd=20 / 3600, deadline=utc(c.clock() + 100), idle_seconds=20)
+    owner.keep("pod-1", grant, until_release=True)
+    if state == "active":
+        owner.settle(invocation)
+    assert c.read()["lease"]["idle_expires_at"] == c.read()["lease"]["paid_expires_at"] == c.clock() + 20
+    c.clock.advance(2)
+    assert not c.deletes
+    c.clock.advance(18)
+    assert c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
+
+
+def test_small_lease_keep_until_release_survives_a_reused_job(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    first = owner.acquire(c.grant, requested_idle_seconds=2)
+    owner.settle(first)
+    owner.keep("pod-1", keep_grant(c, max_usd=20 / 3600,
+                                 deadline=utc(c.clock() + 100), idle_seconds=20), True)
+    second = owner.acquire(replace(c.grant, invocation_id="reused", preparation_seconds=1,
+                                    execution_seconds=1, idle_seconds=2), requested_idle_seconds=2)
+    owner.settle(second)
+    assert c.read()["lease"]["idle_expires_at"] == c.clock() + 20
+    c.clock.advance(2)
+    assert not c.deletes
+    c.clock.advance(18)
+    assert c.deletes == ["pod-1"]
+
+
+@pytest.mark.parametrize("reason", ["no-live-owner", "foreign-id", "foreign-journal-pod", "stale-epoch",
+                                    "release-inflight", "replayed-consent", "not-claimed", "expired"])
+def test_small_lease_keep_refusal_leaves_custody_and_timers_unchanged(small_lease, reason):
+    c = small_lease
+    owner = c.fresh()
+    owner.acquire(c.grant)
+    machine = "pod-1"
+    grant = keep_grant(c)
+    record = c.read()
+    if reason == "no-live-owner":
+        owner.started = False
+    elif reason == "foreign-id":
+        machine = "pod-foreign"
+    elif reason == "foreign-journal-pod":
+        record["pod_id"] = machine = "pod-foreign"
+    elif reason == "stale-epoch":
+        record["lease"]["owner_epoch"] = "another-owner"
+    elif reason == "release-inflight":
+        owner._release_inflight = True
+    elif reason == "replayed-consent":
+        grant = replace(grant, invocation_id=c.grant.invocation_id)
+    elif reason == "not-claimed":
+        record["state"] = "cleanup_pending"
+    elif reason == "expired":
+        c.clock.now = record["lease"]["paid_expires_at"]
+    worker_preparation.write_target_record(c.owner.path, record)
+    before = c.owner.path.read_bytes()
+    timers = [(timer, timer.cancelled) for timer in c.clock.timers]
+    try:
+        with pytest.raises((RunPodWorkerOwnerError, AcquisitionUnresolvedError, target_selection.PaidSelectionError)):
+            owner.keep(machine, grant)
+        assert c.owner.path.read_bytes() == before
+        assert len(c.clock.timers) == len(timers)
+        assert all(timer.cancelled == cancelled for timer, cancelled in timers)
+        assert not c.deletes and c.creates == 1
+    finally:
+        owner._release_inflight = False
+
+
+def test_small_lease_keep_rejects_older_consent_after_two_keeps(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    owner.acquire(c.grant)
+    first = keep_grant(c)
+    owner.keep("pod-1", first)
+    owner.keep("pod-1", replace(first, invocation_id="keep-2"))
+    before = c.owner.path.read_bytes()
+    with pytest.raises(target_selection.PaidSelectionError, match="already used"):
+        owner.keep("pod-1", first)
+    assert c.owner.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("change", [{"consent": ()}, {"offer_digest": "changed"},
+                                   {"max_usd": 0.001}, {"deadline": "2026-11-01T00:00:01Z"}])
+def test_small_lease_keep_validates_paid_consent_before_mutating(small_lease, change):
+    c = small_lease
+    owner = c.fresh()
+    owner.acquire(c.grant)
+    before = c.owner.path.read_bytes()
+    with pytest.raises(target_selection.PaidSelectionError):
+        owner.keep("pod-1", keep_grant(c, **change))
+    assert c.owner.path.read_bytes() == before and not c.deletes
     assert c.creates == 1
 
 

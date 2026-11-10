@@ -19,6 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
@@ -87,6 +88,17 @@ class RunPodLease:
     claim: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class _RecordedPaidOffer:
+    """The already-rented offer, whose original digest survives in custody."""
+
+    hourly_usd: float
+    offer_digest: str
+
+    def digest(self, preferences: Any) -> str:
+        return self.offer_digest
+
+
 class RunPodLeaseOwner:
     """Small attached-engine lease owned by the existing long-lived host.
 
@@ -113,6 +125,8 @@ class RunPodLeaseOwner:
         self.deadline_timer = self.expiry_retry_timer = self.warm_lease = self.key = None
         self.closed, self.started = False, False
         self._release_inflight = False
+        self._paid_consent_ids: set[str] = set()
+        self._machine_identity: tuple[str, str] | None = None
         selection._read()  # Refuse unsafe paths before opening custody.
         self.account = target_owner(selection.path)
         self.account.__enter__()
@@ -141,6 +155,8 @@ class RunPodLeaseOwner:
             for key in ("started_at", "idle_seconds"):
                 if type(lease.get(key)) not in (int, float) or not math.isfinite(lease[key]) or lease[key] < 0:
                     raise RunPodWorkerOwnerError("lease has invalid retention bounds")
+            if "keep_until_release" in lease and type(lease["keep_until_release"]) is not bool:
+                raise RunPodWorkerOwnerError("lease has invalid keep selection")
             if lease["state"] in {"active", "idle"}:
                 if type(lease.get("paid_expires_at")) not in (int, float) or not math.isfinite(lease["paid_expires_at"]):
                     raise RunPodWorkerOwnerError("lease has invalid paid expiry")
@@ -305,6 +321,8 @@ class RunPodLeaseOwner:
                      "started_at": self.clock() if previous is None else previous["started_at"]}
             if previous is not None and previous.get("preparation") is not None:
                 lease["preparation"] = previous["preparation"]
+            if previous is not None and previous.get("keep_until_release"):
+                lease["keep_until_release"] = True
             # Only P1's already-owned account lock is bypassed here, as in R02.
             acquired = False
             try:
@@ -317,6 +335,8 @@ class RunPodLeaseOwner:
                                  * previous["hourly_usd"] / 3600),
                              accounted_at=lease["started_at"] if previous is None else self.clock())
                 claimed = self._save(claimed, lease)
+                self._paid_consent_ids.add(consent.invocation_id)
+                self._machine_identity = (claimed["operation_id"], claimed["pod_id"])
             except BaseException:
                 current = self.selection._read()
                 if current is not None and (acquired or current.get("state") != "claimed"
@@ -329,6 +349,60 @@ class RunPodLeaseOwner:
             self._arm(claimed)
             return RunPodLease(claimed["operation_id"], self.epoch, lease["generation"],
                                consent.invocation_id, claimed)
+
+    def keep(self, machine_id: str, consent: Any, until_release: bool = False) -> Mapping[str, Any]:
+        """Replace the exact live lease's paid bound using fresh explicit consent."""
+        from .target_selection import PaidRunConsent, PaidSelectionError, RunPodOffer, _number
+
+        with self.lock:
+            if self.closed or not self.started:
+                raise RunPodWorkerOwnerError("keep requires a running host that owns this machine")
+            if self._release_inflight:
+                raise AcquisitionUnresolvedError("lease release is already in progress; keep refused")
+            record = self._read()
+            lease = dict(record["lease"]) if record is not None else {}
+            now = self.clock()
+            if (not isinstance(machine_id, str) or not machine_id.strip()
+                    or record is None or record.get("pod_id") != machine_id
+                    or self._machine_identity != (record["operation_id"], machine_id)
+                    or record.get("state") != "claimed" or lease.get("state") not in {"idle", "active"}
+                    or lease.get("owner_epoch") != self.epoch
+                    or now >= lease["paid_expires_at"]
+                    or lease["state"] == "idle" and now >= lease["idle_expires_at"]):
+                raise RunPodWorkerOwnerError("keep requires the exact live machine owned by this host")
+            if not isinstance(consent, PaidRunConsent) or type(until_release) is not bool:
+                raise PaidSelectionError("keep requires fresh paid consent and a boolean until-release selection")
+            limits = record["paid_limits"]
+            rate = _number(limits.get("hourly_usd"), "recorded hourly USD rate")
+            digest = limits.get("offer_digest")
+            if (not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+                    or lease.get("hourly_usd") != rate):
+                raise PaidSelectionError("recorded RunPod offer and rate cannot be confirmed")
+            # This checks the original create authority and exact placement,
+            # without observing stock or constructing another provider owner.
+            self.selection._owned(record, RunPodOffer(
+                record["provider_account_ref"], record["gpu_type"], rate, "retained-keep",
+                record.get("network_volume_datacenter_id"), record.get("accepted_gpu_type_id")))
+            current = datetime.fromtimestamp(now, timezone.utc)
+            expiry = consent.validate(_RecordedPaidOffer(rate, digest), self.selection.preferences, current)
+            if (consent.invocation_id == limits.get("invocation_id")
+                    or consent.invocation_id in self._paid_consent_ids):
+                raise PaidSelectionError("paid consent was already used; keep requires fresh consent")
+            cost = (_number(lease.get("estimated_cost_usd", 0), "estimated USD cost", zero=True)
+                    + max(0, now - lease.get("accounted_at", lease["started_at"])) * rate / 3600)
+            lease.update(paid_expires_at=expiry.timestamp(),
+                         idle_expires_at=(expiry.timestamp() if until_release else
+                                          min(now + consent.idle_seconds, expiry.timestamp())),
+                         idle_seconds=consent.idle_seconds, keep_until_release=until_release,
+                         estimated_cost_usd=cost, accounted_at=now)
+            paid_limits = {"invocation_id": consent.invocation_id, "offer_digest": digest,
+                           "hourly_usd": rate, "max_usd": consent.max_usd,
+                           "deadline": consent.deadline, "expires_at": expiry.isoformat(),
+                           "authorized_at": current.isoformat(), "idle_seconds": consent.idle_seconds}
+            record = self._save(record, lease, paid_limits=paid_limits, estimated_cost_usd=cost)
+            self._paid_consent_ids.add(consent.invocation_id)
+            self._arm(record)
+            return record
 
     def settle(self, invocation: RunPodLease) -> None:
         """Called by the host after that exact invocation has settled."""
@@ -348,8 +422,8 @@ class RunPodLeaseOwner:
             preparation = lease.get("preparation")
             if preparation is not None and preparation["state"] != "prepared":
                 raise RunPodWorkerOwnerError("unresolved preparation cannot enter warm retention")
-            lease.update(state="idle", idle_expires_at=min(self.clock() + lease["idle_seconds"],
-                                                          lease["paid_expires_at"]))
+            lease.update(state="idle", idle_expires_at=(lease["paid_expires_at"] if lease.get("keep_until_release")
+                         else min(self.clock() + lease["idle_seconds"], lease["paid_expires_at"])))
             record = self._save(record, lease)
             self._arm(record)
 
