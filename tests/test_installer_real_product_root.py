@@ -141,7 +141,7 @@ def test_staged_product_root_is_admitted_by_validate_candidate(tmp_path, monkeyp
 
     backend = Backend(program, tmp_path / "install.log", Path(uv), say=lambda _line: None)
     monkeypatch.setattr("astrid.installer.backend.install_tools",
-                        lambda _manifest, root, _target, _run: _tool_stand_ins(root))
+                        lambda _manifest, root, _target, _run, **_kwargs: _tool_stand_ins(root))
     monkeypatch.setattr(backend, "install_remotion_dependencies", lambda *_args: False)
 
     try:

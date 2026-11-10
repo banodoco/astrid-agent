@@ -169,7 +169,7 @@ print(json.dumps({name: importlib.import_module(name).__file__ for name in names
             _damage(state.product_root / SCHEMA, state.damage, outside)
         return ""
 
-    def tools(_manifest, tool_root, _target, _run):
+    def tools(_manifest, tool_root, _target, _run, **_kwargs):
         npm = tool_root / "node/npm-cli.js"
         npm.parent.mkdir(parents=True)
         npm.touch()

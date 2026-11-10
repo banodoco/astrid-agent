@@ -314,7 +314,7 @@ def test_stage_uses_source_overrides_and_records_manifest(
         return destination
 
     monkeypatch.setattr("astrid.installer.backend.source", materialize)
-    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda *_args: {
+    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda *_args, **_kwargs: {
         "PATH": "/tools", "ASTRID_NODE_EXECUTABLE": "/tools/node", "ASTRID_BUN_EXECUTABLE": "/tools/bun",
     })
     monkeypatch.setattr("astrid.installer.backend.binary", lambda *_args: tmp_path / "npm-cli.js")
@@ -537,7 +537,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
             "target": 31,
         },
     )
-    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda _m, dest, *_args: (
+    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda _m, dest, *_args, **_kwargs: (
         dest.mkdir(parents=True) or {
             "PATH": str(dest), "ASTRID_NODE_EXECUTABLE": str(dest / "node"),
             "ASTRID_BUN_EXECUTABLE": str(dest / "bun"),

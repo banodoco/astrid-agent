@@ -413,20 +413,24 @@ class Backend:
         result = subprocess.run([str(s) for s in argv], cwd=cwd, env=env, check=False,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 encoding="utf-8", errors="replace", timeout=timeout)
+        self.diagnostic(result.stdout)
+        if result.returncode:
+            raise subprocess.CalledProcessError(result.returncode, [str(argv[0])], output=result.stdout)
+        return result.stdout.strip()
+
+    def diagnostic(self, text: str) -> None:
+        """Append command output or one installer line to the install log."""
         if not getattr(self, "console_diagnostics", False):
             try:
                 with self.log.open("a", encoding="utf-8") as stream:
                     platform.owner_only(stream.fileno())
                     # Do not log inherited environments or credentials.
-                    stream.write(result.stdout + "\n")
+                    stream.write(text + "\n")
             except OSError:
                 # Diagnostics must never prevent manager stop/recovery.
                 self.console_diagnostics = True
-        if getattr(self, "console_diagnostics", False) and result.stdout:
-            getattr(self, "say", print)(result.stdout.rstrip("\n"))
-        if result.returncode:
-            raise subprocess.CalledProcessError(result.returncode, [str(argv[0])], output=result.stdout)
-        return result.stdout.strip()
+        if getattr(self, "console_diagnostics", False) and text:
+            getattr(self, "say", print)(text.rstrip("\n"))
 
     def install_remotion_dependencies(self, agent: Path, env: dict[str, str], npm: Path) -> bool:
         """Install the renderer's frozen dependencies, reusing an identical lock."""
@@ -1273,7 +1277,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         self.run([self.uv, "pip", "install", *link_mode, "--python", python, "--no-deps", runtime,
                   runtime / "packages" / "python", agent, vibecomfy, *sibling_sources],
                  extra_env=source_install_env)
-        env = install_tools(manifest, folder / "tools", platform_target(), self.run)
+        env = install_tools(manifest, folder / "tools", platform_target(), self.run, note=self.diagnostic)
         prior = current(root) or self.existing(data)
         env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
                     "ASTRID_INSTALL_UV": str(self.uv),

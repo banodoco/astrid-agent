@@ -72,7 +72,7 @@ def harness(tmp_path, monkeypatch, *, availability="qualified"):
         if name == "ffmpeg":
             media_binary(destination / "bundle", "ffprobe")
 
-    def run(argv, *, extra_env=None):
+    def run(argv, *, extra_env=None, timeout=None):
         executable, *args = [str(value) for value in argv]
         calls.append((executable, args))
         if args == ["--version"]:
@@ -215,3 +215,16 @@ def test_launcher_must_resolve_inside_the_owned_prefix(tmp_path, monkeypatch):
     monkeypatch.setattr(tools, "_install_omp_package", redirect)
     with pytest.raises(ValueError, match="launcher escapes"):
         tools.install_tools(manifest(), root, TARGET, run)
+
+
+def test_a_git_that_is_not_git_does_not_block_the_install(tmp_path, monkeypatch):
+    root, *_unused, run = harness(tmp_path, monkeypatch)
+    # The harness answers every --version with a Node or Bun version, never "git version".
+    fake_git = media_binary(tmp_path / "user git", "git")
+    monkeypatch.setenv("PATH", os.environ["PATH"] + os.pathsep + str(fake_git.parent))
+    notes = []
+
+    env = tools.install_tools(manifest(), root, TARGET, run, note=notes.append)
+
+    assert "ASTRID_GIT_EXECUTABLE" not in env
+    assert notes == [f"Git for pack installs was not recorded: {fake_git} did not identify itself as Git."]
