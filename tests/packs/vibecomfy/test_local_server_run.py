@@ -255,10 +255,11 @@ def test_missing_model_fails_before_queueing(comfy, tmp_path, choices):
     assert not comfy.prompts
 
 
-def test_managed_image_is_uploaded_and_bound_to_load_image(comfy, tmp_path):
+@pytest.mark.parametrize('default_image', ['original.png', ''])
+def test_managed_image_is_uploaded_and_bound_to_load_image(comfy, tmp_path, default_image):
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     workflow = _workflow()
-    workflow["nodes"][0].update(type="LoadImage", widgets_values=["original.png"],
+    workflow["nodes"][0].update(type="LoadImage", widgets_values=[default_image],
                                  inputs=[{"name": "image", "type": "COMBO", "widget": {"name": "image"}, "link": None}],
                                  properties={"Node name for S&R": "LoadImage"})
     comfy.workflow.write_text(json.dumps(workflow))
@@ -277,6 +278,22 @@ def test_managed_image_is_uploaded_and_bound_to_load_image(comfy, tmp_path):
     assert comfy.prompts[0]["1"]["inputs"]["image"] == "astrid/task-1/uploaded.png"
     upload = next(body for method, path, body in comfy.calls if path == "/upload/image")
     assert b"astrid/task-1" in upload
+
+
+def test_connected_blank_image_without_binding_is_refused(comfy, tmp_path):
+    workflow = _workflow()
+    workflow["nodes"][0].update(type="LoadImage", widgets_values=[""],
+        inputs=[{"name": "image", "type": "COMBO", "widget": {"name": "image"}, "link": None}],
+        properties={"Node name for S&R": "LoadImage"})
+    comfy.workflow.write_text(json.dumps(workflow))
+    comfy.schema.pop("SeedImage")
+    comfy.schema["LoadImage"] = {"input": {"required": {"image": [["available.png"], {"image_upload": True}]}},
+                                 "output": ["IMAGE", "MASK"], "output_node": False}
+    with pytest.raises(production_engine.ProductionEngineError):
+        production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="task-1",
+            comfy_url=comfy.url, comfy_output_dir=str(comfy.output), profile_id="local_server")
+    assert not comfy.prompts
 
 
 def test_explicit_seed_is_preserved(comfy, tmp_path):
