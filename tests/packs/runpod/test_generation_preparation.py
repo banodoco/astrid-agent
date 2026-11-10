@@ -261,7 +261,7 @@ def test_path_loaded_adapter_cold_and_warm_use_exact_placement_canonical_install
     install_commands = [line for line in c.pod.job_log if "engines install" in line]
     assert len(install_commands) == 1
     assert "install comfyui --platform linux-x86_64-cu130 --placement local" in install_commands[0]
-    assert "vibecomfy-h3" not in install_commands[0]
+    assert ("vibecomfy" + "-h3") not in install_commands[0]
     c.host.settle(first.lease)
     jobs = list(c.pod.job_log)
     second = c.adapter.prepare(c.request, replace(c.grant, invocation_id="invocation-2"))

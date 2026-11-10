@@ -22,7 +22,7 @@ PACKS = ROOT / "astrid/packs"
 # Pinned shipped pack ids (the validator derives its inventory from manifests,
 # so deriving here would make the exact-set assertions circular).
 PACK_IDS = tuple(sorted({
-    "comfy_wrap", "developer", "generation", "h3_av", "local", "rendering",
+    "developer", "generation", "h3_av", "local", "rendering",
     "runpod", "timeline", "training", "vibecomfy", "wan2gp",
 }))
 RETIRED = {"builtin", "references", "astrid", "runaway", "shots"}
@@ -55,8 +55,8 @@ def test_catalog_preserves_stage1_capability_census() -> None:
     elements = load_elements()
     assert tuple(pack.id for pack in packs) == PACK_IDS
     assert (len(packs), len(executors.list()), len(orchestrators.list()), len(elements.list())) == (
-        11,
-        54,
+        10,
+        47,
         0,
         24,
     )
