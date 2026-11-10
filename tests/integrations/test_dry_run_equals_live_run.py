@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -386,12 +387,9 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         assert align_log.is_file(), "the real child recorded no engine events"
         events = [json.loads(line) for line in align_log.read_text().splitlines()]
         if target_kind == "local-managed":
-            from astrid.core.generation.managed_preparation import configured_models_root
             actual = [event for event in host_events if event[0] == "align"]
             assert len(actual) == 1, actual
-            expected_manifest = {**dry["entry"]["requirements"], "engine": "comfyui",
-                                 "models_root": configured_models_root(root=str(pinned_install[3]))}
-            assert actual[0][1] == expected_manifest, "dry and actual align manifests differ"
+            assert actual[0][1] == dry["entry"]["requirements"], "dry and actual align manifests differ"
             assert actual[0][3] is not None, "host did not align the selected workflow"
             host_workflows = [event[1] for event in host_events if event[0] == "workflow"]
             assert host_workflows and all(graph == live_graph for graph in host_workflows)

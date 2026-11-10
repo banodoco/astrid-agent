@@ -1598,8 +1598,8 @@ class GenerationFacade:
             # Report the same built graph's requirements that local alignment will judge.
             manifest = workflow_entries.engine_table()['comfyui'].requirements({'workflow': workflow}, effective_values)
             if placement.kind == 'local':
-                from astrid.core.generation.engine_local_endpoint import default_engine_root
-                manifest = {**manifest, 'models_root': str(Path(default_engine_root('comfyui')) / 'models')}
+                from astrid.core.generation.managed_preparation import configured_models_root
+                manifest = {**manifest, 'models_root': configured_models_root()}
             readiness['entry']['requirements'] = manifest
             readiness['entry'].update(preview)
             if align == 'trust':

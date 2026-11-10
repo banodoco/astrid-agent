@@ -84,3 +84,24 @@ def test_pod_ui_json_is_frozen_before_preparation(tmp_path, managed_install):
     assert (tmp_path / 'out' / result['managed_generation_result_path']).is_file()
     assert source.read_bytes() == original
     client.stop_owned(deadline=time.monotonic() + 15)
+
+
+def test_managed_dry_preview_uses_receipt_model_root(tmp_path, monkeypatch, managed_install):
+    from astrid.core.generation import engine_recipe
+    from astrid.core.generation.managed_preparation import configured_models_root
+    from astrid.sdk.generation import GenerationFacade
+
+    client, payload, recipe, root, started, bootstrap = managed_install
+    monkeypatch.setattr(engine_recipe, 'load_recipe', lambda engine, platform, **kwargs: recipe)
+    receipt_path = root / '.astrid-engine/install.json'
+    receipt = json.loads(receipt_path.read_text())
+    custom = tmp_path / 'custom-model-cache'
+    custom.mkdir()
+    receipt['models_root'] = str(custom)
+    for row in receipt['models']:
+        row['path'] = str(custom / str(row['path']).split('/models/', 1)[1])
+    receipt_path.write_text(json.dumps(receipt))
+    expected = configured_models_root(root=str(root))
+    dry = GenerationFacade().image(placement='managed', prompt='a boat', seed=7, dry_run=True)
+    assert expected == str(custom)
+    assert dry['entry']['requirements']['models_root'] == expected
