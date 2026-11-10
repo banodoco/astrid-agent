@@ -117,6 +117,45 @@ def test_an_installed_pack_declares_the_schema_and_every_check_uses_it(tmp_path,
     assert clip.params == {"size": 3}
 
 
+def test_a_cached_schema_stays_on_its_provider_until_its_identity_changes(tmp_path, monkeypatch):
+    _probe_pack(tmp_path / "installed")
+    _uses(monkeypatch, tmp_path / "installed")
+    first = element_schema(ELEMENT)
+    assert element_schema(ELEMENT) is first
+
+
+def test_removing_a_cached_provider_refuses_parameter_writes_after_registry_clear(tmp_path, monkeypatch):
+    installed = tmp_path / "installed"
+    pack = installed / PACK
+    _probe_pack(installed)
+    _uses(monkeypatch, installed)
+    tl = _tiny(ELEMENT)
+    assert element_schema(ELEMENT)["properties"]["size"]["maximum"] == 8
+
+    import shutil
+
+    shutil.rmtree(pack)
+    clear_default_registry_cache()
+    with pytest.raises(ElementPackNotInstalled) as caught:
+        tl.clip("c1.rocket").set(size=3)
+    assert caught.value.code == "element_pack_not_installed"
+
+
+def test_replacing_a_cached_provider_with_a_malformed_manifest_refuses_with_its_code(tmp_path, monkeypatch):
+    installed = tmp_path / "installed"
+    pack = installed / PACK
+    _probe_pack(installed)
+    _uses(monkeypatch, installed)
+    tl = _tiny(ELEMENT)
+    assert element_schema(ELEMENT)["properties"]["size"]["maximum"] == 8
+    assert timeline_address._SCHEMA_BINDINGS[ELEMENT][0] == PACK
+
+    (pack / "pack.yaml").write_text('{"schema_version": 3, "id": "broken"')
+    with pytest.raises(ElementManifestInvalid) as caught:
+        tl.clip("c1.rocket").set(size=3)
+    assert caught.value.code == "element_manifest_invalid"
+
+
 # --------------------------------------------------------------- pack absent
 
 def test_a_moved_element_names_its_pack_and_install_command_and_writes_nothing(monkeypatch):

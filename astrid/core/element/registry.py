@@ -240,13 +240,18 @@ def _load_default_registry_data(
 
 
 def clear_default_registry_cache() -> None:
-    """Drop the cached element corpus.
+    """Drop the cached element corpus and SDK schema bindings together.
 
     Test seam / hot-reload hook: tests that patch pack discovery must clear
     this cache (the catalog's ``_clear_registry_cache`` does) so a re-discovered
     corpus (e.g. a temp pack declaring a custom element kind) is re-parsed.
     """
     _load_default_registry_data.cache_clear()
+    # Keep timeline parameter validation coherent with provider discovery. The SDK owns
+    # its schema cache, so import lazily to avoid coupling registry initialization to it.
+    from astrid.sdk.timeline_address import clear_schema_cache
+
+    clear_schema_cache()
 
 
 def load_default_registry(
