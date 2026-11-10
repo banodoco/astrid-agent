@@ -434,6 +434,18 @@ def sync(
     all_units = all_descriptors + extras
     selected_pack_ids = tuple(selected_pack_ids)
     targets = _resolve_harnesses(harness_names)
+    # Reject ambiguous destinations before composing views or changing state.
+    for harness_name, adapter in targets.items():
+        destinations = {}
+        for descriptor in all_units:
+            target = adapter.target_for(descriptor)
+            previous = destinations.get(target)
+            if previous is not None and previous != descriptor.skill_id:
+                raise ValueError(
+                    f"Skill target collision for {harness_name}: {previous} and "
+                    f"{descriptor.skill_id} both target {target}"
+                )
+            destinations[target] = descriptor.skill_id
     if proposed_state is not None and not dry_run:
         raise ValueError("proposed_state is only valid for a dry-run sync")
     current_state = proposed_state if proposed_state is not None else state.load(state_path)
@@ -554,16 +566,28 @@ def sync(
                 disabled_ids = set(current_state.get("disabled_defaults", {}).get(harness_name, []))
                 known_ids = {d.skill_id for d in all_units if d.pack_id not in disabled_ids}
                 prune_conflicts = []
+                # Custom names are candidates only when an install record ties
+                # that exact destination to an exact source.
+                from .harnesses.base import ours_link_to_pack_id
+                prune_sources = {target: sources for target, sources in owned_sources.items()
+                                 if ours_link_to_pack_id(target.name) is not None}
+                for record in current_state["installs"].get(harness_name, {}).values():
+                    if not isinstance(record, dict):
+                        continue
+                    target, source = record.get("target"), record.get("source")
+                    if not isinstance(target, str) or not isinstance(source, str) or not Path(source).is_absolute():
+                        continue
+                    target = Path(target).expanduser()
+                    if ours_link_to_pack_id(target.name) is None:
+                        prune_sources.setdefault(target, set()).add(Path(source))
                 removed_paths = prune_orphan_skill_links(
-                    skills_dir, known_ids, owned_sources=owned_sources,
+                    skills_dir, known_ids, owned_sources=prune_sources,
                     known_names={adapter.target_for(d).name for d in all_units if d.pack_id not in disabled_ids},
                     declared_sources=_declared, conflicts=prune_conflicts)
                 steps.extend(prune_conflicts)
                 for removed in removed_paths:
                     steps.append(_pruned_step(removed))
-                    removed_id = _link_pack_id(removed.name)
-                    state.record_uninstall(current_state, harness_name, removed_id,
-                        default=removed_id in default_pack_ids(all_descriptors))
+                    # Obsolete records are removed below by their recorded target.
             # Forget only absent obsolete entries. A preserved path keeps its record.
             for skill_id, record in list(current_state["installs"][harness_name].items()):
                 if skill_id in installed_ids or not isinstance(record, dict) or not record.get("target"):

@@ -203,3 +203,50 @@ def test_documented_preinstall_launcher_form_runs_with_local_helper(tmp_path):
                             capture_output=True, env=env, check=True)
     assert 'This installs the skill only' in result.stdout
     assert (home / '.claude/skills/astrid-setup/.astrid-managed-skill.json').is_file()
+
+
+def test_sync_rejects_colliding_names_before_mutation(tmp_path, monkeypatch):
+    import pytest
+    from astrid import skills
+    descriptors = list_skills()
+    descriptors = [replace(d, sync_name='astrid') if d.pack_id == 'setup' else d for d in descriptors]
+    home = tmp_path / 'home'
+    (home / '.claude').mkdir(parents=True)
+    monkeypatch.setattr(Path, 'home', lambda: home)
+    monkeypatch.setattr(skills, 'list_skills', lambda: descriptors)
+    for _ in range(2):
+        with pytest.raises(ValueError, match='collid'):
+            skills.sync(harness_names=['claude'], deep=True, state_path=tmp_path / 'state.json')
+        assert not (home / '.claude/skills/astrid').exists()
+        assert not (tmp_path / 'skills').exists()
+
+
+def test_prune_recorded_custom_name_only_with_matching_source(tmp_path):
+    from astrid.skills.harnesses.base import prune_orphan_skill_links
+    skills_dir = tmp_path / 'skills'
+    skills_dir.mkdir()
+    source = tmp_path / 'source'
+    source.mkdir()
+    target = skills_dir / 'custom-name'
+    target.symlink_to(source, target_is_directory=True)
+    assert prune_orphan_skill_links(skills_dir, set(), known_names=set(),
+                                   owned_sources={target: {source.resolve()}},
+                                   declared_sources=[source.resolve()]) == [target]
+    assert not target.is_symlink()
+
+
+def test_prune_custom_name_preserves_retargeted_link(tmp_path):
+    from astrid.skills.harnesses.base import prune_orphan_skill_links
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    target = skills_dir / "custom-name"
+    target.symlink_to(foreign, target_is_directory=True)
+    conflicts = []
+    assert prune_orphan_skill_links(skills_dir, set(), owned_sources={target: {source.resolve()}},
+                                   declared_sources=[foreign.resolve()], conflicts=conflicts) == []
+    assert target.resolve() == foreign.resolve()
+    assert conflicts and conflicts[0].extras.get("conflict")

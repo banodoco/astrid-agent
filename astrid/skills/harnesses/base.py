@@ -148,10 +148,15 @@ def prune_orphan_skill_links(
         return removed
     for entry in sorted(skills_dir.iterdir()):
         pack_id = ours_link_to_pack_id(entry.name)
-        if entry.name in (known_names or set()) or pack_id is None or pack_id == "_core" or pack_id in known_pack_ids:
+        if entry.name in (known_names or set()) or pack_id == "_core" or pack_id in known_pack_ids:
+            continue
+        if pack_id is None and entry not in (owned_sources or {}):
             continue
         try:
-            changed = remove_symlink(entry, sources=(*declared_sources, *(owned_sources or {}).get(entry, ())))
+            sources = (owned_sources or {}).get(entry, ())
+            if pack_id is not None:
+                sources = (*declared_sources, *sources)
+            changed = remove_symlink(entry, sources=sources)
         except AstridError as exc:
             if conflicts is not None:
                 conflicts.append(PlannedStep(str(exc), target=entry,
