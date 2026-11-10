@@ -13,6 +13,7 @@ import json
 import os
 import runpy
 import socket
+import stat
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -30,7 +31,9 @@ def _read_captured_source(fd: int):
     if len(raw) > 12 * 1024 * 1024:
         raise ValueError("external source descriptor exceeds its bound")
     selected = json.loads(raw)
-    if canonical(selected) != raw or set(selected) != {"scope", "selected_profile_digest", "source", "definition"}:
+    if canonical(selected) != raw or set(selected) not in (
+            {"scope", "selected_profile_digest", "source", "definition"},
+            {"scope", "selected_profile_digest", "source", "definition", "snapshot_root"}):
         raise ValueError("invalid private external source descriptor")
     source = selected["source"]
     if selected["definition"] not in source["definitions"] or set(source["contents"]) != set(source["files"]):
@@ -38,6 +41,24 @@ def _read_captured_source(fd: int):
     contents = {name: base64.b64decode(data, validate=True) for name, data in source["contents"].items()}
     if any(hashlib.sha256(data).hexdigest() != source["files"][name] for name, data in contents.items()):
         raise ValueError("external source descriptor bytes differ")
+    if "snapshot_root" in selected:
+        from runtime_protocol import platform
+        from .generic_host import _pack_capture_inventory
+        from astrid.core.pack.identity import _EXCLUDED_DIRS, pack_digest
+
+        root = Path(selected["snapshot_root"])
+        if not root.is_absolute() or root.resolve(strict=True) != root or not platform.is_owner_only(root.parent):
+            raise ValueError("external snapshot must have private host custody")
+        # Compare to the retained Runtime bytes, never a fresh live-source
+        # observation. Exclusions match the portable pack-tree-v1 copy.
+        expected = {name: data for name, data in contents.items()
+                    if not any(part in _EXCLUDED_DIRS for part in Path(name).parts[:-1])
+                    and Path(name).name != ".git" and not name.endswith((".pyc", ".pyo"))}
+        actual = {path.relative_to(root).as_posix(): path for path, token in _pack_capture_inventory(root).items()
+                  if stat.S_ISREG(token[2])}
+        if set(actual) != set(expected) or any(actual[name].read_bytes() != data for name, data in expected.items()):
+            raise ValueError("external snapshot differs from Runtime-selected bytes")
+        pack_digest(root)  # Also enforce the canonical path/entry rules.
     return selected, contents
 
 
@@ -45,7 +66,7 @@ def captured_pack_command(selected, argv: list[str]) -> str:
     """Encode a Runtime-selected Python command for the one ``--pack-command`` route."""
     from astrid.core.pack.identity import pack_digest
 
-    root = Path(selected["source"]["root"])
+    root = Path(selected.get("snapshot_root") or selected["source"]["root"])
     return json.dumps({"pack_id": root.name, "root": str(root),
                        "source_digest": pack_digest(root), "argv": list(argv)})
 
@@ -63,7 +84,7 @@ def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = No
             or any(not isinstance(arg, str) for arg in control["argv"])):
         raise ValueError("invalid selected pack command")
     root = Path(control["root"]).resolve(strict=True)
-    if selected is not None and (root != Path(selected["source"]["root"])
+    if selected is not None and (root != Path(selected.get("snapshot_root") or selected["source"]["root"])
             or not selected["definition"]["capability_id"].startswith(control["pack_id"] + ".")):
         raise ValueError("external command differs from Runtime selection")
     args = pack_command_args(control["argv"], control["pack_id"], root)
@@ -217,9 +238,20 @@ def run(payload_path: str | Path, *, captured=None) -> int:
         selected, contents = captured
         chosen = selected["definition"]
         source_root = Path(admission["source_root"])
+        selected_root = Path(selected.get("snapshot_root") or selected["source"]["root"])
+        definition_digest = _capability_digest(definition_payload)
+        if "snapshot_root" in selected:
+            from .generic_host import _relocate_pack_definition
+            from astrid.core.execution.executor.schema import validate_executor_definition
+
+            # The grant still authorizes the original definition. Only the
+            # deterministic relocation to its verified byte copy is accepted.
+            original = _relocate_pack_definition(validate_executor_definition(definition_payload),
+                                                  selected_root, Path(selected["source"]["root"]))
+            definition_digest = _capability_digest(original.to_dict())
         if (chosen["capability_kind"] != kind or chosen["capability_id"] != capability_id
-                or chosen["definition_digest"] != _capability_digest(definition_payload)
-                or (source_root != Path(selected["source"]["root"])
+                or chosen["definition_digest"] != definition_digest
+                or (source_root != selected_root
                     if kind == "executor" else
                     source_root != (Path(selected["source"]["root"]) / chosen["path"]).parent)):
             raise ValueError("external worker definition differs from Runtime selection")
