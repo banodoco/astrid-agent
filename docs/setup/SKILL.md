@@ -200,7 +200,7 @@ Windows PowerShell:
 
 Each succeeds on a successful setter result; otherwise use `--doctor`. Never
 ask for the key in chat, a command argument, or shell history. Set up the
-retained RunPod owner using [runpod.setup](../../astrid/packs/runpod/docs/SKILL.md#replacing-preferences),
+retained RunPod owner using [runpod.setup](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/runpod/docs/SKILL.md#replacing-preferences),
 with the user's approved policy, positive `budget_cap_usd` ceiling and credential
 reference, not the key. The policy needs the account reference, ordered GPU
 types, an image pinned by digest and a positive cap; use the user's actual
