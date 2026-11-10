@@ -346,6 +346,13 @@ an ok result. Verify the lease ended and follow the RunPod skill's independent
 provider cleanup checks; use `--doctor` on failure. Never create a pod during
 setup without paid consent.
 
+When the user asks to set up RunPod, use the complete
+[RunPod machine skill](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/runpod/docs/SKILL.md#runpod-generation-machines)
+(installed name: `runpod`). It covers the credential prompt, `astrid machines
+setup`, saved GPU/storage choices and `setup --show`. Setup saves preferences;
+a paid claim or generation requires separate consent. Do not launch RunPod
+setup or a paid test automatically.
+
 ## Run everything on this computer
 
 After the official install, get the editor from
