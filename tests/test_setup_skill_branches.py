@@ -37,6 +37,17 @@ def _guide_command(command_fragment: str, document: Path = _SETUP) -> str:
     return next(value.strip() for value in candidates if command_fragment in value)
 
 
+def _launcher_args(command: str) -> list[str]:
+    """Drop the launcher path from a Linux guide command, retaining CLI argv."""
+    return shlex.split(command)[1:]
+
+
+def _guide_argv(fragment: str, document: Path = _SETUP) -> list[str]:
+    command = _guide_command(fragment, document)
+    line = next(line for line in command.splitlines() if fragment in line)
+    return _launcher_args(line)
+
+
 def test_generation_skill_fenced_scan_command_uses_real_cli_parser(tmp_path, monkeypatch, capsys):
     server, thread = _server(tmp_path)
     try:
@@ -64,9 +75,11 @@ def test_setup_engine_fenced_command_reaches_real_parser_through_fake_launcher(t
     launcher = data / "astrid" / "run-astrid"
     launcher.parent.mkdir(parents=True)
     call_log = tmp_path / "launcher-argv"
+    setter_log = tmp_path / "credential-setter-called"
     launcher.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$@\" > {shlex.quote(str(call_log))}\n"
+        f"if [ \"$1\" = credential ]; then touch {shlex.quote(str(setter_log))}; fi\n"
         f"exec {shlex.quote(sys.executable)} -c "
         "'import sys; from astrid.core.gateway import main; "
         "raise SystemExit(main(sys.argv[1:]))' \"$@\"\n"
@@ -85,6 +98,7 @@ def test_setup_engine_fenced_command_reaches_real_parser_through_fake_launcher(t
     assert output["plan"]["steps"]
     assert output["disk_check"]["status"] == "ok"
     assert not root.exists()
+    assert not setter_log.exists()
 
 
 @pytest.mark.parametrize("memory_mib, capable", [(11445, True), (11444, False)])
@@ -139,3 +153,84 @@ def test_runpod_machine_refuses_claim_without_paid_consent(machine_case):
     with pytest.raises(PaidSelectionError):
         case.machine.claim(job)
     assert case.creates == before
+
+
+def test_runpod_setter_guide_command_uses_hidden_prompt_without_key_in_argv_or_env(
+    monkeypatch, capsys, tmp_path,
+):
+    from astrid.core.util import credential_store
+
+    command = _guide_command('credential set runpod')
+    argv = _launcher_args(command)
+    assert argv == ["credential", "set", "runpod"]
+    key = "fake-test-runpod-secret"
+    prompt_calls: list[str] = []
+    stored: list[tuple[str, str]] = []
+
+    def hidden_prompt(prompt: str) -> str:
+        prompt_calls.append(prompt)
+        return key
+
+    monkeypatch.setattr(credential_store.getpass, "getpass", hidden_prompt)
+    monkeypatch.setattr(credential_store, "store_credential",
+                        lambda provider, value: (stored.append((provider, value)) or tmp_path / "fake.env"))
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    assert credential_store.main(argv[1:]) == 0
+    output = capsys.readouterr().out
+    assert prompt_calls == ["Credential for runpod: "]
+    assert stored == [("runpod", key)]
+    assert key not in " ".join(argv)
+    assert key not in " ".join(os.environ.values())
+    assert key not in output
+
+
+def test_runpod_setup_commands_reach_real_generation_parsers():
+    from astrid.core.generation import cli as generation_cli
+
+    parser = generation_cli._parser()
+    checkout = _guide_argv("generate settings checkout --file /absolute/path/generation.json")
+    checkin = _guide_argv("generate settings checkin /absolute/path/generation.json")
+    checkout_args = parser.parse_args(checkout[1:])
+    checkin_args = parser.parse_args(checkin[1:])
+    assert (checkout_args.modality, checkout_args.settings_action, checkout_args.file) == (
+        "settings", "checkout", "/absolute/path/generation.json")
+    assert (checkin_args.modality, checkin_args.settings_action, checkin_args.file) == (
+        "settings", "checkin", "/absolute/path/generation.json")
+
+    offer = _guide_argv("generate describe --placement runpod --engine comfyui --json")
+    offer_args = parser.parse_args(offer[1:])
+    assert (offer_args.modality, offer_args.placement, offer_args.engine, offer_args.json) == (
+        "describe", "runpod", "comfyui", True)
+
+    paid = _guide_argv("generate image --entry ENTRY --inputs-json /absolute/path/inputs.json")
+    paid = [arg.replace("FUTURE_UTC_DEADLINE", "2099-01-01T00:00:00Z")
+            .replace("OFFER_DIGEST", "fake-offer")
+            .replace("PREPARATION_SECONDS", "60")
+            .replace("EXECUTION_SECONDS", "60")
+            .replace("IDLE_SECONDS", "1800") for arg in paid]
+    paid_args = parser.parse_args(paid[1:])
+    assert paid_args.modality == "image"
+    assert paid_args.placement == "runpod" and paid_args.consent == ["paid"]
+    assert paid_args.max_usd == 2 and paid_args.offer_digest == "fake-offer"
+
+
+def test_runpod_lease_guide_commands_parse_without_provider_access(monkeypatch, capsys):
+    from astrid.core import machines_cli
+
+    list_command = _guide_argv("machines --json")
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [{"id": "fake-pod", "kind": "runpod",
+                                                              "gpu": "fake", "state": "idle",
+                                                              "live": True, "cost_usd": 0}])
+    assert machines_cli.main(list_command[1:]) == 0
+    assert "fake-pod" in capsys.readouterr().out
+
+    release = _guide_argv("machines release ID --json")
+    calls: list[bool] = []
+    rows = iter([
+        [{"id": "fake-pod", "kind": "runpod", "gpu": "fake", "state": "idle", "live": True}],
+        [{"id": "fake-pod", "kind": "runpod", "gpu": "fake", "state": "ended", "live": False}],
+    ])
+    monkeypatch.setattr(machines_cli, "_leases", lambda: next(rows))
+    assert machines_cli.main([release[1], "fake-pod", *release[3:]],
+                             release=lambda: calls.append(True)) == 0
+    assert calls == [True]
