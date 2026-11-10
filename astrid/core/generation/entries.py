@@ -1051,7 +1051,7 @@ def attach_hooks(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: A
 def build_entry(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, registry: Any = None) -> dict[str, Any] | None:
     """Run the entry's ``build`` through the engine's ``prepare``: ``{workflow, bindings, plan, ...}``, or None."""
     attached = entry if entry.get('hooks') else attach_hooks(entry, inputs, job_dir, registry=registry)
-    if 'build' not in (attached.get('hooks') or {}):
+    if not attached.get('hooks'):
         return None
     return engine_table()[entry.get('engine') or 'comfyui'].prepare(
         entry_job(entry, inputs, job_dir, hooks=attached['hooks']))
