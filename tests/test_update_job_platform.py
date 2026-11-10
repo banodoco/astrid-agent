@@ -70,6 +70,7 @@ def test_linux_launch_exact_transient_argv_and_log_redirection(tmp_path, monkeyp
     assert calls == [["systemd-run", "--user", "--no-block", "--expand-environment=no",
                       "--unit=" + descriptor["name"], "--collect",
                       "--property=Type=oneshot", "--property=Restart=no",
+                      "--setenv=HOME=" + record["home"],
                       "--property=StandardOutput=append:" + escaped_log,
                       "--property=StandardError=append:" + escaped_log,
                       "--", *command]]

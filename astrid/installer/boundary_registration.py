@@ -177,6 +177,9 @@ for key in ("PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT", "ASTRID_WOR
     os.environ.pop(key, None)
 os.environ.update(version["env"])
 os.environ.update(settings)
+# The manager may supply the account home instead of the installation home.
+# Use the same home as the selection above and the packs install-line CLI.
+os.environ["HOME"] = {str(Path.home())!r}
 os.environ["ASTRID_RUNTIME_DATA_ROOT"] = data
 os.environ["ASTRID_RUNTIME_SOURCE_MANIFEST"] = version["profile"]
 os.environ["ASTRID_INSTALL_PROGRAM_ROOT"] = str(root)
