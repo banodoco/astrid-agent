@@ -2,7 +2,7 @@ name: Chat service
 
 on:
   push:
-    branches: [main, release-1]
+    branches: [main, release-1, "cand/**"]
   workflow_dispatch:
 
 concurrency:
