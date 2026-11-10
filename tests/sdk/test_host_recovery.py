@@ -53,6 +53,9 @@ class Harness:
         self.credential = self.support / "credentials" / "worker.token"
         self.credential.write_text("worker", encoding="utf-8")
         os.chmod(self.credential, 0o600)
+        owner = self.support / "credentials" / "owner.token"
+        owner.write_text("owner", encoding="utf-8")
+        host_bootstrap.platform.owner_only(owner)
         self.value = {
             "worker_credential_file": str(self.credential), "source_checkout": str(self.source),
             "worker_actor": host_bootstrap.PACK_HOST_ACTOR, "worker_scopes": list(host_bootstrap.PACK_HOST_SCOPES),
@@ -68,7 +71,8 @@ class Harness:
         monkeypatch.setattr("astrid.core.pack.source_setup.active_source_inventory", lambda: inventory)
 
         class Client:
-            def __init__(self, *_a): pass
+            def __init__(self, _endpoint, token):
+                self.token = token
             def health(self):
                 return {"status": "ok", "runtime_epoch": "epoch-1", "runtime_instance_id": "instance-1",
                         "schema_digest": "schema-1"}
@@ -76,6 +80,7 @@ class Harness:
                 return "realm-1"
             @property
             def generated(self):
+                assert self.token == "owner", "exact executor observation requires the Runtime owner"
                 return SimpleNamespace(get_executor=lambda _executor_id: SimpleNamespace(
                     executor_id=host_bootstrap.PACK_HOST_ACTOR, readiness="ready",
                     runtime_epoch="epoch-1", source_epoch="source-epoch-1",

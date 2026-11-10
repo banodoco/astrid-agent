@@ -1889,13 +1889,41 @@ def _attach_resident_host(
         if observed_manifest != current["boot_manifest_hash"]:
             return _reject_attach(current, [_attach_mismatch(
                 "live.boot_manifest_hash", current["boot_manifest_hash"], observed_manifest)], rejections)
-        resident_token = worker_path.read_text(encoding="utf-8").strip()
+        # Exact executor observation is owner-only in Runtime. Use only this
+        # selected Runtime's credential, after binding its root and live identity;
+        # the worker credential retains its least-privilege execution scopes.
+        from astrid.sdk.workspace_client import _safe_local_path
+
+        support = _safe_local_path(str(expected["support_root"]), field="runtime support")
+        owner_path = _safe_local_path(support / "credentials" / "owner.token", field="runtime owner credential")
+        if (worker_path.parent != owner_path.parent
+                or not support.is_dir() or not platform.is_current_user(support.stat())
+                or not owner_path.is_file() or not platform.is_owner_only(owner_path)):
+            raise PackHostBootstrapError("Runtime owner credential reference is unsafe")
+        resident_token = owner_path.read_text(encoding="utf-8").strip()
+        if not resident_token:
+            raise PackHostBootstrapError("Runtime owner credential is empty")
         resident_client = RuntimeProtocolClient(str(expected["endpoint"]), resident_token)
-        resident_client._authenticate_worker(PACK_HOST_ACTOR)
+        health = resident_client.health()
+        def health_field(name: str):
+            return health.get(name) if isinstance(health, Mapping) else getattr(health, name, None)
+        identity_pairs = [
+            ("owner.status", "ok", health_field("status")),
+            ("owner.runtime_epoch", runtime_epoch, health_field("runtime_epoch")),
+            ("owner.runtime_instance_id", runtime_instance_id, health_field("runtime_instance_id")),
+            ("owner.schema_digest", expected["schema_digest"], health_field("schema_digest")),
+        ]
+        identity_mismatches = [_attach_mismatch(key, want, got) for key, want, got in identity_pairs if want != got]
+        if identity_mismatches:
+            return _reject_attach(current, identity_mismatches, rejections)
         registration = resident_client.generated.get_executor(PACK_HOST_ACTOR)
         def field(name: str):
             return registration.get(name) if isinstance(registration, Mapping) else getattr(registration, name, None)
         ready_registration = ready.get("registration")
+        # The ready marker retains register()'s wrapper around the executor
+        # response. Older markers may contain the executor mapping directly.
+        if isinstance(ready_registration, Mapping) and "registration" in ready_registration:
+            ready_registration = ready_registration["registration"]
         def ready_field(name: str):
             return ready_registration.get(name) if isinstance(ready_registration, Mapping) else getattr(ready_registration, name, None)
         caps = field("capabilities") or ()
