@@ -250,3 +250,20 @@ def test_prune_custom_name_preserves_retargeted_link(tmp_path):
                                    declared_sources=[foreign.resolve()], conflicts=conflicts) == []
     assert target.resolve() == foreign.resolve()
     assert conflicts and conflicts[0].extras.get("conflict")
+
+
+def test_sync_prunes_removed_custom_name_from_record(tmp_path, monkeypatch):
+    from astrid import skills
+    descriptors = [replace(d, sync_name='custom-setup') if d.pack_id == 'setup' else d
+                   for d in list_skills()]
+    home = tmp_path / 'home'
+    (home / '.claude').mkdir(parents=True)
+    monkeypatch.setattr(Path, 'home', lambda: home)
+    monkeypatch.setattr(skills, 'list_skills', lambda: descriptors)
+    state_path = tmp_path / 'state.json'
+    skills.sync(harness_names=['claude'], deep=True, state_path=state_path)
+    target = home / '.claude/skills/custom-setup'
+    assert target.is_symlink()
+    monkeypatch.setattr(skills, 'list_skills', lambda: [d for d in descriptors if d.pack_id != 'setup'])
+    skills.sync(harness_names=['claude'], deep=True, state_path=state_path)
+    assert not target.is_symlink()
