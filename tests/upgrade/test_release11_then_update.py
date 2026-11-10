@@ -84,7 +84,7 @@ def _leg(monkeypatch, tmp_path, *, candidate_release=12, update_exit=0, update_i
         "identity": {"release": release[state["current"]]}})
     monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "agent-r12", "runtime": "runtime-r12"})
     monkeypatch.setattr(jumps, "add_journey_pack_and_restart_legacy_host", lambda *_a: ["chiptune"])
-    monkeypatch.setattr(jumps, "task_after_update", lambda *_args: "task-id")
+    monkeypatch.setattr(jumps, "task_after_update", lambda *_args, **_kwargs: "task-id")
 
     def assert_seeded_data(before, after):
         if not preserved:
@@ -177,11 +177,14 @@ def test_only_the_release11_baseline_adds_the_pack_and_restarts_its_host_before_
     monkeypatch.setattr(jumps, "add_journey_pack_and_restart_legacy_host",
                         lambda _root, _data, version, _evidence: order.append(("legacy-pack", version["root"])) or ["chiptune"])
     monkeypatch.setattr(jumps, "task_after_update",
-                        lambda version, *_args: order.append(("task", version["root"])) or "task-id")
+                        lambda version, *_args, existing_pack_gate=True: order.append(
+                            ("task", version["root"], existing_pack_gate)) or "task-id")
     assert run()["status"] == "pass"
     r11 = str(tmp_path / "program" / "versions/r11")
     # R11 has no single-worker hot refresh: add + restart once, before R11's baseline task only.
-    assert order[:2] == [("legacy-pack", r11), ("task", r11)]
+    # That baseline task skips the existing-pack gate; every later task keeps it.
+    assert order[:2] == [("legacy-pack", r11), ("task", r11, False)]
+    assert all(entry[2] is True for entry in order[2:] if entry[0] == "task")
     assert [entry for entry in order if entry[0] == "legacy-pack"] == [("legacy-pack", r11)]
 
 

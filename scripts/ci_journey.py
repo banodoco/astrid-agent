@@ -104,6 +104,10 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-pack-hot-refresh.json",
     # wait_pack_registered: every Runtime-side registration poll, plus the outbox on timeout.
     "journey-pack-registration.json",
+    # The sanitized pack-host identity beside each registration observation.
+    "journey-pack-host-identity.json",
+    # Linux/macOS: each expected host/service log, captured or absent.
+    "runtime-service-log-status.json",
 })
 JOURNEY_PACK_LOG = re.compile(r"journey-pack-[A-Za-z0-9_-]+\.log")
 EVIDENCE_LOG_LIMIT = 1024 * 1024
@@ -829,14 +833,53 @@ def capture_service_manager_output(evidence: Path, run_root: Path, phase: str) -
     return captured
 
 
+SERVICE_LOG_STATUS_RECEIPT = "runtime-service-log-status.json"
+
+
+def posix_service_log_dir(run_root: Path) -> Path:
+    if sys.platform == "darwin":
+        return run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
+    return run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
+
+
+def write_service_log_status(evidence: Path, run_root: Path, phase: str, manager_output: list[str]) -> dict:
+    """Name every expected host/service log as captured or absent, so a missing one is explicit."""
+    log_dir = posix_service_log_dir(run_root)
+    logs = {}
+    for name in ("service-pack-host.log", "runtime.log", "runtime-service.log", "install.log"):
+        source = log_dir / name
+        logs[name] = ("captured" if source.is_file() and not source.is_symlink() else "absent")
+    if sys.platform == "linux":
+        expected = [f"runtime-service-service-journald-{unit}.log" for unit in ("astrid.service", "astrid-r1.service")]
+    else:
+        expected = [f"runtime-service-service-launchd-{label}-{stream}.log"
+                    for label in ("haus.astrid.runtime", "haus.astrid.runtime.r1") for stream in ("stdout", "stderr")]
+    for name in expected:
+        logs[name] = "captured" if name in manager_output else "absent"
+    status = {"schema_version": 1, "phase": phase, "platform": sys.platform,
+              "log_dir_present": log_dir.is_dir(), "logs": logs}
+    write_json(evidence / SERVICE_LOG_STATUS_RECEIPT, status)
+    absent = sorted(name for name, value in logs.items() if value == "absent")
+    if absent:
+        print(f"Journey service logs absent ({phase}): {', '.join(absent)}", file=sys.stderr, flush=True)
+    return status
+
+
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
     """Retain bounded tails of Runtime logs from the active journey profile."""
     capture_update_transaction_status(evidence, run_root, phase)
+    manager_output: list[str] = []
     try:  # Diagnostics only: a capture failure never replaces the journey's own result.
-        capture_service_manager_output(evidence, run_root, phase)
+        manager_output = capture_service_manager_output(evidence, run_root, phase)
     except Exception as exc:  # noqa: BLE001
         print(f"Journey service-manager output capture ({phase}) failed: {type(exc).__name__}",
               file=sys.stderr, flush=True)
+    if sys.platform in {"linux", "darwin"}:
+        try:
+            write_service_log_status(evidence, run_root, phase, manager_output)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Journey service log status ({phase}) failed: {type(exc).__name__}",
+                  file=sys.stderr, flush=True)
     if sys.platform == "darwin":
         capture_macos_listing(evidence, run_root, phase)
         # The Runtime's own log lives in the data root on macOS, beside its state.
@@ -1147,17 +1190,23 @@ def _capture_windows_pack_host_update_state(evidence: Path, data: Path, phase: s
 
 
 TASK_FOLLOW_FILES = ("task-follow.jsonl", "task-follow-failure.json", "task-cancel.json",
-                     "task-cancel-follow.jsonl", "task-after-cancel.json")
+                     "task-cancel-follow.jsonl", "task-after-cancel.json", "task-settled.json")
+# The pack-activation evidence a task phase writes. The top-level staging copies these only from
+# the leg's own folder, so nested task folders (candidate-working-task, release1-working-task, ...)
+# are promoted here explicitly.
+TASK_PACK_FILES = ("journey-packs-list.json", "journey-pack-hot-refresh.json", "journey-pack-registration.json",
+                   "journey-pack-host-identity.json", "journey-pack-chiptune.log", "journey-pack-capability.log",
+                   "journey-pack-outbox.log", "journey-pack-console.log", "journey-pack-refresh.log")
 # journey-task-<phase>--<file>: <phase> is the task's evidence folder ("root" for the leg's own),
 # with path separators as "-", so every task phase stages flat beside the other names.
 TASK_FOLLOW_STAGED = re.compile(r"journey-task-[A-Za-z0-9_-]+--(?:" +
-                                "|".join(re.escape(name) for name in TASK_FOLLOW_FILES) + r")")
+                                "|".join(re.escape(name) for name in TASK_FOLLOW_FILES + TASK_PACK_FILES) + r")")
 
 
 def stage_task_follow_diagnostics(evidence: Path, destination: Path) -> list[str]:
-    """Stage every task phase's follow/cancel files (diagnostics only; bounded)."""
+    """Stage every task phase's follow/cancel/settled files and nested pack evidence (bounded)."""
     staged = []
-    for name in TASK_FOLLOW_FILES:
+    for name in TASK_FOLLOW_FILES + TASK_PACK_FILES:
         for source in sorted(evidence.rglob(name)):
             if source.is_symlink() or not source.is_file():
                 continue
@@ -1168,6 +1217,8 @@ def stage_task_follow_diagnostics(evidence: Path, destination: Path) -> list[str
             if any(part.is_symlink() for part in [evidence / Path(*relative.parts[:i + 1])
                                                    for i in range(len(relative.parts))]):
                 continue
+            if not relative.parts and name in TASK_PACK_FILES:
+                continue  # The leg's own pack evidence is already staged under its plain name.
             phase = "root" if not relative.parts else "-".join(relative.parts)
             phase = re.sub(r"[^A-Za-z0-9_-]", "_", phase)
             target_name = f"journey-task-{phase}--{name}"
@@ -1175,7 +1226,7 @@ def stage_task_follow_diagnostics(evidence: Path, destination: Path) -> list[str
                 continue
             try:
                 size = source.stat().st_size
-                if name.endswith(".jsonl"):
+                if name.endswith((".jsonl", ".log")):
                     with source.open("rb") as stream:  # follow streams: keep the bounded tail
                         stream.seek(max(0, size - EVIDENCE_LOG_LIMIT))
                         (destination / target_name).write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
@@ -2607,7 +2658,8 @@ def _pack_rows(value):
             yield from _pack_rows(child)
 
 
-def install_journey_packs(run_cli, *, routes_packs=None, before_add=None, wait_registered=None) -> list[str]:
+def install_journey_packs(run_cli, *, routes_packs=None, before_add=None, wait_registered=None,
+                          existing_ready=None) -> list[str]:
     """Install each JOURNEY_PACKS pack from its pinned source through the public `packs add` path.
 
     ``run_cli(argv, name)`` runs the installed ``astrid`` console entry point (the
@@ -2623,6 +2675,10 @@ def install_journey_packs(run_cli, *, routes_packs=None, before_add=None, wait_r
     for pack_id, (source, revision) in JOURNEY_PACKS.items():
         listing = json.loads(run_cli(["packs", "list", "--json"], "journey-packs-list.json"))
         if any(row.get("id") == pack_id for row in _pack_rows(listing)):
+            # Already listed: nothing to add, but its Runtime registration must be current
+            # for the live host before the task is submitted.
+            if existing_ready is not None:
+                existing_ready(pack_id)
             continue
         if before_add is not None and not added:
             before_add()
@@ -2663,13 +2719,32 @@ RUNTIME_REGISTRATION_PROBE = (
     "registration = client.generated.get_executor(PACK_HOST_ACTOR)\n"
     "def field(value, name):\n"
     "    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)\n"
-    "rows = [{{'capability_id': field(c, 'capability_id'), 'status': field(c, 'status')}}\n"
+    "rows = [{{'capability_id': field(c, 'capability_id'), 'status': field(c, 'status'),\n"
+    "          'definition_digest': field(c, 'definition_digest')}}\n"
     "        for c in (field(registration, 'capabilities') or ())]\n"
     "print(json.dumps({{'id': field(registration, 'id'),\n"
     "                  'readiness': field(registration, 'readiness'),\n"
     "                  'max_concurrency': field(registration, 'max_concurrency'),\n"
     "                  'runtime_epoch': field(registration, 'runtime_epoch'),\n"
+    "                  'source_epoch': field(registration, 'source_epoch'),\n"
+    "                  'source_digest': field(registration, 'source_digest'),\n"
+    "                  'dependency_digest': field(registration, 'dependency_digest'),\n"
     "                  'capabilities': rows}}, default=str))")
+PACK_HOST_IDENTITY_RECEIPT = "journey-pack-host-identity.json"
+# Identity fields only: never the worker credential file, endpoint token or environment.
+PACK_HOST_IDENTITY_FIELDS = ("pid", "process_birth_id", "executor_id", "runtime_instance_id", "runtime_epoch",
+                             "source_epoch", "source_checkout_digest", "source_closure_digest",
+                             "source_inventory_identity", "capability_count", "ready_capabilities",
+                             "unready_capabilities")
+
+
+def sanitized_pack_host_identity(ready: dict) -> dict:
+    """The pack host's identity from its ready marker, without credentials or paths."""
+    identity = {key: ready.get(key) for key in PACK_HOST_IDENTITY_FIELDS}
+    registration = ready.get("registration") if isinstance(ready.get("registration"), dict) else {}
+    identity["registration"] = {key: registration.get(key) for key in (
+        "id", "readiness", "runtime_epoch", "source_epoch", "source_digest", "dependency_digest")}
+    return identity
 # The personal packs-root transaction outbox: its committed revision and any pending refresh.
 PACK_OUTBOX_PROBE = (
     "import json\n"
@@ -2782,6 +2857,122 @@ def installed_routes_packs(version: dict, evidence: Path) -> bool:
         return False
 
 
+def _capability_ready(registration: dict | None, capability_id: str) -> bool:
+    rows = registration.get("capabilities") if isinstance(registration, dict) else None
+    return isinstance(rows, list) and any(isinstance(row, dict) and row.get("capability_id") == capability_id
+                                          and row.get("status") == "ready" for row in rows)
+
+
+def existing_pack_registration_problems(capability_id: str, observation: dict) -> list[str]:
+    """Why the Runtime's registration is NOT current for the live host (empty when it is).
+
+    A bare status=ready can be stale, so the registration must belong to the CURRENT live
+    host: the host process is alive, the executor id matches, it was registered under the
+    current Runtime instance and epoch, its source identity matches the host's own record
+    (the pairs astrid.sdk.host_bootstrap requires to attach a resident host), and no
+    refresh is pending in the outbox (no unresolved refresh fence).
+    """
+    problems = []
+    ready = observation.get("ready") if isinstance(observation.get("ready"), dict) else {}
+    registration = observation.get("registration") if isinstance(observation.get("registration"), dict) else None
+    host_registration = ready.get("registration") if isinstance(ready.get("registration"), dict) else {}
+    if not observation.get("host_alive"):
+        problems.append("the pack host in the ready marker is not running")
+    if registration is None:
+        problems.append("the Runtime returned no executor registration")
+        return problems
+    expected_id = ready.get("executor_id") or "astrid-pack-host"
+    if registration.get("id") != expected_id:
+        problems.append(f"executor {registration.get('id')!r} is not the live host's {expected_id!r}")
+    if registration.get("readiness") != "ready":
+        problems.append(f"executor readiness is {registration.get('readiness')!r}")
+    if ready.get("runtime_instance_id") != observation.get("runtime_instance_id"):
+        problems.append("the live host registered with a previous Runtime instance")
+    if registration.get("runtime_epoch") != ready.get("runtime_epoch"):
+        problems.append("stale registration: its runtime epoch differs from the live host's")
+    for name, expected in (("source_epoch", ready.get("source_epoch")),
+                           ("source_digest", host_registration.get("source_digest")),
+                           ("dependency_digest", host_registration.get("dependency_digest"))):
+        if expected is None or registration.get(name) != expected:
+            problems.append(f"registration {name} does not match the live host's")
+    if not _capability_ready(registration, capability_id):
+        problems.append(f"{capability_id} is not listed as ready")
+    outbox = observation.get("outbox") if isinstance(observation.get("outbox"), dict) else None
+    if outbox is None or "error" in outbox:
+        problems.append("the pack outbox state is unavailable")
+    elif outbox.get("refresh") is not None:
+        problems.append("an unresolved pack refresh is pending (refresh fence)")
+    return problems
+
+
+def _observe_pack_registration(version: dict, evidence: Path) -> dict:
+    """One Runtime-side observation: registration, outbox, live host and Runtime instance."""
+    observation = {"registration": None, "registration_error": None, "outbox": None, "ready": None,
+                   "host_alive": False, "runtime_instance_id": None}
+    try:
+        ready_path = pack_host_ready_path()
+        ready = read_json(ready_path)
+        observation["ready"] = ready
+        pid = ready.get("pid")
+        observation["host_alive"] = type(pid) is int and pid > 0 and bool(_process_command(pid))
+        discovery = read_json(ready_path.parent / "discovery.json")
+        observation["runtime_instance_id"] = discovery.get("runtime_instance_id")
+        code = RUNTIME_REGISTRATION_PROBE.format(ready_path=str(ready_path))
+        observation["registration"] = json.loads(_installed_probe(version, code, evidence,
+                                                                  "journey-pack-capability.log"))
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        observation["registration_error"] = f"{type(exc).__name__}: {exc}"[:500]
+    try:
+        observation["outbox"] = json.loads(_installed_probe(version, PACK_OUTBOX_PROBE, evidence,
+                                                            "journey-pack-outbox.log"))
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        observation["outbox"] = {"error": f"{type(exc).__name__}: {exc}"[:500]}
+    return observation
+
+
+def _poll_pack_registration(version: dict, evidence: Path, pack_id: str, *, mode: str,
+                            timeout: float, interval: float) -> None:
+    capability_id = JOURNEY_PACK_CAPABILITIES.get(pack_id)
+    if capability_id is None:
+        return
+    receipt = {"schema_version": 2, "mode": mode, "pack_id": pack_id, "capability_id": capability_id,
+               "timeout_seconds": timeout, "registered": False, "polls": 0, "last": None,
+               "last_error": None, "outbox": None, "problems": None, "host_alive": None,
+               "runtime_instance_id": None}
+    identity = None
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            receipt["polls"] += 1
+            observation = _observe_pack_registration(version, evidence)
+            receipt.update(last=observation["registration"], last_error=observation["registration_error"],
+                           outbox=observation["outbox"], host_alive=observation["host_alive"],
+                           runtime_instance_id=observation["runtime_instance_id"])
+            if isinstance(observation["ready"], dict):
+                identity = sanitized_pack_host_identity(observation["ready"])
+            if mode == "existing":
+                problems = existing_pack_registration_problems(capability_id, observation)
+            else:
+                problems = ([] if _capability_ready(observation["registration"], capability_id)
+                            else [f"{capability_id} is not listed as ready"])
+            receipt["problems"] = problems
+            if not problems:
+                receipt["registered"] = True
+                return
+            if time.monotonic() >= deadline:
+                # A product finding, not a harness flake.
+                if mode == "existing":
+                    raise RuntimeError(f"The Runtime's registration of {capability_id} is not current for the "
+                                       f"live host after {int(timeout)}s: " + "; ".join(problems))
+                raise RuntimeError(f"The Runtime did not register {capability_id} as ready within "
+                                   f"{int(timeout)}s of `packs add` of {pack_id}")
+            time.sleep(interval)
+    finally:
+        write_json(evidence / PACK_REGISTRATION_RECEIPT, receipt)
+        write_json(evidence / PACK_HOST_IDENTITY_RECEIPT,
+                   identity if identity is not None else {"status": "unavailable"})
+
+
 def wait_pack_registered(version: dict, evidence: Path, pack_id: str, *,
                          timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0) -> None:
     """Wait for RUNTIME-SIDE readiness after `packs add`: no restart, no refresh-outbox gate.
@@ -2789,52 +2980,19 @@ def wait_pack_registered(version: dict, evidence: Path, pack_id: str, *,
     Readiness is the Runtime's own registration of the pack host's executor listing the
     capability with status ready, polled up to ``timeout``. A local SDK resolve would prove
     only discovery. Admission AND completion of the journey task, then
-    assert_pack_hot_refreshed, prove the rest. On timeout, the receipt records every
-    observation and the outbox state; the failure staging uploads the host and service logs.
+    assert_pack_hot_refreshed, prove the rest. Each poll's registration, outbox and the
+    sanitized host identity are uploaded; the failure staging uploads host and service logs.
     """
-    capability_id = JOURNEY_PACK_CAPABILITIES.get(pack_id)
-    if capability_id is None:
-        return
-    receipt = {"schema_version": 1, "pack_id": pack_id, "capability_id": capability_id,
-               "timeout_seconds": timeout, "registered": False, "polls": 0, "last": None,
-               "last_error": None, "outbox": None}
-    deadline = time.monotonic() + timeout
-    try:
-        while True:
-            receipt["polls"] += 1
-            try:
-                code = RUNTIME_REGISTRATION_PROBE.format(ready_path=str(pack_host_ready_path()))
-                observed = json.loads(_installed_probe(version, code, evidence,
-                                                       "journey-pack-capability.log"))
-                receipt["last"], receipt["last_error"] = observed, None
-            except (RuntimeError, ValueError, OSError) as exc:
-                observed = None
-                receipt["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
-            rows = observed.get("capabilities") if isinstance(observed, dict) else None
-            if isinstance(rows, list) and any(isinstance(row, dict) and row.get("capability_id") == capability_id
-                                              and row.get("status") == "ready" for row in rows):
-                receipt["registered"] = True
-                return
-            if time.monotonic() >= deadline:
-                try:
-                    receipt["outbox"] = json.loads(_installed_probe(version, PACK_OUTBOX_PROBE, evidence,
-                                                                    "journey-pack-outbox.log"))
-                except (RuntimeError, ValueError, OSError) as exc:
-                    receipt["outbox"] = {"error": f"{type(exc).__name__}: {exc}"[:500]}
-                # Upload the host's ready marker beside it, so the refresh state is visible.
-                try:
-                    ready = read_json(pack_host_ready_path())
-                    receipt["pack_host_ready"] = {key: ready.get(key) for key in (
-                        "pid", "process_birth_id", "executor_id", "runtime_instance_id", "ready_capabilities",
-                        "unready_capabilities", "capability_count")}
-                except Exception as exc:  # noqa: BLE001 - diagnostics cannot replace the timeout
-                    receipt["pack_host_ready"] = {"error": f"{type(exc).__name__}: {exc}"[:500]}
-                # A product finding, not a harness flake: the Runtime never registered the added pack.
-                raise RuntimeError(f"The Runtime did not register {capability_id} as ready within "
-                                   f"{int(timeout)}s of `packs add` of {pack_id}")
-            time.sleep(interval)
-    finally:
-        write_json(evidence / PACK_REGISTRATION_RECEIPT, receipt)
+    _poll_pack_registration(version, evidence, pack_id, mode="added", timeout=timeout, interval=interval)
+
+
+def wait_existing_pack_current(version: dict, evidence: Path, pack_id: str, *,
+                               timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0) -> None:
+    """GATE for a pack that is already listed: its registration must be current for the live host.
+
+    See existing_pack_registration_problems; a bare status=ready is not enough.
+    """
+    _poll_pack_registration(version, evidence, pack_id, mode="existing", timeout=timeout, interval=interval)
 
 
 def invocation_outcome(invocation: dict) -> tuple[bool | None, object]:
@@ -2869,7 +3027,7 @@ def _invocation_failure(error: object) -> str:
 
 
 def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
-                duration_s: float = 0.1) -> str:
+                duration_s: float = 0.1, existing_pack_gate: bool = True) -> str:
     """Admit one chiptune SFX task through the installed SDK and return its id, unfollowed."""
     SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
     PACK_HOT_REFRESH.pop(evidence.absolute(), None)
@@ -2892,7 +3050,9 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
                                                            console=True, timeout=600),
                           routes_packs=lambda: installed_routes_packs(version, evidence),
                           before_add=lambda: before_journey_pack_add(evidence),
-                          wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id))
+                          wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id),
+                          existing_ready=((lambda pack_id: wait_existing_pack_current(version, evidence, pack_id))
+                                          if existing_pack_gate else None))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
     try:
@@ -2931,43 +3091,89 @@ def _task_error(row: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
-def task_follow_failure_summary(task_id: str, observed: dict, final: dict, *, cancelled_by_harness: bool) -> str:
-    """One job-log line naming the task's terminal state, its error and whether the harness cancelled it."""
+def follow_error_code(exc: BaseException) -> str:
+    """`tasks follow`'s own failure: its exit code, or the timeout."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"timeout after {exc.timeout}s"
+    matched = re.search(r": exit (-?\d+);", str(exc))
+    return f"exit {matched.group(1)}" if matched else type(exc).__name__
+
+
+def task_follow_before_cancel(task_id: str, follow_error: str, observed: dict) -> str:
+    """The job-log line printed BEFORE any cancel: follow's error, and the task's state and error."""
+    first = observed.get("data") if isinstance(observed.get("data"), dict) else {}
+    code, message = _task_error(first)
+    return ("Journey task follow failure (before cancel): " + json.dumps({
+        "task_id": task_id, "follow_error": follow_error, "state": first.get("state"),
+        "error_code": code, "error_message": message}, sort_keys=True))
+
+
+def task_follow_failure_summary(task_id: str, observed: dict, final: dict, *, cancelled_by_harness: bool,
+                                follow_error: str | None = None, cancel_action: dict | None = None) -> str:
+    """One job-log line naming the follow error, the state and error before and after any cancel,
+    the cancel action, and whether the harness cancelled the task."""
     first = observed.get("data") if isinstance(observed.get("data"), dict) else {}
     row = final.get("data") if isinstance(final.get("data"), dict) else {}
+    before_code, before_message = _task_error(first)
     code, message = _task_error(row)
     if code is None and message is None:
-        code, message = _task_error(first)
+        code, message = before_code, before_message
     return ("Journey task follow failure: " + json.dumps({
-        "task_id": task_id, "state_at_follow_failure": first.get("state"), "terminal_state": row.get("state"),
-        "error_code": code, "error_message": message, "cancelled_by_harness": cancelled_by_harness},
-        sort_keys=True))
+        "task_id": task_id, "follow_error": follow_error,
+        "state_at_follow_failure": first.get("state"), "error_code_before_cancel": before_code,
+        "error_message_before_cancel": before_message, "cancel_action": cancel_action,
+        "terminal_state": row.get("state"), "error_code": code, "error_message": message,
+        "cancelled_by_harness": cancelled_by_harness}, sort_keys=True))
 
 
-def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
-    """Exercise the installed SDK through a settled, materialized SFX output."""
-    task_id = submit_task(version, evidence, project, create_project=create_project)
+def task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
+         existing_pack_gate: bool = True) -> str:
+    """Exercise the installed SDK through a settled, materialized SFX output.
+
+    ``existing_pack_gate=False`` is only for a legacy baseline (R11) whose host was just
+    restarted after the pack add; its admission and completion still prove it.
+    """
+    task_id = submit_task(version, evidence, project, create_project=create_project,
+                          existing_pack_gate=existing_pack_gate)
     try:
         installed_cli(version, ["tasks", "follow", task_id, "--project", project,
                                 "--poll-seconds", "2", "--timeout-seconds", "900", "--json"],
                       evidence, "task-follow.jsonl", timeout=960)
     except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        follow_error = follow_error_code(exc)
         state = _sdk_result(installed_cli(version, ["tasks", "show", task_id, "--project", project,
                                                  "--json"], evidence, "task-follow-failure.json"))
+        # Before any cancel: what follow reported and what the task itself says.
+        print(task_follow_before_cancel(task_id, follow_error, state), file=sys.stderr, flush=True)
         cancelled_by_harness = False
+        cancel_action = {"action": "none", "reason": "task already terminal"}
         if (state.get("data") or {}).get("state") not in TERMINAL:
             cancelled_by_harness = True
-            installed_cli(version, ["tasks", "cancel", task_id, "--project", project, "--json"],
-                          evidence, "task-cancel.json")
+            cancel_action = {"action": "cancel"}
+            try:
+                cancel_output = installed_cli(version, ["tasks", "cancel", task_id, "--project", project,
+                                                        "--json"], evidence, "task-cancel.json")
+                try:  # Diagnostics only: an unparsable reply does not change the cancel's outcome.
+                    cancel_action["ok"] = _sdk_result(cancel_output).get("ok")
+                except (ValueError, AttributeError):
+                    cancel_action["ok"] = None
+            except RuntimeError as cancel_error:
+                cancel_action.update(ok=False, error=_WINDOWS_ABSOLUTE_PATH.sub("<path>", str(cancel_error))[:300])
+                print(task_follow_failure_summary(task_id, state, {}, cancelled_by_harness=True,
+                                                  follow_error=follow_error, cancel_action=cancel_action),
+                      file=sys.stderr, flush=True)
+                raise
             try:
                 installed_cli(version, ["tasks", "follow", task_id, "--project", project,
                                         "--poll-seconds", "2", "--timeout-seconds", "300", "--json"],
                               evidence, "task-cancel-follow.jsonl", timeout=360)
-            except (RuntimeError, subprocess.TimeoutExpired):
-                pass
+                cancel_action["cancel_follow"] = "exit 0"
+            except (RuntimeError, subprocess.TimeoutExpired) as cancel_follow_error:
+                cancel_action["cancel_follow"] = follow_error_code(cancel_follow_error)
         final = _sdk_result(installed_cli(version, ["tasks", "show", task_id, "--project", project,
                                                  "--json"], evidence, "task-after-cancel.json"))
-        print(task_follow_failure_summary(task_id, state, final, cancelled_by_harness=cancelled_by_harness),
+        print(task_follow_failure_summary(task_id, state, final, cancelled_by_harness=cancelled_by_harness,
+                                          follow_error=follow_error, cancel_action=cancel_action),
               file=sys.stderr, flush=True)
         if (final.get("data") or {}).get("state") not in TERMINAL:
             raise RuntimeError("Task remained nonterminal after cancellation") from exc

@@ -660,13 +660,13 @@ def semantic_digest(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def task_after_update(version: dict, evidence: Path, project: str) -> str:
+def task_after_update(version: dict, evidence: Path, project: str, *, existing_pack_gate: bool = True) -> str:
     if sys.platform == "win32":
         journey.windows.EVIDENCE = evidence
         journey.windows.wait_for("pack-host is running with its current ready file", journey.windows.host_ready)
         journey.windows.snapshot("processes-host-ready.json")
         return journey.windows.task(project, create_project=False)
-    return journey.task(version, evidence, project, create_project=False)
+    return journey.task(version, evidence, project, create_project=False, existing_pack_gate=existing_pack_gate)
 
 
 def release0_admission(args) -> tuple[Path, Path, dict]:
@@ -1231,7 +1231,9 @@ def execute_release11_then_update(args, root: Path, data: Path, evidence: Path, 
         # R11 has no single-worker hot refresh: add the pack and restart R11's host before its
         # baseline task, so that task adds nothing (and so has no hot-refresh check).
         add_journey_pack_and_restart_legacy_host(root, data, old, baseline / "release11-pack")
-        keys["task_id"] = task_after_update(old, baseline / "release11-task", project)
+        # The existing-pack gate reads the Runtime through the candidate's client APIs; the R11
+        # baseline host was just restarted, and its admission AND completion prove the pack.
+        keys["task_id"] = task_after_update(old, baseline / "release11-task", project, existing_pack_gate=False)
         before = live_workspace(root, data, baseline, "snapshot", keys)
         old_health = journey.healthy(data)
         result["checks"]["release11_install"] = "pass"

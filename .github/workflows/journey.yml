@@ -971,7 +971,8 @@ jobs:
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt',
-            'journey-packs-list.json', 'journey-pack-hot-refresh.json', 'journey-pack-registration.json'
+            'journey-packs-list.json', 'journey-pack-hot-refresh.json', 'journey-pack-registration.json',
+            'journey-pack-host-identity.json', 'runtime-service-log-status.json'
           )
           $maxArtifactBytes = 49000000
           # Reserve 1 KiB per file for the stored ZIP entry and central directory.
@@ -984,7 +985,7 @@ jobs:
                 throw "Unexpected staged evidence path: $relative"
               }
               $name = $Matches[2]
-              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$' -and $name -notmatch '^keepgoing-stage-[0-9]{2}\.log$' -and $name -cnotmatch '^journey-pack-[A-Za-z0-9_-]+\.log$' -and $name -cnotmatch '^journey-task-[A-Za-z0-9_-]+--(task-follow\.jsonl|task-follow-failure\.json|task-cancel\.json|task-cancel-follow\.jsonl|task-after-cancel\.json)$') {
+              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$' -and $name -notmatch '^keepgoing-stage-[0-9]{2}\.log$' -and $name -cnotmatch '^journey-pack-[A-Za-z0-9_-]+\.log$' -and $name -cnotmatch '^journey-task-[A-Za-z0-9_-]+--(task-follow\.jsonl|task-follow-failure\.json|task-cancel\.json|task-cancel-follow\.jsonl|task-after-cancel\.json|task-settled\.json|journey-packs-list\.json|journey-pack-hot-refresh\.json|journey-pack-registration\.json|journey-pack-host-identity\.json|journey-pack-chiptune\.log|journey-pack-capability\.log|journey-pack-outbox\.log|journey-pack-console\.log|journey-pack-refresh\.log)$') {
                 throw "Unexpected staged evidence filename: $relative"
               }
               if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {

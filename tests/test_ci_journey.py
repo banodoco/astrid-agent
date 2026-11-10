@@ -259,62 +259,128 @@ def test_journey_packs_skip_without_a_packs_route_and_wait_for_registration():
     assert calls == [["packs", "list", "--json"]]
 
 
-def _registration(*rows):
-    return json.dumps({"id": "astrid-pack-host", "readiness": "ready", "max_concurrency": 1, "runtime_epoch": 1,
-                       "capabilities": [{"capability_id": cid, "status": status} for cid, status in rows]})
+READY_MARKER = {"pid": 10, "process_birth_id": "b10", "executor_id": "astrid-pack-host",
+                "runtime_instance_id": "i1", "runtime_epoch": 4, "source_epoch": "se1",
+                "credential_file": "/secret/worker", "endpoint": "http://127.0.0.1:1",
+                "ready_capabilities": ["other.cap"],
+                "registration": {"id": "astrid-pack-host", "readiness": "ready", "runtime_epoch": 4,
+                                 "source_epoch": "se1", "source_digest": "sd1", "dependency_digest": "dd1"}}
+
+
+def _registration(*rows, **changes):
+    value = {"id": "astrid-pack-host", "readiness": "ready", "max_concurrency": 1, "runtime_epoch": 4,
+             "source_epoch": "se1", "source_digest": "sd1", "dependency_digest": "dd1",
+             "capabilities": [{"capability_id": cid, "status": status} for cid, status in rows]}
+    value.update(changes)
+    return value
+
+
+def _observation(registration, *, outbox=None, alive=True, instance="i1", ready=None):
+    return {"registration": registration, "registration_error": None, "ready": dict(ready or READY_MARKER),
+            "host_alive": alive, "runtime_instance_id": instance,
+            "outbox": {"packs_root": "/p", "revision": 2, "transaction_id": "t2", "refresh": None}
+            if outbox is None else outbox}
 
 
 def test_wait_pack_registered_requires_the_runtimes_own_ready_registration(tmp_path, monkeypatch):
-    ready = tmp_path / "generic-host.ready.json"
+    observations = iter([
+        {**_observation(None), "registration_error": "RuntimeError: journey-pack-capability.log: exit 1"},
+        _observation(_registration(("other.cap", "ready"))),
+        _observation(_registration(("chiptune.sfx", "unavailable"))),
+        _observation(_registration(("chiptune.sfx", "ready")))])
+    monkeypatch.setattr(journey, "_observe_pack_registration", lambda version, evidence: next(observations))
+    journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
+    receipt = json.loads((tmp_path / journey.PACK_REGISTRATION_RECEIPT).read_text())
+    assert receipt["registered"] is True and receipt["polls"] == 4 and receipt["mode"] == "added"
+    assert receipt["outbox"]["revision"] == 2 and receipt["problems"] == []
+    identity = json.loads((tmp_path / journey.PACK_HOST_IDENTITY_RECEIPT).read_text())
+    assert identity["pid"] == 10 and identity["registration"]["source_digest"] == "sd1"
+    # Sanitized: no credential file, endpoint or token reaches the uploaded identity.
+    assert "credential_file" not in identity and "endpoint" not in identity
+    assert "/secret/worker" not in json.dumps(identity)
+
+
+def test_runtime_registration_probe_reads_the_executor_through_the_worker_credential(tmp_path, monkeypatch):
+    ready = tmp_path / "runtime" / "generic-host.ready.json"
+    ready.parent.mkdir()
+    ready.write_text(json.dumps(READY_MARKER), encoding="utf-8")
+    (tmp_path / "runtime" / "discovery.json").write_text(json.dumps({"runtime_instance_id": "i1"}), encoding="utf-8")
     monkeypatch.setattr(journey, "pack_host_ready_path", lambda: ready)
-
-    def unreachable():
-        raise RuntimeError("journey-pack-capability.log: exit 1")
-
-    answers = iter([unreachable,
-                    lambda: _registration(("other.cap", "ready")),
-                    lambda: _registration(("chiptune.sfx", "unavailable")),
-                    lambda: _registration(("chiptune.sfx", "ready"))])
-    seen, codes = [], []
+    monkeypatch.setattr(journey, "_process_command", lambda pid: "python -m astrid.core.execution.generic_host")
+    codes = {}
 
     def probe(version, code, evidence, name):
-        seen.append(name)
-        codes.append(code)
-        return next(answers)()
+        codes[name] = code
+        return json.dumps(_registration(("chiptune.sfx", "ready")) if name == "journey-pack-capability.log"
+                          else {"packs_root": "/p", "revision": 1, "transaction_id": "t1", "refresh": None})
 
     monkeypatch.setattr(journey, "_installed_probe", probe)
-    journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=60, interval=0)
-    # The Runtime's own executor registration gates (not the local SDK resolve, not the outbox).
-    assert seen == ["journey-pack-capability.log"] * 4
-    assert "generated.get_executor(PACK_HOST_ACTOR)" in codes[-1] and repr(str(ready)) in codes[-1]
-    assert "get_capability" not in codes[-1]
-    compile(codes[-1], "probe", "exec")
-    receipt = json.loads((tmp_path / journey.PACK_REGISTRATION_RECEIPT).read_text())
-    assert receipt["registered"] is True and receipt["polls"] == 4 and receipt["outbox"] is None
+    observation = journey._observe_pack_registration({}, tmp_path)
+    assert observation["host_alive"] is True and observation["runtime_instance_id"] == "i1"
+    code = codes["journey-pack-capability.log"]
+    assert "generated.get_executor(PACK_HOST_ACTOR)" in code and repr(str(ready)) in code
+    assert "get_capability" not in code and "'source_digest'" in code
+    compile(code, "probe", "exec")
+    compile(journey.PACK_OUTBOX_PROBE, "outbox", "exec")
 
 
 def test_wait_pack_registered_timeout_records_the_outbox_and_host_state(tmp_path, monkeypatch):
-    ready = tmp_path / "generic-host.ready.json"
-    ready.write_text(json.dumps({"pid": 10, "process_birth_id": "b10", "executor_id": "astrid-pack-host",
-                                 "ready_capabilities": ["other.cap"], "credential_file": "/secret"}),
-                     encoding="utf-8")
-    monkeypatch.setattr(journey, "pack_host_ready_path", lambda: ready)
     outbox = {"packs_root": "/p", "revision": 3, "transaction_id": "t3", "refresh": {"revision": 3}}
-
-    def probe(version, code, evidence, name):
-        return json.dumps(outbox) if name == "journey-pack-outbox.log" else _registration(("other.cap", "ready"))
-
-    monkeypatch.setattr(journey, "_installed_probe", probe)
+    monkeypatch.setattr(journey, "_observe_pack_registration",
+                        lambda version, evidence: _observation(_registration(("other.cap", "ready")), outbox=outbox))
     with pytest.raises(RuntimeError, match="The Runtime did not register chiptune.sfx as ready within 0s"):
         journey.wait_pack_registered({}, tmp_path, "chiptune", timeout=0, interval=0)
     receipt = json.loads((tmp_path / journey.PACK_REGISTRATION_RECEIPT).read_text())
     assert receipt["registered"] is False and receipt["outbox"] == outbox
     assert receipt["last"]["capabilities"] == [{"capability_id": "other.cap", "status": "ready"}]
-    assert receipt["pack_host_ready"]["ready_capabilities"] == ["other.cap"]
-    # The worker credential path is not copied into the uploaded receipt.
-    assert "credential_file" not in receipt["pack_host_ready"]
-    compile(journey.PACK_OUTBOX_PROBE, "outbox", "exec")
-    assert journey.PACK_REGISTRATION_RECEIPT in journey.JOURNEY_EVIDENCE_NAMES
+    identity = json.loads((tmp_path / journey.PACK_HOST_IDENTITY_RECEIPT).read_text())
+    assert identity["ready_capabilities"] == ["other.cap"] and "credential_file" not in identity
+    for name in (journey.PACK_REGISTRATION_RECEIPT, journey.PACK_HOST_IDENTITY_RECEIPT):
+        assert name in journey.JOURNEY_EVIDENCE_NAMES
+
+
+def test_existing_pack_gate_accepts_only_a_current_registration_for_the_live_host():
+    ready = _registration(("chiptune.sfx", "ready"))
+    assert journey.existing_pack_registration_problems("chiptune.sfx", _observation(ready)) == []
+
+
+@pytest.mark.parametrize(("observation", "problem"), [
+    (_observation(_registration(("chiptune.sfx", "ready")), alive=False), "pack host in the ready marker is not running"),
+    (_observation(None), "returned no executor registration"),
+    (_observation(_registration(("chiptune.sfx", "ready"), id="other-host")), "is not the live host's"),
+    (_observation(_registration(("chiptune.sfx", "ready"), readiness="starting")), "executor readiness is 'starting'"),
+    (_observation(_registration(("chiptune.sfx", "ready")), instance="i0"), "previous Runtime instance"),
+    (_observation(_registration(("chiptune.sfx", "ready"), runtime_epoch=3)), "stale registration: its runtime epoch"),
+    (_observation(_registration(("chiptune.sfx", "ready"), source_digest="old")), "source_digest does not match"),
+    (_observation(_registration(("chiptune.sfx", "ready"), source_epoch="se0")), "source_epoch does not match"),
+    (_observation(_registration(("chiptune.sfx", "ready"), dependency_digest="dd0")), "dependency_digest does not match"),
+    (_observation(_registration(("chiptune.sfx", "unavailable"))), "chiptune.sfx is not listed as ready"),
+    (_observation(_registration(("chiptune.sfx", "ready")), outbox={"refresh": {"revision": 5}}), "refresh fence"),
+    (_observation(_registration(("chiptune.sfx", "ready")), outbox={"error": "RuntimeError: x"}), "outbox state is unavailable"),
+])
+def test_existing_pack_gate_rejects_a_stale_or_foreign_registration(observation, problem):
+    # A bare status=ready is not enough: each stale/foreign aspect is named.
+    problems = journey.existing_pack_registration_problems("chiptune.sfx", observation)
+    assert any(problem in item for item in problems), problems
+
+
+def test_existing_pack_gate_times_out_naming_every_problem(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "_observe_pack_registration", lambda version, evidence: _observation(
+        _registration(("chiptune.sfx", "ready"), runtime_epoch=3)))
+    with pytest.raises(RuntimeError, match="not current for the live host after 0s: stale registration"):
+        journey.wait_existing_pack_current({}, tmp_path, "chiptune", timeout=0, interval=0)
+    receipt = json.loads((tmp_path / journey.PACK_REGISTRATION_RECEIPT).read_text())
+    assert receipt["mode"] == "existing" and receipt["registered"] is False and receipt["problems"]
+
+
+def test_already_listed_pack_runs_the_existing_gate_before_submission():
+    calls = []
+    added = journey.install_journey_packs(
+        lambda argv, name: (calls.append(argv[:2]), json.dumps({"packs": [{"id": "chiptune"}]}))[1],
+        routes_packs=lambda: True, before_add=lambda: calls.append("before"),
+        wait_registered=lambda pack_id: calls.append(("added", pack_id)),
+        existing_ready=lambda pack_id: calls.append(("existing", pack_id)))
+    assert added == [] and calls == [["packs", "list"], ("existing", "chiptune")]
 
 
 def _pack_host(monkeypatch, tmp_path, hosts):
@@ -400,6 +466,45 @@ def test_every_task_phase_stages_its_follow_and_cancel_files(tmp_path):
     assert all(journey.TASK_FOLLOW_STAGED.fullmatch(name) for name in expected)
 
 
+def test_nested_task_phases_promote_their_pack_evidence_and_settled_task(tmp_path):
+    evidence = tmp_path / "evidence" / "r0-handoff-then-update"
+    for folder in ("candidate-working-task", "release1-working-task"):
+        (evidence / folder).mkdir(parents=True)
+        for name in journey.TASK_PACK_FILES + ("task-settled.json",):
+            (evidence / folder / name).write_text("{}\n", encoding="utf-8")
+    (evidence / "journey-pack-registration.json").write_text("{}\n", encoding="utf-8")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = {path.name for path in (tmp_path / "evidence-upload" / "before-cleanup").iterdir()}
+    for folder in ("candidate-working-task", "release1-working-task"):
+        for name in journey.TASK_PACK_FILES + ("task-settled.json",):
+            assert f"journey-task-{folder}--{name}" in staged
+    # The leg's own pack evidence keeps its plain name (no root-prefixed duplicate).
+    assert "journey-pack-registration.json" in staged
+    assert "journey-task-root--journey-pack-registration.json" not in staged
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text(encoding="utf-8")
+    guard = re.search(r"-cnotmatch '(\^journey-task-[^']+)'", workflow).group(1)
+    assert all(re.fullmatch(guard, name) for name in staged if name.startswith("journey-task-"))
+    names_block = workflow.split("$allowedNames = @(", 1)[1].split("\n          )", 1)[0]
+    for name in ("journey-pack-host-identity.json", "runtime-service-log-status.json"):
+        assert f"'{name}'" in names_block and name in journey.JOURNEY_EVIDENCE_NAMES
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_service_log_status_reports_absent_host_and_service_logs(tmp_path, monkeypatch, platform):
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    log_dir = journey.posix_service_log_dir(tmp_path / "run")
+    log_dir.mkdir(parents=True)
+    (log_dir / "runtime.log").write_text("up\n", encoding="utf-8")
+    captured = (["runtime-service-service-journald-astrid.service.log"] if platform == "linux"
+                else ["runtime-service-service-launchd-haus.astrid.runtime-stdout.log"])
+    status = journey.write_service_log_status(tmp_path, tmp_path / "run", "before-cleanup", captured)
+    logs = status["logs"]
+    assert logs["runtime.log"] == "captured" and logs["service-pack-host.log"] == "absent"
+    assert logs[captured[0]] == "captured"
+    assert sum(1 for value in logs.values() if value == "absent") >= 3
+    assert json.loads((tmp_path / journey.SERVICE_LOG_STATUS_RECEIPT).read_text()) == status
+
+
 def test_failure_capture_keeps_the_journald_unit_output(tmp_path, monkeypatch):
     monkeypatch.setattr(journey.sys, "platform", "linux")
     seen = []
@@ -449,9 +554,20 @@ def test_task_follow_failure_prints_terminal_state_error_and_cancel(tmp_path, mo
     monkeypatch.setattr(journey, "installed_cli", cli)
     with pytest.raises(RuntimeError, match="Task follow failed"):
         journey.task({}, tmp_path, "project")
-    line = [row for row in capsys.readouterr().err.splitlines() if row.startswith("Journey task follow failure: ")][0]
-    fields = json.loads(line.split(": ", 1)[1])
-    assert fields == {"task_id": "task-7", "state_at_follow_failure": first_state, "terminal_state": final_state,
+    err = capsys.readouterr().err.splitlines()
+    before = [row for row in err if row.startswith("Journey task follow failure (before cancel): ")]
+    final = [row for row in err if row.startswith("Journey task follow failure: ")]
+    # The before-cancel line is printed first, before any cancel is attempted.
+    assert len(before) == 1 and len(final) == 1 and err.index(before[0]) < err.index(final[0])
+    assert json.loads(before[0].split(": ", 1)[1]) == {
+        "task_id": "task-7", "follow_error": "exit 1", "state": first_state,
+        "error_code": None, "error_message": None}
+    fields = json.loads(final[0].split(": ", 1)[1])
+    cancel_action = ({"action": "cancel", "ok": True, "cancel_follow": "exit 0"} if first_state == "running"
+                     else {"action": "none", "reason": "task already terminal"})
+    assert fields == {"task_id": "task-7", "follow_error": "exit 1", "state_at_follow_failure": first_state,
+                      "error_code_before_cancel": None, "error_message_before_cancel": None,
+                      "cancel_action": cancel_action, "terminal_state": final_state,
                       "error_code": "executor_failed", "error_message": "chiptune render failed at <path>",
                       "cancelled_by_harness": first_state == "running"}
 

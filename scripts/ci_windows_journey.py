@@ -741,7 +741,8 @@ def install_journey_packs():
         lambda argv, name: cli("astrid", argv, name, console=True, timeout=600),
         routes_packs=lambda: ci_journey.installed_routes_packs(installed, EVIDENCE),
         before_add=lambda: ci_journey.before_journey_pack_add(EVIDENCE),
-        wait_registered=lambda pack_id: ci_journey.wait_pack_registered(installed, EVIDENCE, pack_id))
+        wait_registered=lambda pack_id: ci_journey.wait_pack_registered(installed, EVIDENCE, pack_id),
+        existing_ready=lambda pack_id: ci_journey.wait_existing_pack_current(installed, EVIDENCE, pack_id))
 
 
 def assert_journey_pack_hot_refreshed():
