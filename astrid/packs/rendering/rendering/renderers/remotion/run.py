@@ -886,7 +886,7 @@ def _stage_effect_assets_for_timeline(
         clip = clips[index]
         if isinstance(clip, dict):
             staged_assets = dict(staged_by_effect[key])
-            if key[:2] == ("personal", "end-spanning-layer"):
+            if key[:2] == ("local", "end-spanning-layer"):
                 staged_assets.update(_resolve_end_spanning_card_assets(clip, asset_registry))
             if staged_assets:
                 _inject_clip_asset_params(clip, staged_assets)
