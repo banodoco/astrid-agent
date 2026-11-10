@@ -397,13 +397,16 @@ def test_retained_actual_gpu_id_mismatch_never_starts_preparation(retained, monk
     c = retained
     c.actual_gpu_id = "wrong-provider-gpu"
 
+    confirmations = []
     def provider_confirmation(api_key, contract, *, timeout_seconds):
-        if contract.gpu_type == "gpu-provider-exact":
+        confirmations.append(contract)
+        if len(confirmations) > 1:
             raise TargetObservationError(f"GPU mismatch: provider reports {c.actual_gpu_id!r}")
-        return contract.gpu_type, contract.datacenter_id
+        return c.prefs.gpu_types[0], contract.datacenter_id
     monkeypatch.setattr(worker_preparation, "confirm_acquired_machine", provider_confirmation)
     with pytest.raises(Exception, match="requires cleanup"):
         c.adapter.prepare(c.request, c.grant)
+    assert len(confirmations) == 2
     assert c.creates == 1 and not c.pod.job_log
     assert c.read()["state"] == "cleanup_pending"
     c.host.release()
