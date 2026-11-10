@@ -17,6 +17,31 @@ from urllib.parse import urlsplit
 PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
+_NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor"})
+
+
+def native_failure_diagnostic(step: str, stdout: str, stderr: str) -> tuple[str, str]:
+    """Reduce untrusted output to fixed labels; never forward a remote text tail."""
+    step = step if step in _NATIVE_STEPS else "unknown"
+    reason = {"runtime_inspect": "runtime_inspection_failed", "nodes_restore": "node_restore_failed",
+              "pip_bootstrap": "pip_bootstrap_failed", "fetch": "model_fetch_failed",
+              "prepare": "native_preparation_failed", "doctor": "workflow_diagnosis_failed"}.get(step, "command_failed")
+    # VibeComfy doctor emits its diagnostic on stdout and returns 1. Only
+    # recognize complete fixed headings, never its paths, errors or suggestions.
+    if step == "doctor":
+        headings = {"Layer: Python scratchpad import/build": "workflow_load_failed",
+                    "Layer: Schema reconciliation": "schema_reconciliation_failed",
+                    "Layer: VibeWorkflow validation": "workflow_validation_failed",
+                    "Layer: Porting helper diagnostics": "workflow_helper_failed",
+                    "Layer: nodepack lockfile drift": "nodepack_drift",
+                    "Missing models:": "models_missing"}
+        for line in stdout[-4096:].splitlines()[-32:]:
+            if line in headings:
+                reason = headings[line]
+                break
+    if any(line.startswith("ModuleNotFoundError: ") for line in stderr[-4096:].splitlines()[-32:]):
+        reason = "dependency_missing"
+    return step, reason
 
 
 @contextmanager
@@ -388,7 +413,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             if check["status"] != "matching" and (post or package is None or package in base_packages):
                 raise IntegrityError("managed runtime requirement is not satisfied by the installed base: " + path)
 
-    def _native(self, program, *args):
+    def _native(self, program, *args, step="runtime_inspect"):
         from .engine_contracts import CommandRequest, DeadlineExceeded, IntegrityError
         self.check()
         primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
@@ -407,11 +432,14 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             raise DeadlineExceeded("managed alignment command timed out")
         if result.exit_code != 0:
             import logging
+            step, reason = native_failure_diagnostic(step, result.stdout, result.stderr)
             logging.getLogger(__name__).error(
-                "managed alignment failed task=%s attempt=%s exit=%s stderr_sha256=%s",
-                self.task, self.attempt, result.exit_code,
+                "managed alignment failed task=%s attempt=%s step=%s reason=%s exit=%s stdout_sha256=%s stderr_sha256=%s",
+                self.task, self.attempt, step, reason, result.exit_code,
+                hashlib.sha256(result.stdout.encode()).hexdigest(),
                 hashlib.sha256(result.stderr.encode()).hexdigest())
-            raise IntegrityError("managed alignment command failed; inspect the host log for this attempt")
+            raise IntegrityError(f"managed alignment command failed (step={step}, reason={reason}); "
+                                 "inspect the host log for this attempt")
         self.check()
         return result
 
@@ -425,7 +453,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             from astrid.packs.vibecomfy.native_preparation import native_pip_program
             primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
             python = self.adapter.venv_python(self.adapter.join(self.root, primary.relative_path))
-            self.pip_bootstrap = json.loads(self._native(native_pip_program(), json.dumps({"python_executable": python})).stdout)
+            self.pip_bootstrap = json.loads(self._native(native_pip_program(), json.dumps({"python_executable": python}),
+                                                        step="pip_bootstrap").stdout)
         program = "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))"
         if argv[0] in {"prepare", "doctor", "fetch"}:
             # This is the host's own canonical renderer output, never admitted
@@ -441,6 +470,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 "capsule_sha256": {str(path): expected for path, expected in self._canonical_members.items()},
                 "expected_requirements": self._runtime_requirements.to_dict() if self._runtime_requirements else None,
                 "sync_packages": self._sync_packages}
-            self.native_preparation = json.loads(self._native(native_preparation_program(), json.dumps(request)).stdout)
+            self.native_preparation = json.loads(self._native(native_preparation_program(), json.dumps(request),
+                                                              step="prepare").stdout)
         else:
-            self._native(program, *argv)
+            step = "nodes_restore" if argv[0] == "nodes" else argv[0]
+            self._native(program, *argv, step=step)

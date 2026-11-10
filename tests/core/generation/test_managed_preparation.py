@@ -274,3 +274,84 @@ def test_native_pip_rejects_a_selected_wheel_symlink_escape(tmp_path):
     completed = subprocess.run([sys.executable, '-I', '-c', program, json.dumps({'python_executable': sys.executable})],
                                capture_output=True, text=True, timeout=10)
     assert completed.returncode != 0 and 'wheel escaped the verified interpreter' in completed.stderr
+
+
+def test_native_alignment_diagnostics_never_forward_arbitrary_output(tmp_path, caplog):
+    from astrid.core.generation.managed_preparation import native_failure_diagnostic
+    from astrid.core.generation.engine_recipe import load_recipe
+    from astrid.core.generation.engine_platforms import platform_adapter
+    secret = 'PRIVATE_STDOUT_OR_TOKEN_SENTINEL'
+    for step in ('runtime_inspect', 'nodes_restore', 'pip_bootstrap', 'fetch', 'prepare', 'doctor', secret):
+        found, reason = native_failure_diagnostic(step, secret * 10000, secret * 10000)
+        assert secret not in found + reason
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep.check = lambda: None
+    prep.root, prep.task, prep.attempt = str(tmp_path), 'task', 'attempt'
+    prep.recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    prep.adapter = platform_adapter(prep.recipe.platform)
+    prep.deadline = time.monotonic() + 10
+    prep.context = SimpleNamespace(run=lambda request: CommandResult(1, secret, secret, False, 0.1, None, False, False))
+    with pytest.raises(IntegrityError, match='step=fetch, reason=model_fetch_failed') as error:
+        prep._command(['fetch', '/private/' + secret])
+    assert secret not in str(error.value) + caplog.text
+    assert 'stdout_sha256=' in caplog.text and 'stderr_sha256=' in caplog.text
+
+
+def test_real_vibecomfy_doctor_stdout_failure_and_success_are_distinguished(tmp_path, caplog):
+    """Run the pinned native CLI; no models, server, provider or GPU involved."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import venv
+    import vibecomfy
+    from astrid.core.generation.engine_recipe import load_recipe
+    from astrid.core.generation.engine_platforms import platform_adapter
+    from vibecomfy.templates import ReadyMetadata, new_workflow, OutputSpec
+    from vibecomfy.nodes.core import EmptyImage, SaveImage
+    from vibecomfy.workflow_bundle import emit_bundle_with_candidate
+    from vibecomfy.security.provenance import Provenance
+
+    native = tmp_path / 'native'
+    venv.EnvBuilder(with_pip=False, symlinks=False).create(native)
+    python = str(native / 'bin/python')
+    site = next((native / 'lib').glob('python*/site-packages'))
+    dependencies = Path(sys.prefix).resolve() / 'lib' / f'python{sys.version_info.major}.{sys.version_info.minor}' / 'site-packages'
+    (site / 'test-dependencies.pth').write_text(str(dependencies) + '\n')
+    staged = tmp_path / 'pinned-vibecomfy'
+    shutil.copytree(Path(vibecomfy.__file__).resolve().parent.parent, staged,
+                    ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc', '.venv', 'node_modules', 'build', 'dist'))
+    installed = subprocess.run([shutil.which('uv'), '--system-certs', 'pip', 'install', '--python', python,
+                                '--no-deps', str(staged)],
+                               capture_output=True, text=True, timeout=60)
+    assert installed.returncode == 0, 'native VibeComfy fixture installation failed'
+
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep.check = lambda: None
+    prep.root, prep.task, prep.attempt = str(tmp_path), 'task', 'attempt'
+    prep.recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    adapter = platform_adapter(prep.recipe.platform)
+    prep.adapter = SimpleNamespace(join=adapter.join, venv_python=lambda root: python)
+    prep.deadline = time.monotonic() + 60
+    (tmp_path / 'runtime/ComfyUI').mkdir(parents=True)
+    observed = []
+    def run(request):
+        completed = subprocess.run(request.argv, cwd=request.cwd, env={**os.environ, **request.env},
+                                   capture_output=True, text=True, timeout=30)
+        observed.append(completed)
+        return CommandResult(completed.returncode, completed.stdout, completed.stderr, False, 0.1, None, False, False)
+    prep.context = SimpleNamespace(run=run)
+    secret = 'PRIVATE_NATIVE_WORKFLOW_PATH_SENTINEL'
+    with pytest.raises(IntegrityError, match='step=doctor, reason=workflow_load_failed') as error:
+        prep._command(['doctor', str(tmp_path / secret / 'absent.py'), '--non-interactive'])
+    assert observed[-1].returncode == 1 and observed[-1].stderr == ''
+    assert 'Layer: Python scratchpad import/build' in observed[-1].stdout
+    assert secret not in str(error.value) + caplog.text
+
+    with new_workflow(ReadyMetadata.build(template_id='native-doctor', capability='image')) as workflow:
+        image = EmptyImage(width=16, height=16, batch_size=1, color=0)
+        saved = SaveImage(images=image.out('IMAGE'), filename_prefix='astrid')
+        workflow.finalize({}, outputs=[OutputSpec(node=saved)])
+    emitted = emit_bundle_with_candidate(workflow, tmp_path / 'workflow.py', Provenance.USER_CONFIRMED, None)
+    prep._command(['doctor', str(emitted.python_path), '--non-interactive'])
+    assert observed[-1].returncode == 0
