@@ -669,6 +669,131 @@ def test_small_lease_keep_validates_paid_consent_before_mutating(small_lease, ch
     assert c.creates == 1
 
 
+def test_small_lease_paid_clock_and_cost_include_delayed_post(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    initial = c.clock()
+    c.before_create = lambda: setattr(c.clock, "now", c.clock() + 30)
+    lease = owner.acquire(c.grant)
+    assert lease.claim["lease"]["started_at"] == initial
+    assert lease.claim["lease"]["paid_expires_at"] == initial + 3600
+    assert lease.claim["lease"]["estimated_cost_usd"] == pytest.approx(30 / 3600)
+    assert lease.claim["lease"]["accounted_at"] == initial + 30
+
+
+def test_deadline_passing_during_post_keeps_paid_clock_and_releases_exact_pod(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    initial = c.clock()
+    grant = replace(c.grant, preparation_seconds=0, execution_seconds=0, idle_seconds=1,
+                    deadline=utc(initial + 10))
+    c.before_create = lambda: setattr(c.clock, "now", initial + 11)
+    with pytest.raises(target_selection.PaidSelectionError):
+        owner.acquire(grant, requested_idle_seconds=0)
+    assert c.read()["paid_limits"]["authorized_at"] == utc(initial)
+    assert target_selection._utc(c.read()["paid_limits"]["expires_at"]).timestamp() == initial + 10
+    c.clock.advance(1)
+    assert c.deletes == ["pod-1"] and c.creates == 1 and c.read()["state"] == "cleanup_complete"
+
+
+def test_cancellation_during_post_reconciles_and_releases_without_second_create(small_lease, monkeypatch):
+    import asyncio
+    import runpod_lifecycle
+    c = small_lease
+    owner = c.fresh()
+    cancelled = [False]
+
+    async def launch(config, *, name, **kwargs):
+        c.creates += 1
+        c.pods.append({"id": "pod-1", "name": name, "desiredStatus": "RUNNING", "actualStatus": "RUNNING",
+                       "machineType": c.offer.gpu_type, "imageName": c.prefs.image,
+                       "networkVolumeId": c.prefs.volume_id})
+        cancelled[0] = True
+        await asyncio.sleep(100)
+
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
+    with pytest.raises(target_selection.CapacityWaitCancelled):
+        owner.acquire(c.grant, cancelled=lambda: cancelled[0])
+    assert c.read()["state"] == "allocation_unknown"
+    c.clock.advance(1)
+    assert c.creates == 1 and c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
+
+
+def test_concurrent_release_cancels_a_capacity_wait_while_owner_lock_is_held(small_lease):
+    import asyncio
+    import threading
+    from tests.packs.runpod.test_target_selection import waiting_grant
+
+    c = small_lease
+    owner = c.fresh()
+    waiting = threading.Event()
+    errors = []
+    c.owner.observe_offer = lambda: (_ for _ in ()).throw(target_selection.OfferObservationError("stock_unavailable"))
+
+    async def sleep(seconds):
+        waiting.set()
+        await asyncio.sleep(100)
+
+    c.owner.sleep = sleep
+
+    def acquire():
+        try:
+            owner.acquire(waiting_grant(c))
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=acquire)
+    thread.start()
+    assert waiting.wait(3)
+    assert owner.release() is None
+    thread.join(3)
+    assert not thread.is_alive() and isinstance(errors[0], target_selection.CapacityWaitCancelled)
+    assert c.creates == 0 and not c.owner.path.exists()
+
+
+def stale_capacity_record(c, owner, *, ambiguous=False):
+    owner.acquire(c.grant)
+    record = c.read()
+    record.pop("pod_id")
+    record.pop("name", None)
+    record.pop("provider_observation", None)
+    record["state"] = "allocation_unknown" if ambiguous else "capacity_retry_ready"
+    record["safe_to_retry"] = not ambiguous
+    record["capacity_rejection"] = None if ambiguous else "ProviderCapacityUnavailable"
+    record["lease"]["state"] = "preparing"
+    worker_preparation.write_target_record(c.owner.path, record)
+    owner.close()
+    return record
+
+
+def test_restart_discards_only_confirmed_zero_pod_typed_capacity_intent(small_lease, capsys):
+    c = small_lease
+    stale_capacity_record(c, c.fresh())
+    c.pods.clear()
+    restarted = c.fresh()
+    restarted.recover()
+    assert not c.owner.path.exists() and restarted.started
+    assert "recovered_stale_capacity_intent" in capsys.readouterr().err
+    restarted.acquire(replace(c.grant, invocation_id="after-restart"))
+    assert c.creates == 2
+
+
+def test_restart_capacity_intent_with_matching_pod_reconciles_and_releases(small_lease):
+    c = small_lease
+    stale_capacity_record(c, c.fresh())
+    c.fresh().recover()
+    assert c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
+
+
+def test_restart_never_discards_an_ambiguous_create_intent(small_lease):
+    c = small_lease
+    stale_capacity_record(c, c.fresh(), ambiguous=True)
+    c.pods.clear()
+    with pytest.raises(AcquisitionUnresolvedError):
+        c.fresh().recover()
+    assert c.owner.path.exists() and c.read()["state"] == "allocation_unknown"
+
+
 def test_small_lease_owner_process_death_releases_lock_and_recovers(small_lease):
     import multiprocessing
 

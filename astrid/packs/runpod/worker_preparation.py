@@ -1189,6 +1189,8 @@ async def acquire_target(
     ready_timeout_seconds: int,
     allow_capacity_retry: bool = False,
     max_create_attempts: int | None = None,
+    single_attempt: bool = False,
+    before_post: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> AcquiredRunPodTarget:
     """Allocate from a fresh/safe intent or attach to one exact pod.
 
@@ -1340,6 +1342,8 @@ async def acquire_target(
                 "safe_to_retry": False,
                 "last_create_started_at": utc_now_iso(),
             }
+            if before_post is not None:
+                pending = before_post(pending)
             replace_target_record(handle_path, pending, operation_id=operation_id)
             attempt = pending
             try:
@@ -1388,17 +1392,28 @@ async def acquire_target(
                     "safe_to_retry": True,
                     "last_capacity_rejection_at": utc_now_iso(),
                     "last_failure_type": type(exc).__name__,
+                    "capacity_rejection": "ProviderCapacityUnavailable",
                 }
                 replace_target_record(
                     handle_path, retry_ready, operation_id=operation_id
                 )
                 attempt = retry_ready
+                if single_attempt:
+                    raise CapacityExhaustedError("capacity_unavailable: one definite capacity rejection") from exc
                 if max_create_attempts is not None and attempt["create_attempts"] < max_create_attempts:
                     delay = min(60.0, retry_interval_seconds * 1.5 ** (attempt["create_attempts"] - 1))
                     if deadline is not None:
                         delay = min(delay, max(0.0, deadline - time.monotonic()))
                     await asyncio.sleep(delay)
                 continue
+            except asyncio.CancelledError as exc:
+                # A cancellation or lost response during the POST cannot prove
+                # that no pod exists. Preserve this exact attempt for recovery.
+                unknown = {**attempt, "state": "allocation_unknown", "reconciliation_required": True,
+                           "safe_to_retry": False, "failure_type": type(exc).__name__,
+                           "unresolved_at": utc_now_iso()}
+                replace_target_record(handle_path, unknown, operation_id=operation_id)
+                raise
 
             allocated = {
                 **attempt,

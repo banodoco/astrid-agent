@@ -231,9 +231,13 @@ def test_cancel_stops_the_job_checkpoints_it_then_releases(machine_case):
             return {"id": job_id, "state": "running", "exit_code": ""}
         return original(job_id)
     c.pod.job_poll = running
-    polls = iter([False, False, True])
+    polls = iter([False, True])
+    def cancelled():
+        if c.owner.path.exists() and c.read()["lease"].get("job"):
+            return next(polls, True)
+        return False
     with pytest.raises(MachineRunCancelled):
-        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: next(polls),
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=cancelled,
                        sleep=lambda s: None)
     c.pod.job_poll = original
     record = c.read()
@@ -241,6 +245,35 @@ def test_cancel_stops_the_job_checkpoints_it_then_releases(machine_case):
     assert generation and c.pod.cancelled, "the remote job was not cancelled"
     assert record["lease"]["job"] == {"id": c.pod.cancelled[0], "state": "cancelled"}
     assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_generation_policy_waits_for_stock_through_the_real_machine_claim(machine_case, monkeypatch):
+    from dataclasses import replace
+    from astrid.packs.runpod import target_selection
+
+    c = machine_case
+    job = c.job()
+    policy = {**job.policy, "offer_digest": None, "deadline": None, "max_hourly_usd": 1.5,
+              "policy_digest": target_selection.policy_consent_digest(c.owner.preferences, 1.5),
+              "capacity_timeout_seconds": 30, "wait_for_capacity": True}
+    calls = []
+    original = c.owner.observe_offer
+
+    def observe():
+        calls.append(1)
+        if len(calls) < 3:
+            raise target_selection.OfferObservationError("stock_unavailable")
+        return original()
+
+    async def sleep(seconds):
+        c.clock.advance(seconds)
+
+    c.owner.observe_offer, c.owner.sleep = observe, sleep
+    c.owner.monotonic = c.clock
+    monkeypatch.setattr(target_selection.random, "uniform", lambda *args: 0)
+    run_on_machine(c.machine, replace(job, policy=policy), destination=job.scratch / "outputs",
+                   cancelled=lambda: False, sleep=lambda seconds: None)
+    assert len(calls) == 3 and c.creates == 1 and c.read()["lease"]["state"] == "idle"
 
 
 def test_a_crash_after_job_start_is_cancelled_by_recover_before_delete(machine_case):

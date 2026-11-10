@@ -14,6 +14,7 @@ import math
 import re
 import secrets
 import stat
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -125,6 +126,7 @@ class RunPodLeaseOwner:
         self.deadline_timer = self.expiry_retry_timer = self.warm_lease = self.key = None
         self.closed, self.started = False, False
         self._release_inflight = False
+        self._acquisition_cancel = threading.Event()
         self._paid_consent_ids: set[str] = set()
         self._machine_identity: tuple[str, str] | None = None
         selection._read()  # Refuse unsafe paths before opening custody.
@@ -235,6 +237,8 @@ class RunPodLeaseOwner:
         with self.lock:
             if self._release_inflight:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
+            if expected_machine_id is None:
+                self._discard_stale_capacity_intent(self.selection._read())
             record = self._read()
             if expected_machine_id is not None and (record is None or record.get("pod_id") != expected_machine_id):
                 raise RunPodWorkerOwnerError("current lease differs from the requested machine; release refused")
@@ -245,6 +249,41 @@ class RunPodLeaseOwner:
                 return
         self.release(reason="restart", _expected_operation=record["operation_id"],
                      expected_machine_id=expected_machine_id)
+
+    def _discard_stale_capacity_intent(self, raw: Mapping[str, Any] | None) -> bool:
+        if (raw is not None and raw.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
+                and raw.get("safe_to_retry") is True and raw.get("pod_id") is None
+                and raw.get("capacity_rejection") == "ProviderCapacityUnavailable"):
+            # A definite capacity rejection can leave a write-ahead intent
+            # during its wait. Confirm zero exact-name/tag matches before
+            # discarding it; every ambiguous create retains normal recovery.
+            from runpod_lifecycle import api
+            offer = self.selection._recorded_offer(raw)
+            self.selection._owned(raw, offer)
+            config = self.selection.config_factory(offer)
+
+            async def inventory():
+                return await asyncio.wait_for(asyncio.to_thread(api.list_pods, config.api_key), timeout=30)
+
+            pods = _run_sync(inventory())
+            if not isinstance(pods, list) or any(not isinstance(pod, dict) for pod in pods):
+                raise AcquisitionUnresolvedError("stale capacity intent inventory is unresolved")
+            identities = {raw["request_name"], raw["operation_id"]}
+
+            def matches(pod):
+                tags = pod.get("tags", ())
+                tags = tags.values() if isinstance(tags, dict) else tags if isinstance(tags, (list, tuple)) else (tags,)
+                return pod.get("name") == raw["request_name"] or any(tag in identities for tag in tags if isinstance(tag, str))
+
+            if any(matches(pod) for pod in pods):
+                replace_target_record(self.selection.path, {
+                    **raw, "state": "allocation_unknown", "safe_to_retry": False,
+                    "reconciliation_required": True}, operation_id=raw["operation_id"])
+                return False
+            self.selection.path.unlink()
+            print(f"recovered_stale_capacity_intent operation={raw['operation_id']}", file=sys.stderr, flush=True)
+            return True
+        return False
 
     def setup(self) -> Mapping[str, Any]:
         """Persist this owner's validated preferences while no lease is live.
@@ -291,12 +330,13 @@ class RunPodLeaseOwner:
         except Exception as exc:
             self.last_error_type = type(exc).__name__
 
-    def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None) -> RunPodLease:
+    def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
+                cancelled: Callable[[], bool] | None = None) -> RunPodLease:
         from .target_selection import _utc
         if not self.started:
             self.recover()
         with self.lock:
-            if self._release_inflight or not self.started:
+            if self._release_inflight or self._acquisition_cancel.is_set() or not self.started:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
             record = self._read()
             previous = record["lease"] if record is not None else None
@@ -326,19 +366,30 @@ class RunPodLeaseOwner:
             # Only P1's already-owned account lock is bypassed here, as in R02.
             acquired = False
             try:
-                claimed = dict(_run_sync(self.selection._select(consent, lease=lease, lock_held=True)))
+                claimed = dict(_run_sync(self.selection._select(
+                    consent, lease=lease, lock_held=True,
+                    cancelled=lambda: self._acquisition_cancel.is_set() or (cancelled is not None and cancelled()))))
                 acquired = True
+                paid_started = (_utc(claimed["paid_limits"]["authorized_at"]).timestamp()
+                                if previous is None else previous["started_at"])
+                cost = ((max(0, self.clock() - paid_started) * claimed["paid_limits"]["hourly_usd"] / 3600)
+                        if previous is None else previous.get("estimated_cost_usd", 0)
+                        + max(0, self.clock() - previous.get("accounted_at", previous["started_at"]))
+                        * previous["hourly_usd"] / 3600)
                 lease.update(state="active", paid_expires_at=_utc(claimed["paid_limits"]["expires_at"]).timestamp(),
                              hourly_usd=claimed["paid_limits"]["hourly_usd"],
-                             estimated_cost_usd=(0 if previous is None else previous.get("estimated_cost_usd", 0)
-                                 + max(0, self.clock() - previous.get("accounted_at", previous["started_at"]))
-                                 * previous["hourly_usd"] / 3600),
-                             accounted_at=lease["started_at"] if previous is None else self.clock())
-                claimed = self._save(claimed, lease)
+                             started_at=paid_started, estimated_cost_usd=cost, accounted_at=self.clock())
+                claimed = self._save(claimed, lease, estimated_cost_usd=cost)
                 self._paid_consent_ids.add(consent.invocation_id)
                 self._machine_identity = (claimed["operation_id"], claimed["pod_id"])
             except BaseException:
                 current = self.selection._read()
+                if (current is not None and current.get("state") == "allocation_ready"
+                        and current.get("create_attempts") == 0 and current.get("pod_id") is None):
+                    # This process still owns the lock and has not written the
+                    # pending-POST stamp. Cancellation here cannot have allocated.
+                    self.selection.path.unlink()
+                    current = None
                 if current is not None and (acquired or current.get("state") != "claimed"
                                            or current.get("lease", {}).get("state") == "preparing"):
                     self.started = False
@@ -442,6 +493,12 @@ class RunPodLeaseOwner:
 
     def release(self, *, reason: str = "explicit", _expected_operation: str | None = None,
                 expected_machine_id: str | None = None) -> Mapping[str, Any] | None:
+        # Release must reach an acquisition that currently holds self.lock.
+        # Exact-id or old-timer requests cannot cancel a different machine.
+        observed = self.selection._read()
+        if ((expected_machine_id is None or observed is not None and observed.get("pod_id") == expected_machine_id)
+                and (_expected_operation is None or observed is not None and observed.get("operation_id") == _expected_operation)):
+            self._acquisition_cancel.set()
         with self.lock:
             if expected_machine_id is not None:
                 current = self._read()
@@ -471,11 +528,13 @@ class RunPodLeaseOwner:
         finally:
             with self.lock:
                 self._release_inflight = False
+                self._acquisition_cancel.clear()
 
     def _release(self, *, reason: str) -> Mapping[str, Any] | None:
         from .target_selection import RunPodOffer
         from .worker_preparation import reconcile_target
         with self.lock:
+            self._discard_stale_capacity_intent(self.selection._read())
             record = self._read()
             if record is None:
                 return None
@@ -609,6 +668,7 @@ class RunPodLeaseOwner:
 
     def close(self) -> None:
         """Host shutdown; saved custody is cleaned before the next admission."""
+        self._acquisition_cancel.set()
         with self.lock:
             if self._release_inflight:
                 raise RunPodWorkerOwnerError("wait for the in-progress exact release before closing its owner")

@@ -244,6 +244,35 @@ def test_runpod_generate_without_gpu_keeps_saved_policy_request(monkeypatch, cap
     capsys.readouterr()
 
 
+def test_runpod_policy_wait_controls_forward_ceiling_and_capacity_timeout(monkeypatch, capsys):
+    calls = _facade(monkeypatch)
+    assert cli.main(["image", "a dog", "--placement", "runpod", "--gpu", "RTX 4090",
+                     "--consent", "paid", "--max-usd", "2", "--max-hourly-usd", "1.5",
+                     "--capacity-timeout", "2m"]) == 0
+    assert calls[0]["max_hourly_usd"] == 1.5
+    assert calls[0]["capacity_timeout_seconds"] == 120
+    assert calls[0]["placement"]["policy"]["gpu_types"] == ["RTX 4090"]
+    assert "offer_digest" not in calls[0] and "deadline" not in calls[0]
+    capsys.readouterr()
+
+
+def test_runpod_no_wait_for_capacity_is_independent_of_async_generation(monkeypatch, capsys):
+    calls = _facade(monkeypatch)
+    assert cli.main(["image", "a dog", "--placement", "runpod", "--no-wait-for-capacity"]) == 0
+    assert calls[0]["wait_for_capacity"] is False and "wait" not in calls[0]
+    capsys.readouterr()
+
+
+def test_describe_discloses_the_hourly_waiting_ceiling(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(
+        describe=lambda **kwargs: (calls.append(kwargs) or {"waiting_policy": {"max_hourly_usd": kwargs["max_hourly_usd"]}})))
+    assert cli.main(["describe", "--placement", "runpod", "--max-hourly-usd", "1.5", "--json"]) == 0
+    assert calls[0]["max_hourly_usd"] == 1.5
+    assert json.loads(capsys.readouterr().out)["waiting_policy"]["max_hourly_usd"] == 1.5
+
+
 @pytest.mark.parametrize("modality", ["image", "video"])
 def test_installed_console_dispatches_generate_to_the_gateway(monkeypatch, modality):
     from astrid import console

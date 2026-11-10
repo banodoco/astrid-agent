@@ -8,6 +8,7 @@ Generation runs on the prepared pod as a remote machine
 from __future__ import annotations
 
 import json
+import asyncio
 import re
 import threading
 from datetime import datetime, timezone
@@ -46,7 +47,7 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
     p = preferences
     datacenter = p.datacenter_id
     if p.volume_id is not None:
-        volume = await resolve_existing_volume(config.api_key, p.volume_id)
+        volume = await asyncio.wait_for(resolve_existing_volume(config.api_key, p.volume_id), timeout=30)
         inspect_volume_records(RunPodTargetContract(
             "unclaimed", p.gpu_types[0], p.image, p.volume_id, p.volume_name,
             p.volume_size_gb, datacenter_id=datacenter,
@@ -55,20 +56,27 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
         if not isinstance(datacenter, str) or not datacenter:
             raise PaidSelectionError("exact volume datacenter could not be confirmed")
     unavailable = []
+    retry_after = None
     for gpu in p.gpu_types:
-        observed = await gpu_availability(
+        observed = await asyncio.wait_for(gpu_availability(
             api_key=config.api_key, gpu=gpu,
             datacenter_ids=[datacenter] if datacenter is not None else None,
             require_network_volume=p.volume_id is not None,
             container_disk_gb=config.container_disk_gb,
             allowed_cuda_versions=config.allowed_cuda_versions,
             min_cuda_version=config.min_cuda_version,
-        )
+        ), timeout=30)
+        observed_retry = getattr(observed, "retry_after", None)
+        if type(observed_retry) in (int, float) and observed_retry >= 0:
+            retry_after = max(retry_after or 0, observed_retry)
         if getattr(observed, "status", None) == "unknown":
             unavailable.append(_unavailable_offer_reason(getattr(observed, "reason", None)))
         if not observed.gpu_type_id:
             continue
         for dc in observed.datacenters:
+            dc_retry = getattr(dc, "retry_after", None)
+            if type(dc_retry) in (int, float) and dc_retry >= 0:
+                retry_after = max(retry_after or 0, dc_retry)
             if dc.status == "unknown":
                 unavailable.append(_unavailable_offer_reason(getattr(dc, "reason", None)))
             elif dc.status == "available" and dc.price_per_hour is None:
@@ -93,7 +101,7 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
     # Keep the first specific reason in observation order when failures differ.
     reason = next((item for item in unavailable if item != "provider_observation_unavailable"),
                   unavailable[0] if unavailable else "stock_unavailable")
-    raise OfferObservationError(reason)
+    raise OfferObservationError(reason, retry_after=retry_after)
 
 
 def broker_selection(preferences, config, *, account_ref, data_root, compatibility):
@@ -137,7 +145,13 @@ class RunPodAdapter:
         """Return the current, secret-free offer the caller may accept."""
         from dataclasses import asdict
 
-        offer = self.lease_owner.selection.observe_offer()
+        try:
+            offer = self.lease_owner.selection.observe_offer()
+        except OfferObservationError as exc:
+            if exc.reason != "stock_unavailable":
+                raise
+            return {"availability": {"status": "unavailable", "reason": exc.reason},
+                    "preferences": self.lease_owner.selection.preferences.as_mapping()}
         return {"offer": asdict(offer),
                 "offer_digest": offer.digest(self.lease_owner.selection.preferences)}
 
@@ -207,12 +221,14 @@ def _validate_retained_workflow(request):
 def prevalidate_task(policy, inputs, *, scratch):
     """Refuse malformed policy and workflow before constructing the owner."""
     from astrid.core.generation.interfaces import RunPodPreparationRequest
-    from astrid.packs.runpod.target_selection import RunPodPreferences, _utc
+    from astrid.packs.runpod.target_selection import PaidRunConsent, RunPodPreferences, _utc
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
 
     required = {"kind", "engine", "preferences", "offer_digest", "consent", "max_usd", "deadline",
                 "preparation_seconds", "execution_seconds", "idle_seconds"}
-    if (not isinstance(policy, dict) or not required <= set(policy) <= required | {"machine", "placement_idle_seconds"}
+    if (not isinstance(policy, dict) or not required <= set(policy) <= required | {
+            "machine", "placement_idle_seconds", "policy_digest", "max_hourly_usd",
+            "capacity_timeout_seconds", "wait_for_capacity"}
             or policy["kind"] != "runpod"):
         raise PaidSelectionError("target policy lacks exact offer and paid bounds")
     if policy["engine"] not in {"comfyui"}:
@@ -221,7 +237,8 @@ def prevalidate_task(policy, inputs, *, scratch):
         raise PaidSelectionError("a pinned machine must name a live lease's machine id")
     if RunPodPreferences.from_mapping(policy["preferences"]).as_mapping() != policy["preferences"]:
         raise PaidSelectionError("target preferences are not canonical")
-    if not isinstance(policy["offer_digest"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", policy["offer_digest"]):
+    policy_wait = policy.get("policy_digest") is not None
+    if not policy_wait and (not isinstance(policy["offer_digest"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", policy["offer_digest"])):
         raise PaidSelectionError("target policy requires the disclosed offer digest")
     consent = policy["consent"]
     if (not isinstance(consent, list) or "paid" not in consent
@@ -236,7 +253,14 @@ def prevalidate_task(policy, inputs, *, scratch):
         _number(policy["placement_idle_seconds"], "placement idle", zero=True)
     durations = [_number(policy[name], name, zero=True) for name in
                  ("preparation_seconds", "execution_seconds", "idle_seconds")]
-    if sum(durations) <= 0 or (_utc(policy["deadline"]) - datetime.now(timezone.utc)).total_seconds() < sum(durations):
+    if policy_wait:
+        PaidRunConsent("preflight", policy["offer_digest"], policy["max_usd"], policy["deadline"],
+                       tuple(consent), *durations, policy_digest=policy["policy_digest"],
+                       max_hourly_usd=policy.get("max_hourly_usd"),
+                       capacity_timeout_seconds=policy.get("capacity_timeout_seconds"),
+                       wait_for_capacity=policy.get("wait_for_capacity", True)).validate_authority(
+                           preferences, datetime.now(timezone.utc))
+    elif sum(durations) <= 0 or (_utc(policy["deadline"]) - datetime.now(timezone.utc)).total_seconds() < sum(durations):
         raise PaidSelectionError("deadline cannot cover the disclosed paid bounds")
     if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
         raise PaidSelectionError("target policy cannot be combined with an endpoint override")

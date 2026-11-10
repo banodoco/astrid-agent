@@ -12,7 +12,10 @@ import copy
 import hashlib
 import json
 import math
+import random
 import re
+import sys
+import time
 import uuid
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
@@ -56,9 +59,19 @@ _OFFER_FAILURES = {
 class OfferObservationError(PaidSelectionError):
     """Fixed offer diagnostics, independent of provider response/error text."""
 
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, *, retry_after: float | None = None):
         self.reason = reason if isinstance(reason, str) and reason in _OFFER_FAILURES else "observation_failed"
+        self.retry_after = (float(retry_after) if type(retry_after) in (int, float)
+                            and math.isfinite(retry_after) and retry_after >= 0 else None)
         super().__init__(f"RunPod offer unavailable (reason={self.reason}): {_OFFER_FAILURES[self.reason]}", gate="offer")
+
+
+class CapacityWaitCancelled(asyncio.CancelledError):
+    """The caller cancelled before acquisition could safely complete."""
+
+
+class CapacityWaitTimeout(PaidSelectionError):
+    """The disclosed capacity wait or absolute paid deadline passed."""
 
 
 # The readiness timeout the acquisition path already used (was the literal in
@@ -253,20 +266,23 @@ class PaidRunConsent:
     """Fresh per-invocation approval of a disclosed offer and absolute limits."""
 
     invocation_id: str
-    offer_digest: str
+    offer_digest: str | None
     max_usd: float
-    deadline: str
+    deadline: str | None
     consent: tuple[str, ...]
     preparation_seconds: float
     execution_seconds: float
     idle_seconds: float
+    policy_digest: str | None = None
+    max_hourly_usd: float | None = None
+    capacity_timeout_seconds: float | None = None
+    wait_for_capacity: bool = True
 
-    def validate(self, offer: RunPodOffer, preferences: RunPodPreferences, now: datetime) -> datetime:
+    def validate_authority(self, preferences: RunPodPreferences, now: datetime) -> datetime | None:
+        """Validate paid authority before stock observation or any journal write."""
         if "paid" not in self.consent:
             raise PaidSelectionError("fresh explicit paid consent is required")
         _label(self.invocation_id, "invocation id")
-        if self.offer_digest != offer.digest(preferences):
-            raise PaidSelectionError("offer or rate changed; disclose it and obtain fresh paid consent")
         cap = _number(self.max_usd, "USD cap")
         if preferences.budget_cap_usd is not None and cap > preferences.budget_cap_usd:
             raise PaidSelectionError("invocation cap exceeds the saved RunPod budget ceiling")
@@ -274,12 +290,46 @@ class PaidRunConsent:
             ("preparation seconds", self.preparation_seconds),
             ("execution seconds", self.execution_seconds), ("idle seconds", self.idle_seconds),
         ))
-        deadline = _utc(self.deadline)
-        if seconds <= 0 or deadline <= now or (deadline - now).total_seconds() < seconds:
+        if type(self.wait_for_capacity) is not bool:
+            raise PaidSelectionError("wait_for_capacity must be a boolean")
+        if self.capacity_timeout_seconds is not None:
+            _number(self.capacity_timeout_seconds, "capacity timeout seconds")
+        if self.policy_digest is not None:
+            ceiling = _number(self.max_hourly_usd, "hourly USD ceiling")
+            if self.offer_digest is not None or self.policy_digest != policy_consent_digest(preferences, ceiling):
+                raise PaidSelectionError("RunPod waiting policy changed; review the GPU, storage and hourly ceiling again")
+        elif self.max_hourly_usd is not None or not isinstance(self.offer_digest, str):
+            raise PaidSelectionError("an exact offer digest or an explicit waiting policy is required")
+        deadline = _utc(self.deadline) if self.deadline is not None else None
+        if seconds <= 0 or (deadline is not None and (deadline <= now or (deadline - now).total_seconds() < seconds)):
             raise PaidSelectionError("UTC deadline cannot cover preparation, execution and disclosed idle")
+        if deadline is None and self.policy_digest is None:
+            raise PaidSelectionError("an exact offer requires an absolute UTC deadline")
+        return deadline
+
+    def validate(self, offer: RunPodOffer, preferences: RunPodPreferences, now: datetime,
+                 *, allow_policy: bool = False) -> datetime:
+        deadline = self.validate_authority(preferences, now)
+        observed = offer.digest(preferences)
+        if self.policy_digest is None:
+            if self.offer_digest != observed:
+                raise PaidSelectionError("offer or rate changed; disclose it and obtain fresh paid consent")
+        elif not allow_policy:
+            raise PaidSelectionError("keep requires fresh consent for the exact rented offer")
+        elif offer.hourly_usd > self.max_hourly_usd:
+            raise PaidSelectionError("observed RunPod hourly rate exceeds the consented hourly ceiling")
+        seconds = self.preparation_seconds + self.execution_seconds + self.idle_seconds
+        cap = _number(self.max_usd, "USD cap")
         if seconds * offer.hourly_usd / 3600 > cap:
             raise PaidSelectionError("USD cap cannot cover preparation, execution and disclosed idle")
-        return min(deadline, now + timedelta(seconds=cap / offer.hourly_usd * 3600))
+        expiry = now + timedelta(seconds=cap / offer.hourly_usd * 3600)
+        return min(deadline, expiry) if deadline is not None else expiry
+
+
+def policy_consent_digest(preferences: RunPodPreferences, max_hourly_usd: float) -> str:
+    """The explicit waiting policy, independent of any current market offer."""
+    return _digest({"schema": "astrid.runpod.wait-policy.v1", "preferences": preferences.as_mapping(),
+                    "max_hourly_usd": _number(max_hourly_usd, "hourly USD ceiling")})
 
 
 @dataclass(frozen=True)
@@ -312,6 +362,9 @@ class RunPodSelectionOwner:
         data_root: Path | None = None, clock: Callable[[], datetime] | None = None,
         compatibility: RunPodLeaseCompatibility | None = None,
         https_token_file: Path | None = None,
+        sleep: Callable[[float], Any] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        progress: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         if account_ref != preferences.provider_account_ref:
             raise PaidSelectionError("authenticated account differs from selected preferences")
@@ -321,6 +374,7 @@ class RunPodSelectionOwner:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.compatibility = compatibility.as_mapping() if compatibility is not None else None
         self.https_token_file = https_token_file
+        self.sleep, self.monotonic, self.progress = sleep, monotonic, progress
 
     def _read(self) -> dict[str, Any] | None:
         # Legacy sibling handles cannot quietly become a second product owner.
@@ -361,25 +415,26 @@ class RunPodSelectionOwner:
         if "lease" in record and self.compatibility is None:
             raise AcquisitionUnresolvedError("retained lease requires its original owner")
 
-    def consented_offer(self, consent: PaidRunConsent, now: datetime) -> tuple[RunPodOffer, datetime]:
+    def consented_offer(self, consent: PaidRunConsent, now: datetime,
+                        *, offer: RunPodOffer | None = None) -> tuple[RunPodOffer, datetime]:
         """Observe the current offer and validate consent against it, before any claim or create.
 
         A quoted-digest mismatch refuses at zero cost and leaves one secret-free
         refusal record beside (never in) the custody journal.
         """
         try:
-            offer = self.observe_offer()
+            offer = offer if offer is not None else self.observe_offer()
         except OfferObservationError as exc:
-            raise OfferObservationError(exc.reason) from None
+            raise OfferObservationError(exc.reason, retry_after=exc.retry_after) from None
         except Exception:
             raise OfferObservationError("observation_failed") from None
         observed = offer.digest(self.preferences)
-        if consent.offer_digest != observed:
+        if consent.policy_digest is None and consent.offer_digest != observed:
             self._record_offer_refusal(offer, observed, consent.offer_digest, now)
             raise PaidSelectionError(
                 "offer or rate changed; disclose it and obtain fresh paid consent "
                 f"(quoted {str(consent.offer_digest)[:80]}, observed {observed})")
-        return offer, consent.validate(offer, self.preferences, now)
+        return offer, consent.validate(offer, self.preferences, now, allow_policy=True)
 
     def _record_offer_refusal(self, offer: RunPodOffer, observed: str, quoted: Any, now: datetime) -> None:
         # Diagnostic only: a failure to write it never masks or changes the refusal.
@@ -397,15 +452,153 @@ class RunPodSelectionOwner:
         except (OSError, ValueError):
             pass
 
-    async def select(self, consent: PaidRunConsent, *, dry_run: bool = False) -> Mapping[str, Any]:
-        return await self._select(consent, dry_run=dry_run)
+    async def select(self, consent: PaidRunConsent, *, dry_run: bool = False,
+                     cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
+        return await self._select(consent, dry_run=dry_run, cancelled=cancelled)
 
     async def _select(self, consent: PaidRunConsent, *, dry_run: bool = False,
-                      lease: Mapping[str, Any] | None = None, lock_held: bool = False) -> Mapping[str, Any]:
+                      lease: Mapping[str, Any] | None = None, lock_held: bool = False,
+                      cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
+        """One offer/one journaled POST per iteration; ambiguity never re-enters the loop."""
+        consent.validate_authority(self.preferences, self.clock())
+        if dry_run:
+            return await self._select_once(consent, dry_run=True, lease=lease, lock_held=lock_held)
+        self._read()
+        started = self.monotonic()
+
+        def check() -> None:
+            if cancelled is not None and cancelled():
+                raise CapacityWaitCancelled("RunPod capacity wait cancelled")
+            if (consent.capacity_timeout_seconds is not None
+                    and self.monotonic() - started >= consent.capacity_timeout_seconds):
+                raise CapacityWaitTimeout("RunPod capacity timeout passed; no further create will be attempted", gate="capacity")
+            if consent.deadline is not None and self.clock() >= _utc(consent.deadline):
+                raise CapacityWaitTimeout("RunPod paid deadline passed; no further create will be attempted", gate="lifetime")
+
+        async def interruptible(awaitable: Any, *, provider_timeout: float | None = None) -> Any:
+            task = asyncio.ensure_future(awaitable)
+            began = self.monotonic()
+            try:
+                while not task.done():
+                    check()
+                    if provider_timeout is not None and self.monotonic() - began >= provider_timeout:
+                        raise OfferObservationError("provider_transport_or_response_unavailable")
+                    await asyncio.wait({task}, timeout=0.05)
+                result = await task
+                check()
+                return result
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+        def progress(number: int, offer: RunPodOffer | None, result: str) -> None:
+            row = {"attempt": number, "gpu": offer.gpu_type if offer else list(self.preferences.gpu_types),
+                   "datacenter": offer.datacenter_id if offer else self.preferences.datacenter_id,
+                   "result": result}
+            if self.progress is not None:
+                self.progress(row)
+            else:
+                print(f"RunPod capacity attempt {number}: GPU {row['gpu']}, datacenter {row['datacenter'] or 'eligible'}: {result}",
+                      file=sys.stderr, flush=True)
+
+        async def observe() -> RunPodOffer:
+            try:
+                return await asyncio.to_thread(self.observe_offer)
+            except OfferObservationError:
+                raise
+            except Exception:
+                raise OfferObservationError("observation_failed") from None
+
+        prefetched_offer = prefetched_failure = None
+        initial = self._read()
+        if consent.policy_digest is None and (initial is None or initial.get("state") == "cleanup_complete"):
+            try:
+                prefetched_offer = await interruptible(observe(), provider_timeout=30.0)
+            except OfferObservationError as exc:
+                prefetched_failure = exc
+            else:
+                # Preserve the exact-offer refusal before taking claim custody.
+                self.consented_offer(consent, self.clock(), offer=prefetched_offer)
+
+        with nullcontext() if lock_held else target_owner(self.path):
+            number = 0
+            rate_limit_failures = 0
+            while True:
+                check()
+                number += 1
+                offer = None
+                record = self._read()
+                try:
+                    # Retained custody and ambiguous prior POSTs are reconciled using
+                    # their recorded offer, never gated on today's market stock.
+                    if (record is not None and record.get("state") not in
+                            {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}):
+                        offer = self._recorded_offer(record)
+                    elif prefetched_failure is not None:
+                        failure, prefetched_failure = prefetched_failure, None
+                        raise failure
+                    elif prefetched_offer is not None:
+                        offer, prefetched_offer = prefetched_offer, None
+                    else:
+                        offer = await interruptible(observe(), provider_timeout=30.0)
+                    rate_limit_failures = 0
+                    offer, _ = self.consented_offer(consent, self.clock(), offer=offer)
+                    result = await interruptible(self._select_once(
+                        consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
+                    progress(number, offer, "claimed")
+                    return result
+                except OfferObservationError as exc:
+                    progress(number, offer, exc.reason)
+                    if not consent.wait_for_capacity or exc.reason not in {"stock_unavailable", "provider_rate_limited"}:
+                        raise
+                    rate_limit_failures = rate_limit_failures + 1 if exc.reason == "provider_rate_limited" else 0
+                    base_delay = min(60.0, 5.0 * 2 ** (rate_limit_failures - 1)) if rate_limit_failures else 5.0
+                    delay = max(base_delay + random.uniform(0.0, 0.5), exc.retry_after or 0.0)
+                except CapacityExhaustedError:
+                    current = self._read()
+                    if (current is None or current.get("pod_id") is not None
+                            or current.get("state") not in {"capacity_retry_ready", "capacity_exhausted"}
+                            or current.get("safe_to_retry") is not True
+                            or current.get("capacity_rejection") != "ProviderCapacityUnavailable"):
+                        raise AcquisitionUnresolvedError("capacity rejection lacks exact no-pod retry proof") from None
+                    progress(number, offer, "capacity_rejected")
+                    if not consent.wait_for_capacity:
+                        raise
+                    delay = 5.0 + random.uniform(0.0, 0.5)
+                check()
+                if consent.capacity_timeout_seconds is not None:
+                    delay = min(delay, max(0.0, consent.capacity_timeout_seconds - (self.monotonic() - started)))
+                if consent.deadline is not None:
+                    delay = min(delay, max(0.0, (_utc(consent.deadline) - self.clock()).total_seconds()))
+                await interruptible((self.sleep or asyncio.sleep)(delay))
+
+    def _recorded_offer(self, record: Mapping[str, Any]) -> RunPodOffer:
+        concrete = record.get("consented_offer")
+        if isinstance(concrete, dict):
+            return RunPodOffer(**concrete)
+        limits = record.get("paid_limits") or {}
+
+        @dataclass(frozen=True)
+        class RecordedOffer(RunPodOffer):
+            def digest(self, preferences: RunPodPreferences) -> str:
+                # The original offer id was not stored by older journals. Its
+                # exact accepted digest remains in the paid authority record.
+                RunPodOffer.digest(self, preferences)
+                return limits.get("offer_digest")
+
+        return RecordedOffer(record.get("provider_account_ref"), record.get("gpu_type"),
+                             limits.get("hourly_usd"), "retained-offer",
+                             record.get("network_volume_datacenter_id"), record.get("accepted_gpu_type_id"))
+
+    async def _select_once(self, consent: PaidRunConsent, *, dry_run: bool = False,
+                           lease: Mapping[str, Any] | None = None, lock_held: bool = False,
+                           offer: RunPodOffer | None = None,
+                           cancelled: Callable[[], None] | None = None) -> Mapping[str, Any]:
         p, now = self.preferences, self.clock()
         if not dry_run and lease is None and (self.compatibility is not None or p.volume_id is None):
             raise PaidSelectionError("this target requires admission through the retained lease owner")
-        offer, expires = self.consented_offer(consent, now)
+        offer, expires = self.consented_offer(consent, now, offer=offer)
         preview = {"offer": asdict(offer), "max_usd": consent.max_usd, "deadline": consent.deadline,
                    "expires_at": expires.isoformat(), "claim_handle_path": str(self.path)}
         if dry_run:
@@ -462,15 +655,25 @@ class RunPodSelectionOwner:
             except Exception:
                 raise AcquisitionUnresolvedError("existing account volume cannot be confirmed before claim or reuse") from None
             if record is not None:
+                safe_capacity = (record.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
+                                 and record.get("safe_to_retry") is True and not record.get("pod_id")
+                                 and record.get("capacity_rejection") == "ProviderCapacityUnavailable")
+                if safe_capacity:
+                    self._owned(record, self._recorded_offer(record))
+                    if record.get("paid_limits", {}).get("invocation_id") != consent.invocation_id:
+                        raise AcquisitionUnresolvedError("stale capacity intent requires owner recovery before another invocation")
+                    record = {**record, "gpu_type": offer.gpu_type, "accepted_gpu_type_id": offer.gpu_type_id,
+                              "network_volume_datacenter_id": datacenter, "consented_offer": asdict(offer)}
                 self._owned(record, offer)
                 if "lease" in record and lease is None:
                     raise AcquisitionUnresolvedError("retained lease requires admission through its owner")
                 if record.get("state") not in {
                     "claimed", "allocation_ready", "allocation_pending", "allocation_unknown", "allocated_unverified",
+                    "capacity_retry_ready", "capacity_exhausted",
                 }:
                     raise AcquisitionUnresolvedError("pending cleanup or expired custody prevents admission or renewal")
                 previous = record.get("paid_limits", {})
-                if previous.get("expires_at"):
+                if previous.get("expires_at") and not safe_capacity:
                     expires = min(expires, _utc(previous["expires_at"]))
                     required = consent.preparation_seconds + consent.execution_seconds + consent.idle_seconds
                     if (expires - now).total_seconds() < required:
@@ -492,7 +695,8 @@ class RunPodSelectionOwner:
                     "network_volume_datacenter_id": datacenter,
                     "handle_path": str(self.path), "transport": "https",
                     "reconciliation_required": True,
-                    "paid_limits": {"invocation_id": consent.invocation_id, "offer_digest": consent.offer_digest,
+                    "consented_offer": asdict(offer),
+                    "paid_limits": {"invocation_id": consent.invocation_id, "offer_digest": offer.digest(p),
                                     "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
                                     "deadline": consent.deadline, "expires_at": expires.isoformat(),
                                     "authorized_at": now.isoformat(), "idle_seconds": consent.idle_seconds},
@@ -510,10 +714,13 @@ class RunPodSelectionOwner:
                     write_target_record(self.path, record)
             volume = {"id": p.volume_id, "name": p.volume_name, "size": p.volume_size_gb,
                       "dataCenterId": datacenter}
-            limits = {"invocation_id": consent.invocation_id, "offer_digest": consent.offer_digest,
+            limits = {"invocation_id": consent.invocation_id, "offer_digest": offer.digest(p),
                       "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
                       "deadline": consent.deadline, "expires_at": expires.isoformat(),
-                      "authorized_at": now.isoformat(), "idle_seconds": consent.idle_seconds}
+                      "authorized_at": record.get("paid_limits", {}).get("authorized_at", now.isoformat()),
+                      "idle_seconds": consent.idle_seconds,
+                      **({"policy_digest": consent.policy_digest, "max_hourly_usd": consent.max_hourly_usd}
+                         if consent.policy_digest is not None else {})}
             if record["state"] == "claimed":
                 try:
                     observation = await observe_exact_target(config.api_key, RunPodTargetContract(
@@ -525,17 +732,38 @@ class RunPodSelectionOwner:
                 acquired_record = dict(record)
             else:
                 # Paid limits survive a lost create response and process restart.
+                safe_capacity = (record["state"] in {"capacity_retry_ready", "capacity_exhausted"}
+                                 and record.get("safe_to_retry") is True
+                                 and record.get("capacity_rejection") == "ProviderCapacityUnavailable")
+                if not safe_capacity and (record["state"] != "allocation_ready" or record.get("create_attempts", 0)):
+                    limits = dict(record["paid_limits"])
+                    expires = _utc(limits["expires_at"])
                 record = {**record, "paid_limits": limits}
                 replace_target_record(self.path, record, operation_id=record["operation_id"])
                 # These are the existing decorated implementations. This scope
                 # already owns their exact .owner.lock; do not acquire it twice.
                 from runpod_lifecycle import NotReadyTimeout
                 try:
-                    if record["state"] == "allocation_ready" and record.get("create_attempts") == 0:
+                    if ((record["state"] == "allocation_ready" and record.get("create_attempts") == 0)
+                            or safe_capacity):
+                        def before_post(pending):
+                            if cancelled is not None:
+                                cancelled()
+                            stamp = self.clock()
+                            paid_expiry = consent.validate(offer, p, stamp, allow_policy=True)
+                            paid = {**limits, "authorized_at": stamp.isoformat(), "expires_at": paid_expiry.isoformat()}
+                            return {**pending, "paid_limits": paid, "consented_offer": asdict(offer),
+                                    "last_create_started_at": stamp.isoformat(),
+                                    **({"lease": {**pending["lease"], "started_at": stamp.timestamp()}}
+                                       if "lease" in pending else {})}
+
                         acquired = await acquire_target.__wrapped__(
                             config, handle_path=self.path, attempt=record, volume=volume, pod_id=None,
                             max_wait_seconds=max(1, int((expires - now).total_seconds())),
-                            capacity_window_seconds=60, retry_interval_seconds=15, max_create_attempts=10,
+                            capacity_window_seconds=60, retry_interval_seconds=15,
+                            max_create_attempts=record.get("create_attempts", 0) + 1,
+                            allow_capacity_retry=safe_capacity,
+                            single_attempt=True, before_post=before_post,
                             ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
                         )
                     else:
@@ -558,6 +786,10 @@ class RunPodSelectionOwner:
                         gate=gate,
                     ) from None
                 acquired_record, observation = dict(acquired.attempt), acquired.observation
+                # The successful (or reconciled) attempt owns the durable clock.
+                # Readiness and later invocations never restart that paid window.
+                limits = dict(acquired_record["paid_limits"])
+                expires = _utc(limits["expires_at"])
             try:
                 status, exact = await asyncio.to_thread(read_exact_pod, config.api_key, observation.pod_id)
                 if (status != 200 or exact is None
