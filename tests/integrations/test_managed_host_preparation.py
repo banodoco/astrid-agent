@@ -583,3 +583,139 @@ def test_native_preparation_installs_only_allowed_addon_or_refuses_before_execut
             if step.kind in {'source', 'environment'}: runner.execute(step, readonly=True)
     finally:
         prep.close()
+
+
+@pytest.mark.parametrize('outcome', ['capsule', 'base', 'cancel', 'report-cancel', 'receipt-failure', 'stop-uncertain', 'success'])
+def test_owned_doctor_retains_custody_through_preparation_completion(tmp_path, monkeypatch, managed_install, outcome):
+    """The real doctor launches a real owned CPU server before the injected fault."""
+    import os
+    import socket
+    from concurrent.futures import CancelledError
+    from astrid.core.generation.engine_contracts import CustodyUnresolved, IntegrityError
+    from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value
+    client, payload, recipe, root, started, bootstrap = managed_install
+    source = tmp_path / 'workflow.json'
+    source.write_text(json.dumps(_workflow()))
+    loaded = load_workflow_path(source, tmp_path / 'author', comfy_url=f'http://127.0.0.1:{recipe.start.port}')
+    workflow = _canonical_bundle_value(loaded.resolved).workflow
+    workflow.metadata['model_assets'] = []
+    client.stop_owned(deadline=time.monotonic() + 15)
+    started.unlink()
+    cancelled, events = [], []
+    prep = ManagedEnginePreparation(task='completion-task', attempt='completion-attempt', mode='align',
+        deadline=time.monotonic() + 90, cancelled=lambda: bool(cancelled), scratch=tmp_path / 'completion')
+    original_lock = prep.adapter.local_install_lock
+    class Lock:
+        def __init__(self, lock): self.lock = lock
+        def __enter__(self): return self.lock.__enter__()
+        def __exit__(self, *args):
+            events.append('unlock')
+            try:
+                if outcome != 'success':
+                    assert events[-2:] == ['stopped-and-drained', 'unlock']
+                    assert not (root / '.astrid-engine/session/session.json').exists()
+                    for pid in started.read_text().splitlines():
+                        with pytest.raises(ProcessLookupError): os.kill(int(pid), 0)
+                    with socket.socket() as probe:
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        probe.bind(('127.0.0.1', recipe.start.port))
+            finally:
+                self.lock.__exit__(*args)
+    monkeypatch.setattr(prep.adapter, 'local_install_lock', lambda *args, **kw: Lock(original_lock(*args, **kw)))
+    original_stop = prep.context.service_client.stop_owned
+    def stop(*, deadline):
+        events.append('stop-exact')
+        if outcome == 'stop-uncertain': raise TimeoutError('PRIVATE_STOP_DETAIL')
+        original_stop(deadline=deadline)
+        events.append('stopped-and-drained')
+    monkeypatch.setattr(prep.context.service_client, 'stop_owned', stop)
+    original_command = prep._command
+    def command(argv):
+        result = original_command(argv)
+        if argv[0] == 'doctor':
+            assert started.is_file()
+            assert len(started.read_text().splitlines()) == 1
+            events.append('doctor-completed')
+            if outcome in {'capsule', 'stop-uncertain'}:
+                (prep.scratch / 'canonical/workflow.py').write_text('changed after doctor\n')
+            elif outcome == 'base':
+                path = root / 'runtime/ComfyUI/tiny.py'
+                path.write_text(path.read_text() + '\n# changed after doctor\n')
+            elif outcome == 'cancel': cancelled.append(True)
+        return result
+    monkeypatch.setattr(prep, '_command', command)
+    if outcome == 'report-cancel':
+        original_prepare = prep._prepare
+        def cancel_completed_report(*args, **kwargs):
+            report = original_prepare(*args, **kwargs)
+            cancelled.append(True)
+            return report
+        monkeypatch.setattr(prep, '_prepare', cancel_completed_report)
+    if outcome == 'receipt-failure':
+        from astrid.core.generation import engine_runner
+        original_refresh = engine_runner.refresh_installed_launch
+        def fail_after_refresh(*args, **kwargs):
+            original_refresh(*args, **kwargs)
+            raise IntegrityError('injected failure after receipt refresh')
+        monkeypatch.setattr(engine_runner, 'refresh_installed_launch', fail_after_refresh)
+    try:
+        def prepare():
+            return prep.prepare(source, execution_identity='execution', inputs={'workflow': str(source)},
+                canonical_workflow=workflow, input_digests={'workflow': hashlib.sha256(source.read_bytes()).hexdigest()})
+        if outcome == 'success':
+            assert prepare()['health']['healthy'] is True
+            prep.close()
+            assert events == ['doctor-completed', 'unlock']
+            assert (root / '.astrid-engine/session/session.json').exists()
+        elif outcome == 'stop-uncertain':
+            with pytest.raises(CustodyUnresolved, match='stop remains unconfirmed') as error: prepare()
+            assert 'PRIVATE_STOP_DETAIL' not in str(error.value)
+            with pytest.raises(CustodyUnresolved): prep.close()
+            assert prep.uncertain and prep.lock is not None
+            assert events == ['doctor-completed', 'stop-exact']
+            # The OS lock remains held, not just a Python flag.
+            contender = subprocess.run(['flock', '-n', str(root / '.astrid-engine/install.lock'), 'true'])
+            assert contender.returncode != 0
+        else:
+            with pytest.raises(CancelledError if outcome in {'cancel', 'report-cancel'} else IntegrityError): prepare()
+            prep.close()
+            assert events == ['doctor-completed', 'stop-exact', 'stopped-and-drained', 'unlock']
+    finally:
+        # Fixture-only recovery after the retained-fence assertion.
+        original_stop(deadline=time.monotonic() + 15)
+        if prep.lock is not None:
+            prep.lock.lock.__exit__(None, None, None)
+            prep.lock = None
+
+
+@pytest.mark.parametrize('mutation', ['capsule', 'base', 'environment'])
+def test_native_mutation_is_refused_before_owned_doctor_launch(tmp_path, monkeypatch, managed_install, mutation):
+    from astrid.core.generation.engine_contracts import IntegrityError
+    from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value
+    client, payload, recipe, root, started, bootstrap = managed_install
+    source = tmp_path / 'workflow.json'
+    source.write_text(json.dumps(_workflow()))
+    loaded = load_workflow_path(source, tmp_path / 'author', comfy_url=f'http://127.0.0.1:{recipe.start.port}')
+    workflow = _canonical_bundle_value(loaded.resolved).workflow
+    workflow.metadata['model_assets'] = []
+    client.stop_owned(deadline=time.monotonic() + 15)
+    started.unlink()
+    prep = ManagedEnginePreparation(task='mutation-task', attempt='mutation-attempt', mode='align',
+        deadline=time.monotonic() + 90, cancelled=lambda: False, scratch=tmp_path / 'mutation')
+    original_command = prep._command
+    def command(argv):
+        result = original_command(argv)
+        if argv[0] == 'prepare':
+            path = {'capsule': prep.scratch / 'canonical/workflow.py',
+                    'base': root / 'runtime/ComfyUI/tiny.py',
+                    'environment': root / '.astrid-engine/environments' / recipe.primary_environment / 'requirements.lock'}[mutation]
+            path.write_text(path.read_text() + '\n# mutated by preparation\n')
+        return result
+    monkeypatch.setattr(prep, '_command', command)
+    try:
+        with pytest.raises(IntegrityError):
+            prep.prepare(source, execution_identity='execution', inputs={'workflow': str(source)},
+                canonical_workflow=workflow, input_digests={'workflow': hashlib.sha256(source.read_bytes()).hexdigest()})
+        assert not started.exists(), 'mutated installation executed before base rejection'
+    finally:
+        prep.close()

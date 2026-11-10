@@ -190,6 +190,8 @@ def test_doctor_failure_stops_exact_owned_engine_and_retains_uncertain_lock(tmp_
     prep.deadline = time.monotonic() + 30
     prep.recipe = SimpleNamespace(start=SimpleNamespace(port=8188))
     prep.uncertain = False
+    prep._alignment_verification = ()
+    prep._verify_alignment = lambda: None
     events = []
     health = SimpleNamespace(object_info_sha256='a' * 64)
     def check_health():
@@ -225,3 +227,22 @@ def test_doctor_failure_stops_exact_owned_engine_and_retains_uncertain_lock(tmp_
         assert events[-2:] == ['stop_exact', 'unlock']
     assert events[0:3] == ['start', 'health', 'doctor']
     assert events.count('stop_exact') == 1
+
+
+def test_doctor_does_not_stop_a_refused_engine_owner():
+    from astrid.core.generation.engine_contracts import EndpointOwnershipError
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep.check = lambda: None
+    prep._alignment_verification = ()
+    prep._verify_alignment = lambda: None
+    prep.uncertain = False
+    prep.report = None
+    events = []
+    def refuse(**kwargs): raise EndpointOwnershipError('service incarnation or launch binding differs')
+    prep._alignment_runner = SimpleNamespace(start=refuse)
+    prep.context = SimpleNamespace(service_client=SimpleNamespace(
+        stop_owned=lambda **kwargs: pytest.fail('refused owner was stopped')))
+    prep.lock = SimpleNamespace(__exit__=lambda *args: events.append('unlock'))
+    with pytest.raises(EndpointOwnershipError): prep._doctor(['doctor', '/workflow.py'])
+    prep.close()
+    assert events == ['unlock']
