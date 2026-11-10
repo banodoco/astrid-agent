@@ -723,7 +723,11 @@ def _pack_element_kind_registry(definition: CanonicalPackDefinition) -> tuple[An
     )
 
     elements = definition.extensions.get("elements")
-    if elements is None or "kinds" not in elements:
+    if elements is None:
+        return ELEMENT_KIND_REGISTRY, ()
+    if not isinstance(elements, Mapping):
+        raise CanonicalPackValidationError("extensions.elements must be an object")
+    if "kinds" not in elements:
         return ELEMENT_KIND_REGISTRY, ()
     try:
         kinds = _normalize_element_kinds(_thaw(elements["kinds"]), path="extensions.elements.kinds")

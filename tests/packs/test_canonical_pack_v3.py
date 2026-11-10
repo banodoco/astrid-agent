@@ -208,6 +208,42 @@ def test_element_kind_neither_built_in_nor_declared_by_this_pack_is_refused(
     assert "declared by pack 'demo' in extensions.elements.kinds" in message
 
 
+@pytest.mark.parametrize("elements", [["widgets"], "widgets"], ids=["list", "string"])
+def test_non_mapping_pack_element_extensions_are_refused(tmp_path: Path, elements) -> None:
+    path = "rendering/elements/widgets/glow/element.yaml"
+    root = _pack(tmp_path, files={path: yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": "demo"})},
+                 extensions={"elements": elements},
+                 rendering={"widgets/glow": {"type": "element", "path": path}})
+    with pytest.raises(CanonicalPackValidationError, match="extensions.elements must be an object"):
+        validate_canonical_pack(root)
+
+
+def test_two_packs_declaring_one_custom_kind_each_load_and_the_merge_names_both(tmp_path: Path) -> None:
+    """Each pack is valid alone; combining them fails clearly instead of picking an owner."""
+    from astrid.core.element.registry import _element_kind_registry_for_packs
+    from astrid.core.pack._common import PackValidationError
+    from astrid.core.pack.loader import load_pack_manifest
+
+    packs = []
+    for pack_id in ("demo_a", "demo_b"):
+        root = tmp_path / pack_id
+        path = "rendering/elements/widgets/glow/element.yaml"
+        (root / path).parent.mkdir(parents=True)
+        (root / path).write_text(yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": pack_id}), encoding="utf-8")
+        (root / "pack.yaml").write_text(yaml.safe_dump({
+            "schema_version": 3, "id": pack_id, "name": pack_id, "version": "1.0.0",
+            "extensions": {"elements": {"kinds": [{"id": "widgets", "singular": "widget"}]}},
+            "rendering": {"widgets/glow": {"type": "element", "path": path}},
+        }), encoding="utf-8")
+        packs.append(load_pack_manifest(root / "pack.yaml"))
+
+    assert "widgets" in _element_kind_registry_for_packs(packs[:1]).canonical_kinds()
+    with pytest.raises(PackValidationError, match=(
+        r"element kind 'widgets' is declared by more than one pack: 'demo_a' and 'demo_b'"
+    )):
+        _element_kind_registry_for_packs(packs)
+
+
 def test_malformed_pack_element_kinds_are_refused(tmp_path: Path) -> None:
     path = "rendering/elements/widgets/glow/element.yaml"
     root = _pack(tmp_path, files={path: yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": "demo"})},

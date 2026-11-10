@@ -483,20 +483,20 @@ def test_get_capability_raises_typed_lookup_errors() -> None:
         )
 
 
-def _write_demo_widget_pack(packs_root: Path) -> None:
-    """Write the schema v3 ``demo`` pack: it declares the ``widgets`` kind and ships ``widgets/glow``.
+def _write_demo_widget_pack(packs_root: Path, pack_id: str = "demo") -> None:
+    """Write a schema v3 pack (default ``demo``) that declares the ``widgets`` kind and ships ``widgets/glow``.
 
     Discovery quarantines v1/v2 manifests, so the element is declared under
     ``rendering`` with its descriptor beneath rendering/ (v3 has no folder scan).
     """
-    pack_root = packs_root / "demo"
+    pack_root = packs_root / pack_id
     element_dir = Path("rendering") / "elements" / "widgets" / "glow"
     (pack_root / element_dir).mkdir(parents=True)
     (pack_root / "pack.yaml").write_text(
         json.dumps(
             {
                 "schema_version": 3,
-                "id": "demo",
+                "id": pack_id,
                 "name": "Demo Pack",
                 "version": "0.1.0",
                 "pack_api": "2.0",
@@ -531,7 +531,7 @@ def _write_demo_widget_pack(packs_root: Path) -> None:
             {
                 "id": "glow",
                 "kind": "widget",
-                "pack_id": "demo",
+                "pack_id": pack_id,
                 "metadata": {"label": "Glow"},
                 "schema": {"type": "object"},
                 "defaults": {"enabled": True},
@@ -595,6 +595,22 @@ def test_discover_exposes_a_v3_pack_declared_element_kind_and_its_element() -> N
         element = next(element for element in inventory.elements if element.id == "widgets/glow")
         assert element.capability_type == "element"
         assert element.handle.kind == "widgets"
+
+
+def test_discover_fails_clearly_when_two_packs_declare_one_custom_element_kind() -> None:
+    """A custom kind belongs to one pack: discovery names both declaring packs, not a bare duplicate."""
+    astrid = _import_public_module()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        packs_root = Path(tmp) / "packs"
+        _write_demo_widget_pack(packs_root, "demo_a")
+        _write_demo_widget_pack(packs_root, "demo_b")
+
+        with pytest.raises(
+            Exception,
+            match=r"element kind 'widgets' is declared by more than one pack: 'demo_a' and 'demo_b'",
+        ):
+            astrid.discover(extra_pack_roots=(str(packs_root),))
 
 
 def test_invoke_rejects_elements_and_missing_executor_project(
