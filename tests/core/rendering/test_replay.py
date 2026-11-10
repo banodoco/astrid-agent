@@ -202,7 +202,7 @@ def test_manifest_digest_drift_refused_without_acknowledgement(
 
     # Fixture correction after capture: the backend manifest changes, so the
     # current manifest digest no longer matches the pinned one.
-    manifest = extra_root / "raw_command" / "renderer.yaml"
+    manifest = extra_root / "raw_command" / "rendering" / "renderer.yaml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8") + "\n# corrected fixture\n",
         encoding="utf-8",
@@ -235,7 +235,7 @@ def test_acknowledged_manifest_drift_proceeds_and_produces_expected_output(
     candidate = _candidate(extra_root)
     bundle_dir = _make_bundle(tmp_path, candidate)
 
-    manifest = extra_root / "raw_command" / "renderer.yaml"
+    manifest = extra_root / "raw_command" / "rendering" / "renderer.yaml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8") + "\n# corrected fixture\n",
         encoding="utf-8",

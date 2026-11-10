@@ -122,11 +122,16 @@ def _starter_manifest(
     dependency: str,
 ) -> dict[str, Any]:
     role_names = ", ".join(roles) if roles else "support-only"
+    from astrid.pack_api import VERSION as PACK_API_VERSION
+
     manifest: dict[str, Any] = {
         "schema_version": 3,
         "id": pack_id,
         "name": pack_name,
         "version": "0.1.0",
+        # External v3 packs must declare the pack API they target, or discovery
+        # quarantines them ("Pack does not declare pack_api compatibility").
+        "pack_api": "%d.%d" % PACK_API_VERSION,
         "description": (
             f"Starter pack for {pack_name} demonstrating {role_names} declarations; "
             "replace this with a summary of the pack's actual contribution."
