@@ -127,6 +127,19 @@ def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, ver
             if (not original.is_dir() or original.name != pack_id or original == root
                     or str(original) != relocation["original_root"]):
                 raise ValueError("invalid verified pack original root")
+            from runtime_protocol import platform
+            from astrid.sdk.storage_root import resolve_runtime_data_root
+
+            area = resolve_runtime_data_root() / "runtime" / "pack-captures"
+            if (root.parent.parent != area or not platform.is_owner_only(area)
+                    or not platform.is_owner_only(root.parent)):
+                raise ValueError("verified pack snapshot must have private host custody in the capture area")
+        if pack_id == "personal":
+            from astrid.personal_packs_root import resolve_personal_packs_root
+
+            personal = resolve_personal_packs_root()
+            if personal is None or original != personal / "personal":
+                raise ValueError("selected personal pack must use the canonical personal root")
         if builtin.is_dir() and builtin.resolve() != original:
             raise ValueError("external selected pack collides with an in-tree pack")
         if not re.fullmatch(r"[0-9a-f]{64}", entry["source_digest"]):
@@ -149,14 +162,24 @@ def selected_pack_environment(selected: Mapping[str, Mapping[str, str]], *,
     relocations = verified_relocations if verified_relocations is not None else {}
     if relocations:
         validate_selected_pack_map(selected, verified_relocations=relocations)
-    # A bundled snapshot keeps its bundled collection identity. The raw-source
-    # finder binds its executable imports to the snapshot; advertising it as an
-    # external collection would make catalog discovery see two owners for X.
-    roots = dict.fromkeys(str(Path(entry["root"]).parent) for pack_id, entry in selected.items()
-                          if Path(relocations.get(pack_id, {}).get("original_root", entry["root"])).parent != builtin)
-    return {"ASTRID_PACKS_PATH": os.pathsep.join(roots),
-            "ASTRID_SELECTED_PACK_MAP": json.dumps(selected, sort_keys=True),
-            "ASTRID_VERIFIED_PACK_RELOCATIONS": json.dumps(verified_relocations or {}, sort_keys=True)}
+    # Every snapshot keeps its original collection identity. The raw-source
+    # finder binds executable imports to the snapshot; discovery must still
+    # see only one owner, including for personal and other external packs.
+    roots = {}
+    for pack_id, entry in selected.items():
+        collection = Path(relocations.get(pack_id, {}).get("original_root", entry["root"])).parent
+        if collection != builtin:
+            roots[str(collection)] = None
+    environment = {"ASTRID_PACKS_PATH": os.pathsep.join(roots),
+                   "ASTRID_SELECTED_PACK_MAP": json.dumps(selected, sort_keys=True),
+                   "ASTRID_VERIFIED_PACK_RELOCATIONS": json.dumps(verified_relocations or {}, sort_keys=True)}
+    if relocations:
+        from astrid.sdk.storage_root import resolve_runtime_data_root
+
+        # The worker must verify custody against the same host-selected area,
+        # even when its ordinary subprocess environment omits root selectors.
+        environment["ASTRID_RUNTIME_DATA_ROOT"] = str(resolve_runtime_data_root())
+    return environment
 
 
 def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str] | None = None,

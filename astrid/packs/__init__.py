@@ -68,13 +68,18 @@ def _check_collisions(roots: tuple[Path, ...], *, selected=None, verified_reloca
     for root in roots:
         for name in _child_directory_names(root):
             path = root / name
-            if name == "personal" and root != _PERSONAL_ROOT:
+            relocation = relocations.get(name)
+            canonical_personal_relocation = (
+                relocation and _PERSONAL_ROOT is not None
+                and Path(relocation["original_root"]) == _PERSONAL_ROOT / "personal"
+                and path.resolve() == Path(relocation["root"])
+            )
+            if name == "personal" and root != _PERSONAL_ROOT and not canonical_personal_relocation:
                 raise ImportError(
                     f"refusing astrid.packs: reserved personal directory at {path}; "
                     f"canonical root is {_PERSONAL_ROOT}"
                 )
             if name in owners:
-                relocation = relocations.get(name)
                 if not (relocation and path.resolve() == Path(relocation["root"])
                         and owners[name].resolve() == Path(relocation["original_root"])):
                     raise ImportError(
