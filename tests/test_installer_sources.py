@@ -291,7 +291,9 @@ def test_stage_uses_source_overrides_and_records_manifest(
     value["agent"]["repo"] = str(tmp_path / "agent")
     value["runtime"]["repo"] = (tmp_path / "runtime").as_uri()
     if with_vibecomfy:
-        value["vibecomfy"] = {"sha": "c" * 40, "repo": str(tmp_path / "vibecomfy")}
+        value["vibecomfy"] = {"sha": VIBECOMFY_ENGINE_REVISION, "repo": str(tmp_path / "vibecomfy")}
+        # The installer running an update can belong to an older release.
+        monkeypatch.setattr("astrid.installer.backend.VIBECOMFY_ENGINE_REVISION", "f" * 40)
     backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv", managed_by=managed_by)
     backend.uv.touch()
     # The CLI writes this marker before staging; install_identity reads managed_by from it.
@@ -302,6 +304,7 @@ def test_stage_uses_source_overrides_and_records_manifest(
     def materialize(name, sha, destination, *, repo=None):
         calls.append((name, sha, destination, repo))
         if name == "agent":
+            shutil.copytree(Path(__file__).parents[1] / "astrid/packs", destination / "astrid/packs")
             (destination / "remotion/node_modules").mkdir(parents=True)
             (destination / "remotion/package-lock.json").write_text("{}\n")
             canonical = Path(__file__).parents[1] / "astrid/core/timeline/schema/timeline-config.schema.json"
@@ -492,6 +495,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         destination.mkdir(parents=True)
         (destination / "fresh-source.txt").write_text(f"{name}:{sha}")
         if name == "agent":
+            shutil.copytree(Path(__file__).parents[1] / "astrid/packs", destination / "astrid/packs")
             (destination / "remotion/node_modules").mkdir(parents=True)
             (destination / "remotion/package-lock.json").write_text("{}\n")
             checkout = Path(__file__).resolve().parents[1]
@@ -673,7 +677,7 @@ def test_vibecomfy_download_uses_the_pinned_fork(tmp_path, monkeypatch):
     destination = tmp_path / "v"
     tools.source("vibecomfy", VIBECOMFY_ENGINE_REVISION, destination)
     assert requests == [
-        f"https://github.com/peteromallet/VibeComfy/archive/{VIBECOMFY_ENGINE_REVISION}.tar.gz"
+        f"https://github.com/banodoco/VibeComfy/archive/{VIBECOMFY_ENGINE_REVISION}.tar.gz"
     ]
     assert (destination / "vibecomfy/__init__.py").is_file()
 
@@ -770,3 +774,32 @@ def test_missing_candidate_or_product_root_directory_is_named(tmp_path, missing)
     with pytest.raises(ValueError) as caught:
         backend_module._secure_installed_schema_inputs(folder, product)
     assert str(caught.value) == f"staged Agent is missing: {expected}"
+
+
+def test_stage_checks_explicit_vibe_pin_before_fetching_other_sources(tmp_path, monkeypatch):
+    value = manifest()
+    value["vibecomfy"] = {"sha": "0" * 40}
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    backend.uv.touch()
+    monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: "uv 1.2.3")
+    calls = []
+
+    def materialize(name, sha, destination, **kwargs):
+        calls.append(name)
+        assert name == "agent"
+        shutil.copytree(Path(__file__).parents[1] / "astrid/packs", destination / "astrid/packs")
+        return destination
+
+    monkeypatch.setattr("astrid.installer.backend.source", materialize)
+    with pytest.raises(ValueError, match="staged Agent recipe"):
+        backend.stage(value, tmp_path / "program", tmp_path / "data")
+    assert calls == ["agent"]
+
+
+def test_staged_recipe_pin_comes_from_target_and_rejects_corruption(tmp_path):
+    packs = tmp_path / "astrid/packs"
+    shutil.copytree(Path(__file__).parents[1] / "astrid/packs", packs)
+    assert Backend._staged_vibecomfy_revision(tmp_path) == VIBECOMFY_ENGINE_REVISION
+    (packs / "runpod/pins.json").write_text('{}')
+    with pytest.raises(ValueError, match="digest mismatch"):
+        Backend._staged_vibecomfy_revision(tmp_path)

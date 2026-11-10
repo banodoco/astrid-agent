@@ -1229,6 +1229,40 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     target.unlink()
                 copy_support(item, target)
 
+    @staticmethod
+    def _staged_vibecomfy_revision(agent: Path) -> str:
+        """Read the target Agent's digest-bound engine recipe using only stdlib."""
+        root = agent / "astrid"
+
+        def referenced(ref):
+            path = ref["path"]
+            if not isinstance(path, str) or not path.startswith("packs/") or any(
+                part in {"", ".", ".."} for part in path.split("/")
+            ) or "\\" in path or ":" in path:
+                raise ValueError("Invalid staged Agent recipe reference.")
+            content = (root / path).read_bytes()
+            if hashlib.sha256(content).hexdigest() != ref["sha256"]:
+                raise ValueError("Staged Agent recipe digest mismatch.")
+            return json.loads(content)
+
+        try:
+            index = json.loads((root / "packs/engine-index.json").read_bytes())
+            entries = [entry for entry in index["entries"] if entry["engine"] == "vibecomfy"
+                       and entry["platform"] == "windows-x86_64-cu130"]
+            if len(entries) != 1:
+                raise ValueError("Invalid staged Agent VibeComfy recipe selection.")
+            recipe = referenced(entries[0]["recipe"])
+            bindings = [entry for entry in recipe["source_bindings"] if entry["name"] == "vibecomfy"]
+            if len(bindings) != 1:
+                raise ValueError("Invalid staged Agent VibeComfy source binding.")
+            pins = referenced(recipe["pins"])
+            revision = pins["sources"][bindings[0]["pin"]]["revision"]
+            if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+                raise ValueError("Invalid staged Agent VibeComfy revision.")
+            return revision
+        except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("Cannot read staged Agent VibeComfy recipe.") from exc
+
     def stage(self, manifest: dict, root: Path, data: Path, *, copy_from: Path | None = None) -> Version:
         install_release(manifest)
         if "pack_build" in manifest:
@@ -1242,17 +1276,20 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # only when dispatch actually prepares a fresh candidate.
         if not self.uv.is_absolute() or not self.uv.is_file():
             raise ValueError("Run the install line to provide the pinned user-local uv.")
-        # Older release manifests omit this source. Record the effective pin
-        # alongside the other sources without changing the caller's document.
-        manifest = {**manifest, "vibecomfy": manifest.get("vibecomfy", {"sha": VIBECOMFY_ENGINE_REVISION})}
         if self.run([self.uv, "--version"]).split()[1] != manifest["tools"]["uv"]["version"]:
             raise ValueError("The installer needs the manifest's pinned uv.")
         folder = root / "versions" / new_version_id(manifest)
         folder.mkdir(parents=True)
         windows_private(folder)  # Parent of version.json, profile.json and services.json.
-        write_json(folder / "manifest.json", manifest)
         agent = source("agent", manifest["agent"]["sha"], folder / "a",
                        **({"repo": manifest["agent"]["repo"]} if "repo" in manifest["agent"] else {}))
+        if "vibecomfy" in manifest:
+            revision = self._staged_vibecomfy_revision(agent)
+            if manifest["vibecomfy"]["sha"] != revision:
+                raise ValueError("The manifest VibeComfy pin does not match the staged Agent recipe.")
+        # Preserve the historical fallback for manifests without this source.
+        manifest = {**manifest, "vibecomfy": manifest.get("vibecomfy", {"sha": VIBECOMFY_ENGINE_REVISION})}
+        write_json(folder / "manifest.json", manifest)
         runtime = source("runtime", manifest["runtime"]["sha"], folder / "r",
                          **({"repo": manifest["runtime"]["repo"]} if "repo" in manifest["runtime"] else {}))
         vibecomfy = source("vibecomfy", manifest["vibecomfy"]["sha"], folder / "v",
