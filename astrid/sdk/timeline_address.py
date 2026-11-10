@@ -276,6 +276,54 @@ def _nothing(tl: Any, raw: str) -> str:
 # ---------------------------------------------------------------- the complete record
 
 _SCHEMAS: dict[str, Any] = {}
+_SCHEMA_BINDINGS: dict[str, tuple[str, Path, Path, tuple[int, int, int, int], tuple[int, int, int, int]]] = {}
+# Preserve just the last selected pack id so repeated writes can still classify a now
+# malformed provider after the schema and registry corpus have both been invalidated.
+_SCHEMA_PROVIDER_HINTS: dict[str, str] = {}
+
+
+def clear_schema_cache() -> None:
+    """Clear resolved schemas and the provider identities they were validated against."""
+    _SCHEMAS.clear()
+    _SCHEMA_BINDINGS.clear()
+
+
+def _file_identity(path: Path) -> tuple[int, int, int, int] | None:
+    """Cheap identity for a provider manifest; file replacement or removal invalidates a hit."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def _schema_binding(definition: Any, manifest: Path) -> tuple[
+    str, Path, Path, tuple[int, int, int, int], tuple[int, int, int, int]
+] | None:
+    """Pack id, element root and pack/element manifest identities for a resolved schema."""
+    element_root = Path(definition.root).resolve()
+    pack_root = next((parent for parent in element_root.parents if (parent / "pack.yaml").is_file()), None)
+    if pack_root is None:
+        return None
+    pack_manifest = pack_root / "pack.yaml"
+    pack_identity, element_identity = _file_identity(pack_manifest), _file_identity(manifest)
+    if pack_identity is None or element_identity is None:
+        return None
+    pack_id = str((definition.metadata or {}).get("pack_id") or definition.source.removeprefix("pack:"))
+    return pack_id, element_root, pack_manifest, pack_identity, element_identity
+
+
+def _cached_schema_is_current(element: str) -> bool:
+    binding = _SCHEMA_BINDINGS.get(element)
+    if binding is None:
+        return False
+    _, element_root, pack_manifest, pack_identity, element_identity = binding
+    from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES
+
+    manifest = next((element_root / name for name in ELEMENT_MANIFEST_NAMES
+                     if (element_root / name).is_file()), element_root / "element.yaml")
+    return (_file_identity(pack_manifest) == pack_identity
+            and _file_identity(manifest) == element_identity)
 
 # A media clip (footage or audio file) is not an element: it has no element manifest, and the only
 # params it carries are its audio fades (``MEDIA_PARAMS``).
@@ -385,7 +433,7 @@ def _present_but_unloadable(element: str, pack_id: str | None) -> tuple[str, Pat
     return None
 
 
-def _unresolved(element: str, registry: Any) -> ElementSchemaUnavailable:
+def _unresolved(element: str, registry: Any, provider_hint: str | None = None) -> ElementSchemaUnavailable:
     """Why no declaration resolves for ``element``: a broken element manifest, a broken pack, or no pack."""
     moved = moved_element_pack(element)
     for skipped in getattr(registry, "diagnostics", ()):
@@ -398,7 +446,9 @@ def _unresolved(element: str, registry: Any) -> ElementSchemaUnavailable:
             return ElementManifestInvalid(
                 element, f"pack {skipped.pack_id!r} declares it, but its element manifest {skipped.path} "
                 f"does not load ({skipped.error})", fix=fix, details=details)
-    broken = _present_but_unloadable(element, moved[0] if moved is not None else None)
+    provider_hint = provider_hint or _SCHEMA_PROVIDER_HINTS.get(element)
+    broken = _present_but_unloadable(
+        element, provider_hint or (moved[0] if moved is not None else None))
     if broken is not None:
         owner, manifest, error = broken
         fix = (f"Fix the pack manifest, or install with `{moved[1]['install']}`." if moved is not None and moved[0] == owner
@@ -425,8 +475,20 @@ def element_schema(element: str) -> dict[str, Any]:
     ``ASTRID_PACKS_PATH``), so a moved element resolves from its installed pack. A ``media`` clip is not an
     element and has an empty schema (its params are ``MEDIA_PARAMS``). Any other clip type with no resolvable
     declaration raises an :class:`ElementSchemaUnavailable` subclass; it is never schema-less."""
+    provider_hint = None
     if element in _SCHEMAS:
-        return _SCHEMAS[element]
+        # A few SDK callers/tests may seed this private mapping with a core-only schema;
+        # schemas resolved from pack discovery always have a binding alongside the value.
+        if element not in _SCHEMA_BINDINGS:
+            return _SCHEMAS[element]
+        if _cached_schema_is_current(element):
+            return _SCHEMAS[element]
+        # The selected provider changed on disk. Drop both the parsed corpus and this entry,
+        # then rediscover so removal and malformed replacements take the normal refusal path.
+        provider_hint = (_SCHEMA_BINDINGS.get(element) or (None,))[0] or _SCHEMA_PROVIDER_HINTS.get(element)
+        from astrid.core.element.registry import clear_default_registry_cache
+
+        clear_default_registry_cache()
     if element == MEDIA_CLIP_TYPE:
         return {}
     from astrid.core.element.registry import load_default_registry
@@ -446,7 +508,7 @@ def element_schema(element: str) -> dict[str, Any]:
             element, f"the element registry could not be loaded ({' '.join(str(exc).split())})",
             fix=fix, details=details) from exc
     if not candidates:
-        raise _unresolved(element, registry)
+        raise _unresolved(element, registry, provider_hint)
     definition = sorted(candidates, key=lambda item: (item.kind != "effects", item.kind))[0]
     schema = definition.schema or {}
     manifest = next((definition.root / name for name in ELEMENT_MANIFEST_NAMES
@@ -454,7 +516,12 @@ def element_schema(element: str) -> dict[str, Any]:
     found = {"properties": dict(schema.get("properties") or {}), "defaults": dict(definition.defaults or {}),
              "additional": bool(schema.get("additionalProperties", True)), "path": str(manifest),
              "units": dict((definition.metadata or {}).get("units") or {})}
-    _SCHEMAS[element] = found
+    binding = _schema_binding(definition, manifest)
+    pack_id = str((definition.metadata or {}).get("pack_id") or definition.source.removeprefix("pack:"))
+    _SCHEMA_PROVIDER_HINTS[element] = pack_id
+    if binding is not None:
+        _SCHEMAS[element] = found
+        _SCHEMA_BINDINGS[element] = binding
     return found
 
 
