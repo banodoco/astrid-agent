@@ -230,11 +230,43 @@ def test_after_outputs_failure_fails_the_job_and_no_hooks_means_no_change(tmp_pa
 
 
 def test_core_names_neither_build_nor_after_outputs():
+    import ast
+
+    def names_hook(node):
+        return isinstance(node, ast.Constant) and node.value in ("build", "after_outputs")
+
+    def violates(node):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get":
+            return bool(node.args) and names_hook(node.args[0])
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in ("hook", "hooks"):
+            return names_hook(node.slice)
+        if isinstance(node, ast.Compare) and any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops):
+            return names_hook(node.left)
+        return False
+
+    for example in ("hooks.get('build')", "hooks['after_outputs']", "'build' in hooks", "'after_outputs' not in hooks"):
+        assert any(violates(node) for node in ast.walk(ast.parse(example)))
     core = (ROOT / "astrid/core").rglob("*.py")
     named = [str(p.relative_to(ROOT)) for p in core
-             if re.search(r"\bhooks?\[['\"](build|after_outputs)['\"]\]|\.get\(['\"](build|after_outputs)['\"]", p.read_text())
+             if any(violates(node) for node in ast.walk(ast.parse(p.read_text())))
              and p.name != "workflows.py"]
     assert named == []
+
+
+def test_build_entry_delegates_optional_hooks_to_engine(monkeypatch, tmp_path):
+    from astrid.core.generation import entries
+
+    engine = mod.ComfyUIEngine(FakeCommands())
+    calls = []
+    prepare = engine.prepare
+    monkeypatch.setattr(engine, "prepare", lambda job: calls.append(job) or prepare(job))
+    monkeypatch.setattr(entries, "engine_table", lambda: {"comfyui": engine})
+    monkeypatch.setattr(entries, "attach_hooks", lambda entry, *args, **kwargs: entry)
+    assert entries.build_entry({"id": "plain"}, {}, tmp_path) is None
+    assert calls == []
+    hook = lambda *args: None
+    assert entries.build_entry({"id": "finalizer", "hooks": {"after_outputs": hook}}, {}, tmp_path) is None
+    assert calls[0]["hooks"] == {"after_outputs": hook}
 
 
 def test_vibecomfy_argv_parses_with_the_real_cli():
