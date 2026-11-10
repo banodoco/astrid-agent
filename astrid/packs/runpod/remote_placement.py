@@ -75,6 +75,10 @@ class RemotePlacementError(AstridError):
     """A remote placement step failed. The pod has been released unless stated."""
 
 
+class BoundedObserverUnreaped(RemotePlacementError):
+    """A local HTTPS caller survived kill; its exact custody remains pending."""
+
+
 class PreparationDeadlineExceeded(RemotePlacementError):
     """Preparation of a claimed pod ran past its disclosed preparation bound."""
 
@@ -730,11 +734,13 @@ class RemotePlacement:
 
 class _HttpsOps:
     def __init__(self, pod_id: str, token: str, *, deadline: float | None = None,
-                 base_url: str | None = None) -> None:
+                 base_url: str | None = None, abort_event: threading.Event | None = None) -> None:
         self.pod_id, self.token, self.deadline, self.base_url = pod_id, token, deadline, base_url
+        self.abort_event = abort_event
 
-    def bounded(self, deadline: float) -> "_HttpsOps":
-        return type(self)(self.pod_id, self.token, deadline=deadline, base_url=self.base_url)
+    def bounded(self, deadline: float, *, abort_event: threading.Event | None = None) -> "_HttpsOps":
+        return type(self)(self.pod_id, self.token, deadline=deadline, base_url=self.base_url,
+                          abort_event=abort_event)
 
     def _transport(self):
         from runpod_lifecycle.https import HttpsPodTransport
@@ -757,6 +763,8 @@ class _HttpsOps:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise RemotePlacementError("failure verification deadline expired")
+        if self.abort_event is not None and self.abort_event.is_set():
+            raise RemotePlacementError("bounded pod operation interrupted by exact release")
         context = multiprocessing.get_context("spawn")
         recv, send = context.Pipe(duplex=False)
         child = context.Process(target=_bounded_https_call_child,
@@ -764,46 +772,67 @@ class _HttpsOps:
         child.daemon = True
         started = False
         watchdog = None
+        stop_watchdog = threading.Event()
+        # Reserve child termination and reaping inside the same absolute
+        # transport deadline; HTTP response time never consumes that reserve.
+        request_deadline = self.deadline - min(0.25, remaining / 2)
         try:
             child.start()
             started = True
             send.close()
             # poll() can wake on a partial frame; recv_bytes() may then block
-            # indefinitely. A separate timer must stop the local caller even
-            # while this thread is inside the framed receive.
+            # indefinitely. The watchdog also observes exact owner release,
+            # killing the child so a paid timer can drain without waiting for
+            # the old verification deadline.
             def expire() -> None:
+                while not stop_watchdog.wait(0.02):
+                    if time.monotonic() >= request_deadline or (
+                            self.abort_event is not None and self.abort_event.is_set()):
+                        break
+                if stop_watchdog.is_set():
+                    return
                 try:
                     if child.is_alive():
                         child.kill()
                 except (OSError, ValueError):
                     pass
-            watchdog = threading.Timer(max(0, self.deadline - time.monotonic()), expire)
+            watchdog = threading.Thread(target=expire, daemon=True)
             watchdog.daemon = True
             watchdog.start()
-            remaining = self.deadline - time.monotonic()
+            remaining = request_deadline - time.monotonic()
             if remaining <= 0 or not recv.poll(remaining):
                 raise RemotePlacementError("failure verification deadline expired")
             raw = recv.recv_bytes(maxlength=2 * 1024 * 1024)
+            if self.abort_event is not None and self.abort_event.is_set():
+                raise RemotePlacementError("bounded pod operation interrupted by exact release")
             if time.monotonic() >= self.deadline:
                 raise RemotePlacementError("failure verification deadline expired")
             payload = json.loads(raw)
             if not isinstance(payload, dict) or set(payload) != {"ok", "value"} or payload["ok"] is not True:
                 raise RemotePlacementError("bounded pod operation failed")
+            if self.abort_event is not None and self.abort_event.is_set():
+                raise RemotePlacementError("bounded pod operation interrupted by exact release")
             return payload["value"]
         except (OSError, EOFError, ValueError, TypeError):
-            raise RemotePlacementError("failure verification deadline expired" if time.monotonic() >= self.deadline
+            raise RemotePlacementError("failure verification deadline expired" if time.monotonic() >= request_deadline
                                        else "bounded pod operation failed") from None
         finally:
-            if watchdog is not None:
-                watchdog.cancel()
+            stop_watchdog.set()
             try:
+                if watchdog is not None:
+                    watchdog.join(timeout=max(0, self.deadline - time.monotonic()))
+                    if watchdog.is_alive():
+                        # Do not close a Process while a watchdog can still touch it.
+                        self.unreaped_child = child
+                        raise BoundedObserverUnreaped("bounded pod observer watchdog could not be reaped")
                 if started:
-                    child.join(timeout=0.02)
+                    child.join(timeout=min(0.02, max(0, self.deadline - time.monotonic())))
                     if child.is_alive():
                         child.kill()
-                        child.join(timeout=0.2)
+                        child.join(timeout=max(0, self.deadline - time.monotonic()))
                     if child.is_alive():
-                        raise RemotePlacementError("bounded pod observer could not be reaped")
+                        self.unreaped_child = child
+                        raise BoundedObserverUnreaped("bounded pod observer could not be reaped")
                     child.close()
             finally:
                 recv.close()

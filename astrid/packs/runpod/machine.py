@@ -867,6 +867,23 @@ class RunPodMachine:
 
     def release(self, lease: MachineLease, warm: bool, *, reason: str = "task_failed",
                 failure: BaseException | None = None, stage: str = "execution") -> None:
+        owner = self._require().lease_owner
+        observer_key = abort_event = None
+        if failure is not None and not lease.released:
+            try:
+                observer_key, abort_event = owner.begin_failure_observation(lease.lease, lease.claim.pod_id)
+            except Exception:
+                pass  # _release_impl still fences unsafe custody and reconciles exact release.
+        try:
+            self._release_impl(lease, warm, reason=reason, failure=failure, stage=stage,
+                               abort_event=abort_event)
+        finally:
+            if observer_key is not None:
+                owner.end_failure_observation(observer_key)
+
+    def _release_impl(self, lease: MachineLease, warm: bool, *, reason: str,
+                      failure: BaseException | None, stage: str,
+                      abort_event: Any = None) -> None:
         """Reset a verified job's Runtime, then settle idle; release unsafe custody."""
         from .worker_preparation import AcquisitionUnresolvedError
 
@@ -887,7 +904,7 @@ class RunPodMachine:
                     # The first cancellation is part of the same one-shot
                     # observation budget as status, receipt and reset.
                     verify_deadline = time.monotonic() + min(FAILURE_VERIFY_SECONDS, remaining)
-                    lease.claim.ops = bounded(verify_deadline)
+                    lease.claim.ops = bounded(verify_deadline, abort_event=abort_event)
             except Exception:
                 pass  # Exact release below reconciles any unresolved job.
         # Poll/transport failures can leave a job running. Stop that exact
@@ -953,6 +970,10 @@ class RunPodMachine:
             except Exception as exc:  # noqa: BLE001 (any failed reset releases the pod)
                 lease.state.note("reset", "failed", error=type(exc).__name__)
                 warm, reason = False, "reset_failed"
+        unreaped = getattr(lease.claim.ops, "unreaped_child", None)
+        if unreaped is not None:
+            owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)
+            raise AcquisitionUnresolvedError("bounded pod observer remains alive; exact custody is pending")
         from .failure_diagnostics import host_summary
         from astrid.core.execution.machine_run import MachineRunCancelled
         summary = host_summary(failure, getattr(lease, "failure_diagnostic", None),
@@ -1010,6 +1031,8 @@ class RunPodMachine:
                     paid_expiry is not None and self._require().lease_owner.clock() >= paid_expiry):
                 raise MachineError("failure reset exceeded the original paid limit")
             record = ops.job_poll(job_id)
+            if record.get("id") != job_id:
+                raise MachineError("reset poll differs from the checkpointed job custody")
             if record.get("state") == "exited":
                 break
             if record.get("state") in {"missing", "cancelled"}:
