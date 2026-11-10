@@ -155,7 +155,8 @@ def _url(url, placement, endpoint_id, owner, attestation):
         match = re.fullmatch(r"https://([a-z0-9]+)-([1-9][0-9]{0,4})\.proxy\.runpod\.net/engines/" + re.escape(endpoint_id), url)
     if not match or int(match.group(1 if placement == "local" else 2)) > 65535:
         _bad()
-    if placement == "runpod":
+    from astrid.core.generation.placement import is_runpod_placement
+    if is_runpod_placement(placement):
         pod = match.group(1)
         if (owner.pod_id is not None and owner.pod_id != pod) or (attestation is not None and attestation.pod_id != pod):
             _bad()
@@ -169,6 +170,7 @@ def parse_endpoint(value) -> EngineEndpoint:
     endpoint_id, engine = _id(v["endpoint_id"]), _id(v["engine"])
     platform = _enum(v["platform"], get_args(PlatformKey))
     placement = _enum(v["placement"], ("local", "runpod"))
+    from astrid.core.generation.placement import is_runpod_placement
     state = _enum(v["state"], get_args(EndpointState))
     auth, owner = _auth(v["auth"]), _owner(v["lifecycle_owner"])
     health = _optional(v["health"], _health)
@@ -185,7 +187,7 @@ def parse_endpoint(value) -> EngineEndpoint:
         _bad()
     if state == "ready":
         if (health is None or health.status != "healthy" or attestation is None
-                or health != attestation.health or (placement == "runpod" and auth.kind != "bearer-file")):
+                or health != attestation.health or (is_runpod_placement(placement) and auth.kind != "bearer-file")):
             _bad()
     url = _url(v["url"], placement, endpoint_id, owner, attestation)
     return EngineEndpoint(v["schema"], endpoint_id, engine, platform, placement, url, auth, state, health, owner, attestation)

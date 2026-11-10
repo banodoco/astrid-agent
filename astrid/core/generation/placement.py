@@ -95,6 +95,15 @@ class Placement:
         return {**out, "policy": self.policy.as_mapping()}
 
 
+def is_runpod_placement(value: Any) -> bool:
+    """Whether a placement selector or resolved placement names RunPod."""
+    if isinstance(value, str):
+        return value == "runpod"
+    if isinstance(value, (Mapping, Placement)):
+        return value.get("kind") == "runpod" if isinstance(value, Mapping) else value.kind == "runpod"
+    return False
+
+
 def _merge(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
     merged = {**base, **{key: value for key, value in over.items() if key != "policy"}}
     if "policy" in base or "policy" in over:
@@ -251,5 +260,5 @@ def validate_placement(placement: Placement, *, machine_kinds: tuple[str, ...] |
     return placement
 
 
-__all__ = ["BUILTIN_KINDS", "Placement", "PlacementPolicy", "comfy_selector", "registered_machine_kinds", "request_from_selector", "resolve_placement",
+__all__ = ["BUILTIN_KINDS", "Placement", "PlacementPolicy", "comfy_selector", "is_runpod_placement", "registered_machine_kinds", "request_from_selector", "resolve_placement",
            "validate_placement"]
