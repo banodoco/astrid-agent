@@ -20,7 +20,7 @@ from astrid.core.generation import entries as workflow_entries
 from astrid.sdk import generation as facade_module
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 from tests.integrations.test_runpod_slot_path_cpu import (
-    H3_REQUEST, PROMPTS, SLOTS, _drive, _h3_built_classes,
+    H3_REQUEST, PROMPTS, SLOTS, SLOT_DEFAULTS, _drive,
 )
 
 pytestmark = pytest.mark.integration
@@ -305,6 +305,7 @@ def test_dry_run_equals_live_run(cell, target_kind, selected_entry, tmp_path, mo
     modality, mode = cell
     h3 = cell == ("video", "h3")
     h3_classes, h3_assets = (), None
+    selected_workflow = None
     if h3:
         source = tmp_path / "source.mp4"
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
@@ -314,8 +315,11 @@ def test_dry_run_equals_live_run(cell, target_kind, selected_entry, tmp_path, mo
         h3_request = json.loads(H3_REQUEST.read_text())
         h3_assets = tmp_path / "assets.json"
         h3_assets.write_text(json.dumps({h3_request["media"][0]["asset"]["id"]: str(source), "source": str(source)}))
-        h3_classes = set(json.loads(H3_CLASSES.read_text())) | _h3_built_classes(
-            H3_REQUEST, json.loads(h3_assets.read_text()), tmp_path)
+        built = workflow_entries.build_entry(workflow_entries.find_entry("h3"),
+            {"request": str(H3_REQUEST), "asset_map": json.loads(h3_assets.read_text())}, tmp_path / "classes-job")
+        selected_workflow = built["workflow"]
+        h3_classes = set(json.loads(H3_CLASSES.read_text())) | {
+            node.class_type for node in selected_workflow.runtime_nodes().values()}
     recorder = Recorder(monkeypatch)
     align_log = tmp_path / "actual-align.jsonl"
     _spy_child_align(monkeypatch, align_log)
@@ -326,10 +330,21 @@ def test_dry_run_equals_live_run(cell, target_kind, selected_entry, tmp_path, mo
         # local HTTP peer validates against the slot's packaged node schemas.
         from tests.integrations import test_runpod_slot_path_cpu as matrix
         from astrid.core.generation.engine_local_server import ensure_local_engine_server
+        from vibecomfy.model_assets import _referenced_model_values
+        if selected_workflow is None:
+            from astrid.core.model_catalog.registry import ModelRegistry
+            identifier = selected_entry or SLOT_DEFAULTS[cell][0]
+            try:
+                template = ModelRegistry.load_default().get(identifier).modes[mode].backends['local'].template
+            except KeyError:
+                template = identifier
+            selected_workflow = workflow_entries._load_entry_workflow(workflow_entries.find_entry(template))
+        declared_files = [value for ref in _referenced_model_values(selected_workflow)
+                          for value in (ref['value'], ref['subdir'] + '/' + ref['value'])]
 
         @contextmanager
         def managed_engine(provider, folder, patch):
-            extra_files = ("vae/ae.safetensors", r"vae/FLUX1\ae.safetensors") if cell == ("image", "t2i") else ()
+            extra_files = [*declared_files, *([r"vae/FLUX1\ae.safetensors"] if selected_entry == "z-image" else [])]
             with _pinned_owned_cpu_peer(provider, pinned_install, patch, extra_files=extra_files):
                 patch.setenv("HOME", str(folder / "home"))
                 ensure_local_engine_server("comfyui")
