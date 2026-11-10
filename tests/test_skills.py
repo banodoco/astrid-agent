@@ -63,6 +63,7 @@ def test_fresh_sync_selects_and_links_declared_defaults():
     fx = _Tmp()
     try:
         defaults = skills.default_descriptors()
+        assert {"setup", "rendering", "vibecomfy", "timeline"} <= {d.pack_id for d in defaults}
         assert skills_cli.main(["sync", "--skills", "on", "--harness", "claude", "--json"]) == 0
         adapter = ClaudeAdapter()
         assert all(adapter.target_for(descriptor).is_symlink() for descriptor in defaults)
@@ -92,13 +93,14 @@ def test_installer_sync_preserves_default_opt_out():
     try:
         args = ["sync", "--skills", "on", "--skill-copies", "off", "--harness", "claude", "--json"]
         assert skills_cli.main(args) == 0
-        assert skills_cli.main(["uninstall", "vibecomfy", "--harness", "claude", "--json"]) == 0
+        for pack in ("vibecomfy", "timeline"):
+            assert skills_cli.main(["uninstall", pack, "--harness", "claude", "--json"]) == 0
         assert skills_cli.main(args) == 0
         data = state.load()
-        assert "vibecomfy" in data["disabled_defaults"]["claude"]
+        assert {"vibecomfy", "timeline"} <= set(data["disabled_defaults"]["claude"])
         descriptors = {d.pack_id: d for d in _descriptors()}
         adapter = ClaudeAdapter()
-        assert not adapter.target_for(descriptors["vibecomfy"]).exists()
+        assert all(not adapter.target_for(descriptors[pack]).exists() for pack in ("vibecomfy", "timeline"))
         assert adapter.target_for(descriptors["rendering"]).exists()
     finally:
         fx.close()
@@ -111,7 +113,7 @@ def test_installer_sync_preserves_existing_selection():
         assert skills_cli.main(["sync", "--skills", "on", "--skill-copies", "off", "--harness", "claude", "--json"]) == 0
         selected = state.load()["skills"]["claude"]["skills"]
         assert selected["generation"]["selected"]
-        assert not any(selected.get(pack, {}).get("selected") for pack in ("setup", "rendering", "vibecomfy"))
+        assert not any(selected.get(pack, {}).get("selected") for pack in ("setup", "rendering", "vibecomfy", "timeline"))
         descriptors = {d.pack_id: d for d in _descriptors()}
         assert ClaudeAdapter().target_for(descriptors["generation"]).exists()
     finally:

@@ -164,7 +164,7 @@ def test_preinstall_helper_writes_durable_marker_and_default_sync_adopts_it(tmp_
     assert json.loads((target / '.astrid-managed-skill.json').read_text())['source'] == str(view.resolve())
     assert (view / 'SKILL.md').is_file()
     selected = state.load()['skills']['claude']['skills']
-    assert all(selected[pack]['selected'] for pack in ('setup', 'rendering', 'vibecomfy'))
+    assert all(selected[pack]['selected'] for pack in ('setup', 'rendering', 'vibecomfy', 'timeline'))
     assert (home / '.claude/skills/astrid-rendering').exists()
     assert (home / '.claude/skills/astrid-vibecomfy').exists()
     assert len(list((home / '.claude/skills').glob('astrid-setup'))) == 1
