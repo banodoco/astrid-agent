@@ -205,7 +205,7 @@ jobs:
       - name: Unit tests (default lane shard)
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
-        run: python -m pytest -q --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+        run: python -m pytest -q -rA --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
 
       - name: Upload measured test durations
         if: always()
