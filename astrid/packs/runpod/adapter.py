@@ -39,6 +39,36 @@ def _unavailable_offer_reason(reason: Any) -> str:
     return "provider_observation_unavailable"
 
 
+async def setup_volumes(api_key: str) -> list[dict[str, Any]]:
+    """Read the account's existing network volumes; setup never creates one."""
+    from astrid.core.integrations.runpod.storage import list_volumes
+
+    return await list_volumes(api_key)
+
+
+async def setup_gpu_types(api_key: str, *, datacenter_id: str | None,
+                          require_network_volume: bool) -> list[str]:
+    """Return GPU type names currently offered in the selected datacenter."""
+    from runpod_lifecycle import probe
+
+    observed = await probe.probe(
+        api_key=api_key,
+        datacenter_ids=[datacenter_id] if datacenter_id else None,
+        min_memory_gb=0,
+    )
+    items = observed
+    names = []
+    for item in items or ():
+        name = item if isinstance(item, str) else getattr(item, "name", None)
+        if isinstance(item, dict):
+            name = item.get("gpu_type") or item.get("display_name") or item.get("displayName") or name
+            if datacenter_id and datacenter_id not in (item.get("datacenters_available") or []):
+                continue
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return list(dict.fromkeys(names))
+
+
 async def observe_priced_offer(preferences, config) -> RunPodOffer:
     """Broker provider semantics, without its allocation/retry/credential path."""
     from runpod_lifecycle import gpu_availability

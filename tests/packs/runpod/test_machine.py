@@ -539,6 +539,7 @@ def test_machines_table_and_json_show_lifetime_fields(monkeypatch, capsys):
     assert "10.0" in table and "2.80" in table and "1.20" in table
 
     assert machines_cli.main(["--json"]) == 0
+    import json
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["release_at"] == 2_600.0
     assert payload[0]["minutes_left"] == 10.0
@@ -546,6 +547,39 @@ def test_machines_table_and_json_show_lifetime_fields(monkeypatch, capsys):
     assert payload[0]["hourly_usd"] == 1.2
 
 
+def test_machines_setup_saves_ordered_choices_and_volume(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    saved_policy = {}
+    volumes = [{"id": "vol-1", "name": "data", "dataCenterId": "US-GA-1",
+                "size_gb": 100}]
+    assert machines_cli.main(["setup", "--volume", "data", "--gpu", "RTX A", "--gpu", "RTX B",
+                              "--budget-usd", "8", "--json"],
+                             volumes=lambda: volumes,
+                             offered_gpus=lambda dc, has_volume: ["RTX A", "RTX B"],
+                             setup=lambda policy: saved_policy.update(policy) or type("Result", (), {"ok": True})()) == 0
+    import json
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is True
+    assert saved_policy["gpu_types"] == ["RTX A", "RTX B"]
+    assert saved_policy["datacenter_id"] == "US-GA-1"
+    assert saved_policy["volume"]["id"] == "vol-1"
+    assert saved_policy["budget_cap_usd"] == 8
+
+
+def test_machines_setup_refuses_missing_pinned_identity(monkeypatch, capsys):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {"gpu_types": ["RTX A"]})
+    assert machines_cli.main(["setup", "--json"], volumes=lambda: [],
+                             offered_gpus=lambda *_: []) == 2
+    output = capsys.readouterr().out
+    assert "provider_account_ref" in output and "image" in output
+    assert "astrid machines setup" in output
 def test_machine_keep_for_uses_recorded_consent_data_and_reports_new_limit(monkeypatch, capsys):
     from types import SimpleNamespace
     from astrid.core import machines_cli

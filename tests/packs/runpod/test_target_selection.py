@@ -26,6 +26,7 @@ def case(tmp_path, monkeypatch):
     raw = {
         "provider_account_ref": "account-a", "gpu_types": ["preferred-gpu", "fallback-gpu"],
         "image": "worker@sha256:" + "a" * 64,
+        "budget_cap_usd": 10.0,
         "volume": {"id": "volume-a", "name": "storage", "size_gb": 100, "mount_path": "/workspace"},
         "idle_timeout_seconds": 60, "credential_ref": "env:RUNPOD_RUNPOD_FAKE_CREDENTIAL",
     }
@@ -371,7 +372,7 @@ def test_preferences_default_idle_uses_shared_warm_hold_default(case):
 def test_default_idle_and_explicit_optional_volume(generation_settings_store):
     from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
     raw = {"provider_account_ref": "account-a", "gpu_types": ["gpu"],
-           "image": "worker@sha256:" + "a" * 64, "volume": None}
+           "image": "worker@sha256:" + "a" * 64, "volume": None, "budget_cap_usd": 5.0}
     preferences = RunPodPreferences.from_mapping(raw)
     assert preferences.idle_timeout_seconds == DEFAULT_IDLE_SECONDS == 1800
     assert RunPodPreferences.from_mapping(preferences.as_mapping()) == preferences

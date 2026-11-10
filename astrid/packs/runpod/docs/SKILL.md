@@ -44,6 +44,18 @@ To save the list as the default, use
 `astrid generate targets --placement runpod --save --input 'gpu_types=["RTX 4090"]'`
 or configure it with `runpod.setup`.
 
+### Machine preferences
+
+Run `astrid machines setup` to choose an existing account network volume (or
+ephemeral disk), then an ordered list of GPU types offered in that volume's
+datacenter, and a maximum USD budget for each paid run. Setup saves through the
+retained `runpod.setup` action; it does not create a volume, quote an offer, or
+launch a machine. The pinned worker image and provider account identity must
+already exist in saved `machines.runpod` preferences. If they are missing, the
+command names the missing inputs instead of inventing them. The equivalent
+noninteractive form accepts `--volume <id-or-name>`, repeated `--gpu <type>`,
+`--budget-usd <amount>`, and `--json`.
+
 The prepared RunPod path requires a fresh, explicit paid authorization for
 each invocation, including reuse. Before claiming, disclose the selected
 account, GPU offer and hourly USD rate, pinned image, optional network volume and mount,
