@@ -162,6 +162,8 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences, m
     files += [value for ref in _referenced_model_values(workflow)
               for value in (ref['value'], ref['subdir'] + '/' + ref['value'])]
     client_engine, payload, recipe, root, started, bootstrap = managed_install
+    from astrid.core.generation import engine_recipe
+    monkeypatch.setattr(engine_recipe, 'load_recipe', lambda engine, platform, **kwargs: recipe)
     records = tmp_path / 'peer-records'
     records.mkdir()
     program = f'''
