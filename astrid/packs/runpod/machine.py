@@ -527,6 +527,12 @@ class RunPodMachine:
                     entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
                     manifest_rows=manifest_rows,
                 )
+                # Preparation and execution have separate disclosed budgets. Arm once
+                # at handoff, clipped to this lease's original paid expiry.
+                adapter.placement.begin_execution(deadline_seconds=min(
+                    consent.execution_seconds,
+                    prepared.lease.claim["lease"]["paid_expires_at"] - owner.clock(),
+                ))
             except BaseException:
                 if acquired:
                     # A failed preparation never settles warm: release the exact pod.

@@ -561,3 +561,55 @@ def test_warm_gpu_id_uses_confirmed_display_and_refuses_mismatch(machine_case, m
                        sleep=lambda s: None)
         assert c.read()["lease"]["preparation"]["custody"]["gpu_type"] == "RTX 5090"
         assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
+
+
+@pytest.mark.parametrize("paid_remaining", [None, 20])
+def test_execution_gets_its_own_deadline_after_preparation(machine_case, monkeypatch, paid_remaining):
+    c = machine_case
+    ticks = [0.0]
+    c.placement._clock = lambda: ticks[0]
+    original = c.placement.prepare_claimed
+
+    def prepare(*args, **kwargs):
+        state = original(*args, **kwargs)
+        ticks[0] = 55.0
+        if paid_remaining is not None:
+            c.clock.now = c.read()["lease"]["paid_expires_at"] - paid_remaining
+        return state
+
+    monkeypatch.setattr(c.placement, "prepare_claimed", prepare)
+    job = c.job()
+    lease = c.machine.claim(job)
+    ticks[0] = 65.0  # preparation bound passed; execution still has 50s
+    run = c.machine.start(lease, job)
+    assert c.machine.poll(run)["state"] == "exited"
+    c.machine.fetch(run, destination=job.scratch / "outputs")
+    deadline = 115.0 if paid_remaining is None else 75.0
+    assert c.placement._deadline_at == deadline
+    with pytest.raises(rm.RemotePlacementError, match="already established"):
+        c.placement.begin_execution(deadline_seconds=60)
+    assert c.placement._deadline_at == deadline
+    ticks[0] = deadline
+    with pytest.raises(rm.RemotePlacementError, match="execution deadline"):
+        c.machine.poll(run)
+
+
+def test_execution_timeout_cancels_and_releases_without_another_claim(machine_case, monkeypatch):
+    c = machine_case
+    ticks = [0.0]
+    c.placement._clock = lambda: ticks[0]
+    original = c.machine.poll
+
+    def expired(run):
+        ticks[0] = c.placement._deadline_at
+        return original(run)
+
+    monkeypatch.setattr(c.machine, "poll", expired)
+    job = c.job()
+    with pytest.raises(rm.RemotePlacementError, match="execution deadline"):
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                       sleep=lambda s: None)
+    record = c.read()
+    assert record["lease"]["job"] == {"id": c.pod.cancelled[0], "state": "cancelled"}
+    assert record["state"] == "cleanup_complete"
+    assert c.deletes == ["pod-1"] and c.creates == 1

@@ -371,6 +371,7 @@ class RemotePlacement:
         self._claims_made = 0
         self._deadline_at: float | None = None
         self._preparation_seconds: float | None = None
+        self._execution_seconds: float | None = None
 
     # -- public ------------------------------------------------------------
 
@@ -380,6 +381,7 @@ class RemotePlacement:
             raise RemotePlacementError("prepared claim has no remaining paid lifetime")
         self._deadline_at = self._clock() + deadline_seconds
         self._preparation_seconds = deadline_seconds
+        self._execution_seconds = None
         out = Path(out)
         out.mkdir(parents=True, exist_ok=True)
         run_id = uuid.uuid4().hex
@@ -399,6 +401,7 @@ class RemotePlacement:
             raise RemotePlacementError("prepared claim has no remaining paid lifetime")
         self._deadline_at = self._clock() + deadline_seconds
         self._preparation_seconds = deadline_seconds
+        self._execution_seconds = None
         out = Path(out)
         out.mkdir(parents=True, exist_ok=True)
         run_id = uuid.uuid4().hex
@@ -430,6 +433,17 @@ class RemotePlacement:
         return state
 
 
+    def begin_execution(self, *, deadline_seconds: float) -> None:
+        """Leave preparation once; retries must retain this execution bound."""
+        if self._preparation_seconds is None:
+            raise RemotePlacementError("execution deadline is already established")
+        self._check_deadline("execution handoff")
+        if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+            raise RemotePlacementError("prepared claim has no remaining paid lifetime")
+        self._deadline_at = self._clock() + deadline_seconds
+        self._preparation_seconds = None
+        self._execution_seconds = deadline_seconds
+
     # -- preflight ---------------------------------------------------------
 
 
@@ -446,6 +460,10 @@ class RemotePlacement:
                 raise PreparationDeadlineExceeded(
                     f"preparation deadline of {self._preparation_seconds:g}s exceeded during {step}"
                 )
+        elif self._execution_seconds is not None and now >= self._deadline_at:
+            raise RemotePlacementError(
+                f"execution deadline of {self._execution_seconds:g}s exceeded during {step}"
+            )
         elif now > self._deadline_at:
             raise RemotePlacementError(
                 f"deadline of {self.limits.deadline_seconds}s exceeded during {step}"
