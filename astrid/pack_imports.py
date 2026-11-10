@@ -64,6 +64,53 @@ def _requirements(manifest: Mapping[str, object]) -> set[str]:
     return result
 
 
+def _is_pack_root_module(pack_dir: Path, module: str) -> bool:
+    """True when *module*'s top-level name is a module or package inside *pack_dir*.
+
+    ``import X`` is pack-private when ``<pack>/X.py`` or ``<pack>/X/__init__.py``
+    exists and its real path (after resolving symlinks) stays under the pack
+    root; ``import X.y`` only when ``<pack>/X/`` is such a package. This is
+    what Python imports for code run from the pack root, whatever the
+    entrypoint, and it mirrors the private-helper rule for relative imports.
+    """
+    parts = module.split(".")
+    name = parts[0]
+    if not name.isidentifier():
+        return False
+    try:
+        root = pack_dir.resolve(strict=True)
+    except OSError:
+        return False
+
+    def inside(path: Path) -> bool:
+        try:
+            return path.resolve(strict=True).is_relative_to(root)
+        except OSError:
+            return False
+
+    package = pack_dir / name
+    if package.is_dir() and inside(package) and (package / "__init__.py").is_file() \
+            and inside(package / "__init__.py"):
+        return True
+    if len(parts) > 1:
+        return False
+    module_file = pack_dir / f"{name}.py"
+    return module_file.is_file() and inside(module_file)
+
+
+def _shadowed_requirement(name: str, *, contract: ImportContract, declared_python: set[str]) -> str | None:
+    """The declared Python requirement a pack-root module named *name* would shadow, if any."""
+    candidates = {name.lower().replace("_", "-").replace(".", "-")}
+    mapped = contract.python_modules.get(name, _PYTHON_DISTRIBUTIONS.get(name))
+    if mapped:
+        candidates.add(mapped.lower().replace("_", "-").replace(".", "-"))
+    for prefix, distribution in _PYTHON_NAMESPACE_DISTRIBUTIONS.items():
+        if prefix.split(".", 1)[0] == name:
+            candidates.add(distribution)
+    shadowed = sorted(candidates & declared_python)
+    return shadowed[0] if shadowed else None
+
+
 def _classify(module: str, *, level: int, pack_id: str, contract: ImportContract,
               declared_packs: set[str], declared_python: set[str]) -> tuple[str, str] | None:
     if not module:
@@ -162,6 +209,20 @@ def check_pack_imports(pack_dir: Path, *, contract: ImportContract,
 
     def inspect_module(path: Path, line: int, module: str, level: int = 0,
                        symbols: tuple[str, ...] = ()) -> None:
+        name = module.split(".", 1)[0]
+        # A top-level module or package inside this pack's root is a private
+        # helper, for every entrypoint kind. The standard library keeps its own
+        # rule, and ``astrid`` is never pack-local, so a pack cannot ship an
+        # ``astrid`` package to step around the public SDK surface.
+        if (not level and module and name != "astrid" and name not in sys.stdlib_module_names
+                and _is_pack_root_module(pack_dir, module)):
+            shadowed = _shadowed_requirement(name, contract=contract, declared_python=declared_python)
+            if shadowed is not None:
+                violations.append(ImportViolation(
+                    path.relative_to(pack_dir).as_posix(), line, module, "shadowed_dependency",
+                    f"Rename the pack module {name!r}: it shadows the declared Python requirement "
+                    f"{shadowed!r}."))
+            return
         if level:
             resolved = _relative_target(path, pack_dir, level, module, pack_id)
             if resolved is None:

@@ -234,3 +234,83 @@ def test_private_and_unknown_sdk_imports_are_rejected(tmp_path):
         assert [(item.module, item.code) for item in found] == [(module, "deep_import")], statement
     (pack / "entry.py").write_text("from astrid.sdk import dto\n", encoding="utf-8")
     assert check_pack_imports(pack, contract=contract, manifest=_manifest()) == []
+
+
+# A script run from the pack root (a raw-command renderer, a command action, ...)
+# reaches its helpers by absolute top-level imports; the same rule applies to
+# every entrypoint kind.
+
+
+def test_pack_root_sibling_module_and_package_are_pack_private(tmp_path):
+    pack = _pack(tmp_path)
+    (pack / "_shared.py").write_text("value = 1\n", encoding="utf-8")
+    (pack / "helpers").mkdir()
+    (pack / "helpers" / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "helpers" / "util.py").write_text("x = 1\n", encoding="utf-8")
+    (pack / "entry.py").write_text(
+        "import _shared\nfrom _shared import value\nimport helpers\nimport helpers.util\n"
+        "from helpers.util import x\n",
+        encoding="utf-8",
+    )
+    assert check_pack_imports(pack, contract=ImportContract(), manifest=_manifest()) == []
+
+
+def test_module_only_outside_the_pack_root_is_still_undeclared(tmp_path):
+    pack = _pack(tmp_path)
+    (tmp_path / "outside_helper.py").write_text("value = 1\n", encoding="utf-8")
+    # A dotted import is pack-private only when the top-level name is a package in the pack.
+    (pack / "flat.py").write_text("value = 1\n", encoding="utf-8")
+    # A module in a subdirectory is not at the pack root.
+    (pack / "actions" / "nested" / "deep_helper.py").write_text("value = 1\n", encoding="utf-8")
+    (pack / "entry.py").write_text(
+        "import outside_helper\nimport flat.missing\nimport deep_helper\n", encoding="utf-8"
+    )
+    found = check_pack_imports(pack, contract=ImportContract(), manifest=_manifest())
+    assert [(item.module, item.code) for item in found] == [
+        ("outside_helper", "undeclared_python"),
+        ("flat.missing", "undeclared_python"),
+        ("deep_helper", "undeclared_python"),
+    ]
+
+
+def test_pack_root_symlink_pointing_outside_the_pack_is_not_pack_private(tmp_path):
+    pack = _pack(tmp_path)
+    outside = tmp_path / "elsewhere"
+    (outside / "linked_pkg").mkdir(parents=True)
+    (outside / "linked_pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (outside / "linked_mod.py").write_text("value = 1\n", encoding="utf-8")
+    (pack / "linked_mod.py").symlink_to(outside / "linked_mod.py")
+    (pack / "linked_pkg").symlink_to(outside / "linked_pkg", target_is_directory=True)
+    (pack / "entry.py").write_text("import linked_mod\nimport linked_pkg\n", encoding="utf-8")
+    found = check_pack_imports(pack, contract=ImportContract(), manifest=_manifest())
+    assert [(item.module, item.code) for item in found] == [
+        ("linked_mod", "undeclared_python"),
+        ("linked_pkg", "undeclared_python"),
+    ]
+
+
+def test_pack_root_module_shadowing_a_declared_requirement_is_refused(tmp_path):
+    pack = _pack(tmp_path)
+    (pack / "requests.py").write_text("value = 1\n", encoding="utf-8")
+    (pack / "yaml").mkdir()
+    (pack / "yaml" / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "entry.py").write_text("import requests\nimport yaml\n", encoding="utf-8")
+    manifest = _manifest()
+    manifest["dependencies"] = {"packs": [], "python_requirements": ["requests>=2", "PyYAML>=6"]}
+    found = check_pack_imports(pack, contract=ImportContract(), manifest=manifest)
+    assert [(item.module, item.code) for item in found] == [
+        ("requests", "shadowed_dependency"),
+        ("yaml", "shadowed_dependency"),
+    ]
+    assert "shadows the declared Python requirement 'requests'" in found[0].fix
+    assert "'pyyaml'" in found[1].fix
+
+
+def test_pack_root_astrid_package_does_not_bypass_the_sdk_surface(tmp_path):
+    pack = _pack(tmp_path)
+    (pack / "astrid" / "sdk").mkdir(parents=True)
+    (pack / "astrid" / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "astrid" / "sdk" / "__init__.py").write_text("", encoding="utf-8")
+    (pack / "entry.py").write_text("from astrid.sdk.rendering import renderer_main\n", encoding="utf-8")
+    found = check_pack_imports(pack, contract=ImportContract(), manifest=_manifest())
+    assert [(item.module, item.code) for item in found] == [("astrid.sdk.rendering", "deep_import")]
