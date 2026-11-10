@@ -234,7 +234,7 @@ jobs:
       - name: Unit tests (default lane shard)
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
-        run: python -m pytest -q --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+        run: python -m pytest -q -rA --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
 
       - name: Upload measured test durations
         if: always()
@@ -359,7 +359,7 @@ jobs:
 
       # The lanes the default run deselects and only this job provides: native macOS, the Remotion install, headless Chromium, the Codex CLI.
       - name: Darwin native, Remotion and browser tests
-        run: python -m pytest -q -m "darwin_native or remotion or chrome or codex_cli"
+        run: python -m pytest -q -rA -m "darwin_native or remotion or chrome or codex_cli"
 
   # Release wheel (testing plan R-1: kept from the old m8 artifact job). Hashed build tools, one wheel,
   # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the
