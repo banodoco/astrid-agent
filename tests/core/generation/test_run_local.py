@@ -332,3 +332,17 @@ def test_run_scoped_overrides_preserve_built_graph_and_only_namespace_declared_o
     assert scoped.nodes["save"].inputs == {"filename_prefix": "chosen_astrid_attempt-123", "images": ["decode", 0]}
     assert scoped.nodes["other"].inputs == built.nodes["other"].inputs
     assert scoped.metadata == built.metadata
+
+
+def test_run_scoped_prefix_survives_public_input_compilation():
+    from vibecomfy.workflow import VibeNode, VibeOutput, VibeWorkflow, WorkflowSource
+    from astrid.packs.vibecomfy.local_server_engine import run_scoped_overrides
+
+    built = VibeWorkflow(id="scope", source=WorkflowSource(id="scope"),
+                         nodes={"1": VibeNode(id="1", class_type="SaveImage",
+                                              inputs={"filename_prefix": "chosen"})},
+                         outputs=[VibeOutput(node_id="1", output_type="SaveImage")])
+    built.register_input("filename_prefix", "1", "filename_prefix", "chosen", type="STRING")
+    scoped = run_scoped_overrides(built, "attempt-123")
+    assert scoped.compile("api")["1"]["inputs"]["filename_prefix"] == "chosen_astrid_attempt-123"
+    assert built.compile("api")["1"]["inputs"]["filename_prefix"] == "chosen"
