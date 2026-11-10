@@ -199,7 +199,6 @@ def test_app_brief_route_shows_the_brief_values_and_runs_its_command_as_given():
     assert "Show those values back" in route, route
     assert "Install with these choices, or change one?" in route, route
     assert "run the brief's command exactly as given" in route, route
-    assert "recommended" not in route, route
     assert "Then follow step 2's success and failure rules." in route, route
 
 
@@ -252,3 +251,29 @@ def test_readme_banner_keeps_saved_choices_for_an_existing_install():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "If Astrid is already installed, keep my saved choices unless I ask to change one." in readme
     assert "Before you run anything, show me the setup choices" not in readme
+
+
+def test_setup_choices_recommend_current_settings():
+    routes = _routes()
+    app = routes["App brief"]
+    assert 'as "your choices from the App"' in app
+    assert "Recommend keeping them." in app
+    assert "saved" not in app
+    assert "defaults" not in app
+    assert "Recommend Astrid defaults." in routes["Fresh install"]
+    existing = routes["Existing install"]
+    assert 'Recommend "keep your current settings".' in existing
+    assert "Do not guess saved choices." in existing
+    assert "Do not show the choices list." in existing
+    choices = " ".join(_steps(_skill())[1].split())
+    assert "If there is an App brief, recommend keeping the brief's values." in choices
+    assert "For a fresh install without an App brief, recommend Astrid defaults." in choices
+    assert "Astrid defaults are:" in choices
+    install = " ".join(_steps(_skill())[2].split())
+    assert "Use the approved values from step 1 for every choice." in install
+    banner_line = (
+        "Before you install, show me the setup choices, recommending my current "
+        "settings, and let me change them."
+    )
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert banner_line in readme
