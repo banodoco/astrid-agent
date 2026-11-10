@@ -11,9 +11,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import json
-import ntpath
 import os
-import posixpath
 import re
 import shlex
 import shutil
@@ -32,6 +30,7 @@ from astrid import pack_api, sdk
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import _entry_path, pack_digest, read_pin, write_pin
 from astrid.core.pack.personal import resolve_personal_packs_root
+from astrid.installer.git_lookup import _find_executable, _git_executable, _path_entries
 from astrid.pack_imports import ImportContract, check_pack_imports
 from astrid.pack_validation import CompatibilityResult, PackFacts, PinFacts, _declared_requirement_names, validate_pack
 
@@ -224,46 +223,6 @@ def _askpass_program(work: Path, windows: bool) -> str:
         path.write_text("#!/bin/sh\nexit 1\n", encoding="ascii")
         path.chmod(0o700)
     return str(path)
-
-
-def _path_entries(path_value: str, *, windows: bool, cwd: str | os.PathLike[str]) -> list[str]:
-    """Absolute PATH entries only: never the working directory, relative or empty entries."""
-    module = ntpath if windows else posixpath
-    here = module.normcase(module.normpath(os.fspath(cwd)))
-    entries = []
-    for entry in path_value.split(";" if windows else os.pathsep):
-        # The host's own check: ntpath on Windows, posixpath elsewhere. A relative
-        # entry such as \\x would name a directory inside the working directory.
-        if not entry or not os.path.isabs(entry):
-            continue
-        if module.normcase(module.normpath(entry)) == here:
-            continue
-        entries.append(entry)
-    return entries
-
-
-def _find_executable(path_value: str, names: tuple[str, ...], *, windows: bool,
-                     cwd: str | os.PathLike[str]) -> str | None:
-    for entry in _path_entries(path_value, windows=windows, cwd=cwd):
-        for name in names:
-            candidate = os.path.join(entry, name)
-            if os.path.isfile(candidate) and (windows or os.access(candidate, os.X_OK)):
-                return candidate
-    return None
-
-
-def _git_executable(path_value: str, *, windows: bool, cwd: str | os.PathLike[str],
-                    recorded: str | None = None) -> str | None:
-    """Find git: the install-recorded executable first, then absolute PATH entries only.
-
-    shutil.which searches the current directory first on Windows, so a planted
-    git.exe in the working tree would run. A recorded path must be absolute and
-    an existing executable file; anything else falls through to the PATH lookup.
-    """
-    if (recorded and os.path.isabs(recorded) and os.path.isfile(recorded)
-            and (windows or os.access(recorded, os.X_OK))):
-        return recorded
-    return _find_executable(path_value, ("git.exe",) if windows else ("git",), windows=windows, cwd=cwd)
 
 
 def _git_missing_reason(operation: str, windows: bool) -> str:
