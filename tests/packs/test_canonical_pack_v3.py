@@ -372,7 +372,17 @@ def test_versioned_schema_is_valid_and_retains_shared_contract_fields() -> None:
     schema = json.loads((Path(canonical.__file__).parent / "schemas/v3/pack.json").read_text())
     jsonschema.Draft202012Validator.check_schema(schema)
     action = schema["properties"]["actions"]["additionalProperties"]["properties"]
-    assert set(action["inputs"]["oneOf"][0]["items"]["properties"]) == set(Port.__dataclass_fields__)
+    port_schema = action["inputs"]["oneOf"][0]["items"]
+    # `enum` is a v3 manifest declaration beyond the Port contract (the core
+    # Hivemind pack lists its allowed string values with it); it is string-only.
+    assert set(port_schema["properties"]) == set(Port.__dataclass_fields__) | {"enum"}
+    assert port_schema["properties"]["enum"] == {
+        "type": "array", "minItems": 1, "uniqueItems": True, "items": {"$ref": "#/$defs/non_blank"},
+    }
+    assert port_schema["allOf"] == [{
+        "if": {"required": ["enum"]},
+        "then": {"required": ["type"], "properties": {"type": {"const": "string"}}},
+    }]
     assert set(action["outputs"]["oneOf"][0]["items"]["properties"]) == set(Output.__dataclass_fields__)
     command = action["invocation"]["oneOf"][1]["properties"]["command"]
     assert set(command["properties"]) == set(CommandSpec.__dataclass_fields__)
