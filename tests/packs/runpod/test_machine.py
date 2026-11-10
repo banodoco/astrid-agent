@@ -859,6 +859,25 @@ def test_machines_setup_hides_async_datacenter_error(monkeypatch, capsys, caplog
     assert secret not in captured.out + captured.err + caplog.text
 
 
+def test_machines_setup_failed_action_keeps_saved_policy(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    saved = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+             "gpu_types": ["RTX A"], "budget_cap_usd": 5}
+    before = dict(saved)
+    secret = "failed-action-sentinel"
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: saved)
+    assert machines_cli.main(["setup", "--datacenter", "any", "--json"], volumes=lambda: [],
+        offered_gpus=lambda *_: ["RTX A"],
+        setup=lambda _: SimpleNamespace(ok=False, error={"message": secret})) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["ok"] is False
+    assert secret not in captured.out + captured.err
+    assert saved == before
+
+
 def test_machines_setup_interactive_datacenter_keeps_gpu_order(monkeypatch, capsys):
     from astrid.core import machines_cli
     from astrid.core.generation import settings
