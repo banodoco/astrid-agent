@@ -232,9 +232,9 @@ def _path_entries(path_value: str, *, windows: bool, cwd: str | os.PathLike[str]
     here = module.normcase(module.normpath(os.fspath(cwd)))
     entries = []
     for entry in path_value.split(";" if windows else os.pathsep):
-        # On Windows os.path is ntpath, so this is ntpath's check; the OR keeps POSIX
-        # paths absolute in the Linux simulation. Drive-less roots are still refused.
-        if not entry or not (module.isabs(entry) or os.path.isabs(entry)):
+        # The host's own check: ntpath on Windows, posixpath elsewhere. A relative
+        # entry such as \\x would name a directory inside the working directory.
+        if not entry or not os.path.isabs(entry):
             continue
         if module.normcase(module.normpath(entry)) == here:
             continue

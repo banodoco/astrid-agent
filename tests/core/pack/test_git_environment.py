@@ -65,11 +65,13 @@ def test_posix_environment_is_isolated_and_uses_null_devices(tmp_path: Path) -> 
 def test_windows_environment_passes_only_required_system_variables(tmp_path: Path) -> None:
     work = tmp_path / "work"
     askpass = str(work / "askpass.cmd")
+    path_value = ";".join((str(tmp_path / "Git" / "cmd"), str(tmp_path / "System32")))
+    source = {**WINDOWS_SOURCE, "Path": path_value}
 
-    env = _git_environment(work, askpass, windows=True, source=WINDOWS_SOURCE)
+    env = _git_environment(work, askpass, windows=True, source=source)
 
     assert env == {
-        "PATH": WINDOWS_SOURCE["Path"],
+        "PATH": path_value,
         "HOME": str(work),
         "USERPROFILE": str(work),
         "TEMP": str(work),
@@ -89,11 +91,12 @@ def test_windows_environment_passes_only_required_system_variables(tmp_path: Pat
 
 
 def test_windows_variable_names_are_matched_case_insensitively(tmp_path: Path) -> None:
-    source = {"PATH": r"C:\Git", "systemroot": r"C:\Windows"}
+    git_dir = tmp_path / "Git"
+    source = {"PATH": str(git_dir), "systemroot": str(tmp_path / "Windows")}
     env = _git_environment(tmp_path, "askpass.cmd", windows=True, source=source)
 
-    assert env["PATH"] == r"C:\Git"
-    assert env["SYSTEMROOT"] == r"C:\Windows"
+    assert env["PATH"] == str(git_dir)
+    assert env["SYSTEMROOT"] == str(tmp_path / "Windows")
 
 
 def test_default_platform_follows_os_name_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -301,3 +304,21 @@ def test_planted_ssh_in_working_directory_never_runs(tmp_path: Path, monkeypatch
         install._git(work, "ls-remote", "ssh://git@127.0.0.1:1/repo.git")
 
     assert not marker.exists()
+
+
+def test_backslash_led_path_entry_is_relative_on_posix_and_never_runs(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    # On POSIX a "\\x" entry is a relative name: a directory called "\\x" in the cwd.
+    project = tmp_path / "project"
+    planted = project / "\\x"
+    _executable(planted / "git")
+    _executable(planted / "ssh")
+    monkeypatch.chdir(project)
+
+    assert install._git_executable("\\x", windows=False, cwd=project) is None
+    env = _git_environment(tmp_path / "work", "askpass", windows=False, source={"PATH": "\\x"},
+                           cwd=project)
+
+    assert env["PATH"] == ""
+    assert env["GIT_SSH_COMMAND"].startswith("ssh -F ")
+    assert str(planted) not in env["GIT_SSH_COMMAND"]
