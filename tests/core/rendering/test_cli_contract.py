@@ -272,7 +272,7 @@ def test_plain_mode_create_is_human_readable_text(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert not result.stdout.lstrip().startswith("{")
     assert "created renderer scaffold at" in result.stdout
-    assert "files: pack.yaml renderer.yaml render.py test_renderer.py" in result.stdout
+    assert "files: pack.yaml rendering/renderer.yaml render.py test_renderer.py" in result.stdout
 
 
 def test_plain_mode_support_is_human_readable_text(tmp_path: Path) -> None:

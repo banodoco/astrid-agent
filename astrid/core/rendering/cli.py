@@ -5,7 +5,7 @@ deliberately outside Astrid's eight-family product gateway. ``main`` routes
 each sub-verb:
 
 * ``create`` — write the exact four-file renderer scaffold (``pack.yaml``,
-  ``renderer.yaml``, ``render.py``, ``test_renderer.py``);
+  ``rendering/renderer.yaml``, ``render.py``, ``test_renderer.py``);
 * ``list`` — print every discovered renderer/planner/finalizer qualified id;
 * ``inspect`` — print one candidate's manifest fields plus its discovery and
   trust evidence (source pack, eligibility, trust method);
@@ -303,7 +303,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         )
         return 0
     print(f"created renderer scaffold at {scaffolded}")
-    print("files: pack.yaml renderer.yaml render.py test_renderer.py")
+    print("files: " + " ".join(SCAFFOLD_FILES))
     return 0
 
 

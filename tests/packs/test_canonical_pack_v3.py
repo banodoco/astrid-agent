@@ -178,6 +178,81 @@ def test_element_retains_kind_local_identity_and_descriptor_defaults(tmp_path: P
     assert yaml.safe_load((root / path).read_text()) == descriptor
 
 
+def test_element_may_use_an_element_kind_its_own_pack_declares(tmp_path: Path) -> None:
+    """Platform contract: a pack declares extensions.elements.kinds and ships elements of those kinds."""
+    path = "rendering/elements/widgets/glow/element.yaml"
+    root = _pack(tmp_path, files={path: yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": "demo"})},
+                 extensions={"elements": {"kinds": [{"id": "widgets", "singular": "widget"}]}},
+                 rendering={"widgets/glow": {"type": "element", "path": path}})
+    entry = validate_canonical_pack(root)
+    assert entry.definition.declaration_id("rendering", "widgets/glow") == "widgets/glow"
+
+
+@pytest.mark.parametrize("extensions", [
+    # A custom kind the pack does not declare (it declares a different one).
+    {"elements": {"kinds": [{"id": "gadgets", "singular": "gadget"}]}},
+    # A custom kind declared by no pack here: another pack's declaration never applies.
+    {},
+], ids=["undeclared-by-this-pack", "declared-elsewhere-or-nowhere"])
+def test_element_kind_neither_built_in_nor_declared_by_this_pack_is_refused(
+    tmp_path: Path, extensions: dict,
+) -> None:
+    path = "rendering/elements/widgets/glow/element.yaml"
+    root = _pack(tmp_path, files={path: yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": "demo"})},
+                 extensions=extensions,
+                 rendering={"widgets/glow": {"type": "element", "path": path}})
+    with pytest.raises(CanonicalPackValidationError) as excinfo:
+        validate_canonical_pack(root)
+    message = str(excinfo.value)
+    assert "element kind 'widget' is neither built in [effects, animations, transitions]" in message
+    assert "declared by pack 'demo' in extensions.elements.kinds" in message
+
+
+@pytest.mark.parametrize("elements", [["widgets"], "widgets"], ids=["list", "string"])
+def test_non_mapping_pack_element_extensions_are_refused(tmp_path: Path, elements) -> None:
+    path = "rendering/elements/widgets/glow/element.yaml"
+    root = _pack(tmp_path, files={path: yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": "demo"})},
+                 extensions={"elements": elements},
+                 rendering={"widgets/glow": {"type": "element", "path": path}})
+    with pytest.raises(CanonicalPackValidationError, match="extensions.elements must be an object"):
+        validate_canonical_pack(root)
+
+
+def test_two_packs_declaring_one_custom_kind_each_load_and_the_merge_names_both(tmp_path: Path) -> None:
+    """Each pack is valid alone; combining them fails clearly instead of picking an owner."""
+    from astrid.core.element.registry import _element_kind_registry_for_packs
+    from astrid.core.pack._common import PackValidationError
+    from astrid.core.pack.loader import load_pack_manifest
+
+    packs = []
+    for pack_id in ("demo_a", "demo_b"):
+        root = tmp_path / pack_id
+        path = "rendering/elements/widgets/glow/element.yaml"
+        (root / path).parent.mkdir(parents=True)
+        (root / path).write_text(yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": pack_id}), encoding="utf-8")
+        (root / "pack.yaml").write_text(yaml.safe_dump({
+            "schema_version": 3, "id": pack_id, "name": pack_id, "version": "1.0.0",
+            "extensions": {"elements": {"kinds": [{"id": "widgets", "singular": "widget"}]}},
+            "rendering": {"widgets/glow": {"type": "element", "path": path}},
+        }), encoding="utf-8")
+        packs.append(load_pack_manifest(root / "pack.yaml"))
+
+    assert "widgets" in _element_kind_registry_for_packs(packs[:1]).canonical_kinds()
+    with pytest.raises(PackValidationError, match=(
+        r"element kind 'widgets' is declared by more than one pack: 'demo_a' and 'demo_b'"
+    )):
+        _element_kind_registry_for_packs(packs)
+
+
+def test_malformed_pack_element_kinds_are_refused(tmp_path: Path) -> None:
+    path = "rendering/elements/widgets/glow/element.yaml"
+    root = _pack(tmp_path, files={path: yaml.safe_dump({"id": "glow", "kind": "widget", "pack_id": "demo"})},
+                 extensions={"elements": {"kinds": [{"id": "widgets", "bogus": True}]}},
+                 rendering={"widgets/glow": {"type": "element", "path": path}})
+    with pytest.raises(CanonicalPackValidationError, match="extensions.elements.kinds is invalid"):
+        validate_canonical_pack(root)
+
+
 def test_documents_are_schema_resources_with_independent_format_version(tmp_path: Path) -> None:
     root = _pack(tmp_path, files={"shared/note.schema.json": '{"type":"object"}',
                                  "shared/note-example.json": "{}"},
@@ -333,7 +408,17 @@ def test_versioned_schema_is_valid_and_retains_shared_contract_fields() -> None:
     schema = json.loads((Path(canonical.__file__).parent / "schemas/v3/pack.json").read_text())
     jsonschema.Draft202012Validator.check_schema(schema)
     action = schema["properties"]["actions"]["additionalProperties"]["properties"]
-    assert set(action["inputs"]["oneOf"][0]["items"]["properties"]) == set(Port.__dataclass_fields__)
+    port_schema = action["inputs"]["oneOf"][0]["items"]
+    # `enum` is a v3 manifest declaration beyond the Port contract (the core
+    # Hivemind pack lists its allowed string values with it); it is string-only.
+    assert set(port_schema["properties"]) == set(Port.__dataclass_fields__) | {"enum"}
+    assert port_schema["properties"]["enum"] == {
+        "type": "array", "minItems": 1, "uniqueItems": True, "items": {"$ref": "#/$defs/non_blank"},
+    }
+    assert port_schema["allOf"] == [{
+        "if": {"required": ["enum"]},
+        "then": {"required": ["type"], "properties": {"type": {"const": "string"}}},
+    }]
     assert set(action["outputs"]["oneOf"][0]["items"]["properties"]) == set(Output.__dataclass_fields__)
     command = action["invocation"]["oneOf"][1]["properties"]["command"]
     assert set(command["properties"]) == set(CommandSpec.__dataclass_fields__)

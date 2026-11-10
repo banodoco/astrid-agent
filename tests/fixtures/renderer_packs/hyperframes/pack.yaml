@@ -1,7 +1,8 @@
-schema_version: 2
+schema_version: 3
 id: hyperframes
 name: HyperFrames Renderer Pack
 version: 1.0.0
+pack_api: "2.0"
 description: >-
   Third-party renderer pack adapting Astrid timelines to the HyperFrames
   HTML-to-MP4 renderer (heygen-com/hyperframes).  render.py is a pure-stdlib
@@ -15,9 +16,10 @@ permissions:
     reason: Read the invocation request JSON, write the composition, and
       emit the rendered MP4 into the request workspace.
 aliases: []
-extensions:
-  rendering:
-    renderers:
-      - renderer.yaml
-    planners:
-      - planner.yaml
+rendering:
+  renderer:
+    type: renderer
+    path: rendering/renderer.yaml
+  planner:
+    type: planner
+    path: rendering/planner.yaml
