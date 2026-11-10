@@ -293,6 +293,12 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         # Replaying them also applies the already-verified non-media values to
         # workflows with aliases/defaults, such as H3's duration input.
         expected = _output_reachable(json.loads(_graph(scoped, run_inputs=runtime[0])))
+        if submitted != expected:
+            (tmp_path / "graph-difference.json").write_text(json.dumps({
+                node: {"submitted": submitted.get(node), "expected": expected.get(node)}
+                for node in submitted.keys() | expected.keys()
+                if submitted.get(node) != expected.get(node)
+            }, indent=2, sort_keys=True))
         assert submitted == expected, (
             "submitted graph differs in nodes, inputs, links or values; "
             f"outputs={[(out.node_id, scoped.nodes[out.node_id].inputs, scoped.nodes[out.node_id].widgets) for out in scoped.outputs]!r}; "
