@@ -3415,9 +3415,10 @@ def _wait_for_kernel_task(
     read_managed_outputs: bool = False,
     expects_outputs: bool = False,
     owner_tick: Any | None = None,
+    initial_task: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool, str]:
     """Follow a task, cancelling an admitted RunPod generation on caller Ctrl-C."""
-    latest: dict[str, Any] = {}
+    latest: dict[str, Any] = dict(initial_task) if isinstance(initial_task, Mapping) else {}
 
     def observed(task):
         latest.clear()
@@ -3767,6 +3768,7 @@ def _observe_task_invocation(
             read_managed_outputs=read_managed_outputs,
             expects_outputs=expects_outputs,
             owner_tick=owner_tick,
+            initial_task=raw_result.get("task"),
         )
         if waited_attempt_id:
             attempt_id = waited_attempt_id

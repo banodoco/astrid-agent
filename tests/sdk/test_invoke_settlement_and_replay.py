@@ -105,6 +105,36 @@ def test_ctrl_c_cancels_only_the_known_runpod_generation_task(monkeypatch, place
     assert cancelled == expected
 
 
+@pytest.mark.parametrize("capability_id,placement,expected", [
+    ("vibecomfy.run", "runpod", [TASK]),
+    ("runpod.claim", "runpod", [TASK]),
+    ("vibecomfy.run", "local", []),
+    ("other.task", "runpod", []),
+])
+def test_ctrl_c_on_first_status_poll_uses_admitted_task(capability_id, placement, expected):
+    cancelled = []
+    show_calls = []
+    policy = {"kind": placement}
+    if capability_id == "runpod.claim":
+        policy["paid_consent"] = {"wait_for_capacity": True}
+    task = {"spec": {"capability_id": capability_id, "inputs": {
+        "placement_policy": json.dumps(policy)}}}
+
+    def show(task_id):
+        show_calls.append(task_id)
+        raise KeyboardInterrupt()
+
+    client = SimpleNamespace(tasks=SimpleNamespace(
+        show=show, cancel=lambda task_id, **kwargs: cancelled.append(task_id)))
+    with pytest.raises(KeyboardInterrupt):
+        invocation._observe_task_invocation(
+            client, capability_id=capability_id, capability_type="executor",
+            native_kind="built_in", task_id=TASK, run_id=RUN,
+            initial_task=task, wait=True, poll_seconds=0.001)
+    assert show_calls == [TASK]
+    assert cancelled == expected
+
+
 def test_ctrl_c_without_a_runtime_cancel_api_preserves_the_interrupt(monkeypatch):
     task = {"state": "running", "spec": {"capability_id": "vibecomfy.run", "inputs": {
         "placement_policy": json.dumps({"kind": "runpod"})}}}
