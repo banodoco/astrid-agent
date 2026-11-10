@@ -403,6 +403,23 @@ def _linked(workflow: Any, node_id: str, field: str) -> bool:
                for edge in workflow.edges)
 
 
+# ComfyUI spells a choice widget COMBO (live /object_info) while VibeComfy templates retain it
+# as CHOICE or ENUM; all three name the same value channel.
+_CHOICE_SOCKET_TYPES = frozenset({'COMBO', 'CHOICE', 'ENUM'})
+
+
+def _binding_type(node: Any, field: str, provider_type: Any) -> Any:
+    """The public type for a writable node field: the node's own retained socket type when the
+    schema provider names the same choice channel with another spelling, else the provider's."""
+    names = getattr(node, 'native_input_names', None) or ()
+    types = getattr(node, 'native_input_types', None) or ()
+    native = types[list(names).index(field)] if field in names and list(names).index(field) < len(types) else None
+    if (isinstance(native, str) and isinstance(provider_type, str)
+            and native.upper() in _CHOICE_SOCKET_TYPES and provider_type.upper() in _CHOICE_SOCKET_TYPES):
+        return native
+    return provider_type
+
+
 def _writable_node_bindings(workflow: Any, provider: Any = None) -> dict[str, str]:
     """Expose schema-backed literals through Vibe's existing validated binding.
 
@@ -432,7 +449,8 @@ def _writable_node_bindings(workflow: Any, provider: Any = None) -> dict[str, st
             limits = {key: getattr(spec, key) for key in ('choices', 'min', 'max')
                       if getattr(spec, key, None) is not None}
             workflow.register_input(name, str(node_id), field, value,
-                                    type=spec.type, default=spec.default, range=limits)
+                                    type=_binding_type(node, field, spec.type), default=spec.default,
+                                    range=limits)
             bindings[name] = name
     return bindings
 

@@ -58,7 +58,7 @@ def test_catalog_preserves_stage1_capability_census() -> None:
         11,
         54,
         0,
-        10,
+        24,
     )
 
 

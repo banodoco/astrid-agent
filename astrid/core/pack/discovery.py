@@ -1,8 +1,9 @@
 """Shared pack discovery across executor, orchestrator, and element registries.
 
 Each registry consumes the same manifest-ledger discovery walk. The walk is
-read-only: it can see source-tree packs, managed sources, the per-user
-``personal`` collection, explicit extra roots, and read-only roots named by
+read-only: it can see source-tree packs, the bundled project ``local`` pack,
+managed sources, the per-user ``personal`` collection, explicit extra roots,
+and read-only roots named by
 ``ASTRID_PACKS_PATH``. It never creates a project pack and never consults an
     mutable user pack store.
 
@@ -47,10 +48,11 @@ from astrid.core.pack.loader import discover_packs as _default_discover_packs
 DiscoverPacksFn = Callable[..., "tuple[PackDefinition, ...]"]
 
 # Source-kind labels in discovery (and therefore priority) order.
-SOURCE_KINDS: tuple[str, ...] = ("source", "managed", "extra", "env")
-# The retired project-local pack id (Plan 06 PK-12, Decision 8). Discovery
-# never loads a pack with this id; user effects live in ``personal``.
-RETIRED_LOCAL_PACK_ID = "local"
+SOURCE_KINDS: tuple[str, ...] = ("source", "local", "managed", "extra", "env")
+# The project ``local`` pack id. Only ``<project_root>/astrid/packs/local`` is
+# admitted under it, as the ``local`` layer; a folder or pack with this id in any
+# other root is never loaded. Editable user effects live in ``personal``.
+LOCAL_PACK_ID = "local"
 MANAGED_SOURCE_KIND = "managed"
 ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
 
@@ -165,7 +167,7 @@ class DiscoveredPack:
 
     ``priority_index`` is the position of this pack in the ordered discovery
     list; lower indices were discovered first. It encodes layer precedence
-    (source < managed < extra < env) and is distinct from the per-content
+    (source < local < managed < extra < env) and is distinct from the per-content
     ``metadata["priority"]`` value that registries use to pick winners.
     """
 
@@ -320,9 +322,8 @@ def discover_canonical_pack_metadata(
             try:
                 if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
                     continue
-                # ``local`` is the retired project-local pack id (PK-12): it stays
-                # reserved, so an old folder of that name is never loaded as a pack.
-                if child.name in {RETIRED_LOCAL_PACK_ID, "__pycache__"}:
+                # ``local`` is admitted only from the project tree (below).
+                if child.name in {LOCAL_PACK_ID, "__pycache__"}:
                     continue
                 if manifest.is_file():
                     add(manifest, source)
@@ -331,6 +332,9 @@ def discover_canonical_pack_metadata(
                     "skipping %s pack %s: manifest failed to load: %s", source.value, manifest, exc
                 )
 
+    local = project_root / "astrid" / "packs" / LOCAL_PACK_ID / "pack.yaml"
+    if local.is_file():
+        add(local, ExternalPackSource.LOCAL)
     if managed_inventory is not None:
         for source in managed_inventory.sources:
             root = source.pack_root.resolve()
@@ -365,12 +369,12 @@ def discover_pack_metadata(
 ) -> tuple[DiscoveredPack, ...]:
     """Return discovered packs in layered priority order.
 
-    Layers, in order: source-tree packs, validated managed roots, the personal
-    collection, explicit extra pack roots, and ``ASTRID_PACKS_PATH`` roots.
-    The project-scoped ``local`` layer was retired in PK-12 (Plan 06
-    Decision 8); only the per-user ``personal`` pack remains.
+    Layers, in order: source-tree packs (excluding ``local``), the project's
+    ``astrid/packs/local`` pack when it has an authored manifest, validated
+    managed roots, the personal collection, explicit extra pack roots, and
+    ``ASTRID_PACKS_PATH`` roots. ``local`` is never admitted from any other root.
 
-    *discover_packs_fn* overrides the source/extra layer scanner; callers
+    *discover_packs_fn* overrides the source/local/extra layer scanner; callers
     pass their own module-level ``discover_packs`` so the historical per-registry
     test seam (``mock.patch("astrid.core.<x>.registry.discover_packs")``) keeps
     working. Defaults to :func:`astrid.core.pack.discover_packs`.
@@ -661,8 +665,8 @@ def discover_pack_metadata(
                     " ".join(str(exc).split()),
                 )
                 continue
-            if pack.id == RETIRED_LOCAL_PACK_ID:
-                continue  # retired id stays reserved (PK-12)
+            if pack.id == LOCAL_PACK_ID:
+                continue  # admitted only as the project ``local`` layer
             if previous_name is not None and previous_name[1] is None:
                 raise PackValidationError(
                     f"duplicate pack directory name {child.name!r} across {previous_name[0]} and {child}"
@@ -698,10 +702,30 @@ def discover_pack_metadata(
         )
         _add(core_hivemind, "source")
     for pack in source_packs:
-        if pack.id in {RETIRED_LOCAL_PACK_ID, "hivemind"}:
+        if pack.id in {LOCAL_PACK_ID, "hivemind"}:
             continue
         _register_pack_name(Path(pack.root), pack.id)
         _add(pack, "source")
+
+    # Discovery is observational: only an explicitly-authored manifest at the
+    # project's ``astrid/packs/local`` is eligible for the local layer.
+    project_pack_root = (Path(project_root) / "astrid" / "packs").resolve()
+    local_pack_root = project_pack_root / LOCAL_PACK_ID
+    if project_pack_root.is_dir() and any(
+        (local_pack_root / name).is_file() for name in ("pack.yaml", "pack.yml", "pack.json")
+    ):
+        # Only the built-in scanner guarantees identical strict admission for
+        # these two calls when its actual default root is the project root.
+        # Injected scanners can assign different authority to each argument.
+        local_packs = (
+            source_packs
+            if scan is _default_discover_packs and loader.packs_root().resolve() == project_pack_root
+            else scan(project_pack_root)
+        )
+        for pack in local_packs:
+            if pack.id == LOCAL_PACK_ID and Path(pack.root).resolve() == local_pack_root.resolve():
+                _register_pack_name(Path(pack.root), pack.id)
+                _add(pack, "local")
 
     if managed_inventory is not None:
         for source in managed_inventory.sources:
