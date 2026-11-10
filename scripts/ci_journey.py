@@ -2723,24 +2723,24 @@ PACK_REGISTRATION_TIMEOUT = 180
 # Journey pack id -> the executor capability the journey's task admits.
 JOURNEY_PACK_CAPABILITIES = {"chiptune": "chiptune.sfx"}
 # The Runtime's OWN registration of the pack host's executor (the registry admission reads),
-# read the way astrid.sdk.host_bootstrap attaches a resident host: the pack host's worker
-# credential and endpoint from its ready marker, then generated.get_executor.
+# read with the selected Runtime owner, after validating its owned root and live identity.
 RUNTIME_REGISTRATION_PROBE = (
     "import json\n"
     "from pathlib import Path\n"
     "from astrid.core.execution.generic_host import RuntimeProtocolClient\n"
     "from astrid.sdk.host_bootstrap import PACK_HOST_ACTOR\n"
-    "ready = json.loads(Path({ready_path!r}).read_text(encoding='utf-8'))\n"
-    "token = Path(ready['credential_file']).read_text(encoding='utf-8').strip()\n"
-    "client = RuntimeProtocolClient(str(ready['endpoint']).rstrip('/'), token)\n"
-    "client._authenticate_worker(PACK_HOST_ACTOR)\n"
+    "token = Path({owner_path!r}).read_text(encoding='utf-8').strip()\n"
+    "client = RuntimeProtocolClient({endpoint!r}, token)\n"
+    "auth = client.generated.handshake('journey-probe', '1', ['admin'])\n"
+    "if auth.actor_id != 'owner' or 'admin' not in auth.scopes:\n"
+    "    raise RuntimeError('Runtime credential is not the admin owner')\n"
     "registration = client.generated.get_executor(PACK_HOST_ACTOR)\n"
     "def field(value, name):\n"
     "    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)\n"
     "rows = [{{'capability_id': field(c, 'capability_id'), 'status': field(c, 'status'),\n"
     "          'definition_digest': field(c, 'definition_digest')}}\n"
     "        for c in (field(registration, 'capabilities') or ())]\n"
-    "print(json.dumps({{'id': field(registration, 'id'),\n"
+    "print(json.dumps({{'id': field(registration, 'executor_id'),\n"
     "                  'readiness': field(registration, 'readiness'),\n"
     "                  'max_concurrency': field(registration, 'max_concurrency'),\n"
     "                  'runtime_epoch': field(registration, 'runtime_epoch'),\n"
@@ -2759,9 +2759,10 @@ PACK_HOST_IDENTITY_FIELDS = ("pid", "process_birth_id", "executor_id", "runtime_
 def sanitized_pack_host_identity(ready: dict) -> dict:
     """The pack host's identity from its ready marker, without credentials or paths."""
     identity = {key: ready.get(key) for key in PACK_HOST_IDENTITY_FIELDS}
-    registration = ready.get("registration") if isinstance(ready.get("registration"), dict) else {}
+    result = ready.get("registration") if isinstance(ready.get("registration"), dict) else {}
+    registration = result.get("registration") if isinstance(result.get("registration"), dict) else {}
     identity["registration"] = {key: registration.get(key) for key in (
-        "id", "readiness", "runtime_epoch", "source_epoch", "source_digest", "dependency_digest")}
+        "executor_id", "readiness", "runtime_epoch", "source_epoch", "source_digest", "dependency_digest")}
     return identity
 # The personal packs-root transaction outbox: its committed revision and any pending refresh.
 PACK_OUTBOX_PROBE = (
@@ -2860,7 +2861,14 @@ def console_routes_packs(source: str | None) -> bool:
 def _installed_probe(version: dict, code: str, evidence: Path, name: str) -> str:
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(version["env"])
-    output = run([version["python"], "-I", "-c", code], evidence / name, env=env, timeout=120)
+    try:
+        output = run([version["python"], "-I", "-c", code], evidence / name, env=env, timeout=120)
+    except RuntimeError as exc:
+        if name == "journey-pack-capability.log":
+            lines = (evidence / name).read_text(encoding="utf-8", errors="replace").splitlines()
+            if lines:
+                raise RuntimeError(f"{exc}: {lines[-1][:400]}") from exc
+        raise
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     return lines[-1] if lines else ""
 
@@ -2893,20 +2901,23 @@ def existing_pack_registration_problems(capability_id: str, observation: dict) -
     problems = []
     ready = observation.get("ready") if isinstance(observation.get("ready"), dict) else {}
     registration = observation.get("registration") if isinstance(observation.get("registration"), dict) else None
-    host_registration = ready.get("registration") if isinstance(ready.get("registration"), dict) else {}
+    host_result = ready.get("registration") if isinstance(ready.get("registration"), dict) else {}
+    host_registration = host_result.get("registration") if isinstance(host_result.get("registration"), dict) else {}
     if not observation.get("host_alive"):
         problems.append("the pack host in the ready marker is not running")
     if registration is None:
-        problems.append("the Runtime returned no executor registration")
+        error = observation.get("registration_error")
+        problems.append(f"Runtime registration probe failed: {error}" if error
+                        else "the Runtime returned no executor registration")
         return problems
-    expected_id = ready.get("executor_id") or "astrid-pack-host"
-    if registration.get("id") != expected_id:
+    expected_id = ready.get("executor_id")
+    if not expected_id or registration.get("id") != expected_id:
         problems.append(f"executor {registration.get('id')!r} is not the live host's {expected_id!r}")
     if registration.get("readiness") != "ready":
         problems.append(f"executor readiness is {registration.get('readiness')!r}")
-    if ready.get("runtime_instance_id") != observation.get("runtime_instance_id"):
+    if not ready.get("runtime_instance_id") or ready.get("runtime_instance_id") != observation.get("runtime_instance_id"):
         problems.append("the live host registered with a previous Runtime instance")
-    if registration.get("runtime_epoch") != ready.get("runtime_epoch"):
+    if ready.get("runtime_epoch") is None or registration.get("runtime_epoch") != ready.get("runtime_epoch"):
         problems.append("stale registration: its runtime epoch differs from the live host's")
     for name, expected in (("source_epoch", ready.get("source_epoch")),
                            ("source_digest", host_registration.get("source_digest")),
@@ -2935,10 +2946,42 @@ def _observe_pack_registration(version: dict, evidence: Path) -> dict:
         observation["host_alive"] = type(pid) is int and pid > 0 and bool(_process_command(pid))
         discovery = read_json(ready_path.parent / "discovery.json")
         observation["runtime_instance_id"] = discovery.get("runtime_instance_id")
-        code = RUNTIME_REGISTRATION_PROBE.format(ready_path=str(ready_path))
+        data = ready_path.parent.parent
+        selection = read_json(selection_path())
+        program = Path(version["root"]).parent.parent
+        owner_file = program.parent / OWNER_FILE
+        owner = read_json(owner_file)
+        original_data = Path(owner["data_root"])
+        if (owner_file.is_symlink() or owner.get("schema_version") != 1
+                or not re.fullmatch(r"[0-9a-f]{32}", str(owner.get("run_id", "")))
+                or owner.get("root") != str(program) or program.name != "program"
+                or original_data != program.parent / "data"
+                or data not in (original_data, Path(str(original_data) + "-r1"))
+                or not data.is_absolute() or data != data.resolve()
+                or selection.get("owner") != "haus.astrid.runtime"
+                or not _same_path(selection.get("program_root"), program)
+                or not _same_path(selection.get("data_root"), data)):
+            raise RuntimeError("Selected Runtime data root is not owned by this journey")
+        discovery = healthy(data)
+        endpoint = discovery.get("endpoint")
+        if (not isinstance(endpoint, str) or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", endpoint)
+                or not 1 <= int(endpoint.rsplit(":", 1)[1]) <= 65535
+                or ready.get("endpoint") != endpoint
+                or not discovery.get("runtime_instance_id")
+                or ready.get("runtime_instance_id") != discovery["runtime_instance_id"]):
+            raise RuntimeError("Pack host endpoint or Runtime identity differs from the live selected Runtime")
+        request = urllib.request.Request(endpoint + "/v1/health")
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as response:
+            live = json.load(response)
+        if live.get("runtime_instance_id") != discovery["runtime_instance_id"] or live.get("status") != "ok":
+            raise RuntimeError("Runtime endpoint health does not match selected discovery")
+        owner_path = data / "runtime" / "credentials" / "owner.token"
+        if owner_path != owner_path.resolve() or not owner_path.is_file():
+            raise RuntimeError("Selected Runtime owner credential is missing or aliased")
+        code = RUNTIME_REGISTRATION_PROBE.format(owner_path=str(owner_path), endpoint=endpoint)
         observation["registration"] = json.loads(_installed_probe(version, code, evidence,
                                                                   "journey-pack-capability.log"))
-    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+    except (RuntimeError, ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
         observation["registration_error"] = f"{type(exc).__name__}: {exc}"[:500]
     try:
         observation["outbox"] = json.loads(_installed_probe(version, PACK_OUTBOX_PROBE, evidence,
@@ -2971,8 +3014,10 @@ def _poll_pack_registration(version: dict, evidence: Path, pack_id: str, *, mode
             if mode == "existing":
                 problems = existing_pack_registration_problems(capability_id, observation)
             else:
-                problems = ([] if _capability_ready(observation["registration"], capability_id)
-                            else [f"{capability_id} is not listed as ready"])
+                problems = ([f"Runtime registration probe failed: {observation['registration_error']}"]
+                            if observation["registration_error"] else
+                            ([] if _capability_ready(observation["registration"], capability_id)
+                             else [f"{capability_id} is not listed as ready"]))
             receipt["problems"] = problems
             if not problems:
                 receipt["registered"] = True
@@ -2983,7 +3028,7 @@ def _poll_pack_registration(version: dict, evidence: Path, pack_id: str, *, mode
                     raise RuntimeError(f"The Runtime's registration of {capability_id} is not current for the "
                                        f"live host after {int(timeout)}s: " + "; ".join(problems))
                 raise RuntimeError(f"The Runtime did not register {capability_id} as ready within "
-                                   f"{int(timeout)}s of `packs add` of {pack_id}")
+                                   f"{int(timeout)}s of `packs add` of {pack_id}: " + "; ".join(problems))
             time.sleep(interval)
     finally:
         write_json(evidence / PACK_REGISTRATION_RECEIPT, receipt)

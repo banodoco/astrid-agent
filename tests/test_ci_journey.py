@@ -263,8 +263,8 @@ READY_MARKER = {"pid": 10, "process_birth_id": "b10", "executor_id": "astrid-pac
                 "runtime_instance_id": "i1", "runtime_epoch": 4, "source_epoch": "se1",
                 "credential_file": "/secret/worker", "endpoint": "http://127.0.0.1:1",
                 "ready_capabilities": ["other.cap"],
-                "registration": {"id": "astrid-pack-host", "readiness": "ready", "runtime_epoch": 4,
-                                 "source_epoch": "se1", "source_digest": "sd1", "dependency_digest": "dd1"}}
+                "registration": {"registration": {"executor_id": "astrid-pack-host", "readiness": "ready", "runtime_epoch": 4,
+                                                  "source_epoch": "se1", "source_digest": "sd1", "dependency_digest": "dd1"}}}
 
 
 def _registration(*rows, **changes):
@@ -295,33 +295,94 @@ def test_wait_pack_registered_requires_the_runtimes_own_ready_registration(tmp_p
     assert receipt["outbox"]["revision"] == 2 and receipt["problems"] == []
     identity = json.loads((tmp_path / journey.PACK_HOST_IDENTITY_RECEIPT).read_text())
     assert identity["pid"] == 10 and identity["registration"]["source_digest"] == "sd1"
+    assert identity["registration"]["executor_id"] == "astrid-pack-host"
     # Sanitized: no credential file, endpoint or token reaches the uploaded identity.
     assert "credential_file" not in identity and "endpoint" not in identity
     assert "/secret/worker" not in json.dumps(identity)
 
 
-def test_runtime_registration_probe_reads_the_executor_through_the_worker_credential(tmp_path, monkeypatch):
-    ready = tmp_path / "runtime" / "generic-host.ready.json"
-    ready.parent.mkdir()
-    ready.write_text(json.dumps(READY_MARKER), encoding="utf-8")
-    (tmp_path / "runtime" / "discovery.json").write_text(json.dumps({"runtime_instance_id": "i1"}), encoding="utf-8")
-    monkeypatch.setattr(journey, "pack_host_ready_path", lambda: ready)
-    monkeypatch.setattr(journey, "_process_command", lambda pid: "python -m astrid.core.execution.generic_host")
-    codes = {}
+def test_runtime_registration_probe_uses_only_the_validated_owner(tmp_path, monkeypatch, capsys):
+    import io
+    import types
+    import sys
 
+    program = tmp_path / "program"
+    data = tmp_path / "data"
+    ready = data / "runtime" / "generic-host.ready.json"
+    ready.parent.mkdir(parents=True)
+    endpoint = "http://127.0.0.1:1234"
+    marker = {**READY_MARKER, "endpoint": endpoint}
+    ready.write_text(json.dumps(marker), encoding="utf-8")
+    discovery = {"runtime_instance_id": "i1", "endpoint": endpoint}
+    (ready.parent / "discovery.json").write_text(json.dumps(discovery), encoding="utf-8")
+    owner = ready.parent / "credentials" / "owner.token"
+    owner.parent.mkdir()
+    owner.write_text("owner-secret", encoding="utf-8")
+    (tmp_path / journey.OWNER_FILE).write_text(json.dumps({"schema_version": 1, "run_id": "a" * 32,
+        "root": str(program), "data_root": str(data)}), encoding="utf-8")
+    selection = tmp_path / "selection.json"
+    selection.write_text(json.dumps({"owner": "haus.astrid.runtime", "program_root": str(program),
+                                     "data_root": str(data)}), encoding="utf-8")
+    monkeypatch.setattr(journey, "selection_path", lambda: selection)
+    monkeypatch.setattr(journey, "_process_command", lambda pid: "generic-host")
+    monkeypatch.setattr(journey, "healthy", lambda root: discovery)
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url == endpoint + "/v1/health"
+            return io.BytesIO(json.dumps({"status": "ok", "runtime_instance_id": "i1"}).encode())
+    monkeypatch.setattr(journey.urllib.request, "build_opener", lambda *args: Opener())
+    calls = []
+    class Client:
+        def __init__(self, url, token):
+            calls.append((url, token))
+            self.generated = self
+        def handshake(self, name, version, scopes):
+            calls.append(scopes)
+            return types.SimpleNamespace(actor_id="owner", scopes=("admin",))
+        def get_executor(self, actor):
+            calls.append(actor)
+            return types.SimpleNamespace(executor_id=actor, readiness="ready", runtime_epoch=4,
+                source_epoch="se1", source_digest="sd1", dependency_digest="dd1", max_concurrency=1,
+                capabilities=[types.SimpleNamespace(capability_id="chiptune.sfx", status="ready", definition_digest="d")])
+    fake = types.ModuleType("astrid.core.execution.generic_host")
+    fake.RuntimeProtocolClient = Client
+    monkeypatch.setitem(sys.modules, fake.__name__, fake)
     def probe(version, code, evidence, name):
-        codes[name] = code
-        return json.dumps(_registration(("chiptune.sfx", "ready")) if name == "journey-pack-capability.log"
-                          else {"packs_root": "/p", "revision": 1, "transaction_id": "t1", "refresh": None})
-
+        if name != "journey-pack-capability.log":
+            return json.dumps({"refresh": None})
+        exec(compile(code, "probe", "exec"), {})
+        return capsys.readouterr().out
     monkeypatch.setattr(journey, "_installed_probe", probe)
-    observation = journey._observe_pack_registration({}, tmp_path)
-    assert observation["host_alive"] is True and observation["runtime_instance_id"] == "i1"
-    code = codes["journey-pack-capability.log"]
-    assert "generated.get_executor(PACK_HOST_ACTOR)" in code and repr(str(ready)) in code
-    assert "get_capability" not in code and "'source_digest'" in code
-    compile(code, "probe", "exec")
-    compile(journey.PACK_OUTBOX_PROBE, "outbox", "exec")
+    version = {"root": str(program / "versions" / "v1")}
+    observation = journey._observe_pack_registration(version, tmp_path)
+    assert observation["registration_error"] is None
+    assert observation["registration"]["id"] == "astrid-pack-host"
+    assert calls == [(endpoint, "owner-secret"), ["admin"], "astrid-pack-host"]
+    assert journey.existing_pack_registration_problems("chiptune.sfx", observation) == []
+    discovery["endpoint"] = "http://127.0.0.1:1235"
+    assert "endpoint or Runtime identity" in journey._observe_pack_registration(version, tmp_path)["registration_error"]
+    assert len(calls) == 3
+    discovery["endpoint"] = endpoint
+    marker["runtime_instance_id"] = "foreign"
+    ready.write_text(json.dumps(marker))
+    assert "endpoint or Runtime identity" in journey._observe_pack_registration(version, tmp_path)["registration_error"]
+    assert len(calls) == 3
+    ready.write_text(json.dumps(READY_MARKER | {"endpoint": endpoint}))
+    selection.write_text(json.dumps({"owner": "foreign", "program_root": str(program), "data_root": str(data)}))
+    observation = journey._observe_pack_registration(version, tmp_path)
+    assert "not owned" in observation["registration_error"] and len(calls) == 3
+
+
+def test_missing_nested_registration_and_probe_errors_fail_loudly(tmp_path, monkeypatch):
+    observation = _observation(_registration(("chiptune.sfx", "ready")), ready={**READY_MARKER, "registration": {}})
+    problems = journey.existing_pack_registration_problems("chiptune.sfx", observation)
+    assert any("source_digest does not match" in p for p in problems)
+    assert any("dependency_digest does not match" in p for p in problems)
+    observation = {**_observation(None), "registration_error": "RuntimeError: credential lacks required scope"}
+    monkeypatch.setattr(journey, "_observe_pack_registration", lambda *a: observation)
+    for wait in (journey.wait_existing_pack_current, journey.wait_pack_registered):
+        with pytest.raises(RuntimeError, match="credential lacks required scope"):
+            wait({}, tmp_path, "chiptune", timeout=0, interval=0)
 
 
 def test_wait_pack_registered_timeout_records_the_outbox_and_host_state(tmp_path, monkeypatch):
