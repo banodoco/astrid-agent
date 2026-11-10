@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import json
+import logging
 import os
 import re
 import shlex
@@ -39,6 +40,7 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 # Transport metadata and unchecked generated output never enter an install.
 _OMIT = {".git", ".build", ".generated", ".cache", ".pytest_cache", "__pycache__"}
+_LOG = logging.getLogger(__name__)
 
 
 class PackInstallError(ValueError):
@@ -466,15 +468,20 @@ _PUBLICATION = PublicationPolicy.for_platform(sys.platform)
 
 def _publish(stage: Path, destination: Path, *, publication: PublicationPolicy = _PUBLICATION) -> None:
     if not destination.exists():
-        os.rename(stage, destination)
+        os.replace(stage, destination)
         return
     publication.exchange(stage, destination)
 
 
 def _sync_tree(root: Path) -> None:
     for _, path in _tree(root):
-        with path.open("rb") as stream:
+        # Windows' _commit/FlushFileBuffers requires a writable handle.
+        with path.open("r+b" if os.name == "nt" else "rb") as stream:
             os.fsync(stream.fileno())
+    # Windows' CRT cannot open a directory for fsync (and has no O_DIRECTORY).
+    # File flushes above remain mandatory; POSIX directory errors must surface.
+    if os.name == "nt":
+        return
     for directory in [*sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True), root]:
         descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
@@ -506,7 +513,9 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
     Callers must retire executing workers before publication (C1). Group
     journaling, browser-output verification and inventory refresh are M1-16.
     Crash residues are hidden under .install-* and are never auto-published.
-    Atomic replacement is supported on Linux/macOS; others fail closed.
+    New directories publish with os.replace, including on Windows. Replacing
+    an existing directory requires atomic exchange (Linux/macOS); other hosts
+    fail closed rather than moving the old directory out of the way first.
     ``publication`` supplies a trusted host exchange policy; the default is
     constructed once for the host when this module is loaded.
     ``python_environment`` declares the locked interpreter and metadata index.
@@ -553,8 +562,10 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
         facade_exports=frozenset(pack_api.__all__), sdk_names=frozenset(sdk.__all__),
         core_pack_apis={key: f"astrid.packs.{key}.api" for key, facts in selected.items() if facts.get("origin") == "core"},
     )
+    phase = "lock"
     try:
         with _install_lock(root):
+            phase = "inspect_destination"
             if (root / ".group.json").exists() or (root / ".group.json").is_symlink():
                 raise PackInstallError("group_transaction_required", "Use install_group to update a committed dependency group.")
             if destination.is_symlink():
@@ -566,15 +577,19 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                     raise PackInstallError("reserved_id", "A personal pack can never be replaced.")
                 if origin == "default" and (existing_pin is None or existing_pin["origin"] != "default"):
                     raise PackInstallError("default_pin_conflict", "A release default cannot overwrite a user-owned pack.")
+            phase = "create_stage"
             work = Path(tempfile.mkdtemp(prefix=".install-", dir=root))
             try:
                 stage = work / pack_id
                 stage.mkdir()
                 if revision is None:
+                    phase = "copy_source"
                     _copy_folder(folder, stage)
                     commit = None
                 else:
+                    phase = "fetch_source"
                     commit = _fetch_tree(work, source_text.split("#", 1)[0], revision, subpath, stage)
+                phase = "verify_source"
                 _tree(stage)
                 digest = pack_digest(stage)
                 pin: dict[str, Any] = {
@@ -586,6 +601,7 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                 if expected_digest is not None and digest != expected_digest:
                     raise PackInstallError("pin_mismatch", "Observed pack digest does not match the expected digest.")
                 # ONE strict parser/schema and ONE pure compatibility checker.
+                phase = "validate"
                 manifest = validate_canonical_pack(stage, expected_pack_id=pack_id).definition.to_dict()
                 requirements = _declared_requirement_names(manifest) or []
                 if python_environment is not None:
@@ -605,9 +621,12 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                 )
                 if not compatibility["ok"]:
                     raise PackInstallError(compatibility["code"], compatibility["reason"], compatibility=compatibility)
+                phase = "write_pin"
                 write_pin(stage / "PIN", pin)
                 if before_swap is not None:
+                    phase = "before_swap"
                     before_swap(stage)
+                phase = "verify_stage"
                 _tree(stage)
                 if pack_digest(stage) != digest or read_pin(stage / "PIN") != pin:
                     raise PackInstallError("pin_mismatch", "Staged source changed before publication.")
@@ -615,10 +634,13 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                 # A host build may change excluded artifacts while source/PIN
                 # stay identical (for example, a new pinned toolchain). Such a
                 # request must publish its verified outputs, not discard them.
+                phase = "compare_destination"
                 if before_swap is None and destination.exists() and (destination / "PIN").exists():
                     if read_pin(destination / "PIN") == pin and pack_digest(destination) == digest:
                         return InstallResult(pack_id, destination, commit, digest, origin, False)
+                phase = "sync_tree"
                 _sync_tree(stage)
+                phase = "publish"
                 _publish(stage, destination, publication=publication)
                 # Publication succeeded. Housekeeping cannot turn a committed
                 # install into a reported failure (or roll it back piecemeal).
@@ -628,7 +650,16 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
     except PackInstallError:
         raise
     except (OSError, ValueError) as exc:
-        raise PackInstallError("install_failed", "Pack staging or validation failed; the previous install is unchanged.") from exc
+        # Exception messages/filenames may contain credentials or private paths.
+        # Keep the receipt useful without logging those or a chained traceback.
+        number = exc.errno if isinstance(exc, OSError) else None
+        number = number if isinstance(number, int) else None
+        diagnostic = f"stage={phase}, error={type(exc).__name__}, errno={number}"
+        _LOG.warning("Pack install failed (%s).", diagnostic)
+        raise PackInstallError(
+            "install_failed",
+            f"Pack staging or validation failed ({diagnostic}); the previous install is unchanged.",
+        ) from None
 
 
 __all__ = ["install_pack", "InstallResult", "PackInstallError", "PublicationPolicy", "LockedPythonEnvironment"]
