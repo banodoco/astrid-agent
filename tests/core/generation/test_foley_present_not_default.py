@@ -45,6 +45,6 @@ def test_foley_requires_explicit_selection_before_qualification(monkeypatch, sou
     with pytest.raises(Probed):
         GenerationFacade()._generate_on_target(registry=registry,
             model=identifier if explicit else None, mode='sfx', modality='audio',
-            target='auto', execution=None, inputs={'video_ref': 'clip.mp4'}, dry_run=True)
+            placement='auto', execution=None, inputs={'video_ref': 'clip.mp4'}, dry_run=True)
     assert qualify.call_count == int(explicit)
     probe.assert_called_once()

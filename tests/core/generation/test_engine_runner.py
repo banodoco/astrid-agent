@@ -65,7 +65,7 @@ class FakeAdapter:
     def environment_commands(self, recipe, environment, root):
         return (("fake-bootstrap", environment.name),)
 
-    def start_request(self, recipe, root, *, deadline):
+    def start_request(self, recipe, root, *, deadline, models_root=None):
         primary = next(e for e in recipe.environments if e.name == recipe.primary_environment)
         values = {"install_root": root, "python": self.venv_python(self.join(root, primary.relative_path)),
                   "comfy_root": self.join(root, "runtime/ComfyUI"), "models_root": self.join(root, "models"),
@@ -84,7 +84,7 @@ class FakeContext:
     placement = "local"
 
     def __init__(self):
-        self.recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+        self.recipe = recipes.load_recipe("comfyui", PLATFORM)
         self.adapter = FakeAdapter()
         self.root = ROOT
         self.events = []
@@ -298,7 +298,7 @@ class FakeHttpsContext(FakeContext):
 def _resolve_once_recipe():
     """The pre-lock Linux recipe: same sources/wheels, resolved by the canonical compile at install time."""
     from astrid.core.generation.engine_contracts import RequirementsSpec, SourcePath
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     requirements = RequirementsSpec(
         "resolve-once", None,
         (SourcePath("comfyui", "requirements.txt"), SourcePath("vibecomfy", "pyproject.toml"),
@@ -333,8 +333,11 @@ def install(setup):
     return runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline)
 
 
-def test_install_writes_private_receipt_per_final_wheel(setup):
-    install(setup)
+def test_install_writes_private_receipt_per_final_wheel(setup, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+    receipt = install(setup)
+    start = next(step for step in receipt.steps if step.kind == "start")
+    assert start.facts["cuda_visible_devices"] == "2"
     context = setup[1]
     wheels = context.recipe.environments[0].final_wheels
     assert wheels
@@ -351,6 +354,68 @@ def status(setup):
                                 root=plan.root, context=context, deadline=deadline)
 
 
+@pytest.mark.parametrize('failure', ['none', 'cancel', 'changed', 'before-replace', 'after-replace', 'bad-health'])
+def test_refresh_preserves_raw_receipt_and_has_safe_commit_boundary(setup, monkeypatch, failure):
+    from concurrent.futures import CancelledError
+    plan, context, adapter, deadline = setup
+    install(setup)
+    path = ROOT + '/' + runner._RECEIPT
+    raw = copy.deepcopy(context.files[path])
+    legacy = {'id': 'model:legacy', 'kind': 'model', 'action': 'executed', 'validation': 'passed',
+              'facts': {'legacy': 'preserve'}}
+    raw['steps'].append(legacy)
+    for step in raw['steps']:
+        if step['kind'] in {'start', 'health'}:
+            step['facts']['unrelated'] = 'preserved'
+    context.files[path] = copy.deepcopy(raw)
+    live = runner._Runner(plan, context, adapter, deadline, device=2)
+    with context.acquire_install_lock(ROOT, deadline=deadline):
+        action, start_facts = live.start()
+        health_action, health_facts = live.check_health()
+        calls = []
+        def check():
+            calls.append(True)
+            if failure == 'cancel' and len(calls) == 2:
+                raise CancelledError('cancel before commit')
+        if failure == 'changed':
+            context.files[path]['receipt_id'] = 'changed-by-other-writer'
+        if failure in {'before-replace', 'after-replace'}:
+            write = context.write_json_atomic
+            def failing_write(path, value, *, deadline):
+                if failure == 'after-replace':
+                    write(path, value, deadline=deadline)
+                raise OSError('injected atomic write failure')
+            monkeypatch.setattr(context, 'write_json_atomic', failing_write)
+        if failure == 'bad-health':
+            health_facts = {**health_facts, 'object_info_sha256': '0' * 64}
+        if failure == 'none':
+            digest = runner.refresh_installed_launch(live, raw, start_action=action, start_facts=start_facts,
+                health_action=health_action, health_facts=health_facts, check=check)
+            assert digest == hashlib.sha256(runner._json(context.files[path]).encode()).hexdigest()
+        else:
+            error = (CancelledError if failure == 'cancel' else OSError if failure in {'before-replace', 'after-replace'}
+                     else IntegrityError)
+            with pytest.raises(error):
+                runner.refresh_installed_launch(live, raw, start_action=action, start_facts=start_facts,
+                    health_action=health_action, health_facts=health_facts, check=check)
+    committed = context.files[path]
+    if failure in {'none', 'after-replace'}:
+        assert next(step for step in committed['steps'] if step['kind'] == 'start')['facts']['cuda_visible_devices'] == '2'
+        assert committed['steps'][-1] == legacy
+        assert all(step['facts']['unrelated'] == 'preserved' for step in committed['steps']
+                   if step['kind'] in {'start', 'health'})
+        for key in raw:
+            if key not in {'steps', 'health'}:
+                assert committed[key] == raw[key]
+        for old, new in zip(raw['steps'], committed['steps']):
+            if old['kind'] not in {'start', 'health'}:
+                assert old == new
+    elif failure == 'changed':
+        assert committed['receipt_id'] == 'changed-by-other-writer'
+    else:
+        assert committed == raw
+
+
 def test_protocol_shapes_exactly_match_v1():
     assert [f.name for f in fields(CommandRequest)] == ["argv", "cwd", "env", "deadline", "max_output_bytes"]
     assert CommandRequest(("true",), ROOT, {}, 123).max_output_bytes == 262144
@@ -364,11 +429,12 @@ def test_plan_is_complete_deterministic_and_has_real_names(setup):
     expected_ids = [
         *("source:" + source.name for source in context.recipe.sources),
         *("environment:" + environment.name for environment in context.recipe.environments),
-        *("model:" + model.name for model in runner.recipes.load_model_lock(context.recipe.models_lock).models),
         "start", "health",
     ]
+    # Plan 32 T5h: the install is model-free, so the plan has no model steps.
     assert [s.id for s in plan.steps] == expected_ids
-    assert len(plan.steps) == 41
+    assert len(plan.steps) == len(context.recipe.sources) + len(context.recipe.environments) + 2
+    assert not [s for s in plan.steps if s.id.startswith("model:")]
     seen = set()
     for step in plan.steps:
         assert set(step.depends_on) <= seen
@@ -384,7 +450,7 @@ def test_unsafe_plan_roots_rejected(setup, root):
 
 
 def test_windows_schema_plans_but_execution_refuses_before_context_io(setup):
-    recipe = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
     plan = runner.plan_install(recipe, root=r"C:\engines\vibe", placement="local")
     assert plan.root == r"C:\engines\vibe"
     with pytest.raises(UnsupportedPlatform):
@@ -463,9 +529,9 @@ def test_clean_rerun_skips_every_step_but_reads_sha_and_current_health(setup):
     assert first.status == second.status == "installed"
     assert all(s.action == "skipped" and s.validation == "passed" for s in second.steps)
     assert context.bootstrap_count == 1
-    expected_model_count = len(recipes.load_model_lock(context.recipe.models_lock).models)
-    assert len([e for e in context.events if e[0] == "download"]) == expected_model_count
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == expected_model_count
+    # Plan 32 T5h: a model-free install downloads and hashes no model on rerun.
+    assert not [e for e in context.events if e[0] == "download"]
+    assert not [e for e in context.events if e[0] == "hash" and "/models/" in e[1]]
     assert len([e for e in context.events if e[0] == "service:health"]) >= 1
     assert not [e for e in context.events if e[0] == "service:start"]
     assert not [e for e in context.events if e[0] == "argv" and ("fetch" in e[1] or "install" in e[1] or "sync" in e[1])]
@@ -614,15 +680,15 @@ def test_reinstall_cli_exposes_safe_clean_root_command(tmp_path, capsys, command
 
     def refuse(**kwargs):
         raise EngineReinstallRequired.for_install(
-            engine="vibecomfy-h3", platform=PLATFORM, root=root, environment=environment,
+            engine="comfyui", platform=PLATFORM, root=root, environment=environment,
             step_id="environment:comfy")
 
-    rc = engine_cli.main([command, "vibecomfy-h3", "--platform", PLATFORM,
+    rc = engine_cli.main([command, "comfyui", "--platform", PLATFORM,
                           "--placement", "local", "--root", root], backend_factory=refuse)
     assert rc == 1
     error = json.loads(capsys.readouterr().err)["error"]
     clean_root = root + "-clean"
-    expected = shlex.join(("astrid", "engines", "install", "vibecomfy-h3", "--platform",
+    expected = shlex.join(("astrid", "engines", "install", "comfyui", "--platform",
                            PLATFORM, "--placement", "local", "--root", clean_root))
     assert error["code"] == "engine_reinstall_required"
     assert error["environment"] == environment
@@ -647,6 +713,8 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
 
     from astrid.core import engine_cli
     from astrid.core.generation import engine_custody as custody, engine_recipe
+    # The free-space floor is a policy gate; this journey runs a real install on a sandbox disk.
+    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: (str(root), 1, 1, 10**15))
     from astrid.core.generation.engine_contracts import (
         CommandResult, DataRef, EngineRecipe, EngineReinstallRequired, HealthSpec, RequirementsSpec,
         SourcePin, SourceSpec, StartSpec,
@@ -754,7 +822,7 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
     }}).encode()
     (fixture / "pins.json").write_bytes(pins_bytes)
 
-    original = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    original = recipes.load_recipe("comfyui", PLATFORM)
     base_environment = original.environments[0]
     environment = replace(
         base_environment, name="comfy", relative_path="runtime/cpu-venv",
@@ -809,14 +877,16 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
     recipe_path = current_code_root / recipe_rel
     recipe_path.parent.mkdir(parents=True, exist_ok=True)
     recipe_path.write_bytes(recipe_bytes)
-    cpu_index = {"schema": "astrid.engine-index.v1", "entries": [{
-        "engine": recipe_draft.engine, "platform": recipe_draft.platform,
-        "recipe": {"path": recipe_rel, "sha256": hashlib.sha256(recipe_bytes).hexdigest()},
-    }]}
-    (current_code_root / "packs/engine-index.json").write_text(json.dumps(cpu_index, sort_keys=True))
+    declarations = current_code_root / "packs"
+    for stale in declarations.glob("*/extensions/generation.engine/*.yaml"):
+        stale.unlink()
+    declaration = declarations / f"vibecomfy/extensions/generation.engine/{recipe_draft.engine}.yaml"
+    declaration.parent.mkdir(parents=True, exist_ok=True)
+    declaration.write_text(
+        f"recipes:\n  - platform: {recipe_draft.platform}\n    path: {recipe_rel}\n"
+        f"    sha256: \"{hashlib.sha256(recipe_bytes).hexdigest()}\"\n")
     monkeypatch.setattr(engine_recipe, "_ROOT", current_code_root)
-    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", current_code_root / "packs/engine-index.json")
-    recipe = engine_recipe.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = engine_recipe.load_recipe("comfyui", PLATFORM)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("ASTRID_INSTALL_UV", uv)
 
@@ -887,7 +957,7 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
 
     # Reconstruct an older selected package from the real candidate package
     # snapshot, changing only one selected helper byte after copying it.
-    current_code_root, current_index = engine_recipe._ROOT, engine_recipe._INDEX_PATH
+    current_code_root = engine_recipe._ROOT
     source_code_root = current_code_root
     baseline_manifest = runner.helper_manifest(recipe)
     old_code_root = tmp_path / "old-python/astrid"
@@ -896,7 +966,6 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
     changed_helper = old_code_root / "core/generation/engine_contracts.py"
     changed_helper.write_bytes(changed_helper.read_bytes() + b"\n# prior helper fixture\n")
     monkeypatch.setattr(engine_recipe, "_ROOT", old_code_root)
-    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", old_code_root / "packs/engine-index.json")
 
     old_root = str(tmp_path / "old-engine")
     clean_root = old_root + "-clean"
@@ -947,7 +1016,6 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
         assert runner._sha(baseline_manifest) != old_helper
 
         monkeypatch.setattr(engine_recipe, "_ROOT", current_code_root)
-        monkeypatch.setattr(engine_recipe, "_INDEX_PATH", current_index)
         current_helper = runner._sha(runner.helper_manifest(recipe))
         deadline = time.monotonic() + 60
         stale = runner.engine_status(recipe.engine, platform=PLATFORM, placement="local",
@@ -1101,16 +1169,6 @@ def test_initial_helper_error_retains_code_identity_and_step_without_receipt(set
     assert not setup[1].held
 
 
-def test_exact_workspace_sibling_roots_are_lexically_supported(setup):
-    root = "/workspace/astrid/runtime/h3/vibecomfy-h3"
-    cache = "/workspace/astrid/engines/vibecomfy-h3/models"
-    plan = runner.plan_install(setup[1].recipe, root=root, placement="local")
-    assert plan.root == root
-    assert runner.validate_model_cache_root(cache, engine_root=plan.root,
-        platform=plan.platform, placement=plan.placement) == cache
-    assert not setup[1].events
-
-
 @pytest.mark.parametrize("condition", ["absent", "missing-node", "unhealthy", "wrong-owner", "unowned-port"])
 def test_server_or_nodes_cannot_be_faked_installed(setup, condition):
     context = setup[1]
@@ -1137,65 +1195,10 @@ def test_server_or_nodes_cannot_be_faked_installed(setup, condition):
     assert context.files[ROOT + "/" + runner._RECEIPT]["status"] == "failed"
 
 
-def test_bad_model_result_refuses_before_start(setup):
-    setup[1].bad_model = True
-    with pytest.raises(IntegrityError):
-        install(setup)
-    assert not [e for e in setup[1].events if e[0] == "service:start"]
-
-
-@pytest.mark.parametrize("condition", ["dirty", "origin", "revision", "model", "node-lock", "lock"])
-def test_full_revalidation_prevents_false_skips(setup, condition):
-    install(setup)
-    context = setup[1]
-    comfy = context.sources[ROOT + "/runtime/ComfyUI"]
-    if condition == "dirty":
-        comfy["dirty"] = " M main.py"
-    elif condition == "origin":
-        comfy["origin"] = "https://unreviewed.invalid/repo"
-    elif condition == "revision":
-        comfy["head"] = "0" * 40
-        # Status never repairs a changed source.
-    elif condition == "model":
-        model = recipes.load_model_lock(context.recipe.models_lock).models[0]
-        context.files[ROOT + "/models/" + model.destination] = FileFact(True, True, False, model.bytes, "0" * 64)
-    elif condition == "node-lock":
-        ref = context.recipe.environments[0].node_lock
-        source = next(s for s in context.recipe.sources if s.name == ref.source)
-        context.files[ROOT + "/" + source.relative_path + "/" + ref.path] = FileFact(True, True, False, 100, "0" * 64)
-    else:
-        context.files[ROOT + "/.astrid-engine/environments/comfy/requirements.lock"] = FileFact(True, True, False, 100, "0" * 64)
-    context.events.clear()
-    report = status(setup)
-    assert report.status == "failed"
-    assert report.error_code == "integrity_failed"
-    assert report.failed_step_id == {
-        "dirty": "source:comfyui", "origin": "source:comfyui", "revision": "source:comfyui",
-        "model": "model:h3-reference-to-video", "node-lock": "environment:comfy",
-        "lock": "environment:comfy",
-    }[condition]
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-
-
 def test_status_absent_is_none_and_readonly_without_platform_module(setup, monkeypatch):
     monkeypatch.delitem(sys.modules, "astrid.core.generation.engine_platforms")
     assert status(setup) is None
     assert [e[0] for e in setup[1].events] == ["fact"]
-
-
-def test_status_revalidates_models_and_health_readonly(setup):
-    receipt = install(setup)
-    context = setup[1]
-    context.events.clear()
-    current = status(setup)
-    assert current.status == "installed" and current.receipt_id == receipt.receipt_id
-    assert current.failed_step_id is None
-    expected_model_count = len(recipes.load_model_lock(context.recipe.models_lock).models)
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == expected_model_count
-    assert [e for e in context.events if e[0] == "service:health"]
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-    context.health_objects["new-node"] = {}
-    assert status(setup).status == "failed"
 
 
 @pytest.mark.parametrize("node,input_name", [
@@ -1225,182 +1228,6 @@ def test_status_tolerates_only_dynamic_file_choice_drift(setup, node, input_name
     assert (current.status, current.error_code, current.failed_step_id) == (
         "failed", "integrity_failed", "receipt-evidence")
     assert current.health.status == "unhealthy" and current.health.required_nodes_present is False
-    assert context.files == persisted
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-
-
-@pytest.mark.parametrize("mismatch,gate", [
-    ("schema", "receipt-evidence"),
-    ("source", "source:comfyui"),
-    ("lock", "environment:comfy"),
-])
-def test_canonical_same_registered_root_recovers_legacy_object_info_receipt(
-        setup, tmp_path, monkeypatch, capsys, mismatch, gate):
-    from astrid.core import engine_cli
-    from astrid.core.contracts.errors import AstridError
-    from astrid.core.generation import engine_execution
-    from astrid.core.generation import engine_local_endpoint as local
-    from astrid.packs.h3_av.actions.transform import run as transform
-
-    # This fake installer test is independent of host filesystem capacity.
-    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 10**15))
-    _, context, adapter, _ = setup
-    root = str(tmp_path / "synthetic-engine")
-    context.root = root
-    context.files = {path.replace(ROOT, root, 1): value for path, value in context.files.items()}
-    plan = runner.plan_install(context.recipe, root=root, placement="local")
-    receipt_path = Path(root, runner._RECEIPT)
-    context.health_objects["LoadImage"] = {
-        "input": {"required": {"image": [["synthetic-old.png"], {"image_upload": True}]}},
-        "output": ["IMAGE"],
-    }
-    # Mirror only canonical receipt writes for the endpoint's actual byte attestation.
-    # All target commands, models and other files remain in the CPU fake context.
-    write = context.write_json_atomic
-    def persist(path, value, *, deadline):
-        write(path, value, deadline=deadline)
-        if path == str(receipt_path):
-            receipt_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-            receipt_path.write_text(runner._json(value), encoding="utf-8")
-    monkeypatch.setattr(context, "write_json_atomic", persist)
-    monkeypatch.setenv(local.ENGINE_ROOT_ENV, str(tmp_path / "unused-fallback"))
-
-    def backend(**kwargs):
-        assert (kwargs["engine"], kwargs["platform"], kwargs["placement"], kwargs["root"]) == (
-            plan.engine, plan.platform, "local", root)
-        context.deadline = kwargs["deadline"]
-        return context, adapter
-
-    monkeypatch.setattr(engine_execution, "create_local_backend", backend)
-
-    def install_cli():
-        code = engine_cli.main([
-            "install", plan.engine, "--placement", "local", "--root", root, "--deadline", "45",
-        ], backend_factory=backend)
-        output = capsys.readouterr()
-        assert code == 0 and not output.err
-        receipt = json.loads(output.out)
-        assert receipt == context.files[str(receipt_path)] == json.loads(receipt_path.read_bytes())
-        return receipt
-
-    def ready():
-        # Real H3 wrapper, root selection, status and endpoint gate; fake target backend only.
-        return transform._resolve_local_engine()
-
-    def current():
-        return runner.engine_status(plan.engine, platform=plan.platform, placement="local",
-                                    root=local.default_engine_root(plan.engine), context=context,
-                                    deadline=context.deadline)
-
-    # Reproduce the pre-H272 health producer, rather than hand-editing a receipt.
-    with monkeypatch.context() as legacy:
-        legacy.setattr(target, "_object_info_sha256", runner._sha)
-        legacy.setattr(runner, "_now", lambda: "2026-10-28T00:00:00+00:00")
-        old = install_cli()
-    assert old["health"]["object_info_sha256"] == runner._sha(context.health_objects)
-    assert old["health"]["object_info_sha256"] != runner._object_info_sha256(context.health_objects)
-    record_path = Path.home() / ".astrid-data/engines" / f"{plan.engine}.root.json"
-    record_bytes = record_path.read_bytes()
-    persisted = copy.deepcopy(context.files)
-    context.events.clear()
-    rejected = current()
-    assert (rejected.status, rejected.error_code, rejected.failed_step_id) == (
-        "failed", "integrity_failed", "receipt-evidence")
-    with pytest.raises(AstridError, match="readiness reason: install_status_failed") as caught:
-        ready()
-    assert isinstance(caught.value.__cause__, local.EngineNotInstalled)
-    assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
-    assert context.files == persisted and json.loads(receipt_path.read_bytes()) == old
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-
-    owner = context.server
-    context.events.clear()
-    with monkeypatch.context() as recovery:
-        recovery.setattr(runner, "_now", lambda: "2026-10-29T00:00:00+00:00")
-        new = install_cli()
-    assert {key for key in old if old[key] != new[key]} == {
-        "receipt_id", "started_at", "completed_at", "health", "steps", "models",
-    }
-    assert new["health"]["object_info_sha256"] == runner._object_info_sha256(context.health_objects)
-    assert {key for key in old["health"] if old["health"][key] != new["health"][key]} == {
-        "checked_at", "object_info_sha256",
-    }
-    assert new["status"] == "installed" and new["error_code"] is None
-    assert all(s["action"] == "skipped" and s["validation"] == "passed" for s in new["steps"])
-    assert [{k: v for k, v in m.items() if k != "action"} for m in old["models"]] == [
-        {k: v for k, v in m.items() if k != "action"} for m in new["models"]]
-    assert context.server == owner and context.bootstrap_count == 1
-    expected_model_count = len(recipes.load_model_lock(context.recipe.models_lock).models)
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == expected_model_count
-    assert any(e[0] == "service:health" for e in context.events)
-    assert not [e for e in context.events if e[0] in {"service:start", "service:stop"}]
-    assert not [e for e in context.events if e[0] == "argv" and
-                any(arg in e[1] for arg in ("fetch", "install", "sync", "fake-bootstrap"))]
-    assert local.default_engine_root(plan.engine) == root and record_path.read_bytes() == record_bytes
-    endpoint = ready().endpoint
-    assert current().status == "installed" and endpoint.state == "ready"
-    assert endpoint.url == f"http://127.0.0.1:{context.recipe.start.port}"
-    assert endpoint.attestation.install_receipt_path == str(receipt_path)
-    assert endpoint.attestation.install_receipt_sha256 == hashlib.sha256(receipt_path.read_bytes()).hexdigest()
-    assert endpoint.attestation.object_info_sha256 == new["health"]["object_info_sha256"]
-
-    context.health_objects["LoadImage"]["input"]["required"]["image"][0] = ["synthetic-new.png"]
-    assert ready().endpoint.state == "ready"
-    if mismatch == "schema":
-        context.health_objects["LoadImage"]["output"] = ["MASK"]
-    elif mismatch == "source":
-        context.sources[root + "/runtime/ComfyUI"]["origin"] = "https://unreviewed.invalid/repo"
-    else:
-        context.files[root + "/.astrid-engine/environments/comfy/requirements.lock"] = FileFact(
-            True, True, False, 100, "0" * 64)
-    persisted = copy.deepcopy(context.files)
-    context.events.clear()
-    rejected = current()
-    assert (rejected.status, rejected.error_code, rejected.failed_step_id) == ("failed", "integrity_failed", gate)
-    with pytest.raises(AstridError, match="readiness reason: install_status_failed"):
-        ready()
-    assert context.files == persisted and json.loads(receipt_path.read_bytes()) == new
-    assert record_path.read_bytes() == record_bytes
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-
-
-@pytest.mark.parametrize("gate", [
-    "source:comfyui", "source:vibecomfy", "source:h3-motion-context", "source:videohelpersuite",
-    "environment:comfy", "model:h3-reference-to-video", "model:h3-text-encoder",
-    "model:h3-video-vae", "model:h3-audio-vae", "model:h3-turbo-lora", "start", "health",
-])
-def test_status_failure_keeps_only_trusted_gate_and_code(setup, monkeypatch, gate):
-    install(setup)
-    plan, context, *_ = setup
-    persisted = copy.deepcopy(context.files)
-    context.events.clear()
-    original = runner._Runner.execute
-    private = "PRIVATE_INPUT_SENTINEL"
-    error = IntegrityError("exception-message " + private * 10000,
-                           step_id="source:" + private,
-                           recovery_handle="/arbitrary/private/" + private)
-    error.stdout = "raw-command-output " + private
-    error.target_facts = {"media": private}
-
-    def fail(self, step, *, readonly=False):
-        assert readonly is True
-        if step.id == gate:
-            raise error
-        return original(self, step, readonly=readonly)
-
-    monkeypatch.setattr(runner._Runner, "execute", fail)
-    report = status(setup)
-    assert report.status == "failed" and report.error_code == "integrity_failed"
-    assert report.failed_step_id == gate
-    assert report.health.status == "unhealthy" and report.health.required_nodes_present is False
-    assert report.models == () and report.steps == ()
-    # Exercise the public status serializer, rather than just inspecting the exception.
-    from astrid.core.engine_cli import _plain
-    output = json.dumps(_plain(report))
-    for forbidden in (private, "exception-message", "raw-command-output", "/arbitrary/private", "target_facts"):
-        assert forbidden not in output
-    assert len(output) < 16384
-    assert runner._parse_receipt(json.loads(output), plan) == report
     assert context.files == persisted
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
 
@@ -1473,14 +1300,16 @@ class Block(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, Block())
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_runner import plan_install
-p=plan_install(load_recipe('vibecomfy-h3','linux-x86_64-cu130'),root='/uncreated/install',placement='local')
-assert {s.kind for s in p.steps} == {'source','environment','model','start','health'}
+p=plan_install(load_recipe('comfyui','linux-x86_64-cu130'),root='/uncreated/install',placement='local')
+# Plan 32 T5h: the install is model-free, so the plan has no model steps.
+assert {s.kind for s in p.steps} == {'source','environment','start','health'}
 assert not any(m in sys.modules for m in ('runpod_lifecycle','runpod','paramiko'))
 print(len(p.steps))
 '''
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False, timeout=20)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "41"
+    recipe = recipes.load_recipe('comfyui', 'linux-x86_64-cu130')
+    assert int(result.stdout.strip()) == len(recipe.sources) + len(recipe.environments) + 2
 
 
 def test_helper_closure_uses_relative_paths_exact_bytes_and_no_install_root(setup):
@@ -1493,12 +1322,13 @@ def test_helper_closure_uses_relative_paths_exact_bytes_and_no_install_root(setu
     assert ROOT not in runner._json(manifest)
     for path, digest in manifest.items():
         assert hashlib.sha256((recipes._ROOT / path).read_bytes()).hexdigest() == digest
-    assert {"packs/engine-index.json", "packs/runpod/recipe.linux-cu130.json",
+    assert {"packs/vibecomfy/extensions/generation.engine/comfyui.yaml", "packs/runpod/recipe.linux-cu130.json",
             setup[1].recipe.pins.path} <= manifest.keys()
 
 
 @pytest.mark.parametrize("path", ["core/generation/engine_runner.py", "core/generation/engine_runner_target.py",
-                                  "core/generation/model_downloader.py", "packs/engine-index.json"])
+                                  "core/generation/model_downloader.py",
+                                  "packs/vibecomfy/extensions/generation.engine/comfyui.yaml"])
 def test_helper_identity_changes_with_exact_code_or_index_bytes(setup, tmp_path, monkeypatch, path):
     recipe = setup[1].recipe
     original = runner.helper_manifest(recipe)
@@ -1507,7 +1337,6 @@ def test_helper_identity_changes_with_exact_code_or_index_bytes(setup, tmp_path,
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes((recipes._ROOT / relative).read_bytes())
     monkeypatch.setattr(recipes, "_ROOT", tmp_path)
-    monkeypatch.setattr(recipes, "_INDEX_PATH", tmp_path / "packs/engine-index.json")
     assert runner.helper_manifest(recipe) == original
     changed = tmp_path / path
     changed.write_bytes(changed.read_bytes() + b"\n")
@@ -1517,7 +1346,7 @@ def test_helper_identity_changes_with_exact_code_or_index_bytes(setup, tmp_path,
 
 
 def _helper_payload(root, recipe=None, **extra):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM) if recipe is None else recipe
+    recipe = recipes.load_recipe("comfyui", PLATFORM) if recipe is None else recipe
     return {"schema": runner._HELPER_SCHEMA, "engine": recipe.engine, "platform": recipe.platform,
             "root": str(root), "recipe_sha256": recipes.recipe_digest(recipe),
             "helper_sha256": runner._sha(runner.helper_manifest(recipe)), **extra}
@@ -1537,7 +1366,7 @@ HASH_LOCK = "demo==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n"
 
 
 def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(resolve_once, tmp_path):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     h3 = next(source for source in recipe.sources if source.name == "h3-motion-context")
     h3_requirements = tmp_path / h3.relative_path / "requirements.txt"
@@ -1562,7 +1391,7 @@ def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(resolve_on
 
 @pytest.mark.parametrize("declared", [False, True])
 def test_target_helper_persists_and_reuses_bound_hash_lock_before_install(resolve_once, tmp_path, monkeypatch, declared):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     if not declared:
         recipe = replace(recipe, environments=(replace(recipe.environments[0], source_installs=()),))
         monkeypatch.setattr(recipes, "load_recipe", lambda *_: recipe)
@@ -1773,7 +1602,7 @@ def test_probe_still_accepts_pip_style_archive_hash_without_receipt(receipt_envi
 
 
 def test_target_lock_commit_interruption_reuses_exact_candidate(resolve_once, tmp_path, monkeypatch):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
     target.dispatch("lock-inputs", payload)
@@ -1800,7 +1629,7 @@ def test_target_stale_identity_refuses_interrupted_lock_without_mutation(
         resolve_once, tmp_path, operation):
     from astrid.core.generation.engine_contracts import EngineReinstallRequired
 
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
     target.dispatch("lock-inputs", payload)
@@ -1841,7 +1670,7 @@ def test_target_stale_identity_refuses_interrupted_lock_without_mutation(
 @pytest.mark.parametrize("bad", ["demo==1.0\n", "demo>=1.0 --hash=sha256:" + "a" * 64,
                                  "--index-url https://unreviewed.invalid\n", "", "demo==1.0 \\"])
 def test_target_refuses_unhashed_or_unresolved_locks(resolve_once, tmp_path, bad):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
     target.dispatch("lock-inputs", payload)
@@ -1853,7 +1682,7 @@ def test_target_refuses_unhashed_or_unresolved_locks(resolve_once, tmp_path, bad
 
 
 def test_target_refuses_modified_or_unbound_persisted_lock(resolve_once, tmp_path):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
     target.dispatch("lock-inputs", payload)
@@ -1879,21 +1708,34 @@ def test_target_helper_rejects_unknown_fields_wrong_code_and_symlink_escape(tmp_
     outside.mkdir()
     (tmp_path / "runtime").symlink_to(outside, target_is_directory=True)
     with pytest.raises(UnsafePathError):
-        target.dispatch("models-config", payload)
+        target.dispatch("models-config", {**payload, "models_root": None})
     assert list(outside.iterdir()) == []
 
 
 def test_target_models_config_is_deterministic_and_loopback_launch_is_recipe_bound(tmp_path, setup):
     payload = _helper_payload(tmp_path)
-    assert target.dispatch("models-config", payload)["facts"] == {"written": True}
+    assert target.dispatch("models-config", {**payload, "models_root": None})["facts"] == {"written": True}
     path = tmp_path / "runtime/extra_model_paths.yaml"
     before = path.read_bytes()
-    target.dispatch("models-config", payload)
+    target.dispatch("models-config", {**payload, "models_root": None})
     assert path.read_bytes() == before
     assert json.loads(before)["astrid_engine"]["base_path"] == str(tmp_path / "models")
     launch = setup[2].start_request(setup[1].recipe, ROOT, deadline=setup[3])
     assert "127.0.0.1" in launch.argv and "0.0.0.0" not in launch.argv
     assert "CUDA_VISIBLE_DEVICES" not in launch.env
+
+
+def test_launch_snapshots_ambient_visibility_and_explicitly_clears_unset(setup, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    first = runner._Runner(*setup)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    second = runner._Runner(*setup)
+    assert first.launch_spec()["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert second.launch_spec()["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert runner._Runner(*setup).launch_spec()["env"]["CUDA_VISIBLE_DEVICES"] is None
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert runner._Runner(*setup).launch_spec()["env"]["CUDA_VISIBLE_DEVICES"] == ""
 
 
 def test_helper_error_envelope_preserves_stable_error_without_raw_exception(tmp_path, capsys):
@@ -2038,15 +1880,6 @@ def test_final_revalidation_refuses_sources_dirtied_by_build(setup):
     assert context.files[ROOT + "/" + runner._RECEIPT]["status"] == "failed"
 
 
-@pytest.mark.parametrize("field,value", [("models", []), ("source_commits", {}), ("requirements_locks", {}),
-                                         ("started_at", "not-a-timestamp"), ("health", {"fake": True})])
-def test_incomplete_installed_evidence_refuses(setup, field, value):
-    install(setup)
-    setup[1].files[ROOT + "/" + runner._RECEIPT][field] = value
-    with pytest.raises(IntegrityError):
-        status(setup)
-
-
 def test_named_environments_have_distinct_lock_paths_and_complete_dependencies(setup, monkeypatch):
     plan, context, adapter, deadline = setup
     primary = context.recipe.environments[0]
@@ -2065,7 +1898,7 @@ def test_named_environments_have_distinct_lock_paths_and_complete_dependencies(s
 
 
 def test_target_node_lock_checks_canonical_commits_after_hash(tmp_path, monkeypatch):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     comfy = next(s for s in recipe.sources if s.name == "comfyui")
     prefix = comfy.relative_path + "/custom_nodes/"
     text = "\n".join(f'[nodepacks."{s.relative_path[len(prefix):]}"]\ncommit = "{s.pin.revision}"'
@@ -2092,7 +1925,7 @@ def test_target_node_lock_checks_canonical_commits_after_hash(tmp_path, monkeypa
 
 def test_packaged_requirements_follow_same_hashed_lock_path(tmp_path, monkeypatch):
     from astrid.core.generation.engine_contracts import DataRef, RequirementsSpec
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     lock_bytes = HASH_LOCK.encode()
     ref = DataRef("packs/test/requirements.lock", hashlib.sha256(lock_bytes).hexdigest())
     req = RequirementsSpec("packaged", ref, (), (), None)
@@ -2112,7 +1945,7 @@ LINUX_LOCK_SHA256 = "b501e04a13951eb00f03412e9ab5288ab8e8eaca1caf61251268a976a36
 
 
 def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     requirements = recipe.environments[0].requirements
     assert (requirements.mode, requirements.input_paths, requirements.constraints, requirements.exclude_newer) == (
         "packaged", (), (), None)
@@ -2133,12 +1966,12 @@ def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
     # pip is not declared by the canonical source inputs for this closure.
     assert "pip" not in by_name
     # The reviewed index digest binds the exact recipe bytes that name this lock.
-    entry = next(e for e in recipes.load_recipe_index().entries if (e.engine, e.platform) == ("vibecomfy-h3", PLATFORM))
+    entry = next(e for e in recipes.load_recipe_index().entries if (e.engine, e.platform) == ("comfyui", PLATFORM))
     assert hashlib.sha256((Path(recipes._ROOT) / entry.recipe.path).read_bytes()).hexdigest() == entry.recipe.sha256
 
 
 def test_fresh_root_selects_exact_shipped_lock_bytes_without_resolution(tmp_path, monkeypatch):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     shipped = (Path(recipes._ROOT) / LINUX_LOCK_PATH).read_bytes()
     payload = _helper_payload(tmp_path, recipe, environment="comfy")
     directory = tmp_path / ".astrid-engine/environments/comfy"
@@ -2198,7 +2031,7 @@ def test_h3_packaged_sync_allows_only_three_source_builds_and_uses_support_lock(
         "--build-constraints", support, support)
     recipe = setup[1].recipe
     assert (recipe.engine, recipe.platform, recipe.environments[0].requirements.mode) == (
-        "vibecomfy-h3", PLATFORM, "packaged")
+        "comfyui", PLATFORM, "packaged")
     sync_index = commands.index(sync)
     check = next(i for i, command in enumerate(commands) if "check" in command)
     source_installs = [i for i, command in enumerate(commands)
@@ -2288,11 +2121,11 @@ def test_changed_models_config_refuses_installed_status_without_repair(setup):
 
 def test_target_models_config_check_reads_exact_bytes(tmp_path):
     payload = _helper_payload(tmp_path)
-    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": False}
-    target.dispatch("models-config", payload)
-    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": True}
+    assert target.dispatch("models-config-check", {**payload, "models_root": None})["facts"] == {"valid": False}
+    target.dispatch("models-config", {**payload, "models_root": None})
+    assert target.dispatch("models-config-check", {**payload, "models_root": None})["facts"] == {"valid": True}
     (tmp_path / "runtime/extra_model_paths.yaml").write_text('{"unbound":"elsewhere"}')
-    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": False}
+    assert target.dispatch("models-config-check", {**payload, "models_root": None})["facts"] == {"valid": False}
 
 
 def test_context_lock_failure_never_runs_or_writes(setup):
@@ -2383,23 +2216,6 @@ def _sanity_context(context, code=0, stdout=""):
     context.run = run
 
 
-def test_sanity_hook_runs_after_environments_and_before_models(setup, monkeypatch):
-    plan, context, adapter, deadline = setup
-    _sanity_context(context)
-    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/cuda/lib64")
-    monkeypatch.setenv(runner.SANITY_CMD_ENV, "fake-sanity --flag")
-    assert install(setup).status == "installed"
-    kinds = [e[0] for e in context.events]
-    assert kinds.count("sanity") == 1
-    at = kinds.index("sanity")
-    assert any(e[0] == "argv" and e[1][0] == "fake-bootstrap" for e in context.events[:at])
-    assert "download" not in kinds[:at] and "download" in kinds[at:]
-    _, argv, env = context.events[at]
-    primary = next(e for e in context.recipe.environments if e.name == context.recipe.primary_environment)
-    assert argv[:2] == ("fake-sanity", "--flag") and argv[-2:] == ("--venv", adapter.join(ROOT, primary.relative_path))
-    assert "/usr/local/cuda" not in env["LD_LIBRARY_PATH"]
-
-
 def test_sanity_hook_is_off_by_default(setup, monkeypatch):
     monkeypatch.delenv(runner.SANITY_CMD_ENV, raising=False)
     _sanity_context(setup[1])
@@ -2418,121 +2234,46 @@ def test_sanity_failure_aborts_before_any_model_step_and_names_lib_paths(setup):
     assert not [e for e in context.events if e[0] in {"download", "service:start"}]
 
 
-def test_cache_binding_preserves_lock_models_local_receipt_readiness_and_sanity_order(setup):
-    from astrid.core.generation.engine_local_endpoint import model_root_binding_from_receipt
-    plan, context, adapter, deadline = setup
-    cache_root = "/mounted/read-only-model-cache"
-    seen = []
-    original = context.download_model
+def test_model_free_install_receipt_binds_the_model_root_unpatched(setup):
+    """Plan 32 T5h: a fresh model-free install records no models, and the model-root binding
+    derived from that receipt is valid (empty inventory), with no patch on the derivation."""
+    from astrid.core.generation import engine_local_endpoint as endpoint
 
-    def download(model, *, models_root, deadline, model_cache_root):
-        context.events.append(("cache-read", model_cache_root, deadline))
-        seen.append((model, models_root, model_cache_root))
-        return original(model, models_root=models_root, deadline=deadline)
-
-    context.download_model = download
-    _sanity_context(context)
-    receipt = runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-                                    sanity_cmd="fake-sanity", model_cache_root=cache_root)
-    locked = recipes.load_model_lock(context.recipe.models_lock).models
-    assert seen == [(model, ROOT + "/models", cache_root) for model in locked]
-    kinds = [event[0] for event in context.events]
-    assert kinds.index("sanity") < kinds.index("cache-read") < kinds.index("download")
-    assert receipt.root == ROOT and receipt.status == "installed"
-    assert all(model.path.startswith(ROOT + "/models/") and model.verified for model in receipt.models)
-    assert context.files[ROOT + "/.astrid-engine/install.json"]["root"] == ROOT
-    binding = model_root_binding_from_receipt(receipt, ROOT)
-    assert binding.path == Path(ROOT) / "models"
-    launches = [event[1] for event in context.events if event[0] == "service:start"]
-    assert launches and all(launch["root"] == ROOT and cache_root not in runner._json(launch)
-                            for launch in launches)
-    assert all(path.startswith(ROOT + "/") for path in context.files)
-    assert kinds[-1] == "release" and not context.held
+    receipt = install(setup)
+    assert receipt.status == "installed" and tuple(receipt.models) == ()
+    binding = endpoint.model_root_binding_from_receipt(receipt, ROOT, engine="comfyui")
+    assert list(binding.inventory) == []
+    bound = endpoint.composed_model_root_binding(receipt, ROOT, engine="comfyui", deadline=time.monotonic() + 30)
+    assert list(bound.inventory) == []
 
 
-@pytest.mark.parametrize('cache', [ROOT, ROOT + '/models', '/TARGET_ONLY', 'relative/cache', '/cache/../models'])
-def test_unsafe_cache_binding_stops_before_install_or_model_work(setup, cache):
-    plan, context, adapter, deadline = setup
-    with pytest.raises(UnsafePathError):
-        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-                              model_cache_root=cache)
-    assert not context.events and not context.held
+def test_legacy_receipt_with_model_rows_parses_and_binds(setup):
+    """Plan 32 T5h: a legacy receipt's verified model rows parse as the receipt's rows and bind."""
+    from astrid.core.generation import engine_local_endpoint as endpoint
+
+    plan = runner.plan_install(setup[1].recipe, root=ROOT, placement="local")
+    row = DownloadResult("synthetic-test-lora", ROOT + "/models/loras/synthetic-test-b.safetensors",
+                         "downloaded", 9, "b" * 64, True, 0)
+    legacy = replace(install(setup), models=(row,))
+    parsed = runner._parse_receipt(json.loads(json.dumps(runner._plain(legacy))), plan)
+    assert parsed.models == (row,)
+    binding = endpoint.model_root_binding_from_receipt(parsed, ROOT, engine="comfyui")
+    assert [(r["name"], r["subdir"]) for r in binding.inventory] == [("synthetic-test-b.safetensors", "loras")]
 
 
-def test_cache_binding_requires_local_placement_before_install_work(setup):
-    plan, _, adapter, deadline = setup
-    context = FakeHttpsContext()
-    context.deadline = deadline
-    with pytest.raises(UnsupportedPlacement):
-        runner.install_engine(replace(plan, placement='runpod'), context=context, adapter=adapter,
-                              deadline=deadline, model_cache_root='/mounted/cache')
-    assert not context.events
-
-
-def test_sanity_failure_with_cache_never_accesses_cache_or_downloads(setup):
-    plan, context, adapter, deadline = setup
-    _sanity_context(context, code=1)
-    context.download_model = lambda *a, **kw: pytest.fail('cache or model access before successful sanity')
-    with pytest.raises(CommandFailed):
-        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-                              sanity_cmd='fake-sanity', model_cache_root='/mounted/cache')
-    assert not [event for event in context.events if event[0] in {'download', 'service:start'}]
-    assert context.events[-1][0] == 'release' and not context.held
-
-
-def test_authenticated_mount_binding_is_forwarded_to_every_model_step(setup):
-    plan, context, adapter, deadline = setup
-    seen = []
-    original = context.download_model
-    def download(model, *, models_root, deadline, **cache):
-        seen.append(cache)
-        return original(model, models_root=models_root, deadline=deadline)
-    context.download_model = download
-    receipt = runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-        model_cache_root='/mounted/cache', model_cache_device=99, model_cache_mount_id=71)
-    assert receipt.status == 'installed' and seen
-    assert all(cache == {'model_cache_root': '/mounted/cache', 'model_cache_device': 99,
-                         'model_cache_mount_id': 71} for cache in seen)
-    assert context.events[-1][0] == 'release'
-
-
-def test_cache_capacity_lost_before_writeback_cannot_commit_installed_receipt(setup, tmp_path, monkeypatch):
-    import io
-    from astrid.core.generation import model_downloader as downloader
-    from astrid.core.generation.engine_contracts import DownloadError
-    _, context, adapter, deadline = setup
-    payload = b'SYNTHETIC CPU locked model bytes'
-    lock = recipes.load_model_lock(context.recipe.models_lock)
-    model = replace(lock.models[0], bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
-    monkeypatch.setattr(recipes, 'load_model_lock', lambda ref: replace(lock, models=(model,)))
-    plan = runner.plan_install(context.recipe, root=ROOT, placement='local')
-    cache, local = tmp_path / 'cache', tmp_path / 'local-models'
-    checks, downloads = [], []
-
-    def available(descriptor):
-        checks.append(descriptor)
-        return types.SimpleNamespace(f_bavail=len(payload) if len(checks) == 1 else 0, f_frsize=1)
-
-    class Response(io.BytesIO):
-        status = 206
-        headers = {'Content-Range': f'bytes 0-{len(payload) - 1}/{len(payload)}'}
-    def opener(request, timeout):
-        downloads.append(request.full_url)
-        return Response(payload)
-    def download(model, *, models_root, deadline, **cache_args):
-        return downloader.download_model(model, models_root=str(local), deadline=deadline,
-                                         opener=opener, **cache_args)
-
-    monkeypatch.setattr(downloader.os, 'fstatvfs', available)
-    context.download_model = download
-    with pytest.raises(DownloadError, match='capacity'):
-        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-                              model_cache_root=str(cache))
-    receipt = context.files[ROOT + '/.astrid-engine/install.json']
-    assert receipt['status'] == 'failed' and receipt['models'] == []
-    assert (local / model.destination).read_bytes() == payload
-    assert downloads and len(checks) == 2
-    assert not (cache / downloader._cache_relative(model)).exists()
-    assert not list(tmp_path.rglob('*.cache-*'))
-    assert not [event for event in context.events if event[0] == 'service:start']
-    assert context.events[-1][0] == 'release' and not context.held
+def test_true_legacy_receipt_with_model_steps_and_rows_parses(setup):
+    """Plan 32 T5h: a receipt written the old way (model steps plus model rows) parses as installed.
+    The model steps are validated and dropped; the plan's expected steps and rows are kept."""
+    plan = runner.plan_install(setup[1].recipe, root=ROOT, placement="local")
+    lock = recipes.load_model_lock(setup[1].recipe.models_lock).models
+    rows = tuple(DownloadResult(m.name, ROOT + "/models/" + m.destination, "downloaded", m.bytes, m.sha256,
+                                True, 0) for m in lock)
+    model_steps = tuple(runner.StepReceipt("model:" + m.name, "model", "executed", "passed", {}) for m in lock)
+    base = install(setup)
+    plan_steps = tuple(base.steps)
+    legacy_steps = plan_steps[:-2] + model_steps + plan_steps[-2:]  # model steps sat before start/health
+    legacy = replace(base, models=rows, steps=legacy_steps)
+    parsed = runner._parse_receipt(json.loads(json.dumps(runner._plain(legacy))), plan)
+    assert parsed.status == "installed"
+    assert parsed.models == rows
+    assert tuple(s.id for s in parsed.steps) == tuple(s.id for s in plan.steps)

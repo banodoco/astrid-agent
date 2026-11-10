@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from concurrent.futures import CancelledError
 from dataclasses import asdict, replace
 import hashlib
 import json
@@ -104,12 +105,19 @@ def _send(channel, value, deadline):
     channel.sendall(struct.pack("!I", len(data)) + data)
 
 
-def _receive(channel, deadline):
+def _receive(channel, deadline, cancelled=None):
     def read(size):
         data = bytearray()
         while len(data) < size:
-            channel.settimeout(_remaining(deadline))
-            block = channel.recv(min(65536, size - len(data)))
+            if cancelled is not None and cancelled():
+                raise CancelledError("engine operation cancelled")
+            channel.settimeout(min(0.05, _remaining(deadline)) if cancelled is not None else _remaining(deadline))
+            try:
+                block = channel.recv(min(65536, size - len(data)))
+            except socket.timeout:
+                if cancelled is None:
+                    raise
+                continue
             if not block:
                 raise EOFError
             data.extend(block)
@@ -205,6 +213,7 @@ class LinuxEngineServiceClient:
             raise RecipeValidationError("invalid installation identity")
         self.control = root + "/.astrid-engine/session"
         self._spawned = None
+        self.cancelled = None
 
     @classmethod
     def for_recipe(cls, *, root, recipe, platform):
@@ -213,9 +222,11 @@ class LinuxEngineServiceClient:
                    recipe_sha256=recipes.recipe_digest(recipe),
                    helper_sha256=_sha(helper_manifest(recipe)))
 
-    def _connect(self, fd, deadline, *, start):
+    def _connect(self, fd, deadline, *, start, cancelled=None):
         while True:
             _remaining(deadline)
+            if cancelled is not None and cancelled():
+                raise CancelledError("engine operation cancelled before connection")
             # The marker is a refusal fence only, never authority to adopt or
             # stop an owner. In particular, do not send a current-identity
             # request to a supervisor published under different helper bytes.
@@ -311,12 +322,14 @@ class LinuxEngineServiceClient:
             finally:
                 os.close(lock)
 
-    def _request(self, operation, payload, deadline, *, start=True):
+    def _request(self, operation, payload, deadline, *, start=True, cancelled=None, expected_peer=None):
         _remaining(deadline)
+        if cancelled is not None and cancelled():
+            raise CancelledError("engine operation cancelled before connection")
         try:
             with _directory(self.control, create=start) as fd:
                 try:
-                    channel = self._connect(fd, deadline, start=start)
+                    channel = self._connect(fd, deadline, start=start, **({"cancelled": cancelled} if cancelled is not None else {}))
                 except DeadlineExceeded as exc:
                     if _exists(fd, "session.json") is not None:
                         raise CustodyUnresolved("supervisor unavailable; explicit recovery required") from exc
@@ -324,10 +337,34 @@ class LinuxEngineServiceClient:
                 if channel is None:
                     return None
                 with channel:
+                    if cancelled is not None or expected_peer is not None:
+                        peer = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                        incarnation = (*peer, _vibe_birth(peer[0]))
+                        if expected_peer is not None and incarnation != expected_peer:
+                            raise CustodyUnresolved("supervisor incarnation changed during cancellation")
+                        if peer[1] != os.getuid():
+                            raise CustodyUnresolved("supervisor peer has a different user")
+                    if cancelled is not None and cancelled():
+                        raise CancelledError("engine operation cancelled before request")
                     _send(channel, {"identity": self.identity, "operation": operation, "payload": payload,
                                     "remaining_seconds": _remaining(deadline)}, deadline)
                     # Keep the connection open while target deadline cleanup is verified.
-                    response = _receive(channel, deadline if operation == "stop" else deadline + _CLEANUP_SECONDS)
+                    try:
+                        response = _receive(channel, deadline if operation == "stop" else deadline + _CLEANUP_SECONDS,
+                                            **({"cancelled": cancelled} if cancelled is not None else {}))
+                    except CancelledError:
+                        # EOF cancels only this request; the supervisor drains its
+                        # retained command before taking another operation.
+                        channel.shutdown(socket.SHUT_RDWR)
+                        channel.close()
+                        barrier = self._request("run", {"argv": [sys.executable, "-I", "-S", "-B", "-c", "pass"],
+                            "cwd": self.identity["root"], "env": {}, "max_output_bytes": 1024},
+                            time.monotonic() + _CLEANUP_SECONDS + 2, start=False, expected_peer=incarnation)
+                        if not isinstance(barrier, dict) or barrier.get("exit_code") != 0 or barrier.get("timed_out") is not False:
+                            raise CustodyUnresolved("cancelled engine command drainage is unconfirmed")
+                        raise
+                    except DeadlineExceeded as exc:
+                        raise CustodyUnresolved("supervisor did not confirm command cleanup before the response deadline") from exc
                 if (not isinstance(response, dict) or response.get("identity") != self.identity
                         or set(response) not in ({"identity", "result"}, {"identity", "error"},
                                                  {"identity", "error", "cleanup_failure"})):
@@ -354,11 +391,11 @@ class LinuxEngineServiceClient:
     def call(self, operation, payload, *, deadline):
         if operation not in {"probe", "start", "health"}:
             raise RecipeValidationError("unsupported engine service operation")
-        return self._request(operation, payload, deadline)
+        return self._request(operation, payload, deadline, **({"cancelled": self.cancelled} if self.cancelled is not None else {}))
 
     def run(self, request: CommandRequest) -> CommandResult:
         return CommandResult(**self._request("run", {"argv": list(request.argv), "cwd": request.cwd,
-                             "env": dict(request.env), "max_output_bytes": request.max_output_bytes}, request.deadline))
+                             "env": dict(request.env), "max_output_bytes": request.max_output_bytes}, request.deadline, **({"cancelled": self.cancelled} if self.cancelled is not None else {})))
 
     def release_owned(self, *, deadline):
         return self._request("release", {}, deadline, start=False)
@@ -588,14 +625,30 @@ def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
         return value
 
 
+def _installed_models_root(root, recipe):
+    """The model directory the installed receipt bound; None (the default) when it records none."""
+    from .engine_runner import _models_root
+    try:
+        raw = json.loads(Path(root, ".astrid-engine", "install.json").read_bytes())
+    except (OSError, ValueError):
+        return None
+    value = raw.get("models_root") if isinstance(raw, dict) else None
+    if value is None:
+        return None
+    return _models_root(root, value)
+
+
 class _Supervisor:
     def __init__(self, identity, recipe, token):
         self.identity, self.recipe, self.token = identity, recipe, token
         self.root = identity["root"]
         self.control = self.root + "/.astrid-engine/session"
         self.adapter = LinuxPlatformAdapter(identity["platform"])
-        request = self.adapter.start_request(recipe, self.root, deadline=time.monotonic() + 1)
+        # The model directory is the installed receipt's record (a saved volume cache, or <root>/models).
+        request = self.adapter.start_request(recipe, self.root, deadline=time.monotonic() + 1,
+                                             models_root=_installed_models_root(self.root, recipe))
         self.launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+        self.base_launch = self.launch
         self.engine = None
         self.commands = []  # Retain uncertain handles; never reconstruct them from disk.
         self.stopping = threading.Event()
@@ -797,13 +850,29 @@ class _Supervisor:
                 self.registry_names.append(name)
                 _write(fd, name, value.encode())
 
+    def valid_launch(self, launch):
+        if not isinstance(launch, dict) or set(launch) != {"argv", "cwd", "env"}:
+            return False
+        env = launch.get("env")
+        if not isinstance(env, dict) or "CUDA_VISIBLE_DEVICES" not in env:
+            return False
+        device = env.get("CUDA_VISIBLE_DEVICES")
+        if device is not None and (not isinstance(device, str) or "\0" in device
+                                   or len(device.encode("utf-8")) > 4096):
+            return False
+        expected = dict(self.base_launch["env"])
+        if "CUDA_VISIBLE_DEVICES" in env:
+            expected["CUDA_VISIBLE_DEVICES"] = device
+        return launch["argv"] == self.base_launch["argv"] and launch["cwd"] == self.base_launch["cwd"] and env == expected
+
     def service(self, operation, payload, deadline, channel):
         if self.unresolved:
             raise CustodyUnresolved("session retains an unresolved native cleanup obligation")
         expected = {"schema", *self.identity, "launch", "owner_id", "timeout_seconds", "poll_interval_seconds"}
         if (not isinstance(payload, dict) or set(payload) != expected or payload["schema"] != _SCHEMA
                 or any(payload[k] != v for k, v in self.identity.items())
-                or payload["launch"] != self.launch
+                or not self.valid_launch(payload["launch"])
+                or self.engine is not None and payload["launch"] != self.launch
                 or payload["owner_id"] not in (None, self.token)
                 or payload["timeout_seconds"] != self.recipe.health.timeout_seconds
                 or payload["poll_interval_seconds"] != self.recipe.health.poll_interval_seconds):
@@ -820,6 +889,7 @@ class _Supervisor:
                     return self.facts("unowned")
             if operation != "start":
                 return self.facts("absent")
+            self.launch = payload["launch"]
             source = self.source_identity(deadline, channel)
             request = _command({**self.launch, "max_output_bytes": 262144}, deadline)
             self.engine = self.spawn(request)
@@ -1006,7 +1076,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("_serve", "stop"))
     parser.add_argument("value")
-    parser.add_argument("--engine", default="vibecomfy-h3")
+    parser.add_argument("--engine", default="comfyui")
     parser.add_argument("--platform", default="linux-x86_64-cu130")
     parser.add_argument("--timeout", type=float, default=30)
     parser.add_argument("--lock-fd", type=int)

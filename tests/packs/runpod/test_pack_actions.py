@@ -108,7 +108,7 @@ def test_ls_returns_zero_or_one_lease_from_this_owner(tmp_path):
             "pod_id": "pod-owned",
             "state": "claimed",
             "lease": {"state": "idle", "generation": 2, "invocation_id": "inv-2",
-                      "paid_expires_at": 200, "idle_expires_at": 150,
+                      "paid_expires_at": 200, "idle_expires_at": 150, "idle_seconds": 30,
                       "provider_secret": "must-not-leak"},
             "other_account_pod": "hidden",
         }
@@ -117,7 +117,7 @@ def test_ls_returns_zero_or_one_lease_from_this_owner(tmp_path):
             "operation_id": current["operation_id"], "pod_id": "pod-owned",
             "provider_account_ref": "account-a", "state": "claimed",
             "lease": {"state": "idle", "generation": 2, "invocation_id": "inv-2",
-                      "paid_expires_at": 200, "idle_expires_at": 150},
+                      "paid_expires_at": 200, "idle_expires_at": 150, "idle_timeout_s": 30},
         }]
         current["state"] = "cleanup_complete"
         assert owner.ls() == []

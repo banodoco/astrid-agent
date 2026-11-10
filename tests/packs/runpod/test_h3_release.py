@@ -498,7 +498,7 @@ def test_real_lock_and_recipe_pins():
     }
     assert inputs["recipe"]["source"] == {
         "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-        "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+        "revision": "423cbd20511becb1f16122ab518e92e58bfa03d9",
     }
     assert windows["source"] == {
         "repository": "https://github.com/Comfy-Org/ComfyUI.git",

@@ -90,7 +90,7 @@ class LinuxPlatformAdapter:
         self._recipe(recipe)
         return _bootstrap.linux_bootstrap_pip_environment() if index == 0 else {}
 
-    def start_request(self, recipe, root, *, deadline):
+    def start_request(self, recipe, root, *, deadline, models_root=None):
         self._recipe(recipe)
         self.validate_root(root)
         if recipe.start.bind_host != "127.0.0.1":
@@ -101,7 +101,7 @@ class LinuxPlatformAdapter:
         except StopIteration as exc:
             raise RecipeValidationError("missing primary environment or comfyui source") from exc
         values = {"install_root": root, "python": self.venv_python(self.join(root, primary.relative_path)),
-                  "comfy_root": self.join(root, comfy.relative_path), "models_root": self.join(root, "models"),
+                  "comfy_root": self.join(root, comfy.relative_path), "models_root": self.join(root, "models") if models_root is None else models_root,
                   "models_config": self.join(root, "runtime/extra_model_paths.yaml"),
                   "host": recipe.start.bind_host, "port": str(recipe.start.port)}
         # The ComfyUI launch is an engine process. The recipe's env is the base and
@@ -113,7 +113,7 @@ class LinuxPlatformAdapter:
                               _bootstrap.engine_process_env(launch_env, root), deadline)
 
     @contextmanager
-    def local_install_lock(self, root, *, deadline):
+    def local_install_lock(self, root, *, deadline, cancelled=None):
         # Import only at the target; no operational Runtime daemon is involved.
         from runtime_protocol import platform
 
@@ -148,6 +148,9 @@ class LinuxPlatformAdapter:
                 raise UnsafePathError("unsafe install lock inode")
             while True:
                 _deadline(deadline)
+                if cancelled is not None and cancelled():
+                    from concurrent.futures import CancelledError
+                    raise CancelledError("engine lock acquisition cancelled")
                 try:
                     platform.lock_file(fd, exclusive=True, blocking=False)
                     locked = True

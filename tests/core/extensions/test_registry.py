@@ -443,3 +443,88 @@ def test_pack_shaped_points_cannot_claim_a_reserved_owner(roots, tmp_path):
     assert reg_.points() == []
     reserved = [p for p in reg_.problems() if isinstance(p, Quarantined)]
     assert any("reserved namespace" in q.error for q in reserved)
+
+
+def test_workflow_contribution_registers_ready_root_entries_build_and_after_outputs(roots, tmp_path):
+    """Plan 32 T6: the vibecomfy.workflows point carries a ready root, thin entries, build and after_outputs."""
+    from astrid.core.generation import workflows
+
+    source = Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/extensions/points"
+    vibe = _pack(roots["installed"].path, "vibecomfy")
+    for name in ("workflows.yaml", "workflows.schema.json"):
+        _write(vibe / "extensions" / "points" / name, (source / name).read_text(encoding="utf-8"))
+    (vibe / "ready" / "minimax").mkdir(parents=True)
+    _write(vibe / "extensions" / "vibecomfy.workflows" / "minimax.yaml",
+           _contribution() + "ready_root: ../../ready\n"
+           "entries:\n"
+           "  - {id: minimax-h3, kind: video, modes: [t2v], bundle: minimax, needs: [], binds: {}, defaults: {}}\n"
+           "build: hooks.py:build\nafter_outputs: hooks.py:after_outputs\n")
+    _write(vibe / "extensions" / "vibecomfy.workflows" / "hooks.py",
+           "def build(inputs, files, out):\n    return {'workflow': 'W', 'bindings': {}, 'plan': 'p'}\n"
+           "def after_outputs(job_dir, inputs, files, outputs):\n    return outputs\n")
+    reg_ = _registry(roots, tmp_path, _fake_discover(_Record("vibecomfy", vibe))).load()
+    assert reg_.problems() == []
+
+    (contribution,) = workflows.contributions(reg_)
+    registered = []
+    api = SimpleNamespace(register_ready_root=registered.append)
+    assert workflows.register_ready_roots(reg_, lambda: api) == [(vibe / "ready").resolve()]
+    assert registered == [(vibe / "ready").resolve()]
+
+    (entry,) = workflows.workflow_entries(reg_)
+    assert (entry["id"], entry["kind"], entry["modes"]) == ("minimax-h3", "video", ["t2v"])
+    assert entry["bundle"] == str((vibe / "ready" / "minimax").resolve())
+    assert set(entry["hooks"]) == {"build", "after_outputs"}
+    assert entry["hooks"]["build"]({}, {}, None)["plan"] == "p"
+    assert entry["hooks"]["after_outputs"](None, {}, {}, ["o"]) == ["o"]
+    assert workflows.hook(reg_, contribution, "build") is not None
+
+
+def test_workflow_contribution_hooks_are_optional_and_refs_stay_in_the_pack(roots, tmp_path):
+    from astrid.core.generation import workflows
+
+    source = Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/extensions/points"
+    vibe = _pack(roots["installed"].path, "vibecomfy")
+    for name in ("workflows.yaml", "workflows.schema.json"):
+        _write(vibe / "extensions" / "points" / name, (source / name).read_text(encoding="utf-8"))
+    _write(vibe / "extensions" / "vibecomfy.workflows" / "plain.yaml", _contribution() + "ready_root: ready\n")
+    _write(vibe / "extensions" / "vibecomfy.workflows" / "escape.yaml",
+           _contribution() + "ready_root: ../../../../outside\n")
+    reg_ = _registry(roots, tmp_path, _fake_discover(_Record("vibecomfy", vibe))).load()
+    by_key = {c.key: c for c in workflows.contributions(reg_)}
+    assert workflows.hooks(reg_, by_key["plain"]) == {}
+    with pytest.raises(Exception, match="escapes"):
+        workflows.ready_root(by_key["escape"])
+
+
+def test_h3_contribution_registers_build_and_after_outputs(roots, tmp_path):
+    """Plan 32 T6b-1: h3_av is one pack with one vibecomfy.workflows contribution."""
+    import yaml
+    from astrid.core.generation import workflows
+
+    repo = Path(__file__).resolve().parents[3] / "astrid/packs"
+    h3_pack = yaml.safe_load((repo / "h3_av/pack.yaml").read_text(encoding="utf-8"))
+    assert h3_pack["dependencies"]["packs"] == ["vibecomfy"]
+
+    packs = {}
+    for name in ("vibecomfy", "h3_av"):
+        packs[name] = _pack(roots["installed"].path, name)
+        src = repo / name / "extensions"
+        for path in src.rglob("*"):
+            if path.is_file() and "points" in path.parts or path.is_file() and name == "h3_av":
+                _write(packs[name] / path.relative_to(repo / name), path.read_text(encoding="utf-8"))
+    for trio in ("native_h3_continuation", "native_h3_continuation_refs", "lanpaint_h3_av_generalized"):
+        (packs["h3_av"] / "workflows" / trio).mkdir(parents=True)
+    reg_ = _registry(roots, tmp_path, _fake_discover(
+        _Record("vibecomfy", packs["vibecomfy"]), _Record("h3_av", packs["h3_av"]))).load()
+    assert reg_.problems() == []
+
+    (contribution,) = workflows.contributions(reg_)
+    assert contribution.id == "h3_av.h3"
+    assert workflows.ready_root(contribution) == (packs["h3_av"] / "workflows").resolve()
+    (entry,) = workflows.workflow_entries(reg_)
+    assert (entry["id"], entry["kind"]) == ("h3", "video")
+    assert entry["modes"] == ["i2v", "v2v", "video-edit"]
+    assert set(entry["hooks"]) == {"build", "after_outputs"}
+    assert entry["hooks"]["build"].__name__ == "build"
+    assert entry["hooks"]["after_outputs"].__name__ == "after_outputs"

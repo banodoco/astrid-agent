@@ -97,8 +97,8 @@ def case(tmp_path, monkeypatch):
 def test_preferences_use_independent_f02_writer_and_preserve_human_default(case, tmp_path):
     path = tmp_path / "config.toml"
     path.write_text('[comfyui]\nurl="http://127.0.0.1:8188"\nowner="human"\n')
-    save_runpod_preferences(case.raw, path=path)
-    assert read_runpod_preferences(path=path) == case.prefs
+    save_runpod_preferences(case.raw)
+    assert read_runpod_preferences() == case.prefs
     from astrid.core.generation.targets import read_target
     human = read_target(path=path)
     assert human.owner == "human"
@@ -368,17 +368,17 @@ def test_preferences_default_idle_uses_shared_warm_hold_default(case):
     assert DEFAULT_IDLE_SECONDS == 1800
     assert parsed.idle_timeout_seconds == direct.idle_timeout_seconds == DEFAULT_IDLE_SECONDS
     assert RunPodPreferences.from_mapping(parsed.as_mapping()) == parsed
-def test_default_idle_and_explicit_optional_volume(tmp_path):
+def test_default_idle_and_explicit_optional_volume(generation_settings_store):
     from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
     raw = {"provider_account_ref": "account-a", "gpu_types": ["gpu"],
            "image": "worker@sha256:" + "a" * 64, "volume": None}
     preferences = RunPodPreferences.from_mapping(raw)
     assert preferences.idle_timeout_seconds == DEFAULT_IDLE_SECONDS == 1800
     assert RunPodPreferences.from_mapping(preferences.as_mapping()) == preferences
-    path = tmp_path / "config.toml"
-    save_runpod_preferences(raw, path=path)
-    assert read_runpod_preferences(path=path) == preferences
-    assert "volume" not in path.read_text()
+    save_runpod_preferences(raw)
+    assert read_runpod_preferences() == preferences
+    stored, _ = generation_settings_store.documents["generation"]
+    assert "volume" not in stored["machines"]["runpod"]
 
 
 def test_initial_intent_directory_is_flushed_before_create(case, monkeypatch):
@@ -458,8 +458,9 @@ def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
     assert not case.owner.path.exists() and case.creates == 0
 
 
-def test_bind_task_refuses_changed_offer_before_staging_or_acquisition(case, monkeypatch):
-    from astrid.packs.runpod import adapter
+def test_machine_claim_refuses_changed_offer_before_staging_or_acquisition(case, monkeypatch, tmp_path):
+    from astrid.core.execution.machine_run import MachineJob
+    from astrid.packs.runpod import adapter, machine
 
     monkeypatch.setattr(adapter, "prevalidate_task", lambda *args, **kwargs: None)
     owner = SimpleNamespace(selection=case.owner)
@@ -469,16 +470,20 @@ def test_bind_task_refuses_changed_offer_before_staging_or_acquisition(case, mon
     def unreachable(*args, **kwargs):
         raise AssertionError("preparation reached before consent validation")
 
-    facade.prepare = facade.bind_endpoint = unreachable
+    facade.prepare = unreachable
+    monkeypatch.setattr("astrid.packs.runpod.generation.prepare_retained_generation", unreachable)
     monkeypatch.setattr("astrid.packs.vibecomfy.shared.bundle_inputs.staged_workflow_path", unreachable)
     policy = {"kind": "runpod", "engine": "comfyui", "preferences": case.prefs.as_mapping(),
               "offer_digest": "sha256:" + "9" * 64, "consent": ["paid"], "max_usd": 1.0,
               "deadline": case.grant.deadline, "preparation_seconds": 30, "execution_seconds": 30,
               "idle_seconds": 60}
     inputs = {"python": "workflow.py", "companion": "{}", "source": "{}"}
+    job = MachineJob(entry="cpu-image", mode="t2i", policy=policy, inputs=inputs, invocation_id="invocation-1",
+                     task_id="task", attempt_id="attempt", scratch=tmp_path,
+                     progress_path=tmp_path / ".astrid-progress.json")
+    runpod = machine.MACHINE.for_host(facade, begin=unreachable, done=unreachable)
     with pytest.raises(PaidSelectionError, match="offer or rate changed"):
-        facade.bind_task(policy, inputs, invocation_id="invocation-1", scratch=None,
-                         begin_lease=unreachable, retain_bridge=unreachable, retire_bridge=unreachable)
+        runpod.claim(job)
     assert not case.owner.path.exists() and case.creates == case.configs == 0
 
 
@@ -498,3 +503,150 @@ def test_refused_reuse_never_reaches_create_or_reconcile(case, monkeypatch):
     case.now += timedelta(hours=2)
     with pytest.raises(PaidSelectionError, match="cannot be extended by reuse"):
         asyncio.run(case.owner.select(replace(case.grant, deadline=(case.now + timedelta(hours=1)).isoformat())))
+
+
+@pytest.mark.parametrize('failure,reason', [
+    ('transport', 'provider_transport_or_response_unavailable'),
+    ('authentication', 'provider_authentication_failed'),
+    ('rate_limit', 'provider_rate_limited'),
+    ('invalid_response', 'provider_observation_unavailable'),
+    ('stock', 'stock_unavailable'),
+])
+def test_offer_reobservation_preserves_fixed_provider_or_stock_reason_without_allocation(case, monkeypatch, failure, reason):
+    import httpx
+    import runpod_lifecycle
+    from runpod_lifecycle import availability
+    from astrid.packs.runpod.adapter import observe_priced_offer
+    c = case
+    secret = 'PRIVATE_PROVIDER_RESPONSE_AND_CREDENTIAL'
+    c.owner.preferences = RunPodPreferences.from_mapping({**c.raw, 'volume': None})
+    config = SimpleNamespace(api_key=secret, container_disk_gb=40, allowed_cuda_versions=('13.0',), min_cuda_version=None)
+    if failure == 'stock':
+        async def no_stock(**kwargs):
+            return availability.GpuAvailability(kwargs['gpu'], 'gpu-id', 'GPU', 'unavailable', 'now', {}, [
+                availability.DataCenterAvailability('DC', None, None, 'unavailable', None, 1.0, False)])
+        monkeypatch.setattr(runpod_lifecycle, 'gpu_availability', no_stock)
+    else:
+        def post(*args, **kwargs):
+            if failure == 'transport':
+                raise httpx.ConnectError(secret)
+            status = {'authentication': 403, 'rate_limit': 429, 'invalid_response': 200}[failure]
+            return SimpleNamespace(status_code=status, json=lambda: {'errors': [{'message': secret}]})
+        # Real pinned lifecycle query/unknown behavior, replaced only at HTTP I/O.
+        monkeypatch.setattr(availability.httpx, 'post', post)
+    c.owner.observe_offer = lambda: asyncio.run(observe_priced_offer(c.owner.preferences, config))
+    with pytest.raises(PaidSelectionError) as raised:
+        c.owner.consented_offer(c.grant, c.now)
+    assert getattr(raised.value, 'reason', None) == reason
+    assert 'reason=' + reason in str(raised.value)
+    assert secret not in str(raised.value)
+    assert c.creates == 0 and not c.owner.path.exists()
+
+
+def test_unexpected_offer_error_cannot_forward_provider_text(case):
+    from astrid.packs.runpod.target_selection import OfferObservationError
+    secret = 'PRIVATE_UNEXPECTED_PROVIDER_FAILURE'
+    def failed():
+        raise RuntimeError(secret)
+    case.owner.observe_offer = failed
+    with pytest.raises(OfferObservationError) as raised:
+        case.owner.consented_offer(case.grant, case.now)
+    assert raised.value.reason == 'observation_failed'
+    assert secret not in str(raised.value)
+    assert case.creates == 0 and not case.owner.path.exists()
+
+
+@pytest.mark.parametrize('failure,reason', [
+    ('authentication', 'provider_authentication_failed'),
+    ('rate_limit', 'provider_rate_limited'),
+    ('transport', 'provider_transport_or_response_unavailable'),
+])
+def test_pricing_http_failure_reports_specific_safe_reason(case, monkeypatch, failure, reason):
+    import httpx
+    from runpod_lifecycle import availability
+    from astrid.packs.runpod.adapter import observe_priced_offer
+
+    secret = 'PRIVATE_PRICE_RESPONSE_AND_CREDENTIAL'
+    calls = []
+    case.owner.preferences = RunPodPreferences.from_mapping({**case.raw, 'volume': None})
+    config = SimpleNamespace(api_key=secret, container_disk_gb=40, allowed_cuda_versions=('13.0',), min_cuda_version=None)
+
+    def post(*args, **kwargs):
+        query = kwargs['json']['query']
+        if 'GpuCatalogue' in query:
+            calls.append('catalogue')
+            data = {'gpuTypes': [{'id': 'gpu-id', 'displayName': 'preferred-gpu'}]}
+        elif 'DataCenterStock' in query:
+            calls.append('stock')
+            data = {'dataCenters': [{'id': 'DC', 'storageSupport': False, 'gpuAvailability': [
+                {'gpuTypeId': 'gpu-id', 'available': True, 'stockStatus': 'High'}]}]}
+        else:
+            assert 'DataCenterPrices' in query
+            calls.append('prices')
+            if failure == 'transport':
+                raise httpx.ConnectError(secret)
+            return SimpleNamespace(status_code={'authentication': 403, 'rate_limit': 429}[failure],
+                                   json=lambda: {'errors': [{'message': secret}]})
+        return SimpleNamespace(status_code=200, json=lambda: {'data': data})
+
+    monkeypatch.setattr(availability.httpx, 'post', post)
+    case.owner.observe_offer = lambda: asyncio.run(observe_priced_offer(case.owner.preferences, config))
+    with pytest.raises(PaidSelectionError) as raised:
+        case.owner.consented_offer(case.grant, case.now)
+    assert calls[:3] == ['catalogue', 'stock', 'prices']
+    assert raised.value.reason == reason
+    assert secret not in str(raised.value)
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
+def test_pricing_mixed_datacenters_selects_healthy_offer_and_requires_consent(case, monkeypatch):
+    from runpod_lifecycle import availability
+    from astrid.packs.runpod.adapter import observe_priced_offer
+
+    case.owner.preferences = RunPodPreferences.from_mapping({**case.raw, 'volume': None})
+    config = SimpleNamespace(api_key='secret', container_disk_gb=40, allowed_cuda_versions=('13.0',), min_cuda_version=None)
+
+    def post(*args, **kwargs):
+        query = kwargs['json']['query']
+        if 'GpuCatalogue' in query:
+            data = {'gpuTypes': [{'id': 'gpu-id', 'displayName': 'preferred-gpu'}]}
+        elif 'DataCenterStock' in query:
+            data = {'dataCenters': [{'id': dc, 'gpuAvailability': [
+                {'gpuTypeId': 'gpu-id', 'available': True, 'stockStatus': 'High'}]} for dc in ('A', 'B')]}
+        else:
+            assert 'DataCenterPrices' in query
+            data = {'gpuTypes': [{'id': 'gpu-id', 'dc0': None,
+                                  'dc1': {'stockStatus': 'High', 'uninterruptablePrice': 1.0}}]}
+        return SimpleNamespace(status_code=200, json=lambda: {'data': data})
+
+    monkeypatch.setattr(availability.httpx, 'post', post)
+    case.owner.observe_offer = lambda: asyncio.run(observe_priced_offer(case.owner.preferences, config))
+    offer = case.owner.observe_offer()
+    assert offer.datacenter_id == 'B' and offer.hourly_usd == 1.0
+    with pytest.raises(PaidSelectionError, match='offer or rate changed'):
+        case.owner.consented_offer(case.grant, case.now)
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
+def test_pricing_conflicting_failures_use_first_specific_reason(case, monkeypatch):
+    from runpod_lifecycle import availability
+    from astrid.packs.runpod.adapter import observe_priced_offer
+
+    prefs = RunPodPreferences.from_mapping({**case.raw, 'volume': None})
+    config = SimpleNamespace(api_key='secret', container_disk_gb=40, allowed_cuda_versions=('13.0',), min_cuda_version=None)
+    def post(*args, **kwargs):
+        query, variables = kwargs['json']['query'], kwargs['json']['variables']
+        if 'GpuCatalogue' in query:
+            data = {'gpuTypes': [{'id': gpu, 'displayName': gpu} for gpu in prefs.gpu_types]}
+        elif 'DataCenterStock' in query:
+            data = {'dataCenters': [{'id': 'DC', 'gpuAvailability': [
+                {'gpuTypeId': gpu, 'available': True, 'stockStatus': 'High'} for gpu in prefs.gpu_types]}]}
+        else:
+            assert 'DataCenterPrices' in query
+            status = 403 if variables['gpu']['id'] == prefs.gpu_types[0] else 429
+            return SimpleNamespace(status_code=status)
+        return SimpleNamespace(status_code=200, json=lambda: {'data': data})
+    monkeypatch.setattr(availability.httpx, 'post', post)
+    with pytest.raises(PaidSelectionError) as raised:
+        asyncio.run(observe_priced_offer(prefs, config))
+    assert raised.value.reason == 'provider_authentication_failed'

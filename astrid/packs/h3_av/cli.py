@@ -74,29 +74,11 @@ def _asset_map(path: Path | None) -> dict[str, str]:
     return value
 
 
-def _ops(argv: list[str]) -> int:
-    # Operator entrypoints retain their existing parsers and behavior.
-    if not argv or argv[0] in {"-h", "--help"}:
-        print("Usage: astrid h3 ops {action,transform,prepare,compile,compose,verify} ...")
-        return 0
-    name, rest = argv[0], argv[1:]
-    if name == "action":
-        from astrid.core.action_cli import main
-        return main(rest)
-    if name not in {"transform", "prepare", "compile", "compose", "verify"}:
-        print(f"astrid h3 ops: unknown command {name!r}", file=sys.stderr)
-        return 2
-    from importlib import import_module
-    return import_module(f"astrid.packs.h3_av.actions.{name}.run").main(rest)
-
-
 def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
-    if raw_args and raw_args[0] == "ops":
-        return _ops(raw_args[1:])
     parser = _parser()
     args = parser.parse_args(raw_args)
-    from astrid.core.contracts.errors import AstridError, render_astrid_error
+    from astrid.core.contracts.errors import AstridError, coerce_astrid_error, render_astrid_error
     from .shared.request import H3RequestError, normalize_request
     from .shared.spec import canonical_spec
 
@@ -111,6 +93,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         assets = _asset_map(args.asset_map)
         if args.command == "plan":
+            from astrid.core.generation.engine_facts import comfyui_facts
+            from .shared import engine_facts
+            engine_facts.install(comfyui_facts())
             from .shared.planner import plan_request
             plan = plan_request(request, asset_map=assets, out_dir=args.out)
             print(json.dumps(plan, indent=2, sort_keys=True))
@@ -122,17 +107,17 @@ def main(argv: list[str] | None = None) -> int:
                 code="h3.capability.unavailable", field="ops",
                 fix="Use a capability with recorded GPU proof",
             )
-        # The existing action runner owns Runtime lifecycle and invokes B7 transform.
-        from astrid.core.action_cli import main as action_main
+        # h3 is the ``h3`` entry of the one generate path: build and after_outputs run there.
+        from astrid.core.generation.cli import main as generate_main
         with tempfile.TemporaryDirectory(prefix="astrid-h3-") as temp:
             temp_path = Path(temp)
             request_path = temp_path / "request.json"
-            asset_path = temp_path / "assets.json"
             request_path.write_text(json.dumps(document), encoding="utf-8")
-            asset_path.write_text(json.dumps(assets), encoding="utf-8")
-            return action_main(["run", "h3_av.transform", "--request", str(request_path),
-                                "--asset-map", str(asset_path), "--placement", "local", "--out", str(args.out)])
-    except AstridError as exc:
-        return render_astrid_error(exc)
+            inputs_path = temp_path / "inputs.json"
+            inputs_path.write_text(json.dumps({"request": str(request_path), "asset_map": assets}), encoding="utf-8")
+            return generate_main(["video", "--entry", "h3", "--inputs-json", str(inputs_path),
+                                  "--placement", "local", "--out", str(args.out)])
+    except (AstridError, H3RequestError) as exc:
+        return render_astrid_error(coerce_astrid_error(exc))
     except OSError as exc:
         return render_astrid_error(H3RequestError(str(exc)))

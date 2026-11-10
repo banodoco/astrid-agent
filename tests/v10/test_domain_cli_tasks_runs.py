@@ -426,12 +426,14 @@ def test_runs_list_human_view_is_a_short_table_not_json(capsys) -> None:
     assert _run("runs", ["list", "--project", "P-1", "--capability", "rendering.render", "--limit", "2"], client) == 0
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert lines[0].split() == ["ID", "CAPABILITY", "STATE", "CREATED", "(UTC)", "DURATION", "OUTPUT"]
+    # The MACHINE column (the machine identity on each attempt) sits before OUTPUT, by design.
+    assert lines[0].split() == ["ID", "CAPABILITY", "STATE", "CREATED", "(UTC)", "DURATION", "MACHINE", "OUTPUT"]
     assert len(lines) == 4  # header, two rows, footer
     assert "spec" not in out and "{" not in out
     assert lines[1].split()[0] == f"{4:032x}"[:12]
-    assert "completed" in lines[1] and "hype.mp4" in lines[1]
-    assert "running" in lines[2] and "so far" in lines[2]
+    # These rows ran on no recorded machine, so the column is the compact '-', and the output name ends the line.
+    assert "completed" in lines[1] and lines[1].split()[-2:] == ["-", "hype.mp4"]
+    assert "running" in lines[2] and "so far" in lines[2] and lines[2].split()[-2:] == ["-", "-"]
     assert lines[-1].startswith("3 more: --limit N")
 
 

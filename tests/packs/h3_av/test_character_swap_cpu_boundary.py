@@ -10,7 +10,6 @@ import subprocess
 import pytest
 from tests.lanes import unavailable
 
-from astrid.packs.h3_av.shared.input_bundle import build_input_bundle
 from astrid.packs.h3_av.shared.request import normalize_request
 from astrid.packs.vibecomfy.asset_manifest import read_archive
 from astrid.sdk.pagination import paged_rows
@@ -23,79 +22,6 @@ def _field(value, name: str, default=None):
     return getattr(value, name, default)
 
 
-@pytest.mark.parametrize("fault", ["success", "missing_revision", "missing_content",
-                                  "revision_drift", "content_drift", "checkout_drift",
-                                  "profile_hash_drift"])
-def test_cpu_host_readiness_identity_reaches_real_installed_guard(tmp_path, fault):
-    import sys
-    from tests.helpers import h3_cpu_runtime as helper
-
-    checkout = tmp_path / "controlled-vibe"
-    package = checkout / "vibecomfy"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text('"""Controlled dependency, no backend."""\n')
-    (package / "workflow_bundle.py").write_text("FIXTURE_ONLY = True\n")
-    revision = helper.PINNED_VIBECOMFY_REVISION
-    digest = "sha256:" + hashlib.sha256((package / "workflow_bundle.py").read_bytes()).hexdigest()
-    profile = {
-        "vibecomfy_candidate": {"kind": "local_snapshot", "checkout": str(checkout),
-                               "revision": revision, "source_content_digest": digest},
-        "vibecomfy_session": {"source_revision": revision, "source_content_digest": digest},
-    }
-    readiness = tmp_path / "readiness.json"
-    readiness.write_text(json.dumps(profile))
-    values = helper._vibecomfy_host_readiness_environment(
-        checkout, readiness, "sha256:" + hashlib.sha256(readiness.read_bytes()).hexdigest(),
-        revision, digest,
-    )
-    assert values["ASTRID_VIBECOMFY_ATTESTED_REVISION"] == profile["vibecomfy_session"]["source_revision"]
-    assert values["ASTRID_VIBECOMFY_ATTESTED_CONTENT_DIGEST"] == profile["vibecomfy_session"]["source_content_digest"]
-    if fault == "missing_revision": values.pop("ASTRID_VIBECOMFY_ATTESTED_REVISION")
-    if fault == "missing_content": values.pop("ASTRID_VIBECOMFY_ATTESTED_CONTENT_DIGEST")
-    if fault == "revision_drift": values["ASTRID_VIBECOMFY_ATTESTED_REVISION"] = "0" * 40
-    if fault == "content_drift": values["ASTRID_VIBECOMFY_ATTESTED_CONTENT_DIGEST"] = "sha256:" + "0" * 64
-    if fault == "checkout_drift": values["ASTRID_VIBECOMFY_CHECKOUT"] = str(tmp_path)
-    if fault == "profile_hash_drift": values["ASTRID_HOST_READINESS_PROFILE_HASH"] = "sha256:" + "0" * 64
-    identity_keys = tuple(helper._vibecomfy_host_readiness_environment(
-        checkout, readiness, "unused", revision, digest,
-    ))
-    prior = {key: os.environ.get(key) for key in identity_keys}
-    script = r'''
-import json,os,sys
-from pathlib import Path
-import astrid
-from astrid.core.execution.generic_host import _install_host_vibecomfy_import_root, _host_product_import_origins, HostError
-from astrid.sdk.host_bootstrap import _host_render_environment
-keys=json.loads(sys.argv[1]);checkout=Path(sys.argv[2]);before=_host_product_import_origins();oldpath=sys.path[:]
-import astrid_runtime_client
-# The installed product tree is what holds astrid and its client: site-packages in a wheel install, the checkout
-# when the venv lives inside it, and their common ancestor when astrid is an editable install (CI).
-product=Path(os.path.commonpath([Path(astrid.__file__).resolve().parent,Path(astrid_runtime_client.__file__).resolve().parent]))
-environment=_host_render_environment(product)
-assert {key:environment.get(key) for key in keys} == {key:os.environ.get(key) for key in keys}
-os.environ.clear();os.environ.update(environment)
-try:
-    assert _install_host_vibecomfy_import_root()==checkout
-    import vibecomfy.workflow_bundle as bundle
-    assert Path(bundle.__file__).is_relative_to(checkout)
-    assert _host_product_import_origins()==before
-    print(json.dumps({'accepted':True,'product_origins_unchanged':True}))
-except HostError:
-    assert sys.path==oldpath
-    print(json.dumps({'accepted':False,'path_unchanged':True}))
-'''
-    remove = (*identity_keys, "ASTRID_VIBECOMFY_CANDIDATE_KIND",
-              "ASTRID_VIBECOMFY_CANDIDATE_REVISION", "ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST")
-    with helper._temporary_environment(values, remove=remove):
-        environment = dict(os.environ)
-        environment.update(ASTRID_HOST_EXECUTION_PROFILE="installed", ASTRID_PACK_HOST_PYTHON=sys.executable)
-        environment.pop("PYTHONPATH", None)
-        result = subprocess.run([sys.executable, "-I", "-c", script, json.dumps(identity_keys), str(checkout)],
-                                env=environment, text=True, capture_output=True, timeout=20)
-    assert {key: os.environ.get(key) for key in identity_keys} == prior
-    assert result.returncode == 0, result.stderr
-    observed = json.loads(result.stdout)
-    assert observed["accepted"] is (fault == "success")
 
 
 @pytest.mark.integration
@@ -171,8 +97,8 @@ def test_installed_cpu_actions_retain_candidate_content_pins(tmp_path):
     # must carry the same bytes (a wheel built from this checkout does). The manifest is written here from the checkout.
     pinned = (
         "astrid/packs/h3_av/pack.yaml",
-        "astrid/packs/h3_av/actions/transform/run.py",
-        "astrid/packs/h3_av/actions/transform/operation.py",
+        "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py",
+        "astrid/packs/h3_av/shared/compile.py",
         "astrid/packs/vibecomfy/pack.yaml",
         "astrid/packs/vibecomfy/actions/run/run.py",
     )
@@ -186,7 +112,7 @@ def test_installed_cpu_actions_retain_candidate_content_pins(tmp_path):
     candidate.write_text(json.dumps(manifest))
     assert helper.candidate_manifest_path_from_environment({"ASTRID_H3_CANDIDATE_MANIFEST": str(candidate)}) == candidate.resolve()
     helper._verify_installed_candidate_actions(candidate)
-    manifest["source_files"]["astrid/packs/h3_av/actions/transform/run.py"] = "0" * 64
+    manifest["source_files"]["astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"] = "0" * 64
     drift = tmp_path / "candidate-drift.json"
     drift.write_text(json.dumps(manifest))
     with pytest.raises(RuntimeError, match="installed action differs"):
@@ -343,118 +269,8 @@ def test_h3_public_workspace_helper_pin_matches_current_shared_fixture() -> None
     )
 
 
-def test_cpu_harness_asset_map_matches_public_transform_input_contract(tmp_path: Path) -> None:
-    from tests.helpers.h3_cpu_runtime import _write_runtime_asset_map
-
-    raw = {
-        "version": 2,
-        "prompt": "Describe the reference image.",
-        "duration": 1,
-        "media": [{"id": "look", "asset": "look.png", "role": "reference", "modality": "image"}],
-        "settings": {},
-    }
-    image = tmp_path / "look.png"
-    image.write_bytes(b"small deterministic image fixture")
-    bundle = tmp_path / "input-bundle.zip"
-    build_input_bundle(normalize_request(raw), {"look.png": str(image)}, bundle)
-
-    asset_map_path = _write_runtime_asset_map(read_archive(bundle), tmp_path / "staged")
-    asset_map = json.loads(asset_map_path.read_text(encoding="utf-8"))
-
-    assert set(asset_map) == {"look.png"}
-    materialized = Path(asset_map["look.png"])
-    assert materialized.is_file()
-    assert materialized.read_bytes() == image.read_bytes()
 
 
-@pytest.mark.integration
-def test_cpu_harness_invokes_transform_unbound_without_request_or_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from types import SimpleNamespace
-    import sys
-
-    import tests.helpers.h3_cpu_runtime as runtime_module
-
-    request_path = tmp_path / "request.json"
-    request_path.write_text("{}", encoding="utf-8")
-    asset_map_path = tmp_path / "asset-map.json"
-    asset_map_path.write_text("{}", encoding="utf-8")
-    expected_path = tmp_path / "expected.json"
-    archive = SimpleNamespace(manifest={"assets": [{
-        "binding": "source.mp4", "member": "source.mp4", "sha256": "a" * 64, "size": 17,
-    }]})
-    monkeypatch.setattr(
-        runtime_module,
-        "normalize_request",
-        lambda _value: SimpleNamespace(value={
-            "version": 1, "source": {"asset": "source.mp4", "range": [0, 2]},
-            "output": {"duration": 3},
-        }),
-    )
-    monkeypatch.setattr(runtime_module, "read_archive", lambda _path: archive)
-
-    def write_asset_map(_archive, out: Path) -> Path:
-        out.mkdir(parents=True, exist_ok=True)
-        return asset_map_path
-
-    monkeypatch.setattr(runtime_module, "_write_runtime_asset_map", write_asset_map)
-
-    captured = {}
-    imports = []
-
-    def import_file(**kwargs):
-        imports.append(kwargs)
-        digest = "sha256:" + hashlib.sha256(kwargs["path"].read_bytes()).hexdigest()
-        return SimpleNamespace(ok=True, data={"object_id": digest})
-
-    class Owner:
-        media = SimpleNamespace(import_file=import_file)
-        def invoke_result(self, capability_id, **kwargs):
-            captured.update({
-                "capability_id": capability_id,
-                "support_root_at_invocation": os.environ.get("ASTRID_RUNTIME_DATA_ROOT"),
-                "model_substitute_profile_at_invocation": os.environ.get(
-                    "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"
-                ),
-                **kwargs,
-            })
-            return SimpleNamespace(ok=True)
-
-    runtime = runtime_module.H3CpuRuntime.__new__(runtime_module.H3CpuRuntime)
-    runtime.schema_session = SimpleNamespace(expected_path=expected_path)
-    runtime.data_root = tmp_path / "selected-support-root"
-    runtime.owner = Owner()
-    runtime.project_id = "fixture-project"
-    runtime.cpu_model_boundary = "test-only"
-    out = tmp_path / "out"
-    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", "/tmp/stale-runtime-support")
-    monkeypatch.setenv("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE", "/tmp/stale-model-profile.json")
-
-    result = runtime.run_public_transform(request_path, tmp_path / "bundle.zip", out=out, key="fixture")
-
-    assert result.ok
-    assert captured["capability_id"] == "h3_av.transform"
-    assert captured["project"] == runtime.project_id
-    assert captured["kind"] == "orchestrator"
-    assert captured["python_exec"] == sys.executable
-    assert "orchestrator_args" not in captured
-    assert captured["inputs"]["project"] == runtime.project_id
-    assert [row["path"] for row in imports] == [request_path.resolve(), asset_map_path.resolve()]
-    assert all(row["project"] == runtime.project_id and row["realm"] == "managed_local" for row in imports)
-    for port, path, imported in zip(("request", "asset_map"), (request_path, asset_map_path), imports):
-        digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-        assert captured["inputs"][port] == str(path.resolve())
-        from runtime_protocol.service import validate_idempotency_key
-        validate_idempotency_key(imported["idempotency_key"])
-    assert imports[0]["idempotency_key"] != imports[1]["idempotency_key"]
-    assert captured["support_root_at_invocation"] == str(runtime.data_root.resolve())
-    assert captured["model_substitute_profile_at_invocation"] is None
-    assert "execution_request" not in captured
-    assert set(captured["inputs"]) == {"request", "asset_map", "project"}
-    assert "execution_target" not in captured
-    assert os.environ["ASTRID_RUNTIME_DATA_ROOT"] == "/tmp/stale-runtime-support"
-    assert os.environ["ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"] == "/tmp/stale-model-profile.json"
 
 
 def test_h3_synthetic_readiness_profile_uses_digest_bound_model_root(tmp_path: Path) -> None:
@@ -484,134 +300,6 @@ def test_h3_synthetic_readiness_profile_uses_digest_bound_model_root(tmp_path: P
     assert binding.qualification_identity is None
 
 
-@pytest.mark.integration  # needs the Runtime and VibeComfy checkouts and the approved T9 readiness profile
-def test_character_swap_public_managed_cpu_boundary(tmp_path: Path) -> None:
-    blockers = _boundary_blockers()
-    if blockers:
-        unavailable("public managed CPU boundary is not qualified: " + "; ".join(blockers))
-    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
-        unavailable("public managed CPU boundary requires ffmpeg and ffprobe")
-
-    from PIL import Image
-
-    from tests.helpers.h3_cpu_runtime import (
-        APPROVED_CPU_MODEL_BOUNDARY,
-        H3CpuRuntime,
-    )
-
-    caller = tmp_path / "caller"
-    caller.mkdir()
-    source = caller / "baseline.mp4"
-    performance = caller / "performance.mp4"
-    for path, color, tone in ((source, "blue", 440), (performance, "green", 660)):
-        subprocess.run([
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", f"color=c={color}:s=64x64:r=24:d=15",
-            "-f", "lavfi", "-i", f"sine=frequency={tone}:sample_rate=48000:duration=15",
-            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-shortest", str(path),
-        ], check=True, capture_output=True, timeout=60)
-    replacement = caller / "replacement.png"
-    Image.new("RGB", (64, 64), (32, 96, 160)).save(replacement)
-
-    raw = {
-        "version": 2,
-        "prompt": "Replace the person in <Video 1> with the person in <Picture 1>.",
-        "duration": 15,
-        "media": [
-            {"id": "baseline", "asset": "baseline.mp4", "role": "timeline", "modality": "video",
-             "at": {"frame": 0}, "range": [0, 15],
-             "edit": [{"stream": "video", "during": [0, 15], "mask": {"full_frame": True}}]},
-            {"id": "performance", "asset": "performance.mp4", "role": "reference", "modality": "video",
-             "range": [0, 15], "audio": False},
-            {"id": "replacement", "asset": "replacement.png", "role": "reference", "modality": "image"},
-        ],
-        "settings": {"adapter": {"id": "character_swap_v1"}},
-    }
-    request_path = tmp_path / "request.json"
-    request_path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
-    request = normalize_request(raw)
-    bundle_path = tmp_path / "input-bundle.zip"
-    build_input_bundle(request, {
-        "baseline.mp4": str(source),
-        "performance.mp4": str(performance),
-        "replacement.png": str(replacement),
-    }, bundle_path)
-    input_digests = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (source, performance, replacement)}
-    for path in (source, performance, replacement):
-        path.unlink()
-
-    runtime = H3CpuRuntime(tmp_path / "runtime", cpu_model_boundary=APPROVED_CPU_MODEL_BOUNDARY)
-    try:
-        outcome = runtime.run_public_transform(
-            request_path, bundle_path, out=tmp_path / "public-transform", key="h3-character-swap-cpu-boundary",
-        )
-        assert outcome.ok, outcome.error
-        rows = paged_rows(runtime.owner.tasks.list, runtime.project_id, limit=100)
-        assert rows is not None
-        tasks = list(rows)
-        capabilities = [_field(task, "capability_id") for task in tasks]
-        for expected in (
-            "h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run",
-            "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer",
-        ):
-            assert expected in capabilities
-        boundary = runtime.read_cpu_model_boundary_evidence()
-        assert boundary["schema_version"] == "h3-character-swap-cpu-boundary.v2"
-        assert boundary["synthetic_inference"] is True
-        assert boundary["queued_to_comfy"] is False
-        assert boundary["production_model_bytes_observed"] is False
-        assert boundary["task_id"] and boundary["attempt_id"] and boundary["execution_id"]
-        assert boundary["child_pid"] != os.getpid()
-        marker = boundary["activation_marker"]
-        assert marker["schema_version"] == "h3-t9-child-activation.v1"
-        assert marker["child_pid"] == boundary["child_pid"]
-        assert marker["task_id"] == boundary["task_id"]
-        assert marker["attempt_id"] == boundary["attempt_id"]
-        assert marker["execution_id"] == boundary["execution_id"]
-        assert marker["synthetic_inference"] is True
-        assert marker["queued_to_comfy"] is False
-        assert marker["production_model_bytes_observed"] is False
-        assert marker["profile_sha256"] == runtime.readiness_profile_hash
-        assert marker["candidate_manifest_sha256"] == "sha256:" + hashlib.sha256(
-            runtime.candidate_manifest_path.read_bytes()
-        ).hexdigest()
-        calls = [
-            json.loads(line)
-            for line in runtime.t9_child_calls_path.read_text(encoding="utf-8").splitlines()
-            if line
-        ]
-        assert any(
-            call.get("task_id") == boundary["task_id"]
-            and call.get("attempt_id") == boundary["attempt_id"]
-            and call.get("execution_id") == boundary["execution_id"]
-            and call.get("child_pid") == boundary["child_pid"]
-            and call.get("evidence_path") == boundary["evidence_path"]
-            for call in calls
-        )
-        for output in boundary["outputs"]:
-            output_path = Path(output["path"])
-            assert output_path.is_file() and not output_path.is_symlink()
-            assert hashlib.sha256(output_path.read_bytes()).hexdigest() == output["sha256"]
-        observed = {row["member"]: row["sha256"] for row in boundary["managed_inputs"]}
-        for name in ("performance.mp4", "replacement.png"):
-            assert input_digests[name] in observed.values()
-        finalizer = next(task for task in tasks if _field(task, "capability_id") == "h3_av.publication_finalizer")
-        finalizer_result = _field(finalizer, "result", {}) or {}
-        outputs = _field(finalizer_result, "outputs", [])
-        assert any(row.get("name") == "verified_candidate" for row in outputs if isinstance(row, dict))
-    finally:
-        runtime.close()
-
-    workspace_provenance = json.loads(
-        runtime.public_workspace_provenance_path.read_text(encoding="utf-8")
-    )
-    assert workspace_provenance["profile"] == "astrid"
-    assert workspace_provenance["candidate_manifest_sha256"]
-    assert "execution_target" not in workspace_provenance
-    assert workspace_provenance["synthetic_inference"] is True
-    assert workspace_provenance["stop"]["owner_stopped"] is True
-    assert workspace_provenance["stop"]["runtime_pid"] == workspace_provenance["runtime_pid"]
 
 
 def test_candidate_manifest_resolves_from_environment_without_runtime_startup(
@@ -667,60 +355,6 @@ def test_candidate_manifest_rejects_symlink_environment_path(
         candidate_manifest_path_from_environment()
 
 
-def test_candidate_manifest_reaches_declared_orchestrator_child_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import yaml
-
-    from astrid.core.subprocess_env import build_child_subprocess_env
-
-    checkout = Path(__file__).resolve().parents[3]
-    orchestrator_path = checkout / "astrid/packs/h3_av/pack.yaml"
-    compile_path = checkout / "astrid/packs/h3_av/pack.yaml"
-    orchestrator = yaml.safe_load(orchestrator_path.read_text(encoding="utf-8"))["actions"]["transform"]
-    compile_executor = yaml.safe_load(compile_path.read_text(encoding="utf-8"))["actions"]["compile"]
-    allowed = orchestrator["isolation"]["env_passthrough"]
-    compile_allowed = compile_executor["isolation"]["env_passthrough"]
-    assert "ASTRID_H3_CANDIDATE_MANIFEST" in allowed
-    assert "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE" in allowed
-    assert "ASTRID_H3_CANDIDATE_MANIFEST" in compile_allowed
-    assert "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE" in compile_allowed
-    assert "ASTRID_RUNTIME_DATA_ROOT" in allowed
-    assert "*" not in allowed
-    assert "*" not in compile_allowed
-
-    candidate = "/tmp/selected-h3-candidate.json"
-    model_profile = "/tmp/selected-t9-model-substitute.json"
-    support = "/tmp/selected-support-root"
-    monkeypatch.setenv("ASTRID_H3_CANDIDATE_MANIFEST", candidate)
-    monkeypatch.setenv("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE", model_profile)
-    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", support)
-    monkeypatch.setenv("ASTRID_H3_UNDECLARED_TEST_VALUE", "must-not-cross")
-    inherited_owner_pin = "__CF_USER_TEXT_ENCODING"
-    parent = (
-        {inherited_owner_pin: os.environ[inherited_owner_pin]}
-        if inherited_owner_pin in os.environ
-        else {}
-    )
-    child_env = build_child_subprocess_env(
-        base=os.environ,
-        parent=parent,
-        passthrough=allowed,
-        declared_passthrough=allowed,
-    )
-    compile_child_env = build_child_subprocess_env(
-        base=os.environ,
-        parent=parent,
-        passthrough=compile_allowed,
-        declared_passthrough=compile_allowed,
-    )
-
-    assert child_env["ASTRID_H3_CANDIDATE_MANIFEST"] == candidate
-    assert child_env["ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"] == model_profile
-    assert compile_child_env["ASTRID_H3_CANDIDATE_MANIFEST"] == candidate
-    assert compile_child_env["ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"] == model_profile
-    assert child_env["ASTRID_RUNTIME_DATA_ROOT"] == support
-    assert "ASTRID_H3_UNDECLARED_TEST_VALUE" not in child_env
 
 
 @pytest.mark.integration
@@ -741,7 +375,7 @@ def test_character_swap_digest_override_is_source_and_inventory_bound(
         "astrid/packs/vibecomfy/actions/run/run.py",
         "astrid/packs/vibecomfy/pack.yaml",
         "astrid/packs/h3_av/shared/generation.py",
-        "astrid/packs/h3_av/actions/compile/compile.py",
+        "astrid/packs/h3_av/shared/compile.py",
     )
     source_files = {
         relative: hashlib.sha256((checkout / relative).read_bytes()).hexdigest()
@@ -901,31 +535,6 @@ def test_h3_host_startup_policy_matches_real_installed_caller(monkeypatch, profi
     assert harness._pack_host_startup_options() == {}
 
 
-def test_cpu_transform_current_v3_preview_and_old_kind_rejection(tmp_path: Path) -> None:
-    from astrid.sdk import invoke_result
-
-    request = tmp_path / "request.json"
-    asset_map = tmp_path / "asset-map.json"
-    request.write_text("{}", encoding="utf-8")
-    asset_map.write_text("{}", encoding="utf-8")
-    inputs = {"request": str(request), "asset_map": str(asset_map), "project": "fixture-project"}
-    preview = invoke_result(
-        "h3_av.transform", kind="orchestrator", inputs=inputs,
-        project="fixture-project", out=tmp_path / "out", dry_run=True,
-    )
-    assert preview.ok, preview.error
-    assert preview.capability_type == "orchestrator"
-    command = preview.raw_result["command"]
-    assert "--project" in command
-    assert command[command.index("--project") + 1] == "fixture-project"
-    assert "--request" in command and "--asset-map" in command
-    rejected = invoke_result(
-        "h3_av.transform", kind="executor", inputs=inputs,
-        project="fixture-project", out=tmp_path / "out", dry_run=True,
-    )
-    assert not rejected.ok
-    assert rejected.error["type"] == "CapabilityNotFoundError"
-    assert not (tmp_path / "out").exists()
 
 
 @pytest.mark.parametrize("data", [
@@ -967,238 +576,16 @@ def test_transform_file_policy_accepts_canonical_managed_descriptor():
 
 
 
-def test_h3_cleanup_keeps_host_primary_when_original_runtime_also_fails(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from tests.helpers import h3_cpu_runtime as harness
-    from astrid.sdk import host_bootstrap
-    events = []
-    host_error = RuntimeError("controlled original host graph failure")
-    runtime_error = RuntimeError("controlled original Runtime failure")
-    original = object()
-    state = {"pid": 12345, "process_birth_id": "original-birth"}
-    monkeypatch.setitem(host_bootstrap._RETAINED_HOSTS, (12345, "original-birth"), original)
-    def failed_host(selected):
-        assert selected is state
-        events.append("host")
-        raise host_error
-    def failed_runtime():
-        events.append("runtime")
-        raise runtime_error
-    monkeypatch.setattr(host_bootstrap, "_stop_registered_host", failed_host)
-    runtime = harness.H3CpuRuntime.__new__(harness.H3CpuRuntime)
-    runtime._closed = False; runtime.host_pid = 12345; runtime.original_host = original
-    runtime.original_host_state = state; runtime.schema_session = SimpleNamespace(close=lambda: events.append("schema"))
-    boundary = SimpleNamespace(stop=failed_runtime)
-    runtime.public_workspace = boundary
-    monkeypatch.setattr(runtime, "_restore_parent_state", lambda: events.append("restore"))
-    with pytest.raises(RuntimeError, match="cleanup was incomplete") as error:
-        runtime.close()
-    assert error.value.__cause__ is host_error
-    assert events == ["host", "schema", "runtime", "restore"]
-    assert runtime.original_host is original and runtime.public_workspace is boundary and not runtime._closed
 
 
-@pytest.mark.parametrize("failed", [None, "daemon_birth", "daemon_argv", "child_birth", "child_parent", "listener"])
-def test_schema_ownership_failure_row_is_fixed_and_secret_free(tmp_path, monkeypatch, failed):
-    import sys
-    from types import SimpleNamespace
-    from tests.helpers import h3_cpu_runtime as harness
-    token = "controlled-secret-token-never-emitted"
-    marker = {"pid": 123, "url": "http://127.0.0.1:8188", "launch_token": token,
-              "process_start_identity": "daemon-birth", "comfy_pid": 124,
-              "comfy_process_start_identity": "child-birth"}
-    for name, value in {"pid": "123", "url": marker["url"], "comfy_pid": "124", "comfy_process_start_identity": "child-birth"}.items():
-        (tmp_path / name).write_text(value)
-    owner = SimpleNamespace(
-        _read_launch_marker=lambda path: marker,
-        _process_start_identity=lambda pid: ("changed" if failed == ("daemon_birth" if pid == 123 else "child_birth") else ("daemon-birth" if pid == 123 else "child-birth")),
-        _process_commandline=lambda pid: ("python", "--launch-token", token),
-        _launch_token_is_exactly_paired=lambda argv, selected: failed != "daemon_argv" and selected == token,
-        _process_parent_pid=lambda pid: 999 if failed == "child_parent" else 123,
-        _listener_owner_pid=lambda url: None if failed == "listener" else 124,
-    )
-    monkeypatch.setitem(sys.modules, "vibecomfy", SimpleNamespace(runtime=SimpleNamespace(session=owner)))
-    monkeypatch.setitem(sys.modules, "vibecomfy.runtime", SimpleNamespace(session=owner))
-    row = harness._schema_session_ownership_failure_row(tmp_path, 123)
-    assert row["phase"] == "schema_ownership_rejected" and row["daemon_pid"] == 123 and row["child_pid"] == 124
-    checks = {k: v for k, v in row.items() if k not in {"phase", "daemon_pid", "child_pid", "elapsed_ms"}}
-    assert all(type(v) is bool for v in checks.values())
-    assert {k for k, v in checks.items() if v is False} == ({failed} if failed else set())
-    encoded = json.dumps(row)
-    assert len(encoded.encode()) <= 512
-    assert token not in encoded and "daemon-birth" not in encoded and "http://" not in encoded
 
 
-def test_schema_ownership_failure_row_unknown_predicate_and_missing_marker(tmp_path, monkeypatch):
-    import sys
-    from types import SimpleNamespace
-    from tests.helpers import h3_cpu_runtime as harness
-    def unavailable(*args): raise OSError("controlled unavailable observation")
-    owner = SimpleNamespace(_read_launch_marker=lambda path: None, _process_commandline=unavailable)
-    monkeypatch.setitem(sys.modules, "vibecomfy", SimpleNamespace(runtime=SimpleNamespace(session=owner)))
-    monkeypatch.setitem(sys.modules, "vibecomfy.runtime", SimpleNamespace(session=owner))
-    with pytest.raises(OSError): harness._schema_session_ownership_failure_row(tmp_path, 123)
 
 
-@pytest.mark.parametrize("mode", [0o600, 0o644])
-def test_schema_ownership_row_emission_retains_fd_and_private_sink(tmp_path, monkeypatch, mode):
-    import os
-    from tests.helpers import h3_cpu_runtime as harness
-    path = tmp_path / "private.log"
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, mode)
-    os.fchmod(fd, mode)
-    before = os.fstat(fd)
-    real_stat, real_write = os.fstat, os.write
-    monkeypatch.setattr(harness.os, "fstat", lambda selected: real_stat(fd) if selected == 2 else real_stat(selected))
-    writes = []
-    def write(selected, data):
-        assert selected == 2
-        writes.append(data)
-        return real_write(fd, data)
-    monkeypatch.setattr(harness.os, "write", write)
-    try:
-        harness._emit_schema_session_ownership_failure({"phase": "schema_ownership_rejected", "daemon_pid": 123})
-        assert len(writes) == (1 if mode == 0o600 else 0)
-        assert all(len(data) <= 512 for data in writes)
-        assert os.fstat(fd).st_ino == before.st_ino and (os.fstat(fd).st_mode & 0o777) == mode
-    finally: os.close(fd)
 
 
-@pytest.mark.parametrize("failure", ["observation", "output"])
-def test_schema_ownership_diagnostic_preserves_primary_and_close(tmp_path, monkeypatch, failure):
-    import inspect
-    from tests.helpers import h3_cpu_runtime as harness
-    # Execute the actual exception path from the constructor, so its ordering
-    # and primary exception remain the production helper's own statements.
-    source = inspect.getsource(harness.ManagedSchemaSession.__init__)
-    start = source.index("            try:\n                _verify_owned_vibe_session")
-    end = source.index("            # The CLI can observe", start)
-    guarded = source[start:end]
-    import textwrap
-    primary = ValueError("controlled strict ownership rejection")
-    events = []
-    obj = type("Fixture", (), {})(); obj.session_dir = tmp_path; obj.pid = 123
-    def reject(*args): events.append("verify"); raise primary
-    def observe(*args):
-        events.append("observe")
-        if failure == "observation": raise OSError("controlled observation failure")
-        return {"phase": "schema_ownership_rejected", "daemon_pid": 123}
-    def emit(row):
-        events.append("emit")
-        if failure == "output": harness._emit_schema_session_ownership_failure(row)
-    monkeypatch.setattr(harness.os, "fstat", lambda fd: (_ for _ in ()).throw(OSError("controlled output failure")))
-    code = "try:\n" + textwrap.indent(textwrap.dedent(guarded), "    ") + "except BaseException:\n    try:\n        close()\n    finally:\n        emit(getattr(self, '_ownership_failure_row', None))\n    raise\n"
-    with pytest.raises(ValueError) as caught:
-        exec(code, {"self": obj, "_verify_owned_vibe_session": reject, "_schema_session_ownership_failure_row": observe,
-                    "close": lambda: events.append("close"), "emit": emit})
-    assert caught.value is primary and events == ["verify", "observe", "close", "emit"]
 
 
-def test_cpu_harness_local_parent_retains_child_managed_input_materialization(tmp_path: Path) -> None:
-    """The helper's actual descriptors survive SDK admission and localization.
-
-    Only the object store and task transport are synthetic. The command child
-    reads the admitted request and asset map after the original caller is gone;
-    nested assets remain explicitly fixture-owned, not remotely portable.
-    """
-    import sys
-    from types import SimpleNamespace
-    import yaml
-    from astrid.core.execution.generic_host import GenericPackHost
-    from astrid.packs.h3_av.actions.transform import run as transform
-    from astrid.sdk.invocation import _kernel_invoke
-    from tests.helpers import h3_cpu_runtime as helper
-
-    caller = tmp_path / "caller"
-    caller.mkdir()
-    source = caller / "baseline.mp4"
-    source.write_bytes(b"CPU fixture source bytes; no generation")
-    request = {"version": 1, "operation": "continue",
-               "source": {"asset": "baseline.mp4", "range": [0, 1]},
-               "output": {"duration": 2}, "content": {"prompt": "continue"},
-               "changes": {"video": [{"during": [1, 2], "area": {"full_frame": True}, "action": "generate"}],
-                           "audio": [{"during": [1, 2], "action": "generate"}]},
-               "references": [], "overrides": {}}
-    request_path = caller / "request.json"
-    request_path.write_text(json.dumps(request))
-    bundle = caller / "bundle.zip"
-    build_input_bundle(normalize_request(request), {"baseline.mp4": str(source)}, bundle)
-    source_bytes = source.read_bytes()
-    objects = {}
-    admitted = {}
-    manifest = yaml.safe_load((Path(transform.__file__).parents[2] / "pack.yaml").read_text())["actions"]["transform"]
-    ports = [SimpleNamespace(**row) for row in manifest["inputs"]]
-    capability = SimpleNamespace(id="h3_av.transform", capability_type="executor", inputs=ports)
-
-    class Media:
-        def import_file(self, *, project, path, realm, idempotency_key):
-            assert project == "cpu-admission" and realm == "managed_local"
-            payload = Path(path).read_bytes()
-            digest = "sha256:" + hashlib.sha256(payload).hexdigest()
-            objects[digest] = payload
-            return SimpleNamespace(ok=True, data={"object_id": digest})
-
-    class Tasks:
-        def create(self, **kwargs):
-            admitted.update(kwargs)
-            return SimpleNamespace(ok=True, data={"task_id": "task-cpu", "run_id": "run-cpu"})
-
-    class Owner:
-        media = Media()
-        tasks = Tasks()
-        def invoke_result(self, capability_id, **kwargs):
-            assert capability_id == "h3_av.transform" and kwargs["kind"] == "orchestrator"
-            assert kwargs["inputs"]["project"] == kwargs["project"] == "cpu-admission"
-            assert all(isinstance(kwargs["inputs"][name], str) for name in ("request", "asset_map"))
-            # Managed descriptors are complementary child transport evidence,
-            # never submissions of the now-local transform parent.
-            child_inputs = {"project": kwargs["project"]}
-            for name in ("request", "asset_map"):
-                path = Path(kwargs["inputs"][name])
-                digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-                child_inputs[name] = {"object_id": digest, "digest": digest, "filename": path.name}
-            child = SimpleNamespace(id="fixture.managed_child", capability_type="executor", inputs=ports)
-            _kernel_invoke(child, kind="executor", project=kwargs["project"],
-                           inputs=child_inputs, outputs={}, _client=self)
-            assert set(admitted["spec"]["inputs"]) == {"request", "asset_map", "project"}
-            assert len(admitted["input_manifest"]) == 2
-            shutil.rmtree(caller)
-            attempt = tmp_path / "attempt"
-            attempt.mkdir()
-            host = GenericPackHost(pack_roots=[], client=SimpleNamespace(
-                get_object=lambda digest: objects["sha256:" + digest.removeprefix("sha256:")]))
-            localized = host._materialize_inputs(
-                {"spec": admitted["spec"], "input_object_ids": admitted["input_manifest"]}, attempt,
-                file_input_names=frozenset(row.name for row in ports if row.type == "file"))
-            assert localized["project"] == "cpu-admission"
-            assert all(Path(localized[name]).is_relative_to(attempt) for name in ("request", "asset_map"))
-            nested = json.loads(Path(localized["asset_map"]).read_text())
-            assert Path(nested["baseline.mp4"]).is_absolute()
-            assert Path(nested["baseline.mp4"]).is_relative_to(tmp_path / "out")
-            assert Path(nested["baseline.mp4"]).read_bytes() == source_bytes
-            bindings = {**localized, "python_exec": sys.executable, "out": str(attempt / "outputs")}
-            command = manifest["invocation"]["command"]
-            argv = [value.format_map(bindings) for value in command["argv"]]
-            for arg in command.get("input_args", []):
-                if arg["input"] in localized:
-                    argv.extend([arg["flag"], str(localized[arg["input"]])])
-            assert argv[:3] == [sys.executable, "-m", "astrid.packs.h3_av.actions.transform.run"]
-            parsed = transform.build_parser().parse_args(argv[3:])
-            assert parsed.project == "cpu-admission"
-            # A real isolated child consumes the exact current action argv's
-            # localized file fields; it does not launch the full transform.
-            child = "import sys,json,pathlib; a=sys.argv[1:]; r=pathlib.Path(a[a.index('--request')+1]); m=pathlib.Path(a[a.index('--asset-map')+1]); v=json.loads(r.read_text()); n=json.loads(m.read_text()); assert v['source']['asset']=='baseline.mp4'; assert pathlib.Path(n['baseline.mp4']).read_bytes()==" + repr(source_bytes) + "; assert a[a.index('--project')+1]=='cpu-admission'"
-            subprocess.run([sys.executable, "-I", "-c", child, *argv[3:]], check=True, timeout=10)
-            return SimpleNamespace(ok=True)
-
-    runtime = helper.H3CpuRuntime.__new__(helper.H3CpuRuntime)
-    runtime.schema_session = SimpleNamespace(expected_path=tmp_path / "expected.json")
-    runtime.data_root = tmp_path / "support"
-    runtime.owner = Owner()
-    runtime.project_id = "cpu-admission"
-    runtime.cpu_model_boundary = "test-only"
-    assert runtime.run_public_transform(request_path, bundle, out=tmp_path / "out", key="real-admission").ok
-    assert not caller.exists()
 
 
 def _managed_import_real_sdk_media(transport):
@@ -1322,38 +709,6 @@ def test_managed_import_real_sdk_success_keeps_strict_descriptor_negatives(tmp_p
                                       "fixture-project", path, key="operation", port="request")
 
 
-def test_character_cpu_transport_matches_actual_compiler_raw_frame_timing(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from astrid.sdk.contracts import DomainResult
-    from astrid.packs.h3_av.shared.generation import generation_timing
-    from tests.helpers import h3_cpu_runtime as helper
-    raw = {"version": 2, "prompt": "Replace <Video 1> with <Picture 1>.", "duration": 15,
-           "media": [
-               {"id": "baseline", "asset": "baseline.mp4", "role": "timeline", "modality": "video",
-                "at": {"frame": 0}, "range": [0, 15], "edit": [{"stream": "video", "during": [0, 15], "mask": {"full_frame": True}}]},
-               {"id": "performance", "asset": "performance.mp4", "role": "reference", "modality": "video", "range": [0, 15], "audio": False},
-               {"id": "replacement", "asset": "replacement.png", "role": "reference", "modality": "image"}],
-           "settings": {"adapter": {"id": "character_swap_v1"}}}
-    request = tmp_path / "request.json"
-    request.write_text(json.dumps(raw))
-    assets = [{"binding": name, "member": name, "sha256": "a" * 64, "size": 1}
-              for name in ("baseline.mp4", "performance.mp4", "replacement.png")]
-    monkeypatch.setattr(helper, "read_archive", lambda p: SimpleNamespace(manifest={"assets": assets}, members={name: b"x" for name in ("baseline.mp4", "performance.mp4", "replacement.png")}))
-    def transport(method, route, headers, body):
-        return _managed_import_wire_response(headers, body)
-    owner = SimpleNamespace(media=_managed_import_real_sdk_media(transport), invoke_result=lambda *args, **kwargs: DomainResult.success({}))
-    runtime = helper.H3CpuRuntime.__new__(helper.H3CpuRuntime)
-    runtime.schema_session = SimpleNamespace(expected_path=tmp_path / "expected.json")
-    runtime.owner = owner
-    runtime.project_id = "fixture-project"
-    runtime.data_root = tmp_path / "support"
-    runtime.cpu_model_boundary = "fixture-only"
-    assert runtime.run_public_transform(request, tmp_path / "bundle.zip", out=tmp_path / "out", key="timing").ok
-    expected = json.loads(runtime.schema_session.expected_path.read_text())
-    timing = generation_timing(15)
-    assert expected["generated_seconds"] == timing["raw_frames"] / timing["fps"] == 362 / 24
-    assert timing["requested_frames"] == 360 and timing["trim_tail_frames"] == 2
-    assert normalize_request(raw).value["duration"] == 15
 
 
 @pytest.mark.parametrize("failure", [None, "missing", "relative", "direct-alias", "ancestor-alias", "fixture-drift", "profile-drift", "candidate-drift", "production", "code-drift"])
@@ -1367,7 +722,7 @@ def test_synthetic_fixture_uses_pinned_explicit_source_with_installed_code_only(
     candidate, candidate_path, profile, profile_path, _, _, _ = case
     checkout = Path(__file__).resolve().parents[3]
     installed = tmp_path / "installed"
-    relatives = ("astrid/packs/h3_av/shared/generation.py", "astrid/packs/h3_av/actions/compile/compile.py")
+    relatives = ("astrid/packs/h3_av/shared/generation.py", "astrid/packs/h3_av/shared/compile.py")
     for relative in relatives:
         target = installed / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1407,120 +762,6 @@ def test_synthetic_fixture_uses_pinned_explicit_source_with_installed_code_only(
         with pytest.raises(ValueError):
             module.character_swap_asset_sha256()
 
-@pytest.mark.parametrize("fault", ["success", "return_failure", "raise"])
-@pytest.mark.integration
-def test_cpu_public_parent_carries_attested_vibe_imports_to_real_runner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
-) -> None:
-    from types import SimpleNamespace
-    import sys
-
-    import tests.helpers.h3_cpu_runtime as runtime_module
-
-    request_path = tmp_path / "request.json"
-    request_path.write_text("{}", encoding="utf-8")
-    asset_map_path = tmp_path / "asset-map.json"
-    asset_map_path.write_text("{}", encoding="utf-8")
-    expected_path = tmp_path / "expected.json"
-    archive = SimpleNamespace(manifest={"assets": [{
-        "binding": "source.mp4", "member": "source.mp4", "sha256": "a" * 64, "size": 17,
-    }]})
-    monkeypatch.setattr(
-        runtime_module,
-        "normalize_request",
-        lambda _value: SimpleNamespace(value={
-            "version": 1, "source": {"asset": "source.mp4", "range": [0, 2]},
-            "output": {"duration": 3},
-        }),
-    )
-    monkeypatch.setattr(runtime_module, "read_archive", lambda _path: archive)
-
-    def write_asset_map(_archive, out: Path) -> Path:
-        out.mkdir(parents=True, exist_ok=True)
-        return asset_map_path
-
-    monkeypatch.setattr(runtime_module, "_write_runtime_asset_map", write_asset_map)
-
-    captured = {}
-    imports = []
-
-    def import_file(**kwargs):
-        imports.append(kwargs)
-        digest = "sha256:" + hashlib.sha256(kwargs["path"].read_bytes()).hexdigest()
-        return SimpleNamespace(ok=True, data={"object_id": digest})
-
-    class Owner:
-        media = SimpleNamespace(import_file=import_file)
-        def invoke_result(self, capability_id, **kwargs):
-            import subprocess, yaml
-            from astrid.core.execution.executor.actions import action_orchestrator_definition
-            from astrid.core.execution.orchestrator.runner import _command_subprocess_env, OrchestratorRunRequest
-            pack_root = runtime_module.ASTRID_ROOT / "astrid/packs/h3_av"
-            action = yaml.safe_load((pack_root / "pack.yaml").read_text())["actions"]["transform"]
-            definition = action_orchestrator_definition(SimpleNamespace(id="h3_av", version="1", root=pack_root), "transform", action)
-            child_env = _command_subprocess_env(definition, OrchestratorRunRequest("h3_av.transform", out=out), {})
-            assert child_env["PYTHONPATH"] == runtime_module._vibecomfy_child_pythonpath(runtime.vibecomfy_root)
-            assert child_env["VIBECOMFY_HEADLESS"] == "1"
-            assert "/tmp/stale-parent-import" not in child_env["PYTHONPATH"]
-            python = os.environ.get("ASTRID_PACK_HOST_PYTHON") or sys.executable
-            completed = subprocess.run([python, "-B", "-c", "from vibecomfy import workflow_bundle; print(workflow_bundle.__file__)"], cwd=tmp_path, env=child_env, capture_output=True, text=True, check=True, timeout=10)
-            assert Path(completed.stdout.strip()).resolve().is_relative_to(runtime.vibecomfy_root.resolve())
-            captured.update({
-                "capability_id": capability_id,
-                "support_root_at_invocation": os.environ.get("ASTRID_RUNTIME_DATA_ROOT"),
-                "model_substitute_profile_at_invocation": os.environ.get(
-                    "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"
-                ),
-                **kwargs,
-            })
-            if fault == "raise":
-                raise RuntimeError("original public invocation failure")
-            return SimpleNamespace(ok=fault == "success")
-
-    runtime = runtime_module.H3CpuRuntime.__new__(runtime_module.H3CpuRuntime)
-    runtime.schema_session = SimpleNamespace(expected_path=expected_path)
-    runtime.data_root = tmp_path / "selected-support-root"
-    runtime.owner = Owner()
-    runtime.project_id = "fixture-project"
-    runtime.cpu_model_boundary = "test-only"
-    runtime.vibecomfy_root = runtime_module.VIBECOMFY_SOURCE_ROOT
-    assert (runtime.vibecomfy_root / "vibecomfy/__init__.py").is_file()
-    monkeypatch.setattr(runtime_module, "_HOST_EXECUTION_PROFILE", "installed")
-    monkeypatch.setenv("PYTHONPATH", "/tmp/stale-parent-import")
-    monkeypatch.setenv("VIBECOMFY_HEADLESS", "0")
-    out = tmp_path / "out"
-    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", "/tmp/stale-runtime-support")
-    monkeypatch.setenv("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE", "/tmp/stale-model-profile.json")
-
-    if fault == "raise":
-        with pytest.raises(RuntimeError, match="original public invocation failure"):
-            runtime.run_public_transform(request_path, tmp_path / "bundle.zip", out=out, key="fixture")
-    else:
-        result = runtime.run_public_transform(request_path, tmp_path / "bundle.zip", out=out, key="fixture")
-        assert result.ok is (fault == "success")
-    assert os.environ["PYTHONPATH"] == "/tmp/stale-parent-import"
-    assert os.environ["VIBECOMFY_HEADLESS"] == "0"
-    assert captured["capability_id"] == "h3_av.transform"
-    assert captured["project"] == runtime.project_id
-    assert captured["kind"] == "orchestrator"
-    assert captured["python_exec"] == sys.executable
-    assert "orchestrator_args" not in captured
-    assert captured["inputs"]["project"] == runtime.project_id
-    assert [row["path"] for row in imports] == [request_path.resolve(), asset_map_path.resolve()]
-    assert all(row["project"] == runtime.project_id and row["realm"] == "managed_local" for row in imports)
-    for port, path, imported in zip(("request", "asset_map"), (request_path, asset_map_path), imports):
-        digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-        assert captured["inputs"][port] == str(path.resolve())
-        from runtime_protocol.service import validate_idempotency_key
-        validate_idempotency_key(imported["idempotency_key"])
-    assert imports[0]["idempotency_key"] != imports[1]["idempotency_key"]
-    assert captured["support_root_at_invocation"] == str(runtime.data_root.resolve())
-    assert captured["model_substitute_profile_at_invocation"] is None
-    assert "execution_request" not in captured
-    assert set(captured["inputs"]) == {"request", "asset_map", "project"}
-    assert "execution_target" not in captured
-    assert os.environ["ASTRID_RUNTIME_DATA_ROOT"] == "/tmp/stale-runtime-support"
-    assert os.environ["ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"] == "/tmp/stale-model-profile.json"
 
 
 
@@ -1547,83 +788,6 @@ def test_render_only_rejects_required_h3_before_mutation(tmp_path, monkeypatch, 
     assert dict(os.environ) == before
 
 
-@pytest.mark.parametrize("failure", [None, "sdk", "missing_capability", "cleanup"])
-def test_render_only_factory_keeps_sdk_contract_and_original_cleanup(tmp_path, monkeypatch, failure):
-    from types import SimpleNamespace
-    import sys
-    from astrid.sdk import host_bootstrap
-    from tests.helpers import h3_cpu_runtime as helper
-    for key in helper._H3_ONLY_ENVIRONMENT:
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("ASTRID_VIBECOMFY_CHECKOUT", "unused-inherited-fixture-selection")
-    monkeypatch.setenv("ASTRID_VIBECOMFY_ATTESTED_REVISION", "unused-inherited-revision")
-    before = dict(os.environ); before_path = tuple(sys.path)
-    root = (tmp_path / "runtime").resolve(); support = root / "runtime-data/runtime"
-    candidate = tmp_path / "candidate.json"; candidate.write_text('{}')
-    monkeypatch.setattr(helper, "candidate_manifest_path_from_environment", lambda: candidate)
-    monkeypatch.setattr(helper, "RUNTIME_ROOT", tmp_path)
-    monkeypatch.setattr(helper, "T9_PROFILE", tmp_path / "missing-unused-profile")
-    monkeypatch.setattr(helper, "VIBECOMFY_SOURCE_ROOT", tmp_path / "missing-unused-vibe")
-    monkeypatch.setattr(helper, "_prepare_clean_vibecomfy_checkout", lambda *_: pytest.fail("render-only copied Vibe"))
-    monkeypatch.setattr(helper, "ManagedSchemaSession", lambda *_args, **_kw: pytest.fail("render-only started schema"))
-    monkeypatch.setattr(helper, "_load_public_workspace_fixture", lambda: object())
-    monkeypatch.setattr(helper, "_public_workspace_environment", lambda: {})
-    monkeypatch.setattr(helper, "active_source_inventory", lambda: SimpleNamespace(sources=(), identity=""))
-    monkeypatch.setattr(helper, "source_checkout_digest", lambda _p: "sha256:" + "7" * 64)
-    stops=[]; waits=[]; calls=[]
-    class Original:
-        def poll(self): return None
-        def wait(self, timeout): waits.append(timeout); return 0
-    original=Original()
-    class Workspace:
-        endpoint="http://127.0.0.1:1"; actor_id="fixture-owner"; realm_id="fixture-realm"; runtime_pid=123
-        python=Path(sys.executable)
-        discovery={"runtime_instance_id":"fixture-runtime"}
-        def __init__(self):
-            support.mkdir(parents=True, exist_ok=True)
-            self.credential_file=root/'owner.json';self.credential_file.write_text(json.dumps({"scope":"astrid","actor_id":self.actor_id,"token":"synthetic-owned-token"}))
-            creds=support/'credentials';creds.mkdir();worker=creds/'worker';worker.write_text('synthetic-owned-token');worker.chmod(0o600)
-            self.up_result={"worker_credential_file":str(worker),"worker_actor":helper.PACK_HOST_ACTOR,"worker_scopes":helper.PACK_HOST_SCOPES}
-        def stop(self):
-            stops.append('runtime')
-            if failure == "cleanup": raise RuntimeError("synthetic original Runtime cleanup failed")
-            return {"owner_stopped":True,"original_wait_exit_code":0}
-        def provenance(self): return {"original_runtime_handle_retained":True}
-    monkeypatch.setattr(helper, "_start_retained_public_workspace", lambda **_kw: Workspace())
-    owner=SimpleNamespace(projects=SimpleNamespace(create=lambda **_kw: SimpleNamespace(ok=True,data={"project_id":"fixture-project"})))
-    monkeypatch.setattr(helper, "AstridClient", SimpleNamespace(open=lambda **_kw: owner))
-    health={"status":"ok","runtime_instance_id":"fixture-runtime","runtime_epoch":1,"runtime_session_id":"fixture-session","schema_digest":helper.SCHEMA_DIGEST}
-    monkeypatch.setattr(helper, "RuntimeProtocolClient", lambda *_: SimpleNamespace(health=lambda:health))
-    def bootstrap(value, **kwargs):
-        calls.append((dict(value), dict(kwargs)))
-        assert not set(helper._H3_ONLY_ENVIRONMENT).intersection(os.environ)
-        assert "readiness_profile_path" not in value and "readiness_profile_hash" not in value
-        assert value['worker_actor']==helper.PACK_HOST_ACTOR and value['worker_scopes']==helper.PACK_HOST_SCOPES
-        assert value['source_checkout']==str(helper._INSTALLED_EXECUTION_ROOT if helper._HOST_EXECUTION_PROFILE=='installed' else helper.ASTRID_ROOT)
-        if failure in ("sdk", "cleanup"): raise RuntimeError("synthetic SDK qualification failed")
-        ready=support/'generic-host.ready.json';ready.write_text(json.dumps({"identity_attestation":{"target":None,"target_digest":None}}))
-        (support/'generic-host.json').write_text(json.dumps({"pid":321,"process_birth_id":"synthetic-birth"}))
-        monkeypatch.setitem(host_bootstrap._RETAINED_HOSTS,(321,"synthetic-birth"),original)
-        return {"host_status":"ready","host_pid":321,"host_ready_file":str(ready),
-                "host_ready_capabilities":["rendering.render"] if failure=='missing_capability' else ["rendering.render","rendering.timeline_visualize"]}
-    monkeypatch.setattr(helper,"ensure_pack_host",bootstrap)
-    monkeypatch.setattr(host_bootstrap,"_stop_registered_host",lambda _state:stops.append('host'))
-    if failure:
-        with pytest.raises(RuntimeError) as raised: helper.H3CpuRuntime(root,render_only=True)
-        if failure=='cleanup':
-            assert str(raised.value)=='synthetic SDK qualification failed'
-            assert 'original Runtime cleanup failed' in str(raised.value.__cause__.__cause__)
-        assert stops==(['host','runtime'] if failure=='missing_capability' else ['runtime'])
-    else:
-        rt=helper.H3CpuRuntime(root,render_only=True)
-        assert rt.schema_session is None and not (root/'managed-session').exists() and not (root/'runtime-data/models').exists()
-        assert not hasattr(rt,'readiness_profile_path')
-        rt.close();rt.close()
-        assert stops==['host','runtime']
-        provenance=json.loads(rt.public_workspace_provenance_path.read_text())
-        assert provenance['render_only'] is True and provenance['synthetic_inference'] is False
-    assert len(calls)==1
-    assert dict(os.environ)==before and tuple(sys.path)==before_path
 
 
 def test_render_only_default_preserves_full_h3_preconditions(tmp_path, monkeypatch):

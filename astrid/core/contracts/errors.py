@@ -239,6 +239,10 @@ def coerce_astrid_error(
 ) -> AstridError:
     """Normalize exceptions, legacy shapes, and result payloads."""
 
+    fields = getattr(value, "astrid_error_fields", None)
+    if callable(fields) and isinstance(value, Exception) and not isinstance(value, AstridError):
+        # A pack error that cannot import Astrid (a pack's) carries its structured fields.
+        value = AstridValueError(str(value), source_type=type(value).__name__, **fields())
     if isinstance(value, AstridError):
         if state_snapshot is None and degraded == value.degraded:
             return value

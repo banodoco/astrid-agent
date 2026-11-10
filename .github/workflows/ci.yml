@@ -175,7 +175,7 @@ jobs:
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
         run: |
-          rev="$(python3 -c 'from astrid.core.generation.engine_recipe import engine_source_revision; print(engine_source_revision("vibecomfy", "windows-x86_64-cu130", "vibecomfy"))')"
+          rev="$(python3 scripts/vibecomfy_pin.py)"
           if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
             echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
             exit 1
@@ -205,7 +205,7 @@ jobs:
       - name: Unit tests (default lane shard)
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
-        run: python -m pytest -q --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+        run: python -m pytest -q -rA --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
 
       - name: Upload measured test durations
         if: always()
@@ -294,7 +294,7 @@ jobs:
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
         run: |
-          rev="$(python3 -c 'from astrid.core.generation.engine_recipe import engine_source_revision; print(engine_source_revision("vibecomfy", "windows-x86_64-cu130", "vibecomfy"))')"
+          rev="$(python3 scripts/vibecomfy_pin.py)"
           if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
             echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
             exit 1

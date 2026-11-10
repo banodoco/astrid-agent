@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.local_engine_stub import LOCAL_ENGINE_URL, local_engine_patch
 import contextlib
 import io
 import json
@@ -77,6 +78,8 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 "{managed_assets}",
                 "--workflow-inputs",
                 "{workflow_inputs}",
+                "--after-outputs-job",
+                "{after_outputs_job}",
                 "--comfy-url",
                 "{comfy_url}",
                 "--comfy-output-dir",
@@ -142,7 +145,7 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 production_engine,
                 "run_workflow_path",
                 return_value=(source_a, source_b),
-            ) as run_workflow:
+            ) as run_workflow, local_engine_patch():
                 manifest = _run_and_settle(
                     root / "workflow.json",
                     out,
@@ -154,8 +157,9 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 out,
                 task_identity="task-1",
                 expected_execution_identity=None,
-                profile_id="pip_embedded",
+                profile_id="local_server",
                 hc03_profile=None,
+                comfy_url=LOCAL_ENGINE_URL,
             )
             self.assertEqual(len(manifest["outputs"]), 2)
             for ordinal, entry in enumerate(manifest["outputs"]):

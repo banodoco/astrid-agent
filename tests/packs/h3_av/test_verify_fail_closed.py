@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
-from astrid.packs.h3_av.actions.verify import verify as verify_module
-from astrid.packs.h3_av.actions.verify.verify import VerificationError, verify_candidate
+from astrid.packs.h3_av.shared.prepare import prepare_request
+from astrid.packs.h3_av.shared import verify as verify_module
+from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
 from astrid.packs.h3_av.shared.compose import compose_candidate
 
 from astrid.packs.h3_av.shared.request import normalize_request

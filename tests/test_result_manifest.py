@@ -285,7 +285,7 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
     registry = load_default_registry()
     allowed_reasons = {"paid", "GPU", "external-escape-hatch", "no-artifact"}
 
-    assert registry.get("h3_av.publication_finalizer").metadata.get("output_result_manifest") is True
+    assert registry.get("vibecomfy.run").metadata.get("output_result_manifest") is True
 
     for definition in registry.list():
         action_id = definition.id.split(".", 1)[1]

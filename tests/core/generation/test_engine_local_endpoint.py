@@ -19,7 +19,7 @@ from astrid.core.generation.engine_local_endpoint import (
 from astrid.core.generation.engine_recipe import load_recipe
 
 PLATFORM = "linux-x86_64-cu130"
-ENGINE = "vibecomfy-h3"
+ENGINE = "comfyui"
 OBJECT_INFO = "ab" * 32
 
 
@@ -46,9 +46,9 @@ def _status(**overrides):
 def test_installed_engine_becomes_a_local_endpoint(tmp_path):
     root, receipt_sha = _root(tmp_path)
     stub = _status()
-    local = local_engine_endpoint("vibecomfy-h3", platform=PLATFORM, root=str(root), context=object(), status=stub)
+    local = local_engine_endpoint("comfyui", platform=PLATFORM, root=str(root), context=object(), status=stub)
     endpoint = local.endpoint
-    recipe = load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = load_recipe("comfyui", PLATFORM)
     assert stub.calls[0][1]["placement"] == "local" and stub.calls[0][1]["root"] == str(root)
     assert endpoint.placement == "local" and endpoint.state == "ready"
     assert endpoint.url == f"http://127.0.0.1:{recipe.start.port}"
@@ -74,10 +74,10 @@ def test_installed_engine_becomes_a_local_endpoint(tmp_path):
 def test_missing_or_unhealthy_engine_fails_fast_with_next_action(tmp_path, overrides):
     root, _ = _root(tmp_path)
     with pytest.raises(EngineNotInstalled) as caught:
-        local_engine_endpoint("vibecomfy-h3", platform=PLATFORM, root=str(root), context=object(),
+        local_engine_endpoint("comfyui", platform=PLATFORM, root=str(root), context=object(),
                               status=_status(**overrides))
-    assert caught.value.next_action == "astrid engines install vibecomfy-h3"
-    assert "astrid engines install vibecomfy-h3" in str(caught.value)
+    assert caught.value.next_action == "astrid engines install comfyui"
+    assert "astrid engines install comfyui" in str(caught.value)
 
 
 def test_stale_helper_status_preserves_reinstall_refusal(tmp_path):

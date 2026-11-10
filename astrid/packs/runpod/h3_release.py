@@ -50,7 +50,7 @@ class AttachmentPending(BuildError):
 def release_inputs():
     # The remote builder retains its historic receipt vocabulary as an adapter,
     # while source pins and model rows come from the verified canonical files.
-    canonical = load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    canonical = load_recipe("comfyui", "linux-x86_64-cu130")
     by_name = {source.name: {"repository": source.pin.repository, "revision": source.pin.revision}
                for source in canonical.sources}
     recipe = json.loads((_DATA / "environment.linux-cu130.json").read_text())
@@ -60,7 +60,7 @@ def release_inputs():
         {"name": "ComfyUI-H3-Motion-Context-MultiRef", **by_name["h3-motion-context"]},
         {"name": "ComfyUI-VideoHelperSuite", **by_name["videohelpersuite"]},
     ]
-    model_lock = load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    model_lock = load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
     repository = model_lock.models[0].repository if model_lock.models else None
     lock = {"schema_version": 1, "repository": repository, "metadata_fetched_at": "2026-10-27",
             "models": [{"path": row.path, "destination": row.destination, "revision": row.revision,

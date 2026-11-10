@@ -28,12 +28,11 @@ _UNAVAILABLE = "unavailable"
 _MODULES = (
     "__main__", "astrid.core.execution.generic_host",
     "astrid.core.execution.generic_host_worker", "astrid.core.execution._child_bridge",
-    "astrid.sdk._child_bridge", "astrid.packs.h3_av.actions.transform.run",
+    "astrid.sdk._child_bridge",
     "astrid.packs.vibecomfy.actions.validate.run",
     "astrid.core.execution.orchestrator.runner",
 )
 _ACTIONS = {
-    "h3_av.transform": "astrid.packs.h3_av.actions.transform.run",
     "vibecomfy.validate": "astrid.packs.vibecomfy.actions.validate.run",
 }
 _BINDING_KEYS = (
@@ -190,7 +189,7 @@ def _validate(packet, pid, birth):
 
 
 class ChildImportReceipt:
-    """One bounded private channel per owned H3/validator launch, never authority."""
+    """One bounded private channel per owned audiovisual/validator launch, never authority."""
 
     def __init__(self, host, capability_id, binding=None):
         self.host = host

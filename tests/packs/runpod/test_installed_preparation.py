@@ -37,14 +37,14 @@ def composite(tmp_path, monkeypatch):
                               "pod_id": "pod-exact", "provider_account_ref": "runpod-test-account"},
     )
     claim_path.write_text(json.dumps(claim))
-    root = "/workspace/engines/vibecomfy-h3"
+    root = "/workspace/engines/comfyui"
     config = {"runtime_root": root + "/runtime", "port": 8188,
               "cwd": root + "/runtime/ComfyUI", "warm_policy": "never",
               "base_directory": root + "/runtime/ComfyUI", "models_root": root + "/models",
               "models_root_normalized": root + "/models", "output_directory": root + "/runtime/output",
-              "locality": "managed_local_server", "server_log_path": root + "/runtime/out/sessions/vibecomfy-h3/comfy.log"}
+              "locality": "managed_local_server", "server_log_path": root + "/runtime/out/sessions/comfyui/comfy.log"}
     selection = ManagedSessionSelection(
-        claim["provider_account_ref"], claim["pod_id"], "vibecomfy-h3", root + "/venv/bin/python",
+        claim["provider_account_ref"], claim["pod_id"], "comfyui", root + "/venv/bin/python",
         root + "/runtime", root + "/vibecomfy", root + "/runtime/ComfyUI", root + "/models",
         root + "/runtime/output", 8188, config, "sha256:" + "b" * 64,
     )

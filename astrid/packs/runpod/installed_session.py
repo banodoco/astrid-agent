@@ -17,12 +17,13 @@ from pathlib import Path, PurePosixPath
 import time
 
 from astrid.core.generation import engine_recipe, engine_runner
+from astrid.core.generation.engine_contracts import effective_models_root
 from astrid.core.generation._engine_target_files import _TargetFiles, _FILE_FLAGS, _check
 from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
 
 from .worker_session import ManagedSessionError, _DIGEST, _path, _process
 
-ENGINE = "vibecomfy-h3"
+ENGINE = "comfyui"
 PLATFORM = "linux-x86_64-cu130"
 _LIMIT = 1024 * 1024
 _NAMES = ("config.json", "launch.json", "pid", "comfy_pid",
@@ -77,10 +78,17 @@ class InstalledVibeComfySessionTransport:
             registry = runtime_root + "/out/sessions/" + self.engine
             files = {name: self._read(root, registry + "/" + name, deadline) for name in _NAMES}
             config, marker = _json(files["config.json"]), _json(files["launch.json"])
-            launch = adapter.start_request(recipe, root, deadline=deadline)
-            launch_value = {"argv": list(launch.argv), "cwd": launch.cwd, "env": dict(launch.env)}
-            launch_sha = engine_runner._sha(launch_value)
+            launch = adapter.start_request(recipe, root, deadline=deadline, models_root=receipt.models_root)
             facts = next(s.facts for s in receipt.steps if s.kind == "start")
+            if "cuda_visible_devices" not in facts:
+                raise ManagedSessionError("installed launch has no bound GPU visibility")
+            visibility = facts["cuda_visible_devices"]
+            if visibility is not None and (not isinstance(visibility, str) or "\0" in visibility
+                                           or len(visibility.encode("utf-8")) > 4096):
+                raise ManagedSessionError("installed launch GPU visibility is invalid")
+            launch_value = {"argv": list(launch.argv), "cwd": launch.cwd,
+                            "env": {**dict(launch.env), "CUDA_VISIBLE_DEVICES": visibility}}
+            launch_sha = engine_runner._sha(launch_value)
             if (facts.get("owner_id") != marker.get("launch_token")
                     or facts.get("launch_sha256") != launch_sha):
                 raise ManagedSessionError("installed receipt and registry launch owner differ")
@@ -90,7 +98,8 @@ class InstalledVibeComfySessionTransport:
             expected = {
                 "runtime_root": runtime_root, "cwd": launch.cwd, "port": recipe.start.port,
                 "warm_policy": "never", "base_directory": launch.cwd,
-                "models_root": root + "/models", "models_root_normalized": root + "/models",
+                "models_root": effective_models_root(root, receipt.models_root),
+                "models_root_normalized": effective_models_root(root, receipt.models_root),
                 "output_directory": output, "locality": "managed_local_server",
                 "server_log_path": registry + "/comfy.log",
             }

@@ -187,7 +187,7 @@ contain:
 
 The shipped packs are: `rendering`, `understanding`, `generation`, `editorial`,
 `video_editing`, `foley`, `training`, `youtube`, `fal`, `vibecomfy`,
-`runpod`, `moirae`, `iteration`, `media`, `stream_content`, and `comfy_wrap`.
+`runpod`, `moirae`, `iteration`, `media`, and `stream_content`.
 
 A project-local `local` pack at `astrid/packs/local/` is an optional ordinary
 source root for user-authored capabilities. Its `pack.yaml` and content

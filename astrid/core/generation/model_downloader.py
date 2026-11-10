@@ -150,7 +150,7 @@ def _quarantine(path: Path) -> None:
 
 
 def _looks_like_legacy_redirect(path: Path, expected_bytes: int) -> bool:
-    # Old H3 chunks are safetensors. Xet/HTTP redirect text was occasionally
+    # Older model chunks are safetensors. Xet/HTTP redirect text was occasionally
     # left in .part; recognize that legacy signature and restart from byte 0.
     if not path.exists() or path.stat().st_size >= 1 << 20 or expected_bytes <= 1 << 20:
         return False

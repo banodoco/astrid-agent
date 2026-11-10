@@ -29,7 +29,7 @@ def test_catalog_t2v_requires_the_image_the_template_needs():
 
 def test_prompt_only_t2v_dry_run_is_refused_for_the_missing_image(tmp_path, capsys):
     rc = console.main(["generate", "video", "A quiet street at dusk.", "--entry", "ltx-2.3",
-                       "--mode", "t2v", "--target", "runpod", "--dry-run", "--json"])
+                       "--mode", "t2v", "--placement", "runpod", "--dry-run", "--json"])
     assert rc != 0
     refused = json.loads(capsys.readouterr().out)
     assert "input_rejected" in json.dumps(refused)

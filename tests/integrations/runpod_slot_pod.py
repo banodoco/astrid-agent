@@ -18,12 +18,16 @@ from functools import lru_cache
 from pathlib import Path
 
 SAVE_KEYS = {"SaveImage": "images", "PreviewImage": "images", "SaveAudio": "audio", "SaveAudioMP3": "audio",
-             "SaveAudioOpus": "audio", "PreviewAudio": "audio", "VHS_VideoCombine": "gifs", "SaveVideo": "images"}
+             "SaveAudioOpus": "audio", "PreviewAudio": "audio", "VHS_VideoCombine": "gifs", "SaveVideo": "images",
+             "MiniMaxH3StreamLiveExtensionAVToVHS": "gifs"}
 MODEL_EXT = (".safetensors", ".gguf", ".pth", ".ckpt", ".pt", ".bin", ".sft")
 # loader field -> models folder the stand-in pod keeps those files in
 FOLDERS = {"unet_name": "diffusion_models", "vae_name": "vae", "clip_name": "text_encoders",
            "clip_name1": "text_encoders", "clip_name2": "text_encoders", "lora_name": "loras",
            "ckpt_name": "checkpoints", "model_name": None}
+# Custom Foley models live in their own directory under models/, and the loader
+# expects that directory to remain part of the selected model name.
+CLASS_FOLDERS = {("LoadDACHunyuanVAE", "vae_name"): "hunyuan_foley"}
 # the order real snapshots are preferred in when a class is in several
 PREFERRED = ("runpod-snapshot", "source-", "local", "zz-official", "object_info_comfyui", "stub")
 
@@ -60,6 +64,14 @@ def _combo(spec):
         if head == "COMBO" and len(spec) > 1 and isinstance(spec[1], dict):
             return list(spec[1].get("options", []))
     return None
+
+
+def _set_menu(spec, names):
+    """Replace a combo spec's menu, keeping its format (a list head, or COMBO with options)."""
+    if isinstance(spec[0], list):
+        spec[0] = list(names)
+    else:
+        spec[1]["options"] = list(names)
 
 
 def real_class(name: str, extra: dict | None = None) -> dict:
@@ -99,21 +111,23 @@ def receipt_files(receipt: dict) -> list[str]:
 
 def fill_loader_menus(info: dict, files: list[str]) -> dict:
     """Replace every model-file combo's menu with what the pod's install receipt lists."""
-    for cls in info.values():
+    for class_name, cls in info.items():
         for section in ("required", "optional"):
             for field, spec in (cls["input"].get(section) or {}).items():
                 menu = _combo(spec)
                 if menu is None or not any(str(v).lower().endswith(MODEL_EXT) for v in menu):
                     continue
-                folder = FOLDERS.get(field)
+                custom_folder = CLASS_FOLDERS.get((class_name, field))
+                folder = custom_folder if custom_folder is not None else FOLDERS.get(field)
                 names = []
                 for path in files:
                     parts = path.split("/models/", 1)[-1]
                     if folder is None or parts.startswith(folder + "/") or "/" + folder + "/" in "/" + parts:
-                        names.append(parts.split("/", 1)[-1] if folder and parts.startswith(folder + "/") else parts)
-                spec[0] = sorted(set(names))
-                if isinstance(spec[0], str):
-                    pass
+                        if custom_folder is not None:
+                            names.append(parts)
+                        else:
+                            names.append(parts.split("/", 1)[-1] if folder and parts.startswith(folder + "/") else parts)
+                _set_menu(spec, sorted(set(names)))
     return info
 
 
@@ -121,31 +135,55 @@ def _link(value):
     return isinstance(value, list) and len(value) == 2 and isinstance(value[0], (str, int)) and isinstance(value[1], int)
 
 
+def _is_output(node: dict, info: dict) -> bool:
+    cls = node.get("class_type")
+    return bool(info.get(cls, {}).get("output_node")) or cls in SAVE_KEYS
+
+
 def validate_prompt(graph: dict, info: dict) -> dict:
-    """ComfyUI's /prompt validation: classes, required inputs, links and combo menus."""
+    """ComfyUI's /prompt validation: classes everywhere; required inputs, links and combo menus on what outputs reach."""
     errors = {}
+    # Every node must name a known class, reachable or not (ComfyUI checks class_type up front).
+    for node_id, node in graph.items():
+        if node.get("class_type") not in info:
+            errors[node_id] = {"errors": [{"type": "missing_node_type",
+                                           "message": f"Node '{node.get('class_type')}' not found"}],
+                               "class_type": node.get("class_type")}
+    # ComfyUI validates the inputs only of the nodes an output node reaches; the rest is never executed.
+    roots = [i for i, n in graph.items() if _is_output(n, info)]
+    reached, stack = set(), list(roots)
+    while stack:
+        current = str(stack.pop())
+        if current in reached or current not in graph:
+            continue
+        reached.add(current)
+        stack += [v[0] for v in graph[current].get("inputs", {}).values() if _link(v)]
+    if not roots:
+        reached = {str(i) for i in graph}  # no output node to prune against: check everything
     for node_id, node in graph.items():
         cls = node.get("class_type")
-        problems = []
-        if cls not in info:
-            errors[node_id] = {"errors": [{"type": "missing_node_type", "message": f"Node '{cls}' not found"}],
-                               "class_type": cls}
+        if cls not in info or str(node_id) not in reached:
             continue
+        problems = []
         spec = info[cls]["input"]
         inputs = node.get("inputs", {})
         for field, field_spec in (spec.get("required") or {}).items():
-            if field not in inputs:
+            # An autogrow input arrives as field.<name> entries; each is a plain value or a link.
+            grown = [name for name in inputs if str(name).startswith(field + ".")] \
+                if str(field_spec[0]).startswith("COMFY_AUTOGROW") else []
+            if field not in inputs and not grown:
                 problems.append({"type": "required_input_missing", "message": f"Required input is missing: {field}"})
                 continue
-            value = inputs[field]
-            if _link(value):
-                if str(value[0]) not in graph:
-                    problems.append({"type": "bad_linked_input", "message": f"{field} links to missing node {value[0]}"})
-                continue
-            menu = _combo(field_spec)
-            if menu is not None and value not in menu:
-                problems.append({"type": "value_not_in_list",
-                                 "message": f"Value not in list: {field}: '{value}' not in {menu[:8]}"})
+            for name in ([field] if field in inputs else grown):
+                value = inputs[name]
+                if _link(value):
+                    if str(value[0]) not in graph:
+                        problems.append({"type": "bad_linked_input", "message": f"{name} links to missing node {value[0]}"})
+                    continue
+                menu = _combo(field_spec) if name == field else None
+                if menu is not None and value not in menu:
+                    problems.append({"type": "value_not_in_list",
+                                     "message": f"Value not in list: {name}: '{value}' not in {menu[:8]}"})
         if problems:
             errors[node_id] = {"errors": problems, "class_type": cls}
     return errors
@@ -167,8 +205,10 @@ def _media(kind: str) -> tuple[bytes, str, str]:
                             "sine=frequency=440:duration=1", str(out)], check=True, timeout=60)
             return out.read_bytes(), "flac", "audio/flac"
         out = Path(scratch) / "v.mp4"
+        # video_h3: the 108-frame 24 fps 1024x576 continuation h3's after_outputs composes (request.v2 fixture).
+        size, seconds = ("1024x576", "4.5") if kind == "video_h3" else ("64x64", "1")
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
-                        "color=c=blue:s=64x64:r=24:d=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                        f"color=c=blue:s={size}:r=24:d={seconds}", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
                         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)],
                        check=True, timeout=60)
         return out.read_bytes(), "mp4", "video/mp4"
@@ -189,11 +229,12 @@ class PodComfy:
     def info(self):
         # Loader menus follow whatever the pod has installed when ComfyUI is asked, as on a pod.
         info = fill_loader_menus({name: real_class(name, self.extra) for name in self.classes}, self.installed_files())
-        for name in ("LoadImage", "LoadImageMask", "VHS_LoadVideo", "VHS_LoadVideoFFmpeg", "LoadAudio"):
+        for name in ("LoadImage", "LoadImageMask", "LoadVideo", "VHS_LoadVideo", "VHS_LoadVideoFFmpeg", "LoadAudio"):
             # These list the pod's input directory, which is whatever was uploaded.
             for field, spec in (info.get(name, {}).get("input", {}).get("required") or {}).items():
-                if _combo(spec) is not None and field in ("image", "video", "audio"):
-                    spec[0] = sorted(self.input_files)
+                if _combo(spec) is not None and (field in ("image", "video", "audio")
+                                                 or (name == "LoadVideo" and field == "file")):
+                    _set_menu(spec, sorted(self.input_files))
         return info
 
     def object_info(self):
@@ -217,7 +258,7 @@ class PodComfy:
             if key is None:
                 continue
             kind = {"images": "images", "audio": "audio", "gifs": "video"}[key]
-            data, ext, mime = _media(kind)
+            data, ext, mime = _media("video_h3" if kind == "video" and getattr(self, "h3_output", False) else kind)
             name = f"{prompt_id}-{node_id}.{ext}"
             self.outputs[name] = (data, mime)
             outputs[node_id] = {key: [{"filename": name, "subfolder": "", "type": "output"}]}

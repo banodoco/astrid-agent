@@ -27,26 +27,26 @@ def test_pin_script_reads_the_constant() -> None:
 def recipe_workspace(tmp_path, monkeypatch) -> tuple[Path, ...]:
     """Stage the authority chain independently of the checkout's real pins."""
     root = tmp_path / "astrid"
-    index = json.loads(engine_recipe._INDEX_PATH.read_text(encoding="utf-8"))
-    entry = next(item for item in index["entries"] if item["engine"] == "vibecomfy")
+    entry = next(item for item in engine_recipe._index_rows()
+                 if (item["engine"], item["platform"]) == ("comfyui", "windows-x86_64-cu130"))
     recipe = json.loads((engine_recipe._ROOT / entry["recipe"]["path"]).read_text(encoding="utf-8"))
     pins = json.loads((engine_recipe._ROOT / recipe["pins"]["path"]).read_text(encoding="utf-8"))
     pins["sources"]["vibecomfy"]["revision"] = "a" * 40
     pins_bytes = (json.dumps(pins, indent=2) + "\n").encode("utf-8")
     recipe["pins"]["sha256"] = hashlib.sha256(pins_bytes).hexdigest()
     recipe_bytes = (json.dumps(recipe, indent=2) + "\n").encode("utf-8")
-    entry["recipe"]["sha256"] = hashlib.sha256(recipe_bytes).hexdigest()
-    index_bytes = (json.dumps(index, indent=2) + "\n").encode("utf-8")
+    declaration_path = "packs/vibecomfy/extensions/generation.engine/comfyui.yaml"
+    declaration_bytes = (engine_recipe._ROOT / declaration_path).read_text(encoding="utf-8").replace(
+        entry["recipe"]["sha256"], hashlib.sha256(recipe_bytes).hexdigest()).encode("utf-8")
     payloads = {
         root / recipe["pins"]["path"]: pins_bytes,
         root / entry["recipe"]["path"]: recipe_bytes,
-        root / "packs" / "engine-index.json": index_bytes,
+        root / declaration_path: declaration_bytes,
     }
     for path, payload in payloads.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
     monkeypatch.setattr(engine_recipe, "_ROOT", root)
-    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", root / "packs" / "engine-index.json")
     monkeypatch.setattr(vibecomfy_pin, "ROOT", root)
     return tuple(payloads)
 
@@ -81,7 +81,6 @@ def packs_copy(tmp_path, monkeypatch) -> Path:
     root = tmp_path / "astrid"
     shutil.copytree(engine_recipe._ROOT / "packs", root / "packs")
     monkeypatch.setattr(engine_recipe, "_ROOT", root)
-    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", root / "packs" / "engine-index.json")
     monkeypatch.setattr(vibecomfy_pin, "ROOT", root)
     return root
 
@@ -95,13 +94,12 @@ def test_pin_script_bump_rewrites_every_vibecomfy_pin_and_keeps_digests_verified
     bumped = 0
     for path in (packs_copy / "packs").glob("*/pins.json"):
         for name, source in json.loads(path.read_text(encoding="utf-8")).get("sources", {}).items():
-            if name in {"vibecomfy", "vibecomfy-h3"}:
+            if name == "vibecomfy":
                 assert source["revision"] == revision, (path, name)
                 bumped += 1
     assert bumped >= 2
     # Every indexed recipe still loads: the pin and recipe digest chain was rewritten together.
-    index = json.loads(engine_recipe._INDEX_PATH.read_text(encoding="utf-8"))
-    for entry in index["entries"]:
+    for entry in engine_recipe._index_rows():
         engine_recipe.load_recipe(entry["engine"], entry["platform"])
 
 

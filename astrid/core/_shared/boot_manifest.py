@@ -21,7 +21,7 @@ from astrid.core.foundation.hash import canonical_json_digest
 
 BOOT_MANIFEST_FILENAME = "boot-manifest.json"
 BOOT_MANIFEST_SCHEMA_VERSION = 1
-_DEFAULT_PROFILE_ORDER = ("pip_embedded", "checkout_server")
+_DEFAULT_PROFILE_ORDER: tuple[str, ...] = ()
 _REGISTRY_ENTRY_FIELDS = ("definition_version", "binding", "output_policy", "probe")
 _SECRET_WORDS = ("secret", "token", "password", "credential", "api_key", "private_key")
 

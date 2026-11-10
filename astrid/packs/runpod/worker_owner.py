@@ -214,18 +214,21 @@ class RunPodLeaseOwner:
                         self.expiry_retry_timer.cancel()
                     self.expiry_retry_timer = self.timer(1, lambda: self._expire(reason, generation, operation))
 
-    def recover(self) -> None:
+    def recover(self, *, expected_machine_id: str | None = None) -> None:
         """Startup barrier: reconcile, then terminate the prior host's lease."""
         with self.lock:
             if self._release_inflight:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
             record = self._read()
+            if expected_machine_id is not None and (record is None or record.get("pod_id") != expected_machine_id):
+                raise RunPodWorkerOwnerError("current lease differs from the requested machine; release refused")
             if record is None or record["state"] == "cleanup_complete":
                 if record is not None:
                     _validate_completed_release(record)
                 self.started = True
                 return
-        self.release(reason="restart", _expected_operation=record["operation_id"])
+        self.release(reason="restart", _expected_operation=record["operation_id"],
+                     expected_machine_id=expected_machine_id)
 
     def setup(self) -> Mapping[str, Any]:
         """Persist this owner's validated preferences while no lease is live.
@@ -258,9 +261,9 @@ class RunPodLeaseOwner:
                 "pod_id": record.get("pod_id"),
                 "provider_account_ref": record["provider_account_ref"],
                 "state": record["state"],
-                "lease": {key: lease.get(key) for key in (
+                "lease": {**{key: lease.get(key) for key in (
                     "state", "generation", "invocation_id", "paid_expires_at", "idle_expires_at",
-                )},
+                )}, "idle_timeout_s": lease.get("idle_seconds")},
             }]
 
     def _retry_recovery(self, operation: str) -> None:
@@ -363,8 +366,14 @@ class RunPodLeaseOwner:
             raise RunPodWorkerOwnerError("preparation requires the exact active invocation lease")
         return record
 
-    def release(self, *, reason: str = "explicit", _expected_operation: str | None = None) -> Mapping[str, Any] | None:
+    def release(self, *, reason: str = "explicit", _expected_operation: str | None = None,
+                expected_machine_id: str | None = None) -> Mapping[str, Any] | None:
         with self.lock:
+            if expected_machine_id is not None:
+                current = self._read()
+                if (not isinstance(expected_machine_id, str) or not expected_machine_id.strip()
+                        or current is None or current.get("pod_id") != expected_machine_id):
+                    raise RunPodWorkerOwnerError("current lease differs from the requested machine; release refused")
             if _expected_operation is not None:
                 current = self._read()
                 if current is None or current["operation_id"] != _expected_operation:
@@ -426,6 +435,12 @@ class RunPodLeaseOwner:
                     lease = {**lease, "preparation": preparation}
                     record = self._save(record, lease)
                 job = preparation.get("job")
+                if job is not None and job["state"] not in {"exited", "cancelled"} and reason == "provider_terminated":
+                    # The provider already ended the pod: there is no process left to stop.
+                    preparation = {**preparation, "state": "unresolved", "job": {"id": job["id"], "state": "cancelled"}}
+                    lease = {**lease, "preparation": preparation}
+                    record = self._save(record, lease)
+                    job = preparation["job"]
                 if job is not None and job["state"] not in {"exited", "cancelled"}:
                     from .remote_placement import connect_claimed_for_preparation
                     # The original verified claim is still exact custody; no
@@ -438,6 +453,23 @@ class RunPodLeaseOwner:
                                    "job": {"id": job["id"], "state": stopped["state"]}}
                     lease = {**lease, "preparation": preparation}
                     record = self._save(record, lease)
+            machine_job = lease.get("job")
+            if (machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}
+                    and reason == "provider_terminated"):
+                lease = {**lease, "job": {"id": machine_job["id"], "state": "cancelled"}}
+                record = self._save(record, lease)
+                machine_job = lease["job"]
+            if machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}:
+                from .remote_placement import connect_claimed_for_preparation
+                # A generation job the host started (or crashed after starting)
+                # is stopped on the same exact custody before the pod is deleted.
+                claim = connect_claimed_for_preparation({**record, "state": "claimed"})
+                stopped = claim.ops.job_cancel(machine_job["id"])
+                if stopped.get("id") != machine_job["id"] or stopped.get("state") not in {"exited", "cancelled"}:
+                    raise AcquisitionUnresolvedError("exact machine job stop remains unresolved")
+                lease = {**lease, "job": {"id": machine_job["id"], "state": stopped["state"]}}
+                record = self._save(record, lease)
+            if preparation is not None or machine_job is not None:
                 validate_lease_preparation(record, releasing=True)
         # Keep the account lock, but let a completing host invocation call
         # settle while quiescence waits for it. Durable releasing state and
@@ -446,12 +478,60 @@ class RunPodLeaseOwner:
             config, handle_path=self.selection.path, attempt=record,
             quiesce_worker=self.quiesce, resume=True))
         with self.lock:
-            lease = dict(result["lease"])
+            lease = {**dict(result["lease"]), "ended": reason, "ended_at": self.clock()}
             elapsed = max(0, self.clock() - lease.get("accounted_at", lease["started_at"]))
             result = self._save(result, lease, estimated_cost_usd=lease.get("estimated_cost_usd", 0)
                                 + elapsed * lease.get("hourly_usd", limits["hourly_usd"]) / 3600)
+            self._record_ended(result)
             self.started = True
             return result
+
+    ENDED_KEEP = 20
+
+    def ended_path(self) -> Path:
+        return ended_leases_path(self.selection.path)
+
+    def _record_ended(self, record: Mapping[str, Any]) -> None:
+        """Keep the last few ended leases beside the journal, for ``astrid machines``."""
+        from .machine import lease_row
+
+        path = self.ended_path()
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+        except (OSError, ValueError):
+            rows = []
+        row = lease_row(record)
+        rows = [item for item in rows if isinstance(item, dict) and item.get("lease") != row["lease"]]
+        rows = (rows + [row])[-self.ENDED_KEEP:]
+        partial = path.with_name(path.name + ".partial")
+        partial.write_text(json.dumps(rows, sort_keys=True, indent=1), encoding="utf-8")
+        partial.replace(path)
+
+    def observe_liveness(self, *, observe: Callable[[str], str] | None = None) -> str | None:
+        """Ask the provider about this account's live lease; end it if the pod is gone.
+
+        Returns ``None`` (no live lease), ``"live"``, or ``"provider_terminated"``
+        after the lease was ended with that reason (it leaves warm reuse and stops
+        being charged). ``observe(pod_id)`` returns ``live`` or ``gone``.
+        """
+        from .target_selection import RunPodOffer
+        with self.lock:
+            if self.closed or self._release_inflight:
+                return None
+            record = self._read()
+            if (record is None or record["state"] != "claimed" or not record.get("pod_id")
+                    or record["lease"]["state"] not in {"active", "idle"}):
+                return None
+            operation, pod_id = record["operation_id"], record["pod_id"]
+            if observe is None:
+                limits = record["paid_limits"]
+                config = self.selection.config_factory(RunPodOffer(
+                    record["provider_account_ref"], record["gpu_type"], limits["hourly_usd"], "lease-liveness"))
+                observe = lambda pod: provider_pod_state(config.api_key, pod)  # noqa: E731
+        if observe(pod_id) != "gone":
+            return "live"
+        self.release(reason="provider_terminated", _expected_operation=operation)
+        return "provider_terminated"
 
     def close(self) -> None:
         """Host shutdown; saved custody is cleaned before the next admission."""
@@ -704,7 +784,7 @@ def _stop_original_installed_session(selection_value: Mapping[str, Any],
 
     selection = ManagedSessionSelection(**dict(selection_value))
     receipt = ManagedSessionReceipt.from_dict(receipt_value)
-    if (selection.session_ref != "vibecomfy-h3" or any(
+    if (selection.session_ref != "comfyui" or any(
             getattr(selection, key) != getattr(receipt, key)
             for key in ("account_ref", "pod_id", "session_ref", "config_digest", "output_root"))):
         raise RunPodWorkerOwnerError("original supervisor stop selection is foreign")
@@ -1009,7 +1089,7 @@ class RunPodRemoteWorkerPreparer:
         from .worker_preparation import create_target_record_exclusive
 
         recipe = load_recipe(engine, platform)  # support admission precedes effects
-        if engine != "vibecomfy-h3" or endpoint_id != engine or reference.session_ref != engine:
+        if engine != "comfyui" or endpoint_id != engine or reference.session_ref != engine:
             raise AttestationError("workflow endpoint readiness binding is invalid")
         retained = getattr(self, "_endpoint_preparation", None)
         if retained is not None:
@@ -1094,11 +1174,14 @@ class RunPodRemoteWorkerPreparer:
         # Independently re-read the collection, rather than trusting a session receipt's digest alone.
         if any(read_file(registry + "/" + name, deadline=deadline) != value for name, value in files.items()):
             raise AttestationError("installed endpoint session evidence changed")
-        existing_session = profile.get("vibecomfy_session", {})
-        if (not isinstance(existing_session, dict) or ("vibecomfy_session" in profile
-                and any(existing_session.get(key) != value for key, value in session.items()))):
-            raise AttestationError("startup and installed endpoint session disagree")
-        profile["vibecomfy_session"] = {**existing_session, **session}
+        # The engine identity is the attested install receipt, not a checkout session record.
+        if not installed_path.endswith("/.astrid-engine/install.json"):
+            raise AttestationError("installed endpoint receipt path is not canonical")
+        identity = {"engine": engine, "receipt_sha256": hashlib.sha256(installed_bytes).hexdigest(),
+                    "root": installed_path[: -len("/.astrid-engine/install.json")]}
+        if profile.get("engine_identity", identity) != identity:
+            raise AttestationError("startup and installed endpoint engine identity disagree")
+        profile["engine_identity"] = identity
         if "endpoint_evidence" in profile:
             # Retain an existing approved snapshot/evidence binding verbatim.
             # The shared ensure below validates its actual bytes and live P1.
@@ -1291,7 +1374,7 @@ class RunPodRemoteWorkerPreparer:
             "gpu_qualified": False,
         }
         current = self._read_claim()
-        if (selection.session_ref == "vibecomfy-h3" and current.get("managed_session") is not None
+        if (selection.session_ref == "comfyui" and current.get("managed_session") is not None
                 and current["managed_session"] != record):
             raise RunPodWorkerOwnerError("installer attachment conflicts with original session custody")
         updated = {**current, "managed_session": record}
@@ -1375,7 +1458,7 @@ class RunPodRemoteWorkerPreparer:
         if isinstance(previous, Mapping) and previous.get("state") not in {"stopped", "released"}:
             raise RunPodWorkerOwnerError("P1 custody already contains a live or unresolved managed worker")
 
-        if getattr(reference, "session_ref", None) == "vibecomfy-h3" and self.session_owner is None:
+        if getattr(reference, "session_ref", None) == "comfyui" and self.session_owner is None:
             raise RunPodWorkerOwnerError("installer-owned session attachment is required")
 
         retained = getattr(self, "_endpoint_preparation", None)
@@ -2031,7 +2114,7 @@ class RunPodRemoteWorkerPreparer:
                     or selection.pod_id != binding.pod_id or receipt.pod_id != binding.pod_id):
                 raise RunPodWorkerOwnerError("managed session custody changed before release")
             if session_stopped is None:
-                if selection.session_ref == "vibecomfy-h3":
+                if selection.session_ref == "comfyui":
                     program = (
                         "import json,sys; sys.path[:0]=json.loads(sys.argv[1]); "
                         "from astrid.packs.runpod.worker_owner import _stop_original_installed_session; "
@@ -2219,7 +2302,7 @@ class RunPodRemoteWorkerPreparer:
             raise RunPodWorkerOwnerError("selected P2 plan differs from durable RunPod preparation custody")
         session_selection = None
         session_receipt = None
-        if getattr(reference, "session_ref", None) == "vibecomfy-h3" and self.session_owner is None:
+        if getattr(reference, "session_ref", None) == "comfyui" and self.session_owner is None:
             raise RunPodWorkerOwnerError("installer-owned session attachment is required")
         if self.session_owner is not None:
             saved_session = claim.get("managed_session")
@@ -2469,3 +2552,24 @@ __all__ = [
     "RunPodRemoteWorkerPreparer",
     "RunPodWorkerOwnerError",
 ]
+
+
+def provider_pod_state(api_key: str, pod_id: str) -> str:
+    """``gone`` when the provider reports the exact pod missing, terminated or exited; else ``live``.
+
+    An unreadable answer is never absence: only a 404 or a terminal status ends a lease.
+    """
+    from .worker_preparation import read_exact_pod
+
+    status, pod = read_exact_pod(api_key, pod_id)
+    if status == 404:
+        return "gone"
+    if status == 200 and isinstance(pod, dict):
+        states = {str(pod.get(key) or "").upper() for key in ("desiredStatus", "actualStatus")}
+        if states & {"TERMINATED", "EXITED"}:
+            return "gone"
+    return "live"
+
+
+def ended_leases_path(journal: Path) -> Path:
+    return Path(journal).with_name(Path(journal).name + ".ended.json")

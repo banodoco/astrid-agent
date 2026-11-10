@@ -15,14 +15,13 @@ import math
 import re
 import uuid
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
-from astrid.core.generation.targets import read_config, update_config
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
 from astrid.sdk.storage_root import resolve_runtime_data_root
 
@@ -41,6 +40,25 @@ class PaidSelectionError(TargetObservationError):
     Post-acquisition gates pass a fixed ``gate`` name (volume, GPU, datacenter,
     rate, lifetime, machine) that the outer handler reports.
     """
+
+
+_OFFER_FAILURES = {
+    "stock_unavailable": "no requested GPU has confirmed stock and price in the selected datacenter",
+    "provider_transport_or_response_unavailable": "provider transport or response is unavailable; retry offer observation",
+    "provider_authentication_failed": "provider authentication was rejected; check the configured credential",
+    "provider_rate_limited": "provider rate limit was reached; retry offer observation later",
+    "provider_observation_unavailable": "provider availability could not be confirmed; retry offer observation",
+    "price_unconfirmed": "the selected GPU price could not be confirmed; retry offer observation",
+    "observation_failed": "current RunPod offer could not be confirmed; retry offer observation",
+}
+
+
+class OfferObservationError(PaidSelectionError):
+    """Fixed offer diagnostics, independent of provider response/error text."""
+
+    def __init__(self, reason: str):
+        self.reason = reason if isinstance(reason, str) and reason in _OFFER_FAILURES else "observation_failed"
+        super().__init__(f"RunPod offer unavailable (reason={self.reason}): {_OFFER_FAILURES[self.reason]}", gate="offer")
 
 
 # The readiness timeout the acquisition path already used (was the literal in
@@ -177,16 +195,24 @@ class RunPodPreferences:
         }
 
 
-def read_runpod_preferences(*, path: Path | None = None) -> RunPodPreferences:
-    raw = read_config(path).get("runpod")
+def read_runpod_preferences(*, path: Path | None = None, client: Any = None) -> RunPodPreferences:
+    """RunPod placement policy: ``machines.runpod`` in the user's generation settings document.
+
+    ``path`` names an old VibeComfy TOML whose ``[runpod]`` is imported into the document once.
+    """
+    from astrid.core.generation import settings
+
+    raw = settings.machine_policy("runpod", client, legacy_path=path)
     if not isinstance(raw, Mapping):
         raise PaidSelectionError("save independent RunPod preferences before preparing a target")
     return RunPodPreferences.from_mapping(raw)
 
 
-def save_runpod_preferences(raw: Mapping[str, Any], *, path: Path | None = None) -> Path:
+def save_runpod_preferences(raw: Mapping[str, Any], *, path: Path | None = None, client: Any = None) -> str:
+    from astrid.core.generation import settings
+
     value = RunPodPreferences.from_mapping(raw).as_mapping()
-    return update_config(lambda document: document.update(runpod=value), path=path)
+    return settings.set_machine_policy("runpod", value, client, legacy_path=path).label
 
 
 def canonical_claim_path(account_ref: str, *, data_root: Path | None = None) -> Path:
@@ -343,8 +369,10 @@ class RunPodSelectionOwner:
         """
         try:
             offer = self.observe_offer()
+        except OfferObservationError as exc:
+            raise OfferObservationError(exc.reason) from None
         except Exception:
-            raise PaidSelectionError("current RunPod offer could not be confirmed") from None
+            raise OfferObservationError("observation_failed") from None
         observed = offer.digest(self.preferences)
         if consent.offer_digest != observed:
             self._record_offer_refusal(offer, observed, consent.offer_digest, now)
@@ -489,8 +517,8 @@ class RunPodSelectionOwner:
             if record["state"] == "claimed":
                 try:
                     observation = await observe_exact_target(config.api_key, RunPodTargetContract(
-                        str(record["pod_id"]), offer.gpu_type, p.image, p.volume_id, p.volume_name,
-                        p.volume_size_gb, record["request_name"], datacenter,
+                        str(record["pod_id"]), offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id, p.volume_name,
+                        p.volume_size_gb, record["request_name"], datacenter, defer_machine=True,
                     ))
                 except Exception:
                     raise AcquisitionUnresolvedError("exact journal-owned pod observation is unresolved") from None
@@ -501,6 +529,7 @@ class RunPodSelectionOwner:
                 replace_target_record(self.path, record, operation_id=record["operation_id"])
                 # These are the existing decorated implementations. This scope
                 # already owns their exact .owner.lock; do not acquire it twice.
+                from runpod_lifecycle import NotReadyTimeout
                 try:
                     if record["state"] == "allocation_ready" and record.get("create_attempts") == 0:
                         acquired = await acquire_target.__wrapped__(
@@ -516,8 +545,18 @@ class RunPodSelectionOwner:
                         )
                 except CapacityExhaustedError:
                     raise
-                except Exception:
-                    raise AcquisitionUnresolvedError("provider acquisition remains unresolved; reconcile the same journal") from None
+                except NotReadyTimeout:
+                    raise AcquisitionUnresolvedError(
+                        "RunPod worker did not become ready within the startup timeout; "
+                        "the same journal retains exact pod custody for recovery cleanup"
+                    ) from None
+                except Exception as exc:
+                    gate = worker_preparation.observation_failure_gate(exc)
+                    detail = f"; failed gate: {gate}" if gate is not None else ""
+                    raise AcquisitionUnresolvedError(
+                        "provider acquisition remains unresolved; reconcile the same journal" + detail,
+                        gate=gate,
+                    ) from None
                 acquired_record, observation = dict(acquired.attempt), acquired.observation
             try:
                 status, exact = await asyncio.to_thread(read_exact_pod, config.api_key, observation.pod_id)
@@ -528,7 +567,7 @@ class RunPodSelectionOwner:
                 # GPU and datacenter come from GraphQL pod.machine and the provider gpuTypes
                 # catalog (REST reports machine {} and no gpuTypeId/dataCenterId on a correct
                 # fresh pod). Unreported or unequal fails closed; no REST fallback.
-                await asyncio.to_thread(
+                gpu_display, observed_datacenter = await asyncio.to_thread(
                     worker_preparation.confirm_acquired_machine, config.api_key,
                     RunPodTargetContract(
                         observation.pod_id, offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id,
@@ -536,6 +575,7 @@ class RunPodSelectionOwner:
                     ),
                     timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
                 )
+                observation = replace(observation, gpu_type=gpu_display, datacenter_id=observed_datacenter)
                 try:
                     gpu_count = await asyncio.to_thread(
                         worker_preparation.read_acquired_gpu_count, config.api_key, observation.pod_id)

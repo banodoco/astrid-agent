@@ -73,7 +73,7 @@ def test_generation_sdk_filters_compose_without_changing_records(filters, expect
 def test_media_list_three_provider_fixture(capsys, extra, expected):
     runtime = _Runtime()
     parsed = build_parser(SimpleNamespace(media=RemoteMedia(runtime))).parse_args([
-        "list", "--project", "demo", "--model", "X", "--target", "runpod", *extra, "--json",
+        "list", "--project", "demo", "--model", "X", "--placement", "runpod", *extra, "--json",
     ])
 
     assert parsed.handler(parsed) == 0

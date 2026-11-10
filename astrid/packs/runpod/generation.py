@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -29,11 +29,14 @@ def _digest(value: Any) -> str:
 
 @dataclass(frozen=True)
 class PreparedRunPodLease:
-    """A5 consumes this exact retained lease through its attached chain."""
+    """One job's prepared machine: the exact lease, its connected claim and custody."""
 
     lease: RunPodLease
     installed: Mapping[str, Any]
-    models: tuple[Mapping[str, Any], ...] = ()
+    claim: Claim | None = None
+    state: Any = None  # remote_placement.RemoteRun of the preparation
+    custody: Mapping[str, Any] | None = None
+    reused: bool = False
 
 
 def prepare_retained_generation(
@@ -42,12 +45,28 @@ def prepare_retained_generation(
     installation: RunPodInstallation, validate: Callable[[RunPodPreparationRequest], None],
     requested_idle_seconds: float | None = None,
     on_acquired: Callable[[RunPodLease], None] | None = None,
+    entry: str | None = None,
+    pod_ready: bool = False,
+    observe_mounts: Callable[[str, str], Mapping[str, Any]] | None = None,
+    manifest_rows: tuple[Mapping[str, Any], ...] = (),
 ) -> PreparedRunPodLease:
-    """A4 handoff under A3's existing lock and journal, without a worker on pod.
+    """Prepare one machine under A3's existing lock and journal, without a worker on pod.
 
     Static request/source/recipe checks precede paid admission. A3 alone owns
     settle, expiry, reconciliation and release; no second account lock is taken.
+    A warm machine is reused only when its machine custody (account, observed
+    GPU, image, pinned volume, source digest) matches this job's; a saved volume
+    is pinned by the storage probe before install, and with ``pod_ready`` the
+    pod's one Runtime is ready (reset in place when no ready.json is left).
     """
+    from .machine import (
+        CustodyChanged,
+        custody_differences,
+        ensure_pod_ready,
+        machine_custody,
+        pin_storage,
+    )
+
     if (request.entry.get("engine", "comfyui") != installation.engine
             or request.max_usd != consent.max_usd or request.deadline != consent.deadline
             or request.consent != consent.consent or request.execution_request is not None
@@ -67,13 +86,26 @@ def prepare_retained_generation(
         from astrid.packs.runpod import managed_sources
         placement.source_root = managed_sources.ensure_managed_sources()
     bootstrap_digest = installation.validate_sources(placement.source_root)
+    preferences = lease_owner.selection.preferences
     with lease_owner.lock:
         prior = lease_owner._read()
         prior_preparation = prior.get("lease", {}).get("preparation") if prior else None
         if (prior is not None and prior["state"] != "cleanup_complete" and prior_preparation is not None
-                and (prior_preparation["state"] != "prepared"
-                     or prior_preparation["bootstrap_digest"] != bootstrap_digest)):
-            raise PreparedWorkerError("retained preparation is unresolved or has different source bytes")
+                and prior_preparation["state"] != "prepared"):
+            raise PreparedWorkerError("retained preparation is unresolved; reconcile the same journal")
+        if (prior is not None and prior["state"] != "cleanup_complete" and prior_preparation is not None
+                and prior.get("lease", {}).get("state") == "idle"):
+            # Refuse warm reuse before the claim when custody that needs no pod
+            # observation already differs (the GPU is the warm pod's own).
+            expected = machine_custody(
+                account=preferences.provider_account_ref,
+                gpu_type=str((prior.get("provider_observation") or {}).get("gpu_type") or prior.get("gpu_type")),
+                image=preferences.image,
+                volume={**(prior_preparation.get("custody") or {}).get("volume", {}),
+                        "id": preferences.volume_id, "mount_path": preferences.mount_path},
+                source_digest=bootstrap_digest)
+            if custody_differences(prior_preparation.get("custody"), expected):
+                lease_owner.release(reason="custody_changed", _expected_operation=prior["operation_id"])
         invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds)
         if on_acquired is not None:
             on_acquired(invocation)
@@ -94,22 +126,50 @@ def prepare_retained_generation(
         save()
         try:
             claim = connect_claimed_for_preparation(claimed)
-            # Preparation (bootstrap, engine install and its model download) is
+            # Preparation (bootstrap and the model-free engine install) is
             # bounded by the disclosed --preparation-seconds, never only by the
             # longer paid claim lifetime.
             remaining = min(consent.preparation_seconds, (
                 _utc(claimed["paid_limits"]["expires_at"]) - lease_owner.selection.clock()).total_seconds())
-            # A saved network volume holds only the model cache; models stay on the local engine root.
-            preferences = lease_owner.selection.preferences
+            # A saved network volume is pinned by the probe; the install is model-free and align fetches the manifest's rows.
             cache_root = None if preferences.volume_id is None else (
                 f"{preferences.mount_path}/astrid/engines/{installation.engine}/models")
+            # The install binds the saved volume's model cache, so align and ComfyUI read it from there.
+            installation = replace(installation, models_root=cache_root)
+            out = lease_owner.selection.path.parent / "preparation" / invocation.operation_id
+            storage: dict[str, Any] = {"mode": "ephemeral"}
+            if preferences.volume_id is not None:
+                # Pin the mount before anything is written: an unmounted volume
+                # refuses here instead of caching onto container disk.
+                if observe_mounts is None:
+                    raise PreparedWorkerError("a saved volume needs the provider's typed mount observation")
+                probe_state = placement.begin_claimed(claim, out=out, deadline_seconds=remaining)
+                storage = pin_storage(
+                    placement, probe_state, pod_id=claimed["pod_id"], volume_id=preferences.volume_id,
+                    mount_path=preferences.mount_path, model_cache_root=cache_root, engine_root=installation.root,
+                    required_volume_bytes=installation.model_bytes(manifest_rows), observe_mounts=observe_mounts)
+            observation = claimed.get("provider_observation") or {}
+            custody = machine_custody(
+                account=claimed["provider_account_ref"],
+                gpu_type=str(observation.get("gpu_type") or claimed.get("gpu_type")),
+                image=preferences.image,
+                volume={"id": preferences.volume_id, "mount_path": preferences.mount_path,
+                        "cache_device": storage.get("cache_device"), "mount_id": storage.get("mount_id")},
+                source_digest=bootstrap_digest)
+            reuse = previous is not None and previous.get("state") == "prepared"
+            if reuse and custody_differences(previous.get("custody"), custody):
+                raise CustodyChanged("warm machine custody differs: "
+                                     + ", ".join(custody_differences(previous.get("custody"), custody)))
+            save(custody=custody, storage=storage)
             state = placement.prepare_claimed(
-                claim, out=lease_owner.selection.path.parent / "preparation" / invocation.operation_id,
+                claim, out=out,
                 deadline_seconds=remaining, installation=installation,
                 checkpoint=lambda job: save(job=dict(job)),
-                reuse_snapshot=previous["installed"] if previous is not None else None,
-                model_cache_root=cache_root,
+                reuse_snapshot=previous["installed"] if reuse else None,
             )
+            if pod_ready:
+                # The pod's one Runtime: ready as left by the last reset, or reset now.
+                save(pod_ready=ensure_pod_ready(placement, state))
             if (lease_owner.clock() >= claimed["lease"]["paid_expires_at"]
                     or source_digest(placement.source_root) != bootstrap_digest
                     or any(hashlib.sha256(path.read_bytes()).hexdigest() != sources[name]
@@ -125,7 +185,8 @@ def prepare_retained_generation(
             raise
         return PreparedRunPodLease(
             RunPodLease(invocation.operation_id, invocation.owner_epoch, invocation.generation,
-                        invocation.invocation_id, saved), state.installed, state.models,
+                        invocation.invocation_id, saved), state.installed,
+            claim=claim, state=state, custody=custody, reused=reuse,
         )
 
 

@@ -257,3 +257,48 @@ def _sandboxed_home_and_projects(
     monkeypatch.setenv(paths.PROJECTS_ROOT_ENV, str(projects_root))
     yield
     _clear_task_env()
+
+
+class InMemoryAppState:
+    """A stand-in for the Runtime's per-user app-state store (versioned, idempotent writes)."""
+
+    def __init__(self):
+        self.documents = {}
+        self.receipts = {}
+
+    def get_user_app_state(self, key):
+        content, version = self.documents.get(key, (None, 0))
+        return {"content": None if content is None else __import__("copy").deepcopy(content), "version": version}
+
+    def update_user_app_state(self, key, content, *, expected_version, idempotency_key):
+        import copy
+        from astrid.sdk.workspace_client import WorkspaceClientError
+
+        if (key, idempotency_key) in self.receipts:
+            return self.receipts[(key, idempotency_key)]
+        _, version = self.documents.get(key, (None, 0))
+        if version != expected_version:
+            raise WorkspaceClientError(409, "version_conflict", "app-state version changed")
+        self.documents[key] = (copy.deepcopy(dict(content)), version + 1)
+        result = {"content": copy.deepcopy(dict(content)), "version": version + 1}
+        self.receipts[(key, idempotency_key)] = result
+        return result
+
+
+@pytest.fixture(autouse=True)
+def generation_settings_store():
+    """Generation settings live in the Runtime; every test gets an empty in-memory one."""
+    from astrid.core.generation import settings
+
+    store = InMemoryAppState()
+    settings.set_store_factory(lambda: store)
+    yield store
+    settings.set_store_factory(None)
+
+
+@pytest.fixture(autouse=True)
+def _h3_engine_facts():
+    """h3_av imports nothing from Astrid; its host installs the engine facts (production: each run.py)."""
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av.shared import engine_facts
+    engine_facts.install(comfyui_facts())

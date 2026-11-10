@@ -14,6 +14,7 @@ from astrid.core.contracts.managed_generation_result import (  # noqa: E402
     validate_managed_generation_result,
 )
 from astrid.packs.vibecomfy.production_engine import ProductionRunResult  # noqa: E402
+from tests.local_engine_stub import local_engine_patch  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -343,7 +344,6 @@ def test_materializer_retains_verified_partial_media_on_terminal_failure(tmp_pat
                                            (SystemExit(1), "failed"), (SystemExit(143), "cancelled")])
 def test_run_failure_retains_original_source_before_conversion_and_preserves_error(tmp_path, monkeypatch, error, status):
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    from astrid.core.generation.backends import registry
 
     workflow = tmp_path / "submitted.json"
     original = b'{ "exact": true }\r\n'
@@ -354,12 +354,10 @@ def test_run_failure_retains_original_source_before_conversion_and_preserves_err
         raise error
 
     adapter = SimpleNamespace(workflow=execute)
-    descriptor = SimpleNamespace(create=lambda **kwargs: adapter,
-                                 placement=SimpleNamespace(resolve=lambda placement: "local"))
-    monkeypatch.setattr(registry, "resolve_workflow_descriptor", lambda *args, **kwargs: descriptor)
+    monkeypatch.setattr("astrid.packs.vibecomfy.workflow_route.WorkflowRunner", lambda **kwargs: adapter)
     spool = tmp_path / "spool"
-    with pytest.raises(type(error)) as raised:
-        run._run_and_settle(workflow, spool, task_identity="task-1", attempt_identity="attempt-1", registry=object())
+    with pytest.raises(type(error)) as raised, local_engine_patch():
+        run._run_and_settle(workflow, spool, task_identity="task-1", attempt_identity="attempt-1")
     assert raised.value is error
     manifest = json.loads((spool / "manifest.json").read_text())
     managed = manifest["managed_generation_result"]
@@ -457,7 +455,6 @@ def test_model_identity_never_upgrades_an_observed_or_mismatched_digest(tmp_path
 @pytest.mark.parametrize("status", ["failed", "cancelled"])
 def test_returned_terminal_producer_result_never_becomes_successful_settlement(tmp_path, monkeypatch, status):
     from astrid.core.contracts.errors import AstridError
-    from astrid.core.generation.backends import registry
 
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     producer = tmp_path / "producer"
@@ -465,13 +462,11 @@ def test_returned_terminal_producer_result_never_becomes_successful_settlement(t
     payload = _managed_payload(producer, execution_status=status)
     production = _write_production(producer, payload)
     adapter = SimpleNamespace(workflow=lambda *args, **kwargs: production)
-    descriptor = SimpleNamespace(create=lambda **kwargs: adapter,
-                                 placement=SimpleNamespace(resolve=lambda placement: "local"))
-    monkeypatch.setattr(registry, "resolve_workflow_descriptor", lambda *args, **kwargs: descriptor)
+    monkeypatch.setattr("astrid.packs.vibecomfy.workflow_route.WorkflowRunner", lambda **kwargs: adapter)
     spool = tmp_path / "spool"
-    with pytest.raises(AstridError) as raised:
+    with pytest.raises(AstridError) as raised, local_engine_patch():
         run._run_and_settle(tmp_path / "absent.json", spool, task_identity="task-1",
-                            attempt_identity="attempt-1", registry=object())
+                            attempt_identity="attempt-1")
     assert raised.value.code == f"producer_{status}"
     manifest = json.loads((spool / "manifest.json").read_text())
     assert manifest["managed_generation_result"]["outcomes"]["execution"]["status"] == status

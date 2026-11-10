@@ -26,7 +26,7 @@ from astrid.core.generation.model_root import (
 )
 
 PLATFORM = "linux-x86_64-cu130"
-INSTALL = "astrid engines install vibecomfy-h3"
+INSTALL = "astrid engines install comfyui"
 FILES = {
     "diffusion_models/unet.safetensors": b"unet bytes",
     "vae/video.safetensors": b"video vae bytes",
@@ -66,14 +66,14 @@ def _status(receipt):
 
 
 def _derive(root, receipt):
-    return local_model_root_binding("vibecomfy-h3", platform=PLATFORM, root=str(root), context=object(),
+    return local_model_root_binding("comfyui", platform=PLATFORM, root=str(root), context=object(),
                                     status=_status(receipt))
 
 
 def test_valid_receipt_yields_the_binding_of_the_installed_model_lock(tmp_path):
     root, models = _install(tmp_path)
     stub = _status(_receipt(models))
-    binding = local_model_root_binding("vibecomfy-h3", platform=PLATFORM, root=str(root), context=object(),
+    binding = local_model_root_binding("comfyui", platform=PLATFORM, root=str(root), context=object(),
                                        status=stub)
     # The root comes from the engine status call; the inventory from the receipt's verified model files.
     assert stub.calls[0][1]["placement"] == "local" and stub.calls[0][1]["root"] == str(root)
@@ -96,9 +96,9 @@ def test_valid_receipt_yields_the_binding_of_the_installed_model_lock(tmp_path):
 def test_binding_follows_the_recorded_install_root_over_the_env_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv(ENGINE_ROOT_ENV, str(tmp_path / "other"))
     root, models = _install(tmp_path)
-    record_engine_root("vibecomfy-h3", str(root))
+    record_engine_root("comfyui", str(root))
     stub = _status(_receipt(models))
-    binding = local_model_root_binding("vibecomfy-h3", platform=PLATFORM, context=object(), status=stub)
+    binding = local_model_root_binding("comfyui", platform=PLATFORM, context=object(), status=stub)
     assert stub.calls[0][1]["root"] == str(root)
     assert str(binding.path) == str(root / "models")
 
@@ -142,10 +142,12 @@ def test_unverified_model_hash_is_refused_naming_the_install_action(tmp_path, da
     assert INSTALL in str(caught.value)
 
 
-def test_a_receipt_with_no_verified_models_is_refused(tmp_path):
+def test_a_model_free_receipt_derives_an_empty_binding(tmp_path):
+    """Plan 32 T5h: a model-free install records no models. Its binding is empty, and align
+    fetches each job's rows, so an empty receipt is valid rather than refused."""
     root, _models = _install(tmp_path)
-    with pytest.raises(EngineNotInstalled, match="no verified models"):
-        _derive(root, _receipt(()))
+    binding = _derive(root, _receipt(()))
+    assert list(binding.inventory) == []
 
 
 def test_binding_from_receipt_needs_no_engine_status(tmp_path):
@@ -172,9 +174,9 @@ def test_host_derives_the_child_binding_from_the_installed_engine_once(tmp_path,
 
     monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_model_root_binding", derive)
     host = SimpleNamespace()
-    first = _host_method()(host, "vibecomfy-h3")
-    again = _host_method()(host, "vibecomfy-h3")
-    assert first == again and calls == ["vibecomfy-h3"]
+    first = _host_method()(host, "comfyui")
+    again = _host_method()(host, "comfyui")
+    assert first == again and calls == ["comfyui"]
     assert first[MODEL_ROOT_ENV] == str(root / "models")
     binding = validate_model_root_binding(json.loads(first[MODEL_ROOT_BINDING_ENV]), verify_files=True)
     assert str(binding.path) == first[MODEL_ROOT_ENV]
@@ -187,8 +189,8 @@ def test_host_refuses_when_the_install_cannot_attest_a_binding(tmp_path, monkeyp
         raise EngineNotInstalled(engine, "no install receipt")
 
     monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_model_root_binding", refuse)
-    with pytest.raises(HostError, match="astrid engines install vibecomfy-h3"):
-        _host_method()(SimpleNamespace(), "vibecomfy-h3")
+    with pytest.raises(HostError, match="astrid engines install comfyui"):
+        _host_method()(SimpleNamespace(), "comfyui")
 
 
 def _child_environment(monkeypatch, tmp_path, *, profile=None, local_engine=None):
@@ -224,7 +226,7 @@ def test_child_environment_for_local_placement_carries_the_installed_engine_bind
     root, models = _install(tmp_path)
     monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_model_root_binding",
                         lambda engine: _derive(root, _receipt(models)))
-    env = _child_environment(monkeypatch, tmp_path, local_engine="vibecomfy-h3")
+    env = _child_environment(monkeypatch, tmp_path, local_engine="comfyui")
     assert env[MODEL_ROOT_ENV] == str(root / "models")
     assert json.loads(env[MODEL_ROOT_BINDING_ENV])["path"] == str(root / "models")
 
@@ -245,6 +247,6 @@ def test_readiness_profile_still_wins_over_the_local_flag(monkeypatch, tmp_path)
         raise AssertionError("the installed engine must not be consulted when a readiness profile is present")
 
     monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_model_root_binding", never)
-    env = _child_environment(monkeypatch, tmp_path, profile=profile, local_engine="vibecomfy-h3")
+    env = _child_environment(monkeypatch, tmp_path, profile=profile, local_engine="comfyui")
     assert env[MODEL_ROOT_ENV] == str(profile_root)
     assert json.loads(env[MODEL_ROOT_BINDING_ENV])["inventory"] == inventory

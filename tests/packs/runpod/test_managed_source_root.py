@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 from astrid.packs.runpod import managed_sources, remote_placement
 
@@ -26,21 +25,8 @@ def test_installed_agent_uses_managed_root_without_env(tmp_path, monkeypatch):
     pins = {name: _repo(tmp_path / "remotes" / name.split("/")[1]) for name in remote_placement.SOURCE_DIRS}
     monkeypatch.setattr(managed_sources, "_pins", lambda: pins)
 
-    seen = {}
-
-    class Capture:
-        def __init__(self, provider, **kwargs):
-            seen.update(kwargs)
-
-        def run(self, **_):
-            return {}
-
-    monkeypatch.setattr(remote_placement, "RemotePlacement", Capture)
-    args = SimpleNamespace(out=tmp_path / "out", request=None, asset_map=None)
-    remote_placement.run_remote_placement(args, provider=object(), env={})
-
-    root = tmp_path / "data" / "runpod" / "sources"
-    assert seen["source_root"] == root
+    root = managed_sources.ensure_managed_sources()
+    assert root == tmp_path / "data" / "runpod" / "sources"
     for directory, (_, sha) in pins.items():
         head = subprocess.run(["git", "-C", str(root / directory), "rev-parse", "HEAD"],
                               capture_output=True, text=True, check=True).stdout.strip()

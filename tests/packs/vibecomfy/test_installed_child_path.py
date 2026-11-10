@@ -162,7 +162,7 @@ def test_installed_qwen_managed_child_path(tmp_path: Path) -> None:
         assert "Traceback (most recent call last)" in failed.stderr
         assert "ValueError" in failed.stderr
         assert "HTTPError" in failed.stderr  # original HTTP 500 remains chained
-        assert "run_local_server" in failed.stderr
+        assert "not ready" in failed.stderr  # the engine probe refuses before any submit
         failure_requests = comfy.requests[failure_start:]
         assert any(request.path == "/object_info" for request in failure_requests)
         assert not any(request.method == "POST" for request in failure_requests)
