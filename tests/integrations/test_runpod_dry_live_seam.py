@@ -163,7 +163,9 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences, m
               for value in (ref['value'], ref['subdir'] + '/' + ref['value'])]
     client_engine, payload, recipe, root, started, bootstrap = managed_install
     from astrid.core.generation import engine_recipe
+    from astrid.core.generation.engine_local_endpoint import record_engine_root
     monkeypatch.setattr(engine_recipe, 'load_recipe', lambda engine, platform, **kwargs: recipe)
+    record_engine_root('comfyui', str(root))
     records = tmp_path / 'peer-records'
     records.mkdir()
     program = f'''
