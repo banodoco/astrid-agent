@@ -11,8 +11,11 @@ from __future__ import annotations
 import ctypes
 import errno
 import json
+import ntpath
 import os
+import posixpath
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -223,43 +226,68 @@ def _askpass_program(work: Path, windows: bool) -> str:
     return str(path)
 
 
-def _git_executable(path_value: str, *, windows: bool, cwd: Path) -> str | None:
-    """Find git in absolute PATH entries only; never the current directory.
-
-    shutil.which searches the current directory first on Windows, so a planted
-    git.exe in the working tree would run. Relative entries and entries that
-    resolve to the current directory are skipped here.
-    """
-    names = ("git.exe",) if windows else ("git",)
-    here = os.path.normcase(os.path.abspath(cwd))
-    for entry in path_value.split(os.pathsep):
+def _path_entries(path_value: str, *, windows: bool, cwd: str | os.PathLike[str]) -> list[str]:
+    """Absolute PATH entries only: never the working directory, relative or empty entries."""
+    module = ntpath if windows else posixpath
+    here = module.normcase(module.normpath(os.fspath(cwd)))
+    entries = []
+    for entry in path_value.split(";" if windows else os.pathsep):
+        # The host's own check: ntpath on Windows, posixpath elsewhere. A relative
+        # entry such as \\x would name a directory inside the working directory.
         if not entry or not os.path.isabs(entry):
             continue
-        directory = os.path.abspath(entry)
-        if os.path.normcase(directory) == here:
+        if module.normcase(module.normpath(entry)) == here:
             continue
+        entries.append(entry)
+    return entries
+
+
+def _find_executable(path_value: str, names: tuple[str, ...], *, windows: bool,
+                     cwd: str | os.PathLike[str]) -> str | None:
+    for entry in _path_entries(path_value, windows=windows, cwd=cwd):
         for name in names:
-            candidate = os.path.join(directory, name)
+            candidate = os.path.join(entry, name)
             if os.path.isfile(candidate) and (windows or os.access(candidate, os.X_OK)):
                 return candidate
     return None
 
 
+def _git_executable(path_value: str, *, windows: bool, cwd: str | os.PathLike[str]) -> str | None:
+    """Find git in absolute PATH entries only; never the current directory.
+
+    shutil.which searches the current directory first on Windows, so a planted
+    git.exe in the working tree would run.
+    """
+    return _find_executable(path_value, ("git.exe",) if windows else ("git",), windows=windows, cwd=cwd)
+
+
+def _shell_word(path: str, windows: bool) -> str:
+    # GIT_SSH_COMMAND is run through a shell; quote the resolved absolute path.
+    return f'"{path}"' if windows else shlex.quote(path)
+
+
 def _git_environment(work: Path, askpass: str, *, windows: bool | None = None,
-                     source: Mapping[str, str] | None = None) -> dict[str, str]:
+                     source: Mapping[str, str] | None = None,
+                     cwd: str | os.PathLike[str] | None = None) -> dict[str, str]:
     """Build the isolated Git environment; ``windows`` defaults to the running OS."""
     windows = (os.name == "nt") if windows is None else windows
     source = os.environ if source is None else source
+    cwd = os.getcwd() if cwd is None else os.fspath(cwd)
     # Windows environment names are case-insensitive (``Path`` vs ``PATH``).
     lookup = {key.upper() if windows else key: value for key, value in source.items()}
+    raw_path = lookup.get("PATH", os.defpath)
+    # The git child gets the same filtered PATH the resolver uses, so a shell
+    # lookup inside git (for ssh) can never reach the working directory.
+    path_value = (";" if windows else os.pathsep).join(_path_entries(raw_path, windows=windows, cwd=cwd))
+    ssh = _find_executable(raw_path, ("ssh.exe",) if windows else ("ssh",), windows=windows, cwd=cwd)
+    ssh_program = _shell_word(ssh, windows) if ssh else "ssh"
     env = {
-        # The real PATH, so the installed git (and ssh) can be found.
-        "PATH": lookup.get("PATH", os.defpath),
+        "PATH": path_value,
         "HOME": str(work), "LC_ALL": "C",
         "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": askpass,
         "GIT_NO_REPLACE_OBJECTS": "1",
-        "GIT_SSH_COMMAND": f"ssh -F {os.devnull} -oBatchMode=yes",
+        "GIT_SSH_COMMAND": f"{ssh_program} -F {os.devnull} -oBatchMode=yes",
     }
     if windows:
         env["USERPROFILE"] = str(work)
@@ -274,9 +302,10 @@ def _git(work: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     # No inherited Git config, hooks, helpers, filters, alternate object stores,
     # replacement objects, credential prompts or pack-controlled environment.
     operation = args[0] if args else "git"
-    askpass = _askpass_program(work, os.name == "nt")
-    env = _git_environment(work, askpass)
-    git = _git_executable(env["PATH"], windows=os.name == "nt", cwd=Path.cwd())
+    windows = os.name == "nt"
+    cwd = os.getcwd()
+    env = _git_environment(work, _askpass_program(work, windows), windows=windows, cwd=cwd)
+    git = _git_executable(os.environ.get("PATH", os.defpath), windows=windows, cwd=cwd)
     if git is None:
         raise PackInstallError("git_failed", f"Git source operation failed ({operation}; git not found).")
     command = [
