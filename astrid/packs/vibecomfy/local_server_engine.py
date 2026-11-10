@@ -9,6 +9,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import stat
+import sys
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -65,7 +68,7 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
 
 
 def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path, *,
-                    client: Any = None, target_custody: Any = None) -> Any:
+                    client: Any = None, target_custody: Any = None, prepared_models: Any = None) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
@@ -111,6 +114,8 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
         return observed
 
     custody = {}
+    if prepared_models is not None:
+        custody = {"auxiliary_model_custody": "target", "target_model_assets": list(prepared_models)}
     if target_custody is not None:
         # Explicitly trusted declarations; approval skips local byte checks, without asserting verification.
         custody = {"auxiliary_model_custody": "target", "target_model_assets": list(target_custody)}
@@ -118,6 +123,8 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
         read_object_info(), server_url=url, model_availability="target",
         refresh_object_info=read_object_info, **custody,
     )
+    if target_custody is not None:
+        provider.trust_model_assets(target_custody)
     # Force a fresh read, including an empty registry (which VibeComfy's
     # general validator treats as an unavailable, skippable schema).
     provider.object_info()
@@ -317,6 +324,34 @@ def _trust_from_environment(bundle: Any) -> tuple[dict[str, Any], ...] | None:
     return target_inventory.declared_rows(bundle.workflow)
 
 
+def _custody_file(path: Path, destination: Path, label: str) -> Path:
+    """Check the native file and all ancestors before reading or replacing it."""
+    if (path.is_symlink() or not path.is_file()
+            or not path.resolve(strict=True).is_relative_to(destination.resolve(strict=True))
+            or any(part.is_symlink() for part in path.parents)
+            or not stat.S_ISREG(path.lstat().st_mode)):
+        raise ProductionEngineError(f"local_server {label} escaped attempt custody")
+    return path
+
+
+def _project_native_attempt(path: Path, destination: Path, *, alignment: Any, prepared: Any = None) -> None:
+    from astrid.core.foundation.atomic_io import write_json_atomic
+
+    _custody_file(path, destination, "native attempt")
+    attempt = json.loads(path.read_text(encoding="utf-8"))
+    attempt["alignment"] = alignment
+    if prepared is not None:
+        # Placement and preparation belong to Astrid. Native target/adapter
+        # remain the external HTTP transport that actually executed this run.
+        attempt["placement"] = "managed"
+        attempt["managed_engine_preparation"] = prepared
+        embedded = attempt.get("managed_generation_result", {}).get("evidence", {}).get("producer", {}).get("attempt", {}).get("record")
+        if isinstance(embedded, dict):
+            embedded.update(placement="managed", alignment=alignment, managed_engine_preparation=prepared)
+    _custody_file(path, destination, "native attempt")
+    write_json_atomic(path, attempt)
+
+
 def run_local_server(
     resolved: Any, destination: Path, *, comfy_url: str, comfy_output_dir: str,
     task_identity: str, attempt_identity: str | None, run_inputs: Mapping[str, Any] | None,
@@ -358,9 +393,13 @@ def run_local_server(
     config = SessionConfig.from_dict(values)
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
+    from astrid.core.generation.managed_preparation import read_preparation
+    prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=url)
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
     custody = _trust_from_environment(bundle)
-    provider = _live_preflight(bundle, run_inputs, url, destination, target_custody=custody)
+    from astrid.core.generation.target_inventory import declared_rows
+    provider = _live_preflight(bundle, run_inputs, url, destination, client=client, target_custody=custody,
+                               prepared_models=declared_rows(bundle.workflow) if prepared is not None else None)
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.
     bundle = local_server_bundle(
@@ -393,20 +432,44 @@ def run_local_server(
     try:
         os.environ.update(pins)
         try:
-            result = run_sync(
-                record, bundle, server_url=url, config=config, schema_provider=provider,
-                server_client=TargetRuntimeClient(client),
-                artifact_client=AttachedArtifacts(client, legacy_output_directory=output_directory),
-            )
+            context = None
+            if prepared is not None:
+                from vibecomfy.runtime.run_context import RunContext
+                run_id = "run-" + uuid.uuid4().hex
+                run_dir = destination / ".vibecomfy-runtime" / "out" / "runs" / run_id
+                if any(part.is_symlink() for part in (run_dir, *run_dir.parents)):
+                    raise ProductionEngineError("local_server native attempt escaped attempt custody")
+                run_dir.mkdir(parents=True, exist_ok=False)
+                if not run_dir.resolve().is_relative_to(destination.resolve()):
+                    raise ProductionEngineError("local_server native attempt escaped attempt custody")
+                context = RunContext(run_id, run_dir, task_id=task_identity,
+                                     attempt_id=attempt_identity, execution_id=prepared.get("execution_identity"))
+                context.begin(str(bundle.python_path))
+                _custody_file(context.receipt_path, destination, "native attempt")
+            try:
+                result = run_sync(
+                    record, bundle, server_url=url, config=config, schema_provider=provider,
+                    server_client=TargetRuntimeClient(client),
+                    artifact_client=AttachedArtifacts(client, legacy_output_directory=output_directory),
+                    **({"run_context": context} if context is not None else {}),
+                )
+            finally:
+                if context is not None:
+                    original_error = sys.exc_info()[1]
+                    try:
+                        _project_native_attempt(context.receipt_path, destination,
+                                                alignment=prepared["alignment"], prepared=prepared)
+                    except Exception as projection_error:
+                        if original_error is None:
+                            raise
+                        original_error.add_note(f"native attempt projection failed: {projection_error}")
             if not getattr(result, "managed_generation_result_path", None):
                 raise ProductionEngineError(
                     "local_server requires VibeComfy managed_generation_result_path; "
                     "check that the selected target exposes /view and declares its final output nodes"
                 )
             result_path = Path(result.managed_generation_result_path)
-            if (result_path.is_symlink() or not result_path.resolve().is_relative_to(destination.resolve())
-                    or any(part.is_symlink() for part in result_path.parents)):
-                raise ProductionEngineError("local_server managed result escaped attempt custody")
+            _custody_file(result_path, destination, "managed result")
             # The pinned producer reports public-input defaults in metadata.
             # Preserve its evidence, but report the detached invocation values
             # (including the chosen seed) that actually reached /prompt.
@@ -415,21 +478,20 @@ def run_local_server(
             if custody is not None:
                 alignment = {"mode": "trust", "status": "unverified", "verified": False}
                 payload["evidence"]["producer"]["alignment"] = alignment
-                attempt_path = result_path.with_name("attempt.json")
-                if (attempt_path.is_symlink() or not attempt_path.is_file()
-                        or not attempt_path.resolve().is_relative_to(destination.resolve())
-                        or any(part.is_symlink() for part in attempt_path.parents)):
-                    raise ProductionEngineError("local_server native attempt escaped attempt custody")
-                attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
-                attempt["alignment"] = alignment
-                from astrid.core.foundation.atomic_io import write_json_atomic
-                write_json_atomic(attempt_path, attempt)
+                _project_native_attempt(result_path.with_name("attempt.json"), destination, alignment=alignment)
+            if prepared is not None:
+                payload["evidence"]["producer"]["alignment"] = prepared["alignment"]
+                payload["evidence"]["transport"]["placement"] = "managed"
+                payload["evidence"]["producer"]["attempt"]["record"].update(
+                    placement="managed", alignment=prepared["alignment"], managed_engine_preparation=prepared)
             if workflow_conversion_object_info_sha256 is not None:
                 schema_provenance = payload["evidence"]["producer"]["runtime"]["schema_provenance"]
                 schema_provenance["workflow_conversion_object_info_sha256"] = (
                     workflow_conversion_object_info_sha256
                 )
-            result_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            from astrid.core.foundation.atomic_io import write_json_atomic
+            _custody_file(result_path, destination, "managed result")
+            write_json_atomic(result_path, payload)
             return _result_from_runtime_result(result, tuple(Path(path) for path in result.outputs))
         except BaseException as exc:
             try:

@@ -56,7 +56,7 @@ class Handler(BaseHTTPRequestHandler):
    time.sleep(2)
   if setting=='redirect':
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
-  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'VHS_VideoCombine':{}}
+  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'UNETLoader':{},'VAELoader':{},'VHS_VideoCombine':{}}
   if self.path=='/queue': value={'queue_running':[[1]] if setting=='busy' else [],'queue_pending':[]}
   if self.path=='/system_stats': value={'system':{'comfyui_version':'0.36.0'},'devices':[{'vram_total':24000,'vram_free':20000}]}
   if self.path.startswith('/history/'):
@@ -660,7 +660,7 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     assert (registry / "source_revision").read_text() == next(s.pin.revision for s in recipe.sources if s.name == "vibecomfy")
     expected = hashlib.sha256(b"tiny.py\0" + hashlib.sha256(b"# immutable fixture source\n").digest()).hexdigest()
     assert (registry / "source_content_digest").read_text() == "sha256:" + expected
-    nodes = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}}
+    nodes = {"MiniMaxH3ReferenceToVideo": {}, "UNETLoader": {}, "VAELoader": {}, "VHS_VideoCombine": {}}
     assert first["object_info_sha256"] == _sha(nodes)
     assert len(list(Path(client.control).glob("*.json"))) == 1
 
@@ -690,7 +690,9 @@ def cpu_h3_install(session, monkeypatch, request):
     bootstrap_uv = root / "runtime/bootstrap/bin/uv"
     bootstrap_uv.parent.mkdir(parents=True)
     shutil.copy2(uv, bootstrap_uv)
-    environment_root = root / "runtime/cpu-venv"
+    native_cli = getattr(request, "param", None) == "managed_native"
+    environment_relative = "runtime/venv" if native_cli else "runtime/cpu-venv"
+    environment_root = root / environment_relative
     venv.EnvBuilder(with_pip=False, symlinks=False).create(environment_root)
     site = environment_root / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
     packaging = importlib.metadata.distribution("packaging")
@@ -702,9 +704,66 @@ def cpu_h3_install(session, monkeypatch, request):
             target = site.joinpath(*member.parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(packaging.locate_file(member), target)
+    native_distributions = []
+    if native_cli:
+        # Copy real installed distributions from this exact pinned test environment,
+        # including their metadata/RECORD files; no network resolver or fake CLI.
+        from packaging.requirements import Requirement
+        pending = [(name, set()) for name in ("packaging", "httpx", "huggingface_hub", "pyyaml", "websockets", "pillow")]
+        seen = set()
+        while pending:
+            name, extras = pending.pop()
+            distribution = importlib.metadata.distribution(name)
+            key = distribution.metadata["Name"].lower().replace("_", "-")
+            if key in seen:
+                continue
+            seen.add(key)
+            native_distributions.append(distribution)
+            for member in distribution.files or ():
+                if ".." in member.parts or str(member).endswith('.pth'):
+                    continue
+                origin, target = distribution.locate_file(member), site.joinpath(*member.parts)
+                if origin.is_file():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(origin, target)
+            for text in distribution.requires or ():
+                requirement = Requirement(text)
+                if requirement.marker is None or any(requirement.marker.evaluate({"extra": extra}) for extra in ("", *extras)):
+                    pending.append((requirement.name, requirement.extras))
+        import vibecomfy
+        pinned = Path(vibecomfy.__file__).resolve().parent
+        shutil.copytree(pinned, site / "vibecomfy")
+        for name in ("ready_templates", "custom_nodes.lock", "template_index.json"):
+            origin = pinned.parent / name
+            if origin.is_dir(): shutil.copytree(origin, site / "vibecomfy" / name, dirs_exist_ok=True)
+            elif origin.is_file(): shutil.copy2(origin, site / "vibecomfy" / name)
+        # The source checkout's package metadata is real; its editable pointer is
+        # replaced with the frozen copied module tree, so -I imports these bytes.
+        import tomllib
+        project = tomllib.loads((pinned.parent / 'pyproject.toml').read_text())['project']
+        info = site / f"vibecomfy-{project['version']}.dist-info"
+        info.mkdir()
+        metadata_text = f"Metadata-Version: 2.3\nName: vibecomfy\nVersion: {project['version']}\n" + ''.join(
+            f"Requires-Dist: {dependency}\n" for dependency in project['dependencies'])
+        (info / 'METADATA').write_text(metadata_text)
+        (info / 'WHEEL').write_text('Wheel-Version: 1.0\nGenerator: astrid-cpu-fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+        (info / 'direct_url.json').write_text(json.dumps({'url': pinned.parent.as_uri(), 'dir_info': {}}))
+        import base64,csv,io
+        records = []
+        for member in [*(site / 'vibecomfy').rglob('*'), *info.iterdir()]:
+            if member.is_file():
+                payload = member.read_bytes()
+                records.append((str(member.relative_to(site)), 'sha256=' + base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode().rstrip('='), str(len(payload))))
+        records.append((str((info / 'RECORD').relative_to(site)), '', ''))
+        buffer = io.StringIO(); csv.writer(buffer).writerows(records)
+        (info / 'RECORD').write_text(buffer.getvalue())
+        native_distributions.append(importlib.metadata.PathDistribution(info))
     fixture = root / "cpu-fixture"
     fixture.mkdir()
     lock = f"packaging=={packaging.version} --hash=sha256:{hashlib.sha256(packaging.read_text('METADATA').encode()).hexdigest()}\n".encode()
+    if native_cli:
+        lock = "".join(f"{dist.metadata['Name']}=={dist.version} --hash=sha256:{hashlib.sha256(dist.read_text('METADATA').encode()).hexdigest()}\n"
+                       for dist in sorted(native_distributions, key=lambda d: d.metadata['Name'])).encode()
     (fixture / "requirements.lock").write_bytes(lock)
     model = b"CPU model inventory witness\n"
     model_path = root / "models/diffusion_models/cpu.bin"
@@ -758,7 +817,7 @@ from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
 base=recipes.load_recipe('comfyui',{PLATFORM!r})
 recipe=replace(base,
  sources=tuple(replace(s,pin=replace(s.pin,revision={revision!r})) for s in base.sources if s.name in {{'comfyui','vibecomfy'}}),
- environments=(replace(base.environments[0],name='cpu',relative_path='runtime/cpu-venv',python_version={sys.version.split()[0]!r},uv_version={uv_version!r},requirements=RequirementsSpec('packaged',DataRef('cpu-fixture/requirements.lock',{hashlib.sha256(lock).hexdigest()!r}),(),(),None),final_wheels=(),node_lock=None,source_installs=()),),
+ environments=(replace(base.environments[0],name='cpu',relative_path={environment_relative!r},python_version={sys.version.split()[0]!r},uv_version={uv_version!r},requirements=RequirementsSpec('packaged',DataRef('cpu-fixture/requirements.lock',{hashlib.sha256(lock).hexdigest()!r}),(),(),None),final_wheels=(),node_lock=None,source_installs=()),),
  primary_environment='cpu',models_lock=DataRef('cpu-fixture/models.json',{hashlib.sha256(model_bytes).hexdigest()!r}),
  start=StartSpec({original.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1'}},'127.0.0.1',{original.start.port}),
  health=replace(base.health,timeout_seconds=4,poll_interval_seconds=0.02))
@@ -1716,3 +1775,58 @@ def test_live_supervisor_busy_and_failed_free_are_not_released(session, setting,
     assert result["status"] == expected
     assert result.get("models_unloaded") is not True
     assert not (root / "release-posts").exists()
+
+
+def test_cancel_finite_request_drains_original_before_return_and_keeps_engine(session):
+    from concurrent.futures import CancelledError
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    engine_pid = int(started.read_text().splitlines()[-1])
+    entered = root / "cancel-command-entered"
+    command_pid = root / "cancel-command-pid"
+    cancelled = threading.Event()
+    client.cancelled = cancelled.is_set
+    errors = []
+    def execute():
+        try:
+            client.run(_request(root, f"import os,time;from pathlib import Path;Path({str(command_pid)!r}).write_text(str(os.getpid()));Path({str(entered)!r}).write_text('yes');time.sleep(60)", 30))
+        except BaseException as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=execute)
+    worker.start()
+    _wait(entered.exists)
+    pid = int(command_pid.read_text())
+    cancelled.set()
+    worker.join(timeout=15)
+    assert not worker.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], CancelledError), errors
+    assert not _alive(pid)
+    assert _alive(engine_pid)
+    client.cancelled = None
+    assert _call(client, payload, "health")["healthy"] is True
+
+
+def test_already_cancelled_request_never_creates_supervisor(tmp_path):
+    from concurrent.futures import CancelledError
+    root = tmp_path / "no-owner"
+    root.mkdir()
+    client = _client(_identity(root))
+    client.cancelled = lambda: True
+    with pytest.raises(CancelledError):
+        client.run(_request(root, "raise SystemExit(99)"))
+    assert not (root / ".astrid-engine/session").exists()
+
+
+def test_local_response_deadline_is_uncertain_cleanup(tmp_path, monkeypatch):
+    client = _client(_identity(tmp_path))
+    local, remote = socket.socketpair()
+    monkeypatch.setattr(client, '_connect', lambda *args, **kwargs: local)
+    monkeypatch.setattr(custody, '_send', lambda *args, **kwargs: None)
+    def no_response(*args, **kwargs):
+        raise DeadlineExceeded('local receive deadline')
+    monkeypatch.setattr(custody, '_receive', no_response)
+    try:
+        with pytest.raises(CustodyUnresolved, match='confirm command cleanup'):
+            client.run(_request(tmp_path, 'pass'))
+    finally:
+        remote.close()

@@ -874,6 +874,12 @@ def _run_and_settle(
             raise AstridValueError("Worker readiness profile could not be read or its hash does not match") from None
     # A run with no comfy_url that is not the RunPod route is the engine's local run: ComfyUIEngine.run
     # starts or reuses the installed local ComfyUI and submits to it, so it is a local_server submit.
+    from astrid.core.generation.managed_preparation import read_preparation
+    prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=comfy_url,
+                                execution_identity=execution_identity,
+                                inputs=({"python": workflow_path, "companion": workflow_path.with_suffix(".vibe.json"),
+                                         "source": workflow_path.with_name("source.json")}
+                                        if workflow_path.suffix == ".py" else {"workflow": workflow_path}))
     engine_local_run = not comfy_url
     # The requirements this run resolved for its entry, recorded in the attempt's producer evidence on every
     # route (align still judges the manifest above, on the local route only).
@@ -965,7 +971,7 @@ def _run_and_settle(
         "comfy_provenance": provenance,
         "values": dict(workflow_input_bindings),
         "target": (execution_request.get("target") if isinstance(execution_request, dict) else None)
-                  or {"kind": "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
+                  or {"kind": "managed" if prepared else "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
         "execution_binding": execution_request.get("execution_binding") if isinstance(execution_request, dict) else None,
         "requirements": admitted_requirements,
     }
@@ -988,6 +994,12 @@ def _run_and_settle(
                         raise AstridValueError(str(exc)) from exc
                     raise
                 write_progress("finalize")
+                production_result = local.result
+            elif synthetic is None and prepared is not None:
+                # Trusted host already aligned this exact attempt and verified
+                # the owned HTTP listener. The worker has no lifecycle authority.
+                local = _AttachedServer(adapter, output_root, production_kwargs)
+                local.submit(comfy_url, workflow_path)
                 production_result = local.result
             elif synthetic is None:
                 # Attached: the engine probes the caller's endpoint, then trusts it. It never aligns by default.

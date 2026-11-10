@@ -83,8 +83,8 @@ class VibeComfyCommands:
     that installs node packs. fetch skips files already on disk, so it is not passed --force.
     """
 
-    def __init__(self, workflow: str = "", lockfile: str | None = None) -> None:
-        self.workflow, self.lockfile = workflow, lockfile
+    def __init__(self, workflow: str = "", lockfile: str | None = None, *, runner: Any = None) -> None:
+        self.workflow, self.lockfile, self.runner = workflow, lockfile, runner
 
     def argv(self, step: str) -> list[str]:
         if step == "doctor":
@@ -98,6 +98,9 @@ class VibeComfyCommands:
         raise ValueError(step)
 
     def _run(self, step: str) -> None:
+        if self.runner is not None:
+            self.runner(self.argv(step))
+            return
         import subprocess
         import sys
         subprocess.run([sys.executable, "-c", "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))",
@@ -129,10 +132,14 @@ class ComfyUIEngine:
         self.models_root = models_root
 
     def requirements(self, entry: Any, inputs: Any) -> dict[str, Any]:
+        return self.workflow_requirements(_workflows(entry, inputs))
+
+    def workflow_requirements(self, workflows: Any) -> dict[str, Any]:
+        """Requirements of the already selected canonical graph(s), without rebuilding."""
         models: dict[tuple[str, str], dict[str, Any]] = {}
         nodes: dict[str, dict[str, Any]] = {}
         base = None
-        for workflow in _workflows(entry, inputs):
+        for workflow in workflows:
             metadata = workflow.metadata
             for asset in metadata.get("model_assets", []):
                 row = {"name": asset["name"], "subdir": asset.get("subdir") or "", "url": asset.get("url"),
@@ -171,7 +178,7 @@ class ComfyUIEngine:
         """Align this disk to the manifest. Models arrive only through VibeComfy fetch.
 
         ``workflow`` is the executable job path, separate from the portable requirements manifest.
-        align: doctor, prepare --deps sync, nodes restore, then fetch only the missing rows.
+        align: restore declared nodes, fetch missing rows, then dependency preparation and diagnosis.
         check: report the missing rows; touch nothing.
         trust: accept the manifest as declared; the result is marked unverified.
         """
@@ -187,11 +194,11 @@ class ComfyUIEngine:
             result["status"] = "ready" if not missing else "missing"
             return result
         commands = self.commands or VibeComfyCommands(str(workflow or manifest.get("workflow", "")), manifest.get("lockfile"))
-        commands.doctor()
-        commands.prepare_deps_sync()
         commands.nodes_restore((manifest.get("extra") or {}).get("nodes", []))
         if missing:
             commands.fetch(missing)
+        commands.prepare_deps_sync()
+        commands.doctor()
         result.update(fetched=[_key(r) for r in missing], status="ready")
         return result
 

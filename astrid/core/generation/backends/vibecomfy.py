@@ -563,6 +563,7 @@ class VibeComfyBackend(BackendAdapter):
                     observed, server_url=client.http_origin, model_availability="target",
                     auxiliary_model_custody="target", target_model_assets=declared_rows(wf),
                     refresh_object_info=lambda: trust_declared_loader_choices(client.object_info(), wf))
+                target_schema.trust_model_assets(declared_rows(wf))
             from astrid.core.generation.asset_gaps import require_workflow_assets
             require_workflow_assets(wf, observed, entry.id)
 

@@ -1408,6 +1408,7 @@ def _prepare_vibecomfy_execution_identity(
     inputs: Mapping[str, Any],
     scratch: Path,
     readiness_profile: Mapping[str, Any] | None,
+    *, prepare_engine: Any = None,
 ) -> tuple[str, str, str, Mapping[str, Any]]:
     """Select and identify the exact VibeComfy input form before launch."""
     from astrid.packs.vibecomfy.production_engine import (
@@ -1416,6 +1417,7 @@ def _prepare_vibecomfy_execution_identity(
         loaded_workflow_session_requirements,
     )
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
+    from astrid.core.generation.engine_contracts import CustodyUnresolved
 
     previous_headless = os.environ.get("VIBECOMFY_HEADLESS")
     os.environ["VIBECOMFY_HEADLESS"] = "1"
@@ -1426,6 +1428,7 @@ def _prepare_vibecomfy_execution_identity(
             companion=inputs.get("companion"),
             source=inputs.get("source"),
             scratch=scratch,
+            preserve_on_error=(CustodyUnresolved,) if prepare_engine is not None else (),
         ) as (workflow_path, _authority):
             comfy_url = str(inputs.get("comfy_url") or "")
             if comfy_url:
@@ -1439,14 +1442,24 @@ def _prepare_vibecomfy_execution_identity(
                 scratch / "canonical-loader",
                 comfy_url=comfy_url,
             )
+            identity = loaded_workflow_execution_identity(loaded, readiness_profile)
+            if prepare_engine is not None:
+                prepare_engine(workflow_path, identity, loaded)
             return (
-                loaded_workflow_execution_identity(loaded, readiness_profile),
+                identity,
                 loaded.model_id,
                 loaded.template_id,
                 loaded_workflow_session_requirements(loaded),
             )
     except Exception as exc:
-        raise HostError(f"vibecomfy.run canonical input preflight failed: {exc}") from exc
+        from concurrent.futures import CancelledError
+        if isinstance(exc, (CancelledError, HostCancelled)):
+            raise
+        error = HostError(f"vibecomfy.run canonical input preflight failed: {exc}")
+        for name in ("code", "field", "fix", "readiness"):
+            if hasattr(exc, name):
+                setattr(error, name, getattr(exc, name))
+        raise error from exc
     finally:
         if previous_headless is None:
             os.environ.pop("VIBECOMFY_HEADLESS", None)
@@ -8654,7 +8667,7 @@ class GenericPackHost:
         self._pending_provider_grants[task_id] = token
         return token
 
-    def _prepare_producer_evidence(self, output_root: Path, task: Mapping[str, Any]) -> None:
+    def _prepare_producer_evidence(self, output_root: Path, task: Mapping[str, Any], *, preparation=None) -> None:
         """Add host-observed identity to the existing producer result object."""
         receipt_path = output_root / "manifest.json"
         if not receipt_path.is_file() or receipt_path.is_symlink():
@@ -8678,6 +8691,9 @@ class GenericPackHost:
         # repository lookups. Producer evidence remains in its own namespace.
         producer = payload["evidence"]["producer"]
         transport = payload["evidence"]["transport"]
+        if preparation is not None:
+            producer["alignment"] = preparation["alignment"]
+            transport["placement"] = "managed"
         # The bundle loader uses a fixed sibling basename. Restore the
         # admitted source identity only after checking it against the bytes
         # retained by the producer.
@@ -9207,6 +9223,7 @@ class GenericPackHost:
         allow_runtime_connection: bool = True,
         align: str | None = None,
         generation_entry: str | None = None,
+        managed_preparation: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Build a redacted, manifest-scoped child environment.
 
@@ -9318,6 +9335,10 @@ class GenericPackHost:
         env.pop(TRUST_ENV, None)  # only the host's own admission reaches a child
         if record.id == "vibecomfy.run" and align in ("align", "trust"):
             env[TRUST_ENV] = align  # the child's align mode; local_server_engine reads only "trust"
+        from astrid.core.generation.managed_preparation import PREPARATION_ENV
+        env.pop(PREPARATION_ENV, None)
+        if record.id == "vibecomfy.run" and managed_preparation is not None:
+            env[PREPARATION_ENV] = json.dumps(managed_preparation, sort_keys=True, separators=(",", ":"))
         env.pop("ASTRID_GENERATION_ENTRY", None)
         if record.id == "vibecomfy.run" and generation_entry:
             env["ASTRID_GENERATION_ENTRY"] = str(generation_entry)
@@ -9691,6 +9712,7 @@ class GenericPackHost:
         command_admission = dict(admission or {})
         align = command_admission.pop("align", None)
         generation_entry = command_admission.pop("entry", None)
+        managed_preparation = command_admission.pop("managed_engine_preparation", None)
         admission = command_admission if admission is not None else None
         command = record.definition.command
         if command is None:
@@ -9818,6 +9840,7 @@ class GenericPackHost:
             network_broker=network_broker,
             align=align,
             generation_entry=generation_entry,
+            managed_preparation=managed_preparation,
             network_policy=(
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
@@ -10668,6 +10691,11 @@ class GenericPackHost:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
         if terminal.get("machine") is not None:
             receipt["machine"] = dict(terminal["machine"])
+        if terminal.get("managed_engine_preparation") is not None:
+            receipt["managed_engine_preparation"] = terminal["managed_engine_preparation"]
+        readiness = getattr(terminal.get("error"), "readiness", None)
+        if isinstance(readiness, Mapping):
+            receipt["readiness"] = dict(readiness)
         import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
         if import_reference is not None:
             receipt["child_import_receipt"] = import_reference
@@ -11864,6 +11892,9 @@ class GenericPackHost:
                 raise
         child_bridge = None
         session_hold = None
+        engine_preparation = None
+        prepared_identity = None
+        assert_managed_input_identity = None
         target_context = machine_policy = None
         target_operation_result = None
         try:
@@ -11960,6 +11991,82 @@ class GenericPackHost:
                     readiness_profile = None
                 inputs.pop("placement_policy", None)
             _terminal["inputs"] = inputs
+            # Freeze admitted bytes before any canonical import or trusted
+            # alignment command can read them. Cancellation guards recheck this
+            # baseline during preparation as well as execution.
+            immutable_input_baseline = {}
+            for input_root in (root / "inputs", root / "managed-objects"):
+                immutable_input_baseline.update(self.execution_policy.immutable_input_baseline(input_root))
+            evidence_root = root
+            if (capability_id == "vibecomfy.run" and machine_policy is None
+                    and not inputs.get("comfy_url") and readiness_profile is None):
+                from astrid.core.generation.managed_preparation import ManagedEnginePreparation
+                from concurrent.futures import CancelledError
+                admitted_mode = _align_admission(task_data).get("align", "check")
+                engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
+                    mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
+                    scratch=root / "engine-preparation")
+                _terminal["machine"] = {**_local_machine({}), "placement": "managed",
+                                         "id": engine_preparation.root}
+                original_input_digests = {name: hashlib.sha256(Path(value).read_bytes()).hexdigest()
+                    for name, value in inputs.items() if name in {"workflow", "python", "companion", "source"} and value}
+                original_baseline = dict(immutable_input_baseline)
+                def input_nodes(paths):
+                    nodes = {}
+                    for path in paths:
+                        info = os.lstat(path)
+                        if not stat.S_ISREG(info.st_mode):
+                            raise HostError("managed generation input was replaced")
+                        nodes[path] = (info.st_dev, info.st_ino, info.st_mode, info.st_nlink)
+                    return nodes
+                original_nodes = input_nodes(original_baseline)
+                def assert_managed_input_identity():
+                    current = {}
+                    for input_root in (root / "inputs", root / "managed-objects"):
+                        current.update(self.execution_policy.immutable_input_baseline(input_root))
+                    if current != original_baseline or input_nodes(current) != original_nodes:
+                        raise HostError("managed generation admitted input bytes changed during preparation")
+                def prepare_engine(workflow_path, identity, loaded):
+                    assert_managed_input_identity()
+                    from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value
+                    canonical = _canonical_bundle_value(loaded.resolved)
+                    report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs,
+                                                        canonical_workflow=canonical.workflow, input_digests=original_input_digests)
+                    assert_managed_input_identity()
+                    _terminal["managed_engine_preparation"] = report
+                    from astrid.packs.vibecomfy.local_server_engine import _live_preflight, _approve_live
+                    bundle = _canonical_bundle_value(loaded.resolved)
+                    bindings = json.loads(inputs.get("workflow_inputs") or "{}")
+                    if inputs.get("managed_assets"):
+                        from astrid.packs.vibecomfy.actions.run.run import _stage_managed_asset_manifest, resolve_inputs
+                        resolved = _stage_managed_asset_manifest(inputs["managed_assets"],
+                            readiness_profile=None, output_root=root / "host-preflight")
+                        bindings = resolve_inputs(resolved.manifest, bindings)
+                    custody = None
+                    if admitted_mode == "trust":
+                        from astrid.core.generation.target_inventory import declared_rows
+                        custody = declared_rows(bundle.workflow)
+                    from astrid.core.generation.target_inventory import declared_rows
+                    try:
+                        provider = _live_preflight(bundle, bindings, report["endpoint"], root / "host-preflight",
+                                                   target_custody=custody, prepared_models=declared_rows(bundle.workflow))
+                        _approve_live(bundle, bindings, provider)
+                    except Exception as error:
+                        if isinstance(getattr(error, "readiness", None), dict):
+                            error.readiness = {**error.readiness, "placement": "managed",
+                                               "target": {"kind": "managed", "endpoint": report["endpoint"]}}
+                        raise
+                    assert_managed_input_identity()
+                    if cancelled():
+                        raise HostCancelled("task cancelled after managed schema preflight")
+                    _terminal["managed_engine_preparation"] = report
+                    network_admission["managed_engine_preparation"] = report
+                    inputs["comfy_url"] = report["endpoint"]
+                try:
+                    prepared_identity = _prepare_vibecomfy_execution_identity(
+                        inputs, root / "workflow-identity", readiness_profile, prepare_engine=prepare_engine)
+                except (CancelledError, HostCancelled):
+                    raise HostCancelled("task cancelled during managed engine preparation") from None
             if capability_id == "vibecomfy.run" and inputs.get("comfy_url"):
                 from astrid.core.generation.backends.vibecomfy_local_server import (
                     validate_comfy_url,
@@ -12040,16 +12147,12 @@ class GenericPackHost:
                 except ImageStoragePolicyError as exc:
                     raise HostError(str(exc)) from exc
             _assert_live_storage_envelope(storage_estimate, root, root / "outputs")
-            immutable_input_baseline = {}
-            for input_root in (root / "inputs", root / "managed-objects"):
-                immutable_input_baseline.update(
-                    self.execution_policy.immutable_input_baseline(input_root)
-                )
-            evidence_root = root
+            if cancelled():
+                raise HostCancelled("task cancelled after managed preparation")
             lifetime.assert_deadline()
             if capability_id == "vibecomfy.run":
                 execution_identity, model_id, template_id, workflow_session_requirements = (
-                    _prepare_vibecomfy_execution_identity(
+                    prepared_identity or _prepare_vibecomfy_execution_identity(
                         inputs,
                         root / "workflow-identity",
                         readiness_profile,
@@ -12150,6 +12253,8 @@ class GenericPackHost:
                     handle_guard_abort()
                     cancelled_attempt = True
                     return {"task_id": task_id, "status": "cancelled", "cancelled": True}
+                if assert_managed_input_identity is not None:
+                    assert_managed_input_identity()
                 lifetime.begin_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
@@ -12157,6 +12262,9 @@ class GenericPackHost:
                     managed_adapter = self.managed_tool_session.adapter_for(managed_token, begin=True)
                 if machine_policy is None and capability_id == "vibecomfy.run":
                     _terminal["machine"] = _local_machine(inputs)
+                    if engine_preparation is not None:
+                        _terminal["machine"].update(placement="managed", machine="local",
+                            id=engine_preparation.root)
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,
@@ -12307,7 +12415,8 @@ class GenericPackHost:
                     evidence_failure_message = str(exc)
                 raise HostError(str(exc)) from exc
             try:
-                self._prepare_producer_evidence(output_root, task_data)
+                self._prepare_producer_evidence(output_root, task_data,
+                    preparation=_terminal.get("managed_engine_preparation"))
                 harvested = harvest_staged_outputs(
                     output_root,
                     definition=record.definition,
@@ -12446,6 +12555,8 @@ class GenericPackHost:
                 payload["provenance"] = provenance
             if _terminal.get("machine") is not None:
                 payload["machine"] = dict(_terminal["machine"])
+            if _terminal.get("managed_engine_preparation") is not None:
+                payload["managed_engine_preparation"] = _terminal["managed_engine_preparation"]
             if self.attempt_root is not None:
                 scratch_disposition = "caller_owned_pending"
                 retained_owner = "caller"
@@ -12578,12 +12689,13 @@ class GenericPackHost:
                 retryable=False,
                 attempt_id=attempt_id,
                 fence=fence,
-                failure_diagnostic=(
-                    {**(storage_failure_receipt or evidence_failure_receipt or {}),
-                     "child_import_receipt": original_error.child_import_receipt}
-                    if getattr(original_error, "child_import_receipt", None) is not None
-                    else storage_failure_receipt or evidence_failure_receipt
-                ),
+                failure_diagnostic={
+                    **(storage_failure_receipt or evidence_failure_receipt or {}),
+                    **({"child_import_receipt": original_error.child_import_receipt}
+                       if getattr(original_error, "child_import_receipt", None) is not None else {}),
+                    **({"readiness": original_error.readiness}
+                       if isinstance(getattr(original_error, "readiness", None), Mapping) else {}),
+                } or None,
                 outputs=evidence_outputs,
                 result=evidence_result,
                 **_structured_failure_kwargs(original_error),
@@ -12688,6 +12800,22 @@ class GenericPackHost:
                         )
                     except Exception as exc:
                         cleanup_errors.append(f"managed release: {exc}")
+            try:
+                if engine_preparation is not None:
+                    engine_preparation.close(execution_root=root / "outputs",
+                        worker_drained=command_cleanup_error is None and not bool(self._active_processes))
+            except Exception as exc:
+                retain_attempt = True
+                # Keep the live lock object reachable. Releasing it while an
+                # owned preparation may still write would allow another job to
+                # mutate or execute the same installation. Restart/recovery
+                # remains subject to the supervisor's retained custody fence.
+                retained = getattr(self, "_uncertain_engine_preparations", None)
+                if retained is None:
+                    retained = self._uncertain_engine_preparations = []
+                retained.append(engine_preparation)
+                self._latch_cleanup_uncertainty("managed preparation cleanup is unconfirmed")
+                cleanup_errors.append(f"managed preparation release: {exc}")
             try:
                 if session_hold is not None:
                     self._settle_session_hold(session_hold)
