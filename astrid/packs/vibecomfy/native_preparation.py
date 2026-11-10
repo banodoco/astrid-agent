@@ -98,7 +98,17 @@ def ensure_native_pip(python_executable):
     configured = sysconfig.get_config_var('WHEEL_PKG_DIR')
     if configured and not Path(configured).resolve().is_relative_to(Path(sys.base_prefix).resolve()):
         raise ValueError("pip bootstrap wheel directory is outside the verified interpreter")
-    with ensurepip._get_pip_whl_path_ctx() as wheel:
+    from contextlib import nullcontext
+    from importlib import resources
+    if hasattr(ensurepip, '_get_pip_whl_path_ctx'):
+        wheel_context = ensurepip._get_pip_whl_path_ctx()
+    else:
+        # CPython 3.12 (the recipe's interpreter) exposes the exact selected
+        # bundled/system package rather than the 3.13 wheel context helper.
+        package = ensurepip._get_packages()['pip']
+        wheel_context = (nullcontext(Path(package.wheel_path)) if package.wheel_path else
+                         resources.as_file(resources.files('ensurepip').joinpath('_bundled', package.wheel_name)))
+    with wheel_context as wheel:
         wheel = Path(wheel)
         digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
         wheel_path = str(wheel)

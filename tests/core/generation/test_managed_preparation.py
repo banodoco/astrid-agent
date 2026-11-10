@@ -231,3 +231,33 @@ def test_preparation_scope_is_attempt_bound_and_does_not_leak_across_threads(pre
         with ThreadPoolExecutor(max_workers=1) as pool:
             with pytest.raises(ValueError): pool.submit(read).result()
     with pytest.raises(ValueError): read()
+
+
+
+def test_native_pip_uses_real_python312_and_exact_recipe_selector(tmp_path):
+    import importlib.util, subprocess
+    from astrid.packs.vibecomfy.native_preparation import native_pip_program
+    interpreter = Path('/usr/bin/python3.12')
+    if not interpreter.is_file(): pytest.skip('real CPython 3.12 interpreter is unavailable')
+    venv = tmp_path / 'python312'
+    subprocess.run([str(interpreter), '-I', '-m', 'venv', '--without-pip', str(venv)],
+                   check=True, capture_output=True, text=True, timeout=20)
+    python = str(venv / 'bin/python')
+    completed = subprocess.run([python, '-I', '-c', native_pip_program(), json.dumps({'python_executable': python})],
+                               check=True, capture_output=True, text=True, timeout=30)
+    report = json.loads(completed.stdout)
+    assert report['installed']['version'] == report['bundled_version'] and len(report['wheel_sha256']) == 64
+    # The shared machine has 3.12.3, not the recipe's 3.12.10 binary. Exercise
+    # the exact tagged 3.12.10 selector source separately, without replacing the
+    # runtime or pretending that its full binary was qualified here.
+    path = Path(__file__).resolve().parents[2] / 'fixtures/plan32_cpython31210_ensurepip_selector.py'
+    spec = importlib.util.spec_from_file_location('plan32_recipe_ensurepip', path)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    module._WHEEL_PKG_DIR = None; module._PACKAGES = None
+    package = module._get_packages()['pip']
+    assert package.wheel_name == f'pip-{module.version()}-py3-none-any.whl'
+    assert package.wheel_path is None
+    wheels = tmp_path / 'selected-wheels'; wheels.mkdir()
+    (wheels / 'pip-99.0-py3-none-any.whl').write_bytes(b'selector-only fixture')
+    module._WHEEL_PKG_DIR = str(wheels); module._PACKAGES = None
+    assert module._get_packages()['pip'].wheel_path == str(wheels / 'pip-99.0-py3-none-any.whl')

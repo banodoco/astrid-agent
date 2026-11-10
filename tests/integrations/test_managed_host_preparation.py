@@ -233,6 +233,14 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
                 raise CancelledError('forced managed preparation cancellation')
             return original_check(self)
         monkeypatch.setattr(ManagedEnginePreparation, 'check', cancel_before_start)
+    receipt_written = threading.Event()
+    original_write = GenericPackHost._write_task_result
+    def write_receipt(self, terminal):
+        result = original_write(self, terminal)
+        if terminal.get('status') in {'failed', 'cancelled', 'succeeded'} and (tmp_path / 'attempt/result.json').is_file():
+            receipt_written.set()
+        return result
+    monkeypatch.setattr(GenericPackHost, '_write_task_result', write_receipt)
     worker = threading.Thread(target=host.run, kwargs={'poll_seconds': 0.02}, daemon=True)
     worker.start()
     try:
@@ -246,6 +254,7 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
                         'groups': [{'group_key': 'main', 'selectors': [{'selector': 'main-0', 'ordinal': 0,
                             'variant_key': 'original', 'required': True}]}], 'metadata': {'model': 'workflow', 'align': 'align'}}},
             wait=True, timeout_seconds=120, poll_seconds=0.05)
+        assert receipt_written.wait(10), 'host terminal receipt did not complete after Runtime settlement'
         if failure:
             assert not result.ok
             assert 'prepare' in events and 'align' in events, (events, result.to_dict())
@@ -323,6 +332,91 @@ def test_native_node_installer_bootstraps_bundled_pip_without_replacing_base(tmp
         runner = _Runner(plan_install(recipe, root=str(root), placement='local'), prep.context, prep.adapter, prep.deadline)
         runner.check_environment_identities()
         for step in runner.plan.steps:
-            if step.kind == 'environment': runner.execute(step, readonly=True)
+            if step.kind in {'source', 'environment'}: runner.execute(step, readonly=True)
+    finally:
+        prep.close()
+
+
+
+@pytest.fixture
+def addon_index():
+    import base64, csv, io, zipfile
+    members = {'plan32_addon/__init__.py': b"__version__ = '1.0'\n",
+               'plan32_addon-1.0.dist-info/METADATA': b'Metadata-Version: 2.3\nName: plan32-addon\nVersion: 1.0\n',
+               'plan32_addon-1.0.dist-info/WHEEL': b'Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n'}
+    records = [(name, 'sha256=' + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip('='), str(len(data)))
+               for name, data in members.items()]
+    records.append(('plan32_addon-1.0.dist-info/RECORD', '', ''))
+    record = io.StringIO(); csv.writer(record).writerows(records)
+    members['plan32_addon-1.0.dist-info/RECORD'] = record.getvalue().encode()
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as wheel:
+        for name, data in members.items(): wheel.writestr(name, data)
+    state = {'available': True, 'requests': []}
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def do_GET(self):
+            state['requests'].append(self.path)
+            if self.path == '/packages/plan32_addon-1.0-py3-none-any.whl' and state['available']:
+                data = archive.getvalue(); content_type = 'application/octet-stream'
+            elif self.path.rstrip('/') == '/simple/plan32-addon':
+                data = (b'<a href="../../packages/plan32_addon-1.0-py3-none-any.whl">plan32-addon</a>'
+                        if state['available'] else b'')
+                content_type = 'text/html'
+            else:
+                self.send_error(404); return
+            self.send_response(200); self.send_header('Content-Length', str(len(data)))
+            self.send_header('Content-Type', content_type); self.end_headers(); self.wfile.write(data)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try: yield f'http://127.0.0.1:{server.server_port}/simple', state
+    finally: server.shutdown(); server.server_close(); thread.join()
+
+
+@pytest.mark.parametrize('outcome', ['installed', 'missing', 'changed-capsule'])
+def test_native_preparation_installs_only_allowed_addon_or_refuses_before_execution(tmp_path, managed_install, addon_index, outcome):
+    from vibecomfy.templates import ReadyMetadata, new_workflow, OutputSpec
+    from vibecomfy.nodes.core import EmptyImage, SaveImage
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import emit_bundle_with_candidate
+    from astrid.packs.vibecomfy.native_preparation import native_preparation_program
+    from astrid.core.generation.engine_contracts import IntegrityError
+    from astrid.core.generation.engine_runner import _Runner, plan_install
+    client, payload, recipe, root, started, bootstrap = managed_install
+    index_url, state = addon_index
+    state['available'] = outcome != 'missing'
+    requirements = {'packages': {'plan32-addon': '==1.0'}, 'package_indexes': [index_url]}
+    with new_workflow(ReadyMetadata.build(template_id='addon-cpu', capability='image', requirements={'runtime': requirements})) as workflow:
+        image = EmptyImage(width=16, height=16, batch_size=1, color=0)
+        saved = SaveImage(images=image.out('IMAGE'), filename_prefix='astrid')
+        workflow.finalize({}, outputs=[OutputSpec(node=saved)])
+    capsule = tmp_path / 'capsule/workflow.py'
+    emitted = emit_bundle_with_candidate(workflow, capsule, Provenance.USER_CONFIRMED, None, source_format='scratchpad')
+    hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in capsule.parent.iterdir() if path.is_file()}
+    if outcome == 'changed-capsule': capsule.write_text(capsule.read_text() + '\n# changed after admission\n')
+    prep = ManagedEnginePreparation(task='addon-task', attempt='addon-attempt', mode='align',
+        deadline=time.monotonic() + 60, cancelled=lambda: False, scratch=tmp_path / 'addon-preparation')
+    lock = prep.adapter.local_install_lock(prep.root, deadline=prep.deadline, cancelled=prep.cancelled)
+    lock.__enter__(); prep.lock = lock
+    try:
+        request = {'workflow_path': str(capsule), 'runtime_root': str(root / 'runtime'),
+                   'python_executable': str(root / 'runtime/venv/bin/python'),
+                   'uv_executable': str(root / 'runtime/bootstrap/bin/uv'), 'launch_flags': [],
+                   'capsule_sha256': hashes, 'expected_requirements': requirements, 'sync_packages': ['plan32-addon']}
+        def invoke(): return json.loads(prep._native(native_preparation_program(), json.dumps(request)).stdout)
+        if outcome == 'installed':
+            report = invoke()
+            assert report['synchronization']['synced'] is True and report['synchronization']['actions']
+            assert report['observation']['packages']['plan32-addon'] == '1.0'
+            assert report['compliance']['status'] == 'matching'
+            assert all(hashlib.sha256(Path(path).read_bytes()).hexdigest() == digest for path, digest in hashes.items())
+            assert any(path.startswith('/packages/') for path in state['requests'])
+        else:
+            with pytest.raises(IntegrityError): invoke()
+            if outcome == 'changed-capsule': assert state['requests'] == []
+            assert not list((root / 'runtime/out/preparations').glob('*.json'))
+        runner = _Runner(plan_install(recipe, root=str(root), placement='local'), prep.context, prep.adapter, prep.deadline)
+        for step in runner.plan.steps:
+            if step.kind in {'source', 'environment'}: runner.execute(step, readonly=True)
     finally:
         prep.close()
