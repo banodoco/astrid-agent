@@ -7,8 +7,8 @@ endpoint; it never provisions, starts or restarts an engine.
 from __future__ import annotations
 
 import contextlib
-import json
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -49,7 +49,12 @@ class ManagedAssetTarget:
         return ComfyTargetClient(ComfyTarget(self.url, 'managed')).object_info()
 
     def cached_object_info(self) -> dict[str, Any] | None:
-        from vibecomfy.schema.cache import CACHE_METADATA_KEY, load_object_info_cache, object_info_payload, validate_object_info_cache
+        from vibecomfy.schema.cache import (
+            CACHE_METADATA_KEY,
+            load_object_info_cache,
+            object_info_payload,
+            validate_object_info_cache,
+        )
         _safe_path(self.root, self.schema_cache)
         data = load_object_info_cache(self.schema_cache)
         if data is None:
@@ -75,7 +80,7 @@ class ManagedAssetTarget:
         source and environment checks continue to use the installed machinery.
         """
         from .engine_execution import create_local_backend
-        from .engine_runner import _Runner, _parse_receipt, plan_install
+        from .engine_runner import _parse_receipt, _Runner, plan_install
 
         raw = json.loads(_safe_path(self.root, self.root / '.astrid-engine/install.json').read_bytes())
         recipe = load_recipe(raw['engine'], raw['platform'])
@@ -229,9 +234,10 @@ def _fetch_model(model: ModelSpec, models_root: Path, *, deadline: float, client
 
 
 def selected_target() -> ManagedAssetTarget:
+    from vibecomfy.schema.cache import object_info_cache_path
+
     from .engine_local_endpoint import recorded_engine_root
     from .engine_runner import _parse_receipt, plan_install
-    from vibecomfy.schema.cache import object_info_cache_path
 
     # This is the same installed-receipt authority used by target selection,
     # without engine_status (which probes and can mutate custody state).
@@ -299,11 +305,13 @@ def _same_artifact_identity(left: ModelSpec, right: ModelSpec) -> bool:
 
 
 def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
-    from astrid.core.model_catalog.registry import ModelRegistry
-    from .backends.vibecomfy import _load_pinned_catalog_workflow
     from vibecomfy.model_assets import _referenced_model_values, _subdir_for_model_reference
-    from vibecomfy.node_packs import resolve_node_packs, read_lockfile
+    from vibecomfy.node_packs import read_lockfile, resolve_node_packs
     from vibecomfy.node_packs._lockfile import resolve_lockfile_path
+
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    from .backends.vibecomfy import _load_pinned_catalog_workflow
 
     locked = _locked_models()
     lockpath = resolve_lockfile_path()
@@ -312,8 +320,8 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
     if entry_id is not None:
         entries = [entry for entry in entries if entry.id == entry_id]
         if not entries:
-            from .entries import find_entry, _load_entry_workflow
             from .asset_gaps import declared_model_specs
+            from .entries import _load_entry_workflow, find_entry
             entry = find_entry(entry_id)
             if entry is None or entry.get('source') != 'ready-template':
                 raise AlignmentError(f'Unknown pinned entry {entry_id}; astrid generate align requires a catalog or ready-template entry ID')

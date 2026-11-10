@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from runtime_protocol import platform as runtime_platform
 
@@ -553,7 +554,7 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             prepared = candidate
             return candidate
 
-        outcomes = {"startup": "not confirmed", "command": None, "skills": None}
+        outcomes: dict[str, Any] = {"startup": "not confirmed", "command": None, "skills": None}
 
         def persist_selection(version: Version) -> None:
             if no_migration:
@@ -621,5 +622,8 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
                 outcomes["skills"] = {"ok": False, "destinations": []}
                 say("Couldn't apply Astrid's skill changes; see the log.")
             backend.persist_identity(current(root))
+        # The release this run activated: the receipt's target, whatever the manifest defaulted to.
+        assert prepared is not None
+        outcomes["release"] = prepared.release
         say("Astrid is updated and running.")
         return outcomes

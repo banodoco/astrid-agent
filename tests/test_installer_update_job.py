@@ -173,6 +173,100 @@ def test_update_job_availability_action_preserves_get_reason(monkeypatch):
         "actions": list(update_job.SUPPORTED_ACTIONS)}
 
 
+def _selected_windows_install(tmp_path, monkeypatch, *, release):
+    """A selected direct install whose current version has ``release``; no job record."""
+    root, data = tmp_path / "program", tmp_path / "data"
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    folder = root / "versions" / f"release{release}"
+    write_json(folder / "version.json", Version(
+        folder, folder / "py/python.exe", folder / "profile.json", {}, release=release).document())
+    (root / "current").write_text(f"release{release}\n")
+    selection = tmp_path / "selection" / "astrid-install.json"
+    write_json(selection, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
+    monkeypatch.setattr(update_job, "_selection_path", lambda: selection)
+    return root
+
+
+def test_windows_earlier_release_availability_reports_upgrade_reason(tmp_path, monkeypatch):
+    _selected_windows_install(tmp_path, monkeypatch, release=0)
+
+    assert update_job.update_job_availability(system="win32") == {
+        "available": False, "reason": "windows-upgrade-unsupported"}
+
+
+def test_windows_earlier_release_availability_action_reports_upgrade_reason(tmp_path, monkeypatch):
+    _selected_windows_install(tmp_path, monkeypatch, release=0)
+    availability = update_job.update_job_availability
+    monkeypatch.setattr(update_job, "update_job_availability", lambda: availability(system="win32"))
+    monkeypatch.setattr(update_job.sys, "stdin", io.StringIO('{"action":"availability"}'))
+    stdout = io.StringIO()
+    monkeypatch.setattr("builtins.print", lambda value: stdout.write(value))
+
+    update_job.main()
+
+    reply = json.loads(stdout.getvalue())
+    assert reply["available"] is False
+    assert reply["reason"] == "windows-upgrade-unsupported"
+
+
+def test_windows_current_release_availability_remains_supported(tmp_path, monkeypatch):
+    _selected_windows_install(tmp_path, monkeypatch, release=1)
+
+    assert update_job.update_job_availability(system="win32") == {"available": True}
+
+
+def _unpointed_windows_install(tmp_path, monkeypatch):
+    """A selected direct install with no current pointer, the shape an R0 install can have on Windows."""
+    root, data = tmp_path / "program", tmp_path / "data"
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    selection = tmp_path / "selection" / "astrid-install.json"
+    write_json(selection, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
+    monkeypatch.setattr(update_job, "_selection_path", lambda: selection)
+    return root
+
+
+def _task_query_answers(monkeypatch, *, count):
+    """Answer the probe's sign-in task query at the process boundary it really uses."""
+    scripts = []
+
+    def run(argv, **_kwargs):
+        scripts.append(argv[-1])
+        return CompletedProcess(argv, 0, stdout=f"ASTRID_TASK_COUNT={count}\n", stderr="")
+
+    monkeypatch.setattr(update_job.subprocess, "run", run)
+    return scripts
+
+
+def test_windows_r0_without_pointer_but_with_login_task_reports_upgrade_reason(tmp_path, monkeypatch):
+    _unpointed_windows_install(tmp_path, monkeypatch)
+    scripts = _task_query_answers(monkeypatch, count=1)
+
+    assert update_job.update_job_availability(system="win32") == {
+        "available": False, "reason": "windows-upgrade-unsupported"}
+    assert any("Get-ScheduledTask" in script for script in scripts)
+
+
+def test_windows_install_without_pointer_or_login_task_is_not_refused_as_upgrade(tmp_path, monkeypatch):
+    _unpointed_windows_install(tmp_path, monkeypatch)
+    scripts = _task_query_answers(monkeypatch, count=0)
+
+    assert update_job.update_job_availability(system="win32") == {"available": True}
+    assert any("Get-ScheduledTask" in script for script in scripts)
+
+
+def test_windows_upgrade_refusal_gate_names_the_reason_not_the_service_manager(monkeypatch):
+    monkeypatch.setattr(update_job, "update_job_availability", lambda: {
+        "available": False, "reason": "windows-upgrade-unsupported"})
+
+    with pytest.raises(update_job._UnsupportedServiceManager) as raised:
+        update_job._require_update_job_available()
+
+    assert raised.value.reason == "windows-upgrade-unsupported"
+    assert str(raised.value) == (
+        "Upgrading from an earlier Windows version isn't supported yet. "
+        "Your data was kept; reinstall to get the new version.")
+
+
 @pytest.mark.parametrize("system", ["linux", "darwin", "win32"])
 def test_availability_action_lists_supported_actions_on_every_os(monkeypatch, system):
     availability = update_job.update_job_availability
@@ -559,11 +653,12 @@ def test_explicit_saved_autostart_off_refuses_acceptance_without_mutating_prefer
     startup_path, startup_before = _startup_object_snapshot(root)
     selection_path = Path(request["selection_path"])
     selection = read_json(selection_path)
-    selection["preferences"] = {"autostart": False, "skills": {"on": True}}
+    selection["choices"] = {"autostart": False}
     write_json(selection_path, selection)
     before = selection_path.read_bytes()
-    with pytest.raises(ValueError, match="autostart is off"):
+    with pytest.raises(ValueError, match="autostart is off") as refusal:
         update_job.accept(request)
+    assert getattr(refusal.value, "reason", None) == "autostart-off"
     assert selection_path.read_bytes() == before
     assert startup_path.read_bytes() == startup_before
     assert "update_job" not in read_json(root / "install.json")
@@ -574,7 +669,7 @@ def test_saved_autostart_on_is_snapshotted_and_launch_does_not_change_selection(
     startup_path, startup_before = _startup_object_snapshot(root)
     selection_path = Path(request["selection_path"])
     selection = read_json(selection_path)
-    selection["preferences"] = {"autostart": True, "skills": {"on": True}}
+    selection["choices"] = {"autostart": True}
     write_json(selection_path, selection)
     before = selection_path.read_bytes()
     job = update_job.accept(request)
@@ -712,13 +807,23 @@ def test_worker_validation_failure_cleans_from_its_own_job_context(tmp_path, mon
     assert calls == [{"finishing": True}]
 
 
+def test_legacy_selection_without_a_choice_record_snapshots_autostart_on(tmp_path, monkeypatch):
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    selection_path = Path(request["selection_path"])
+    selection = read_json(selection_path)
+    selection.pop("choices", None)
+    write_json(selection_path, selection)
+    job = update_job.accept(request)
+    assert job["autostart_snapshot"] is True
+
+
 @pytest.mark.parametrize("terminal_state", ["updated", "rolled_back", "failed"])
 def test_worker_terminal_handoff_cleans_once_and_preserves_preferences_and_job_name(
         tmp_path, monkeypatch, terminal_state):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     selection_path = Path(request["selection_path"])
     selection = read_json(selection_path)
-    selection["preferences"] = {"autostart": True, "skills": {"on": True}}
+    selection["choices"] = {"autostart": True}
     write_json(selection_path, selection)
     before_selection = selection_path.read_bytes()
     job = update_job.accept(request)
@@ -763,7 +868,7 @@ def test_worker_launch_refuses_if_autostart_was_changed_to_off(tmp_path, monkeyp
     job = update_job.accept(request)
     selection_path = Path(request["selection_path"])
     selection = read_json(selection_path)
-    selection["preferences"] = {"autostart": "off", "skills": {"on": True}}
+    selection["choices"] = {"autostart": False}
     write_json(selection_path, selection)
     before = selection_path.read_bytes()
 
@@ -1423,3 +1528,59 @@ def test_the_job_log_is_preferred_and_the_wrapper_log_is_kept(tmp_path, monkeypa
     settled = update_job.settle_dead_worker(root)
     assert settled["message"].endswith("ValueError: worker refused before claim")
     assert "RuntimeError: wrapper side" in settled["worker_wrapper_log_tail"]
+
+
+def _malformed_saved_autostart(selection_path):
+    selection = read_json(selection_path)
+    selection["choices"] = {"autostart": "maybe"}
+    write_json(selection_path, selection)
+
+
+def test_malformed_saved_autostart_choice_is_a_needs_repair_refusal_in_accept(tmp_path, monkeypatch):
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    selection_path = Path(request["selection_path"])
+    _malformed_saved_autostart(selection_path)
+    before = selection_path.read_bytes()
+    with pytest.raises(update_job._BusyRefusal) as refusal:
+        update_job.accept(request)
+    assert refusal.value.reason == "needs-repair"
+    assert selection_path.read_bytes() == before
+    assert "update_job" not in read_json(root / "install.json")
+
+
+def test_malformed_saved_autostart_choice_is_a_needs_repair_refusal_in_worker_admission(tmp_path, monkeypatch):
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    job = update_job.accept(request)
+    selection_path = Path(request["selection_path"])
+    _malformed_saved_autostart(selection_path)
+    backend = SimpleNamespace(service=SimpleNamespace(selection=selection_path))
+    with pytest.raises(update_job._BusyRefusal) as refusal:
+        update_job.admit_worker(root, job["operation_id"], backend, None, tmp_path / "data", None)
+    assert refusal.value.reason == "needs-repair"
+
+
+def test_malformed_saved_autostart_choice_is_a_needs_repair_refusal_in_reconcile(tmp_path, monkeypatch):
+    selection = tmp_path / "astrid-install.json"
+    write_json(selection, {"owner": LABEL, "choices": {"autostart": "maybe"}})
+    data = tmp_path / "data"
+    job = {"state": "accepted", "bootstrap_proof": {"claim_state": "unclaimed"},
+           "worker_command_sha256": "digest"}
+    monkeypatch.setattr(update_job, "_bootstrap_proof_valid", lambda _job: True)
+    monkeypatch.setattr(update_job, "_validate_worker_binding",
+                        lambda _root, _job: (SimpleNamespace(release=11), data))
+    monkeypatch.setattr(update_job, "_worker_binding_digest", lambda _old, _job: "digest")
+    monkeypatch.setattr(update_job, "_recorded_selection_path", lambda _job: selection)
+    monkeypatch.setattr("astrid.installer.core.current", lambda _root: object())
+    with pytest.raises(update_job._BusyRefusal) as refusal:
+        update_job._validate_prebootstrap(tmp_path / "program", job, data)
+    assert refusal.value.reason == "needs-repair"
+
+
+def test_status_reports_without_reading_a_malformed_saved_autostart_choice(tmp_path, monkeypatch, capsys):
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    _malformed_saved_autostart(Path(request["selection_path"]))
+    monkeypatch.setattr(update_job, "update_job_availability", lambda: {"available": True})
+    monkeypatch.setattr(update_job.sys, "stdin", io.StringIO('{"action":"availability"}'))
+    update_job.main()
+    reply = json.loads(capsys.readouterr().out)
+    assert reply["available"] is True

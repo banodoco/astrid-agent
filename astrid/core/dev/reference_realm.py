@@ -8,6 +8,7 @@ The result is shaped like a real reference (``runtime/catalog.json``, ``runtime/
 """
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -25,6 +26,7 @@ TIMELINE_SECONDS = CLIP_COUNT * CLIP_SECONDS
 FFMPEG_SECONDS = 120
 TINY_CLIP_SECONDS = 1
 TINY_CLIP_SIZE = "320x180"
+REFERENCE_PUBLISHER = "journey-reference"
 
 
 class ReferenceBuildError(RuntimeError):
@@ -46,7 +48,10 @@ def source_manifest(source_checkout: Path, runtime_checkout: Path, runtime_envir
 
 
 def media_only_publication(project_id: str, media: Sequence[Mapping[str, Any]], *, seconds: int = CLIP_SECONDS) -> dict[str, Any]:
-    """The parent-composition publication: the clips end to end on one visual track, nothing else."""
+    """The reference timeline: the clips end to end on one visual track, nothing else.
+
+    ``_seed_timeline`` commits its ``parent_composition`` and admits its ``dependency_manifest`` media.
+    """
     assets = {f"clip{n}": {"media_id": m["object_id"], "content_sha256": m["object_id"], "type": "video"}
               for n, m in enumerate(media, 1)}
     clips = [{"id": f"clip-{n}", "clipType": "media", "track": "video", "asset": f"clip{n}",
@@ -57,11 +62,80 @@ def media_only_publication(project_id: str, media: Sequence[Mapping[str, Any]], 
         config["theme_overrides"] = {"visual": {"canvas": {"width": 320, "height": 180, "fps": 24}}}
     return {
         "project_id": project_id, "timeline_id": TIMELINE_ID, "expected_head": None,
-        "parent_revision_id": "parent-1",
         "dependency_manifest": {"media": [{"media_id": m["object_id"], "content_digest": m["digest"]} for m in media]},
         "parent_composition": {"config": config,
                                "registry": {"assets": assets}, "clips": clips, "occurrences": []},
     }
+
+
+def seeded_parent(publication: Mapping[str, Any]) -> dict[str, Any]:
+    """The parent payload the seed commit must leave at the head: the publication's composition.
+
+    The one difference from the retired publish is Runtime-owned: a committed parent keeps
+    ``config.clips`` as an exact mirror of the root ``clips`` (the bootstrap head already carries both).
+    """
+    target = copy.deepcopy(dict(publication["parent_composition"]))
+    target["config"] = {**target["config"], "clips": copy.deepcopy(target["clips"])}
+    return target
+
+
+def timeline_commit_body(publication: Mapping[str, Any], base_document: Mapping[str, Any],
+                         base_publication_id: str) -> dict[str, Any]:
+    """The guarded commitTimeline request that turns a fresh timeline's bootstrap head into ``publication``.
+
+    ``base_document`` is the canonical closure of the bootstrap head that ``create_timeline`` made and
+    ``base_publication_id`` its publication; both pins are the stale-head guard. ``doc.patch`` changes,
+    each carrying its ``before`` guard, are diffed from that base (the clips at 0, 4 and 8 s, the
+    registry assets and the visual track replacing the bootstrap V1/A1), then ``media.admit`` captures
+    the ingested objects the clips name.
+    """
+    from astrid.sdk.timeline.commit import bundle_from_document
+    from astrid.sdk.timeline.emitter import emit_document_commands
+
+    before = bundle_from_document(base_document)  # verifies the base closure and its digests
+    target = seeded_parent(publication)
+    after = copy.deepcopy(before)
+    after["parent"].update({key: copy.deepcopy(target[key]) for key in ("config", "registry", "clips")})
+    patches = emit_document_commands(before, after)
+    admit = {"schema_version": 1, "op": "media.admit", "version": "1", "select": None,
+             "args": {"inputs": [{"pin": dict(pin)} for pin in publication["dependency_manifest"]["media"]]}}
+    # The admission is its own step: it records the inputs consumed at the final boundary.
+    steps = [{"id": "seed-timeline", "label": "Seed reference clips", "intent": "", "tags": [],
+              "command_ordinals": list(range(len(patches))),
+              "patch": [copy.deepcopy(change) for call in patches for change in call["args"]["changes"]]},
+             {"id": "seed-media", "label": "Admit reference media", "intent": "", "tags": [],
+              "command_ordinals": [len(patches)], "patch": []}]
+    return {"api_version": 1, "project_id": publication["project_id"], "timeline_id": TIMELINE_ID,
+            "base_revision_id": base_document["parent_revision"]["revision_id"],
+            "base_publication_id": base_publication_id, "commands": [*patches, admit],
+            "label": "Seed reference timeline", "steps": steps, "merge": "atomic", "dry_run": False}
+
+
+def _offline_authorize() -> None:
+    """The reference is built offline in this process: there is no bearer to check."""
+
+
+def _seed_timeline(service: Any, publication: Mapping[str, Any]) -> dict[str, Any]:
+    """Commit ``publication`` onto the fresh timeline's bootstrap head and return the accepted result."""
+    from runtime_protocol.timeline_commit_port import route_path
+
+    project_id = publication["project_id"]
+    head = service.list_timeline_commits(project_id, TIMELINE_ID, authorize=_offline_authorize)["head"]
+    parent = service.get_project_parent_composition_revision(project_id, TIMELINE_ID, head["revision_id"])
+    base = {"schema_version": 1, "project_id": project_id, "timeline_id": TIMELINE_ID,
+            "parent_revision": {key: parent[key] for key in ("revision_id", "content_digest", "payload")},
+            "shot_revisions": [], "internal_timeline_revisions": [],
+            "dependency_manifest": parent["dependency_manifest"]}
+    accepted = service.commit_timeline(
+        project_id, TIMELINE_ID, timeline_commit_body(publication, base, head["publication_id"]),
+        idempotency_key="journey-publish", publisher=REFERENCE_PUBLISHER,
+        invocation_path=route_path(project_id, TIMELINE_ID), authorize=_offline_authorize)["data"]
+    if accepted["status"] != "accepted":
+        raise ReferenceBuildError(f"seed commit was not accepted: {accepted['status']}")
+    payload = copy.deepcopy(accepted["canonical_document"]["parent_revision"]["payload"])
+    if payload != seeded_parent(publication):
+        raise ReferenceBuildError("seed commit left a different timeline than the reference publication")
+    return accepted
 
 
 def _run(argv: list[str], env: Mapping[str, str], what: str, timeout: float | None) -> str:
@@ -81,6 +155,10 @@ def build_reference(workdir: Path, *, env: Mapping[str, str], source_checkout: P
         RuntimeService,  # the same Runtime the journey will adopt with
     )
 
+    from astrid.sdk.timeline.commit import (
+        create_runtime_commit_service,  # the Agent's commit provider
+    )
+
     root = workdir / "reference"
     realm = root / "runtime" / "realms" / REALM_ID
     clips = workdir / "clips"
@@ -93,6 +171,9 @@ def build_reference(workdir: Path, *, env: Mapping[str, str], source_checkout: P
          child, "workspace create", None if tiny else 120)
     service = RuntimeService(realm)
     try:
+        # The Agent's provider executes commitTimeline. Registration is startup-only and must precede
+        # create_timeline, which then bootstraps the editable head the seed commit is guarded on.
+        service.register_timeline_commit_provider(create_runtime_commit_service())
         project = service.create_project({"slug": PROJECT_SLUG, "name": "Journey"}, idempotency_key="journey-project")
         service.create_timeline(project["id"], TIMELINE_ID, idempotency_key="journey-timeline")
         media = []
@@ -105,8 +186,7 @@ def build_reference(workdir: Path, *, env: Mapping[str, str], source_checkout: P
                  f"ffmpeg clip {index + 1}", None if tiny else FFMPEG_SECONDS)
             media.append(service.ingest(project["id"], clip.read_bytes(), media_type="video/mp4", original_name=clip.name,
                                         idempotency_key=f"journey-clip-{index + 1}")["data"])
-        publication = media_only_publication(project["id"], media, seconds=seconds)
-        service.publish_parent_composition(project["id"], TIMELINE_ID, publication, idempotency_key="journey-publish")
+        _seed_timeline(service, media_only_publication(project["id"], media, seconds=seconds))
     finally:
         service.close()
     shutil.rmtree(clips, ignore_errors=True)

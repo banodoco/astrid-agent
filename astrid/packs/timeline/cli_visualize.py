@@ -287,7 +287,10 @@ def _cmd_visualize_diff(parsed: argparse.Namespace) -> int:
     notes = []
     window_given = any(getattr(parsed, name, None) not in (None, "") for name in ("range", "at", "cut"))
     if getattr(parsed, "preset", None) == "compare" and window_given and not getattr(parsed, "no_capture", False):
-        from astrid.packs.rendering.actions.timeline_visualize.motion.diffview import compose_compare, window_frames_of
+        from astrid.packs.rendering.actions.timeline_visualize.motion.diffview import (
+            compose_compare,
+            window_frames_of,
+        )
 
         frames, roots = {}, {}
         options = {"view": "motion", "preset": "scan", "formats": ["png"]}
@@ -514,8 +517,13 @@ def _visualize_plan(parsed: argparse.Namespace, inputs: Mapping[str, Any]) -> in
     import math
 
     from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import plan_filmstrip
-    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import filmstrip_options
-    from astrid.packs.rendering.actions.timeline_visualize.motion.window import fit_columns, preset_settings
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import (
+        filmstrip_options,
+    )
+    from astrid.packs.rendering.actions.timeline_visualize.motion.window import (
+        fit_columns,
+        preset_settings,
+    )
     from astrid.sdk.timeline_filmstrip import prepare_filmstrip
 
     values = dict(inputs)
@@ -637,8 +645,10 @@ def _layer_names(parsed: argparse.Namespace) -> list[str]:
 
 def cmd_visualize(parsed: argparse.Namespace) -> int:
     """Resolve what was asked, run it through the one SDK call, and say what came out."""
+    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (
+        inspection_options,
+    )
     from astrid.sdk.contracts import DomainResult, ErrorObject
-    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import inspection_options
 
     cli = _cli()
     if getattr(parsed, "list_layers", False):
@@ -798,7 +808,10 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
                                        {"field": "edited", "view": inputs.get("view")})
 
     if working is not None:
-        from astrid.core.timeline.authoring_bundle import AuthoringBundleError, preview_authoring_candidate
+        from astrid.core.timeline.authoring_bundle import (
+            AuthoringBundleError,
+            preview_authoring_candidate,
+        )
         from astrid.sdk.timeline_checkout import Checkout
 
         draft = Checkout.load(working["draft"])

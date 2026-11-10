@@ -979,7 +979,7 @@ def test_direct_windows_workflow_preflight_invocation(tmp_path, monkeypatch, cap
     assert "if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }" in step
     code = step.split('          $code = "', 1)[1].split('"\n', 1)[0]
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
-    monkeypatch.setenv("JOURNEY_LEG", "release0-to-release1")
+    monkeypatch.setenv("JOURNEY_LEG", "release9-then-install")
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     response = {"status": status}
     if status == "absent":
@@ -1003,14 +1003,14 @@ def test_direct_windows_workflow_preflight_invocation(tmp_path, monkeypatch, cap
     else:
         exec(code, {})
     evidence = json.loads((tmp_path / "journey-manager-direct-windows" /
-                           "preflight-scheduled-task-release0-to-release1.json").read_text())
+                           "preflight-scheduled-task-release9-then-install.json").read_text())
     assert evidence["status"] == ("error" if status == "unknown" else status)
     if status != "unknown":
         assert evidence["observation"] == response
     assert evidence["exit_code"] == exit_code and evidence["stderr"] == "diagnostic stderr"
     diagnostic = json.loads((tmp_path / "journey-manager-direct-windows" / "preflight-scheduled-task.txt").read_text())
     assert diagnostic["query"]["classification"] == {"absent": "not-found", "present": "present"}.get(status, "error")
-    prefix = "Scheduled Task preflight (release0-to-release1): "
+    prefix = "Scheduled Task preflight (release9-then-install): "
     assert json.loads(capsys.readouterr().out.strip().removeprefix(prefix)) == evidence
 
 
@@ -1020,9 +1020,9 @@ def test_windows_manager_prerequisite_passes_lifecycle_leg(tmp_path, monkeypatch
     monkeypatch.setattr(journey, "scheduled_task_preflight", lambda leg: calls.append(leg))
     monkeypatch.setattr(journey, "powershell", lambda *args, **kwargs: "5.1")
     args = shared_journey.argparse.Namespace(job_id="direct-windows", mode="direct",
-                                            leg="release0-to-release1")
+                                            leg="release9-then-install")
     result = shared_journey.release1_manager_prerequisite(args, tmp_path)
-    assert calls == ["release0-to-release1"]
+    assert calls == ["release9-then-install"]
     assert result["outcome"] == "pass" and result["manager"] == "task-scheduler"
 
 

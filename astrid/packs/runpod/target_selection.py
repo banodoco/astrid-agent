@@ -22,7 +22,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
-from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
 from astrid.sdk.storage_root import resolve_runtime_data_root
 
 from .worker_preparation import (

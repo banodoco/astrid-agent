@@ -6339,6 +6339,11 @@ class GenericPackHost:
             if any(str(root) not in _runtime_external_sources._launch_roots for root in configured_roots):
                 raise HostError("discovery root is outside retained Runtime source custody")
         self.pack_roots = tuple(dict.fromkeys(configured_roots))
+        # Only a host that serves the personal collection may acknowledge its outbox.
+        self._personal_collection = bool(personal_collection)
+        self._admitted_pack_ids: set[str] = set()
+        self._pack_refresh_failures = 0
+        self._pack_refresh_reason = ""
         self.client = client
         self.executor_id = executor_id
         self.max_concurrency = max(1, int(max_concurrency))
@@ -6349,6 +6354,7 @@ class GenericPackHost:
         self.capabilities: dict[str, CapabilityRecord] = {}
         self._orchestrators: dict[str, _OrchestratorRecord] = {}
         self.stale_matrix_entries: tuple[str, ...] = ()
+        self.missing_required_capabilities: tuple[str, ...] = ()
         self._registered_digests: dict[str, str] = {}
         self._registered_state: dict[str, dict[str, str]] = {}
         self._registered_runtime_state: dict[str, Any] = {}
@@ -7214,6 +7220,8 @@ class GenericPackHost:
             bundled_core_root == root or bundled_core_root.is_relative_to(root) for root in self._explicit_pack_roots
         )
         local_orchestrator_ids: set[str] = set()
+        admitted_pack_ids: set[str] = set()
+        self._admitted_pack_ids = admitted_pack_ids
         for discovered_pack in discovered_packs:
             pack = discovered_pack.pack
             pack_root = pack.root.resolve()
@@ -7224,6 +7232,8 @@ class GenericPackHost:
                 for root in self.pack_roots
             ):
                 continue
+            if not _inside_quarantined(pack_root, quarantined_dirs):
+                admitted_pack_ids.add(pack.id)
             for local_id, declaration in pack.actions.items():
                 try:
                     if action_is_local_orchestrator(declaration):
@@ -7264,6 +7274,9 @@ class GenericPackHost:
                 capability_id
                 for capability_id in expected - discovered
                 if not capability_id.startswith(_OPTIONAL_EXTERNAL_MATRIX_PREFIXES)
+                # A row that names its external pack is expected to be absent
+                # until that pack is installed with `astrid packs add`.
+                and not self.matrix[capability_id].get("external_pack")
                 and capability_id.split(".", 1)[0] not in quarantined_ids
                 # Declared local orchestrators are registered through the
                 # orchestrator registry, not executor discovery.
@@ -7273,6 +7286,17 @@ class GenericPackHost:
                 _LOGGER.warning(
                     "capability matrix rows not discovered (ignored): %s",
                     ", ".join(self.stale_matrix_entries),
+                )
+            # A required capability with no executor is a broken install, so it
+            # is named in the log, the ready file and doctor, not only dropped.
+            self.missing_required_capabilities = tuple(
+                capability_id for capability_id in self.stale_matrix_entries
+                if self.matrix[capability_id].get("disposition") == "required"
+            )
+            if self.missing_required_capabilities:
+                _LOGGER.error(
+                    "required capabilities have no installed executor: %s",
+                    ", ".join(self.missing_required_capabilities),
                 )
         # Dependencies are digested after the full corpus is known so a graph
         # or dependency source change invalidates the next registration.
@@ -7504,6 +7528,7 @@ class GenericPackHost:
 
         selected = [self.capabilities[capability_id]] if capability_id else list(self.capabilities.values())
         updated: dict[str, CapabilityRecord] = dict(self.capabilities)
+        installed_packs = {installed_id.split(".", 1)[0] for installed_id in self.capabilities}
         gpu_detection = None
         remotion_status = None
         remotion_context = self._remotion_idle_context() if any(
@@ -7652,6 +7677,14 @@ class GenericPackHost:
                     "ok": sandbox_available,
                     **({} if sandbox_available else {"reason": "host-managed provider broker requires macOS sandbox-exec"}),
                 }
+            # A capability that depends on another pack's capability cannot run
+            # until that pack is installed, so it does not read ready.
+            absent_packs = sorted({
+                dependency.split(".", 1)[0] for dependency in record.definition.graph.depends_on
+                if "." in dependency and dependency.split(".", 1)[0] not in installed_packs
+            })
+            if absent_packs:
+                checks["packs"] = {"ok": False, "missing": absent_packs}
             if _is_withdrawn(record):
                 checks["disposition"] = {
                     "ok": False,
@@ -7840,7 +7873,7 @@ class GenericPackHost:
             ) from exc
         return {"registration": registration, "capabilities": [r.manifest() for r in self.capabilities.values()], "withdrawn_capabilities": removed}
 
-    def _renew_executor_registration(self, *, idle: bool = True) -> None:
+    def _renew_executor_registration(self, *, idle: bool = True, deliberate: bool = False) -> None:
         """Refresh runtime executor liveness without replaying a receipt.
 
         A restarted Runtime (new epoch, rotated worker credential) fences this
@@ -7855,7 +7888,10 @@ class GenericPackHost:
             renew = getattr(self.client, "renew_registration_session", None)
             if callable(renew):
                 renew()
-            adopt = idle and self._runtime_restarted
+            # A deliberate renewal is the one validated path that re-registers under a
+            # changed source epoch: the committed pack refresh, while idle. Every other
+            # renewal keeps the source-epoch fence.
+            adopt = idle and (self._runtime_restarted or deliberate)
             self._register_impl(idle_renewal=True, deliberate=adopt)
         except Exception:
             self._registration_refresh_blocked = True
@@ -7888,17 +7924,54 @@ class GenericPackHost:
         from astrid.core.pack.transaction import refresh_pending, retry_refresh
         from astrid.personal_packs_root import resolve_personal_packs_root
 
+        if not self._personal_collection:
+            return False  # a host that does not serve the personal collection never consumes its outbox
         root = resolve_personal_packs_root()
         if root is None or not refresh_pending(packs_root=root):
+            self._pack_refresh_failures = 0
             return False
 
         def renew(*, transaction_id: str, committed_revision: int, changed_ids: tuple[str, ...]) -> dict[str, Any]:
-            self.discover()
-            self._renew_executor_registration(idle=True)
+            try:
+                self.discover()
+                # The committed refresh is a deliberate source change: re-register under the
+                # newly discovered epoch. Acknowledge only after that registration succeeds.
+                self._renew_executor_registration(idle=True, deliberate=True)
+                # Acknowledge only when the admitted packs match the committed collection: a
+                # changed pack is admitted exactly when its directory is present.
+                unserved = [pack_id for pack_id in changed_ids
+                            if (root / pack_id).is_dir() != (pack_id in self._admitted_pack_ids)]
+            except Exception as exc:
+                self._pack_refresh_reason = f"{type(exc).__name__}: {exc}"
+                raise
+            if unserved:
+                reason = f"registration does not match committed packs: {', '.join(unserved)}"
+                self._pack_refresh_reason = reason
+                return {"version": 1, "accepted": False, "revision": committed_revision, "reason": reason}
             return {"version": 1, "accepted": True, "revision": committed_revision,
                     "reason": "registered by the running generic host"}
 
-        return not retry_refresh(packs_root=root, refresh=renew)
+        self._pack_refresh_reason = "registration did not complete"
+        pending = retry_refresh(packs_root=root, refresh=renew)
+        if pending:
+            self._record_pack_refresh_failure(self._pack_refresh_reason)
+            return False
+        self._pack_refresh_failures = 0
+        return True
+
+    def _record_pack_refresh_failure(self, reason: str) -> None:
+        """Count a consecutive pack-refresh failure and log only its first and power-of-two occurrences."""
+        self._pack_refresh_failures += 1
+        count = self._pack_refresh_failures
+        if count == 1 or not (count & (count - 1)):
+            print(f"generic host pack refresh not acknowledged ({count} consecutive, retrying): {reason}",
+                  file=sys.stderr, flush=True)
+
+    def _pack_refresh_delay(self) -> float:
+        """Idle cadence between outbox attempts, backing off while they keep failing."""
+        if not self._pack_refresh_failures:
+            return 2.0
+        return min(30.0, 2.0 * (2 ** min(self._pack_refresh_failures - 1, 4)))
 
     def refresh(self) -> tuple[CapabilityRecord, ...]:
         """Re-scan source and report digest changes; callers must register again."""
@@ -13252,7 +13325,19 @@ class GenericPackHost:
             return self._run_claim_slots(poll_seconds=poll_seconds, max_tasks=max_tasks)
         results: list[Mapping[str, Any]] = []
         consecutive_claim_failures = 0
+        pack_ack_at = 0.0
         while not self._shutdown.is_set() and (max_tasks is None or len(results) < max_tasks):
+            # Idle point: no claim is in flight. Attempt the pack-refresh ack here, before
+            # the claim, so a claim that keeps failing (blocked or fenced registration)
+            # cannot skip the deliberate re-registration that clears the fence. `once`
+            # leaves the outbox untouched.
+            now = time.monotonic()
+            if not once and now >= pack_ack_at:
+                try:
+                    self.acknowledge_pack_refresh()
+                except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
+                    self._record_pack_refresh_failure(f"{type(exc).__name__}: {exc}")
+                pack_ack_at = time.monotonic() + self._pack_refresh_delay()
             try:
                 if time.monotonic() >= self._registration_refresh_deadline:
                     self._renew_executor_registration()
@@ -13455,11 +13540,11 @@ class GenericPackHost:
                 if max_tasks is not None and len(results) >= max_tasks:
                     break
                 if now >= pack_ack_at and not active:
-                    pack_ack_at = now + 2.0
                     try:
                         self.acknowledge_pack_refresh()
                     except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
-                        report_failure(exc, 1)
+                        self._record_pack_refresh_failure(f"{type(exc).__name__}: {exc}")
+                    pack_ack_at = time.monotonic() + self._pack_refresh_delay()
                 if now >= max(self._registration_refresh_deadline, refresh_retry_at):
                     try:
                         self._renew_executor_registration(idle=not active)
@@ -17194,6 +17279,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             "capability_count": len(host.capabilities),
             "ready_capabilities": sorted(record.id for record in host.capabilities.values() if record.ready),
             "unready_capabilities": sorted(record.id for record in host.capabilities.values() if not record.ready),
+            "missing_required_capabilities": list(host.missing_required_capabilities),
             "gated_checks": _gated_remotion_faults(host.capabilities.values()),
             "registration": registration,
             "ready_file": str(ready_path),

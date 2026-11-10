@@ -4,7 +4,9 @@ The per-user installer lock is held by the public entry for this entire
 operation. The authoritative journal lives outside both roots, including before
 Runtime publishes a destination. An interrupted command is NEVER inferred to
 have succeeded from a destination or receipt. Recovery restores R0 and retains
-every published copy. A completed handoff retains its evidence for --rollback.
+every published copy. A completed handoff is normalised once (``normalise``):
+R1 becomes the selected data root and the journal is archived as provenance,
+which ``--rollback`` can still use until Astrid is updated.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import secrets
 
 from . import adoption_receipt, boundary_registration as registration, r0_stop
 from .core import Version, absolute, current, pending_transaction, read_json, separate_roots, version_id
+from .installation import HANDOFF_ARCHIVE
 from .service import LABEL, bootstrap_root
 
 
@@ -33,13 +36,41 @@ WINDOWS_UPGRADE_REFUSAL = (
 )
 
 
+def windows_upgrade_refused(root, service) -> bool:
+    """Whether ``handle`` refuses this installation with WINDOWS_UPGRADE_REFUSAL.
+
+    Mirrors the order in ``handle``: a pending transaction or a non-R0 install
+    is never refused, and an R0 install on Windows always is.
+    """
+    return (service.system == "win32" and not pending_transaction(root)
+            and r0_stop.is_r0_installation(root, service))
+
+
 def journal_path(service):
     return r0_stop._marker_path(service).with_name("astrid-r1-handoff.json")
 
 
+def archive_path(service):
+    """A finished handoff's journal after normalisation: provenance, not authority."""
+    return journal_path(service).with_name(HANDOFF_ARCHIVE)
+
+
+def finish_restore(service):
+    """Finish a restore_archive cut between its link and its unlink (same inode at both names)."""
+    journal, archive = absolute(journal_path(service)), absolute(archive_path(service))
+    if os.path.lexists(journal) and os.path.lexists(archive):
+        if not os.path.samestat(os.lstat(journal), os.lstat(archive)):
+            raise ValueError("Both an active and an archived storage move exist; both data folders were kept.")
+        archive.unlink()
+        r0_stop._sync_directory(archive.parent)
+
+
 def retained_roots(service):
-    value = read_json(absolute(journal_path(service)))
-    return [absolute(value[k]) for k in ("program_root", "r0_data_root", "r1_data_root")] if value else []
+    roots = []
+    for path in (journal_path(service), archive_path(service)):
+        value = read_json(absolute(path))
+        roots += [absolute(value[k]) for k in ("program_root", "r0_data_root", "r1_data_root")] if value else []
+    return roots
 
 
 def _text(path):
@@ -50,9 +81,27 @@ def _json(value):
     return json.dumps(value, sort_keys=True) + "\n"
 
 
-# Saved setup choices (and the command receipt they produce) may change after a
+# Saved setup choices, the command receipt and service settings may change after a
 # completed handoff; they are policy, not handoff identity.
-POLICY_FIELDS = (("command_shim", "command_path"), ("choices",), ())
+POLICY_FIELDS = (("command_shim", "command_path", "update_job"),
+                 ("choices", "service_settings", "chat_settings"), ())
+ROLLBACK_AFTER_UPDATE = (
+    "Astrid was updated after the earlier storage move, so switching back to that copy is not "
+    "offered automatically. Both data folders were kept."
+)
+
+
+def _normalise_record(record, value, *, selection):
+    """The direct-install form of a handed-off record: R1 is the data root, R0 is provenance."""
+    result = {k: v for k, v in record.items() if k not in ("r1_data_root", "r1_realm_root")}
+    result["data_root"] = value["r1_data_root"]
+    result["retained_r0_data_root"] = value["r0_data_root"]
+    if selection:
+        result["realm_root"] = str(Path(value["r1_data_root"]) / "runtime/realms" / value["realm_id"])
+    else:
+        # The selection carries the selected identity; a marker copy would go stale on update.
+        result.pop("identity", None)
+    return result
 
 
 def _matches(path, expected, ignore):
@@ -79,6 +128,7 @@ class BoundaryHandoff:
             alias=registration._publication_alias(self.journal, value) if first else None)
 
     def _load(self):
+        finish_restore(self.service)
         value = read_json(absolute(self.journal))
         if (value.get("version") != 1 or value.get("program_root") != str(self.root)
                 or value.get("system") != self.service.system
@@ -129,20 +179,29 @@ class BoundaryHandoff:
         selection.pop("uninstalled", None)
         return _json(marker), _json(selection), candidate.root.name + "\n"
 
+    def _normalised_records(self, value):
+        marker, selection, pointer = self._records(value)
+        return (_json(_normalise_record(json.loads(marker), value, selection=False)),
+                _json(_normalise_record(json.loads(selection), value, selection=True)), pointer)
+
     def _restore_selection(self, value):
         paths = (self.root / "install.json", self.service.selection, self.root / "current")
         old = (value["old_marker"], value["old_selection"], value["old_pointer"])
         new = self._records(value) if value.get("candidate") else old
+        normal = self._normalised_records(value) if value.get("candidate") else old
         # Validate all three before the first mutation. A partial replay may
-        # contain either side at each file, never a third party's replacement.
-        for path, before, after, ignore in zip(paths, old, new, POLICY_FIELDS):
-            if not _matches(path, (before, after), ignore):
+        # contain either side (or the normalised R1 side) at each file, never a
+        # third party's replacement.
+        for path, before, after, normalised, ignore in zip(paths, old, new, normal, POLICY_FIELDS):
+            if not _matches(path, (before, after, normalised), ignore):
                 raise ValueError(f"Handoff selection changed; R0 was not restarted: {path}")
         for path, before in zip(paths, old):
             if _text(path) != before:
                 registration._publish(path, before, exclusive=False)
 
     def recover(self, *, rollback=False):
+        if rollback and not os.path.lexists(self.journal) and os.path.lexists(archive_path(self.service)):
+            self.restore_archive()  # Rollback from a normalised handoff, before any update.
         value = self._load()
         if value["phase"] == "rolled_back":
             self._restore_selection(value)
@@ -184,9 +243,10 @@ class BoundaryHandoff:
     def validate_active(self, value):
         if value["phase"] != "complete" or not value.get("receipt"):
             raise ValueError("The R1 handoff is not complete.")
-        for path, expected, ignore in zip((self.root / "install.json", self.service.selection, self.root / "current"),
-                                          self._records(value), POLICY_FIELDS):
-            if not _matches(path, (expected,), ignore):
+        for path, expected, normalised, ignore in zip(
+                (self.root / "install.json", self.service.selection, self.root / "current"),
+                self._records(value), self._normalised_records(value), POLICY_FIELDS):
+            if not _matches(path, (expected, normalised), ignore):
                 raise ValueError("R1 handoff selection changed; both roots were kept.")
         candidate = Version.load(value["candidate"])
         if read_json(registration._regular(candidate.root / "version.json")) != candidate.document():
@@ -202,6 +262,47 @@ class BoundaryHandoff:
         if any(not path.exists() for path in expected):
             raise ValueError("R1 service registration is missing.")
         return candidate, Path(value["r1_data_root"])
+
+    def normalise(self, value):
+        """Finish a completed handoff once: afterwards this is an ordinary direct install.
+
+        The marker and selection name R1 as ``data_root`` and its realm as
+        ``realm_root``; R0 stays as ``retained_r0_data_root`` (provenance only).
+        The journal becomes an archive. Each step is idempotent, so an
+        interrupted normalisation is finished by the next run.
+        """
+        archive = absolute(archive_path(self.service))
+        if os.path.lexists(archive):
+            raise ValueError("An archived storage move already exists; both data folders were kept.")
+        candidate, _destination = self.validate_active(value)
+        # The selected version's launcher must accept the normalised records
+        # before they are written: the R1 service restarts through it.
+        registration.stage_runtime_launcher(candidate, replace=True)
+        if _text(candidate.root / "bin/runtime.py") != registration.launcher_script(candidate):
+            # Never write records the running version's launcher would refuse.
+            raise ValueError("The selected version's launcher could not be replaced; nothing was changed.")
+        for path, selection in ((self.root / "install.json", False), (self.service.selection, True)):
+            record = json.loads(_text(path))
+            normalised = _normalise_record(record, value, selection=selection)
+            if normalised != record:
+                registration._publish(path, _json(normalised), exclusive=False)
+        os.replace(self.journal, archive)
+        r0_stop._sync_directory(archive.parent)
+        return candidate
+
+    def restore_archive(self):
+        """Make the archived journal authoritative again, only for --rollback from the handoff state."""
+        archive = absolute(archive_path(self.service))
+        value = read_json(registration._regular(archive))
+        candidate = value.get("candidate")
+        if (value.get("phase") != "complete" or not isinstance(candidate, dict)
+                or _text(self.root / "current") != Path(candidate.get("root", "")).name + "\n"):
+            raise ValueError(ROLLBACK_AFTER_UPDATE)
+        if os.path.lexists(self.journal):
+            raise ValueError("R1 handoff journal does not bind this installer; both roots were kept.")
+        os.link(archive, self.journal, follow_symlinks=False)
+        archive.unlink()
+        r0_stop._sync_directory(archive.parent)
 
     def run(self, data, manifest_loader, *, say=print):
         data = absolute(data)
@@ -279,44 +380,67 @@ class BoundaryHandoff:
                 self.backend.verify(candidate, destination, realm_id)
             value["phase"] = "complete"
             self._save(value)
-            say(f"Astrid is using {destination}. R0 is retained at {data}. Use astrid install --rollback to switch back; later changes stay in their own root.")
         except (Exception, KeyboardInterrupt):
             self.recover(rollback=True)
             raise
+        # The handoff is committed; normalising cannot undo it. An interrupted
+        # normalisation is finished by the next run from the complete journal.
+        self.normalise(value)
 
 
 POLICY_REFUSAL = ("The R0 to R1 handoff is copy-only and cannot apply setup choice changes "
                   "({names}). Nothing was changed; rerun without those flags, or change them after the handoff.")
 
 
+def normalise_completed(backend):
+    """Normalise a completed handoff journal once; return whether one was normalised."""
+    if not os.path.lexists(journal_path(backend.service)):
+        return False
+    transaction = BoundaryHandoff(backend)
+    value = transaction._load()
+    if value["phase"] != "complete":
+        return False
+    transaction.normalise(value)
+    return True
+
+
 def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=print, policy_change=None):
     """Return True when the public entry is handled without any legacy path.
+
+    True means this run performed the copy-only handoff or recovered/rolled
+    back one; the caller then reports the observed outcome. False means the
+    install is not at the R0/R1 boundary (including a normalised handed-off
+    install) and the ordinary install or update path continues.
 
     The handoff never changes command, autostart or skill policy. A requested
     change (``policy_change``) is therefore refused before any handoff work
     instead of being silently dropped; unchanged saved policy is carried over.
-    Once the handoff is complete, changed choices are not handled here (False is
-    returned) so a later explicit install applies them.
     """
     path = journal_path(backend.service)
+    finish_restore(backend.service)
+    if rollback and not os.path.lexists(path) and os.path.lexists(archive_path(backend.service)):
+        BoundaryHandoff(backend).restore_archive()
+    if not rollback and not os.path.lexists(path) and os.path.lexists(archive_path(backend.service)):
+        # A normalised handed-off install is a direct install. Never replay the
+        # retained R1 registration or R0 stop intent: they are rollback evidence.
+        return False
     if os.path.lexists(path):
         transaction = BoundaryHandoff(backend)
         value = transaction._load()
-        if policy_change and value["phase"] == "complete" and not rollback:
-            # The handoff is finished: the caller's normal install applies the new choices.
-            return False
+        if value["phase"] == "complete" and not rollback:
+            # The caller resolved its data root from the un-normalised records;
+            # continuing would use R0's. The install line normalises first.
+            raise ValueError("The earlier storage move must be finished by the install line first; "
+                             "nothing was changed. Run the install line again.")
         if policy_change:
             raise ValueError(POLICY_REFUSAL.format(names=", ".join(sorted(policy_change))))
-        if value["phase"] == "complete" and not rollback:
-            candidate, destination = transaction.validate_active(value)
-            backend.verify(candidate, destination, value["realm_id"])
-            say(f"Astrid is using {destination}; R0 is retained at {value['r0_data_root']}.")
-            return True
         if value["phase"] != "rolled_back" or rollback:
             value = transaction.recover(rollback=True)
             say("Recovered the previous R0 service. Both roots were kept; changes made in R1 remain in R1.")
             return True
-        if value.get("retained_copy") or os.path.lexists(value["r1_data_root"]):
+        # The copy on disk decides, never the saved retained_copy flag: once the owner has
+        # preserved it elsewhere, this clears the journal, or Update stays refused for good.
+        if os.path.lexists(value["r1_data_root"]):
             raise ValueError(f"The previous R1 copy is retained at {value['r1_data_root']}. It cannot be reused or replaced automatically; preserve it before retrying.")
         transaction._restore_selection(value)
         path.unlink()
@@ -345,66 +469,6 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
     return True
 
 
-def apply_completed_policy(backend, policy_change, *, say=print):
-    """Apply changed setup choices to a completed R1 in place; no R0 stop path.
-
-    Returns False when there is no completed handoff, else a dict of per-choice
-    results ``{name: {"ok": bool, "reason": str | None}}``. Each changed choice is
-    applied first and only then saved (that one key); a failed step leaves the
-    saved value unchanged so a rerun retries. The R0 discovery file is
-    never read: R1 operations only use the validated journal and R1 records.
-    Only the changed names are re-registered; unchanged saved policy is kept.
-    """
-    if not policy_change or not os.path.lexists(journal_path(backend.service)):
-        return False
-    transaction = BoundaryHandoff(backend)
-    value = transaction._load()
-    if value["phase"] != "complete":
-        return False
-    candidate, _destination = transaction.validate_active(value)
-    wanted = {name: backend.service.choices[name] for name in policy_change}
-    steps = []
-    if "autostart" in policy_change:
-        steps.append((("autostart",), lambda: transaction.registration.set_autostart(policy_change["autostart"])))
-    def command_step():
-        backend.open()
-        # Backend reports a failed command as a recorded error, not an exception.
-        error = (getattr(backend, "command_result", None) or {}).get("error")
-        if error:
-            raise RuntimeError(f"command failed ({error})")
-
-    def skills_step():
-        outcome = backend.sync_skills(candidate)
-        if outcome and outcome.get("ok") is False:
-            raise RuntimeError("skill sync failed; see the installer log")
-
-    if "command" in policy_change:
-        steps.append((("command",), command_step))
-    skill_names = tuple(name for name in ("skills", "skill_copies") if name in policy_change)
-    if skill_names:
-        steps.append((skill_names, skills_step))
-    results = {}
-    for names, step in steps:
-        try:
-            step()
-        except Exception as error:  # noqa: BLE001 - reported per choice; other choices still apply
-            reason = (str(error) or type(error).__name__).splitlines()[0]
-            for name in names:
-                results[name] = {"ok": False, "reason": reason}
-            continue
-        # Persist only the choices whose step succeeded; a failed step keeps the
-        # saved value so a rerun of the same flag sees the change and retries.
-        saved = read_json(backend.service.selection)
-        registration._publish(backend.service.selection, _json(
-            {**saved, "choices": {**saved.get("choices", {}), **{name: wanted[name] for name in names}}}),
-            exclusive=False)
-        for name in names:
-            results[name] = {"ok": True, "reason": None}
-    if all(item["ok"] for item in results.values()):
-        say("Applied the changed setup choices to the running R1 install; R0 was not touched.")
-    return results
-
-
 def uninstall_complete(backend, data, *, delete_data=False, say=print):
     """Refuse uninstall after an R0 to R1 handoff, preserving both installs."""
     raise ValueError(UPGRADE_UNINSTALL_REFUSAL)
@@ -417,12 +481,13 @@ def refuse_handoff_uninstall(service, root):
                   if service.system == "linux" else service.path.with_name(registration.R1_MAC + ".plist")
                   if service.system == "darwin" else Path(root) / "task-r1.xml")
     if any(os.path.lexists(path) for path in
-           (journal_path(service), registration_journal, r1_service)):
+           (journal_path(service), archive_path(service), registration_journal, r1_service)):
         raise ValueError(UPGRADE_UNINSTALL_REFUSAL)
     try:
         marker = read_json(Path(root) / "install.json")
         selection = read_json(service.selection)
     except (OSError, TypeError, ValueError):
         raise ValueError(UPGRADE_UNINSTALL_REFUSAL) from None
-    if marker.get("r1_data_root") or selection.get("r1_data_root"):
+    if any(record.get(key) for record in (marker, selection)
+           for key in ("r1_data_root", "retained_r0_data_root")):
         raise ValueError(UPGRADE_UNINSTALL_REFUSAL)

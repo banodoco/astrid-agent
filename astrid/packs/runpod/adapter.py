@@ -248,9 +248,14 @@ def prevalidate_task(policy, inputs, *, scratch):
 
 def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, environ, expected_machine_id=None):
     """Construct the retained A3/A4 composition on an explicit host request."""
-    from astrid.core.generation import engine_recipe, engine_runner
     from runpod_lifecycle.config import RunPodConfig
-    from astrid.packs.runpod.remote_placement import ENGINE_BASE, RemotePlacement, RunPodInstallation
+
+    from astrid.core.generation import engine_recipe, engine_runner
+    from astrid.packs.runpod.remote_placement import (
+        ENGINE_BASE,
+        RemotePlacement,
+        RunPodInstallation,
+    )
     from astrid.packs.runpod.target_selection import RunPodLeaseCompatibility, RunPodPreferences
     from astrid.packs.runpod.worker_owner import RunPodLeaseOwner
 

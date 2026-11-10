@@ -6,9 +6,17 @@ import json
 import os
 from typing import Any
 
-from astrid.core.generation.availability import availability_declaration, availability_projection, model_availability, template_availability
+from astrid.core.generation.availability import (
+    availability_declaration,
+    availability_projection,
+    model_availability,
+    template_availability,
+)
 from astrid.core.generation.backends.comfy_target import (
-    ComfyModelMissing, ComfyTarget, ComfyTargetClient, MAX_JSON_BYTES,
+    MAX_JSON_BYTES,
+    ComfyModelMissing,
+    ComfyTarget,
+    ComfyTargetClient,
     resolve_comfy_models,
 )
 from astrid.core.model_catalog.registry import ModelRegistry
@@ -67,7 +75,7 @@ def catalog_rows() -> list[dict[str, Any]]:
     for route, fixture in declaration.get("fixture_only_routes", {}).items():
         if fixture:
             add(route, "fixture", source="fixture", availability="fixture-only", reason="fixture-only route")
-    from astrid.core.generation.entries import action_entries, user_entries, ready_entries
+    from astrid.core.generation.entries import action_entries, ready_entries, user_entries
     for entry in action_entries(discovery):
         for mode in entry["modes"]:
             record = actions.get(entry["action"], {})
@@ -153,8 +161,12 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
                 "fix": "Start ComfyUI on loopback and make /object_info available."}
     if row["source"] in {"user-entry", "ready-template"}:
         from tempfile import TemporaryDirectory
+
         from astrid.core.generation import entries
-        from astrid.packs.vibecomfy.production_engine import ProductionEngineError, load_workflow_path
+        from astrid.packs.vibecomfy.production_engine import (
+            ProductionEngineError,
+            load_workflow_path,
+        )
 
         if row["source"] == "ready-template" and row.get("registry_id"):
             try:

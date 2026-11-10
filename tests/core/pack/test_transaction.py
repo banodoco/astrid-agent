@@ -1449,7 +1449,7 @@ def test_real_cli_git_child_receives_only_declared_environment(
     real_run = install_module.subprocess.run
     seen: list[tuple[list[str], dict[str, str] | None]] = []
     def capture(command, *args, **kwargs):
-        if command and command[0] == "git":
+        if command and Path(command[0]).name in {"git", "git.exe"}:
             seen.append((list(command), kwargs.get("env")))
         return real_run(command, *args, **kwargs)
 
@@ -1466,19 +1466,29 @@ def test_real_cli_git_child_receives_only_declared_environment(
     assert seen
     for command, env in seen:
         assert env is not None
+        # Exactly the declared keys: nothing from the parent, including GIT_*, HOME,
+        # proxy variables and SSH_AUTH_SOCK, reaches the git child.
         assert set(env) == {"PATH", "HOME", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL",
                             "GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "GIT_NO_REPLACE_OBJECTS", "GIT_SSH_COMMAND"}
-        assert env["PATH"] == os.defpath
+        for leaked in ("GIT_CONFIG", "ASTRID_TEST_PARENT_SECRET", "HTTPS_PROXY", "HTTP_PROXY",
+                       "SSH_AUTH_SOCK", "USERPROFILE", "TEMP", "TMP"):
+            assert leaked not in env
+        # The child's PATH is the filtered resolver PATH: absolute entries only.
+        assert env["PATH"]
+        assert all(entry and os.path.isabs(entry) for entry in env["PATH"].split(os.pathsep))
+        assert "." not in env["PATH"].split(os.pathsep)
         git_dir = next(value.removeprefix("--git-dir=") for value in command
                        if value.startswith("--git-dir="))
-        assert env["HOME"] == str(Path(git_dir).parent)
+        work = Path(git_dir).parent
+        assert env["HOME"] == str(work)
         assert env["LC_ALL"] == "C"
         assert env["GIT_CONFIG_NOSYSTEM"] == "1"
         assert env["GIT_CONFIG_GLOBAL"] == os.devnull
         assert env["GIT_TERMINAL_PROMPT"] == "0"
-        assert env["GIT_ASKPASS"] == "/bin/false"
+        assert env["GIT_ASKPASS"] == str(work / ".askpass")
         assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
-        assert env["GIT_SSH_COMMAND"] == "ssh -F /dev/null -oBatchMode=yes"
+        assert env["GIT_SSH_COMMAND"].endswith(f" -F {os.devnull} -oBatchMode=yes")
+        assert Path(command[0]).is_absolute()
 
 
 def test_real_update_cli_allows_omitted_source_tree_digest_and_rejects_real_release_pin_mismatch(

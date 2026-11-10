@@ -56,26 +56,45 @@ keeping the low-resolution badge readable.
 | Generate with the user's own ComfyUI or a saved ComfyUI workflow ("my ComfyUI", "my saved workflow", local generation) | [Run on your own ComfyUI](../../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui) | `generate workflow` with the `attached` placement |
 | Generate an image, video, or audio asset from a prompt | [generation](../../../generation/docs/SKILL.md) | `generate(entry, inputs, placement)` and the image, video and audio aliases |
 | Inspect, edit, validate, or run a ComfyUI/VibeComfy graph | [vibecomfy](../../../vibecomfy/docs/SKILL.md) | `vibecomfy.inspect`, `vibecomfy.edit`, `vibecomfy.validate`, `vibecomfy.run` |
-| Understand or describe an image, audio clip, or video | [understanding](../../../understanding/docs/SKILL.md) | `understanding.understand`, `understanding.scene_describe` |
-| Transcribe, detect scenes/shots, arrange clips, review, or validate editorial work | [editorial](../../../editorial/docs/SKILL.md) | `editorial.transcribe`, `editorial.scenes`, `editorial.shots`, `editorial.arrange`, `editorial.validate` |
-| Trim or repair media, or search/download GIFs | [media](../../../media/docs/SKILL.md) | `media.clip_extract`, `media.speech_repair_lavasr`, `media.gif_search` |
-| Assemble a production video, talk, thumbnail, logo grid, or image animation | [video editing](../../../video_editing/docs/SKILL.md) | `video_editing.hype`, `video_editing.event_talks`, `video_editing.thumbnail_maker` |
+| Understand or describe an image, audio clip, or video | Not installed by default. Add the `understanding` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md` | `understanding.understand`, `understanding.scene_describe` |
+| Transcribe, detect scenes/shots, arrange clips, review, or validate editorial work | Not installed by default. Add the `editorial` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md` | `editorial.transcribe`, `editorial.scenes`, `editorial.shots`, `editorial.arrange`, `editorial.validate` |
+| Trim or repair media, or search/download GIFs | Not installed by default. Add the `media` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md` | `media.clip_extract`, `media.speech_repair_lavasr`, `media.gif_search` |
+| Assemble a production video, talk, thumbnail, logo grid, or image animation | Not installed by default. Add the `editorial`, `iteration` and `video_editing` packs, in that order ([how](#add-a-pack-that-is-not-installed)), then read `video_editing`'s `docs/SKILL.md` | `video_editing.hype`, `video_editing.event_talks`, `video_editing.thumbnail_maker` |
 | Edit a runtime timeline | [timeline](../../../timeline/docs/SKILL.md) | `timelines show` and `timelines visualize` inspect the pinned composition |
 | Render a timeline or inspect render output | [rendering](../../../rendering/docs/SKILL.md) | `rendering.render` creates Remotion or other renderer output |
 | Build, explore, or edit a Three.js world (a live scene) and its shots | [rendering](../../../rendering/docs/SKILL.md#worlds) | World Explorer panel and `Import world…` in the Three.js Live Editor; agent edits through `astrid.live-scene-request/v1` |
-| Build an iteration video or compare experiment outputs | [iteration](../../../iteration/docs/SKILL.md) | `iteration.assemble`, `iteration.experiment_review` |
-| Add sound to one short video clip | [fal](../../../fal/docs/SKILL.md), then [timeline](../../../timeline/docs/SKILL.md) for a finished video | `fal.fal_foley` produces audio; place it alongside the source video on a detached timeline candidate, then publish and point the user to the editor (render only if asked) |
-| Make a spatial soundscape from video tiles | [foley](../../../foley/docs/SKILL.md) | `foley.foley_map` produces per-tile audio and a review viewer |
-| Distill a long stream or event into reviewable clips | [stream content](../../../stream_content/docs/SKILL.md) | `stream_content.distill` |
-| Build a training dataset or run LoRA training | [training](../../../training/docs/SKILL.md) | `training.dataset_build`, `training.training_run` |
-| Render a standalone Blender scene or terminal screenplay | [blender](../../../blender/docs/SKILL.md) or [moirae](../../../moirae/docs/SKILL.md) | `blender.render`, `moirae.moirae` |
-| Acquire YouTube media | [youtube](../../../youtube/docs/SKILL.md) | `youtube.youtube_audio` (the upload action is removed) |
+| Build an iteration video or compare experiment outputs | Not installed by default. Add the `iteration` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md` | `iteration.assemble`, `iteration.experiment_review` |
+| Add sound to one short video clip | Not installed by default. Add the `fal` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md`; then [timeline](../../../timeline/docs/SKILL.md) for a finished video | `fal.fal_foley` produces audio; place it alongside the source video on a detached timeline candidate, then publish and point the user to the editor (render only if asked) |
+| Make a spatial soundscape from video tiles | Not installed by default. Add the `understanding`, `fal` and `foley` packs, in that order ([how](#add-a-pack-that-is-not-installed)), then read `foley`'s `docs/SKILL.md` | `foley.foley_map` produces per-tile audio and a review viewer |
+| Distill a long stream or event into reviewable clips | Not installed by default. Add the `stream_content` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md` | `stream_content.distill` |
+| Build a training dataset or run LoRA training | [training](../../../training/docs/SKILL.md) | `training.dataset_build`, `training.training_run`. Building a clip pool (`training.pool_build`, `training.pool_merge`) and human review also need the `editorial` and `understanding` packs, which are not installed by default |
+| Render a standalone Blender scene or terminal screenplay | Not installed by default. Add the `blender` or `moirae` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md` | `blender.render`, `moirae.moirae` |
+| Acquire YouTube media | Not installed by default. Add the `youtube` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md` | `youtube.youtube_audio` (the upload action is removed) |
+
+### Add a pack that is not installed
+
+Editing, understanding, sound and several other packs no longer come with
+Astrid. They live in the `poms_packs` repository and the user adds the ones
+they want. When a request needs one of them, say so plainly: tell the user
+which pack is missing and that this command adds it, then run it only if
+they agree:
+
+```
+astrid packs add https://github.com/banodoco/poms_packs --revision main --pack-id <pack> --subpath <pack>
+```
+
+Replace `<pack>` with the pack name from the table, for example `editorial`.
+The command shows what the pack is allowed to do and asks before it installs.
+The pack is ready after Astrid restarts. Until then its capabilities do not
+exist here, so do not call them and do not claim the work was done another
+way.
 
 The complete discovered pack catalog is available in
 [pack references](references/packs.md) when an exact route outside this table
 is needed. Reusable characters, places, objects, logos, clothing, styles, and
-layouts use the [references guide](../../../media/docs/references.md), which
-owns that workflow rather than this execution router.
+layouts use the references guide in the `media` pack (`docs/references.md`,
+available once that pack is added), which owns that workflow rather than this
+execution router.
 
 ## Execution shape
 

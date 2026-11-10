@@ -401,7 +401,7 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
             (destination / 'config/astrid-beta-capabilities.json').write_text('{"capabilities":[]}\n')
         return destination
     monkeypatch.setattr('astrid.installer.backend.source', source)
-    monkeypatch.setattr('astrid.installer.backend.install_tools', lambda *_args: {
+    monkeypatch.setattr('astrid.installer.backend.install_tools', lambda *_args, **_kwargs: {
         'PATH': str(tmp_path / 'tools'),
         'ASTRID_NODE_EXECUTABLE': str(tmp_path / 'tools/node'),
         'ASTRID_BUN_EXECUTABLE': str(tmp_path / 'tools/bun'),

@@ -2,7 +2,7 @@
 
 Locks the exact scaffold contract:
 
-* exactly four files (``pack.yaml``, ``renderer.yaml``, ``render.py``,
+* exactly four files (``pack.yaml``, ``rendering/renderer.yaml``, ``render.py``,
   ``test_renderer.py``) with no placeholder tokens and each file within 50
   nonblank/non-comment lines;
 * collision refusal without ``force=True`` and force overwrite;
@@ -28,7 +28,8 @@ from astrid.core.rendering.cli import main as renderers_cli_main
 from astrid.core.rendering.scaffold import SCAFFOLD_FILES, create_renderer_scaffold
 
 PLACEHOLDER_TOKENS = ("TODO", "FIXME", "XXX", "lorem", "example.com")
-_EXPECTED_FILES = ["pack.yaml", "render.py", "renderer.yaml", "test_renderer.py"]
+# Schema v3 requires the renderer descriptor beneath rendering/.
+_EXPECTED_FILES = ["pack.yaml", "render.py", "rendering/renderer.yaml", "test_renderer.py"]
 
 
 def _nonblank_noncomment_lines(text: str) -> list[str]:
@@ -40,7 +41,11 @@ def _nonblank_noncomment_lines(text: str) -> list[str]:
 
 
 def _scaffold_file_names(dest: Path) -> list[str]:
-    return sorted(path.name for path in dest.iterdir() if path.is_file())
+    return sorted(
+        path.relative_to(dest).as_posix()
+        for path in dest.rglob("*")
+        if path.is_file() and not any(part.startswith((".", "__pycache__")) for part in path.relative_to(dest).parts)
+    )
 
 
 def test_scaffold_writes_exactly_four_files(tmp_path: Path) -> None:
@@ -100,10 +105,11 @@ def test_scaffold_static_validation_passes(tmp_path: Path) -> None:
 
     pack = load_manifest_mapping(dest / "pack.yaml", manifest_kind="pack")
     assert pack["id"] == "wave"
-    assert pack["extensions"]["rendering"]["renderers"] == ["renderer.yaml"]
+    assert pack["schema_version"] == 3
+    assert pack["rendering"] == {"wave": {"type": "renderer", "path": "rendering/renderer.yaml"}}
 
     manifest = load_manifest_mapping(
-        dest / "renderer.yaml",
+        dest / "rendering" / "renderer.yaml",
         manifest_kind="renderer",
     )
     assert manifest["id"] == "wave.wave"

@@ -266,7 +266,7 @@ def installed(tmp_path_factory) -> Installed:
     backend = Backend(program, log, Path(uv), say=lambda _line: None)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr("astrid.installer.backend.install_tools",
-                      lambda _manifest, folder, _target, _run: _tool_stand_ins(folder))
+                      lambda _manifest, folder, _target, _run, **_kwargs: _tool_stand_ins(folder))
         patch.setattr(backend, "install_remotion_dependencies", lambda *_args: False)
         # The installed timeline-schema check refuses group/other-writable inputs
         # (astrid/core/rendering/_local_schema.py, forbidden=0o022), and uv writes

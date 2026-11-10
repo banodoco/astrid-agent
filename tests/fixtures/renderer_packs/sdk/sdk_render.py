@@ -43,7 +43,8 @@ def _bootstrap() -> None:
 
 def main(argv: list[str]) -> int:
     _bootstrap()
-    from astrid.sdk.rendering import renderer_main
+    # The frozen public SDK name (external packs may not deep-import astrid.sdk.*).
+    from astrid.sdk import renderer_main
 
     return renderer_main(argv)
 

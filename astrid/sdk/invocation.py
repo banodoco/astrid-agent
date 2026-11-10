@@ -28,15 +28,6 @@ from astrid.core.contracts.binding import (
     expand_command,
 )
 
-from .execution_request import (
-    ExecutionRequest,
-    ExecutionRequestError,
-    merge_execution_input_manifest,
-    merge_execution_request_inputs,
-    normalize_execution_request,
-    reject_caller_execution_binding,
-)
-
 from ._module import _sdk_module
 from .exceptions import (
     AstridSDKError,
@@ -48,8 +39,15 @@ from .exceptions import (
     _redact_message,
     _sdk_error_from_exception,
 )
+from .execution_request import (
+    ExecutionRequest,
+    ExecutionRequestError,
+    merge_execution_input_manifest,
+    merge_execution_request_inputs,
+    normalize_execution_request,
+    reject_caller_execution_binding,
+)
 from .results import DiscoveryResult, InvocationResult, _json_safe, _json_safe_mapping
-
 
 _MAX_GENERATION_METADATA_BYTES = 16 * 1024
 _MAX_GENERATION_METADATA_DEPTH = 8
@@ -852,8 +850,11 @@ def _validate_timeline_visualize_inputs(
         raise CapabilityValidationError("filmstrip review requires project=<slug>")
     if values.get("project_slug") not in (None, "", project):
         raise CapabilityValidationError("project_slug does not match project")
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import (
+        filmstrip_options,
+    )
+
     from .timeline_filmstrip import prepare_filmstrip
-    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import filmstrip_options
     try:
         filmstrip_options(values)
     except ValueError as exc:
@@ -1095,10 +1096,11 @@ def _admitted_timeline_element_resources(config: Mapping[str, Any], *, registry=
     The same admitted registry that chooses the rendering element resolves
     identity. No directory scan or resource basename supplies an owner.
     """
-    from astrid.core.element.registry import load_default_registry
-    from astrid.core.pack.discovery import discover_pack_metadata
-    from astrid.core.foundation.paths import REPO_ROOT
     from copy import deepcopy
+
+    from astrid.core.element.registry import load_default_registry
+    from astrid.core.foundation.paths import REPO_ROOT
+    from astrid.core.pack.discovery import discover_pack_metadata
     clips = [clip for clip in config.get("clips", []) if isinstance(clip, Mapping)]
     candidates = [clip for clip in clips if isinstance(clip.get("elementRef"), Mapping)
                   or clip.get("clipType") not in (None, "", "video", "audio", "image", "shot")]
@@ -1179,6 +1181,7 @@ def _prepare_timeline_revision_diff(*, project: str, timeline_ref: str,
     action remains fail-closed until its declared host-owned consumer is wired.
     """
     from copy import deepcopy
+
     from astrid.sdk.remote import RemoteTimelines
     for name, value in (("project", project), ("timeline_ref", timeline_ref),
                         ("before_revision_id", before_revision_id),
@@ -1207,7 +1210,9 @@ def _prepare_timeline_revision_diff(*, project: str, timeline_ref: str,
                 or (scope is not None and scope != current_scope)):
             raise CapabilityValidationError("revision diff returned a foreign revision/project/timeline binding")
         scope = current_scope
-        from astrid.packs.rendering.actions.render.managed_timeline import _project_exact_parent_head
+        from astrid.packs.rendering.actions.render.managed_timeline import (
+            _project_exact_parent_head,
+        )
         parent_row, projected, expansion = _project_exact_parent_head(
             client=_client, project_id=current_scope[0], timeline_id=current_scope[1], parent_revision_id=revision)
         if (parent_row.get("content_digest") != parent["content_digest"]
@@ -1278,7 +1283,9 @@ def _render_reuse_toolchain_digest() -> str | None:
         return None
     try:
         from astrid.core.execution.generic_host import (
-            _source_digest, source_checkout_closure_digest, source_checkout_digest,
+            _source_digest,
+            source_checkout_closure_digest,
+            source_checkout_digest,
         )
         binaries = {name: shutil.which(name) for name in ("ffmpeg", "ffprobe")}
         binaries["node"] = os.environ.get("ASTRID_NODE_EXECUTABLE") or shutil.which("node")
@@ -1505,7 +1512,10 @@ def _prepare_managed_render_inputs(
                 # The review caption is a phrase at a time, never the whole
                 # chapter script: phrases are timed to the VO word timings
                 # when present, else split and distributed over the shot.
-                from astrid.core.timeline.review_captions import review_speech_phrases, vo_words_for_occurrence
+                from astrid.core.timeline.review_captions import (
+                    review_speech_phrases,
+                    vo_words_for_occurrence,
+                )
 
                 voice_bindings = [
                     binding for binding in review_bindings.get(shot_key, [])
@@ -1991,7 +2001,9 @@ def _invocation_outputs(
             outputs["pack_root"] = str(pack_root)
             outputs["manifest_path"] = str(manifest)
             if isinstance(document, dict) and document.get("kind") == "timeline_filmstrip":
-                from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import action_argv
+                from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (
+                    action_argv,
+                )
                 outputs["inspection"] = action_argv(
                     "python3", "-m", "astrid", "timelines", "inspect", "--manifest", str(manifest), "--section", "summary"
                 )
@@ -2033,7 +2045,7 @@ def _runtime_selected_project(client: Any | None = None) -> str | None:
         error = result.error
         if getattr(error, "code", None) == "not_found":
             return None
-        from .exceptions import ServiceError, _SERVICE_ERROR_CLASSES
+        from .exceptions import _SERVICE_ERROR_CLASSES, ServiceError
         error_type = _SERVICE_ERROR_CLASSES.get(error.code, ServiceError)
         raise error_type(error.message, details=error.details)
     data = result.data
@@ -4047,10 +4059,18 @@ def _invoke_bridge_child(
 ) -> InvocationResult:
     """Use only attempt-scoped admission/readback, preserving SDK result DTOs."""
     from types import SimpleNamespace
+
     from astrid.core.foundation.hash import executor_definition_digest
+
     from ._child_bridge import (
-        _BridgeRejected, _BridgeReplyTimeout, _BridgeTimeout, _ChildOutputBinding,
-        _child_request, _child_status_error, _valid_id, _validate_output_page,
+        _BridgeRejected,
+        _BridgeReplyTimeout,
+        _BridgeTimeout,
+        _child_request,
+        _child_status_error,
+        _ChildOutputBinding,
+        _valid_id,
+        _validate_output_page,
         _validate_publication_readback,
     )
 

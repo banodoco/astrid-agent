@@ -78,12 +78,12 @@ def test_release0_admission_is_narrow_and_rejects_general_bypasses(changes):
               "allow_release0_to_release1": True, "release0_fixture": jumps.RELEASE0_FIXTURE,
               "source_override": False}
     values.update(changes)
-    with pytest.raises(ValueError, match="release0-to-release1"):
+    with pytest.raises(ValueError, match="release-0 start"):
         jumps.release0_admission(argparse.Namespace(**values))
 
 
 def test_seeded_release0_leg_is_not_admitted_on_windows(monkeypatch, tmp_path):
-    args = argparse.Namespace(leg="release0-to-release1")
+    args = argparse.Namespace(leg="release9-then-install")
     monkeypatch.setattr(jumps.sys, "platform", "win32")
     with pytest.raises(RuntimeError, match="narrowed refusal"):
         jumps.execute_owned(args, tmp_path / "program", tmp_path / "data", tmp_path / "evidence",
@@ -102,7 +102,7 @@ def test_release9_to_candidate_receipt_keeps_default_service_identity(monkeypatc
     upgraded = {"done": False}
     old_version = {"root": str(root / "versions/r9")}
     new_version = {"root": str(root / "versions/r10")}
-    args = argparse.Namespace(job_id="direct-linux", mode="direct", leg="release0-to-release1",
+    args = argparse.Namespace(job_id="direct-linux", mode="direct", leg="release9-then-install",
                               shell="sh", candidate_checkouts={}, service_manager_prerequisite={},
                               app_checkout=app, candidate=candidate_path)
 
@@ -122,7 +122,7 @@ def test_release9_to_candidate_receipt_keeps_default_service_identity(monkeypatc
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *_: manifest)
     monkeypatch.setattr(jumps.journey, "git_source", lambda *_: {"sha": "app-r10"})
     monkeypatch.setattr(jumps.journey, "sentinel_observation", lambda *_: {"alive": True})
-    monkeypatch.setattr(jumps, "bootstrap_release9", lambda *_args: None)
+    monkeypatch.setattr(jumps, "bootstrap_release9", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(jumps.journey, "bootstrap", plain_install)
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(jumps, "selected_data_root", lambda _root, selected_data: selected_data)
@@ -144,7 +144,7 @@ def test_release9_to_candidate_receipt_keeps_default_service_identity(monkeypatc
     monkeypatch.setattr(jumps, "assert_preserved", lambda *_: None)
     monkeypatch.setattr(jumps, "semantic_digest", lambda *_: "same-content")
 
-    result = jumps.execute_release0_to_release1(args, root, data, evidence,
+    result = jumps.execute_release9_then_install(args, root, data, evidence,
                                                argparse.Namespace(pid=123), "sentinel-birth")
 
     assert result["status"] == "pass"

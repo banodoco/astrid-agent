@@ -77,10 +77,13 @@ manifest.write_text("{}")
 from astrid.installer.core import write_json
 from astrid.installer.service import LABEL
 write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
-assert gateway.main(["install", "--root", str(root), "--data-root", str(data),
-                     "--manifest", str(manifest), "--uv", sys.executable, *flags]) == 0
+code = gateway.main(["install", "--root", str(root), "--data-root", str(data),
+                     "--manifest", str(manifest), "--uv", sys.executable, *flags])
 expected = "update" if "--update" in flags else "doctor" if "--doctor" in flags else "uninstall" if "--uninstall" in flags else "install"
 assert seen == [expected], seen
+# The stubbed transaction installs nothing and no Runtime answers, so the run
+# receipt must report "not updated" (exit 3) for install and update, never 0.
+assert code == (3 if expected in {"install", "update"} else 0), code
 '''
     result = subprocess.run(
         [sys.executable, "-I", "-S", "-c", script,

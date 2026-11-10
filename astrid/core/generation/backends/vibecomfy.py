@@ -130,7 +130,9 @@ def _assert_process_incarnation_gone(pid: int, expected_identity: str) -> None:
         raise RuntimeError("vibecomfy engine process-absence probe failed") from exc
     try:
         if sys.platform == "darwin":
-            from astrid.core.execution.vibecomfy_engine_adapter import _native_process_start_identity
+            from astrid.core.execution.vibecomfy_engine_adapter import (
+                _native_process_start_identity,
+            )
             current_identity = _native_process_start_identity(pid)
         else:
             from vibecomfy.runtime.session import _process_start_identity
@@ -238,7 +240,9 @@ def _bind_target_model_roles(workflow: Any, spec: BackendSpec, roles: Mapping[st
 def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None) -> Any:
     """Use the canonical repository template loader and catalog source pin."""
     from vibecomfy.registry.ready import (
-        repo_ready_template_discovery, resolve_ready_template, workflow_from_ready,
+        repo_ready_template_discovery,
+        resolve_ready_template,
+        workflow_from_ready,
     )
 
     template_id = spec.template
@@ -299,8 +303,9 @@ def _catalog_alternative_is_executable(spec: BackendSpec, roles: Mapping[str, st
                                        object_info: dict[str, Any], server_url: str) -> bool:
     """Only advertise a role match whose pinned graph crosses canonical approval."""
     try:
-        from .comfy_schema import TargetSchemaProvider
         from vibecomfy.workflow_bundle import load_bundle
+
+        from .comfy_schema import TargetSchemaProvider
 
         workflow = _load_pinned_catalog_workflow(spec)
         _bind_target_model_roles(workflow, spec, roles)
@@ -355,7 +360,10 @@ class VibeComfyBackend(BackendAdapter):
         if comfy_output_dir:
             kwargs["comfy_output_dir"] = comfy_output_dir
         from astrid.core.generation.producer_result import (
-            complete_producer_result, preserve_result_on_error, source_input_ref, workflow_transport,
+            complete_producer_result,
+            preserve_result_on_error,
+            source_input_ref,
+            workflow_transport,
         )
         source = source_input_ref(workflow_path, out_dir)
         transport = workflow_transport(profile_id, comfy_url)
@@ -495,6 +503,7 @@ class VibeComfyBackend(BackendAdapter):
         plan, target_schema = None, None
         if resolve_target or (backend_spec.model_roles and self._model_resolution_client() is not None):
             from astrid.core.model_catalog.registry import ModelRegistry
+
             from .comfy_schema import TargetSchemaProvider
 
             client = self._model_resolution_client()

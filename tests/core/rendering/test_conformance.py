@@ -390,7 +390,8 @@ def test_fixture_pack_static_surface(tmp_path: Path) -> None:
     assert pack.id == "sdk"
     permission_ids = {permission.id for permission in pack.permissions}
     assert permission_ids == {"subprocess", "project_files"}
-    assert pack.extensions["rendering"]["renderers"] == ["renderer.yaml"]
+    assert pack.schema_version == "3"
+    assert pack.rendering == {"renderer": {"type": "renderer", "path": "rendering/renderer.yaml"}}
 
     def scanner(source_root: Path):
         def scan(root: str | Path | None = None):

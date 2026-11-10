@@ -303,7 +303,7 @@ def collect_product_observations(support_root: str, runtime_data: Mapping[str, A
     latch_path = runtime_root / CLEANUP_LATCH_NAME
     latch = read_cleanup_latch(latch_path) if bounded_object(latch_path) is not None else None
     return {
-        "hostReadiness": {key: ready[key] for key in ("status", "runtime_instance_id", "runtime_epoch", "source_closure_digest", "readiness_report") if key in ready},
+        "hostReadiness": {key: ready[key] for key in ("status", "runtime_instance_id", "runtime_epoch", "source_closure_digest", "readiness_report", "missing_required_capabilities") if key in ready},
         "runtimeClientCompatibility": {"observed": isinstance(compatibility, Mapping), "value": dict(compatibility) if isinstance(compatibility, Mapping) else None},
         "cleanupLatch": {"observed": True, "blocked": False, "unresolved": latch is not None, "record": latch},
         "packQuarantine": pack_quarantine_section(),

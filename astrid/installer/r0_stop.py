@@ -130,6 +130,10 @@ def refuse_legacy_r0_recovery(root):
 def refuse_unintegrated_r1_handoff(root, service):
     from .boundary_registration import journal_path
     from .core import read_json
+    from .installation import normalised_handoff
+
+    if normalised_handoff(service, root):
+        return  # A finished, normalised handoff is an ordinary direct install.
 
     if os.path.lexists(journal_path(service)):
         raise R0StopError("An R1 registration needs recovery. Run the install line again; both data roots were kept.")

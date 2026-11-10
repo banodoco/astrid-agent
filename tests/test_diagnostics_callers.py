@@ -98,7 +98,8 @@ def test_transaction_producers_to_cli_and_download(tmp_path, monkeypatch, rollba
         (world.support / 'catalog.json').write_text('{invalid')
         response = world.call('/api/runtime/v1/diagnostics')
         assert response.status == 200
-        assert 'Runtime support state: unhealthy (healthy=False)' in response.json()['report']
+        # The pinned Runtime (744cf248) words this line "This Runtime's support state" (diagnostics.py).
+        assert "This Runtime's support state: unhealthy (healthy=False)" in response.json()['report']
         assert 'catalog_invalid' in response.json()['report']
     finally:
         world.stop()

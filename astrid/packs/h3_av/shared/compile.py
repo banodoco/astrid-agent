@@ -640,12 +640,10 @@ def _compile_character_swap_v2(
         CHARACTER_SWAP_REPOSITORY,
         CHARACTER_SWAP_REVISION,
         TURBO_FILENAME,
-        character_swap_asset_sha256,
         build_generation_workflow,
+        character_swap_asset_sha256,
         generation_timing,
     )
-    from vibecomfy.security.provenance import Provenance
-    from vibecomfy.workflow_bundle import emit_bundle
 
     value = request.value
     settings = effective_settings(request)

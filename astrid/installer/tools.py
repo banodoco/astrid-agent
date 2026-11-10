@@ -567,7 +567,34 @@ def _install_omp_package(selected: str, root: Path, run, env: dict) -> None:
                 "ASTRID_INSTALL_OMP_PACKAGE": selected})
 
 
-def install_tools(manifest: dict, root: Path, target: str, run) -> dict[str, str]:
+def _record_installing_git(env: dict[str, str], run, *, windows: bool, note=None) -> None:
+    """Record the installing user's git, because the service PATH cannot reach it.
+
+    The service PATH is built deliberately (no user profile PATH), so a Git for
+    Windows install under Program Files is invisible to the launcher. Only an
+    absolute git found on the installing PATH is recorded, and it must answer
+    ``git --version``. Git is optional for the install: without a working git
+    nothing is recorded, the install continues, and pack installs from git
+    report that Git is missing.
+    """
+    from astrid.core.pack.install import _git_executable
+
+    git = _git_executable(os.environ.get("PATH", os.defpath), windows=windows, cwd=os.getcwd())
+    if git is None:
+        return
+    try:
+        identified = re.match(r"git version \S+", run([git, "--version"], timeout=60).strip())
+        problem = None if identified else "did not identify itself as Git"
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        problem = f"failed to report its version ({type(exc).__name__})"
+    if problem:
+        if note:
+            note(f"Git for pack installs was not recorded: {git} {problem}.")
+        return
+    env["ASTRID_GIT_EXECUTABLE"] = git
+
+
+def install_tools(manifest: dict, root: Path, target: str, run, *, note=None) -> dict[str, str]:
     pins = manifest["tools"]
     selected = omp_source(pins["omp"])
     if isinstance(selected, dict) and pins["bun"]["version"] != load_omp_recipe()["bun_version"]:
@@ -601,6 +628,7 @@ def install_tools(manifest: dict, root: Path, target: str, run) -> dict[str, str
         directory = str(Path(env[name]).parent)
         if directory not in paths:
             paths.append(directory)
+    _record_installing_git(env, run, windows=windows, note=note)
     # Deliberately construct the service PATH. No user profile or refreshed PATH.
     system_path = (str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32")
                    if windows else "/usr/bin:/bin:/usr/sbin:/sbin")

@@ -11,8 +11,11 @@ from __future__ import annotations
 import ctypes
 import errno
 import json
+import ntpath
 import os
+import posixpath
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -203,18 +206,121 @@ def _copy_folder(source: Path, stage: Path) -> None:
             target.chmod(0o755 if path.stat().st_mode & 0o111 else 0o644)
 
 
+# Windows processes need these system variables to start and load DLLs; they
+# carry no Git configuration, so passing them through does not widen trust.
+_WINDOWS_SYSTEM_VARIABLES = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT")
+
+
+def _askpass_program(work: Path, windows: bool) -> str:
+    """A no-op credential helper: it prints nothing and refuses, so Git never prompts.
+
+    The leading dot keeps it from colliding with any pack id, which never starts with a dot.
+    """
+    if windows:
+        path = work / ".askpass.cmd"
+        path.write_text("@echo off\r\nexit /b 1\r\n", encoding="ascii")
+    else:
+        path = work / ".askpass"
+        path.write_text("#!/bin/sh\nexit 1\n", encoding="ascii")
+        path.chmod(0o700)
+    return str(path)
+
+
+def _path_entries(path_value: str, *, windows: bool, cwd: str | os.PathLike[str]) -> list[str]:
+    """Absolute PATH entries only: never the working directory, relative or empty entries."""
+    module = ntpath if windows else posixpath
+    here = module.normcase(module.normpath(os.fspath(cwd)))
+    entries = []
+    for entry in path_value.split(";" if windows else os.pathsep):
+        # The host's own check: ntpath on Windows, posixpath elsewhere. A relative
+        # entry such as \\x would name a directory inside the working directory.
+        if not entry or not os.path.isabs(entry):
+            continue
+        if module.normcase(module.normpath(entry)) == here:
+            continue
+        entries.append(entry)
+    return entries
+
+
+def _find_executable(path_value: str, names: tuple[str, ...], *, windows: bool,
+                     cwd: str | os.PathLike[str]) -> str | None:
+    for entry in _path_entries(path_value, windows=windows, cwd=cwd):
+        for name in names:
+            candidate = os.path.join(entry, name)
+            if os.path.isfile(candidate) and (windows or os.access(candidate, os.X_OK)):
+                return candidate
+    return None
+
+
+def _git_executable(path_value: str, *, windows: bool, cwd: str | os.PathLike[str],
+                    recorded: str | None = None) -> str | None:
+    """Find git: the install-recorded executable first, then absolute PATH entries only.
+
+    shutil.which searches the current directory first on Windows, so a planted
+    git.exe in the working tree would run. A recorded path must be absolute and
+    an existing executable file; anything else falls through to the PATH lookup.
+    """
+    if (recorded and os.path.isabs(recorded) and os.path.isfile(recorded)
+            and (windows or os.access(recorded, os.X_OK))):
+        return recorded
+    return _find_executable(path_value, ("git.exe",) if windows else ("git",), windows=windows, cwd=cwd)
+
+
+def _git_missing_reason(operation: str, windows: bool) -> str:
+    hint = " Install Git for Windows, then try again." if windows else ""
+    return f"Git source operation failed ({operation}; git not found).{hint}"
+
+
+def _shell_word(path: str, windows: bool) -> str:
+    # GIT_SSH_COMMAND is run through a shell; quote the resolved absolute path.
+    return f'"{path}"' if windows else shlex.quote(path)
+
+
+def _git_environment(work: Path, askpass: str, *, windows: bool | None = None,
+                     source: Mapping[str, str] | None = None,
+                     cwd: str | os.PathLike[str] | None = None) -> dict[str, str]:
+    """Build the isolated Git environment; ``windows`` defaults to the running OS."""
+    windows = (os.name == "nt") if windows is None else windows
+    source = os.environ if source is None else source
+    cwd = os.getcwd() if cwd is None else os.fspath(cwd)
+    # Windows environment names are case-insensitive (``Path`` vs ``PATH``).
+    lookup = {key.upper() if windows else key: value for key, value in source.items()}
+    raw_path = lookup.get("PATH", os.defpath)
+    # The git child gets the same filtered PATH the resolver uses, so a shell
+    # lookup inside git (for ssh) can never reach the working directory.
+    path_value = (";" if windows else os.pathsep).join(_path_entries(raw_path, windows=windows, cwd=cwd))
+    ssh = _find_executable(raw_path, ("ssh.exe",) if windows else ("ssh",), windows=windows, cwd=cwd)
+    ssh_program = _shell_word(ssh, windows) if ssh else "ssh"
+    env = {
+        "PATH": path_value,
+        "HOME": str(work), "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": askpass,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_SSH_COMMAND": f"{ssh_program} -F {os.devnull} -oBatchMode=yes",
+    }
+    if windows:
+        env["USERPROFILE"] = str(work)
+        env["TEMP"] = env["TMP"] = str(work)
+        for name in _WINDOWS_SYSTEM_VARIABLES:
+            if name in lookup:
+                env[name] = lookup[name]
+    return env
+
+
 def _git(work: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     # No inherited Git config, hooks, helpers, filters, alternate object stores,
     # replacement objects, credential prompts or pack-controlled environment.
-    env = {
-        "PATH": os.defpath, "HOME": str(work), "LC_ALL": "C",
-        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/false",
-        "GIT_NO_REPLACE_OBJECTS": "1",
-        "GIT_SSH_COMMAND": "ssh -F /dev/null -oBatchMode=yes",
-    }
+    operation = args[0] if args else "git"
+    windows = os.name == "nt"
+    cwd = os.getcwd()
+    env = _git_environment(work, _askpass_program(work, windows), windows=windows, cwd=cwd)
+    git = _git_executable(os.environ.get("PATH", os.defpath), windows=windows, cwd=cwd,
+                          recorded=os.environ.get("ASTRID_GIT_EXECUTABLE"))
+    if git is None:
+        raise PackInstallError("git_failed", _git_missing_reason(operation, windows))
     command = [
-        "git", "-c", "core.hooksPath=" + os.devnull,
+        git, "-c", "core.hooksPath=" + os.devnull,
         "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
         "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
         "--git-dir=" + str(work / "objects.git"), *args,
@@ -223,10 +329,13 @@ def _git(work: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
         process = subprocess.run(command, input=input_bytes, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, env=env, timeout=120, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PackInstallError("git_failed", "Git source operation failed.") from exc
+        # Diagnostic only: the operation and the error class. Never the URL or stderr.
+        raise PackInstallError(
+            "git_failed", f"Git source operation failed ({operation}; {type(exc).__name__}).") from exc
     if process.returncode:
         # Never include arbitrary source URLs, credential-helper output or stderr.
-        raise PackInstallError("git_failed", "Git source operation failed.")
+        raise PackInstallError(
+            "git_failed", f"Git source operation failed ({operation}; exit {process.returncode}).")
     return process.stdout
 
 
@@ -329,15 +438,15 @@ def _install_lock(root: Path):
     from astrid.core.pack.transaction import group_read_lock
 
     with group_read_lock(root, exclusive=True):
-        try:
-            import fcntl
-        except ImportError as exc:
-            raise PackInstallError("atomic_swap_unsupported", "Atomic pack installs require a supported POSIX filesystem.") from exc
-        descriptor = os.open(root / ".install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        from astrid.core.pack import _filelock
+
+        if not _filelock.locking_supported():
+            raise PackInstallError("atomic_swap_unsupported", "Atomic pack installs require a supported filesystem.")
+        descriptor = os.open(root / ".install.lock", os.O_RDWR | os.O_CREAT | _filelock.nofollow_flag(root / ".install.lock"), 0o600)
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode) or os.fstat(descriptor).st_nlink != 1:
                 raise PackInstallError("unsafe_path", "Install lock must be a regular file with one link.")
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            _filelock.lock_fd(descriptor)
             yield
         finally:
             os.close(descriptor)

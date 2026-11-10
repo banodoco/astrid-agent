@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import os
-import logging
 import json
+import logging
+import os
+import pickle
 import subprocess
 import sys
-import pickle
 import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -21,9 +21,13 @@ from astrid.core._shared.capability_common import (
     _stringify_value,
     _validate_required_inputs,
 )
+from astrid.core.contracts.binding import (
+    BindingError,
+    assert_provided_inputs_bound,
+    expand_command,
+    omit_absent_optional_flag_values,
+)
 from astrid.core.contracts.capability_runner import CapabilityRunner
-from astrid.core.contracts.binding import (omit_absent_optional_flag_values, expand_command,
-    assert_provided_inputs_bound, BindingError)
 from astrid.core.contracts.run_status import RunStatus
 from astrid.core.env_vars import ASTRID_INTERNAL_INVOCATION
 from astrid.core.project.guidance import (
@@ -409,7 +413,11 @@ def _run_command_orchestrator(
     run_root = request.run_root
     import_reference = None
     if orchestrator.metadata.get("local_orchestrator") is True:
-        from astrid.core.execution.process_group import popen_owned_process, terminate_tree, verify_tree_absent
+        from astrid.core.execution.process_group import (
+            popen_owned_process,
+            terminate_tree,
+            verify_tree_absent,
+        )
         import_receipt = None
         inherited_fds = ()
         process = None

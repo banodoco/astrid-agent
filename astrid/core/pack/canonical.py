@@ -702,19 +702,69 @@ def _declared_paths(definition: CanonicalPackDefinition) -> tuple[tuple[str, str
     return tuple(sorted(paths))
 
 
+def _pack_element_kind_registry(definition: CanonicalPackDefinition) -> tuple[Any, tuple[str, ...]]:
+    """Return the element kinds this pack may use, and the kinds it declares itself.
+
+    The platform contract lets a pack declare element kinds under
+    ``extensions.elements.kinds`` and ship elements of those kinds. A pack
+    may use the built-in kinds and its own declared kinds; it may not use a
+    kind another pack declares, so the registry is built from the built-ins
+    plus this pack's declarations only.
+    """
+    from astrid.core.pack._common import PackValidationError
+    from astrid.core.pack.permissions import _normalize_element_kinds
+    from astrid.core.pack.registry import (
+        ELEMENT_KIND_REGISTRY,
+        ElementKindDescriptor,
+        ElementKindRegistry,
+    )
+
+    elements = definition.extensions.get("elements")
+    if elements is None:
+        return ELEMENT_KIND_REGISTRY, ()
+    if not isinstance(elements, Mapping):
+        raise CanonicalPackValidationError("extensions.elements must be an object")
+    if "kinds" not in elements:
+        return ELEMENT_KIND_REGISTRY, ()
+    try:
+        kinds = _normalize_element_kinds(_thaw(elements["kinds"]), path="extensions.elements.kinds")
+        declared = tuple(
+            ElementKindDescriptor(
+                id=kind["id"],
+                singular=kind.get("singular", ""),
+                plural=kind.get("plural", ""),
+                label=kind.get("label", ""),
+                description=kind.get("description", ""),
+            )
+            for kind in kinds
+        )
+        # The constructor registers the built-in kinds first; add only this pack's.
+        registry = ElementKindRegistry(descriptors=declared)
+    except (PackValidationError, ValueError) as exc:
+        raise CanonicalPackValidationError(f"extensions.elements.kinds is invalid: {exc}") from exc
+    return registry, tuple(descriptor.canonical_kind for descriptor in declared)
+
+
 def _validate_rendering_identities(root: Path, definition: CanonicalPackDefinition) -> None:
     # Read descriptors as data only. Their execution/render protocols and
     # implementation loading stay with the existing host-specific owners.
     from astrid.core.pack.registry import ELEMENT_KIND_REGISTRY
 
+    kind_registry, declared_kinds = _pack_element_kind_registry(definition)
     for key, item in definition.rendering.items():
         location = f"rendering.{key}.path"
         descriptor = _read_manifest(root / item["path"])
         if item["type"] == "element":
-            kind = ELEMENT_KIND_REGISTRY.normalize(
-                _text(descriptor.get("kind"), location + ".kind"),
-                error_cls=CanonicalPackValidationError,
-            )
+            raw_kind = _text(descriptor.get("kind"), location + ".kind")
+            try:
+                kind = kind_registry.normalize(raw_kind, error_cls=CanonicalPackValidationError)
+            except CanonicalPackValidationError:
+                built_in = ", ".join(ELEMENT_KIND_REGISTRY.valid_options())
+                declared = ", ".join(declared_kinds)
+                raise CanonicalPackValidationError(
+                    f"{location}.kind: element kind {raw_kind!r} is neither built in [{built_in}] "
+                    f"nor declared by pack {definition.id!r} in extensions.elements.kinds [{declared}]"
+                ) from None
             identity = f"{kind}/{_text(descriptor.get('id'), location + '.id')}"
             metadata = _mapping(descriptor.get("metadata", {}), location + ".metadata")
             owner = descriptor.get("pack_id", metadata.get("pack_id"))

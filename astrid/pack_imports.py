@@ -64,6 +64,115 @@ def _requirements(manifest: Mapping[str, object]) -> set[str]:
     return result
 
 
+# Names a pack-root module may never take: Astrid's own packages and the
+# runtimes the host installs, whether or not they are present on this host.
+_RESERVED_TOP_LEVEL = frozenset({"runtime_protocol", "vibecomfy"})
+
+
+def _pack_module_path(pack_dir: Path, module: str) -> Path | None:
+    """Return the pack-root package directory or module file *module* resolves to, or None.
+
+    Walks every dotted component from the pack root the way Python's path
+    finder does (a regular package directory before a ``.py`` module): each
+    intermediate component must be a package, and every directory,
+    ``__init__.py`` and module file on the way must have its real path (after
+    resolving symlinks) under the pack root. A component that is missing, or
+    that escapes the pack (such as ``pkg/sub`` symlinked outside), makes the
+    import not pack-local, so no outside file is accepted unscanned.
+    """
+    parts = module.split(".")
+    if not all(part.isidentifier() for part in parts):
+        return None
+    try:
+        root = pack_dir.resolve(strict=True)
+    except OSError:
+        return None
+
+    def inside(path: Path) -> bool:
+        try:
+            return path.resolve(strict=True).is_relative_to(root)
+        except OSError:
+            return False
+
+    current = pack_dir
+    for index, part in enumerate(parts):
+        package = current / part
+        init = package / "__init__.py"
+        if package.is_dir() and init.is_file():
+            if not (inside(package) and inside(init)):
+                return None
+            current = package
+            continue
+        if index == len(parts) - 1:
+            module_file = current / f"{part}.py"
+            return module_file if module_file.is_file() and inside(module_file) else None
+        return None
+    return current
+
+
+def _host_can_import(name: str, *, pack_root: Path) -> bool:
+    """True when the host interpreter could import top-level *name* without this pack.
+
+    Asks every ``sys.meta_path`` finder (including editable-install finders),
+    giving the path finder ``sys.path`` without the pack root. Nothing is
+    imported. A pack-root module with such a name is a decoy: the installed
+    package can load at run time instead of the scanned pack file.
+    """
+    if name in sys.modules or name in sys.builtin_module_names:
+        return True
+    try:
+        root = pack_root.resolve(strict=True)
+    except OSError:
+        root = pack_root
+    search_path = []
+    for entry in sys.path:
+        try:
+            resolved = Path(entry or ".").resolve()
+        except OSError:
+            continue
+        if resolved != root and not resolved.is_relative_to(root):
+            search_path.append(entry)
+    import importlib.machinery
+
+    for finder in sys.meta_path:
+        find_spec = getattr(finder, "find_spec", None)
+        if find_spec is None:
+            continue
+        try:
+            if finder is importlib.machinery.PathFinder or isinstance(finder, type) and issubclass(
+                    finder, importlib.machinery.PathFinder):
+                spec = find_spec(name, search_path)
+            else:
+                spec = find_spec(name, None)
+        except Exception:  # noqa: BLE001 - a broken finder must not decide the policy
+            continue
+        if spec is not None:
+            return True
+    return False
+
+
+def _shadowed_name(name: str, *, pack_root: Path) -> str | None:
+    """Why a pack-root module named *name* may not be pack-private, if it may not."""
+    if name in _RESERVED_TOP_LEVEL or name.startswith("astrid_"):
+        return "a name reserved for Astrid and its runtimes"
+    if _host_can_import(name, pack_root=pack_root):
+        return "a package importable on this host, which could load instead of the pack file"
+    return None
+
+
+def _shadowed_requirement(name: str, *, contract: ImportContract, declared_python: set[str]) -> str | None:
+    """The declared Python requirement a pack-root module named *name* would shadow, if any."""
+    candidates = {name.lower().replace("_", "-").replace(".", "-")}
+    mapped = contract.python_modules.get(name, _PYTHON_DISTRIBUTIONS.get(name))
+    if mapped:
+        candidates.add(mapped.lower().replace("_", "-").replace(".", "-"))
+    for prefix, distribution in _PYTHON_NAMESPACE_DISTRIBUTIONS.items():
+        if prefix.split(".", 1)[0] == name:
+            candidates.add(distribution)
+    shadowed = sorted(candidates & declared_python)
+    return shadowed[0] if shadowed else None
+
+
 def _classify(module: str, *, level: int, pack_id: str, contract: ImportContract,
               declared_packs: set[str], declared_python: set[str]) -> tuple[str, str] | None:
     if not module:
@@ -162,6 +271,45 @@ def check_pack_imports(pack_dir: Path, *, contract: ImportContract,
 
     def inspect_module(path: Path, line: int, module: str, level: int = 0,
                        symbols: tuple[str, ...] = ()) -> None:
+        name = module.split(".", 1)[0]
+        # A module or package inside this pack's root is a private helper, for
+        # every entrypoint kind. The standard library keeps its own rule, and
+        # ``astrid`` is never pack-local, so a pack cannot ship an ``astrid``
+        # package to step around the public SDK surface.
+        top = (_pack_module_path(pack_dir, name)
+               if not level and module and name != "astrid" and name not in sys.stdlib_module_names
+               else None)
+        if top is not None:
+            # The top-level name lives in this pack: first refuse decoys of
+            # declared, reserved or host-importable packages, whatever the
+            # dotted rest of the import names.
+            fix = None
+            shadowed = _shadowed_requirement(name, contract=contract, declared_python=declared_python)
+            if shadowed is not None:
+                fix = (f"Rename the pack module {name!r}: it shadows the declared Python requirement "
+                       f"{shadowed!r}.")
+            else:
+                reason = _shadowed_name(name, pack_root=pack_dir)
+                if reason is not None:
+                    fix = (f"Rename the pack module {name!r}: it shadows {reason}; declare the real "
+                           "package in dependencies.python_requirements if the pack needs it.")
+            if fix is not None:
+                violations.append(ImportViolation(
+                    path.relative_to(pack_dir).as_posix(), line, module, "shadowed_dependency", fix))
+                return
+            located = top if module == name else _pack_module_path(pack_dir, module)
+            # A dotted component that is missing or escapes the pack falls
+            # through to the normal classification below (undeclared).
+            if located is not None:
+                # ``from pkg import sub`` imports the submodule ``pkg.sub`` when
+                # one exists on disk, so each such name must also stay in the pack.
+                if symbols and located.is_dir():
+                    for symbol in symbols:
+                        entry, module_file = located / symbol, located / f"{symbol}.py"
+                        if symbol != "*" and (entry.exists() or entry.is_symlink()
+                                              or module_file.exists() or module_file.is_symlink()):
+                            inspect_module(path, line, f"{module}.{symbol}")
+                return
         if level:
             resolved = _relative_target(path, pack_dir, level, module, pack_id)
             if resolved is None:

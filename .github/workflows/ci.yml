@@ -116,6 +116,7 @@ jobs:
       ASTRID_CI_JOB: unit-shard-${{ matrix.os }}
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
       ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
     strategy:
       fail-fast: false
       matrix:
@@ -136,6 +137,34 @@ jobs:
           repository: banodoco/astrid-runtime
           ref: ${{ steps.runtime-pin.outputs.commit }}
           path: astrid-runtime
+
+      - name: Read the pinned RunPod lifecycle revision
+        id: lifecycle-pin
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
+          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
+          print(f"revision={source['revision']}")
+          PY
+
+      - name: Check out the pinned RunPod lifecycle (test fixtures)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.lifecycle-pin.outputs.repository }}
+          ref: ${{ steps.lifecycle-pin.outputs.revision }}
+          path: runpod-lifecycle-checkout
+
+      - name: Record RunPod lifecycle checkout
+        shell: bash
+        env:
+          LIFECYCLE_REVISION: ${{ steps.lifecycle-pin.outputs.revision }}
+        run: |
+          set -euo pipefail
+          checked_out="$(git -C "$ASTRID_TEST_LIFECYCLE_CHECKOUT" rev-parse HEAD)"
+          test "$checked_out" = "$LIFECYCLE_REVISION"
+          echo "- RunPod lifecycle: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore pip cache (C-08)
         id: c08-agent-ci-3

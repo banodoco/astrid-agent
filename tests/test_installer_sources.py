@@ -13,7 +13,7 @@ import pytest
 from runtime_protocol import platform
 
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
-from astrid.installer import cli, core, tools
+from astrid.installer import cli, core, installation, tools
 from astrid.installer.backend import Backend
 from astrid.installer.core import (
     RuntimeOperationError,
@@ -23,6 +23,19 @@ from astrid.installer.core import (
     write_json,
 )
 from astrid.installer.service import LABEL, venv_python
+
+
+def _wheel_layout(product: Path, checkout: Path) -> None:
+    """Mirror an installed wheel: the schema, the reader modules, and the Runtime lock under astrid/resources."""
+    from astrid.core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
+
+    for relative in (SCHEMA_RELATIVE_PATH, *READER_INPUTS):
+        target = product / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(checkout / relative, target)
+    lock = product / "astrid/resources/runtime.lock.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(checkout / "runtime.lock.json", lock)
 
 
 def test_first_tool_archive_creates_its_missing_parent(tmp_path, monkeypatch):
@@ -270,7 +283,8 @@ def test_local_source_cleans_failed_extraction(repository, tmp_path, monkeypatch
 @pytest.mark.parametrize("with_vibecomfy", [False, True])
 @pytest.mark.parametrize("managed_by", [None, "pinokio"])
 @pytest.mark.parametrize("release", [None, 73])
-def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch, with_vibecomfy, managed_by, release):
+def test_stage_uses_source_overrides_and_records_manifest(
+        tmp_path, monkeypatch, real_live_probe, with_vibecomfy, managed_by, release):
     value = manifest()
     if release is not None:
         value["release"] = release
@@ -300,7 +314,7 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
         return destination
 
     monkeypatch.setattr("astrid.installer.backend.source", materialize)
-    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda *_args: {
+    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda *_args, **_kwargs: {
         "PATH": "/tools", "ASTRID_NODE_EXECUTABLE": "/tools/node", "ASTRID_BUN_EXECUTABLE": "/tools/bun",
     })
     monkeypatch.setattr("astrid.installer.backend.binary", lambda *_args: tmp_path / "npm-cli.js")
@@ -308,11 +322,7 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     monkeypatch.setattr(backend, "existing", lambda _data: None)
     def installed_root(python, _env):
         product = python.parent / "Lib/site-packages"
-        source = python.parent.parent.parent / "a"
-        for relative in ("astrid/core/timeline/schema/timeline-config.schema.json",):
-            target = product / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source / relative, target)
+        _wheel_layout(product, Path(__file__).resolve().parents[1])
         return product
 
     monkeypatch.setattr(backend, "_installed_product_root", installed_root)
@@ -373,11 +383,16 @@ def test_stage_refuses_unusable_uv_before_creating_candidate(tmp_path, monkeypat
     assert not backend.root.exists()
 
 
-@pytest.mark.parametrize("outcome", ["ready", "preparation-failure", "busy", "rollback"])
+@pytest.mark.parametrize("outcome", ["ready", "preparation-failure", "busy", "rollback", "never-up",
+                                     "rollback-busy"])
 @pytest.mark.parametrize("schema_changed", [True, False])
 def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
-        tmp_path, monkeypatch, capsys, outcome, schema_changed):
-    """A usable old Runtime/profile can carry ownership while payload is rebuilt."""
+        tmp_path, monkeypatch, capsys, real_live_probe, outcome, schema_changed):
+    """A usable old Runtime/profile can carry ownership while payload is rebuilt.
+
+    ``never-up``: a newer release is staged and selected, but its Runtime never answers.
+    That run is not updated: it must settle as runtime-not-running, never as exit 0.
+    """
     home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "workspace"
     old_root = root / "versions" / "old"
     for path in (old_root / "a", old_root / "r", old_root / "tools"):
@@ -406,7 +421,8 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
     manifest_path = tmp_path / "candidate.json"
     candidate_manifest = manifest()
-    candidate_manifest["release"] = 9
+    candidate_release = 10 if outcome == "never-up" else 9
+    candidate_manifest["release"] = candidate_release
     write_json(manifest_path, candidate_manifest)
     uv = tmp_path / "uv"
     uv.touch()
@@ -425,14 +441,36 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         if outcome == "preparation-failure":
             raise ValueError("candidate rejected during preparation")
 
+    # The live Runtime, modelled here instead of by the autouse stand-in: the old Runtime
+    # answers until it is stopped, and a started version answers only once it comes up.
+    live = {"version": old}
+
+    def probe(_data_root, _program_root=None):
+        version = live["version"]
+        if version is None:
+            return None
+        return {"release": version.release, "managed_by": version.managed_by, "instance_id": "test"}
+
+    monkeypatch.setattr(installation, "probe_live", probe)
+
     def stop(version, _data):
         calls["stop"].append(version.root)
         if outcome == "busy" and version.root == old_root:
             raise RuntimeOperationError("Runtime is busy", details={"safe": False})
+        if outcome == "rollback-busy" and version.root != old_root:
+            # The old Runtime already stopped; now the failed candidate refuses to stop.
+            raise RuntimeOperationError("Runtime is busy", details={"safe": False})
+        live["version"] = None
+
+    def start(version, *_args):
+        calls["start"].append(version.root)
+        if outcome == "never-up" and version.root != old_root:
+            return  # Started, but the new Runtime never answers.
+        live["version"] = version
 
     def verify(version, *_args, **_kwargs):
         calls["verify"].append(version.root)
-        if outcome == "rollback" and version.root != old_root:
+        if outcome in {"rollback", "rollback-busy"} and version.root != old_root:
             workspace_sentinel.write_bytes(b"project written after switched")
             raise VerificationError("candidate did not become ready")
 
@@ -444,7 +482,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     original_workspace = workspace_sentinel.read_bytes()
     backend.restore = lambda *_args: workspace_sentinel.write_bytes(original_workspace)
     backend.register = lambda version, *_args: calls["register"].append(version.root)
-    backend.start = lambda version, *_args: calls["start"].append(version.root)
+    backend.start = start
     backend.verify = verify
     backend.finish = lambda *_args: calls["finish"].append("called")
     backend.open = lambda: None
@@ -480,10 +518,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
             py = Path(args[0]).parent.parent
             purelib = py / "lib/site-packages"
             purelib.mkdir(parents=True, exist_ok=True)
-            schema = Path("astrid/core/timeline/schema/timeline-config.schema.json")
-            target = purelib / schema
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(py.parent / "a" / schema, target)
+            _wheel_layout(purelib, Path(__file__).resolve().parents[1])
             origins = {}
             for key in ("host", "child", "action", "client", "sdk"):
                 origin = purelib / f"{key}.py"
@@ -502,7 +537,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
             "target": 31,
         },
     )
-    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda _m, dest, *_args: (
+    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda _m, dest, *_args, **_kwargs: (
         dest.mkdir(parents=True) or {
             "PATH": str(dest), "ASTRID_NODE_EXECUTABLE": str(dest / "node"),
             "ASTRID_BUN_EXECUTABLE": str(dest / "bun"),
@@ -533,10 +568,10 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     assert [name for name, _path in materialized] == ["agent", "runtime", "vibecomfy"]
     assert all(path.is_relative_to(fresh_root) for _name, path in materialized)
     staged = json.loads((fresh_root / "version.json").read_text(encoding="utf-8"))
-    assert staged["identity"]["release"] == 9
+    assert staged["identity"]["release"] == candidate_release
     assert staged["env"]["ASTRID_RUNTIME_DOOR_PORT"] == "17399"
     assert (fresh_root / "profile.json").is_file()
-    if outcome != "rollback":
+    if outcome not in {"rollback", "rollback-busy"}:
         assert workspace_sentinel.read_bytes() == b"user workspace stays byte-identical"
 
     selected = (root / "current").read_text(encoding="utf-8").strip()
@@ -551,6 +586,15 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         assert calls["backup"] == (["called"] if schema_changed else [])
         assert calls["upgrade"] == (["called"] if schema_changed else [])
         assert calls["finish"] == ["called"]
+    elif outcome == "never-up":
+        # The new release is selected and was started, but no Runtime answers on it.
+        assert selected == fresh_root.name
+        assert calls["start"] == [fresh_root]
+        assert result == 3, "a selected release whose Runtime never came up settled as updated"
+        receipt = capsys.readouterr().out
+        assert "did not restart onto it" in receipt
+        assert "Your projects are safe." in receipt
+        return
     elif outcome == "preparation-failure":
         assert result == 1
         assert selected == old_root.name
@@ -559,13 +603,24 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         assert calls["stop"] == calls["backup"] == calls["upgrade"] == []
         assert calls["register"] == calls["start"] == calls["verify"] == []
     elif outcome == "busy":
-        assert result == 1
+        # A safe --update refusal is not-updated (exit 3, outcome.EXIT_CODES), not failed (exit 1).
+        assert result == 3
         assert selected == old_root.name
         assert transaction["step"] == "complete"
         assert transaction["outcome"] == "stop_refused"
         assert calls["stop"] == [old_root]
         assert calls["backup"] == calls["upgrade"] == []
         assert calls["register"] == calls["start"] == calls["verify"] == []
+    elif outcome == "rollback-busy":
+        # R1: a refusal after the old Runtime stopped is never "not updated, nothing changed" (exit 3).
+        assert result == 1
+        assert transaction["step"] not in {"staged", "complete"}
+        # With a schema change the migration's own candidate stop refuses first, before verify.
+        assert calls["stop"] == ([old_root, fresh_root] if not schema_changed else [old_root, fresh_root, fresh_root])
+        assert calls["verify"] == ([fresh_root] if not schema_changed else [])
+        receipt = json.loads((tmp_path / "logs" / "last-run.json").read_text(encoding="utf-8"))
+        assert receipt["kind"] in {"failed", "rolled-back"}
+        assert receipt["exit_code"] == 1
     else:
         assert result == 1
         assert selected == old_root.name
@@ -678,3 +733,40 @@ def test_manifest_lifecycle_version_satisfies_pack_declaration():
         assert requirement.name == name
         assert requirement.specifier.contains(tools.LIFECYCLE_VERSION, prereleases=True)
     assert LIFECYCLE_PIN["version"] == tools.LIFECYCLE_VERSION
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the POSIX secure step is not used on Windows")
+def test_missing_runtime_lock_names_the_missing_path_not_aliasing(tmp_path):
+    from astrid.core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
+    from astrid.installer import backend as backend_module
+
+    repo = Path(__file__).parents[1]
+    folder = tmp_path / "candidate"
+    product = folder / "py" / "lib" / "site-packages"
+    for relative in (SCHEMA_RELATIVE_PATH, *READER_INPUTS):
+        target = product / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((repo / relative).read_bytes())
+
+    with pytest.raises(ValueError) as caught:
+        backend_module._secure_installed_schema_inputs(folder, product)
+    assert str(caught.value) == "staged Agent is missing: runtime.lock.json"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the POSIX secure step is not used on Windows")
+@pytest.mark.parametrize("missing", ["candidate", "py", "lib", "site-packages"])
+def test_missing_candidate_or_product_root_directory_is_named(tmp_path, missing):
+    """The message names the directory that is missing, never "py" for every one of them."""
+    from astrid.installer import backend as backend_module
+
+    folder = tmp_path / "candidate"
+    product = folder / "py" / "lib" / "site-packages"
+    names = ["py", "lib", "site-packages"]
+    if missing != "candidate":
+        present = names[:names.index(missing)]
+        folder.joinpath(*present).mkdir(parents=True, exist_ok=True)
+    expected = "candidate" if missing == "candidate" else str(Path(*names[:names.index(missing) + 1]))
+
+    with pytest.raises(ValueError) as caught:
+        backend_module._secure_installed_schema_inputs(folder, product)
+    assert str(caught.value) == f"staged Agent is missing: {expected}"

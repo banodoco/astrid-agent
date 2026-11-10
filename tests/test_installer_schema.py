@@ -50,7 +50,7 @@ def test_optional_remotion_failure_does_not_block_staging(tmp_path, monkeypatch,
         return destination
 
     monkeypatch.setattr(backend_module, "source", source)
-    monkeypatch.setattr(backend_module, "install_tools", lambda *_args: {
+    monkeypatch.setattr(backend_module, "install_tools", lambda *_args, **_kwargs: {
         "PATH": "/tools", "ASTRID_NODE_EXECUTABLE": "/tools/node", "ASTRID_BUN_EXECUTABLE": "/tools/bun",
     })
     monkeypatch.setattr(backend_module, "binary", lambda *_args: Path("/tools/npm-cli.js"))
@@ -157,7 +157,7 @@ def test_staging_verifies_the_local_schema_before_declaring_services(tmp_path, m
         return destination
 
     monkeypatch.setattr(backend_module, "source", source)
-    monkeypatch.setattr(backend_module, "install_tools", lambda *_args: {
+    monkeypatch.setattr(backend_module, "install_tools", lambda *_args, **_kwargs: {
         "PATH": "/tools",
         "ASTRID_NODE_EXECUTABLE": "/tools/node",
         "ASTRID_BUN_EXECUTABLE": "/tools/bun",
@@ -263,7 +263,7 @@ def test_windows_pinokio_stage_copies_packages_so_schema_inputs_inherit_the_priv
         return destination
 
     monkeypatch.setattr(backend_module, "source", source)
-    monkeypatch.setattr(backend_module, "install_tools", lambda *_args: {
+    monkeypatch.setattr(backend_module, "install_tools", lambda *_args, **_kwargs: {
         "PATH": "/tools", "ASTRID_NODE_EXECUTABLE": "/tools/node", "ASTRID_BUN_EXECUTABLE": "/tools/bun",
     })
     monkeypatch.setattr(backend_module, "binary", lambda *_args: Path("/tools/npm-cli.js"))

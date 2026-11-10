@@ -347,8 +347,32 @@ def _element_kind_registry_for_packs(
     packs: Iterable[PackDefinition],
 ) -> ElementKindRegistry:
     descriptors = []
+    # A custom kind (or alias) belongs to the one pack that declares it. Name
+    # both packs when two declare the same name, instead of a bare duplicate.
+    builtin_names = set(ELEMENT_KIND_REGISTRY.accepted_names())
+    owners: dict[str, str] = {}
     for pack in packs:
-        descriptors.extend(pack_element_kind_descriptors(pack))
+        declared = pack_element_kind_descriptors(pack)
+        descriptors.extend(declared)
+        if not declared:
+            continue
+        try:
+            pack_registry = ElementKindRegistry(descriptors=declared)
+        except ValueError as exc:
+            raise PackValidationError(
+                f"pack {pack.id!r}: pack.extensions.elements.kinds is invalid: {exc}"
+            ) from exc
+        canonical = set(pack_registry.canonical_kinds())
+        names = set(pack_registry.accepted_names()) - builtin_names
+        # Canonical kinds first, so the error names the kind before its aliases.
+        for name in sorted(names, key=lambda item: (item not in canonical, item)):
+            other = owners.setdefault(name, pack.id)
+            if other != pack.id:
+                raise PackValidationError(
+                    f"element kind {name!r} is declared by more than one pack: {other!r} and "
+                    f"{pack.id!r}; a custom element kind belongs to one pack, so rename it in "
+                    "one pack's extensions.elements.kinds"
+                )
     if not descriptors:
         return ELEMENT_KIND_REGISTRY
     try:

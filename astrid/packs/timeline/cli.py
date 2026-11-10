@@ -59,8 +59,6 @@ product result envelope.
 
 from __future__ import annotations
 
-from astrid.pack_api import pack_root
-
 import argparse
 import copy
 import json
@@ -68,18 +66,16 @@ import re
 import shlex
 import sys
 import zipfile
-from functools import wraps
 from collections.abc import Mapping
 from fractions import Fraction
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
-from astrid.pack_api import print_result
 from astrid.core.cli.domain_output import DomainResult, envelope_dict, render_human
-from astrid.pack_api import CommandSpec, register_product_commands
 from astrid.core.cli.task_progress import task_handoff
 from astrid.core.timeline.clip_names import clip_media_name
-from astrid.sdk.workspace_client import WorkspaceClientError
+from astrid.pack_api import CommandSpec, pack_root, print_result, register_product_commands
 from astrid.packs.timeline.cli_visualize import (  # noqa: F401  (re-exported: the verb's helpers live beside it)
     _changed_cuts_line,
     _clips_changed,
@@ -94,6 +90,7 @@ from astrid.packs.timeline.cli_visualize import (  # noqa: F401  (re-exported: t
     _visualize_working_copy,
     _window_navigation,
 )
+from astrid.sdk.workspace_client import WorkspaceClientError
 
 __all__ = ["COMMANDS", "build_parser"]
 
@@ -789,7 +786,9 @@ def _human_occurrence_lookup(data: Mapping[str, Any]) -> dict[str, Mapping[str, 
 
 def _human_motion_lines(clip: Mapping[str, Any], *, detail: bool = False) -> list[str]:
     """Present only producer-supported intervals; custom clocks stay declarations."""
-    from astrid.packs.rendering.actions.timeline_visualize.readable_timing import project_readable_timing
+    from astrid.packs.rendering.actions.timeline_visualize.readable_timing import (
+        project_readable_timing,
+    )
     if "timed_changes" not in clip:
         clip = project_readable_timing([clip])[0]
     grouped = {}
@@ -1079,7 +1078,9 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
         if callable(bundle_opener):
             return _print_cut_table(parsed, bundle_opener)
 
-    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import inspection_options
+    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (
+        inspection_options,
+    )
     normalized = inspection_options(values)
     opener = getattr(parsed.client.timelines, "open_composition", None)
     if not callable(opener):
@@ -1577,6 +1578,7 @@ def _cmd_diff(parsed: argparse.Namespace) -> int:
     view = getattr(parsed, "presentation", None) or "cuts"
     if view != "cuts":
         import difflib
+
         from astrid.sdk.timeline_views import render_code, render_script
         render = render_script if view == "script" else render_code
         lines = difflib.unified_diff(
@@ -2125,7 +2127,9 @@ def _print_visualization_navigation(outputs: Mapping[str, Any]) -> None:
 
 
 def _cmd_inspect(parsed: argparse.Namespace) -> int:
-    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import inspect_filmstrip
+    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (
+        inspect_filmstrip,
+    )
 
     result = inspect_filmstrip(parsed.manifest, section=parsed.section, limit=parsed.limit, cursor=parsed.cursor,
                               frame=parsed.frame, card=parsed.card, shot=parsed.shot, occurrence=parsed.occurrence,
@@ -2146,7 +2150,9 @@ def offline_inspect_main(args: list[str]) -> int:
     try:
         return _cmd_inspect(parser.parse_args(args))
     except ValueError:
-        from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import _inspection_error
+        from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import (
+            _inspection_error,
+        )
         print(json.dumps(_inspection_error("invalid_arguments"), separators=(",", ":")))
         return 2
 
@@ -3242,6 +3248,7 @@ def _cmd_assets(parsed: argparse.Namespace) -> int:
 
 # The product parser is owned by astrid.core.cli.domain_timelines; these three names are the module's
 # declared public surface (__all__) and the inspect configurator used below.
+from astrid.core.cli import domain_timelines as _core_timelines  # noqa: E402
 from astrid.core.cli.domain_timelines import (  # noqa: E402
     COMMANDS,
     _configure_inspect,
@@ -3254,7 +3261,6 @@ from astrid.packs.timeline import cli_find as _cli_find  # noqa: E402
 from astrid.packs.timeline import cli_log as _cli_log  # noqa: E402
 from astrid.packs.timeline import cli_pending as _cli_pending  # noqa: E402
 from astrid.packs.timeline import cli_working as _cli_working  # noqa: E402
-from astrid.core.cli import domain_timelines as _core_timelines  # noqa: E402
 
 _core_timelines.provide_handlers({
     '_as_timeline_verb': _as_timeline_verb,

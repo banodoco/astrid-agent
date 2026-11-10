@@ -61,7 +61,7 @@ def _retained_preseed_state(tmp_path, monkeypatch):
         run_root=run_root,
         root=root,
         data_root=data,
-        leg="release0-to-release1",
+        leg="release9-then-install",
         mode="direct",
         shell="sh",
         job_id=None,
@@ -104,7 +104,7 @@ def _retained_preseed_state(tmp_path, monkeypatch):
         version_path=version_path,
         version=version,
     )
-    evidence = run_root / "evidence" / "release0-to-release1-diagnostic-release0-api-seed"
+    evidence = run_root / "evidence" / "release9-then-install-diagnostic-release0-api-seed"
     return args, root, data, realm, evidence
 
 

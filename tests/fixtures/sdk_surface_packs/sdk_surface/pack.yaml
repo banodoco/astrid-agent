@@ -1,0 +1,64 @@
+schema_version: 3
+id: sdk_surface
+name: SDK Surface Fixture Pack
+version: 1.0.0
+pack_api: "2.0"
+status: active
+domain: integration
+stability: experimental
+support: community
+visibility: visible
+description: >-
+  Test-owned pack for tests/test_sdk_public_surface.py. It declares the
+  executors and local orchestrator the public SDK surface tests discover,
+  look up and invoke, so those tests do not depend on which first-party
+  packs ship inside the Agent. Every action is a no-op command.
+permissions:
+  - id: subprocess
+    reason: Runs SDK surface fixture actions as subprocesses.
+  - id: project_files
+    reason: Reads and writes fixture briefs and artifacts in the project.
+  - id: network
+    reason: Declared so the surface tests see a network disclosure.
+  - id: environment
+    reason: Declared so the surface tests see an environment disclosure.
+documentation:
+  kind: none
+  reason: Test fixture pack; it has no agent-facing guidance.
+actions:
+  arrange:
+    name: Arrange
+    version: "1.0"
+    description: Fixture executor that stands in for a brief-driven arrangement step.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-c", "pass"]
+    inputs:
+      - name: brief
+        type: file
+        required: false
+        description: Creative brief for the arrangement.
+    outputs: []
+  assemble:
+    name: Assemble
+    version: "1.0"
+    description: Fixture executor that stands in for a result-manifest assembly step.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-c", "pass"]
+    inputs: []
+    outputs: []
+  plan:
+    name: Plan
+    version: "1.0"
+    description: Fixture local orchestrator so discovery reports an admitted orchestrator.
+    invocation:
+      kind: command
+      command:
+        argv: ["{python_exec}", "-c", "pass"]
+    inputs: []
+    outputs: []
+    metadata:
+      local_orchestrator: true

@@ -529,7 +529,9 @@ def test_real_journal_and_installer_log_reach_doctor(installed, monkeypatch, cap
     assert cli.main(["doctor"]) == 1
     report = capsys.readouterr().out
     assert "Last update result: " + ("rolled_back" if rollback else "complete") in report
-    assert "Installer transaction log:" in report and "[REDACTED]" in report
+    # The pinned Runtime (744cf248) prints the installer log as "Installer log (<name>, last 80 lines):"
+    # (the old "Installer transaction log:" label is gone; its test_diagnostics_headline asserts that).
+    assert f"Installer log ({env.backend.log.name}, last 80 lines):" in report and "[REDACTED]" in report
     assert "catalog_missing" in report
     for secret in ["bearer-secret", "cookie-secret", "api-secret", "token-secret", str(paths.home)]:
         assert secret not in report
@@ -1059,7 +1061,7 @@ def test_cli_allows_pending_app_transaction_through_selection(tmp_path, monkeypa
         "--manifest", str(manifest), "--uv", str(uv),
     ])
 
-    assert result == 0
+    assert result == 3  # recovery-only --update-app: the release is unchanged (exit 3)
     assert len(called) == 1
     assert called[0][0][0] == root
     assert called[0][0][1] is backend
@@ -2121,7 +2123,11 @@ def test_strict_cli_app_update_applies_skill_policy_and_reports_without_migratio
         args.extend(["--skills", "on" if requested["skills"] else "off",
                      "--skill-copies", "on" if requested["skill_copies"] else "off"])
     assert cli.main(args) == 0
-    output = capsys.readouterr().out
+    from runtime_protocol import platform
+
+    terminal = capsys.readouterr().out
+    assert "Astrid setup summary:" not in terminal  # the summary is in install.log (card 2)
+    output = terminal + (platform.log_dir() / "install.log").read_text(encoding="utf-8")
     assert env.events.index("ready:new") < env.events.index("skills:new")
     assert env.events.count("skills:new") == 1
     assert current(env.root) == env.candidate
@@ -2196,12 +2202,139 @@ def test_strict_app_update_reports_skill_process_failure_after_successful_restar
     write_json(manifest, {})
     assert cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(env.root),
                      "--manifest", str(manifest), "--uv", str(env.backend.uv), "--skills", "off"]) == 0
-    output = capsys.readouterr().out
+    from runtime_protocol import platform
+
+    terminal = capsys.readouterr().out
+    assert "Skill destinations:" not in terminal  # the summary is in install.log (card 2)
+    output = terminal + (platform.log_dir() / "install.log").read_text(encoding="utf-8")
     assert "Skill destinations: sync failed; see the installer log." in output
     assert "Couldn't add Astrid's skill to your agents" in output
     assert current(env.root) == env.candidate
     assert all(target.exists() for target in env.targets.values())
     assert read_json(env.root / "update-transaction.json")["step"] == "complete"
+
+
+@pytest.mark.parametrize("skills_fail", [True, False], ids=["skill-sync-failed", "skill-sync-ok"])
+def test_strict_app_update_receipt_names_release_and_skill_warning(
+        tmp_path, monkeypatch, capsys, skills_fail):
+    from astrid.installer import cli
+
+    env = _skill_app_update(tmp_path, monkeypatch)
+    execute = env.backend.run
+
+    def maybe_fail_skills(argv, **kwargs):
+        if skills_fail and "astrid.skills" in argv:
+            raise subprocess.CalledProcessError(1, [str(argv[0])], output="skill failure")
+        return execute(argv, **kwargs)
+
+    monkeypatch.setattr(env.backend, "run", maybe_fail_skills)
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: env.backend)
+    monkeypatch.setattr(cli, "validate_manifest", lambda _: {})
+    manifest = tmp_path / "manifest.json"
+    write_json(manifest, {})
+    assert cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(env.root),
+                     "--manifest", str(manifest), "--uv", str(env.backend.uv), "--skills", "off"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    # The receipt is the terminal's last block; the setup summary is in install.log (Plan 29 R11 card 2).
+    assert "Astrid setup summary:" not in lines
+    start = lines.index("Astrid updated: Release 11 → Release 12." if not skills_fail else
+                        "Astrid updated: Release 11 → Release 12, but its skills couldn't be refreshed.")
+    receipt = lines[start:]
+    assert not any("did NOT update" in line for line in receipt)
+    next_lines = [line for line in receipt if line.startswith("Next: to refresh Astrid's skills")]
+    assert len(next_lines) == (1 if skills_fail else 0)
+    assert current(env.root) == env.candidate
+
+
+def _app_update_receipt(tmp_path, monkeypatch, capsys, *, manifest, skills_fail=False, other_copy=False):
+    """Run --update-app and return (exit code, output lines, last-run record)."""
+    import dataclasses
+
+    from astrid.installer import cli
+    from astrid.installer.installation import Installation, LiveRuntime
+    from runtime_protocol import platform
+
+    env = _skill_app_update(tmp_path, monkeypatch)
+    execute = env.backend.run
+
+    def run(argv, **kwargs):
+        if skills_fail and "astrid.skills" in argv:
+            raise subprocess.CalledProcessError(1, [str(argv[0])], output="skill failure")
+        return execute(argv, **kwargs)
+
+    monkeypatch.setattr(env.backend, "run", run)
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: env.backend)
+    monkeypatch.setattr(cli, "validate_manifest", lambda _: dict(manifest))
+    if other_copy:
+        # A second, unselected Runtime is alive once the update has completed.
+        resolve = Installation.resolve
+        journal = env.root / "update-transaction.json"
+
+        def resolve_with_other_copy(home, **kwargs):
+            state = resolve(home, **kwargs)
+            if journal.exists() and read_json(journal).get("step") == "complete":
+                other = LiveRuntime(tmp_path / "other-data", "other", 4242, selected=False, alive=True)
+                return dataclasses.replace(state, live_runtimes=(other,))
+            return state
+
+        monkeypatch.setattr(Installation, "resolve", staticmethod(resolve_with_other_copy))
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, {})
+    capsys.readouterr()
+    code = cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(env.root),
+                     "--manifest", str(manifest_path), "--uv", str(env.backend.uv), "--skills", "off"])
+    lines = capsys.readouterr().out.splitlines()
+    record = read_json(platform.log_dir() / "last-run.json")
+    return code, lines, record
+
+
+def _receipt(lines, headline):
+    """The receipt block: from its headline to the end of the terminal output (the setup summary is in install.log)."""
+    assert "Astrid setup summary:" not in lines  # R11 card 2: the summary is not printed after the receipt
+    block = lines[lines.index(headline):]
+    while block and block[-1] == "":
+        block.pop()
+    return block
+
+
+def test_strict_app_update_manifest_naming_the_activated_release_is_updated(tmp_path, monkeypatch, capsys):
+    code, lines, record = _app_update_receipt(tmp_path, monkeypatch, capsys, manifest={"release": 12})
+    assert code == 0
+    assert _receipt(lines, "Astrid updated: Release 11 → Release 12.")
+    assert record["target"] == 12 and record["target_source"] == "manifest"
+    assert record["exit_code"] == 0
+
+
+def test_strict_app_update_manifest_naming_another_release_is_not_updated(tmp_path, monkeypatch, capsys):
+    code, lines, record = _app_update_receipt(tmp_path, monkeypatch, capsys, manifest={"release": 13})
+    assert code == 3
+    assert any(line.startswith("Astrid did NOT update.") for line in lines)
+    assert record["target"] == 13 and record["target_source"] == "manifest"
+
+
+def test_strict_app_update_manifest_without_release_targets_the_activated_release(tmp_path, monkeypatch, capsys):
+    code, lines, record = _app_update_receipt(tmp_path, monkeypatch, capsys, manifest={})
+    assert code == 0
+    assert _receipt(lines, "Astrid updated: Release 11 → Release 12.")
+    assert record["target"] == 12 and record["target_source"] == "activated"
+
+
+@pytest.mark.parametrize("skills_fail", [False, True], ids=["other-copy", "other-copy-and-skills"])
+def test_strict_app_update_other_copy_warning_is_updated_with_repair_next_line(
+        tmp_path, monkeypatch, capsys, skills_fail):
+    code, lines, record = _app_update_receipt(tmp_path, monkeypatch, capsys, manifest={"release": 12},
+                                              skills_fail=skills_fail, other_copy=True)
+    assert code == 0
+    headline = ("Astrid updated: Release 11 → Release 12, but its skills couldn't be refreshed and "
+                "another copy of Astrid is still running." if skills_fail else
+                "Astrid updated: Release 11 → Release 12, but another copy of Astrid is still running.")
+    receipt = _receipt(lines, headline)
+    assert "Next: run the repair command to stop it: curl -fsSL https://astrid.haus/install | sh" in receipt
+    assert any(line.startswith("Next: to refresh Astrid's skills") for line in receipt) is skills_fail
+    assert receipt[-1].startswith("Details: ")
+    assert record["warnings"] == (["skills-not-refreshed", "other-copy-running"] if skills_fail
+                                  else ["other-copy-running"])
+    assert record["headline"] == headline
 
 
 def test_strict_app_recovery_keeps_saved_policy_without_applying_new_request(tmp_path, monkeypatch):

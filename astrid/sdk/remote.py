@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import mimetypes
 import hashlib
 import json
+import mimetypes
 import re
 import tempfile
 import uuid
@@ -14,11 +14,9 @@ from typing import Any, Mapping
 
 from astrid.core.receipts.contract import CommandReceipt
 
-from .contracts import DomainResult, ErrorObject
+from ._remote_timeline import _RemoteTimelineRevisionMixin
 from .capability_selection import select_capability_row
-from .pagination import page_pair, paged_rows
-from .workspace_client import WorkspaceClient, WorkspaceClientError
-
+from .contracts import DomainResult, ErrorObject
 from .execution_request import (
     ExecutionRequest,
     ExecutionRequestError,
@@ -28,7 +26,8 @@ from .execution_request import (
     reject_caller_execution_binding,
     require_targeted_execution_binding_support,
 )
-from ._remote_timeline import _RemoteTimelineRevisionMixin
+from .pagination import page_pair, paged_rows
+from .workspace_client import WorkspaceClient, WorkspaceClientError
 
 
 def _vibecomfy_invocation_preflight(
@@ -1714,6 +1713,7 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
         timeline_id = resolved.data["timeline_id"]
         from astrid.core.timeline.authoring_bundle import AuthoringBundleError
         from astrid.core.timeline.authoring_revision_diff import diff_authoring_revisions
+
         from .authoring_revision_diff import read_authoring_revision
 
         shown = self._typed("get_project", resolved.data["project_ref"])
@@ -1939,7 +1939,7 @@ class RemoteMedia(_RemoteFamily):
         This Python-only method deliberately returns bytes rather than placing
         them in the JSON-safe product result envelope used by media.show.
         """
-        from .exceptions import ServiceError, _SERVICE_ERROR_CLASSES
+        from .exceptions import _SERVICE_ERROR_CLASSES, ServiceError
 
         try:
             response = self._client.get_object(object_id)
@@ -2234,6 +2234,7 @@ class RemoteTasks(_RemoteFamily):
         # Round-trip with the shared SDK serializer so the receipt owns a
         # detached JSON payload, including list order and generated defaults.
         from astrid.core.receipts.canonical import canonical_json, parse_json
+
         from .results import _json_safe
 
         arguments = parse_json(canonical_json(_json_safe({**admission, "idempotency_key": key})), max_bytes=4 * 1024 * 1024)
@@ -2384,8 +2385,8 @@ class RemoteRuns(_RemoteFamily):
         opener=None,
         no_open=False,
     ):
-        from .project_render import open_project_render
         from .contracts import DomainResult, ErrorObject
+        from .project_render import open_project_render
         if project is not None and project_id is not None and project != project_id:
             return DomainResult.failure(ErrorObject("validation_error", "project and project_id conflict", {"fields": ["project", "project_id"]}))
         if timeline is not None and timeline_id is not None and timeline != timeline_id:

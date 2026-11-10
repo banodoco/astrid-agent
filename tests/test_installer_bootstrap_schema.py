@@ -34,7 +34,7 @@ def test_staged_canonical_schema_reaches_strict_consumer(tmp_path, monkeypatch):
         return destination
 
     monkeypatch.setattr("astrid.installer.backend.source", source)
-    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda *_args: {
+    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda *_args, **_kwargs: {
         "PATH": "/tools", "ASTRID_NODE_EXECUTABLE": "/tools/node",
         "ASTRID_BUN_EXECUTABLE": "/tools/bun",
     })

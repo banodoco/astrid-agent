@@ -126,6 +126,9 @@ def test_installed_tools_forward_the_matching_digest_for_every_archive(tmp_path,
 
     def run(argv, **kwargs):
         argv = [str(value) for value in argv]
+        if Path(argv[0]).name in {"git", "git.exe"}:
+            # The installer records the installing user's git; answer it, whatever PATH holds.
+            return "git version 2.47.0\n"
         if argv[-1] == "--version":
             return "1.3.14" if Path(argv[0]).name == "bun" else "v20.19.4"
         if argv[-1] == "-version":

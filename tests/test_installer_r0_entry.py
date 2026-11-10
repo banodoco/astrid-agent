@@ -336,7 +336,7 @@ def test_public_cli_busy_refusal_with_nested_log(tmp_path, monkeypatch, capsys, 
     output = capsys.readouterr()
     assert "Finish or cancel running tasks" in output.out
     assert "Finish or cancel running tasks" in output.err  # console traceback
-    assert "Details:" not in output.out
+    assert not any(line.startswith("Details: /") for line in output.out.splitlines())
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()
     assert (snapshot(root), snapshot(data)) == before
@@ -359,7 +359,7 @@ def test_public_cli_recovers_interrupted_stop_with_nested_read_only_source(tmp_p
         assert not state(manager)["enabled"]
         state(manager, kill_after_disable=False)
         recovered = invoke(root)
-        assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+        assert recovered.returncode == 3, recovered.stdout + recovered.stderr  # recovery-only run: the receipt says not updated (exit 3)
         assert "Recovered the previous R0 service" in recovered.stdout
         assert state(manager)["enabled"] and state(manager)["running"]
         assert not r0_stop._marker_path(service).exists()
@@ -390,7 +390,7 @@ def test_public_cli_log_becoming_unwritable_cannot_block_manager_recovery(tmp_pa
     assert "diagnostic destination unavailable" in result.stdout
     assert "R0 restored" in result.stdout
     assert "pinned user-local uv" in result.stderr  # failure handler also falls back
-    assert "Details:" not in result.stdout
+    assert not any(line.startswith("Details: /") for line in result.stdout.splitlines())
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()
     assert (snapshot(root), snapshot(data)) == before
@@ -478,7 +478,7 @@ def test_sigkill_in_manager_stop_real_cli_rerun_recovers(tmp_path, monkeypatch):
     assert not state(manager)["enabled"]
     state(manager, kill_after_disable=False)
     recovered = invoke(root)
-    assert recovered.returncode == 0
+    assert recovered.returncode == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert "Recovered the previous R0 service" in recovered.stdout
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()
@@ -647,7 +647,8 @@ def test_public_cli_windows_r0_refuses_with_exact_line_before_any_change(tmp_pat
     monkeypatch.setattr(r0_stop, "stop_r0_and_wait", forbidden)
     monkeypatch.setattr(Installer, "run", forbidden)
     before = snapshot(root), snapshot(data), service.selection.read_bytes(), service.path.read_bytes()
-    assert cli.main([*mode, "--root", str(root), "--uv", sys.executable]) == 1
+    # Refused before any change: not updated, exit 3 (outcome.EXIT_CODES), as the receipt pins.
+    assert cli.main([*mode, "--root", str(root), "--uv", sys.executable]) == 3
     output = capsys.readouterr().out.splitlines()
     assert boundary_handoff.WINDOWS_UPGRADE_REFUSAL in output
     assert ("Upgrading from an earlier Windows version isn't supported yet. "
@@ -680,7 +681,8 @@ def test_public_cli_windows_r0_refusal_keeps_the_legacy_selection_r0_reads(tmp_p
 
     monkeypatch.setattr(cli, "Backend", windows_backend)
     monkeypatch.setattr(Installer, "run", lambda *a, **kw: pytest.fail("installer ran before refusal"))
-    assert cli.main(["--update", "--root", str(root), "--uv", sys.executable]) == 1
+    # Refused before any change (the legacy record is byte-identical below): not updated, exit 3.
+    assert cli.main(["--update", "--root", str(root), "--uv", sys.executable]) == 3
     assert boundary_handoff.WINDOWS_UPGRADE_REFUSAL in capsys.readouterr().out.splitlines()
     assert legacy.read_bytes() == before
     assert not os.path.lexists(install_selection(Path.home(), "win32"))

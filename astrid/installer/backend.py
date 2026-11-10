@@ -193,11 +193,15 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
         raise ValueError("installed timeline schema root is outside the candidate")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     opened = []
+    current = Path(folder.name)  # the input being opened, named if it is missing
     try:
         # Walk from the candidate itself: no resolved alias may escape it.
         fd = os.open(folder, flags)
         opened.append(fd)
+        walked = Path()
         for part in ("py", *relative_root.parts):
+            walked = walked / part
+            current = walked  # the product-root directory, relative to the candidate
             fd = os.open(part, flags, dir_fd=fd)
             opened.append(fd)
             facts = os.fstat(fd)
@@ -206,6 +210,7 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
         root_fd = fd
         dirs = {(): root_fd}
         # The reader's pin source, resolved exactly as the reader resolves it (installed copy, else package data).
+        current = Path("runtime.lock.json")
         lock = runtime_lock_path(product_root)
         try:
             lock_relative = lock.relative_to(product_root)
@@ -214,6 +219,7 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
         files = (SCHEMA_RELATIVE_PATH, lock_relative, *READER_INPUTS)
         # Check all path components without following links before modifying any.
         for relative in files:
+            current = relative
             parent = root_fd
             for index, part in enumerate(relative.parts[:-1], 1):
                 key = relative.parts[:index]
@@ -235,6 +241,7 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
             os.fchmod(directory, 0o755)
         # Each replacement is private even if uv linked its original to cache.
         for relative in files:
+            current = relative
             parent = dirs[relative.parts[:-1]]
             source_fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
             opened.append(source_fd)
@@ -249,8 +256,10 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
                 shutil.copyfileobj(src, dst)
             os.fchmod(dest_fd, 0o644)
             os.replace(name, relative.name, src_dir_fd=parent, dst_dir_fd=parent)
+    except FileNotFoundError as exc:
+        raise ValueError(f"staged Agent is missing: {current}") from exc
     except OSError as exc:
-        raise ValueError("staged Agent is missing or has an aliased local canonical timeline schema input") from exc
+        raise ValueError("staged Agent has an aliased local canonical timeline schema input") from exc
     finally:
         for descriptor in reversed(opened):
             os.close(descriptor)
@@ -404,20 +413,24 @@ class Backend:
         result = subprocess.run([str(s) for s in argv], cwd=cwd, env=env, check=False,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 encoding="utf-8", errors="replace", timeout=timeout)
+        self.diagnostic(result.stdout)
+        if result.returncode:
+            raise subprocess.CalledProcessError(result.returncode, [str(argv[0])], output=result.stdout)
+        return result.stdout.strip()
+
+    def diagnostic(self, text: str) -> None:
+        """Append command output or one installer line to the install log."""
         if not getattr(self, "console_diagnostics", False):
             try:
                 with self.log.open("a", encoding="utf-8") as stream:
                     platform.owner_only(stream.fileno())
                     # Do not log inherited environments or credentials.
-                    stream.write(result.stdout + "\n")
+                    stream.write(text + "\n")
             except OSError:
                 # Diagnostics must never prevent manager stop/recovery.
                 self.console_diagnostics = True
-        if getattr(self, "console_diagnostics", False) and result.stdout:
-            getattr(self, "say", print)(result.stdout.rstrip("\n"))
-        if result.returncode:
-            raise subprocess.CalledProcessError(result.returncode, [str(argv[0])], output=result.stdout)
-        return result.stdout.strip()
+        if getattr(self, "console_diagnostics", False) and text:
+            getattr(self, "say", print)(text.rstrip("\n"))
 
     def install_remotion_dependencies(self, agent: Path, env: dict[str, str], npm: Path) -> bool:
         """Install the renderer's frozen dependencies, reusing an identical lock."""
@@ -1264,7 +1277,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         self.run([self.uv, "pip", "install", *link_mode, "--python", python, "--no-deps", runtime,
                   runtime / "packages" / "python", agent, vibecomfy, *sibling_sources],
                  extra_env=source_install_env)
-        env = install_tools(manifest, folder / "tools", platform_target(), self.run)
+        env = install_tools(manifest, folder / "tools", platform_target(), self.run, note=self.diagnostic)
         prior = current(root) or self.existing(data)
         env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
                     "ASTRID_INSTALL_UV": str(self.uv),
@@ -1454,7 +1467,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         return BoundaryRegistration(self.service).recover()
 
     def register(self, version: Version, data: Path) -> None:
-        if self.managed_by != "pinokio":
+        # A normalised handed-off install keeps its R0 stop intent and R1
+        # registration journal as rollback evidence; they authorize nothing here.
+        if self.managed_by != "pinokio" and not getattr(self.service, "handed_off", False):
             from .boundary_registration import journal_path
             from .r0_stop import R0StopError, _marker_path
 
@@ -1733,6 +1748,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # Keep the immediately previous program and backup. Failures cleaning an
         # older locked version are residue, not grounds to roll back a good update.
         keep = {candidate.root, old.root if old else candidate.root}
+        if self.managed_by != "pinokio":
+            from .installation import retained_versions
+
+            # The R0 program stays while the earlier storage move can be rolled back.
+            keep |= retained_versions(self.service, self.root)
         for path in (self.root / "versions").iterdir():
             if path not in keep:
                 try:

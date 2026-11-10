@@ -107,13 +107,16 @@ def test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs
         monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
         args = ["--update", "--root", str(root), "--manifest", str(manifest), "--uv", str(uv)]
 
-    assert cli.main(args) == 0
+    assert cli.main(args) == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert recovered == ["restoring_realm"]
     assert (data / "runtime" / "realms" / "original-realm").is_dir()
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
     lines = capsys.readouterr().out.splitlines()
     assert "Recovered your previous version — run Update again" in lines
-    assert lines[-1].startswith("  Way back: ")
+    # The receipt ends the output; the Way back line is in install.log (Plan 29 R11 card 2).
+    assert lines[-1] == f"Details: {(tmp_path / 'logs' / 'install.log').absolute()}"
+    assert not any(line.startswith("  Way back: ") for line in lines)
+    assert "  Way back: " in (tmp_path / "logs" / "install.log").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("update_flag", [False, True], ids=["install", "update"])
@@ -206,7 +209,7 @@ def test_recovery_only_cli_sweeps_owned_job_under_installer_lock_after_recovery(
             "--uv", str(tmp_path / "missing-uv")]
     if update_flag:
         args.insert(0, "--update")
-    assert cli.main(args) == 0
+    assert cli.main(args) == 3  # recovery-only run: the receipt says not updated (exit 3)
 
     assert events == [
         "recover",
@@ -255,7 +258,7 @@ def test_regular_cli_recovers_app_journal_with_stopped_custody(
 
     monkeypatch.setattr(app_update, "recover_app", recover_app)
     assert cli.main(["--root", str(root), "--update", "--uv", str(tmp_path / "absent-uv"),
-                     "--manifest", str(tmp_path / "absent-manifest")]) == 0
+                     "--manifest", str(tmp_path / "absent-manifest")]) == 3  # recovery-only --update: the release is unchanged (exit 3)
     assert recovery == ["called"]
 
 
@@ -316,7 +319,7 @@ def test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs(
         validate=lambda _version: None, stop=stop, start=start))
 
     first = ["--root", str(root), "--update", "--manifest", str(manifest), "--uv", str(uv)]
-    assert cli.main(first) == 0
+    assert cli.main(first) == 3  # recovery-only --update: the release is unchanged (exit 3)
     journal = read_json(root / "update-transaction.json")
     assert journal["step"] == ("complete" if step == "staged" else "rolled_back")
     assert current(root) == old
@@ -332,9 +335,12 @@ def test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs(
     # proceed. This keeps recovery ahead of C2b release dispatch on every retry.
     routed = []
     backend.preflight_stop = lambda _data: routed.append("preflight")
-    monkeypatch.setattr(app_update, "update_pinokio", lambda *args, **kwargs: routed.append(
-        (args[0], kwargs.get("force"))))
-    assert cli.main(first) == 0
+    def stub_update(*args, **kwargs):
+        routed.append((args[0], kwargs.get("force")))
+        return {}  # update_pinokio is declared to return a dict (app_update.py), even when it changes nothing
+
+    monkeypatch.setattr(app_update, "update_pinokio", stub_update)
+    assert cli.main(first) == 3  # the retry's update is stubbed, so the release is unchanged (exit 3)
     assert routed == ["preflight", (root, True)]
 
 
@@ -380,7 +386,7 @@ def test_installed_cli_validates_candidate_without_requiring_staging_uv(
     if source == "explicit":
         args.extend(["--manifest", str(manifest_path)])
 
-    assert cli.main(args) == 0
+    assert cli.main(args) == 0  # plain install whose recovery ends healthy: repaired (exit 0)
     assert validated == [candidate]
     assert dispatched == [("install", candidate)]
 
@@ -558,7 +564,7 @@ def test_recovery_only_return_then_next_gateway_call_compares_restored_release(
 
     monkeypatch.setattr(Installer, "_recover_update", recover)
     assert gateway_main(["install", "--root", str(root), "--manifest", str(tmp_path / "missing"),
-                         "--uv", str(tmp_path / "missing-uv")]) == 0
+                         "--uv", str(tmp_path / "missing-uv")]) == 0  # plain install whose recovery ends healthy: repaired (exit 0)
     assert recovery == [True]
     assert not backend.calls
 
@@ -583,10 +589,10 @@ def test_update_app_cli_recovers_before_checking_manifest_or_uv(tmp_path, monkey
     monkeypatch.setattr(cli, "download", lambda *_args: pytest.fail(
         "recovery must not download a manifest"))
     assert cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(root),
-                     "--uv", str(tmp_path / "absent-uv")]) == 0
+                     "--uv", str(tmp_path / "absent-uv")]) == 3  # recovery-only --update-app: the release is unchanged (exit 3)
     assert recovered == [True]
-    assert capsys.readouterr().out.splitlines()[-1] == (
-        "Recovered your previous version — run Update again")
+    # The run receipt is printed after the recovery line, so the recovery line is no longer last.
+    assert "Recovered your previous version — run Update again" in capsys.readouterr().out.splitlines()
 
 
 def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_inputs(
@@ -656,7 +662,7 @@ def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_input
 
     assert cli.main(["--root", str(root), "--update",
                      "--manifest", str(tmp_path / "unavailable-manifest"),
-                     "--uv", str(tmp_path / "unavailable-uv")]) == 0
+                     "--uv", str(tmp_path / "unavailable-uv")]) == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert current(root) == old
     assert (realm_root / "workspace.txt").read_text(encoding="utf-8") == "original bytes"
     assert read_json(data / "runtime" / "catalog.json")["selected_realm_id"] == "original-realm"
@@ -939,7 +945,7 @@ def test_public_cli_recovers_bound_windows_task_after_candidate_activation_failu
 
     assert cli.main(["--update", "--root", str(backend.root),
                      "--uv", str(tmp_path / "unused-uv"),
-                     "--manifest", str(tmp_path / "unused-manifest")]) == 0
+                     "--manifest", str(tmp_path / "unused-manifest")]) == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert len(task_queries) == 4  # legacy read, action migration, early and fenced revalidation
     assert boundary.stop_calls == 0  # no owner publication; C1 admits the idle readable realm
     assert manager_calls == []

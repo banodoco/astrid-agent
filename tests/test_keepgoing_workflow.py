@@ -40,8 +40,8 @@ def test_both_legs_cover_platforms_without_duplicate_windows_fresh_and_retain_re
     assert result.returncode == 0, result.stderr
     rows = json.loads(outputs['matrix'])['include']
     assert {(row['job_id'], row['leg']) for row in rows} == {
-        ('direct-linux', 'fresh-install'), ('direct-linux', 'release0-to-release1'),
-        ('direct-macos', 'fresh-install'), ('direct-macos', 'release0-to-release1'),
+        ('direct-linux', 'fresh-install'), ('direct-linux', 'release9-then-install'),
+        ('direct-macos', 'fresh-install'), ('direct-macos', 'release9-then-install'),
         ('direct-windows', 'fresh-install'),
     }
     assert len(rows) == len({(row['job_id'], row['leg']) for row in rows}) == 5
@@ -59,11 +59,11 @@ def test_both_legs_cover_platforms_without_duplicate_windows_fresh_and_retain_re
 
 def test_strict_direct_matrix_preserves_original_leg_and_artifact_names(tmp_path):
     result, outputs = config(tmp_path, DIAGNOSTIC_KEEP_GOING='false',
-                             DIAGNOSTIC_LEG='release0-to-release1')
+                             DIAGNOSTIC_LEG='release9-then-install')
     assert result.returncode == 0, result.stderr
     rows = json.loads(outputs['matrix'])['include']
     assert {(row['job_id'], row['leg']) for row in rows} == {
-        ('direct-linux', 'release0-to-release1'), ('direct-macos', 'release0-to-release1'),
+        ('direct-linux', 'r0-handoff-then-update'), ('direct-macos', 'r0-handoff-then-update'),
         ('direct-windows', 'fresh-install'),
         ('direct-linux-fresh', 'fresh-install'), ('direct-macos-fresh', 'fresh-install')}
     assert len(rows) == 5
@@ -73,12 +73,12 @@ def test_strict_direct_matrix_preserves_original_leg_and_artifact_names(tmp_path
 
 
 def test_windows_diagnostic_does_not_run_deferred_release0_task(tmp_path):
-    result, outputs = config(tmp_path, DIAGNOSTIC_LEG='release0-to-release1')
+    result, outputs = config(tmp_path, DIAGNOSTIC_LEG='release9-then-install')
     assert result.returncode == 0, result.stderr
     rows = json.loads(outputs['matrix'])['include']
     assert {(row['job_id'], row['leg']) for row in rows} == {
-        ('direct-linux', 'release0-to-release1'),
-        ('direct-macos', 'release0-to-release1'),
+        ('direct-linux', 'release9-then-install'),
+        ('direct-macos', 'release9-then-install'),
         ('direct-windows', 'fresh-install'),
     }
 
@@ -94,7 +94,7 @@ def test_invalid_diagnostic_scope_is_rejected(tmp_path, overrides, message):
     assert message in result.stderr
 
 
-@pytest.mark.parametrize('leg', ['fresh-install', 'release0-to-release1'])
+@pytest.mark.parametrize('leg', ['fresh-install', 'release9-then-install'])
 def test_driver_routes_both_legs_and_never_reports_success(monkeypatch, tmp_path, leg):
     seen = []
     monkeypatch.setattr(journey, 'execute', lambda args: seen.append((args.leg, args.diagnostic_keep_going)))
@@ -102,7 +102,7 @@ def test_driver_routes_both_legs_and_never_reports_success(monkeypatch, tmp_path
             '--data-root', str(tmp_path / 'data'), '--job-id', 'direct-linux', '--candidate', 'candidate.json',
             '--candidate-agent-checkout', '.', '--candidate-runtime-checkout', '.', '--pinokio-checkout', '.',
             '--diagnostic-keep-going']
-    if leg == 'release0-to-release1':
+    if leg == 'release9-then-install':
         args += ['--release9-app-checkout', '.', '--allow-release0-to-release1']
     with patch.object(journey.sys, 'platform', 'linux'):
         assert journey.main(args) == 1
