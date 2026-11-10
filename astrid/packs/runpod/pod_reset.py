@@ -51,6 +51,29 @@ PREPARED_ENV = "ASTRID_PREPARED_CONNECTION"
 class ResetError(RuntimeError):
     """The reset did not leave an empty, ready Runtime; the controller releases the pod."""
 
+    def __init__(self, *args: object, reason: str = "unknown") -> None:
+        super().__init__(*args)
+        self.reason = reason
+
+
+RESET_FAILURE_REASONS = frozenset({
+    "prepare", "runtime_ensure", "realm_lookup", "template_restore", "template_create",
+    "sweep", "ready_ensure", "ready_write", "unknown",
+})
+
+
+def reset_failure_reason(result: str | Mapping[str, Any]) -> str:
+    """Read only the fixed failure protocol; raw pod output is never a diagnostic."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return "unknown"
+    if not isinstance(result, Mapping) or set(result) != {"reset", "reason"} or result.get("reset") != "failed":
+        return "unknown"
+    reason = result.get("reason")
+    return reason if isinstance(reason, str) and reason in RESET_FAILURE_REASONS else "unknown"
+
 
 @contextlib.contextmanager
 def reset_lock(path: Path = LOCK) -> Iterator[None]:
@@ -245,8 +268,19 @@ def open_prepared(path: Path | str | None = None, *, opener: Callable[..., Any] 
                   client_version="stage1", protocol_version="workspace.v1")
 
 
-def _token(result: Mapping[str, Any]) -> str:
-    return Path(str(result["credential_file"])).read_text(encoding="utf-8").strip()
+def _owner_token(data_root: Path) -> str:
+    # Backup/restore/replace are admin operations. The launcher's ordinary
+    # credential_file is the scoped Astrid connection saved for generation;
+    # lifecycle control uses the Runtime's existing owner credential instead.
+    from astrid_runtime.paths import RuntimePaths
+    from astrid.sdk.workspace_client import _read_credential
+
+    paths = RuntimePaths.current(data_root=data_root)
+    token = _read_credential(paths.runtime_support / "credentials" / "owner.token")
+    if not token.isascii() or any(character.isspace() or ord(character) < 32 or ord(character) == 127
+                                  for character in token):
+        raise ResetError("Runtime owner credential is invalid")
+    return token
 
 
 def reset(*, run_dir: Path | None = None, job_dir: Path | None = None,
@@ -259,29 +293,41 @@ def reset(*, run_dir: Path | None = None, job_dir: Path | None = None,
     ``data_root`` defaults to ``ASTRID_RUNTIME_DATA_ROOT`` when set (as pod_bootstrap
     and the launcher read it), else ``/root/astrid/runtime-data``.
     """
-    data_root = Path(data_root) if data_root is not None else runtime_data_root()
-    if ensure is None:
-        from astrid.sdk.autobootstrap import ensure_runtime
-        ensure = ensure_runtime
-    with reset_lock(lock):
-        ready.unlink(missing_ok=True)  # a failed reset leaves the pod not ready
-        if run_dir is None and job_dir is None:
-            # A redo at the claim: the job that never reached its reset named its folders.
-            run_dir, job_dir = pending_dirs(active, runs_root=runs_root)
-        current = ensure()
-        root = realm_root(str(current["realm_id"]), data_root)
-        steps: dict[str, Any] = {}
-        if template.exists():
-            steps["replace"] = replace_realm(current["endpoint"], _token(current), template=template,
-                                             realm_root=root)
-        else:
-            # First reset on a fresh pod: the realm pod_bootstrap created is still empty.
-            steps["template"] = take_template(current["endpoint"], _token(current), template,
-                                              realm_root=root, active=active)
-        steps["removed"] = sweep(run_dir=run_dir, job_dir=job_dir, data_root=data_root)
-        # Replacement rotates credentials; one full ensure writes the connection the next job opens.
-        steps["ready"] = write_prepared(ensure(), prepared=prepared, ready=ready, active=active)
-        return steps
+    reason = "prepare"
+    try:
+        data_root = Path(data_root) if data_root is not None else runtime_data_root()
+        if ensure is None:
+            from astrid.sdk.autobootstrap import ensure_runtime
+            ensure = ensure_runtime
+        with reset_lock(lock):
+            ready.unlink(missing_ok=True)  # a failed reset leaves the pod not ready
+            if run_dir is None and job_dir is None:
+                run_dir, job_dir = pending_dirs(active, runs_root=runs_root)
+            reason = "runtime_ensure"
+            current = ensure()
+            reason = "realm_lookup"
+            root = realm_root(str(current["realm_id"]), data_root)
+            steps: dict[str, Any] = {}
+            if template.exists():
+                reason = "template_restore"
+                steps["replace"] = replace_realm(current["endpoint"], _owner_token(data_root), template=template,
+                                                 realm_root=root)
+            else:
+                reason = "template_create"
+                steps["template"] = take_template(current["endpoint"], _owner_token(data_root), template,
+                                                  realm_root=root, active=active)
+            reason = "sweep"
+            steps["removed"] = sweep(run_dir=run_dir, job_dir=job_dir, data_root=data_root)
+            # Replacement rotates credentials; ensure writes the connection the next job opens.
+            reason = "ready_ensure"
+            current = ensure()
+            reason = "ready_write"
+            steps["ready"] = write_prepared(current, prepared=prepared, ready=ready, active=active)
+            reason = "prepare"  # releasing the reset lock is also part of preparation
+            return steps
+    except Exception as exc:
+        raise ResetError(str(exc), reason=reason) from exc
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -296,7 +342,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         steps = reset(run_dir=args.run_dir, job_dir=args.job_dir)
     except Exception as exc:  # noqa: BLE001 (the controller releases the pod on a non-zero exit)
-        print(json.dumps({"reset": "failed", "error": f"{type(exc).__name__}: {exc}"[:800]}))
+        reason = reset_failure_reason({"reset": "failed", "reason": getattr(exc, "reason", None)})
+        print(json.dumps({"reset": "failed", "reason": reason}))
         return 1
     print(json.dumps({"reset": "ok", "removed": len(steps["removed"]),
                       "template": "taken" if "template" in steps else "restored"}))

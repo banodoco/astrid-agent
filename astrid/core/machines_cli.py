@@ -40,7 +40,14 @@ def render(rows: Sequence[dict[str, Any]]) -> str:
 
 
 def _release(machine_id: str, *, as_json: bool, release: Callable[[], Any] | None) -> int:
-    live = [row for row in _leases() if row.get("live")]
+    rows = _leases()
+    live = [row for row in rows if row.get("live")]
+    ended = next((row for row in rows if row.get("id") == machine_id
+                  and row.get("live") is False and row.get("state") == "ended"), None)
+    if machine_id not in {row["id"] for row in live} and ended is not None:
+        print(json.dumps({"ok": True, "machine": ended}, sort_keys=True, default=str) if as_json
+              else f"already released {machine_id}")
+        return 0
     if machine_id not in {row["id"] for row in live}:
         message = (f"no live machine {machine_id!r}; live machines: "
                    f"{', '.join(row['id'] for row in live) or 'none'}")

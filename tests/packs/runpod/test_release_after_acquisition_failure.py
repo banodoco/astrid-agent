@@ -42,6 +42,49 @@ def _graphql_projection(pod):
     return projected
 
 
+def test_readiness_timeout_is_visible_and_releases_only_the_created_pod(small_lease, monkeypatch):
+    import runpod_lifecycle
+
+    c = small_lease
+    launch = runpod_lifecycle.launch_when_available
+    timeouts = []
+    secret = "provider-token-and-private-response"
+
+    async def unready_launch(*args, **kwargs):
+        pod = await launch(*args, **kwargs)
+
+        async def unready(*, timeout):
+            timeouts.append(timeout)
+            raise runpod_lifecycle.NotReadyTimeout(secret)
+
+        pod.wait_ready = unready
+        return pod
+
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", unready_launch)
+    owner = c.fresh()
+    with pytest.raises(AcquisitionUnresolvedError, match="did not become ready within the startup timeout") as caught:
+        owner.acquire(c.grant)
+
+    assert secret not in str(caught.value)
+    assert "same journal" in str(caught.value)
+    assert timeouts == [900]
+    failed = c.read()
+    assert failed["pod_id"] == "pod-1" and failed["failure_phase"] == "readiness"
+    assert failed["failure_type"] == "NotReadyTimeout"
+    assert secret not in json.dumps(failed)
+    assert c.creates == 1 and not c.deletes
+
+    c.clock.advance(1)
+
+    record = c.read()
+    assert c.deletes == ["pod-1"]
+    assert record["state"] == "cleanup_complete"
+    assert record["operation_id"] == failed["operation_id"]
+    assert record["cleanup"]["pod_id"] == "pod-1"
+    assert record["lease"]["release_reason"] == "recovery"
+    assert c.creates == 1
+
+
 def test_acquisition_failure_releases_the_created_pod_by_create_response_id(
         small_lease, monkeypatch, real_acquisition_confirmation):
     import runpod
