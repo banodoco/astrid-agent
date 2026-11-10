@@ -778,6 +778,21 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
             raise ValueError(f'entry {entry_id!r} requires an explicit mode')
         description = {**description, **description['mode_descriptions'][selected]}
     values = _dimension_values(description, inputs)
+    if description['kind'] == 'audio' and description['mode'] == 'tts' and 'prompt' in values:
+        ports = {port['name']: port for port in description['inputs']}
+        declared_names = set(ports) | {alias for port in ports.values() for alias in port.get('aliases', [])}
+        text = ports.get('text')
+        # The convenience prompt is only an alias for canonical TTS text. Never
+        # override a workflow's declared prompt or choose among other text ports.
+        if 'prompt' not in declared_names:
+            if text is None or _input_type(text.get('type')) != 'string':
+                raise ValueError('TTS prompt has no unambiguous text input; use declared --input NAME=VALUE')
+            explicit_text = {'text', *text.get('aliases', [])}
+            if text.get('_binding'):
+                explicit_text.add('node:' + '.'.join(text['_binding']))
+            if explicit_text.intersection(values):
+                raise ValueError('duplicate/conflicting TTS prompt and text; pass only --input text=...')
+            values = {('text' if name == 'prompt' else name): value for name, value in values.items()}
     return public_description(description), validate_inputs(description, values)
 
 
