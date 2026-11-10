@@ -45,6 +45,17 @@ class PaidSelectionError(TargetObservationError):
     """
 
 
+class RunPodSetupRequiredError(PaidSelectionError):
+    """Saved RunPod setup is absent or incomplete; never trigger setup implicitly."""
+
+    def __init__(self, missing: tuple[str, ...]):
+        self.missing = missing
+        super().__init__(
+            "RunPod preferences are incomplete (missing " + ", ".join(missing)
+            + "); configure them with `astrid machines setup`"
+        )
+
+
 _OFFER_FAILURES = {
     "stock_unavailable": "no requested GPU has confirmed stock and price in the selected datacenter",
     "provider_transport_or_response_unavailable": "provider transport or response is unavailable; retry offer observation",
@@ -217,8 +228,15 @@ def read_runpod_preferences(*, path: Path | None = None, client: Any = None) -> 
 
     raw = settings.machine_policy("runpod", client, legacy_path=path)
     if not isinstance(raw, Mapping):
-        raise PaidSelectionError("save independent RunPod preferences before preparing a target")
-    return RunPodPreferences.from_mapping(raw)
+        raise RunPodSetupRequiredError(("preferences",))
+    missing = tuple(name for name in ("provider_account_ref", "image", "gpu_types", "budget_cap_usd")
+                    if not raw.get(name))
+    if missing:
+        raise RunPodSetupRequiredError(missing)
+    try:
+        return RunPodPreferences.from_mapping(raw)
+    except PaidSelectionError as exc:
+        raise RunPodSetupRequiredError(("valid preferences",)) from exc
 
 
 def save_runpod_preferences(raw: Mapping[str, Any], *, path: Path | None = None, client: Any = None) -> str:
