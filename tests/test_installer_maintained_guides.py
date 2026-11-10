@@ -102,16 +102,27 @@ def test_skill_journey_steps_run_in_order():
 
 def test_install_journey_hands_over_to_generation():
     text = _skill()
-    assert sorted(_steps(text)) == [0, 1, 2, 3], sorted(_steps(text))
-    assert "### Set up generation" in text
-    assert "## 4. " not in text and "## 5. " not in text
+    assert sorted(_steps(text)) == [0, 1, 2, 3, 4], sorted(_steps(text))
+    assert "## 4. Set up generation" in text
+    assert "## 5. " not in text
     assert "astrid/packs/generation/docs/SKILL.md#set-up-my-generation" in text
     assert "coming" not in text.lower()
 
 
-def test_connected_step_points_to_read_only_generation_setup():
-    body = _steps(_skill())[3]
-    assert "Do not start, restart or install anything for ComfyUI or" in body, body
+def test_generation_setup_routes_capability_and_consent():
+    body = " ".join(_steps(_skill())[4].split())
+    for phrase in (
+        "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader",
+        "uname -m", "NVIDIA", "12 GB", "declared", "Wan2GP", "Plan 12",
+        "managed engine", "RunPod", "own yes", "Never", "chat",
+        '"kind": "runpod"', "--consent paid", "--max-usd", "$2",
+        "machines", "release", "--doctor",
+    ):
+        assert phrase in body, phrase
+    assert body.count("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader") == 1
+    core = (ROOT / "astrid/packs/_core/docs/SKILL.md").read_text(encoding="utf-8")
+    row = next(line for line in core.splitlines() if line.startswith("| Set up my generation:"))
+    assert "docs/setup/SKILL.md#4-set-up-generation" in row
 
 
 def test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallback():
