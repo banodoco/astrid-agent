@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -200,6 +201,19 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
     recorder = Recorder(monkeypatch)
     align_log = tmp_path / "actual-align.jsonl"
     _spy_child_align(monkeypatch, align_log)
+    if target_kind == "local-managed":
+        # Use the same owned CPU engine as the machine job seam. Managed runs
+        # must exercise the real supervisor rather than an unowned HTTP thread.
+        from tests.integrations import test_runpod_slot_path_cpu as matrix
+        from tests.integrations.test_remote_machine_job_seam_cpu import _owned_cpu_engine
+        from astrid.core.generation.engine_local_server import ensure_local_engine_server
+
+        @contextmanager
+        def managed_engine(provider, folder, patch):
+            with _owned_cpu_engine(provider, folder, patch):
+                ensure_local_engine_server("comfyui")
+                yield
+        monkeypatch.setattr(matrix, "_managed_local_engine", managed_engine)
     runs = {}
     replay_seed = None
 
@@ -257,6 +271,9 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
             assert actual[0]["manifest"] == dry["entry"]["requirements"]
             assert Path(actual[0]["bundle"]) != workflow_entries.bundle_path(workflow_entries.find_entry("h3"))
 
+        if target_kind == "local-managed":
+            records = tmp_path / "managed" / "engines" / "comfyui" / "peer-records" / "prompts"
+            provider.comfy.prompts = [json.loads(line) for line in records.read_text().splitlines()]
         submitted = provider.comfy.prompts[-1]["prompt"]
         assert submitted, "the live run submitted an empty graph"
         namespaces = [event["identity"] for event in events if event["event"] == "output_namespace"]

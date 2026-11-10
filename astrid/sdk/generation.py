@@ -1646,7 +1646,10 @@ class GenerationFacade:
                 workflow_inputs=json.dumps({name: value for name, value in
                     (plan or {}).get('bindings', {}).items() if name not in assets},
                     sort_keys=True, allow_nan=False),
-                comfy_url=(target_client.target.url if target_client is not None else None),
+                # The managed client is for preparation and inventory. Passing its
+                # loopback URL as an attached endpoint bypasses managed alignment
+                # and lifecycle ownership in the action.
+                comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
                 placement_policy=placement_policy,
                 generation_intent={
                     "version": 1, "modality": modality, "partial_success_policy": "reject",
