@@ -22,6 +22,7 @@ from runtime_protocol import platform
 from runtime_protocol.door import DEFAULT_DOOR_PORT
 
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
+from ._pack_cleanup import remove_pack_tree
 from .core import (
     BackupSpaceError,
     RuntimeOperationError,
@@ -1126,7 +1127,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             return result
         except BaseException:
             if destination.exists():
-                shutil.rmtree(destination)
+                remove_pack_tree(destination)
             raise
 
     def restore(self, old: Version, data: Path, realm: dict, backup: dict) -> None:
@@ -1217,13 +1218,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     # during restore must not recreate the legacy gap.
                     if entry.name not in {"realms", "catalog.json"}:
                         if entry.is_dir():
-                            shutil.rmtree(entry)
+                            remove_pack_tree(entry)
                         else:
                             entry.unlink()
                 copy_support(item, target)
             else:
                 if target.is_dir():
-                    shutil.rmtree(target)
+                    remove_pack_tree(target)
                 elif target.exists():
                     target.unlink()
                 copy_support(item, target)
@@ -1757,14 +1758,14 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         for path in (self.root / "versions").iterdir():
             if path not in keep:
                 try:
-                    shutil.rmtree(path)
+                    remove_pack_tree(path)
                 except OSError:
                     pass
         if backup:
             for path in (self.root / "backups").iterdir():
                 if path != Path(backup["root"]):
                     try:
-                        shutil.rmtree(path)
+                        remove_pack_tree(path)
                     except OSError:
                         pass
 
@@ -1870,7 +1871,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 continue
             try:
                 if path.is_dir() and not linked(path):
-                    shutil.rmtree(path)
+                    remove_pack_tree(path)
                 else:
                     path.unlink()
             except OSError:
@@ -1889,7 +1890,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if not data_path.exists():
                 continue
             try:
-                shutil.rmtree(data_path)
+                remove_pack_tree(data_path)
             except OSError:
                 residue.append(data_path)
         # The thin line bootstraps under the default root even when the managed
@@ -1901,7 +1902,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 and self.uv.parent == bootstrap and bootstrap.exists()):
             try:
                 absolute(bootstrap)
-                shutil.rmtree(bootstrap)
+                remove_pack_tree(bootstrap)
             except (OSError, ValueError):
                 residue.append(bootstrap)
             else:

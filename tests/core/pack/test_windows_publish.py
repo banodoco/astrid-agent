@@ -254,3 +254,51 @@ def test_windows_sync_preserves_group_update_and_rollback(source, tmp_path, wind
     assert restored.revision == updated.revision + 1
     assert windows_fs.synced_files
     assert windows_fs.opened_directories == []
+
+
+def test_readonly_git_objects_are_removed_on_windows_permission_failure(tmp_path, monkeypatch):
+    import shutil
+    from astrid.installer._pack_cleanup import remove_pack_tree
+
+    original_unlink = os.unlink
+
+    def windows_unlink(path, *args, **kwargs):
+        info = os.stat(path, dir_fd=kwargs.get("dir_fd"), follow_symlinks=False)
+        if not info.st_mode & stat.S_IWRITE:
+            raise PermissionError(errno.EACCES, "read-only", str(path))
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", windows_unlink)
+    tree = tmp_path / "objects.git"
+    pack = tree / "objects/pack"
+    pack.mkdir(parents=True)
+    for suffix in ("idx", "pack"):
+        file = pack / ("pack-abc." + suffix)
+        file.write_bytes(b"git object")
+        file.chmod(stat.S_IREAD)
+    with pytest.raises(PermissionError):
+        shutil.rmtree(tree)
+    remove_pack_tree(tree)
+    assert not tree.exists()
+
+
+def test_committed_install_records_cleanup_failure_and_keeps_residue(source, tmp_path, monkeypatch, caplog):
+    root = tmp_path / "packs"
+    first = install(source, root)
+    (source / "nested/payload.txt").write_text("new\n")
+    real_remove = installer.remove_pack_tree
+
+    def refuse_cleanup(path, **kwargs):
+        if path.name.startswith(".install-"):
+            raise PermissionError(errno.EACCES, "busy")
+        return real_remove(path, **kwargs)
+
+    monkeypatch.setattr(installer, "remove_pack_tree", refuse_cleanup)
+    result = install(source, root)
+    assert result.changed and result.path == first.path
+    assert (result.path / "nested/payload.txt").read_text() == "new\n"
+    residues = list(root.parent.glob(".install-*"))
+    assert len(residues) == 1
+    assert (residues[0] / "hello_ext/nested/payload.txt").read_text() == "old\n"
+    assert str(residues[0]) in caplog.text
+    real_remove(residues[0])

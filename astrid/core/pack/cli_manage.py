@@ -12,7 +12,6 @@ import importlib.metadata
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -23,6 +22,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from astrid.installer._pack_cleanup import remove_pack_tree
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import pack_digest, read_pin
 from astrid.core.pack.install import PackInstallError, _fetch_tree, _git_source
@@ -164,7 +164,7 @@ def _source_builds(source: str, revision: str | None, packs: Mapping[str, str]) 
             if build is not None:
                 builds[pack_id] = build
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        remove_pack_tree(work, ignore_errors=True)
     return builds
 
 
