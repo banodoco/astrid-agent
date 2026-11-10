@@ -265,6 +265,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
                          help='With --as-entry: save the entry and queue nothing on any target.')
     command.add_argument('--inputs-json', action=_Once, metavar='FILE')
     command.add_argument("--placement", action=_Once, default="auto")
+    command.add_argument("--gpu", action="append", metavar="GPU_TYPE", help="RunPod GPU type; repeat in preference order.")
+    command.add_argument("--datacenter", action=_Once, metavar="ID", help="RunPod datacenter for this job.")
     command.add_argument("--mode", action=_Once, help="Workflow mode, when it cannot be inferred.")
     command.add_argument("--project")
     command.add_argument("--out")
@@ -580,6 +582,13 @@ def _main(argv: list[str]) -> int:
         print(json.dumps(description, indent=2, sort_keys=True) if parsed.json else _entry_help(description))
         return 0
     if parsed.modality == "workflow":
+        if ((parsed.max_hourly_usd is not None or parsed.capacity_timeout is not None or parsed.no_wait_for_capacity)
+                and not is_runpod_placement(parsed.placement)):
+            parser.error("capacity waiting controls require --placement runpod")
+        _validate_datacenter(parsed.placement, parsed.datacenter, parser)
+        if (parsed.gpu or parsed.datacenter) and is_runpod_placement(parsed.placement) and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
+            parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu and --datacenter values")
+        parsed.placement = _gpu_placement(parsed.placement, parsed.gpu, parser)
         return _workflow_command(parsed)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
