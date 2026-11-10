@@ -7,6 +7,7 @@ reads pack manifests.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from importlib.abc import MetaPathFinder
@@ -54,7 +55,15 @@ def _child_directory_names(root: Path) -> tuple[str, ...]:
         raise ImportError(f"cannot scan pack root {root}: {exc}") from exc
 
 
-def _check_collisions(roots: tuple[Path, ...]) -> None:
+def _check_collisions(roots: tuple[Path, ...], *, selected=None, verified_relocations=None) -> None:
+    relocations = verified_relocations if verified_relocations is not None else {}
+    if relocations:
+        from astrid.core.pack.imports import validate_selected_pack_map
+
+        try:
+            validate_selected_pack_map(selected, verified_relocations=relocations)
+        except (OSError, ValueError) as exc:
+            raise ImportError(f"refusing astrid.packs: invalid verified relocation: {exc}") from exc
     owners = {name: _CORE_ROOT / name for name in _child_directory_names(_CORE_ROOT)}
     for root in roots:
         for name in _child_directory_names(root):
@@ -65,15 +74,25 @@ def _check_collisions(roots: tuple[Path, ...]) -> None:
                     f"canonical root is {_PERSONAL_ROOT}"
                 )
             if name in owners:
-                raise ImportError(
-                    f"refusing astrid.packs: pack id {name!r} at {path} "
-                    f"collides with {owners[name]}"
-                )
+                relocation = relocations.get(name)
+                if not (relocation and path.resolve() == Path(relocation["root"])
+                        and owners[name].resolve() == Path(relocation["original_root"])):
+                    raise ImportError(
+                        f"refusing astrid.packs: pack id {name!r} at {path} "
+                        f"collides with {owners[name]}"
+                    )
             owners[name] = path
 
 
 _PACK_ROOTS = _roots()
-_check_collisions(_PACK_ROOTS)
+try:
+    _VERIFIED_RELOCATIONS = json.loads(os.environ.get("ASTRID_VERIFIED_PACK_RELOCATIONS", "{}"))
+    _SELECTED_PACK_MAP = json.loads(os.environ.get("ASTRID_SELECTED_PACK_MAP", "null"))
+except ValueError as exc:
+    raise ImportError("refusing astrid.packs: invalid selected pack environment") from exc
+if not isinstance(_VERIFIED_RELOCATIONS, dict):
+    raise ImportError("refusing astrid.packs: invalid verified relocations")
+_check_collisions(_PACK_ROOTS, selected=_SELECTED_PACK_MAP, verified_relocations=_VERIFIED_RELOCATIONS)
 for _root in _PACK_ROOTS:
     if _root not in (Path(item).resolve() for item in __path__):
         __path__.append(str(_root))
@@ -85,7 +104,7 @@ class _PackCollisionFinder(MetaPathFinder):
     def find_spec(self, fullname: str, path=None, target=None) -> ModuleSpec | None:
         if not fullname.startswith(__name__ + ".") or "." in fullname[len(__name__) + 1:]:
             return None
-        _check_collisions(_PACK_ROOTS)
+        _check_collisions(_PACK_ROOTS, selected=_SELECTED_PACK_MAP, verified_relocations=_VERIFIED_RELOCATIONS)
         name = fullname.rsplit(".", 1)[-1]
         if name in _child_directory_names(_CORE_ROOT):
             return PathFinder.find_spec(fullname, [str(_CORE_ROOT)], target)

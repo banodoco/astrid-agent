@@ -5039,7 +5039,8 @@ def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[s
         from astrid.core.pack.imports import validate_selected_pack_map
 
         try:
-            selected = validate_selected_pack_map(selected, verify_digests=False)
+            selected = validate_selected_pack_map(selected, verify_digests=False,
+                                                  verified_relocations=admission.get("verified_pack_relocations"))
         except (OSError, ValueError) as exc:
             raise HostError(str(exc)) from exc
         if selected.get(str(metadata.get("source_pack") or root.name)) != {
@@ -5054,7 +5055,8 @@ def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
         from astrid.core.pack.imports import validate_selected_pack_map
 
         try:
-            validate_selected_pack_map(admission["selected_pack_map"])
+            validate_selected_pack_map(admission["selected_pack_map"],
+                                       verified_relocations=admission.get("verified_pack_relocations"))
         except (OSError, ValueError) as exc:
             raise HostError(f"admitted capability source digest changed: {exc}") from exc
     expected = str(admission.get("source_digest") or "")
@@ -10264,10 +10266,12 @@ class GenericPackHost:
             control = {"pack_id": str(record.definition.metadata["source_pack"]), "root": str(pack_root),
                        "source_digest": (admission or {}).get("source_digest") or _source_digest_for_roots((pack_root,)),
                        "argv": selected_arguments,
-                       "map": (admission or {}).get("selected_pack_map") or self._selected_pack_map(record)}
+                       "map": (admission or {}).get("selected_pack_map") or self._selected_pack_map(record),
+                       "verified_relocations": (admission or {}).get("verified_pack_relocations", {})}
             from astrid.core.pack.imports import selected_pack_environment
 
-            env.update(selected_pack_environment(control["map"]))
+            env.update(selected_pack_environment(control["map"],
+                                                 verified_relocations=control["verified_relocations"]))
             # pack_command_args accepts a leading -u; only the interpreter can
             # apply it (the worker re-applies -B itself), so carry it over.
             leading = list(selected_arguments)
@@ -10611,7 +10615,8 @@ class GenericPackHost:
         if isinstance(admission, Mapping) and admission.get("selected_pack_map"):
             from astrid.core.pack.imports import selected_pack_environment
 
-            env.update(selected_pack_environment(admission["selected_pack_map"]))
+            env.update(selected_pack_environment(admission["selected_pack_map"],
+                                                 verified_relocations=admission.get("verified_pack_relocations")))
         secret_values = {
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
@@ -11872,6 +11877,7 @@ class GenericPackHost:
 
         captured_record = None
         captured_pack_map = None
+        verified_pack_relocations = {}
         execution_source_digest = None
         try:
             selected_generation = _selected_pack_generation(record)
@@ -11905,6 +11911,13 @@ class GenericPackHost:
                             self._pack_capture(dependency_generation, expected_digest=selection["source_digest"]))
                         dependency_snapshot = captured[2]
                     captured_pack_map[dependency] = {**selection, "root": str(dependency_snapshot)}
+                    # Only successful digest-authenticated capture grants this
+                    # exact relocation; ordinary selected maps grant no alias.
+                    verified_pack_relocations[dependency] = {
+                        "original_root": selection["root"],
+                        "root": str(dependency_snapshot),
+                        "source_digest": selection["source_digest"],
+                    }
                 # Child admission uses physical roots. Receipts retain the
                 # original admission digest, including legacy root labels.
                 execution_source_digest = _source_digest_for_roots(
@@ -12099,6 +12112,7 @@ class GenericPackHost:
             "dependency_digest": record.dependency_digest,
             "selected_pack_map": (captured_pack_map if captured_pack_map is not None
                                   else self._selected_pack_map(record)),
+            "verified_pack_relocations": verified_pack_relocations,
             "version": record.definition.version,
             "source_root": str(record.source_root),
             "source_roots": [str(root) for root in _admitted_source_roots(record.source_root, record.definition)],
@@ -13198,6 +13212,10 @@ class GenericPackHost:
                     return {"task_id": task_id, "status": "failed", "deadline_exceeded": True}
                 cancelled_attempt = True
                 return {"task_id": task_id, "status": "cancelled", "cancelled": True}
+            # Reclaim authenticated snapshots before either success settlement
+            # or a succeeded receipt can be published. Cleanup failure follows
+            # the ordinary fenced failure path, with no success to reconcile.
+            _terminal["pack_captures"].close()
             # Re-observe the actual engine session after output custody and
             # immediately before consuming the manager token.  A session
             # restart or identity change cannot become a Runtime settlement.
