@@ -25,6 +25,11 @@ def test_installer_has_no_lazy_third_party_imports():
             elif isinstance(node, ast.ImportFrom) and not node.level:
                 names = [node.module or ""]
             for name in names:
+                # The installer may import itself (astrid.installer.*), whose modules this same
+                # check covers. Any other astrid module, e.g. astrid.core.pack (which pulls in
+                # jsonschema), is a product dependency the bootstrap does not have.
+                if name == "astrid.installer" or name.startswith("astrid.installer."):
+                    continue
                 assert name.split(".")[0] in allowed, (source.name, node.lineno, name)
 
 
@@ -90,6 +95,48 @@ assert code == (3 if expected in {"install", "update"} else 0), code
          json.dumps([str(ROOT), str(Path(runtime_protocol.__file__).resolve().parent.parent)]),
          json.dumps(flags), str(tmp_path)],
         env={"HOME": str(tmp_path), "PATH": str(Path(sys.executable).parent)},
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_install_tools_records_git_without_third_party_packages(tmp_path):
+    # Exercise the lazy Git lookup reached during staging, not just cold imports.
+    script = r'''
+import builtins, json, os, sys
+from pathlib import Path
+sys.path[:0] = json.loads(sys.argv[1])
+allowed = sys.stdlib_module_names | {'astrid', 'astrid_runtime', 'astrid_runtime_client', 'runtime_protocol'}
+original = builtins.__import__
+def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+    if not level and name.split('.')[0] not in allowed:
+        raise ModuleNotFoundError('No module named ' + repr(name.split('.')[0]), name=name.split('.')[0])
+    return original(name, globals, locals, fromlist, level)
+builtins.__import__ = guarded
+from astrid.installer import backend, tools
+root = Path(sys.argv[2])
+git = root / 'git'
+git.write_text('fixture')
+git.chmod(0o755)
+os.environ['PATH'] = str(root)
+tools.omp_source = lambda _: 'package'
+tools.asset_downloads = lambda _: []
+tools.binary = lambda folder, name: folder / name
+tools._media_tools = lambda *args: {'ASTRID_FFMPEG_EXECUTABLE': str(root / 'ffmpeg'), 'ASTRID_FFPROBE_EXECUTABLE': str(root / 'ffprobe')}
+def omp(_selected, _root, _run, env):
+    (Path(env['BUN_INSTALL_BIN']) / 'omp').write_text('fixture')
+tools._install_omp_package = omp
+def run(argv, **kwargs):
+    return {'bun': '1', 'node': 'v2', 'git': 'git version 3'}[Path(argv[0]).name]
+manifest = {'tools': {'omp': {}, 'bun': {'version': '1', 'assets': {'linux-test': {'fixture': True}}}, 'node': {'version': '2', 'assets': {'linux-test': {'fixture': True}}}, 'ffmpeg': {}}}
+assert backend.install_tools is tools.install_tools
+env = tools.install_tools(manifest, root / 'tools', 'linux-test', run)
+assert env['ASTRID_GIT_EXECUTABLE'] == str(git)
+'''
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", script,
+         json.dumps([str(ROOT), str(Path(runtime_protocol.__file__).resolve().parent.parent)]),
+         str(tmp_path)],
         capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
