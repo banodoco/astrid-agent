@@ -1403,17 +1403,6 @@ class GenerationFacade:
                 snapshot.write_bytes(data)
                 source_ref = import_member(snapshot)
 
-        def missing_required_inputs(candidate: dict[str, Any]) -> str | None:
-            """Return the validation diagnostic only for the typed missing-input case."""
-            description = workflow_entries.describe_entry(candidate['id'], mode=mode, _native=True)
-            names = {name for port in description['inputs']
-                     for name in (port['name'], *port.get('aliases', []))}
-            try:
-                workflow_entries.validate_inputs(description, {k: v for k, v in inputs.items() if k in names})
-            except workflow_entries.MissingRequiredEntryInputsError as exc:
-                return str(exc)
-            return None
-
         selected = None
         failures: list[str] = []
         for source, candidate in candidates:
@@ -1423,9 +1412,13 @@ class GenerationFacade:
                 # A contributed default may require a different public input shape. Only
                 # skip it for missing required inputs; a chosen candidate's build errors
                 # and explicitly pinned entries remain fail-closed.
-                missing = missing_required_inputs(candidate)
-                if missing is not None:
-                    failures.append(f"{identifier}: {missing}")
+                description = workflow_entries.describe_entry(identifier, mode=mode, _native=True)
+                names = {name for port in description['inputs']
+                         for name in (port['name'], *port.get('aliases', []))}
+                try:
+                    workflow_entries.validate_inputs(description, {k: v for k, v in inputs.items() if k in names})
+                except workflow_entries.MissingRequiredEntryInputsError as exc:
+                    failures.append(f"{identifier}: {exc}")
                     continue
             try:
                 assets = {}
