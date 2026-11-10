@@ -40,8 +40,8 @@ port=int(sys.argv[1]); started=Path(sys.argv[3]); histories={}
 with started.open('a') as stream:stream.write(str(os.getpid())+'\n')
 schema={name:{} for name in ('MiniMaxH3ReferenceToVideo','UNETLoader','VAELoader','VHS_VideoCombine')}
 schema.update({
- 'EmptyImage':{'input':{'required':{'width':['INT',{'default':16}],'height':['INT',{'default':16}],'batch_size':['INT',{'default':1}],'color':['INT',{'default':0}]}},'output':['IMAGE'],'output_name':['IMAGE'],'output_node':False},
- 'SaveImage':{'input':{'required':{'images':['IMAGE'],'filename_prefix':['STRING',{'default':'astrid'}]}},'output':[],'output_node':True}})
+ 'EmptyImage':{'input':{'required':{'width':['INT',{'default':16}],'height':['INT',{'default':16}],'batch_size':['INT',{'default':1}],'color':['INT',{'default':0}]}},'output':['IMAGE'],'output_name':['IMAGE'],'output_node':False,'python_module':'nodes'},
+ 'SaveImage':{'input':{'required':{'images':['IMAGE'],'filename_prefix':['STRING',{'default':'astrid'}]}},'output':[],'output_node':True,'python_module':'nodes'}})
 class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args):pass
  def send(self,payload):
@@ -50,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
   if self.path.startswith('/view?'):
    name=parse_qs(urlsplit(self.path).query)['filename'][0];data=(started.parent/name).read_bytes()
    self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
-  if self.path=='/object_info':return self.send(schema)
+  if self.path=='/object_info':return self.send({name:value for name,value in schema.items() if name!='EmptyImage' or not (started.parent/'missing-node').exists()})
   if self.path.startswith('/history/'):
    key=self.path.rsplit('/',1)[1];return self.send({key:histories[key]} if key in histories else {})
   if self.path=='/queue':return self.send({'queue_running':[],'queue_pending':[]})
@@ -77,6 +77,16 @@ def managed_install(session, monkeypatch, request, tmp_path):
     (root / 'tiny_http.py').write_text(_SERVER)
     generator = cpu_h3_install.__wrapped__(session, monkeypatch, type('Profile', (), {'param': 'managed_native'})())
     fixture = next(generator)
+    installed_python = root / "runtime/venv/bin/python"
+    import vibecomfy
+    expected_module = hashlib.sha256(Path(vibecomfy.__file__).read_bytes()).hexdigest()
+    identity_program = "import hashlib,json,importlib.metadata,vibecomfy;from pathlib import Path;print(json.dumps({'version':importlib.metadata.version('vibecomfy'),'module_sha256':hashlib.sha256(Path(vibecomfy.__file__).read_bytes()).hexdigest()}))"
+    identity = fixture[0].run(CommandRequest((str(installed_python), '-I', '-c', identity_program),
+        str(root), {}, time.monotonic() + 15))
+    assert identity.exit_code == 0
+    observed = json.loads(identity.stdout)
+    assert observed['module_sha256'] == expected_module
+    (tmp_path / 'native-cli-identity.json').write_text(json.dumps(observed))
     monkeypatch.setattr('astrid.core.generation.engine_local_endpoint._engines_dir', lambda: tmp_path / 'roots')
     monkeypatch.setenv('ASTRID_ENGINE_ROOT', str(root))
     try:
@@ -105,8 +115,8 @@ def artifact_server():
         server.shutdown(); server.server_close(); thread.join()
 
 
-@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel'],
-                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker'])
+@pytest.mark.parametrize('failure', [None, 'align', 'start', 'cancel', 'schema', 'cancel-after-schema'],
+                         ids=['repairs-before-worker', 'align-fails-no-worker', 'start-fails-no-worker', 'cancel-no-worker', 'schema-fails-no-worker', 'cancel-after-schema-no-worker'])
 def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, real_runtime, managed_install, artifact_server, failure):
     from vibecomfy.workflow_bundle import emit_bundle
     from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value
@@ -127,6 +137,12 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
     emit_bundle(workflow, bundle / 'workflow.py', {'operation': 'authored'})
+    diagnostic = client.run(CommandRequest((str(root / 'runtime/venv/bin/python'), '-I', '-c',
+        'import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
+        'doctor', str(bundle / 'workflow.py'), '--yes', '--non-interactive', '--json'),
+        str(root / 'runtime/ComfyUI'), {'VIBECOMFY_MODELS_ROOT': str(root / 'models'), 'VIBECOMFY_HEADLESS': '1'},
+        time.monotonic() + 15))
+    assert diagnostic.exit_code == 1 and json.loads(diagnostic.stdout).get('missing_models'), diagnostic
     client.stop_owned(deadline=time.monotonic() + 15)
     started.unlink()
     assert not artifact.exists()
@@ -156,6 +172,7 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
         events.append('ready')
         assert artifact.read_bytes() == artifact_bytes
         assert report['placement'] == 'managed' and report['health']['healthy'] is True
+        if failure == 'schema': (root / 'missing-node').touch()
         return report
     monkeypatch.setattr(ManagedEnginePreparation, 'prepare', prepare)
     if failure == 'start':
@@ -164,6 +181,14 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
             if operation == 'start': raise ValueError('forced managed start failure')
             return original_start(self, operation, payload, **kwargs)
         monkeypatch.setattr(engine_custody.LinuxEngineServiceClient, 'call', fail_start)
+    if failure == 'cancel-after-schema':
+        from astrid.packs.vibecomfy import local_server_engine
+        original_approve = local_server_engine._approve_live
+        def cancel_after_schema(*args, **kwargs):
+            original_approve(*args, **kwargs)
+            from astrid.core.execution.generic_host import HostCancelled
+            raise HostCancelled('forced cancellation after schema preflight')
+        monkeypatch.setattr(local_server_engine, '_approve_live', cancel_after_schema)
     run_command = GenericPackHost._run_command_definition
     def launch(host, record, inputs, output_root, attempt, **kwargs):
         events.append('worker')
@@ -220,10 +245,15 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
             assert 'prepare' in events and 'align' in events, (events, result.to_dict())
             if failure != 'align':
                 assert 'fetched' in events, (events, result.to_dict())
-            assert 'worker' not in events and 'ready' not in events, events
+            assert 'worker' not in events, events
+            if failure not in {'schema', 'cancel-after-schema'}: assert 'ready' not in events, events
             assert not (root / 'prompts').exists()
             receipt = json.loads((tmp_path / 'attempt/result.json').read_text())
             assert receipt['machine']['placement'] == 'managed'
+            if failure == 'schema':
+                assert receipt['readiness']['placement'] == 'managed'
+                assert receipt['readiness']['target']['endpoint'] == endpoint
+            if failure in {'cancel', 'cancel-after-schema'}: assert receipt['status'] == 'cancelled'
             assert not getattr(host, '_uncertain_engine_preparations', []), receipt
         else:
             assert result.ok, str(result.to_dict())[:7000]

@@ -618,7 +618,8 @@ def test_managed_preparation_refuses_native_attempt_symlink(comfy, tmp_path, mon
 
 
 
-def test_trust_absent_auxiliary_asset_is_unverified_in_every_astrid_record(comfy, tmp_path, monkeypatch):
+@pytest.mark.parametrize('outcome', ['success', 'pre-post-failure', 'accepted-failure'])
+def test_trust_absent_auxiliary_asset_is_unverified_in_every_astrid_record(comfy, tmp_path, monkeypatch, outcome):
     from vibecomfy.workflow_bundle import emit_bundle
     loaded = production_engine.load_workflow_path(comfy.workflow, tmp_path / 'author-trust', comfy_url=comfy.url)
     bundle = production_engine._canonical_bundle_value(loaded.resolved)
@@ -626,11 +627,32 @@ def test_trust_absent_auxiliary_asset_is_unverified_in_every_astrid_record(comfy
         'url': 'https://example.invalid/absent-aux.bin', 'sha256': 'a' * 64, 'size_bytes': 123}]
     canonical = emit_bundle(bundle.workflow, tmp_path / 'trusted-aux/workflow.py', {'operation': 'authored'})
     monkeypatch.setenv('ASTRID_ALIGN', 'trust')
-    result = production_engine.run_workflow_result_path(
-        canonical.python_path, tmp_path / 'attempt-aux/outputs', task_identity='task-aux',
-        attempt_identity='attempt-aux', comfy_url=comfy.url, profile_id='local_server')
-    assert result.outputs
-    records = list((tmp_path / 'attempt-aux').rglob('*.json'))
-    assert records
-    for path in records:
-        assert 'verified_target_provisioning' not in path.read_text(), path
+    destination = tmp_path / 'attempt-aux/outputs'
+    observed = []
+    def snapshot():
+        documents = list(destination.rglob('*.json')) + list(destination.rglob('*.jsonl'))
+        text = '\n'.join(path.read_text() for path in documents)
+        assert 'verified_target_provisioning' not in text
+        assert 'declared_unverified' in text and 'absent-aux.bin' in text
+        observed.append(True)
+    from astrid.core.generation.backends.vibecomfy_local_server import TargetRuntimeClient, AttachedArtifacts
+    post = TargetRuntimeClient._post_prompt
+    async def submit(self, *args, **kwargs):
+        snapshot()
+        if outcome == 'pre-post-failure': raise ValueError('forced failure before POST')
+        return await post(self, *args, **kwargs)
+    monkeypatch.setattr(TargetRuntimeClient, '_post_prompt', submit)
+    if outcome == 'accepted-failure':
+        async def retrieval(self, **kwargs):
+            snapshot()
+            raise ValueError('forced accepted retrieval failure')
+        monkeypatch.setattr(AttachedArtifacts, 'download_artifacts', retrieval)
+    def execute():
+        return production_engine.run_workflow_result_path(
+            canonical.python_path, destination, task_identity='task-aux',
+            attempt_identity='attempt-aux', comfy_url=comfy.url, profile_id='local_server')
+    if outcome == 'success': assert execute().outputs
+    else:
+        with pytest.raises(Exception): execute()
+    assert observed
+    snapshot()

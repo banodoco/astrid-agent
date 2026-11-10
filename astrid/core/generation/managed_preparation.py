@@ -56,7 +56,7 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
     body = json.loads(raw)
     keys = {"schema", "task_id", "attempt_id", "execution_identity", "inputs", "manifest", "manifest_sha256",
             "installation", "endpoint", "output_dir", "placement", "mode", "alignment", "health"}
-    if (not isinstance(body, dict) or set(body) != keys or body["schema"] != SCHEMA
+    if (not isinstance(body, dict) or set(body) not in (keys, keys | {"native_preparation"}) or body["schema"] != SCHEMA
             or body["task_id"] != task or body["attempt_id"] != attempt or body["endpoint"] != endpoint
             or body["placement"] != "managed" or body["mode"] not in {"align", "check", "trust"}
             or not isinstance(body["manifest"], dict) or digest(body["manifest"]) != body["manifest_sha256"]
@@ -219,14 +219,27 @@ class ManagedEnginePreparation:
         from vibecomfy.security.provenance import Provenance
         canonical_path = self.scratch / "canonical" / "workflow.py"
         canonical_path.parent.mkdir(parents=True, exist_ok=True)
-        emitted = emit_bundle_with_candidate(canonical_workflow.clone(), canonical_path, Provenance.USER_CONFIRMED, None, source_format="scratchpad")
+        from vibecomfy.workflow_bundle import WorkflowBundleError
+        for source_format in ("ready_template", "scratchpad"):
+            try:
+                emitted = emit_bundle_with_candidate(canonical_workflow.clone(), canonical_path,
+                    Provenance.USER_CONFIRMED, None, source_format=source_format)
+                break
+            except WorkflowBundleError:
+                if source_format == "scratchpad":
+                    raise
+        self._native_generated_scratchpad = source_format == "scratchpad"
         selected = load_bundle(emitted.python_path, trust=Provenance.USER_CONFIRMED)
         selected.require_canonical_authority("managed engine alignment")
         # CLI preparation owns only this emitted copy. The admitted source and
         # the selected workflow remain frozen throughout alignment.
         native_members = list(canonical_path.parent.iterdir())
-        staged_digests.update({path: hashlib.sha256(path.read_bytes()).hexdigest()
-                               for path in native_members if path.is_file()})
+        self._canonical_members = {path: hashlib.sha256(path.read_bytes()).hexdigest()
+                                   for path in native_members if path.is_file()}
+        staged_digests.update(self._canonical_members)
+        from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
+        if runtime_requirements_from_workflow(selected.workflow) != runtime_requirements_from_workflow(canonical_workflow):
+            raise IntegrityError("managed CLI runtime requirements differ from the admitted workflow")
         engine = copy.copy(run_action._engine_for({"engine": "comfyui"}))
         manifest = engine.workflow_requirements([canonical_workflow])
         manifest = {**manifest, "engine": "comfyui", "models_root": configured_models_root(root=self.root)}
@@ -278,6 +291,9 @@ class ManagedEnginePreparation:
             "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
             "output_dir": str(Path(self.root) / next(s.relative_path for s in self.recipe.sources if s.name == "comfyui") / "output"),
             "placement": "managed", "mode": self.mode, "alignment": alignment, "health": health}
+        native_preparation = getattr(self, "native_preparation", None)
+        if native_preparation is not None:
+            self.report["native_preparation"] = native_preparation
         return self.report
 
     def _verify_models(self, manifest):
@@ -301,6 +317,8 @@ class ManagedEnginePreparation:
         from packaging.requirements import Requirement
         requirements = runtime_requirements_from_workflow(workflow)
         self._runtime_requirements = requirements
+        self._runtime_launch_flags = list(runner.launch_spec()["argv"])
+        self._sync_packages = []
         if requirements is None:
             return
         source = next(source for source in self.recipe.sources if source.name == "comfyui")
@@ -314,15 +332,23 @@ class ManagedEnginePreparation:
         base_packages = {Requirement(text).name.lower().replace("_", "-") for text in specification["requirements"]}
         base_packages.update(specification["wheels"])
         base_packages.update(Requirement(text).name.lower().replace("_", "-") for text in specification["constraints"])
-        program = """import json,sys
+        self._sync_packages = [name for name, _ in requirements.packages if name.lower().replace("_", "-") not in base_packages]
+        program = """import ast,json,sys
 from vibecomfy.runtime.dependencies import inspect_runtime_target,compare_runtime
 requirements=json.loads(sys.argv[1])
 actual=inspect_runtime_target(runtime_root=sys.argv[2],python_executable=sys.executable,package_names=list(requirements.get('packages',{})))
+from pathlib import Path
+version_file=Path(sys.argv[2])/'ComfyUI'/'comfyui_version.py'
+if actual.get('comfy_version') is None and version_file.is_file() and not version_file.is_symlink():
+ for statement in ast.parse(version_file.read_text()).body:
+  if isinstance(statement,ast.Assign) and any(isinstance(target,ast.Name) and target.id=='__version__' for target in statement.targets):
+   value=ast.literal_eval(statement.value)
+   if isinstance(value,str):actual['comfy_version']=value
 actual['launch_flags']=json.loads(sys.argv[3]);actual['managed']=True
 print(json.dumps(compare_runtime(requirements,target=actual)))
 """
         report = json.loads(self._native(program, json.dumps(requirements.to_dict()), self.root + "/runtime",
-                                         json.dumps(list(self.recipe.start.argv))).stdout)
+                                         json.dumps(self._runtime_launch_flags)).stdout)
         checks = report.get("checks")
         if not isinstance(checks, list):
             raise IntegrityError("managed runtime inspection returned no dependency predicates")
@@ -362,9 +388,25 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
 
     def _command(self, argv):
         """Run the pinned CLI in its verified installation, through host custody."""
+        from .engine_contracts import IntegrityError
+        if any(path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected
+               for path, expected in getattr(self, "_canonical_members", {}).items()):
+            raise IntegrityError("managed CLI canonical capsule changed before command")
         program = "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))"
+        if argv[0] in {"prepare", "doctor", "fetch"}:
+            # This is the host's own canonical renderer output, never admitted
+            # Python. Its exact bytes are checked before and after the command.
+            argv = [*argv, "--yes"]
         if argv[0] == "prepare":
-            argv = [*argv, "--runtime-root", self.root + "/runtime"]
-            program = ("from pathlib import Path;from vibecomfy.commands.runpod_setup import ensure_runtime_layout;"
-                       f"ensure_runtime_layout(runtime_root=Path({(self.root + '/runtime')!r}));" + program)
-        self._native(program, *argv)
+            from astrid.packs.vibecomfy.native_preparation import native_preparation_program
+            primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
+            request = {"workflow_path": argv[1], "runtime_root": self.root + "/runtime",
+                "python_executable": self.adapter.venv_python(self.adapter.join(self.root, primary.relative_path)),
+                "uv_executable": self.adapter.uv_executable(self.adapter.join(self.root, "runtime")),
+                "launch_flags": self._runtime_launch_flags,
+                "capsule_sha256": {str(path): expected for path, expected in self._canonical_members.items()},
+                "expected_requirements": self._runtime_requirements.to_dict() if self._runtime_requirements else None,
+                "sync_packages": self._sync_packages}
+            self.native_preparation = json.loads(self._native(native_preparation_program(), json.dumps(request)).stdout)
+        else:
+            self._native(program, *argv)
