@@ -732,6 +732,35 @@ class RemotePlacement:
 # ----------------------------------------------------------------------------
 
 
+class _OutstandingObserver:
+    """A surviving local caller and pipe reader; release waits for both to die."""
+
+    def __init__(self, process: Any, reader: threading.Thread | None,
+                 watchdog: threading.Thread | None, recv: Any, send: Any) -> None:
+        self.process, self.reader, self.watchdog = process, reader, watchdog
+        self.recv, self.send = recv, send
+
+    def is_alive(self) -> bool:
+        return (self.process.is_alive()
+                or self.reader is not None and self.reader.is_alive()
+                or self.watchdog is not None and self.watchdog.is_alive())
+
+    def join(self, timeout: float = 0) -> None:
+        end = time.monotonic() + timeout
+        if self.process.is_alive():
+            self.process.join(timeout=max(0, end - time.monotonic()))
+        for thread in (self.reader, self.watchdog):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=max(0, end - time.monotonic()))
+
+    def close(self) -> None:
+        if self.is_alive():
+            raise BoundedObserverUnreaped("bounded pod observer still lives")
+        self.process.close()
+        self.recv.close()
+        self.send.close()
+
+
 class _HttpsOps:
     def __init__(self, pod_id: str, token: str, *, deadline: float | None = None,
                  base_url: str | None = None, abort_event: threading.Event | None = None) -> None:
@@ -772,10 +801,11 @@ class _HttpsOps:
         child.daemon = True
         started = False
         watchdog = None
+        reader = None
         stop_watchdog = threading.Event()
         # Reserve child termination and reaping inside the same absolute
         # transport deadline; HTTP response time never consumes that reserve.
-        request_deadline = self.deadline - min(0.25, remaining / 2)
+        request_deadline = self.deadline - min(0.35, remaining / 2)
         try:
             child.start()
             started = True
@@ -799,10 +829,28 @@ class _HttpsOps:
             watchdog = threading.Thread(target=expire, daemon=True)
             watchdog.daemon = True
             watchdog.start()
-            remaining = request_deadline - time.monotonic()
-            if remaining <= 0 or not recv.poll(remaining):
-                raise RemotePlacementError("failure verification deadline expired")
-            raw = recv.recv_bytes(maxlength=2 * 1024 * 1024)
+            # recv_bytes may block forever on a partial frame. Run it in a
+            # disposable reader and bound the parent wait independently; this
+            # uses only multiprocessing Pipe APIs supported on Windows too.
+            read_done = threading.Event()
+            received: dict[str, Any] = {}
+            def read_frame() -> None:
+                try:
+                    received["raw"] = recv.recv_bytes(maxlength=2 * 1024 * 1024)
+                except BaseException:
+                    received["error"] = True
+                finally:
+                    read_done.set()
+            reader = threading.Thread(target=read_frame, daemon=True)
+            reader.start()
+            while not read_done.wait(0.02):
+                if self.abort_event is not None and self.abort_event.is_set():
+                    raise RemotePlacementError("bounded pod operation interrupted by exact release")
+                if time.monotonic() >= request_deadline:
+                    raise RemotePlacementError("failure verification deadline expired")
+            if received.get("error") or "raw" not in received:
+                raise RemotePlacementError("bounded pod operation failed")
+            raw = received["raw"]
             if self.abort_event is not None and self.abort_event.is_set():
                 raise RemotePlacementError("bounded pod operation interrupted by exact release")
             if time.monotonic() >= self.deadline:
@@ -818,25 +866,26 @@ class _HttpsOps:
                                        else "bounded pod operation failed") from None
         finally:
             stop_watchdog.set()
-            try:
-                if watchdog is not None:
-                    watchdog.join(timeout=max(0, self.deadline - time.monotonic()))
-                    if watchdog.is_alive():
-                        # Do not close a Process while a watchdog can still touch it.
-                        self.unreaped_child = child
-                        raise BoundedObserverUnreaped("bounded pod observer watchdog could not be reaped")
-                if started:
-                    child.join(timeout=min(0.02, max(0, self.deadline - time.monotonic())))
-                    if child.is_alive():
+            if watchdog is not None:
+                watchdog.join(timeout=min(0.05, max(0, self.deadline - time.monotonic())))
+            if started:
+                child.join(timeout=min(0.02, max(0, self.deadline - time.monotonic())))
+                if child.is_alive():
+                    try:
                         child.kill()
-                        child.join(timeout=max(0, self.deadline - time.monotonic()))
-                    if child.is_alive():
-                        self.unreaped_child = child
-                        raise BoundedObserverUnreaped("bounded pod observer could not be reaped")
-                    child.close()
-            finally:
-                recv.close()
-                send.close()
+                    except (OSError, ValueError):
+                        pass  # The composite handle below keeps custody pending.
+                    child.join(timeout=min(0.25, max(0, self.deadline - time.monotonic())))
+            if reader is not None:
+                reader.join(timeout=min(0.03, max(0, self.deadline - time.monotonic())))
+            if started and (child.is_alive() or reader is not None and reader.is_alive()
+                            or watchdog is not None and watchdog.is_alive()):
+                self.unreaped_child = _OutstandingObserver(child, reader, watchdog, recv, send)
+                raise BoundedObserverUnreaped("bounded pod observer could not be reaped")
+            if started:
+                child.close()
+            recv.close()
+            send.close()
 
     def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         return (self._call_direct(name, *args, **kwargs) if self.deadline is None

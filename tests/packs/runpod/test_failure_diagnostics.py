@@ -314,7 +314,11 @@ def test_bounded_observer_has_no_token_in_process_metadata():
         send.close()
 
 
-@pytest.mark.parametrize('mode', ['partial', 'oversized', 'late', 'eof'])
+@pytest.mark.parametrize('mode', [
+    pytest.param('partial', marks=pytest.mark.skipif(sys.platform == 'win32', reason='raw pipe FD is POSIX-only')),
+    pytest.param('oversized', marks=pytest.mark.skipif(sys.platform == 'win32', reason='raw pipe FD is POSIX-only')),
+    'late', 'eof',
+])
 def test_bounded_observer_rejects_malformed_or_late_child_frame(tmp_path, monkeypatch, mode):
     import multiprocessing
     import time
@@ -331,6 +335,110 @@ def test_bounded_observer_rejects_malformed_or_late_child_frame(tmp_path, monkey
     assert time.monotonic() - start < 2.6
     assert 'SENTINEL' not in str(caught.value)
     assert {child.pid for child in multiprocessing.active_children()} == before
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='raw partial-frame pipe writing is POSIX-only')
+@pytest.mark.parametrize('early_abort', [False, True])
+def test_partial_ipc_from_unkillable_caller_returns_with_pending_fence(monkeypatch, early_abort):
+    import multiprocessing
+    import os
+    import struct
+    from threading import Event, Timer
+    import time
+    from astrid.packs.runpod import remote_placement as rp
+
+    real = multiprocessing.get_context('spawn')
+    children = []
+    class Unkillable:
+        def __init__(self, *, target, args):
+            self.send = args[0]
+            self.daemon = False
+            self.writer = None
+            self.kills = 0
+            self.alive = True
+            children.append(self)
+        def start(self):
+            self.writer = os.dup(self.send.fileno())
+            os.write(self.writer, struct.pack('!i', 100) + b'{')
+        def is_alive(self): return self.alive
+        def kill(self): self.kills += 1
+        def join(self, timeout=None): pass
+        def close(self):
+            assert not self.alive, 'an unkillable caller must stay fenced'
+
+    monkeypatch.setattr(rp.multiprocessing, 'get_context',
+                        lambda method: SimpleNamespace(Pipe=real.Pipe, Process=Unkillable))
+    abort = Event()
+    timer = Timer(0.1, abort.set) if early_abort else None
+    deadline = time.monotonic() + (120 if early_abort else 0.5)
+    ops = rp._HttpsOps('pod1', 'private-token', deadline=deadline,
+                       abort_event=abort if early_abort else None)
+    try:
+        if timer is not None:
+            timer.start()
+        start = time.monotonic()
+        with pytest.raises(rp.BoundedObserverUnreaped):
+            ops.job_poll('a' * 32)
+        assert time.monotonic() - start < 1.0
+        assert ops.unreaped_child.process is children[0] and children[0].kills > 0
+        assert 'private-token' not in repr(ops.unreaped_child)
+    finally:
+        if timer is not None:
+            timer.cancel()
+        for child in children:
+            if child.writer is not None:
+                os.close(child.writer)
+            child.alive = False
+        if getattr(ops, 'unreaped_child', None) is not None:
+            ops.unreaped_child.join(0.1)
+            ops.unreaped_child.close()
+
+
+def test_portable_blocked_pipe_reader_is_fenced_after_early_abort(monkeypatch):
+    import multiprocessing
+    from threading import Event, Timer
+    import time
+    from astrid.packs.runpod import remote_placement as rp
+
+    unblock = Event()
+    class Receive:
+        def recv_bytes(self, maxlength):
+            assert maxlength == 2 * 1024 * 1024
+            unblock.wait(10)
+            raise EOFError
+        def close(self): pass
+    class Send:
+        def close(self): pass
+    class SurvivingProcess:
+        alive = True
+        daemon = False
+        def __init__(self, *, target, args): pass
+        def start(self): pass
+        def is_alive(self): return self.alive
+        def kill(self): pass
+        def join(self, timeout=None): pass
+        def close(self): assert not self.alive
+
+    process = SurvivingProcess(target=None, args=())
+    monkeypatch.setattr(rp.multiprocessing, 'get_context', lambda method: SimpleNamespace(
+        Pipe=lambda duplex: (Receive(), Send()), Process=lambda **kwargs: process))
+    abort = Event()
+    timer = Timer(0.1, abort.set)
+    ops = rp._HttpsOps('pod1', 'private-token', deadline=time.monotonic() + 120,
+                       abort_event=abort)
+    try:
+        timer.start()
+        start = time.monotonic()
+        with pytest.raises(rp.BoundedObserverUnreaped):
+            ops.job_poll('a' * 32)
+        assert time.monotonic() - start < 1.0
+        assert ops.unreaped_child.process is process and ops.unreaped_child.is_alive()
+    finally:
+        timer.cancel()
+        process.alive = False
+        unblock.set()
+        ops.unreaped_child.join(0.1)
+        ops.unreaped_child.close()
 
 
 @pytest.mark.parametrize("mode", ["blocked_response", "route_retry"])

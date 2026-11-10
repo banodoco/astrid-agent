@@ -828,12 +828,23 @@ class RunPodLeaseOwner:
                 else:
                     lease = {**lease, "job": {"id": job_id, "state": stopped["state"]}}
                 record = self._save(record, lease)
+        observer_key = (identity[0], identity[2], identity[3], identity[1])
+        while True:
+            with self._observer_lock:
+                observing = observer_key in self._failure_observers
+            if not observing:
+                break
+            if time.monotonic() >= cleanup_deadline:
+                raise AcquisitionUnresolvedError("failure observer drain exceeded exact cleanup budget")
+            time.sleep(min(0.02, max(0, cleanup_deadline - time.monotonic())))
         with self.lock:
             record = self._read()
             if record is None or record["state"] != "cleanup_pending" or (
                     record["operation_id"], record["pod_id"], record["lease"]["owner_epoch"],
                     record["lease"]["generation"], record["lease"]["invocation_id"]) != identity:
                 raise AcquisitionUnresolvedError("exact cleanup custody changed before quiescence")
+            if record.get("observer_unreaped") is True:
+                raise AcquisitionUnresolvedError("unreaped observer keeps exact cleanup pending")
             if record["lease"].get("preparation") is not None or record["lease"].get("job") is not None:
                 validate_lease_preparation(record, releasing=True)
         # Keep the account lock, but let a completing host invocation call

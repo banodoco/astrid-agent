@@ -876,14 +876,14 @@ class RunPodMachine:
                 pass  # _release_impl still fences unsafe custody and reconciles exact release.
         try:
             self._release_impl(lease, warm, reason=reason, failure=failure, stage=stage,
-                               abort_event=abort_event)
+                               abort_event=abort_event, observer_key=observer_key)
         finally:
             if observer_key is not None:
                 owner.end_failure_observation(observer_key)
 
     def _release_impl(self, lease: MachineLease, warm: bool, *, reason: str,
                       failure: BaseException | None, stage: str,
-                      abort_event: Any = None) -> None:
+                      abort_event: Any = None, observer_key: Any = None) -> None:
         """Reset a verified job's Runtime, then settle idle; release unsafe custody."""
         from .worker_preparation import AcquisitionUnresolvedError
 
@@ -990,12 +990,16 @@ class RunPodMachine:
             try:
                 owner.settle(lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids)
             except Exception:
+                if observer_key is not None:
+                    owner.end_failure_observation(observer_key)
                 owner.release(reason="settlement_unverified", _expected_operation=lease.lease.operation_id,
                               expected_machine_id=lease.claim.pod_id)
                 raise
             lease.released = True
             return
         try:
+            if observer_key is not None:
+                owner.end_failure_observation(observer_key)
             owner.release(reason=reason, _expected_operation=lease.lease.operation_id,
                           expected_machine_id=lease.claim.pod_id)
         except AcquisitionUnresolvedError:
