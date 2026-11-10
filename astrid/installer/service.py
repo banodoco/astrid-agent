@@ -347,7 +347,7 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False, exp
 def command(version: Version, data: Path, *, windows: bool = False, log: Path | None = None,
             env_file: Path | None = None, extra_args: list[str] | None = None,
             lock_fd: int | None = None, custody_fd: int | None = None,
-            expected_lock: Path | None = None) -> list[str]:
+            expected_lock: Path | None = None, home: Path | None = None) -> list[str]:
     version = Version(version.root, version.python, version.profile,
                       dict(sorted(version.env.items())), version.release, version.managed_by)
     python = version.python.with_name("pythonw.exe") if windows else version.python
@@ -363,6 +363,9 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
     script = (source + "\n"
               + f"launch_admission(Version.load({version.document()!r}),Path({str(data)!r}),custody={custody_fd is not None!r},expected_lock=Path({str(expected_lock)!r}))\n"
               + f"os.environ.update({version.env!r})\n")
+    if windows and home is not None:
+        # Windows Python's Path.home() uses USERPROFILE, not HOME.
+        script += f"os.environ['USERPROFILE']={str(home)!r}\n"
     if lock_fd is not None:
         script += f"os.set_inheritable({lock_fd},False)\n"
     if custody_fd is not None:
@@ -455,12 +458,13 @@ def render(system: str, version: Version, data: Path, log: Path, *, user: str = 
            env_file: Path | None = None, expected_lock: Path | None = None, home: Path | None = None) -> str:
     log = log.with_name("runtime-service.log")
     argv = command(version, data, windows=system == "win32", log=log, env_file=env_file,
-                   expected_lock=expected_lock)
+                   expected_lock=expected_lock, home=(home if home is not None else Path.home()) if system == "win32" else None)
     service_env = dict(version.env)
+    if system in {"darwin", "linux"}:
+        service_env["HOME"] = str(home if home is not None else Path.home())
     if system == "darwin":
         # launchd would hand the agent the account's real HOME, but the install record and
         # the Runtime's own logs are found through HOME. Pin the install-time home so they agree.
-        service_env["HOME"] = str(home if home is not None else Path.home())
         return plistlib.dumps({
             "Label": LABEL, "ProgramArguments": argv, "RunAtLoad": True,
             # KeepAlive's SuccessfulExit condition is false: launchd respawns
@@ -847,9 +851,10 @@ class Service:
         allowed = []
         for candidate in candidates:
             for env_file in (None, self.env_file):
-                argv = command(candidate, data, windows=True, log=self.log, env_file=env_file,
-                               expected_lock=self.activation_lock_path)
-                allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
+                for home in (None, self.home):
+                    argv = command(candidate, data, windows=True, log=self.log, env_file=env_file,
+                                   expected_lock=self.activation_lock_path, home=home)
+                    allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
         if actions not in allowed:
             raise ValueError("The scheduled task does not match the selected installation.")
         return None
@@ -887,6 +892,10 @@ class Service:
             for env_file in (None, self.env_file):
                 prior = command(retained, data, windows=windows, log=self.log, env_file=env_file,
                                 expected_lock=self.activation_lock_path)
+                if windows and action == encode(command(retained, data, windows=True, log=self.log,
+                                                         env_file=env_file, expected_lock=self.activation_lock_path,
+                                                         home=self.home)):
+                    return True
                 # A previously registered D2 action may have captured a
                 # different installer HOME. Parse only its literal path and
                 # compare the entire generated action before replacing it;
@@ -1133,7 +1142,7 @@ class Service:
             return
         action = json.loads(observed)
         argv = command(version, data, windows=True, log=self.log, env_file=self.env_file,
-                       expected_lock=self.activation_lock_path)
+                       expected_lock=self.activation_lock_path, home=self.home)
         canonical = [{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}]
         if not remove and action == canonical:
             return
