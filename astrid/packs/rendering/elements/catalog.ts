@@ -337,6 +337,155 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
+    "componentPath": "packs/local/rendering/elements/effects/animated-media-transform/component.tsx",
+    "defaults": {
+      "fit": "contain",
+      "keyframes": [
+        {
+          "at": 0,
+          "height": 1080,
+          "opacity": 1,
+          "width": 1920,
+          "x": 0,
+          "y": 0
+        }
+      ]
+    },
+    "description": "Clip-local transform keyframes interpolate in authored canvas pixels. Optional source playback segments independently preserve trims, speed changes and deliberate source resets inside one timeline clip. Uses the same component in live preview and Remotion rendering.",
+    "id": "animated-media-transform",
+    "keywords": [
+      "media",
+      "video",
+      "image",
+      "zoom",
+      "pan",
+      "fade",
+      "keyframes"
+    ],
+    "kind": "effect",
+    "label": "Animated Media Transform",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": "contain",
+        "description": "",
+        "label": "Fit",
+        "name": "fit",
+        "options": [
+          {
+            "label": "Contain",
+            "value": "contain"
+          },
+          {
+            "label": "Cover",
+            "value": "cover"
+          },
+          {
+            "label": "Fill",
+            "value": "fill"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:b5a51ef36dc45b52a59d487ddc0a90b07fcc48f4a721603547df11b79dad7297",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "fit": {
+          "enum": [
+            "contain",
+            "cover",
+            "fill"
+          ],
+          "type": "string"
+        },
+        "keyframes": {
+          "description": "Increasing clip-local seconds with x/y/width/height in canvas pixels. Values interpolate linearly and clamp outside the range.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "height": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "opacity": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "width": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "at",
+              "x",
+              "y",
+              "width",
+              "height",
+              "opacity"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "sourceSegments": {
+          "description": "Video playback sections starting at clip-local seconds; first at 0. Rounded frame boundaries must be distinct.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "sourceStart": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "speed": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "at",
+              "sourceStart",
+              "speed"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "keyframes"
+      ],
+      "type": "object"
+    },
+    "shortDescription": "Animate one managed image or video through editable position, size and opacity keyframes.",
+    "source": "pack:local"
+  },
+  {
     "componentPath": "packs/rendering/rendering/elements/effects/audio-reactive-colour/component.tsx",
     "defaults": {
       "events": [],
@@ -430,6 +579,984 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     "source": "pack:rendering"
   },
   {
+    "componentPath": "packs/local/rendering/elements/effects/end-codex-transform/component.tsx",
+    "defaults": {
+      "duration": 6.383
+    },
+    "description": "Renders the base shot plate, then three reference cards above beam into a timeline row below; targets flash, glow amber, and swap into new images. Duration-relative phases.",
+    "id": "end-codex-transform",
+    "keywords": [
+      "transform",
+      "timeline",
+      "insert",
+      "astrid-intro"
+    ],
+    "kind": "effect",
+    "label": "Ending Codex Transform",
+    "packId": "local",
+    "parameters": [],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:22219b52d90575016452c0b0f6921e4309ddc41ab4aa188080644f3bfffc139f",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {},
+      "type": "object"
+    },
+    "shortDescription": "Reference images connect into timeline images and transform them.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/end-mid-combined/component.tsx",
+    "defaults": {
+      "duration": 14.464
+    },
+    "description": "Renders the base plate, draws each beat's caption in turn, plays references plugging into a persistent timeline row, then two images lifting out with loading videos. Duration-relative phases; replaces shots 16 and 17 with a single unbroken shot.",
+    "id": "end-mid-combined",
+    "keywords": [
+      "transform",
+      "animate",
+      "insert",
+      "astrid-intro"
+    ],
+    "kind": "effect",
+    "label": "Ending Combined Insert",
+    "packId": "local",
+    "parameters": [],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:c29278fe0ff9f0f997908359b9443dd7f3e50e73b1dcb3307cb5fb3d9caba855",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {},
+      "type": "object"
+    },
+    "shortDescription": "One continuous codex-then-minimax insert over a single plate.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/end-minimax-animate/component.tsx",
+    "defaults": {
+      "duration": 8.081
+    },
+    "description": "Renders the base shot plate, then a timeline row appears; two images lift out below, each connected to a loading-then-playing video card above. Duration-relative phases.",
+    "id": "end-minimax-animate",
+    "keywords": [
+      "animate",
+      "timeline",
+      "insert",
+      "astrid-intro"
+    ],
+    "kind": "effect",
+    "label": "Ending Minimax Animate",
+    "packId": "local",
+    "parameters": [],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:ea86794424b58965c8597e7c4e03903d272cddd54201d3d817d5c0076f93fff3",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {},
+      "type": "object"
+    },
+    "shortDescription": "Timeline images lift out below while their videos load and play above.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/end-spanning-layer/component.tsx",
+    "defaults": {},
+    "description": "Transparent Remotion overlay for the ending workflow. The clip-local sequence adapts to caller supplied phase durations for material preparation, PowerPoint words and timing, separate anchor/keyframe references, and a live workflow review. It reorders the supplied timeline cards, highlights the selected segment, and plays the managed source video for that segment. Phase timing and timeline data are supplied through clip params so narration revisions do not require a component change.",
+    "id": "end-spanning-layer",
+    "keywords": [
+      "timeline",
+      "overlay",
+      "insert",
+      "astrid-intro"
+    ],
+    "kind": "effect",
+    "label": "Ending Spanning Layer",
+    "packId": "local",
+    "parameters": [
+      {
+        "description": "",
+        "label": "Anchors Seconds",
+        "name": "anchorsSeconds",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Iteration Seconds",
+        "name": "iterationSeconds",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Prep Seconds",
+        "name": "prepSeconds",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Prep Source End",
+        "name": "prepSourceEnd",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Prep Source Speed",
+        "name": "prepSourceSpeed",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Prep Source Start",
+        "min": 0,
+        "name": "prepSourceStart",
+        "type": "number"
+      },
+      {
+        "description": "Clip-relative delay before the complete overlay is revealed.",
+        "label": "Reveal Delay Seconds",
+        "min": 0,
+        "name": "revealDelaySeconds",
+        "type": "number"
+      },
+      {
+        "description": "Fade duration after revealDelaySeconds; zero reveals immediately.",
+        "label": "Reveal Duration Seconds",
+        "min": 0,
+        "name": "revealDurationSeconds",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Selected Segment Index",
+        "min": 0,
+        "name": "selectedSegmentIndex",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Workflow Seconds",
+        "name": "workflowSeconds",
+        "type": "number"
+      }
+    ],
+    "renderability": {
+      "browserExport": "supported",
+      "preview": "supported",
+      "workerExport": "supported"
+    },
+    "revision": "sha256:11d26a044cb385ac5497ac802f85cffb518801b2c9d01dcc9c9f55d6fbd4ef1d",
+    "runtime": {
+      "adapter": "remotion"
+    },
+    "schema": {
+      "additionalProperties": true,
+      "properties": {
+        "anchorsSeconds": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "cardAssets": {
+          "additionalProperties": false,
+          "description": "Optional card0–card5 overrides by timeline asset registry key. Hosts resolve managed media for preview and render; omitted cards retain the pack defaults.",
+          "properties": {
+            "card0": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card1": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card2": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card3": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card4": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "card5": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "headings": {
+          "description": "Optional short headings for the four visual phases.",
+          "properties": {
+            "anchors": {
+              "type": "string"
+            },
+            "iteration": {
+              "type": "string"
+            },
+            "prep": {
+              "type": "string"
+            },
+            "workflow": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "iterationSeconds": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "phaseDurations": {
+          "description": "Positive clip-local seconds for prep, iteration, anchors, and workflow.",
+          "properties": {
+            "anchors": {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "iteration": {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "prep": {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "workflow": {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "prepSeconds": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "prepSourceEnd": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "prepSourceSpeed": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "prepSourceStart": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "revealDelaySeconds": {
+          "description": "Clip-relative delay before the complete overlay is revealed.",
+          "minimum": 0,
+          "type": "number"
+        },
+        "revealDurationSeconds": {
+          "description": "Fade duration after revealDelaySeconds; zero reveals immediately.",
+          "minimum": 0,
+          "type": "number"
+        },
+        "selectedSegmentId": {
+          "type": "string"
+        },
+        "selectedSegmentIndex": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timelineSegments": {
+          "description": "Ordered source timeline sections; start and end are seconds in the managed source video.",
+          "items": {
+            "properties": {
+              "end": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "sourceEnd": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "sourceStart": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "speed": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "start": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "start",
+              "end",
+              "label",
+              "title"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "workflowSeconds": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Flexible amber workflow timeline with real moving output and keyframe references.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/ending-carousel/component.tsx",
+    "defaults": {
+      "duration": 9.193
+    },
+    "description": "Renders the base shot plate full-screen, then plays a four-phase carousel over the middle band (fly-through, pick with amber glow, lay onto an amber timeline track, zoom out). Phase timing is relative to clip duration. Cards and plate resolve through params.__astridAssets.",
+    "id": "ending-carousel",
+    "keywords": [
+      "carousel",
+      "timeline",
+      "insert",
+      "astrid-intro"
+    ],
+    "kind": "effect",
+    "label": "Ending Carousel",
+    "packId": "local",
+    "parameters": [],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:b6f9e497572b52129e78e0f81fad988d6ebdfa72e413a17091ac6048eca77a69",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {},
+      "type": "object"
+    },
+    "shortDescription": "Image carousel insert that flies cards through, picks one, and lays them onto a timeline.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/event-card/component.tsx",
+    "defaults": {
+      "content": "Event Card",
+      "height": 520,
+      "postProcess": "glow",
+      "subtitle": "DOM layout captured into canvas.",
+      "width": 900
+    },
+    "description": "Event Card uses Remotion HtmlInCanvas to capture DOM content and post-process it as a canvas texture.",
+    "id": "event-card",
+    "keywords": [
+      "html",
+      "canvas",
+      "remotion",
+      "effect",
+      "card"
+    ],
+    "kind": "effect",
+    "label": "Event Card",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": 520,
+        "description": "",
+        "label": "Height",
+        "name": "height",
+        "type": "number"
+      },
+      {
+        "default": "glow",
+        "description": "",
+        "label": "Post Process",
+        "name": "postProcess",
+        "options": [
+          {
+            "label": "None",
+            "value": "none"
+          },
+          {
+            "label": "Soft Blur",
+            "value": "soft-blur"
+          },
+          {
+            "label": "Glow",
+            "value": "glow"
+          },
+          {
+            "label": "Vignette",
+            "value": "vignette"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "default": 900,
+        "description": "",
+        "label": "Width",
+        "name": "width",
+        "type": "number"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:5c38f6f16ab88e227207ad58129dada5ce51a738bdfdc494485bac45e1fc1d70",
+    "runtime": {},
+    "schema": {
+      "properties": {
+        "accent": {
+          "type": "string"
+        },
+        "background": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "foreground": {
+          "type": "string"
+        },
+        "height": {
+          "type": "number"
+        },
+        "postProcess": {
+          "enum": [
+            "none",
+            "soft-blur",
+            "glow",
+            "vignette"
+          ],
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "width": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "DOM-to-canvas Remotion effect for post-processed cards.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/frame-overlay/component.tsx",
+    "defaults": {
+      "duration": 115.699
+    },
+    "description": "Renders the canonical tight-frame borderless overlay fullscreen over everything below. One clip spans the whole timeline on the top frame track; hold must equal total duration and is recomputed whenever VO retimes.",
+    "id": "frame-overlay",
+    "keywords": [
+      "frame",
+      "border",
+      "overlay",
+      "astrid-intro"
+    ],
+    "kind": "effect",
+    "label": "Frame Overlay",
+    "packId": "local",
+    "parameters": [],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:163eccf2935559a2faf2d516d4932e9af1203199bdeefa3a100254273c8607f1",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {},
+      "type": "object"
+    },
+    "shortDescription": "Full-frame tight amber border overlay.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/model-trends/component.tsx",
+    "defaults": {
+      "accent": "#9F1C1C",
+      "anchor": "top-right",
+      "background": "rgba(8, 8, 14, 0.86)",
+      "borderRadius": "14px",
+      "height": 420,
+      "offsetX": 60,
+      "offsetY": 60,
+      "padding": "20px",
+      "width": 540
+    },
+    "description": "Local-pack ModelTrends overlay for /1m-style 'Models Come and Go' visualization. Renders a stacked-area chart (sd, animatediff, flux, wan, cogvideo, hunyuan, ltx) plus a cumulative-messages counter. Animation is driven entirely by useCurrentFrame() — Remotion controls timing, no DOM animation hooks. Chart and dataset are baked-in (sample WRAPPED_DATA from constants.ts). Sized for a corner overlay on a 1920x1080 video.",
+    "id": "model-trends",
+    "keywords": [
+      "chart",
+      "trends",
+      "stacked-area",
+      "wrapped",
+      "models",
+      "overlay"
+    ],
+    "kind": "effect",
+    "label": "Model Trends Chart",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": "top-right",
+        "description": "",
+        "label": "Anchor",
+        "name": "anchor",
+        "options": [
+          {
+            "label": "Top Left",
+            "value": "top-left"
+          },
+          {
+            "label": "Top",
+            "value": "top"
+          },
+          {
+            "label": "Top Right",
+            "value": "top-right"
+          },
+          {
+            "label": "Left",
+            "value": "left"
+          },
+          {
+            "label": "Center",
+            "value": "center"
+          },
+          {
+            "label": "Right",
+            "value": "right"
+          },
+          {
+            "label": "Bottom Left",
+            "value": "bottom-left"
+          },
+          {
+            "label": "Bottom",
+            "value": "bottom"
+          },
+          {
+            "label": "Bottom Right",
+            "value": "bottom-right"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "default": 420,
+        "description": "",
+        "label": "Height",
+        "name": "height",
+        "type": "number"
+      },
+      {
+        "default": 60,
+        "description": "",
+        "label": "Offset X",
+        "name": "offsetX",
+        "type": "number"
+      },
+      {
+        "default": 60,
+        "description": "",
+        "label": "Offset Y",
+        "name": "offsetY",
+        "type": "number"
+      },
+      {
+        "default": 540,
+        "description": "",
+        "label": "Width",
+        "name": "width",
+        "type": "number"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:ed7082bac33ee7f769fff8bc271b5b0eccd006d984fcaff839c26505a6f04c93",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {
+        "accent": {
+          "type": "string"
+        },
+        "anchor": {
+          "enum": [
+            "top-left",
+            "top",
+            "top-right",
+            "left",
+            "center",
+            "right",
+            "bottom-left",
+            "bottom",
+            "bottom-right"
+          ],
+          "type": "string"
+        },
+        "backdropFilter": {
+          "type": "string"
+        },
+        "background": {
+          "type": "string"
+        },
+        "border": {
+          "type": "string"
+        },
+        "borderRadius": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "boxShadow": {
+          "type": "string"
+        },
+        "height": {
+          "type": "number"
+        },
+        "offsetX": {
+          "type": "number"
+        },
+        "offsetY": {
+          "type": "number"
+        },
+        "padding": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "width": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Animated stacked-area chart of model-family share-of-conversation, driven by Remotion frame.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/neon-orbit-card/component.tsx",
+    "defaults": {
+      "content": "Neon Orbit",
+      "height": 520,
+      "postProcess": "glow",
+      "subtitle": "DOM layout captured into canvas.",
+      "width": 900
+    },
+    "description": "A luminous HTML-in-canvas title card for testing canvas post-processing.",
+    "id": "neon-orbit-card",
+    "keywords": [
+      "html",
+      "canvas",
+      "remotion",
+      "effect",
+      "card"
+    ],
+    "kind": "effect",
+    "label": "Neon Orbit",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": 520,
+        "description": "",
+        "label": "Height",
+        "name": "height",
+        "type": "number"
+      },
+      {
+        "default": "glow",
+        "description": "",
+        "label": "Post Process",
+        "name": "postProcess",
+        "options": [
+          {
+            "label": "None",
+            "value": "none"
+          },
+          {
+            "label": "Soft Blur",
+            "value": "soft-blur"
+          },
+          {
+            "label": "Glow",
+            "value": "glow"
+          },
+          {
+            "label": "Vignette",
+            "value": "vignette"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "default": 900,
+        "description": "",
+        "label": "Width",
+        "name": "width",
+        "type": "number"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:6f9b435333cb3dfbfd21d79836162a8a4cd5bbc9dcfafb5ce0adbf9ccbd30ee9",
+    "runtime": {},
+    "schema": {
+      "properties": {
+        "accent": {
+          "type": "string"
+        },
+        "background": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "foreground": {
+          "type": "string"
+        },
+        "height": {
+          "type": "number"
+        },
+        "postProcess": {
+          "enum": [
+            "none",
+            "soft-blur",
+            "glow",
+            "vignette"
+          ],
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "width": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "DOM-to-canvas Remotion effect for post-processed cards.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/scrolling-guide/component.tsx",
+    "defaults": {
+      "heading": "MAKING VIDEOS",
+      "scrollEnd": 440,
+      "scrollStart": 0,
+      "side": "right",
+      "subheading": "A SMALL GUIDE TO THE REVIEW LOOP"
+    },
+    "description": "A reusable Remotion overlay that keeps the authored composition centered and scrolls concise Astrid workflow guidance inside a right-hand document panel. The left side remains transparent for a separate character or source clip.",
+    "id": "scrolling-guide",
+    "keywords": [
+      "guide",
+      "scroll",
+      "workflow",
+      "review",
+      "document",
+      "overlay"
+    ],
+    "kind": "effect",
+    "label": "Scrolling Video Guide",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": 440,
+        "description": "",
+        "label": "Scroll End",
+        "min": 0,
+        "name": "scrollEnd",
+        "type": "number"
+      },
+      {
+        "default": 0,
+        "description": "",
+        "label": "Scroll Start",
+        "min": 0,
+        "name": "scrollStart",
+        "type": "number"
+      },
+      {
+        "default": "right",
+        "description": "",
+        "label": "Side",
+        "name": "side",
+        "options": [
+          {
+            "label": "Left",
+            "value": "left"
+          },
+          {
+            "label": "Right",
+            "value": "right"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:0c85132ea36625976cd2f7784188ce58c3efad50538bd1d7af0a65966f9593a6",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {
+        "heading": {
+          "type": "string"
+        },
+        "scrollEnd": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "scrollStart": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "sections": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "heading": {
+                "type": "string"
+              },
+              "lines": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "number": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "number",
+              "heading",
+              "lines"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "side": {
+          "enum": [
+            "left",
+            "right"
+          ],
+          "type": "string"
+        },
+        "subheading": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Transparent orange and cream scrolling guide for the video-making workflow.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/sliding-media/component.tsx",
+    "defaults": {
+      "duration": 2
+    },
+    "description": "Renders a video or image asset full-screen and applies clip-level fade/slide effects (fade_in, fade_out, slide_in_x, slide_out_x).",
+    "id": "sliding-media",
+    "keywords": [
+      "media",
+      "slide",
+      "transition"
+    ],
+    "kind": "effect",
+    "label": "Sliding Media",
+    "packId": "local",
+    "parameters": [
+      {
+        "description": "",
+        "label": "Object Fit",
+        "name": "objectFit",
+        "options": [
+          {
+            "label": "Cover",
+            "value": "cover"
+          },
+          {
+            "label": "Contain",
+            "value": "contain"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:5e8a7ac47f39bc667d1002b69a088cb2771a2752b46c027b2b19e1beac794aee",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {
+        "objectFit": {
+          "enum": [
+            "cover",
+            "contain"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Full-screen media clip with slide-in/out motion.",
+    "source": "pack:local"
+  },
+  {
     "componentPath": "packs/rendering/rendering/elements/effects/text-card/component.tsx",
     "defaults": {
       "align": "center",
@@ -500,6 +1627,292 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     },
     "shortDescription": "Default text card effect for captions and titles.",
     "source": "pack:rendering"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/text-card/component.tsx",
+    "defaults": {
+      "align": "center",
+      "content": ""
+    },
+    "description": "Local-pack TextCard with anchor positioning, fade in/out, and styling overrides.",
+    "id": "text-card",
+    "keywords": [
+      "text",
+      "card",
+      "effect",
+      "caption",
+      "title",
+      "overlay"
+    ],
+    "kind": "effect",
+    "label": "Text Card",
+    "packId": "local",
+    "parameters": [
+      {
+        "default": "center",
+        "description": "",
+        "label": "Align",
+        "name": "align",
+        "options": [
+          {
+            "label": "Left",
+            "value": "left"
+          },
+          {
+            "label": "Center",
+            "value": "center"
+          },
+          {
+            "label": "Right",
+            "value": "right"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "description": "",
+        "label": "Anchor",
+        "name": "anchor",
+        "options": [
+          {
+            "label": "Top Left",
+            "value": "top-left"
+          },
+          {
+            "label": "Top",
+            "value": "top"
+          },
+          {
+            "label": "Top Right",
+            "value": "top-right"
+          },
+          {
+            "label": "Left",
+            "value": "left"
+          },
+          {
+            "label": "Center",
+            "value": "center"
+          },
+          {
+            "label": "Right",
+            "value": "right"
+          },
+          {
+            "label": "Bottom Left",
+            "value": "bottom-left"
+          },
+          {
+            "label": "Bottom",
+            "value": "bottom"
+          },
+          {
+            "label": "Bottom Right",
+            "value": "bottom-right"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "description": "",
+        "label": "Border Radius",
+        "name": "borderRadius",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Line Height",
+        "name": "lineHeight",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Max Width",
+        "name": "maxWidth",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Offset X",
+        "name": "offsetX",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Offset Y",
+        "name": "offsetY",
+        "type": "number"
+      },
+      {
+        "description": "",
+        "label": "Weight",
+        "name": "weight",
+        "type": "number"
+      }
+    ],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:93f94a5b7af04540b53679eb0413fed8babfe2b6ac63537dd0e15507dbba8f50",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {
+        "align": {
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "type": "string"
+        },
+        "anchor": {
+          "enum": [
+            "top-left",
+            "top",
+            "top-right",
+            "left",
+            "center",
+            "right",
+            "bottom-left",
+            "bottom",
+            "bottom-right"
+          ],
+          "type": "string"
+        },
+        "background": {
+          "type": "string"
+        },
+        "borderRadius": {
+          "type": "number"
+        },
+        "content": {
+          "type": "string"
+        },
+        "letterSpacing": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "lineHeight": {
+          "type": "number"
+        },
+        "maxWidth": {
+          "type": "number"
+        },
+        "offsetX": {
+          "type": "number"
+        },
+        "offsetY": {
+          "type": "number"
+        },
+        "padding": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "textShadow": {
+          "type": "string"
+        },
+        "weight": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Anchored text card overlay with built-in fade in/out.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/vibe-comfy-asset-overlay/component.tsx",
+    "defaults": {
+      "duration": 10
+    },
+    "description": "Transparent Remotion overlay that animates existing Vibe Comfy PNG microassets, independent platform/title assets, and a procedural noodle path over a media background.",
+    "id": "vibe-comfy-asset-overlay",
+    "keywords": [
+      "remotion",
+      "bumper",
+      "assets",
+      "noodle",
+      "vibe-comfy"
+    ],
+    "kind": "effect",
+    "label": "Vibe Comfy Asset Overlay",
+    "packId": "local",
+    "parameters": [],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:0c720be076f903bdba6316750aab1b3f40440db6a25c50701407dd1daad9fe89",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {
+        "accent": {
+          "type": "string"
+        },
+        "green": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Asset-driven Vibe Comfy overlay with procedural noodle.",
+    "source": "pack:local"
+  },
+  {
+    "componentPath": "packs/local/rendering/elements/effects/vibe-comfy-bumper/component.tsx",
+    "defaults": {
+      "duration": 10,
+      "title": "VIBE COMFY"
+    },
+    "description": "Frame-driven Vibe Comfy bumper with a procedural SVG noodle path, platform, title, and animated micro-assets.",
+    "id": "vibe-comfy-bumper",
+    "keywords": [
+      "remotion",
+      "bumper",
+      "noodle",
+      "ui",
+      "vibe-comfy"
+    ],
+    "kind": "effect",
+    "label": "Vibe Comfy Bumper",
+    "packId": "local",
+    "parameters": [],
+    "renderability": {
+      "browserExport": "unknown",
+      "preview": "unknown",
+      "workerExport": "unknown"
+    },
+    "revision": "sha256:f61ae8bd37bceb95d8819dd521552be0d52bf065d8babd5802367b8a19ef7ce7",
+    "runtime": {},
+    "schema": {
+      "additionalProperties": true,
+      "properties": {
+        "accent": {
+          "type": "string"
+        },
+        "background": {
+          "type": "string"
+        },
+        "green": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Procedural Remotion bumper for Vibe Comfy.",
+    "source": "pack:local"
   },
   {
     "componentPath": "packs/rendering/rendering/elements/transitions/cross-fade/component.tsx",

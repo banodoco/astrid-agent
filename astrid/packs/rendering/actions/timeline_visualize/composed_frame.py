@@ -945,7 +945,7 @@ class RemotionFrameProvider:
                 raise SceneQueryUnavailable("capture staged assets on a non-effect clip")
             return
         element = catalog.get("effects", effect_id, pack_id=ref.get("packId")) if isinstance(ref, Mapping) and "packId" in ref else catalog.get("effects", effect_id)
-        cards = _resolve_end_spanning_card_assets(clip, registry) if (_source_pack_id(element), element.id) == ("personal", "end-spanning-layer") else {}
+        cards = _resolve_end_spanning_card_assets(clip, registry) if (_source_pack_id(element), element.id) == ("local", "end-spanning-layer") else {}
         if not isinstance(staged, Mapping) or set(staged) != {asset.name for asset in element.assets} | set(cards):
             raise SceneQueryUnavailable("capture staged element assets mismatch")
         for asset in element.assets:
