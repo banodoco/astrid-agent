@@ -8,6 +8,7 @@ The latter must never acknowledge a detached/unowned process as an owned server.
 from __future__ import annotations
 from ._engine_python_bootstrap import engine_process_env
 
+import copy
 import hashlib
 import json
 import math
@@ -972,6 +973,53 @@ def _parse_receipt(raw, plan):
     except (TypeError, ValueError, KeyError) as exc:
         raise IntegrityError("invalid install receipt evidence") from exc
     return InstallReceipt(**{**value, "models": models, "steps": steps, "health": health})
+
+
+def refresh_installed_launch(runner, raw, *, start_action, start_facts, health_action, health_facts, check):
+    """Commit verified live launch facts while the caller holds the install lock.
+
+    Preserve the raw receipt, including legacy rows that its parsed projection drops.
+    A failed or cancelled pre-commit check leaves it untouched. An exception after
+    atomic replace never restores the stale receipt.
+    """
+    original = _parse_receipt(raw, runner.plan)
+    if original.status != "installed":
+        raise IntegrityError("managed launch requires a completed installation")
+    if (runner.health is None or not isinstance(runner.service_owner, str) or not runner.service_owner
+            or not isinstance(runner.health.object_info_sha256, str)
+            or not _DIGEST.fullmatch(runner.health.object_info_sha256)
+            or start_action not in {"executed", "skipped"}
+            or health_action not in {"executed", "skipped"}
+            or start_facts != {"owner_id": runner.service_owner, "launch_sha256": _sha(runner.launch_spec()),
+                               "cuda_visible_devices": runner.visibility}
+            or health_facts != {"object_info_sha256": runner.health.object_info_sha256,
+                                "required_nodes_present": runner.health.required_nodes_present}
+            or runner.health.status != "healthy" or runner.health.required_nodes_present is not True):
+        raise IntegrityError("live launch evidence is not verified")
+    updated = copy.deepcopy(raw)
+    for step in updated["steps"]:
+        if step["kind"] == "start":
+            step.update(action=start_action, validation="passed", facts={**step["facts"], **start_facts})
+        elif step["kind"] == "health":
+            step.update(action=health_action, validation="passed", facts={**step["facts"], **health_facts})
+    updated["health"] = _plain(runner.health)
+    _parse_receipt(updated, runner.plan)
+    path = runner.path(_RECEIPT)
+    check()
+    if runner.context.read_json(path, deadline=runner.deadline) != raw:
+        raise IntegrityError("installed receipt changed during managed preparation")
+    check()
+    runner.context.write_json_atomic(path, updated, deadline=runner.deadline)
+    committed = runner.context.read_json(path, deadline=runner.deadline)
+    if committed != updated:
+        raise IntegrityError("committed installed receipt differs from verified launch")
+    _parse_receipt(committed, runner.plan)
+    fact = runner.context.file_fact(path, hash_bytes=True, deadline=runner.deadline)
+    expected = _json(committed).encode("utf-8")
+    if (not fact.exists or not fact.regular or fact.symlink or fact.bytes != len(expected)
+            or fact.sha256 != hashlib.sha256(expected).hexdigest()):
+        raise IntegrityError("committed installed receipt bytes differ")
+    return fact.sha256
 
 
 def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placement, root: TargetPath,

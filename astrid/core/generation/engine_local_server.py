@@ -36,13 +36,26 @@ def ensure_local_engine_server(
     deadline = time.monotonic() + deadline_seconds
     if runner_factory is None:
         from .engine_execution import create_local_backend
-        from .engine_runner import _Runner, plan_install
+        from .engine_runner import _Runner, _parse_receipt, plan_install, refresh_installed_launch
+        from .engine_contracts import IntegrityError
         context, adapter = create_local_backend(
             engine=engine, platform=platform, placement="local", root=root, deadline=deadline)
-        plan = plan_install(load_recipe(engine, platform), root=root, placement="local")
-        runner = _Runner(plan, context, adapter, deadline)
+        with context.acquire_install_lock(root, deadline=deadline):
+            raw = context.read_json(posixpath.join(root, RECEIPT_RELATIVE_PATH), deadline=deadline)
+            plan = plan_install(load_recipe(engine, platform), root=root, placement="local",
+                                models_root=raw.get("models_root"))
+            if _parse_receipt(raw, plan).status != "installed":
+                raise IntegrityError("local engine requires a completed installation")
+            runner = _Runner(plan, context, adapter, deadline)
+            runner.step_id = "start"
+            action, facts = runner.start(readonly=False)
+            runner.step_id = "health"
+            health_action, health_facts = runner.check_health()
+            refresh_installed_launch(runner, raw, start_action=action, start_facts=facts,
+                                     health_action=health_action, health_facts=health_facts,
+                                     check=lambda: None)
     else:
         runner = runner_factory(engine=engine, platform=platform, root=root, deadline=deadline)
-    runner.step_id = "start"
-    action, _facts = runner.start(readonly=False)
+        runner.step_id = "start"
+        action, _facts = runner.start(readonly=False)
     return "reused" if action == "skipped" else "started"

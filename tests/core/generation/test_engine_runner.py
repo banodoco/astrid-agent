@@ -354,6 +354,68 @@ def status(setup):
                                 root=plan.root, context=context, deadline=deadline)
 
 
+@pytest.mark.parametrize('failure', ['none', 'cancel', 'changed', 'before-replace', 'after-replace', 'bad-health'])
+def test_refresh_preserves_raw_receipt_and_has_safe_commit_boundary(setup, monkeypatch, failure):
+    from concurrent.futures import CancelledError
+    plan, context, adapter, deadline = setup
+    install(setup)
+    path = ROOT + '/' + runner._RECEIPT
+    raw = copy.deepcopy(context.files[path])
+    legacy = {'id': 'model:legacy', 'kind': 'model', 'action': 'executed', 'validation': 'passed',
+              'facts': {'legacy': 'preserve'}}
+    raw['steps'].append(legacy)
+    for step in raw['steps']:
+        if step['kind'] in {'start', 'health'}:
+            step['facts']['unrelated'] = 'preserved'
+    context.files[path] = copy.deepcopy(raw)
+    live = runner._Runner(plan, context, adapter, deadline, device=2)
+    with context.acquire_install_lock(ROOT, deadline=deadline):
+        action, start_facts = live.start()
+        health_action, health_facts = live.check_health()
+        calls = []
+        def check():
+            calls.append(True)
+            if failure == 'cancel' and len(calls) == 2:
+                raise CancelledError('cancel before commit')
+        if failure == 'changed':
+            context.files[path]['receipt_id'] = 'changed-by-other-writer'
+        if failure in {'before-replace', 'after-replace'}:
+            write = context.write_json_atomic
+            def failing_write(path, value, *, deadline):
+                if failure == 'after-replace':
+                    write(path, value, deadline=deadline)
+                raise OSError('injected atomic write failure')
+            monkeypatch.setattr(context, 'write_json_atomic', failing_write)
+        if failure == 'bad-health':
+            health_facts = {**health_facts, 'object_info_sha256': '0' * 64}
+        if failure == 'none':
+            digest = runner.refresh_installed_launch(live, raw, start_action=action, start_facts=start_facts,
+                health_action=health_action, health_facts=health_facts, check=check)
+            assert digest == hashlib.sha256(runner._json(context.files[path]).encode()).hexdigest()
+        else:
+            error = (CancelledError if failure == 'cancel' else OSError if failure in {'before-replace', 'after-replace'}
+                     else IntegrityError)
+            with pytest.raises(error):
+                runner.refresh_installed_launch(live, raw, start_action=action, start_facts=start_facts,
+                    health_action=health_action, health_facts=health_facts, check=check)
+    committed = context.files[path]
+    if failure in {'none', 'after-replace'}:
+        assert next(step for step in committed['steps'] if step['kind'] == 'start')['facts']['cuda_visible_devices'] == '2'
+        assert committed['steps'][-1] == legacy
+        assert all(step['facts']['unrelated'] == 'preserved' for step in committed['steps']
+                   if step['kind'] in {'start', 'health'})
+        for key in raw:
+            if key not in {'steps', 'health'}:
+                assert committed[key] == raw[key]
+        for old, new in zip(raw['steps'], committed['steps']):
+            if old['kind'] not in {'start', 'health'}:
+                assert old == new
+    elif failure == 'changed':
+        assert committed['receipt_id'] == 'changed-by-other-writer'
+    else:
+        assert committed == raw
+
+
 def test_protocol_shapes_exactly_match_v1():
     assert [f.name for f in fields(CommandRequest)] == ["argv", "cwd", "env", "deadline", "max_output_bytes"]
     assert CommandRequest(("true",), ROOT, {}, 123).max_output_bytes == 262144
