@@ -22,6 +22,7 @@ import io
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import tarfile
@@ -504,10 +505,18 @@ class RemotePlacement:
         if directory:
             _c, stdout, _e = ops.exec(f"cat {shlex.quote(directory)}/stdout", 120)
             _c, stderr, _e = ops.exec(f"tail -c 4000 {shlex.quote(directory)}/stderr", 120)
-        if record.get("exit_code") != 0:
+        exit_code = record.get("exit_code")
+        if exit_code != 0 or (what == "pod reset" and type(exit_code) is not int):
             self._check_deadline(what)
+            if what == "pod reset":
+                from .pod_reset import reset_failure_reason
+                safe_code = exit_code if type(exit_code) is int and 0 <= exit_code <= 255 else "unknown"
+                safe_job = job_id if re.fullmatch(r"[0-9a-f]{32}", job_id) else "unknown"
+                raise RemotePlacementError(
+                    f"pod reset job {safe_job} exited {safe_code}: reset reason: {reset_failure_reason(stdout)}"
+                )
             raise RemotePlacementError(
-                f"{what} job {job_id} exited {record.get('exit_code')}: {stderr[-800:]}"
+                f"{what} job {job_id} exited {exit_code}: {stderr[-800:]}"
             )
         return stdout
 
