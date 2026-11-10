@@ -118,6 +118,9 @@ def test_managed_dry_preview_uses_receipt_model_root(tmp_path, monkeypatch, mana
                'source': folder / 'source.json'}
     digests = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in members.items()}
     loaded = load_workflow_path(members['python'], tmp_path / 'custom-load')
+    # The previous owned process was started with the old model root. A cold
+    # start writes the new receipt's configuration before probing the target.
+    client.stop_owned(deadline=time.monotonic() + 15)
     prepare = ManagedEnginePreparation(task='task', attempt='attempt', mode='trust',
         deadline=time.monotonic() + 60, cancelled=lambda: False, scratch=tmp_path / 'custom-prepare')
     try:

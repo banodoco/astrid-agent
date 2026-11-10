@@ -25,8 +25,9 @@ from tests.integrations.test_runpod_slot_path_cpu import (
 
 pytestmark = pytest.mark.integration
 
-CELLS = [pytest.param(cell, target, id=f"{'/'.join(cell)}-{target}")
+CELLS = [pytest.param(cell, target, None, id=f"{'/'.join(cell)}-{target}")
          for target in ("attached", "local-managed") for cell in [*SLOTS, ("video", "h3")]]
+CELLS.append(pytest.param(("image", "t2i"), "local-managed", "z-image", id="image/z-image-alternate-local-managed"))
 H3_CLASSES = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "object_info_h3_runpod_graph_closure.json"
 
 
@@ -299,8 +300,8 @@ def _built(rows: list[tuple[str, str]]) -> tuple[str, str]:
     return graph, bindings, workflow
 
 
-@pytest.mark.parametrize("cell,target_kind", CELLS)
-def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_runtime, tuple_sources, request):
+@pytest.mark.parametrize("cell,target_kind,selected_entry", CELLS)
+def test_dry_run_equals_live_run(cell, target_kind, selected_entry, tmp_path, monkeypatch, real_runtime, tuple_sources, request):
     modality, mode = cell
     h3 = cell == ("video", "h3")
     h3_classes, h3_assets = (), None
@@ -341,6 +342,8 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         if h3:
             return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(h3_assets), **controls, **extra)
         inputs = dict(PROMPTS[cell])
+        if selected_entry is not None:
+            inputs["entry"] = selected_entry
         if cell == ("audio", "sfx"):
             from tests.integrations.test_runpod_slot_path_cpu import _video_source
             inputs["video_ref"] = str(_video_source(tmp / "source.mp4", "256x144"))
@@ -406,7 +409,7 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
             provider.comfy.prompts = [json.loads(line) for line in records.read_text().splitlines()]
         submitted = provider.comfy.prompts[-1]["prompt"]
         assert submitted, "the live run submitted an empty graph"
-        if target_kind == "local-managed" and cell == ("image", "t2i"):
+        if selected_entry == "z-image":
             menu = provider.comfy.info["VAELoader"]["input"]["required"]["vae_name"][0]
             assert r"FLUX1\ae.safetensors" in menu and "ae.safetensors" in menu
             assert [node["inputs"]["vae_name"] for node in submitted.values()
