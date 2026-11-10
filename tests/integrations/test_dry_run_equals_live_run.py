@@ -232,12 +232,24 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         # Use the same owned CPU engine as the machine job seam. Managed runs
         # must exercise the real supervisor rather than an unowned HTTP thread.
         from tests.integrations import test_runpod_slot_path_cpu as matrix
-        from tests.integrations.test_remote_machine_job_seam_cpu import _owned_cpu_engine
+        from tests.integrations import test_remote_machine_job_seam_cpu as seam
         from astrid.core.generation.engine_local_server import ensure_local_engine_server
+
+        if cell == ("image", "t2i"):
+            provision = seam._managed_local_engine
+
+            @contextmanager
+            def with_alternate(provider, folder, patch):
+                with provision(provider, folder, patch):
+                    installed = provider.comfy.installed_files
+                    provider.comfy.installed_files = lambda: [*installed(), r"vae/FLUX1\ae.safetensors"]
+                    yield
+
+            monkeypatch.setattr(seam, "_managed_local_engine", with_alternate)
 
         @contextmanager
         def managed_engine(provider, folder, patch):
-            with _owned_cpu_engine(provider, folder, patch):
+            with seam._owned_cpu_engine(provider, folder, patch):
                 ensure_local_engine_server("comfyui")
                 yield
         monkeypatch.setattr(matrix, "_managed_local_engine", managed_engine)
@@ -315,6 +327,11 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
             provider.comfy.prompts = [json.loads(line) for line in records.read_text().splitlines()]
         submitted = provider.comfy.prompts[-1]["prompt"]
         assert submitted, "the live run submitted an empty graph"
+        if target_kind == "local-managed" and cell == ("image", "t2i"):
+            menu = provider.comfy.info["VAELoader"]["input"]["required"]["vae_name"][0]
+            assert r"FLUX1\ae.safetensors" in menu and "ae.safetensors" in menu
+            assert [node["inputs"]["vae_name"] for node in submitted.values()
+                    if node["class_type"] == "VAELoader"] == ["ae.safetensors"]
         namespaces = [event["identity"] for event in events if event["event"] == "output_namespace"]
         assert len(namespaces) == 1, namespaces
         from astrid.packs.vibecomfy.local_server_engine import run_scoped_overrides
