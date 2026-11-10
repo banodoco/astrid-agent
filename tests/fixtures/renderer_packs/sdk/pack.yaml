@@ -1,7 +1,8 @@
-schema_version: 2
+schema_version: 3
 id: sdk
 name: SDK Conformance Fixture Pack
 version: 1.0.0
+pack_api: "2.0"
 description: >-
   Shared raw/SDK conformance fixture (T6.4) for the frozen v1 wire protocol.
   The pack ships ONE canonical implementation (_shared.py) behind TWO thin
@@ -25,7 +26,7 @@ permissions:
   - id: project_files
     reason: Read the invocation request JSON and write generated artifacts into the request workspace.
 aliases: []
-extensions:
-  rendering:
-    renderers:
-      - renderer.yaml
+rendering:
+  renderer:
+    type: renderer
+    path: rendering/renderer.yaml
