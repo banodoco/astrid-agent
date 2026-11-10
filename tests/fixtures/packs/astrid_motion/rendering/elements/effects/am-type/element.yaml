@@ -1,0 +1,98 @@
+schema_version: 1
+id: am-type
+kind: effect
+pack_id: astrid_motion
+short_description: Editorial type with masked slide-up or stepped typewriter reveal, rust italic word and orange underline.
+description: "Sets a headline or label in the shipped Gelasio (display) or Departure Mono (label) face. The slide-up reveal is masked and eases out over 8 frames. The typewriter reveal shows one character every 2 frames. One word can render in Gelasio Italic in rust #A94714, and one word can get an orange underline that draws in over 6 frames. Only type eases; reveal steps stay on frames."
+keywords:
+  - type
+  - headline
+  - editorial
+  - label
+  - italic
+  - underline
+  - reveal
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: Text overlay.
+metadata:
+  label: AM Type
+  description: Editorial headline or label with masked slide-up, stepped typewriter reveal, and emphasis word.
+  whenToUse: Use for a headline, a specimen label or a short caption on a motion shot. Use font display for headlines and label for uppercase mono captions. Put one word in italicWord for the site's rust emphasis, and use underlineWord with underlineAt for the orange flash.
+  role: "label"
+  text: ["text"]
+  summary: "{text}"
+  geometry: {"position":["x","y"],"scale":"size","full_frame":false}
+  presets: {"label":{"font":"label","size":40},"title":{"font":"display","size":120},"caption":{"font":"label","size":32}}
+defaults:
+  text: ""
+  font: display
+  size: 96
+  color: "#FAFAFA"
+  align: left
+  x: 96
+  y: 96
+  width: 1200
+  reveal: slideUp
+  tracking: -0.01
+  lineHeight: 0.95
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  required: [text]
+  properties:
+    text: {type: string}
+    italicWord:
+      type: string
+      description: "First matching word renders in Gelasio Italic, rust #A94714."
+    italicColor:
+      type: string
+      description: Colour of the italic word. Default rust (#A94714); on a charcoal field use orange (#FF7A2E).
+    font:
+      type: string
+      enum: [display, label]
+    size: {type: number, exclusiveMinimum: 0, description: Canvas px.}
+    color: {type: string}
+    align:
+      type: string
+      enum: [left, center, right]
+    x: {type: number, description: Canvas px from the left.}
+    y: {type: number, description: Canvas px from the top.}
+    width: {type: number, exclusiveMinimum: 0, description: Canvas px.}
+    reveal:
+      type: string
+      enum: [slideUp, type, none]
+    tracking: {type: number, description: Letter spacing in em.}
+    lineHeight: {type: number, exclusiveMinimum: 0}
+    underlineWord:
+      type: string
+      description: First matching word gets an orange underline.
+    underlineAt:
+      type: integer
+      minimum: 0
+      description: Clip frame where the underline starts to draw (6 frames).
+    yKeyframes:
+      type: array
+      description: "Optional glide: [{at: clip frame, y: px, ease?: linear|easeOut|easeInOut}], interpolated smoothly per frame (holds before the first and after the last); overrides y, composes with reveal."
+      items:
+        type: object
+        required: [at, y]
+        properties:
+          at: {type: integer, minimum: 0}
+          y: {type: number}
+          ease: {type: string, enum: [linear, easeOut, easeInOut]}
+    xKeyframes:
+      type: array
+      description: "Optional glide on x, same shape as yKeyframes with x in place of y; overrides x."
+      items:
+        type: object
+        required: [at, x]
+        properties:
+          at: {type: integer, minimum: 0}
+          x: {type: number}
+          ease: {type: string, enum: [linear, easeOut, easeInOut]}

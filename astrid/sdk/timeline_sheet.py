@@ -253,15 +253,12 @@ def _layer_row(tl, clip, lo, hi, *, is_picture, detail=False):
     return [gutter, track, name, _short(clip.element), what, " ".join(bits), " ".join(timing)]
 
 
-def _look_keys(element, keys, *, display=False):
+def _look_keys(element, keys, *, params=None):
     """The keys that are clip-level look fields for this element: declared by clip_fields, not by the element.
 
-    ``display`` (showing a row only) tolerates an element no installed pack declares; applying refuses it."""
-    from astrid.sdk.timeline_address import MEDIA_CLIP_TYPE, declared_element_schema, declared_params
-    if display and element != MEDIA_CLIP_TYPE:
-        declared = set((declared_element_schema(element) or {}).get("properties") or {})
-    else:
-        declared = set(declared_params(element))
+    With no resolvable schema, the clip's existing ``params`` count as the element's (they stay opaque)."""
+    from astrid.sdk.timeline_address import element_param_names
+    declared = element_param_names(element, params)
     return [k for k in keys if k in cf.FIELDS and k not in declared]
 
 
@@ -271,7 +268,7 @@ def _look_bits(clip, *, skip=()):
     shown = Look(clip).describe()
     if clip.is_audio:
         shown.update(cf.describe(clip.data, fps=clip._tl.fps))
-    keys = _look_keys(clip.element, [k for k in shown if k not in skip], display=True)
+    keys = _look_keys(clip.element, [k for k in shown if k not in skip], params=clip.params)
     return [f"{k}={shown[k] if _is_number(shown[k]) else _value(shown[k])}" for k in keys]
 
 
@@ -293,7 +290,7 @@ def _apply_look(clip, fields):
                 changes[name] = value
         elif stored != cf.read(clip.data, name, fps=fps, audio=audio):
             changes[name] = value
-    for name in _look_keys(clip.element, list(Look(clip).describe())):
+    for name in _look_keys(clip.element, list(Look(clip).describe()), params=clip.params):
         if name not in fields:
             changes[name] = None
     if changes:
@@ -523,12 +520,12 @@ def _parse_layer(body, number, fps=30.0):
 def _names_media(token, element):
     """KEY=HANDLE in the asset column: new media, named KEY (swap-asset's form). KEY must not be a param of the element."""
     from astrid.sdk.media_handles import is_media_handle
-    from astrid.sdk.timeline_address import element_schema
+    from astrid.sdk.timeline_address import element_param_names
 
     key, _, ref = token.partition("=")
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key) or not is_media_handle(ref):
         return False
-    return key not in (element_schema(_element(element)).get("properties") or {})
+    return key not in element_param_names(_element(element))
 
 
 def _read_value(value, number):
@@ -1354,7 +1351,7 @@ def _apply_sound(tl, rows):
             elif row["for"] is not None and not trim_changed and abs(row["for"]-clip.duration) > 0.5/tl.fps:
                 clip.set_duration(row["for"])
             for key in row["params"]:
-                if key not in _look_keys(clip.element, [key]) or cf.FIELDS[key].applies_to == "visual":
+                if key not in _look_keys(clip.element, [key], params=clip.params) or cf.FIELDS[key].applies_to == "visual":
                     audio_fields = sorted(k for k, f in cf.FIELDS.items() if f.applies_to != "visual")
                     raise SheetError(f"line {row['line']}: a sound line takes {', '.join(audio_fields)} (got {key}=)")
             _apply_look(clip, row["params"])
@@ -1385,42 +1382,31 @@ def _update_layer(tl, clip, layer, *, is_picture):
     raw_params = data.get("params") if isinstance(data.get("params"), dict) else None
     current = dict(raw_params or {})
     wanted = dict(layer["params"])
-    look = {k: wanted.pop(k) for k in _look_keys(element, list(wanted))}
+    look = {k: wanted.pop(k) for k in _look_keys(element, list(wanted), params=current)}
     if element == "am-type":
         if layer["text"] is not None:
             wanted["text"] = layer["text"]
         elif "text" in current:
             wanted["text"] = current["text"]
-    from astrid.sdk.timeline.model import validate_param_value
-    for key, value in wanted.items():
-        if value is not ELIDED:
-            validate_param_value(element, key, value, where=clip.address)
-    for key in list(current):
-        if key not in wanted and key != "text" and raw_params is not None:
+    from astrid.sdk.timeline_address import declared_element_schema, element_schema, unknown_params
+    removed = [key for key in current if key not in wanted and key != "text" and raw_params is not None]
+    if declared_element_schema(element) is None:
+        # Unchanged params stay opaque, exactly as stored; changing or removing one needs the schema.
+        if removed or _param_writes(element, wanted, current, intent.formulas(data)):
+            element_schema(element)  # raises the coded dependency error
+    else:
+        from astrid.sdk.timeline.model import validate_param_value
+        for key, value in wanted.items():
+            if value is not ELIDED:
+                validate_param_value(element, key, value, where=clip.address)
+        for key in removed:
             raw_params.pop(key, None)
-    from astrid.sdk.timeline_address import element_schema, unknown_params
-    bad = unknown_params(element, [k for k, v in wanted.items() if v is not ELIDED], existing=current)
-    if bad:
-        props = sorted((element_schema(element).get("properties") or {}))
-        raise TimelineEditError(f"{element} has no param {', '.join(bad)}; it takes: {', '.join(props)}")
-    from astrid.sdk.timeline_checkout import formula_from_spec, formula_short, parse_formula_value, to_canvas
-    formulas = intent.formulas(data)
-    for key, value in wanted.items():
-        if value is ELIDED:
-            continue
-        exact = formulas.get(f"params.{key}")
-        if exact is not None and isinstance(value, str) and value.strip() == formula_short(exact, element):
-            continue
-        spec = parse_formula_value(value)
-        if spec is not None:
-            current_expr = formulas.get(f"params.{key}") or {}
-            new_expr = formula_from_spec(spec, element, key, current_expr)
-            if not (current_expr and current_expr.get("mark") == new_expr["mark"] and abs(float(current_expr.get("offset") or 0)-new_expr["offset"]) < 1e-6):
-                clip.set(**{key: value})
-            continue
-        has_formula = any(p == f"params.{key}" or p.startswith((f"params.{key}[", f"params.{key}.")) for p in formulas)
-        if has_formula or to_canvas(element, key, current.get(key)) != value:
-            clip.set(**{key: value})
+        bad = unknown_params(element, [k for k, v in wanted.items() if v is not ELIDED], existing=current)
+        if bad:
+            props = sorted((element_schema(element).get("properties") or {}))
+            raise TimelineEditError(f"{element} has no param {', '.join(bad)}; it takes: {', '.join(props)}")
+    for key, value in _param_writes(element, wanted, current, intent.formulas(data)):
+        clip.set(**{key: value})
     _apply_look(clip, look)
     if (layer["on"] is not None or not is_picture) and layer["on"] != intent.on(data):
         clip.on(layer["on"]) if layer["on"] else tl._place_on(clip, None)
@@ -1433,6 +1419,30 @@ def _update_layer(tl, clip, layer, *, is_picture):
         else:
             intent.set_until(data, None)
             intent.set_for(data, None)
+
+
+def _param_writes(element, wanted, current, formulas):
+    """The ``(key, value)`` params a sheet row changes; a value shown as it is stored is not a write."""
+    from astrid.sdk.timeline._command_state import equal
+    from astrid.sdk.timeline_checkout import formula_from_spec, formula_short, parse_formula_value, to_canvas
+    writes = []
+    for key, value in wanted.items():
+        if value is ELIDED:
+            continue
+        exact = formulas.get(f"params.{key}")
+        if exact is not None and isinstance(value, str) and value.strip() == formula_short(exact, element):
+            continue
+        spec = parse_formula_value(value)
+        if spec is not None:
+            current_expr = formulas.get(f"params.{key}") or {}
+            new_expr = formula_from_spec(spec, element, key, current_expr)
+            if not (current_expr and current_expr.get("mark") == new_expr["mark"] and abs(float(current_expr.get("offset") or 0)-new_expr["offset"]) < 1e-6):
+                writes.append((key, value))
+            continue
+        has_formula = any(p == f"params.{key}" or p.startswith((f"params.{key}[", f"params.{key}.")) for p in formulas)
+        if has_formula or not equal(to_canvas(element, key, current.get(key)), value):
+            writes.append((key, value))
+    return writes
 
 
 def _add_layer(tl, cut_id, group, layer):

@@ -1,0 +1,101 @@
+schema_version: 1
+id: am-pixel-shape
+kind: effect
+pack_id: astrid_motion
+short_description: Procedural pixel shape (ring, dot, underline, arrow or rect) on the sticker pixel grid.
+description: "Draws a small hard-edged pixel shape with no asset. Each cell is px_scale screen px (6 matches am-sprite at scale 6). Shapes are ring, dot (a 3x3 full stop), underline, arrow and rect (a box with optional fill and outline colours, a stroke-cell outline and pixel-stepped corners from radius). x and y are logical px on the 320x180 grid, like am-sprite. Static, except blinkAt, which hides it for two frames at each listed clip frame, as am-sprite does."
+keywords:
+  - pixel
+  - shape
+  - ring
+  - dot
+  - underline
+  - arrow
+  - rect
+  - tile
+  - sticker
+  - procedural
+  - blink
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: Pixel shape overlay.
+metadata:
+  units:  # how x/y are STORED: logical px on the 320x180 grid; every editing surface shows canvas px (x scale)
+    scale: 6
+    logical: [x, y]
+  label: AM Pixel Shape
+  description: Procedural pixel ring, dot, underline, arrow or rect on the sticker grid.
+  whenToUse: Use for a pixel mark drawn over a plate, such as a ring around a word, a full stop, an underline or an arrow. Do not draw these as PNGs. Set w and h in cells (a 3x3 dot is a full stop), px_scale to 6 to match am-sprite at scale 6, and x and y in logical px.
+defaults:
+  shape: ring
+  color: '#1F1F1F'
+  px_scale: 6
+  x: 0
+  y: 0
+  w: 24
+  h: 24
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    shape:
+      type: string
+      enum:
+      - ring
+      - dot
+      - underline
+      - arrow
+      - rect
+    color:
+      type: string
+    px_scale:
+      type: integer
+      minimum: 1
+      maximum: 24
+      description: Screen px per cell. 6 matches the sticker grid.
+    x:
+      type: number
+      description: Logical px from the left of the 320x180 grid.
+    y:
+      type: number
+      description: Logical px from the top of the 320x180 grid.
+    w:
+      type: integer
+      minimum: 1
+      maximum: 200
+      description: Width in cells.
+    h:
+      type: integer
+      minimum: 1
+      maximum: 200
+      description: Height in cells.
+    stroke:
+      type: integer
+      minimum: 1
+      maximum: 20
+      description: Stroke thickness in cells (ring, underline, arrow shaft, rect outline). Defaults to 2, or 1 for rect.
+    fill:
+      type: string
+      description: rect fill colour. Omit for a transparent (unfilled) rect.
+    outline:
+      type: string
+      description: rect outline colour, drawn stroke cells inside the edge. Omit for no outline.
+    radius:
+      type: integer
+      minimum: 0
+      maximum: 100
+      description: rect corner radius in cells, pixel-stepped. 0 is a square corner.
+    blinkAt:
+      description: Clip frame(s) where the shape hides for two frames, as am-sprite blinkAt. Without it the shape never hides.
+      oneOf:
+      - type: integer
+        minimum: 0
+      - type: array
+        items:
+          type: integer
+          minimum: 0

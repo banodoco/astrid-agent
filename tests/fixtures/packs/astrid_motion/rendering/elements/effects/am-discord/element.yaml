@@ -1,0 +1,222 @@
+schema_version: 1
+id: am-discord
+kind: effect
+pack_id: astrid_motion
+short_description: Pixel-styled Discord channel reconstruction with stepped camera, highlighter and annotation.
+description: A 1280-px Discord-style channel window in crisp UI, not a screenshot, with no Discord logo. Messages stack from the bottom in time order with joins and date dividers. Dividers flip split-flap through the days between dates. fit content hugs the window to the post, and camera steps integer push-ins. Highlighter, underline, strike, circle and annotation decorations step on whole frames. Joins and reactions are illustrative.
+keywords:
+  - discord
+  - chat
+  - reconstruction
+  - announcement
+  - reactions
+  - joins
+  - split-flap
+  - camera
+  - highlighter
+  - pixel
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: Transparent Discord window overlay, centred on the frame.
+metadata:
+  label: AM Discord
+  description: Pixel-styled Discord channel reconstruction with a content-fit window, stepped camera, highlighter, circle and annotation.
+  whenToUse: Use for the announcement and the follow-up reaction beats. Pass the post as one message with its lines, verbatim, with real timestamps. Mark echo words with {u:word}. Use fit content for a hero post, camera for a stepped push-in on a word, and keep joins and reactions labelled illustrative with the badge.
+  role: "card"
+  text: ["messages[].lines"]
+  summary: "{server} {channel} chat reconstruction"
+  geometry: {"position":null,"scale":null,"full_frame":false}
+  units: {"frames":["camera[].at","circle[].at","composer.startAt","messages[].appearAt"]}
+defaults:
+  server: OSAI
+  channel: "# announcements"
+  channels:
+    - "# announcements"
+    - "# general"
+    - "# testing"
+  sidebar: true
+  fit: frame
+  minHeight: 360
+  messages: []
+  dateDividers: []
+  reactions: []
+  joins: []
+  underline: []
+  strike: []
+  highlight: []
+  circle: []
+  annotation: []
+  camera: []
+  badge: "RECONSTRUCTION · REACTIONS & JOINS ILLUSTRATIVE"
+  frame:
+    width: 1280
+    height: 720
+    radius: 12
+    outline: "#25241F"
+    shadow: 12
+  jumpFrames: 12
+  typeStepFrames: 2
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    server:
+      type: string
+    channel:
+      type: string
+      description: Channel name shown in the header, verbatim, for example "# announcements".
+    channels:
+      type: array
+      items: {type: string}
+      description: Sidebar channel names. The one equal to channel is highlighted.
+    sidebar:
+      type: boolean
+      description: Show the channel sidebar. false hides it and widens the chat.
+    fit:
+      type: string
+      enum: [frame, content]
+      description: frame keeps the frame height. content hugs the window to the visible messages, snapping as they land, never below minHeight.
+    minHeight:
+      type: integer
+      minimum: 180
+      description: Minimum window height in px for fit content.
+    messages:
+      type: array
+      description: Messages in posting order. Adjacent messages from the same author, tag and time render as one block. lines are paragraphs. @everyone is a mention; {u:word} marks a word.
+      items:
+        type: object
+        required: [author, lines, appearAt]
+        properties:
+          author: {type: string}
+          tag: {type: string, description: "Server tag shown beside the name, for example OSAI."}
+          avatarColor: {type: string, description: "Hex fill for the avatar."}
+          time: {type: string, description: "Timestamp shown verbatim, for example 26/10/2025 19:29."}
+          lines: {type: array, items: {type: string}}
+          appearAt: {type: integer, minimum: 0, description: "Clip frame the message lands on."}
+          typeOn: {type: boolean, description: "Reveal characters in typeStepFrames steps."}
+    dateDividers:
+      type: array
+      description: Date dividers. A divider after the first flips through the days between the two dates over jumpFrames, then lands.
+      items:
+        type: object
+        required: [label, at]
+        properties:
+          label: {type: string, description: "A date such as 23 December 2025."}
+          at: {type: integer, minimum: 0}
+          jump: {type: boolean, description: "Flip through the intermediate dates. Defaults to true after the first divider."}
+    reactions:
+      type: array
+      items:
+        type: object
+        required: [emoji, startAt]
+        properties:
+          emoji: {type: string, description: "Unicode emoji, or a pixel icon URL or path."}
+          countFrom: {type: integer}
+          countTo: {type: integer}
+          startAt: {type: integer, minimum: 0}
+          stepFrames: {type: integer, minimum: 1, description: "Frames per count step."}
+          onMessage: {type: integer, minimum: 0, description: "Message index to attach to. Defaults to the latest message posted by startAt."}
+          mine: {type: boolean, description: "Draw the blurple reacted state."}
+    joins:
+      type: array
+      description: System join lines, in time order. Stacking accelerates when the at gaps shrink.
+      items:
+        type: object
+        required: [name, at]
+        properties:
+          name: {type: string}
+          at: {type: integer, minimum: 0}
+          time: {type: string}
+    underline:
+      type: array
+      description: Orange underline that draws in over 6 frames under the first matching word.
+      items:
+        type: object
+        required: [word, at]
+        properties:
+          word: {type: string}
+          at: {type: integer, minimum: 0}
+          color: {type: string}
+          onMessage: {type: integer, minimum: 0}
+    strike:
+      type: array
+      description: Two-step strike-through. Rust on the frame at, orange offset by one frame after.
+      items:
+        type: object
+        required: [word, at]
+        properties:
+          word: {type: string}
+          at: {type: integer, minimum: 0}
+          onMessage: {type: integer, minimum: 0}
+    highlight:
+      type: array
+      description: Vox-style marker swipe behind the word. A bar the height of cap height plus about 3 px either side, with 2 px stepped ragged ends, wipes across in 4 stepped frames.
+      items:
+        type: object
+        required: [word, at]
+        properties:
+          word: {type: string}
+          at: {type: integer, minimum: 0}
+          color: {type: string, description: "Hex, default #ED6B23."}
+          alpha: {type: number, minimum: 0, maximum: 1, description: "Default 0.45."}
+          onMessage: {type: integer, minimum: 0}
+    circle:
+      type: array
+      description: Rust hand-drawn ellipse around the word, drawn in 6 stepped segments.
+      items:
+        type: object
+        required: [word, at]
+        properties:
+          word: {type: string}
+          at: {type: integer, minimum: 0}
+          onMessage: {type: integer, minimum: 0}
+    annotation:
+      type: array
+      description: Small Departure Mono callout card above the word, joined by an orange connector.
+      items:
+        type: object
+        required: [word, at, text]
+        properties:
+          word: {type: string}
+          at: {type: integer, minimum: 0}
+          text: {type: string}
+          onMessage: {type: integer, minimum: 0}
+    camera:
+      type: array
+      description: Stepped integer push-ins of the whole window. Each step snaps on its frame; focus is in window px and lands on the frame centre.
+      items:
+        type: object
+        required: [at, zoom]
+        properties:
+          at: {type: integer, minimum: 0}
+          zoom: {type: integer, enum: [1, 2, 3]}
+          focus:
+            type: object
+            properties:
+              x: {type: number}
+              y: {type: number}
+    badge:
+      type: string
+      description: Mono label at the window's bottom-right. Empty string hides it.
+    frame:
+      type: object
+      description: Window width, maximum height, corner radius, outline colour and hard offset shadow in px.
+      properties:
+        width: {type: integer}
+        height: {type: integer}
+        radius: {type: integer}
+        outline: {type: string}
+        shadow: {type: integer}
+    jumpFrames:
+      type: integer
+      minimum: 1
+      description: Frames a divider flip lasts.
+    typeStepFrames:
+      type: integer
+      minimum: 1
+      description: Frames per typed character.

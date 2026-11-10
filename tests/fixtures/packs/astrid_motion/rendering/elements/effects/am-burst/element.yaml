@@ -1,0 +1,85 @@
+schema_version: 1
+id: am-burst
+kind: effect
+pack_id: astrid_motion
+short_description: "Pop-up burst: pixel cutouts or glyphs stamp in on an arc, each with a 6 px psychic ring."
+description: "Items stamp in on an arc around center, one after another. Each item appears with a two-frame flicker, then holds with a one-logical-pixel bob on threes. Behind each item a ring of 6 px squares expands in three steps (the psychic ring). Positions snap to the 6 px grid. src is a pixel cutout (static URL or public path), glyph is short text, label an optional mono caption under the item. Confetti is seeded and stepped on twos."
+keywords:
+  - burst
+  - pop
+  - ring
+  - confetti
+  - arc
+  - stamp
+  - celebration
+  - pixel
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: Burst overlay.
+metadata:
+  label: AM Burst
+  description: Arc of stamped pixel items with psychic rings and optional confetti.
+  whenToUse: Use for the Lindgren aside (book icons bursting on an arc) and celebration beats. Give each item an at frame when it should land, or let stepFrames space them. Keep cutouts at integer sizes that are multiples of 6.
+  role: "sprite"
+  summary: "Pop-up burst of pixel cutouts or glyphs on an arc"
+  geometry: {"position":null,"scale":null,"full_frame":false}
+dependencies:
+  js_packages: []
+  python_requirements: []
+defaults:
+  items: []
+  center: {x: 960, y: 540}
+  stepFrames: 4
+  x: 0
+  y: 0
+  width: 1920
+  height: 1080
+  seed: 1
+  bob: 6
+  ring: true
+  color: "#25241F"
+  confetti: null
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    items:
+      type: array
+      items:
+        type: object
+        properties:
+          src: {type: string, description: Pixel cutout, static URL or public path. Rendered with pixelated scaling.}
+          glyph: {type: string, description: Short text used when there is no src.}
+          label: {type: string, description: Mono caption under the item.}
+          angle: {type: number, description: Degrees on the arc; 0 is right, -90 is up.}
+          distance: {type: number, description: Px from center.}
+          at: {type: integer, minimum: 0, description: Frame the item stamps in. Defaults to index times stepFrames.}
+          size: {type: integer, minimum: 6, description: Edge length px; snaps to 6.}
+    center:
+      type: object
+      properties:
+        x: {type: number}
+        y: {type: number}
+    stepFrames: {type: integer, minimum: 1, maximum: 30}
+    x: {type: number}
+    y: {type: number}
+    width: {type: number}
+    height: {type: number}
+    seed: {type: integer, minimum: 0}
+    bob: {type: number, description: Bob amplitude in px (one logical px is 6).}
+    ring: {type: boolean}
+    color: {type: string}
+    confetti:
+      type: object
+      description: Optional seeded confetti of 6 px squares.
+      properties:
+        at: {type: integer, minimum: 0}
+        count: {type: integer, minimum: 0, maximum: 400}
+        seed: {type: integer, minimum: 0}
+        spread: {type: number}
+        life: {type: integer, minimum: 4, maximum: 240}
+        colors:
+          type: array
+          items: {type: string}

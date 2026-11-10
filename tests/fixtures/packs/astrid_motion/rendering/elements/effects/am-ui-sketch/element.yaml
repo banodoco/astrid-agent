@@ -1,0 +1,96 @@
+schema_version: 1
+id: am-ui-sketch
+kind: effect
+pack_id: astrid_motion
+short_description: "Animated app window whose interface, behaviour and data layers swap in stepped pixel flickers with orange sparks."
+description: "A ruled app window drawn only with shapes, centred at 70% of frame height with an optional integer scale. Three layers swap while in use: INTERFACE (sidebar, big button, slider, tabs), BEHAVIOUR (linear, routed or looped nodes) and DATA (table, reshuffled table, cards). states is keyframed. A change flickers its region in 6 px blocks for two frames, with orange sparks. cursor steps to the region about to change. prompt types a chat line in. allAt mutates every layer for twelve frames."
+keywords:
+  - ui
+  - sketch
+  - interface
+  - window
+  - layers
+  - stepped
+  - pixel
+  - sparks
+outputs:
+  - name: clip
+    type: clip
+    artifact_type: clip/visual
+    description: UI sketch overlay.
+metadata:
+  label: AM UI Sketch
+  description: Swappable interface, behaviour and data layers in a pixel app window, with stepped flicker and sparks.
+  whenToUse: Use to show that the tool changes while it is being used, such as the vision snaps. Keep layer swaps at least six frames apart so each flicker reads. Use allAt for a one-beat mutate-everything moment.
+  role: "card"
+  text: ["title","prompt.text"]
+  summary: "{title}"
+  geometry: {"position":["x","y"],"scale":"scale","full_frame":false}
+  units: {"frames":["prompt.at","states[].at","allAt"]}
+dependencies:
+  js_packages: []
+  python_requirements: []
+defaults:
+  width: 1920
+  height: 1080
+  title: untitled app
+  states:
+    - {at: 0, interface: A, behaviour: A, data: A}
+    - {at: 48, interface: B}
+    - {at: 96, behaviour: B}
+    - {at: 144, data: B}
+    - {at: 204, interface: C}
+    - {at: 240, behaviour: C}
+    - {at: 288, data: C}
+  prompt: null
+  allAt: null
+  seed: 1
+  cursor: null
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    x: {type: number, description: Group left in frame px. Default centred.}
+    y: {type: number, description: Group top in frame px. Default centred.}
+    scale: {type: integer, enum: [1, 2], description: Integer scale of the window plus prompt bar. Default the one closest to 70% of the frame height (1 at 1080).}
+    width: {type: number, description: Frame width (default 1920).}
+    height: {type: number, description: Frame height (default 1080).}
+    title: {type: string, description: Window title bar text.}
+    states:
+      type: array
+      description: Keyframes. Each names the layers it changes; missing layers carry forward from the previous state.
+      items:
+        type: object
+        required: [at]
+        properties:
+          at: {type: integer, minimum: 0}
+          interface: {type: string, enum: [A, B, C]}
+          behaviour: {type: string, enum: [A, B, C]}
+          data: {type: string, enum: [A, B, C]}
+    prompt:
+      type: object
+      description: Chat bubble below the window that types in from at. Null or omitted for none.
+      properties:
+        text: {type: string}
+        at: {type: integer, minimum: 0}
+    allAt:
+      type: integer
+      minimum: 0
+      description: Frame where every layer mutates every two frames for twelve frames.
+    seed: {type: integer, minimum: 0}
+    cursor:
+      type: object
+      description: Pixel arrow that steps to the region about to change, a beat before each swap. path points are window px (the 960 px window, border included) at absolute clip frames; the cursor holds on each point, steps toward the next every stepFrames, and hides holdFrames after the last point.
+      properties:
+        at: {type: integer, minimum: 0}
+        path:
+          type: array
+          items:
+            type: object
+            required: [x, y, frame]
+            properties:
+              x: {type: number}
+              y: {type: number}
+              frame: {type: integer, minimum: 0}
+        holdFrames: {type: integer, minimum: 0}
+        stepFrames: {type: integer, minimum: 1, maximum: 12}

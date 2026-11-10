@@ -1,0 +1,55 @@
+schema_version: 1
+id: am-seasons
+kind: effect
+pack_id: astrid_motion
+short_description: A window onto a street through the year, drawn on the 320x180 grid (procedural, no assets).
+description: 'A locked view through a cream window frame: sky, buildings, a tree and the weather change with the season (autumn, winter, spring, summer, autumn2), and a plant on the sill grows while mugs pile up. Winter has falling snow and festive lights, autumn falling leaves, spring rain. sequence [{at, season, growth?, mugs?}] switches seasons on hard cuts. Particles step on twos and are seeded.'
+keywords:
+- seasons
+- window
+- time
+- year
+- weather
+- procedural
+- pixel
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: AM Seasons overlay.
+metadata:
+  label: AM Seasons
+  description: A window onto a street through the year, drawn on the 320x180 grid (procedural, no assets).
+  whenToUse: Use for time passing over a year, or as the stand-in for the S-00..S-04 window plates until they exist.
+  role: "plate"
+  summary: "Street window through the year: {season}"
+  geometry: {"position":null,"scale":null,"full_frame":true}
+defaults: {}
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    season:
+      type: string
+      enum:
+      - autumn
+      - winter
+      - spring
+      - summer
+      - autumn2
+    growth:
+      type: number
+      minimum: 0
+      maximum: 4
+    mugs:
+      type: integer
+      minimum: 0
+      maximum: 8
+    sequence:
+      type: array
+      description: '[{at (frame), season, growth?, mugs?}]'
+    seed:
+      type: integer

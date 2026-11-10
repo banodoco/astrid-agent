@@ -1,0 +1,72 @@
+schema_version: 1
+id: am-orgchart
+kind: effect
+pack_id: astrid_motion
+short_description: 'Recursive pixel org chart: agents managing agents, row by row, with an optional rubber stamp.'
+description: One pixel bot manages `branching` bots, each managing `branching` more, down `levels` rows. Rows stamp in at revealAt[k], filling left to right over `spread` frames; boxes shrink as the tree widens and the deepest rows become dots. Connectors are hard orthogonal ink lines. Optional mono row labels on the left and a rust rubber stamp (stamp {text, at, x, y, rotate, size}).
+keywords:
+- org-chart
+- agents
+- tree
+- recursion
+- hierarchy
+- stamp
+- pixel
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: Org chart overlay.
+metadata:
+  label: AM Orgchart
+  description: Recursive pixel org chart with a stamp.
+  whenToUse: Use for hierarchies that multiply (agents managing agents). Time revealAt to the words; add a stamp for the punchline.
+  role: "card"
+  text: ["labels"]
+  summary: "Recursive pixel org chart"
+  geometry: {"position":["x","y"],"scale":"width","full_frame":false}
+  units: {"frames":["revealAt[]","stamp.at"]}
+defaults:
+  levels: 5
+  branching: 3
+  spread: 8
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    x:
+      type: number
+    y:
+      type: number
+    width:
+      type: number
+    height:
+      type: number
+    levels:
+      type: integer
+      minimum: 1
+      maximum: 7
+    branching:
+      type: integer
+      minimum: 2
+      maximum: 5
+    revealAt:
+      type: array
+      items:
+        type: integer
+      description: Clip frame each level starts appearing.
+    spread:
+      type: integer
+      minimum: 1
+    labels:
+      type: array
+      items:
+        type: string
+    stamp:
+      type: object
+      description: '{text, at, x, y, rotate, size}'
+    background:
+      type: string

@@ -1,0 +1,59 @@
+schema_version: 1
+id: am-terminal
+kind: effect
+pack_id: astrid_motion
+short_description: 'Pixel terminal window: commands type in after an orange prompt, output lands whole, a progress line counts.'
+description: 'A dark terminal window with a ruled title bar and three pixel buttons. lines [{at, kind, text}]: kind cmd types one char per typeStep frames after the prompt; out, dim and ok land whole; progress replaces {n} and {eta} while counting from progress.from to progress.to over progress.frames on two-frame steps. Text is top-anchored until it overflows, then scrolls. badges [{at, text, color, ink}] stamp in as chips under the window. bare drops the window chrome.'
+keywords:
+- terminal
+- cli
+- shell
+- command
+- agent
+- progress
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: AM Terminal overlay.
+metadata:
+  label: AM Terminal
+  description: 'Pixel terminal window: commands type in after an orange prompt, output lands whole, a progress line counts.'
+  whenToUse: Use to show real commands and their real output as evidence (an agent running without the interface). Do not invent output lines.
+  role: "card"
+  text: ["lines[].text"]
+  summary: "{title}"
+  geometry: {"position":["x","y"],"scale":"width","full_frame":false}
+  units: {"frames":["lines[].at","badges[].at"]}
+defaults: {}
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    title:
+      type: string
+    x:
+      type: number
+    y:
+      type: number
+    width:
+      type: number
+    height:
+      type: number
+    fontSize:
+      type: number
+    lines:
+      type: array
+    badges:
+      type: array
+    prompt:
+      type: string
+    bare:
+      type: boolean
+    look:
+      type: string
+      enum: [brand, real]
+      description: Brand keeps the ruled pixel window; real uses a dark terminal with round window controls.

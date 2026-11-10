@@ -1,0 +1,65 @@
+[
+  {"name": "snap-zoom1", "frames": [0, 45], "mp4": false,
+   "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
+   "layers": [{"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate"}]},
+  {"name": "snap-zoom3-pan-wipe", "frames": [1, 4, 30, 60, 86], "mp4": true,
+   "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
+   "layers": [{"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate",
+     "params": {"zoom": 3, "focus": {"x": 120, "y": 60}, "pan": {"dx": 8, "dy": 0}, "stepFrames": 2,
+                "enter": "blockWipe", "enterFrames": 6, "exitWipe": "blockWipe", "exitFrames": 6, "pattern": "diagonal"}}]},
+  {"name": "control-plain", "frames": [0], "mp4": false,
+   "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
+   "layers": [{"element": "control-plain", "at": 0, "hold": 1, "asset": "plate"}]},
+  {"name": "sprite", "frames": [0, 1, 2, 3, 6, 15, 30, 45, 60], "mp4": true,
+   "assets": {"sprite": {"file": "am/sprite_16.png", "type": "image/png", "resolution": "16x16"},
+              "strip": {"file": "am/sprite_strip_4x16.png", "type": "image/png", "resolution": "64x16"}},
+   "layers": [
+     {"element": "am-sprite", "at": 0, "hold": 2, "asset": "sprite", "params": {"scale": 6, "x": 30, "y": 110, "enter": "stamp"}},
+     {"element": "am-sprite", "at": 0, "hold": 3, "asset": "sprite", "params": {"scale": 12, "x": 70, "y": 100, "enter": "slideIn", "slideFrom": "left", "slideDistance": 24}},
+     {"element": "am-sprite", "at": 0, "hold": 3, "asset": "strip",
+      "params": {"scale": 6, "x": 200, "y": 110, "frames": {"frameWidth": 16, "frameHeight": 16, "count": 4, "fps": 12},
+                 "keyframes": [{"frame": 0, "x": 200, "y": 110}, {"frame": 30, "x": 240, "y": 110, "flipX": true}], "blinkAt": [60]}}]},
+  {"name": "type", "frames": [0, 4, 8, 20, 40, 60], "mp4": true,
+   "assets": {},
+   "layers": [
+     {"element": "am-type", "at": 0, "hold": 3,
+      "params": {"text": "Ship it tomorrow.", "italicWord": "tomorrow", "font": "display", "size": 120, "x": 96, "y": 300, "width": 1400,
+                 "reveal": "slideUp", "underlineWord": "tomorrow", "underlineAt": 30}},
+     {"element": "am-type", "at": 0, "hold": 3,
+      "params": {"text": "Specimen fig. 3 - a function, attempted", "font": "label", "size": 28, "x": 96, "y": 120, "width": 1000, "reveal": "type"}}]},
+  {"name": "callout", "frames": [0, 4, 8, 14, 30], "mp4": true,
+   "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
+   "layers": [
+     {"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate"},
+     {"element": "am-callout", "at": 0, "hold": 3,
+      "params": {"title": "9,640 commits", "body": "Thirteen repos. One year.", "x": 1180, "y": 200, "width": 560,
+                 "anchor": {"x": 720, "y": 430}, "drawFrames": 12}}]},
+  {"name": "pixel-wipe", "frames": [0, 3, 6, 11, 45, 48, 51, 56], "mp4": true,
+   "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
+   "layers": [
+     {"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate"},
+     {"element": "am-pixel-wipe", "at": 0, "hold": 0.6, "params": {"mode": "cover", "frames": 12, "color": "#1F1F1F", "pattern": "diagonal"}},
+     {"element": "am-pixel-wipe", "at": 1.5, "hold": 1, "params": {"mode": "reveal", "frames": 12, "color": "#1F1F1F", "pattern": "random", "seed": 7}}]}
+
+  ,{"name": "snap-presenter-sync", "frames": [10, 30, 31, 34, 36, 38], "mp4": false,
+   "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
+   "layers": [
+     {"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate",
+      "params": {"zoom": 2, "focus": {"x": 151, "y": 100}, "stepFrames": 2, "punchAt": [30], "bob": 1, "seed": 7,
+                 "words": [[1.0, 1.2], [1.25, 1.5], [1.6, 1.9]]}},
+     {"element": "am-presenter", "at": 0, "hold": 3,
+      "params": {"zoom": 2, "focus": {"x": 151, "y": 100}, "punchAt": [30], "bob": 1, "seed": 7,
+                 "words": [[1.0, 1.2], [1.25, 1.5], [1.6, 1.9]],
+                 "mouth": {"x": 151, "y": 104, "w": 19}, "lip": "#00FF00", "inner": "#00FF00",
+                 "label": "REGISTRATION CHECK", "chip": null}}
+   ]}
+
+  ,{"name": "snap-plate-sync", "frames": [10, 30, 31, 34, 36, 38], "mp4": false,
+   "assets": {"plate": {"file": "am/plate_320x180.png", "type": "image/png", "resolution": "320x180"}},
+   "layers": [
+     {"element": "am-snap-plate", "at": 0, "hold": 3, "asset": "plate",
+      "params": {"zoom": 2, "focus": {"x": 151, "y": 100}, "stepFrames": 2, "punchAt": [30], "bob": 1, "seed": 7,
+                 "words": [[1.0, 1.2], [1.25, 1.5], [1.6, 1.9]]}}
+   ]},
+  {"name":"pixel-shape","frames":[0,1,14,15],"mp4":false,"assets":{},"layers":[{"element":"am-pixel-shape","at":0,"hold":3,"params":{"shape":"ring","color":"#A94714","px_scale":6,"x":42,"y":36,"w":24,"h":18,"stroke":2}},{"element":"am-pixel-shape","at":0,"hold":3,"params":{"shape":"rect","fill":"#F7E6CF","outline":"#151311","px_scale":5,"radius":3,"stroke":1,"w":16,"h":16,"x":189,"y":68}}]}
+]

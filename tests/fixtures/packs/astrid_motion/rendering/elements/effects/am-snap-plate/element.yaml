@@ -1,0 +1,145 @@
+schema_version: 1
+id: am-snap-plate
+kind: effect
+pack_id: astrid_motion
+short_description: Pixel plate with integer zoom, stepped pans and block-wipe enter or exit.
+description: Pixel-art plate at integer zoom 1-3 (4 by punch), drawn pixelated. A managed PNG on clip.asset, or a static URL in params.src. Focus and pan are logical px on 320x180 and step on boundaries. punchAt, bob, words and seed match am-presenter, so the two stay registered. Optional tint and block-wipe enter or exit.
+keywords:
+- pixel
+- plate
+- snapshot
+- pan
+- zoom
+- wipe
+- stepped
+outputs:
+- name: clip
+  type: clip
+  artifact_type: clip/visual
+  description: Full-frame pixel plate overlay.
+metadata:
+  label: AM Snap Plate
+  description: Pixel plate with integer zoom, stepped pan and block-wipe transitions.
+  whenToUse: Use for a pixel snapshot as the base of an illustrative shot. Attach the plate as clip.asset (the registry key from media import), not as a URL. Pan needs zoom 2-4; at zoom 1 the plate fills the frame and pan has no effect.
+  coverage: "picture"
+  background_unless: [asset, params.src]
+defaults:
+  zoom: 1
+  focus:
+    x: 160
+    y: 90
+  pan:
+    dx: 0
+    dy: 0
+  stepFrames: 2
+  enter: cut
+  exitWipe: cut
+  enterFrames: 6
+  exitFrames: 6
+  pattern: diagonal
+  seed: 7
+  wipeColor: '#1F1F1F'
+  background: '#F7F4ED'
+dependencies:
+  js_packages: []
+  python_requirements: []
+schema:
+  type: object
+  additionalProperties: true
+  properties:
+    src:
+      type: string
+      description: Static URL or public path. Leave empty and use clip.asset for managed media.
+    zoom:
+      type: integer
+      enum:
+      - 1
+      - 2
+      - 3
+      description: Base zoom. presenterView caps it at 3; zoom 4 comes from a punch (punchAt).
+    focus:
+      type: object
+      description: Logical px (320x180 space) placed at the frame centre.
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+    pan:
+      type: object
+      description: Logical px moved per step. Applies from the first step onward.
+      properties:
+        dx:
+          type: number
+        dy:
+          type: number
+    punchAt:
+      type: array
+      items:
+        type: integer
+        minimum: 0
+      description: Clip frames where zoom lifts one step for 6 frames (same as am-presenter).
+    bob:
+      type: integer
+      enum:
+      - 0
+      - 1
+      description: Nudges the view down one logical px on the first frame of stressed words (same as am-presenter).
+    words:
+      type: array
+      items:
+        type: array
+        items:
+          type: number
+        minItems: 2
+        maxItems: 2
+      description: '[start_s, end_s] word spans in seconds, clip-relative. The bob and punch timing follow them, as on am-presenter.'
+    stepFrames:
+      type: integer
+      enum:
+      - 2
+      - 3
+    tint:
+      type: object
+      properties:
+        color:
+          type: string
+        opacity:
+          type: number
+          minimum: 0
+          maximum: 1
+    enter:
+      type: string
+      enum:
+      - cut
+      - blockWipe
+    exitWipe:
+      type: string
+      enum:
+      - cut
+      - blockWipe
+    enterFrames:
+      type: integer
+      minimum: 1
+    exitFrames:
+      type: integer
+      minimum: 1
+    pattern:
+      type: string
+      enum:
+      - diagonal
+      - random
+      - scan
+    seed:
+      type: integer
+      description: Presenter seed (bob phase) and random block-wipe order. Default 7 matches am-presenter.
+    wipeColor:
+      type: string
+    background:
+      type: string
+    fill:
+      type: string
+      description: Assetless flat plate; a brand token or CSS colour. Existing asset and explicit background behavior is preserved.
+    push:
+      type: object
+      description: 'Slow continuous push {to, frames, at}: zoom moves linearly to `to` over `frames` from clip frame `at`. Give presenter and plate the same value. Prefer it to hard zoom changes.'

@@ -356,7 +356,7 @@ class _CheckMixin:
             else:
                 from astrid.sdk.timeline_address import declared_element_schema
 
-                schema = declared_element_schema(clip.element) or {}  # an undeclared element blocks in _type_mismatches
+                schema = declared_element_schema(clip.element) or {}
                 default = (((schema.get("properties") or {}).get("scale") or {}).get("default", 1))
                 value = params.get("scale", default)
             try:
@@ -578,7 +578,7 @@ class _CheckMixin:
 
     def _type_mismatches(self) -> list[str]:
         """Params whose value has the wrong type: text where the element (or a formula) wants a number."""
-        from astrid.sdk.timeline_address import ElementSchemaUnavailable, element_schema
+        from astrid.sdk.timeline_address import declared_element_schema
 
         out = []
         for clip in self.clips():
@@ -592,11 +592,9 @@ class _CheckMixin:
                             validate_audio_curve(params[key])
                         except (TypeError, ValueError) as exc:
                             out.append(f"{clip.address}.{key} is invalid: {exc}")
-            try:
-                props = (element_schema(clip.element).get("properties") or {}) if params else {}
-            except ElementSchemaUnavailable as exc:  # its params cannot be checked: blocking, never schema-less
-                out.append(f"{clip.address}: {exc}")
-                continue
+            # An element with no resolvable schema keeps its stored params unchanged (every write to them is
+            # refused), so there is nothing new to type-check here.
+            props = ((declared_element_schema(clip.element) or {}).get("properties") or {}) if params else {}
             for key, value in params.items():
                 for path, text, want in _text_where_number(key, value, props.get(key) or {}):
                     stripped = text.strip()

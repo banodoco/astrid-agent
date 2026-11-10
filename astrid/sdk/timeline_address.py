@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from astrid.core.timeline import moments as mo
@@ -278,58 +280,174 @@ _SCHEMAS: dict[str, Any] = {}
 # A media clip (footage or audio file) is not an element: it has no element manifest, and the only
 # params it carries are its audio fades (``MEDIA_PARAMS``).
 MEDIA_CLIP_TYPE = "media"
+_MOVED_ELEMENTS = Path(__file__).resolve().parents[1] / "resources" / "moved-elements.json"
 
 
 class ElementSchemaUnavailable(TimelineEditError):
-    """A clip's element has no declaration Astrid can read, so its params cannot be checked: refuse.
+    """No schema resolves for a clip's element, so its params cannot be checked: a param write is refused.
 
-    Raised instead of treating the element as schema-less, which would accept any key or value."""
+    Never treated as schema-less. Subclasses say why, each with its own ``code``."""
 
     code = "element_schema_unavailable"
 
-    def __init__(self, element: str, reason: str = "") -> None:
+    def __init__(self, element: str, message: str, *, fix: str, details: dict[str, Any] | None = None) -> None:
         self.element = element
-        self.reason = reason
-        self.cause = {"code": self.code, "message": f"element {element!r} is not declared by any installed pack",
-                      "details": {"element": element, **({"reason": reason} if reason else {})}}
-        super().__init__(
-            f"[{self.code}] {element}: no installed pack declares this element, so its params cannot be "
-            "checked and nothing was written. Install the pack that provides it (`astrid packs add <pack>`; "
-            "`astrid packs list` shows what is installed), then retry."
-            + (f" ({reason})" if reason else ""))
+        self.fix = fix
+        self.cause = {"code": self.code, "message": message,
+                      "details": {"element": element, **(details or {})}, "fix": fix}
+        super().__init__(f"[{self.code}] {element}: {message.rstrip('.')}; no param was written. {fix}")
 
 
-def _registered_element(element: str) -> Any:
-    """The element registry's winning declaration for clip type ``element`` (effects first), or None.
+class ElementPackNotInstalled(ElementSchemaUnavailable):
+    """No installed pack declares the element (for a moved element: its pack is not installed)."""
 
-    The registry resolves every discovery layer (source, ``local``, managed, personal, extra and
-    ``ASTRID_PACKS_PATH`` roots), so an element that moved to an installable pack resolves from there."""
-    from astrid.core.element.registry import load_default_registry
+    code = "element_pack_not_installed"
+
+
+class ElementManifestInvalid(ElementSchemaUnavailable):
+    """A pack that should declare the element is present, but its pack or element manifest does not load."""
+
+    code = "element_manifest_invalid"
+
+
+class ElementRegistryUnavailable(ElementSchemaUnavailable):
+    """The element registry itself could not be loaded."""
+
+    code = "element_registry_unavailable"
+
+
+def moved_element_pack(element: str) -> tuple[str, dict[str, Any]] | None:
+    """``(pack_id, record)`` from ``resources/moved-elements.json`` for an element that moved to a pack."""
+    try:
+        packs = json.loads(_MOVED_ELEMENTS.read_text(encoding="utf-8"))["packs"]
+    except (OSError, ValueError, KeyError) as exc:
+        raise ElementRegistryUnavailable(
+            element, f"the moved-element table {_MOVED_ELEMENTS.name} cannot be read ({exc})",
+            fix="Reinstall or update Astrid.") from exc
+    for pack_id, record in packs.items():
+        if element in record.get("elements", ()):
+            return pack_id, record
+    return None
+
+
+def _pack_roots() -> list[Path]:
+    """The external roots discovery reads for installed packs (env, personal, ~/Astrid/packs, managed)."""
+    import os
+
+    from astrid.core.pack.discovery import ASTRID_PACKS_PATH_ENV
+    from astrid.personal_packs_root import resolve_personal_packs_root
+
+    roots = [Path(raw).expanduser() for raw in os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep) if raw]
+    personal = resolve_personal_packs_root()
+    roots += [*([personal] if personal is not None else []), Path.home() / "Astrid" / "packs"]
+    try:
+        from astrid.core.pack.source_setup import active_sources
+
+        roots += [source.pack_root.parent for source in active_sources(verify=False)]
+    except Exception:  # noqa: BLE001 - managed state is optional for this diagnosis only
+        pass
+    return roots
+
+
+def _declares(manifest: Path, element: str) -> bool:
+    """Whether a pack manifest (read as plain data, even one that does not load) names ``element``."""
+    import yaml
 
     try:
-        registry = load_default_registry()
-        candidates = [item for item in registry.list() if item.id == element]
-    except Exception as exc:  # noqa: BLE001 - an unreadable corpus refuses below; it never means "schema-less"
-        raise ElementSchemaUnavailable(element, f"the element registry could not be loaded: {exc}") from exc
-    if not candidates:
-        return None
-    return sorted(candidates, key=lambda item: (item.kind != "effects", item.kind))[0]
+        rendering = (yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}).get("rendering") or {}
+    except Exception:  # noqa: BLE001 - unreadable data names nothing
+        return False
+    return isinstance(rendering, dict) and any(str(key).rsplit("/", 1)[-1] == element for key in rendering)
+
+
+def _present_but_unloadable(element: str, pack_id: str | None) -> tuple[str, Path, str] | None:
+    """``(pack_id, manifest, error)`` for an installed pack folder that should provide ``element`` (it is
+    ``pack_id``, or its manifest names the element) but whose manifest does not load."""
+    from astrid.core.pack.loader import scan_packs
+
+    for root in _pack_roots():
+        try:
+            children = ([root] if (root / "pack.yaml").is_file()
+                        else list(root.iterdir()) if root.is_dir() else [])
+            # Diagnose the provider only. Revalidating every unrelated installed pack on each
+            # unresolved read makes inspection and schema-independent editing unnecessarily slow.
+            if not any((child / "pack.yaml").is_file()
+                       and (child.name == pack_id or _declares(child / "pack.yaml", element))
+                       for child in children):
+                continue
+            scan = scan_packs(root, strict=False)
+        except Exception:  # noqa: BLE001 - diagnosis must not replace the unresolved-element refusal
+            continue
+        for record in scan.quarantined:
+            manifest = record.manifest_path
+            if manifest is not None and (record.pack_id == pack_id or _declares(manifest, element)):
+                return record.pack_id, manifest, " ".join(record.error.split())
+    return None
+
+
+def _unresolved(element: str, registry: Any) -> ElementSchemaUnavailable:
+    """Why no declaration resolves for ``element``: a broken element manifest, a broken pack, or no pack."""
+    moved = moved_element_pack(element)
+    for skipped in getattr(registry, "diagnostics", ()):
+        if Path(skipped.path).parent.name == element:
+            fix = f"Fix the element manifest at `{skipped.path}`."
+            details = {"pack_id": skipped.pack_id, "path": str(skipped.path), "error": skipped.error}
+            if moved is not None:
+                fix += f" Or install with `{moved[1]['install']}`."
+                details["install"] = moved[1]["install"]
+            return ElementManifestInvalid(
+                element, f"pack {skipped.pack_id!r} declares it, but its element manifest {skipped.path} "
+                f"does not load ({skipped.error})", fix=fix, details=details)
+    broken = _present_but_unloadable(element, moved[0] if moved is not None else None)
+    if broken is not None:
+        owner, manifest, error = broken
+        fix = (f"Fix the pack manifest, or install with `{moved[1]['install']}`." if moved is not None and moved[0] == owner
+               else f"Fix the pack manifest (python3 -m astrid.core.pack.cli validate {manifest.parent}).")
+        return ElementManifestInvalid(
+            element, f"pack {owner!r} at {manifest.parent} should provide it, but its manifest does not load "
+            f"({error})", fix=fix, details={"pack_id": owner, "path": str(manifest), "error": error})
+    if moved is None:
+        return ElementPackNotInstalled(
+            element, "no installed pack declares this element, and it is not one this release knows moved to "
+            "a pack", fix="Install the pack that provides it, or check the clip type (`astrid packs list` shows "
+            "what is installed).")
+    pack_id, record = moved
+    return ElementPackNotInstalled(
+        element, f"it belongs to pack {pack_id!r}, which is not installed. {record['evidence_reason']}",
+        fix=f"Run `{record['install']}`, then retry.",
+        details={"pack_id": pack_id, "install": record["install"]})
 
 
 def element_schema(element: str) -> dict[str, Any]:
     """The element's declared params (``element.yaml`` schema properties) as the element registry resolves it.
 
-    A ``media`` clip is not an element and has an empty schema (its params are ``MEDIA_PARAMS``). Any other
-    clip type no installed pack declares raises :class:`ElementSchemaUnavailable`; it is never schema-less."""
+    The registry spans every discovery layer (source, ``local``, managed, personal, extra and
+    ``ASTRID_PACKS_PATH``), so a moved element resolves from its installed pack. A ``media`` clip is not an
+    element and has an empty schema (its params are ``MEDIA_PARAMS``). Any other clip type with no resolvable
+    declaration raises an :class:`ElementSchemaUnavailable` subclass; it is never schema-less."""
     if element in _SCHEMAS:
         return _SCHEMAS[element]
     if element == MEDIA_CLIP_TYPE:
         return {}
-    definition = _registered_element(element)
-    if definition is None:
-        raise ElementSchemaUnavailable(element)
+    from astrid.core.element.registry import load_default_registry
     from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES
 
+    try:
+        registry = load_default_registry()
+        candidates = [item for item in registry.list() if item.id == element]
+    except Exception as exc:  # noqa: BLE001 - an unreadable corpus refuses; it never means "schema-less"
+        moved = moved_element_pack(element)
+        fix = "Run `astrid doctor` to find the pack that breaks the registry."
+        details = {}
+        if moved is not None:
+            details = {"pack_id": moved[0], "install": moved[1]["install"]}
+            fix += f" This element belongs to pack {moved[0]!r}; install with `{moved[1]['install']}`."
+        raise ElementRegistryUnavailable(
+            element, f"the element registry could not be loaded ({' '.join(str(exc).split())})",
+            fix=fix, details=details) from exc
+    if not candidates:
+        raise _unresolved(element, registry)
+    definition = sorted(candidates, key=lambda item: (item.kind != "effects", item.kind))[0]
     schema = definition.schema or {}
     manifest = next((definition.root / name for name in ELEMENT_MANIFEST_NAMES
                      if (definition.root / name).is_file()), definition.root / ELEMENT_MANIFEST_NAMES[0])
@@ -341,14 +459,26 @@ def element_schema(element: str) -> dict[str, Any]:
 
 
 def declared_element_schema(element: str) -> dict[str, Any] | None:
-    """:func:`element_schema` for read-only views, or None when no installed pack declares the element.
+    """:func:`element_schema` for reads and schema-independent edits, or None when no schema resolves.
 
-    Showing a timeline must not need every element installed. Every validation and write path uses
-    :func:`element_schema`, which refuses instead."""
+    Showing, inspecting and editing anything but params must not need every element installed. Every
+    param write uses :func:`element_schema`, which refuses instead."""
     try:
         return element_schema(element)
     except ElementSchemaUnavailable:
         return None
+
+
+def element_param_names(element: str, existing: Any = None) -> set[str]:
+    """The params a clip of ``element`` takes, for telling params apart from clip-level look fields.
+
+    With no resolvable schema, the params the clip already carries (opaque, kept unchanged) stand in."""
+    if element == MEDIA_CLIP_TYPE:
+        return set(MEDIA_PARAMS)
+    schema = declared_element_schema(element)
+    if schema is None:
+        return set(existing or ())
+    return set(schema.get("properties") or {})
 
 
 def formula_text(expr: Any) -> str:
@@ -396,7 +526,11 @@ def declared_params(element: str) -> list[str]:
 
 
 def unknown_params(element: str, keys: list[str], existing: dict[str, Any] | None = None) -> list[str]:
-    """Keys the element does not declare (and the clip does not already have)."""
+    """Keys the element does not declare (and the clip does not already have).
+
+    Writing any param needs the element's schema: with keys and no resolvable schema this refuses."""
+    if not keys:
+        return []
     props = declared_params(element)
     if not props:
         return []
@@ -494,7 +628,12 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
 
         params = dict(clip.data.get("params") or {})
         formulas = intent.formulas(clip.data)
-        schema = element_schema(clip.element)
+        try:
+            schema = element_schema(clip.element)
+        except ElementSchemaUnavailable as exc:  # inspection still shows the clip's stored params as they are
+            schema = {}
+            out.append(f"  schema  [{exc.code}] {exc.cause['message']}; its params are shown as stored and "
+                       f"cannot be edited. {exc.fix}")
         props = schema.get("properties") or {}
         defaults = schema.get("defaults") or {}
         out.append("  params  (every one, as you write them: positions in canvas px; ƒ = computed by a formula; "
@@ -577,7 +716,7 @@ def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: s
         from astrid.sdk.timeline_checkout import formula_short, to_canvas
 
         clip, key = target.clip, target.param
-        schema = element_schema(clip.element)
+        schema = declared_element_schema(clip.element) or {}
         spec = (schema.get("properties") or {}).get(key) or {}
         stored = (clip.data.get("params") or {}).get(key)
         value = to_canvas(clip.element, key, stored)
