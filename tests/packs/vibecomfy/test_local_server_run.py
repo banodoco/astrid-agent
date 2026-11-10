@@ -540,7 +540,8 @@ def test_seedless_rerun_uses_attempt_specific_save_prefix(comfy, tmp_path):
     assert comfy.workflow.read_bytes() == original
 
 
-def test_explicit_save_prefix_keeps_attempt_namespace_and_user_evidence(comfy, tmp_path):
+@pytest.mark.parametrize('prefix', ['custom/name', ''])
+def test_explicit_save_prefix_keeps_attempt_namespace_and_user_evidence(comfy, tmp_path, prefix):
     from vibecomfy.workflow_bundle import emit_bundle
 
     loaded = production_engine.load_workflow_path(comfy.workflow, tmp_path / 'author', comfy_url=comfy.url)
@@ -550,9 +551,9 @@ def test_explicit_save_prefix_keeps_attempt_namespace_and_user_evidence(comfy, t
     result = production_engine.run_workflow_result_path(
         emitted.python_path, tmp_path / 'attempt/outputs', task_identity='task', attempt_identity='attempt-1',
         comfy_url=comfy.url, comfy_output_dir=str(comfy.output), profile_id='local_server',
-        workflow_input_bindings={'save_name': 'custom/name'})
-    assert comfy.prompts[-1]['2']['inputs']['filename_prefix'] == 'custom/name_astrid_attempt-1'
-    assert result.managed_generation_result['inputs']['save_name'] == 'custom/name'
+        workflow_input_bindings={'save_name': prefix})
+    assert comfy.prompts[-1]['2']['inputs']['filename_prefix'] == prefix + '_astrid_attempt-1'
+    assert result.managed_generation_result['inputs']['save_name'] == prefix
 
 
 def test_explicit_trust_is_unverified_in_native_attempt_and_published_receipt(comfy, tmp_path, monkeypatch):
