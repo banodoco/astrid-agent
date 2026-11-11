@@ -1549,7 +1549,7 @@ def install_capture_browser(root: Path) -> Path:
     """The pinned Playwright and its Chromium, installed beside the run for the autostart capture only."""
     directory = root.parent / "autostart-capture"
     directory.mkdir(parents=True, exist_ok=True)
-    steps = (["npm", "install", "--prefix", str(directory), "--no-audit", "--no-fund", "playwright@1.47.2"],
+    steps = (["npm", "install", "--prefix", str(directory), "--no-audit", "--no-fund", "playwright@1.60.0"],
              [str(directory / "node_modules" / ".bin" / "playwright"), "install", "--with-deps", "chromium"])
     for argv in steps:
         process = subprocess.run(argv, env=dict(os.environ), timeout=1800, check=False)
@@ -1594,7 +1594,8 @@ def capture_autostart_card(evidence: Path, app: Path, dist: Path, capture_dir: P
     info = journey.read_json(meta)
     return {"path": png.name, "sha256": hashlib.sha256(png.read_bytes()).hexdigest(),
             "device_scale_factor": info.get("device_scale_factor"), "surface": "autostart-off card",
-            "text": info.get("text"), "url": info.get("url")}
+            "text": info.get("text"), "url": info.get("url"),
+            "served_release_real": release, "served_release_advertised": manifest["release"]}
 
 
 def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:

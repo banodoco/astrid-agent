@@ -22,9 +22,14 @@ export async function capture(config) {
     await page.goto(`${config.origin}${config.entry}`, { waitUntil: 'domcontentloaded', timeout: config.timeoutMs });
     await page.locator('[data-testid="runtime-connection-status"][data-state="connected"]').waitFor({ state: 'attached', timeout: config.timeoutMs });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
-    // The wait is the card itself: it fails, with a timeout, unless the approved sentence is shown.
-    await page.getByText(config.text, { exact: true }).first().waitFor({ state: 'visible', timeout: config.timeoutMs });
-    await page.screenshot({ path: config.screenshot, fullPage: false });
+    const updates = page.locator('#settings-updates');
+    await updates.waitFor({ state: 'visible', timeout: config.timeoutMs });
+    const sentence = updates.getByText(config.text, { exact: true });
+    // Wait for the card first (the status read is asynchronous), then require exactly one copy of the sentence.
+    await sentence.waitFor({ state: 'visible', timeout: config.timeoutMs });
+    if (await sentence.count() !== 1) throw new Error('autostart-off sentence must appear exactly once in Settings updates');
+    await updates.getByRole('button', { name: 'Copy instructions for your agent', exact: true }).waitFor({ state: 'visible', timeout: config.timeoutMs });
+    await updates.screenshot({ path: config.screenshot });
     const result = { ok: true, device_scale_factor: config.dpr, text: config.text, url: `${config.origin}${config.entry}` };
     writeFileSync(config.result, `${JSON.stringify(result, null, 2)}\n`);
     return result;

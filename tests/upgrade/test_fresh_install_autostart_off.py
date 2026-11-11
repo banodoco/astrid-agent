@@ -66,7 +66,8 @@ def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, stat
 
     def capture(evidence, app_path, dist_path, capture_dir):
         return {"path": str(evidence / "autostart-off-card.png"), "sha256": "c" * 64,
-                "device_scale_factor": capture_dpr, "surface": "autostart-off card"}
+                "device_scale_factor": capture_dpr, "surface": "autostart-off card",
+                "served_release_real": 12, "served_release_advertised": 13}
 
     monkeypatch.setattr(jumps.journey, "selected_manifest", lambda *_a, **_k: (app / "manifest.json", manifest))
     monkeypatch.setattr(jumps.journey, "read_json", lambda path: {"manifest_sha256": "candidate",
@@ -160,6 +161,8 @@ def test_leg_passes_only_when_all_four_assertions_hold(monkeypatch, tmp_path):
     assert result["post_update"]["status"] == 409
     assert result["post_update"]["body"] == {"code": "conflict", "details": {"reason": "autostart-off"}}
     assert result["capture"]["device_scale_factor"] == 2
+    assert result["capture"]["served_release_real"] == 12
+    assert result["capture"]["served_release_advertised"] == 13
     for check in jumps.AUTOSTART_CHECKS:
         assert result["checks"][check] == "pass", check
 
@@ -303,6 +306,7 @@ def test_the_capture_runs_inside_the_astrid_haus_intercept_at_the_approved_route
     assert configs[0]["text"] == jumps.AUTOSTART_CARD_TEXT
     assert configs[0]["spki"] == "spki-pin" and configs[0]["dpr"] == 2
     assert capture["device_scale_factor"] == 2 and capture["path"] == "autostart-off-card.png"
+    assert capture["served_release_real"] == 12 and capture["served_release_advertised"] == 13
 
 
 def test_the_wait_text_is_the_approved_card_sentence_and_the_script_waits_for_it():
@@ -315,6 +319,8 @@ def test_the_wait_text_is_the_approved_card_sentence_and_the_script_waits_for_it
     assert '[data-testid="runtime-connection-status"][data-state="connected"]' in script
     assert "getByRole('button', { name: 'Settings', exact: true }).click()" in script
     assert "getByText(config.text, { exact: true })" in script
+    assert "#settings-updates" in script and "sentence.count() !== 1" in script
+    assert "Copy instructions for your agent" in script and "updates.screenshot({ path: config.screenshot })" in script
 
 
 def test_a_macos_capture_failure_is_recorded_as_unverified(monkeypatch, tmp_path):
@@ -390,7 +396,7 @@ def test_the_hosted_app_is_built_with_npm_ci_then_build_hosted(monkeypatch, tmp_
                      (["npm", "run", "build:hosted"], tmp_path / "app")]
 
 
-def test_the_capture_browser_is_pinned_to_playwright_1_47_2(monkeypatch, tmp_path):
+def test_the_capture_browser_is_pinned_to_playwright_1_60_0(monkeypatch, tmp_path):
     calls = []
 
     class Done:
@@ -399,7 +405,7 @@ def test_the_capture_browser_is_pinned_to_playwright_1_47_2(monkeypatch, tmp_pat
     monkeypatch.setattr(jumps.subprocess, "run", lambda argv, **kwargs: calls.append(list(argv)) or Done())
     directory = jumps.install_capture_browser(tmp_path / "program")
     assert directory == tmp_path / "autostart-capture"
-    assert calls[0][:4] == ["npm", "install", "--prefix", str(directory)] and "playwright@1.47.2" in calls[0]
+    assert calls[0][:4] == ["npm", "install", "--prefix", str(directory)] and "playwright@1.60.0" in calls[0]
     assert calls[1][-3:] == ["install", "--with-deps", "chromium"]
 
 
