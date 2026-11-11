@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+# The packaged copy must stay byte-identical to the root lock (the single source).
+PACKAGED_LOCK = "astrid/resources/runtime.lock.json"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SCHEMA_DIGEST = re.compile(r"^SCHEMA_DIGEST\s*=\s*['\"](sha256:[0-9a-f]{64})['\"]", re.M)
 
@@ -129,7 +131,10 @@ def build_outputs(agent_root: Path, app_root: Path, runtime_repo: Path,
     for root, lock, files in ((agent_root, agent_lock, agent_files), (app_root, app_lock, app_files)):
         for consumer, payload in files.items():
             outputs[target_path(root, consumer)] = payload
-        outputs[target_path(root, "runtime.lock.json")] = (json.dumps(lock, indent=2, sort_keys=True) + "\n").encode()
+        lock_bytes = (json.dumps(lock, indent=2, sort_keys=True) + "\n").encode()
+        outputs[target_path(root, "runtime.lock.json")] = lock_bytes
+        if root == agent_root:
+            outputs[target_path(root, PACKAGED_LOCK)] = lock_bytes
     outputs[target_path(app_root, "public/install-manifest.json")] = (json.dumps(install_manifest, indent=2) + "\n").encode()
     return outputs
 

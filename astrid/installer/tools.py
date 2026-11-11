@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
+
 from runtime_protocol import platform
 
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_FORK_URL
@@ -28,6 +29,8 @@ MANIFEST_SOURCE_REPOSITORIES = {
     "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
 }
 # The lifecycle identity (repository, revision, version) has one source: packs/runpod/pins.json.
+# Read with the stdlib: the installer's import closure is a fixed file list (see
+# tests/test_installer_wheel.py), so it must not import canonical_pins/engine_recipe.
 LIFECYCLE_VERSION = json.loads(
     (Path(__file__).resolve().parents[1] / "packs" / "runpod" / "pins.json").read_text(encoding="utf-8")
 )["sources"]["lifecycle"]["version"]
