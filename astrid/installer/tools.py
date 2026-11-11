@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from runtime_protocol import platform
 
+from ..core.generation.canonical_pins import canonical_pin
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_FORK_URL
 from ..version import ASTRID_VERSION
 
@@ -27,9 +28,7 @@ MANIFEST_SOURCE_REPOSITORIES = {
     "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
 }
 # The lifecycle identity (repository, revision, version) has one source: packs/runpod/pins.json.
-LIFECYCLE_VERSION = json.loads(
-    (Path(__file__).resolve().parents[1] / "packs" / "runpod" / "pins.json").read_text(encoding="utf-8")
-)["sources"]["lifecycle"]["version"]
+LIFECYCLE_VERSION = canonical_pin("lifecycle")["version"]
 
 
 def omp_source(pin: dict) -> str | dict:

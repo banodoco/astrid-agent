@@ -43,6 +43,7 @@ def _installed_manifest_path() -> Path:
 def _pins() -> dict[str, tuple[str, str]]:
     """Map each remote_placement.SOURCE_DIRS name to (repository, commit)."""
     from astrid.core.generation import engine_recipe
+    from astrid.core.generation.canonical_pins import canonical_pin
     from astrid.core.rendering._local_schema import runtime_lock_path
 
     runtime_commit = json.loads(runtime_lock_path(AGENT_ROOT).read_bytes())["source_commit"]
@@ -57,10 +58,17 @@ def _pins() -> dict[str, tuple[str, str]]:
             f"RunPod needs the installed release manifest at {manifest_path} to pin its bootstrap sources") from exc
     if runtime["sha"] != runtime_commit:
         raise ManagedSourcesError("installed manifest runtime pin differs from runtime.lock.json")
+    # The lifecycle and VibeComfy pods run are the Agent's canonical pins; a manifest that names
+    # a different lifecycle or VibeComfy would split what is installed locally from what ships.
+    canonical = canonical_pin("lifecycle")
+    if (lifecycle["sha"], lifecycle["repo"]) != (canonical["revision"], canonical["repository"]):
+        raise ManagedSourcesError("installed manifest lifecycle pin differs from the Agent's canonical pin")
+    if manifest.get("vibecomfy", {}).get("sha", vibe.revision) != vibe.revision:
+        raise ManagedSourcesError("installed manifest VibeComfy pin differs from the Agent's canonical pin")
     return {
         "src/astrid-agent": (agent.get("repo", "https://github.com/banodoco/astrid-agent"), agent["sha"]),
         "src/astrid-runtime": (runtime.get("repo", "https://github.com/banodoco/astrid-runtime"), runtime_commit),
-        "src/runpod-lifecycle": (lifecycle["repo"], lifecycle["sha"]),
+        "src/runpod-lifecycle": (canonical["repository"], canonical["revision"]),
         "src/VibeComfy": (vibe.repository, vibe.revision),
     }
 
