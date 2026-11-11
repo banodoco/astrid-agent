@@ -15,10 +15,13 @@ export async function capture(config) {
     const context = await browser.newContext({
       deviceScaleFactor: config.dpr,
       viewport: { width: 1280, height: 900 },
+      permissions: ['local-network-access'],
       storageState: { cookies: [], origins: [{ origin: config.origin, localStorage: [{ name: 'astrid-editor-tour-v1', value: '1' }] }] },
     });
     const page = await context.newPage();
     await page.goto(`${config.origin}${config.entry}`, { waitUntil: 'domcontentloaded', timeout: config.timeoutMs });
+    await page.locator('[data-testid="runtime-connection-status"][data-state="connected"]').waitFor({ state: 'attached', timeout: config.timeoutMs });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
     // The wait is the card itself: it fails, with a timeout, unless the approved sentence is shown.
     await page.getByText(config.text, { exact: true }).first().waitFor({ state: 'visible', timeout: config.timeoutMs });
     await page.screenshot({ path: config.screenshot, fullPage: false });

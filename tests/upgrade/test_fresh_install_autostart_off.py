@@ -284,20 +284,22 @@ def test_the_capture_runs_inside_the_astrid_haus_intercept_at_the_approved_route
 
     monkeypatch.setattr(hosted, "Intercept", FakeIntercept)
     monkeypatch.setattr(hosted, "page_routes", lambda dist: ({"/": dist / "index.html"}, {}))
-    monkeypatch.setattr(hosted, "release_routes", lambda app, manifest: {})
+    manifests = []
+    monkeypatch.setattr(hosted, "release_routes", lambda app, manifest: manifests.append(json.loads(manifest)) or {})
     monkeypatch.setattr(jumps.subprocess, "run", fake_run)
     app = tmp_path / "app"
     (app / "public").mkdir(parents=True)
-    (app / "public" / "install-manifest.json").write_text("{}", encoding="utf-8")
+    (app / "public" / "install-manifest.json").write_text('{"release": 12, "agent": {"sha": "candidate"}}', encoding="utf-8")
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
     (dist / "build.json").write_text("{}", encoding="utf-8")
     capture = jumps.capture_autostart_card(tmp_path / "evidence", app, dist, tmp_path / "capture-browser")
     assert events == ["enter", "node", "exit"]
+    assert manifests == [{"release": 13, "agent": {"sha": "candidate"}}]
     assert configs[0]["playwright"] == str(tmp_path / "capture-browser" / "node_modules" / "playwright" / "index.mjs")
     assert configs[0]["origin"] == jumps.AUTOSTART_ORIGIN == "https://astrid.haus"
-    assert configs[0]["entry"] == jumps.AUTOSTART_ENTRY == "/tools/video-editor?settings=updates"
+    assert configs[0]["entry"] == jumps.AUTOSTART_ENTRY == "/tools/video-editor"
     assert configs[0]["text"] == jumps.AUTOSTART_CARD_TEXT
     assert configs[0]["spki"] == "spki-pin" and configs[0]["dpr"] == 2
     assert capture["device_scale_factor"] == 2 and capture["path"] == "autostart-off-card.png"
@@ -309,6 +311,10 @@ def test_the_wait_text_is_the_approved_card_sentence_and_the_script_waits_for_it
         "your choice stays off.")
     script = (journey.ROOT / "scripts" / "journey_autostart_capture.mjs").read_text(encoding="utf-8")
     assert "waitFor" in script and "Run this command" not in script and "saved autostart is off" not in script
+    assert "permissions: ['local-network-access']" in script
+    assert '[data-testid="runtime-connection-status"][data-state="connected"]' in script
+    assert "getByRole('button', { name: 'Settings', exact: true }).click()" in script
+    assert "getByText(config.text, { exact: true })" in script
 
 
 def test_a_macos_capture_failure_is_recorded_as_unverified(monkeypatch, tmp_path):

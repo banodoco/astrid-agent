@@ -1442,7 +1442,7 @@ AUTOSTART_DEVICE_SCALE_FACTOR = 2
 AUTOSTART_CARD_TEXT = ("Start at sign-in is off, so update from a terminal. This command updates Astrid and starts it; "
                        "your choice stays off.")
 AUTOSTART_ORIGIN = "https://astrid.haus"
-AUTOSTART_ENTRY = "/tools/video-editor?settings=updates"
+AUTOSTART_ENTRY = "/tools/video-editor"
 AUTOSTART_CAPTURE_SCRIPT = journey.ROOT / "scripts" / "journey_autostart_capture.mjs"
 AUTOSTART_CAPTURE_TIMEOUT_MS = 120000
 UPDATE_STATUS_PATH = "/update/status"
@@ -1568,7 +1568,14 @@ def capture_autostart_card(evidence: Path, app: Path, dist: Path, capture_dir: P
     hosted = _hosted_update()
     evidence.mkdir(parents=True, exist_ok=True)
     routes, types = hosted.page_routes(dist)
-    routes.update(hosted.release_routes(app, (app / "public" / "install-manifest.json").read_bytes()))
+    # A current release intentionally has no autostart-off update card. Advertise a
+    # hypothetical next release while keeping the candidate build and real Runtime.
+    manifest = json.loads((app / "public" / "install-manifest.json").read_text(encoding="utf-8"))
+    release = manifest.get("release")
+    if type(release) is not int or release < 0:
+        raise ValueError("candidate manifest has no valid release")
+    manifest["release"] = release + 1
+    routes.update(hosted.release_routes(app, json.dumps(manifest).encode("utf-8")))
     png, meta = evidence / "autostart-off-card.png", evidence / "autostart-off-capture.json"
     config_path = evidence / "autostart-off-capture-config.json"
     with hosted.Intercept(routes, types=types) as intercept:
