@@ -166,7 +166,7 @@ def selected_pack_environment(selected: Mapping[str, Mapping[str, str]], *,
     # Every snapshot keeps its original collection identity. The raw-source
     # finder binds executable imports to the snapshot; discovery must still
     # see only one owner, including for personal and other external packs.
-    roots = {}
+    roots: dict[str, None] = {}
     for pack_id, entry in selected.items():
         collection = Path(relocations.get(pack_id, {}).get("original_root", entry["root"])).parent
         if collection != builtin:

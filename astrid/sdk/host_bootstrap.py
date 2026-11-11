@@ -1915,7 +1915,8 @@ def _attach_resident_host(
         ]
         identity_mismatches = [_attach_mismatch(key, want, got) for key, want, got in identity_pairs if want != got]
         if identity_mismatches:
-            return _reject_attach(current, identity_mismatches, rejections)
+            _reject_attach(current, identity_mismatches, rejections)
+            return None
         registration = resident_client.generated.get_executor(PACK_HOST_ACTOR)
         def field(name: str):
             return registration.get(name) if isinstance(registration, Mapping) else getattr(registration, name, None)
