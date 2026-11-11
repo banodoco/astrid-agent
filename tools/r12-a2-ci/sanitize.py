@@ -5,6 +5,7 @@ from stages import validate_events
 STATUSES = ('PASSED', 'FAILED', 'ERROR', 'SKIPPED', 'XFAIL', 'XPASS')
 SUMMARY_KEYS = ('passed', 'failed', 'error', 'errors', 'skipped', 'xfailed', 'xpassed', 'warnings', 'warning', 'deselected')
 OUTCOME = re.compile(r'^(tests/.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?: +\[ *\d{1,3}%\])?$')
+KNOWN_SKIP = {'tests/test_installer_r0_entry.py::test_captures_match_real_r0_evidence': 'local R0 evidence is not present'}
 HEADINGS = {'test session starts', 'FAILURES', 'ERRORS', 'PASSES', 'XFAILURES', 'XPASSES', 'SKIPPED', 'warnings summary', 'short test summary info'}
 SUMMARY = re.compile(r'^=+ ((?:\d+ (?:passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected)(?:, )?)+) in \d+(?:\.\d+)?s(?: \([0-9:]+\))? =+$')
 
@@ -18,6 +19,12 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
             match = OUTCOME.fullmatch(line)
             if match:
                 node, status = match.groups()
+            else:
+                node = status = None
+                for known_id, reason in KNOWN_SKIP.items():
+                    pattern = re.escape(known_id) + r' SKIPPED \(' + re.escape(reason) + r'\)(?: +\[ *\d{1,3}%\])?'
+                    if re.fullmatch(pattern,line): node, status = known_id, 'SKIPPED'; break
+            if node is not None:
                 if node in expected_set: found.append((node, status))
                 else: unknown_count += 1
             elif line.lstrip().startswith('tests/') and ('::' in line or re.search(r'\b(?:PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b', line)):
@@ -35,7 +42,11 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
             elif line.lstrip().startswith('==') and line.strip('= ').strip() not in HEADINGS:
                 malformed_summary_count += 1
     by_id = collections.Counter(node for node, _ in found)
-    missing = sorted(expected_set - set(by_id)); duplicates = sorted(node for node,n in by_id.items() if n != 1)
+    statuses_by_id = collections.defaultdict(list)
+    for node,status in found: statuses_by_id[node].append(status)
+    extra_errors = sorted(node for node, statuses in statuses_by_id.items()
+                          if len(statuses)==2 and statuses[0] in ('PASSED','FAILED','SKIPPED','XFAIL','XPASS') and statuses[1]=='ERROR')
+    missing = sorted(expected_set - set(by_id)); duplicates = sorted(node for node,n in by_id.items() if n != 1 and node not in extra_errors)
     outcomes = [{'id':node,'status':status} for node,status in found]
     status_counts = dict(sorted(collections.Counter(x['status'] for x in outcomes).items()))
     summary = summaries[0] if len(summaries)==1 else None
@@ -59,7 +70,7 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
         if summary is None: reasons.append('SUMMARY_MISSING_OR_MULTIPLE')
         elif not counts_match: reasons.append('SUMMARY_MISMATCH')
     return {'schema':1, 'incomplete_reasons':reasons, 'stage_events':validate_events(stage_events if stage_events is not None else []), 'classification':classification, 'metadata':metadata,
-            'expected_count':len(expected), 'missing_ids':missing, 'duplicate_ids':duplicates,
+            'expected_count':len(expected), 'missing_ids':missing, 'duplicate_ids':duplicates, 'additional_error_after_outcome_ids':extra_errors,
             'unexpected_result_count':unknown_count, 'malformed_outcome_count':malformed_outcome_count, 'malformed_summary_count':malformed_summary_count, 'absent_ids':sorted(absent),
             'outcomes':outcomes, 'outcome_counts':status_counts, 'summary_counts':summary,
             'exit_code':exit_code if isinstance(exit_code,int) and -255 <= exit_code <= 255 else None,

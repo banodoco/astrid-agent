@@ -53,6 +53,30 @@ class Sanitization(unittest.TestCase):
         result=make(f'{A} PASSED\n=== 1 passed in 1.0s ===\n',exit_code=0)
         self.assertEqual(result['classification'],'INCOMPLETE'); self.assertIn('MISSING_IDS',result['incomplete_reasons'])
         self.assertNotIn(B, result['incomplete_reasons'])
+    def test_outcome_then_teardown_error_is_accounted_once_with_both_statuses(self):
+        raw=f'{A} PASSED [ 50%]\n{A} ERROR [ 50%]\n{B} PASSED [100%]\n=== 2 passed, 1 error in 1.0s ===\n'
+        result=make(raw,exit_code=1)
+        self.assertEqual(result['classification'],'COMPLETE'); self.assertEqual(result['duplicate_ids'],[])
+        self.assertEqual(result['additional_error_after_outcome_ids'],[A])
+        self.assertEqual([x['status'] for x in result['outcomes'] if x['id']==A],['PASSED','ERROR'])
+        self.assertEqual(result['outcome_counts'],{'ERROR':1,'PASSED':2})
+    def test_only_outcome_then_single_error_is_valid(self):
+        for statuses in (('PASSED','PASSED'),('ERROR','ERROR'),('ERROR','PASSED'),('PASSED','ERROR','ERROR'),('FAILED','FAILED')):
+            raw=''.join(f'{A} {status}\n' for status in statuses)+f'{B} PASSED\n=== 1 failed, 1 passed, 1 error in 1.0s ===\n'
+            with self.subTest(statuses=statuses):
+                result=make(raw,exit_code=1); self.assertEqual(result['classification'],'INCOMPLETE'); self.assertIn(A,result['duplicate_ids'])
+        raw=f'{A} FAILED\n{A} ERROR\n{B} PASSED\n=== 1 failed, 1 passed, 1 error in 1.0s ===\n'
+        self.assertEqual(make(raw,exit_code=1)['classification'],'COMPLETE')
+        self.assertEqual(make(raw.replace('1 error','2 errors'),exit_code=1)['classification'],'INCOMPLETE')
+        self.assertEqual(make(raw,exit_code=0)['classification'],'INCOMPLETE')
+    def test_known_local_evidence_skip_reason_only(self):
+        known='tests/test_installer_r0_entry.py::test_captures_match_real_r0_evidence'
+        raw=f'{known} SKIPPED (local R0 evidence is not present) [ 50%]\n{B} PASSED [100%]\n=== 1 passed, 1 skipped in 1.0s ===\n'
+        result=make(raw,expected=(known,B),exit_code=0)
+        self.assertEqual(result['classification'],'COMPLETE'); self.assertEqual(result['outcomes'][0],{'id':known,'status':'SKIPPED'})
+        self.assertNotIn('local R0 evidence is not present',json.dumps(result))
+        for forged in (raw.replace('local R0 evidence is not present',SECRET), raw.replace(known,A),raw.replace(') [ 50%]',f') {SECRET} [ 50%]')):
+            r=make(forged,expected=(known,B),exit_code=0); self.assertEqual(r['classification'],'INCOMPLETE'); self.assertNotIn(SECRET,json.dumps(r))
     def test_only_structured_file_is_uploaded(self):
         root=pathlib.Path(__file__).resolve().parents[2]; workflow=(root/'.github/workflows/r12-a2-once.yml').read_text()
         self.assertIn('path: ${{ runner.temp }}/r12-a2-receipt/receipt.json',workflow)
