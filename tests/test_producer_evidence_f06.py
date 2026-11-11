@@ -504,6 +504,8 @@ def test_failed_producer_receipt_survives_executor_to_safe_remote_frame(tmp_path
     producer_root = tmp_path / 'producer'
     producer_root.mkdir()
     payload = _managed_payload(producer_root, execution_status='failed')
+    payload['inputs']['source'] = _evidence_reference(
+        producer_root, 'evidence/source.bin', 'submitted.bin', b'{}')
     payload['outcomes']['execution']['code'] = 'download_failed'
     payload['outcomes']['execution']['message'] = private
     production = _write_production(producer_root, payload)
