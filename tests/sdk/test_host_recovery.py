@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,7 +73,7 @@ class Harness:
             def __init__(self, *_a): pass
             def health(self):
                 return {"status": "ok", "runtime_epoch": "epoch-1", "runtime_instance_id": "instance-1",
-                        "schema_digest": "schema-1"}
+                        "schema_digest": "schema-1", "runtime_session_id": "session-1"}
             def _authenticate_worker(self, _executor_id):
                 return "realm-1"
             @property
@@ -83,6 +85,12 @@ class Harness:
                     capabilities=[SimpleNamespace(status="ready")],
                 ))
         monkeypatch.setattr(generic_host, "RuntimeProtocolClient", Client)
+        monkeypatch.setattr(host_bootstrap, "_observe_resident_host", lambda **_kwargs: {
+            "executor_id": host_bootstrap.PACK_HOST_ACTOR, "readiness": "ready",
+            "runtime_epoch": "epoch-1", "runtime_session_id": "session-1",
+            "source_epoch": "source-epoch-1", "source_digest": "source-digest-1",
+            "dependency_digest": "dependency-digest-1", "capabilities": [{"status": "ready"}],
+        })
         real_birth = host_bootstrap._host_birth_identity
         monkeypatch.setattr(host_bootstrap, "_host_birth_identity",
                             lambda pid: "birth-1" if pid == FAKE_PID else real_birth(pid))
@@ -199,6 +207,7 @@ def test_launcher_attaches_to_healthy_host_from_another_checkout(harness, monkey
         dispatch, "compose_profile_handoff",
         lambda *_args, **_kwargs: pytest.fail("attach must preserve the resident boot manifest"),
     )
+    markers = [(h.support / name).read_bytes() for name in ("generic-host.json", "generic-host.ready.json")]
 
     result = host_bootstrap.ensure_pack_host(
         h.value, reconfigure_action="reconfigure", attach_healthy=True,
@@ -208,6 +217,65 @@ def test_launcher_attaches_to_healthy_host_from_another_checkout(harness, monkey
     assert result["host_pid"] == FAKE_PID
     assert result["host_source_checkout_digest"] == source_checkout_digest(h.source)
     assert h.launches == []
+    assert markers == [(h.support / name).read_bytes() for name in ("generic-host.json", "generic-host.ready.json")]
+
+
+def test_observer_uses_bound_runtime_arguments(monkeypatch, tmp_path):
+    from astrid.sdk import autobootstrap
+    monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: ["runtime-cli"])
+    calls = []
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        payload = json.dumps({"executor_id": "astrid-pack-host", "readiness": "ready",
+            "runtime_epoch": 3, "runtime_session_id": "session-1", "source_epoch": "source-1",
+            "source_digest": "source", "dependency_digest": "dependency", "capabilities": [{"status": "ready"}]}).encode()
+        return _ObserverProcess(payload, 0)
+    monkeypatch.setattr(host_bootstrap.subprocess, "Popen", run)
+    assert host_bootstrap._observe_resident_host(
+        endpoint="http://runtime.test", support_root=tmp_path,
+        runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3,
+    )["executor_id"] == "astrid-pack-host"
+    assert calls[0][0] == ["runtime-cli", "observe-pack-host", "--data-root", str(tmp_path),
+                           "--endpoint", "http://runtime.test", "--runtime-instance-id", "instance-1",
+                           "--runtime-session-id", "session-1", "--runtime-epoch", "3", "--json"]
+    assert calls[0][1]["stdin"] == subprocess.DEVNULL
+
+
+class _ObserverProcess:
+    def __init__(self, output, returncode):
+        self.stdout, self.returncode = io.BytesIO(output), returncode
+    def __enter__(self): return self
+    def __exit__(self, *_args): pass
+    def wait(self, timeout=None): return self.returncode
+
+
+@pytest.mark.parametrize("output,returncode", [
+    (b"{}", 0), (b"not json", 0), (b"x" * 65537, 0), (b"secret", 1),
+])
+def test_observer_rejects_bad_output_without_exposing_it(monkeypatch, tmp_path, output, returncode):
+    from astrid.sdk import autobootstrap
+    monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: ["runtime-cli"])
+    def run(_argv, **kwargs):
+        return _ObserverProcess(output, returncode)
+    monkeypatch.setattr(host_bootstrap.subprocess, "Popen", run)
+    with pytest.raises(RuntimeError, match="runtime observer unavailable") as exc:
+        host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path,
+            runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
+    assert "secret" not in str(exc.value)
+
+
+@pytest.mark.parametrize("code", [
+    "import sys,time;sys.stdout.write('partial');sys.stdout.flush();time.sleep(10)",
+    "import sys;sys.stdout.write('x'*1000000);sys.stdout.flush()",
+])
+def test_observer_limits_a_real_child(monkeypatch, tmp_path, code):
+    from astrid.sdk import autobootstrap
+    monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: [sys.executable, "-c", code])
+    monkeypatch.setattr(host_bootstrap, "_OBSERVER_TIMEOUT_SECONDS", 0.5)
+    with pytest.raises(RuntimeError, match="runtime observer unavailable"):
+        host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path,
+            runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
+    assert not any(t.name == "astrid-observer-reader" for t in threading.enumerate())
 
 
 def test_attach_does_not_require_worker_to_observe_executor(harness, monkeypatch, tmp_path):
@@ -245,61 +313,55 @@ def test_attach_does_not_require_worker_to_observe_executor(harness, monkeypatch
 
 
 @pytest.mark.parametrize("fault", [
-    "unready-registration", "changed-registration-generation", "changed-resident-source",
+    "unavailable", "foreign", "wrong-epoch", "wrong-session", "unready", "wrong-source",
 ])
-def test_launcher_replaces_cross_checkout_host_when_resident_is_unhealthy(
-    harness, monkeypatch, tmp_path, fault,
-):
+def test_attach_refusal_preserves_resident(harness, monkeypatch, tmp_path, fault):
     h = harness
-    resident_source = h.source
     second = tmp_path / "second-source"
     (second / "astrid" / "packs").mkdir(parents=True)
     _materialize_source_closure(second)
     h.value["source_checkout"] = str(second)
-    h.source = second
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
-    monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
-    retired = []
+    before = [(h.support / name).read_bytes() for name in ("generic-host.json", "generic-host.ready.json")]
     monkeypatch.setattr(host_bootstrap, "_retire_host_locked",
-                        lambda state, support, **_kwargs: retired.append(dict(state)))
+                        lambda *_args, **_kwargs: pytest.fail("resident must not be retired"))
+    def observe(**_kwargs):
+        if fault == "unavailable":
+            raise RuntimeError("unavailable")
+        value = {"executor_id": host_bootstrap.PACK_HOST_ACTOR, "readiness": "ready",
+                 "runtime_epoch": "epoch-1", "runtime_session_id": "session-1",
+                 "source_epoch": "source-epoch-1", "source_digest": "source-digest-1",
+                 "dependency_digest": "dependency-digest-1", "capabilities": [{"status": "ready"}]}
+        field, replacement = {"foreign": ("executor_id", "foreign"),
+                              "wrong-epoch": ("runtime_epoch", "epoch-2"),
+                              "wrong-session": ("runtime_session_id", "session-2"),
+                              "unready": ("readiness", "starting"),
+                              "wrong-source": ("source_epoch", "source-epoch-2")}[fault]
+        value[field] = replacement
+        return value
+    monkeypatch.setattr(host_bootstrap, "_observe_resident_host", observe)
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="attachment was refused"):
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+    assert before == [(h.support / name).read_bytes() for name in ("generic-host.json", "generic-host.ready.json")]
+    assert h.launches == []
 
-    if fault == "unready-registration":
-        client_type = generic_host.RuntimeProtocolClient
 
-        class UnreadyClient(client_type):
-            @property
-            def generated(self):
-                return SimpleNamespace(get_executor=lambda _executor_id: SimpleNamespace(
-                    executor_id=host_bootstrap.PACK_HOST_ACTOR, readiness="starting",
-                    runtime_epoch="epoch-1", source_epoch="source-epoch-1",
-                    source_digest="source-digest-1", dependency_digest="dependency-digest-1",
-                    capabilities=[SimpleNamespace(status="ready")],
-                ))
-
-        monkeypatch.setattr(generic_host, "RuntimeProtocolClient", UnreadyClient)
-    elif fault == "changed-registration-generation":
-        client_type = generic_host.RuntimeProtocolClient
-
-        class SupersededClient(client_type):
-            @property
-            def generated(self):
-                return SimpleNamespace(get_executor=lambda _executor_id: SimpleNamespace(
-                    executor_id=host_bootstrap.PACK_HOST_ACTOR, readiness="ready",
-                    runtime_epoch="epoch-1", source_epoch="source-epoch-2",
-                    source_digest="source-digest-1", dependency_digest="dependency-digest-1",
-                    capabilities=[SimpleNamespace(status="ready")],
-                ))
-
-        monkeypatch.setattr(generic_host, "RuntimeProtocolClient", SupersededClient)
-    else:
-        (resident_source / "astrid" / "packs" / "changed.marker").write_text("changed")
-    result = host_bootstrap.ensure_pack_host(
-        h.value, reconfigure_action="reconfigure", attach_healthy=True,
-    )
-
-    assert result["host_status"] == "ready"
-    assert len(retired) == 1
-    assert len(h.launches) == 1
+def test_bad_worker_never_invokes_observer(harness, monkeypatch, tmp_path):
+    h = harness
+    second = tmp_path / "second-source"
+    (second / "astrid" / "packs").mkdir(parents=True)
+    _materialize_source_closure(second)
+    h.value["source_checkout"] = str(second)
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
+    class InvalidWorker(generic_host.RuntimeProtocolClient):
+        def _authenticate_worker(self, _executor_id):
+            raise RuntimeError("invalid worker")
+    monkeypatch.setattr(generic_host, "RuntimeProtocolClient", InvalidWorker)
+    monkeypatch.setattr(host_bootstrap, "_observe_resident_host",
+                        lambda **_kwargs: pytest.fail("observer must follow worker authentication"))
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="attachment was refused"):
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+    assert h.launches == []
 
 
 def _defunct(pid: int) -> bool:

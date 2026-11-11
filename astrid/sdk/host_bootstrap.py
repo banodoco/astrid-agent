@@ -21,6 +21,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from numbers import Real
@@ -1851,25 +1852,59 @@ def _reject_attach(current: Mapping[str, Any], mismatches: list[dict[str, str]],
     return None
 
 
+_OBSERVER_TIMEOUT_SECONDS = 30.0
+
+
 def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instance_id: str,
                            runtime_session_id: str, runtime_epoch: Any) -> Mapping[str, Any]:
     """Ask Runtime's operator to observe its fixed pack host, without owner credentials."""
     from astrid.sdk.autobootstrap import _launcher_command
 
-    if not runtime_session_id:
+    if not isinstance(runtime_session_id, str) or not runtime_session_id.strip():
         raise RuntimeError("runtime session is unavailable")
     try:
-        result = subprocess.run(
-            [*_launcher_command(), "observe-pack-host", "--data-root", str(support_root),
-             "--endpoint", endpoint, "--runtime-instance-id", runtime_instance_id,
-             "--runtime-session-id", runtime_session_id, "--runtime-epoch", str(runtime_epoch), "--json"],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=30,
-        )
-        if result.returncode != 0:
-            raise ValueError("observer failed")
-        observed = json.loads(result.stdout)
-        if not isinstance(observed, Mapping):
-            raise ValueError("observer response is not an object")
+        with subprocess.Popen(
+                [*_launcher_command(), "observe-pack-host", "--data-root", str(support_root),
+                 "--endpoint", endpoint, "--runtime-instance-id", runtime_instance_id,
+                 "--runtime-session-id", runtime_session_id, "--runtime-epoch", str(runtime_epoch), "--json"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            ) as process:
+            chunks: list[bytes] = []
+            def read_output() -> None:
+                assert process.stdout is not None
+                try:
+                    chunks.append(process.stdout.read(65537))
+                finally:
+                    process.stdout.close()
+            reader = threading.Thread(target=read_output, name="astrid-observer-reader", daemon=True)
+            reader.start()
+            try:
+                returncode = process.wait(timeout=_OBSERVER_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                reader.join(timeout=1)
+                raise
+            reader.join(timeout=1)
+            if reader.is_alive() or returncode != 0:
+                raise ValueError("observer failed")
+            raw = chunks[0]
+            if len(raw) > 65536:
+                raise ValueError("observer response too large")
+        observed = json.loads(raw)
+        string_fields = {"executor_id", "readiness", "runtime_session_id", "source_epoch",
+                         "source_digest", "dependency_digest"}
+        if (not isinstance(observed, dict)
+                or set(observed) != string_fields | {"runtime_epoch", "capabilities"}
+                or any(not isinstance(observed[key], str) or not 0 < len(observed[key]) <= 256
+                       for key in string_fields)
+                or isinstance(observed["runtime_epoch"], bool)
+                or not isinstance(observed["runtime_epoch"], int) or observed["runtime_epoch"] < 1
+                or not isinstance(observed["capabilities"], list)
+                or len(observed["capabilities"]) > 128
+                or any(not isinstance(cap, dict) or set(cap) != {"status"}
+                       or cap["status"] != "ready" for cap in observed["capabilities"])):
+            raise ValueError("invalid observer response")
         return observed
     except Exception as exc:
         raise RuntimeError("runtime observer unavailable") from exc
@@ -1931,6 +1966,7 @@ def _attach_resident_host(
             ("live.executor_id", PACK_HOST_ACTOR, field("executor_id")),
             ("live.readiness", "ready", field("readiness")),
             ("live.runtime_epoch", runtime_epoch, field("runtime_epoch")),
+            ("live.runtime_session_id", runtime_session_id, field("runtime_session_id")),
             ("ready.source_epoch_present", True, isinstance(ready.get("source_epoch"), str) and bool(ready.get("source_epoch"))),
             ("live.source_epoch", ready.get("source_epoch"), field("source_epoch")),
             ("ready_registration.source_epoch", ready.get("source_epoch"), ready_field("source_epoch")),
@@ -1942,7 +1978,7 @@ def _attach_resident_host(
                 (cap.get("status") if isinstance(cap, Mapping) else getattr(cap, "status", None)) == "ready"
                 for cap in caps)),
         ]
-        live_mismatches = [_attach_mismatch(key, want, got) for key, want, got in live_pairs if want != got]
+        live_mismatches = [_attach_mismatch(key, "matching", "mismatch") for key, want, got in live_pairs if want != got]
         if live_mismatches:
             return _reject_attach(current, live_mismatches, rejections)
     except (RuntimeError, OSError, ValueError, TypeError, KeyError, AttributeError, ImportError) as exc:
