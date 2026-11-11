@@ -1,5 +1,7 @@
 # Spinning up and executing tasks on RunPod
 
+> Operator guide, not the generation path. `scripts/claim_runpod_5090_backup.py` and `scripts/pod_session.py` are not for generation; generation is `astrid generate <image|video|audio> --entry ... --placement runpod`.
+
 ## Choose the canonical path
 
 For the prepared H3 RTX 5090 target, the operator flow is:

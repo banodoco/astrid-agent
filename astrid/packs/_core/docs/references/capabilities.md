@@ -25,10 +25,10 @@
 | `rendering.timeline_visualize` | Private backend for composed timeline visualization. |
 | `runpod.exec` | Execute a script on an existing RunPod pod and download artifacts. |
 | `runpod.ls` | List the retained owner's current RunPod lease, if any. |
-| `runpod.provision` | Provision a RunPod GPU pod and emit a pod handle for later exec/teardown. |
+| `runpod.provision` | Not for generation. Provision a RunPod GPU pod and emit a pod handle for later exec/teardown. |
 | `runpod.pull` | Pull artifacts from an existing RunPod pod into local storage. |
 | `runpod.release` | Release the exact retained target. |
-| `runpod.session` | Composite provision → exec → teardown session with guaranteed cleanup. |
+| `runpod.session` | Not for generation. Composite provision → exec → teardown session with guaranteed cleanup. |
 | `runpod.setup` | Save validated RunPod preferences through the retained owner. |
 | `runpod.status` | Inspect the retained target and optionally observe an offer. |
 | `runpod.teardown` | Terminate a RunPod pod. Idempotent. |

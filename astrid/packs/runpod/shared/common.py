@@ -1,5 +1,8 @@
 """Shared implementation for all runpod.* action subcommands.
 
+The provision and session subcommands are operator tools, NOT the generation path;
+generation is ``astrid generate <image|video|audio> --entry ... --placement runpod``.
+
 All five action run.py files (provision, session, exec, teardown, pull) are
 thin wrappers that call ``guard_canonical_entrypoint`` with their pack-action
 name and then re-export everything from this module.
@@ -1810,7 +1813,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- provision ---
-    p_prov = sub.add_parser("provision", help="Provision a RunPod GPU pod.")
+    p_prov = sub.add_parser(
+        "provision",
+        help="Provision a RunPod GPU pod. Not for generation: use `astrid generate ... --placement runpod`.",
+        description="Operator tool, not the generation path. Generation is `astrid generate <image|video|audio> --entry ... --placement runpod`.",
+    )
     p_prov.add_argument("--produces-dir", type=Path, required=True, help="Produces output directory.")
     p_prov.add_argument("--compute-profile", help="Named user compute profile (ASTRID_COMPUTE_PROFILE takes precedence).")
     p_prov.add_argument("--gpu-type", help="GPU type (e.g. 'NVIDIA GeForce RTX 4090').")
@@ -1851,7 +1858,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_tear.add_argument("--pod-handle", help="Path to pod_handle.json (default: <produces-dir>/pod_handle.json).")
 
     # --- session ---
-    p_sess = sub.add_parser("session", help="Provision → exec → teardown composite session.")
+    p_sess = sub.add_parser(
+        "session",
+        help="Provision → exec → teardown composite session. Not for generation: use `astrid generate ... --placement runpod`.",
+        description="Operator tool, not the generation path. Generation is `astrid generate <image|video|audio> --entry ... --placement runpod`.",
+    )
     p_sess.add_argument("--produces-dir", type=Path, required=True, help="Produces output directory.")
     p_sess.add_argument("--compute-profile", help="Named user compute profile (ASTRID_COMPUTE_PROFILE takes precedence).")
     p_sess.add_argument("--gpu-type", help="GPU type.")

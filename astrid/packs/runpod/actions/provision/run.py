@@ -1,5 +1,8 @@
 """Runtime entrypoint for runpod.provision action.
 
+Not for generation: this is an operator tool. The generation path is
+``astrid generate <image|video|audio> --entry ... --placement runpod``.
+
 Thin wrapper — all logic lives in ``astrid.packs.runpod.shared.common``.
 """
 

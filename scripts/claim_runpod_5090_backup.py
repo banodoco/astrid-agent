@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Claim an RTX 5090 on the existing Astrid ``backup`` volume.
 
+Operator tool, not the generation path: ``astrid generate <image|video|audio> ...
+--placement runpod`` claims and releases its own machine. Do not use this script
+for generation.
+
 This is an operator-facing waiter, not a second RunPod client.  It uses the
 shared Astrid environment and the canonical ``runpod-lifecycle`` launch path:
 the exact GPU/storage request is retried until capacity appears.  The

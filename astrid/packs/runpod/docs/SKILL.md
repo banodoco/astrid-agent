@@ -19,6 +19,10 @@ uses. A claim and a later compatible generation share the same pod, custody
 journal and paid limit. The older `runpod.provision` handle belongs to the
 individual actions below; it is not a retained generation machine.
 
+Generation path: `astrid generate <image|video|audio> --entry ... --placement runpod --gpu ... --max-hourly-usd ... --max-usd ... --preparation-seconds ... --execution-seconds ... --idle-seconds ... --consent paid`. `runpod.provision`, `runpod.session`,
+`scripts/pod_session.py` and `scripts/claim_runpod_5090_backup.py` are operator
+tools and are not for generation.
+
 ### Set up and inspect preferences
 
 Run these from the installed Astrid launcher when the user asks to configure
@@ -42,7 +46,7 @@ automatically.
 For unattended setup, supply the choices and `--json`:
 
 ```sh
-astrid machines setup --volume my-volume --gpu "RTX A6000" --gpu "RTX 4090" --budget-usd 5 --json
+astrid machines setup --volume my-volume --gpu "RTX 4090" --gpu "RTX 5090" --budget-usd 5 --json
 ```
 
 On a fresh setup, omitting `--volume` uses ephemeral disk. When updating with
@@ -112,7 +116,7 @@ Review the target with the same ordered GPU and datacenter choices you will
 use for generation:
 
 ```sh
-astrid generate describe --placement runpod --gpu "RTX A6000" --datacenter US-TX-3 --max-hourly-usd 1 --json
+astrid generate describe --placement runpod --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --json
 ```
 
 The hourly figure is an example ceiling, not a current price quote. Ask the
@@ -145,7 +149,7 @@ idle allowances. There are two ways to approve a generation:
 For example, after approval of these illustrative limits:
 
 ```sh
-astrid generate image "A studio portrait" --placement runpod --gpu "RTX A6000" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --preparation-seconds 600 --execution-seconds 600 --idle-seconds 600 --consent paid
+astrid generate image "A studio portrait" --placement runpod --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --preparation-seconds 600 --execution-seconds 600 --idle-seconds 600 --consent paid
 ```
 
 The default is to wait until a machine is claimed or the operation is
@@ -176,7 +180,7 @@ and asks for paid consent; `--consent paid` is the explicit unattended form.
 For example, after approving the displayed terms:
 
 ```sh
-astrid machines claim --gpu "RTX A6000" --max-hourly-usd 1 --max-usd 3 --for 30m --consent paid
+astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --max-hourly-usd 1 --max-usd 3 --for 30m --consent paid
 astrid machines
 astrid machines --json
 ```
