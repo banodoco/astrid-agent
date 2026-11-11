@@ -1,0 +1,517 @@
+{
+  "absent_ids": [
+    "tests/test_installer_bootstrap_imports.py::test_install_tools_records_git_without_third_party_packages"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 95,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "030",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 4,
+    "PASSED": 91
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_two_archives_use_distinct_digests_and_extract_both",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_swapped_archive_digests_fail_before_extraction",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_single_archive_uses_its_string_digest",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_legacy_single_archive_without_digest_retains_compatibility",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes3]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes4]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes5]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes6]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes7]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes8]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes9]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes10]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes11]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes12]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_invalid_archive_pairs_fail_manifest_validation[changes13]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_explicit_invalid_single_archive_digest_is_rejected[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_explicit_invalid_single_archive_digest_is_rejected[]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_explicit_invalid_single_archive_digest_is_rejected[AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_explicit_invalid_single_archive_digest_is_rejected[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_explicit_invalid_single_archive_digest_is_rejected[checksum4]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_explicit_invalid_single_archive_digest_is_rejected[42]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_installed_tools_forward_the_matching_digest_for_every_archive",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_asset_checksums.py::test_multi_archive_manifest_preserves_digest_order",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_registration_uses_default_or_saved_choice[None-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_registration_uses_default_or_saved_choice[None-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_registration_uses_default_or_saved_choice[None-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_registration_uses_default_or_saved_choice[True-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_registration_uses_default_or_saved_choice[True-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_registration_uses_default_or_saved_choice[True-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_registration_uses_default_or_saved_choice[False-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_registration_uses_default_or_saved_choice[False-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_registration_uses_default_or_saved_choice[False-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_turning_off_removes_owned_registration_and_can_turn_on_again[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_turning_off_removes_owned_registration_and_can_turn_on_again[darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_turning_off_removes_owned_registration_and_can_turn_on_again[win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_registration[action-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_registration[action-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_registration[action-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_registration[selection-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_registration[selection-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_registration[selection-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_registration[symlink-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_registration[symlink-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_registration[symlink-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_bound_action_publication_still_requires_a_retained_version[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_bound_action_publication_still_requires_a_retained_version[darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_temporary_stop_keeps_registration_and_saved_on[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_temporary_stop_keeps_registration_and_saved_on[win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_no_systemd_writes_no_unit_and_still_starts_detached[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_no_systemd_writes_no_unit_and_still_starts_detached[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_no_systemd_retires_previous_owned_unit_and_enablement",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_removes_owned_enablement_when_unit_is_already_missing[True]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_removes_owned_enablement_when_unit_is_already_missing[False]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_off_preserves_foreign_enablement_link",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_macos_temporary_c1_stop_keeps_saved_on_and_plist",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_backend_manual_start_detaches_and_windows_launch_is_hidden[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_backend_manual_start_detaches_and_windows_launch_is_hidden[darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_backend_manual_start_detaches_and_windows_launch_is_hidden[win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_choice_persistence_uses_only_an_owned_complete_install_marker[haus.astrid.runtime]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_choice_persistence_uses_only_an_owned_complete_install_marker[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_choice_persistence_uses_only_an_owned_complete_install_marker[another-installer]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_yes_install_line_restarts_stopped_off_copy_and_survives_caller_exit",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_saved_off_reconciles_all_activation_routes_with_real_backend[repair]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_saved_off_reconciles_all_activation_routes_with_real_backend[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_saved_off_reconciles_all_activation_routes_with_real_backend[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_saved_off_reconciles_all_activation_routes_with_real_backend[recovery]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_saved_off_reconciles_all_activation_routes_with_real_backend[local-update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_saved_off_reconciles_all_activation_routes_with_real_backend[local-rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_autostart.py::test_pinokio_registration_preserves_external_startup_ownership",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_full_backup_checks_realm_support_and_margin_before_starting[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_full_backup_checks_realm_support_and_margin_before_starting[win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_large_backup_reserves_ten_percent_when_larger_than_minimum_margin",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_failed_full_backup_removes_its_partial_snapshot[up]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_failed_full_backup_removes_its_partial_snapshot[backup]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_failed_full_backup_removes_its_partial_snapshot[stop]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_failed_full_backup_removes_its_partial_snapshot[support]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_failed_full_backup_removes_its_partial_snapshot[metadata]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_failed_full_backup_removes_its_partial_snapshot[cancel]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_failed_clone_backup_removes_its_partial_snapshot",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_rollback_preserves_live_logs_even_in_an_older_snapshot",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_backup_size_propagates_unreadable_directory_errors",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_support_rollback_preserves_posix_file_and_directory_modes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_windows_failed_update_restores_private_support_and_can_retry",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_windows_restore_does_not_restrict_retained_unsafe_directory[.]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_windows_restore_does_not_restrict_retained_unsafe_directory[runtime]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_backup.py::test_interrupted_support_file_copy_never_publishes_partial_catalog",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_imports.py::test_installer_has_no_lazy_third_party_imports",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_imports.py::test_every_installer_mode_imports_without_third_party_packages[flags0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_imports.py::test_every_installer_mode_imports_without_third_party_packages[flags1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_imports.py::test_every_installer_mode_imports_without_third_party_packages[flags2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_imports.py::test_every_installer_mode_imports_without_third_party_packages[flags3]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_imports.py::test_every_installer_mode_imports_without_third_party_packages[flags4]",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "1cfe841e69819dd13c686f5ab49cf5618df0fb01214bfc55d44d8a4ab91597a1",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "failed": 4,
+    "passed": 91
+  },
+  "unexpected_result_count": 0
+}

@@ -1,0 +1,512 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 94,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "039",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 4,
+    "PASSED": 90
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_custody_identity_requires_the_same_user_process_incarnation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_updater_close_keeps_custody_until_attached_runtime_closes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_custody_retains_foreground_and_legacy_locks_when_xdg_is_filtered",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_custody_arm_and_attach_cover_candidate_and_rollback[switched-candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_custody_arm_and_attach_cover_candidate_and_rollback[rollback_selected-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_attach_rejects_tampered_ticket[token]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_attach_rejects_tampered_ticket[binding]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_attach_rejects_tampered_ticket[lock]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_attach_rejects_wrong_launch_binding_and_does_not_consume_valid_ticket[root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_attach_rejects_wrong_launch_binding_and_does_not_consume_valid_ticket[version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_attach_rejects_wrong_launch_binding_and_does_not_consume_valid_ticket[data]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_attach_ticket_is_single_use",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_stopped_custody_yields_none_when_foreground_owns_lifetime_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_broker_death_closes_attached_runtime_connection",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_updater_process_exit_releases_custody_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_stale_activation_phase_without_operation_lock_refuses_start[switched-candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_stale_activation_phase_without_operation_lock_refuses_start[rollback_selected-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_ordinary_start_refuses_any_unfinished_transaction_even_with_operation_lock[staged-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_ordinary_start_refuses_any_unfinished_transaction_even_with_operation_lock[stopping-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_ordinary_start_refuses_any_unfinished_transaction_even_with_operation_lock[stopped-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_ordinary_start_refuses_any_unfinished_transaction_even_with_operation_lock[switched-candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_ordinary_start_refuses_any_unfinished_transaction_even_with_operation_lock[rollback_selected-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_custody.py::test_actual_runtime_keeper_exits_if_lock_custodian_dies",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_integration.py::test_pinokio_run_executes_foreground_runtime_and_drains_its_child[15]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_integration.py::test_pinokio_run_executes_foreground_runtime_and_drains_its_child[2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_launch_uses_current_version_service_command_and_pinokio_environment[darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_launch_uses_current_version_service_command_and_pinokio_environment[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_launch_uses_current_version_service_command_and_pinokio_environment[win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_foreground_binds_migration_journal_to_exact_retained_session",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_foreground_refuses_unmatched_transaction_binding_before_launch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[switched-candidate-False-True-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[switched-candidate-False-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[switched-old-False-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[rollback_selected-old-False-True-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[rollback_selected-old-False-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[rollback_selected-candidate-False-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[migrated-old-False-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[future-step-old-False-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[switched-candidate-False-False-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[complete-old-True-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[rolled_back-old-True-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[None-old-True-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_refuses_malformed_pending_journal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_launch_resolves_the_selected_version_each_time",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_run_renderings_keep_arguments_and_windows_console_owner",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_launcher.py::test_publish_runtime_runner_fsyncs_before_atomic_replace_and_preserves_wrappers",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_install_creates_runtime_but_registers_no_login_service",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_update_never_registers_or_starts_login_service",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_update_rollback_keeps_login_service_unmodified",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_doctor_is_read_only_and_does_not_start_service",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_uninstall_keeps_workspace_and_skips_service_removal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_managed_backend_stop_and_register_do_not_touch_login_service[False-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_managed_backend_stop_and_register_do_not_touch_login_service[False-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_managed_backend_stop_and_register_do_not_touch_login_service[False-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_managed_backend_stop_and_register_do_not_touch_login_service[True-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_managed_backend_stop_and_register_do_not_touch_login_service[True-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_managed_backend_stop_and_register_do_not_touch_login_service[True-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_manager_argument_requires_absolute_root",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_cli_rejects_unknown_manager_and_relative_root[argv0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_cli_rejects_unknown_manager_and_relative_root[argv1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_ordinary_cli_refuses_active_pinokio_pointer[mode0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_ordinary_cli_refuses_active_pinokio_pointer[mode1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_second_pinokio_root_is_refused_while_first_install_record_exists",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_reset_removed_pinokio_root_releases_pointer_for_terminal_install",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_second_pinokio_root_is_allowed_after_first_root_is_deleted",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_install_saves_explicit_skill_policy",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_install_refuses_existing_login_install",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_install_refuses_login_service_pointer",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_root_marker_retains_pinokio_manager_for_update_and_uninstall[mode0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_root_marker_retains_pinokio_manager_for_update_and_uninstall[mode1]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_pinokio_doctor_without_root_follows_per_user_pointer",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_managed_successful_uninstall_releases_pointer_but_keeps_workspace",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_managed_uninstall_keeps_manager_pointer_when_files_remain",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_interrupted_pinokio_update_recovery_does_not_activate_login_service",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_partial_uninstall_recreates_owned_marker_when_empty_program_directory_is_locked[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_lifecycle.py::test_partial_uninstall_recreates_owned_marker_when_empty_program_directory_is_locked[pinokio]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_installer_lock_path_is_one_user_location_per_platform[darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_installer_lock_path_is_one_user_location_per_platform[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_installer_lock_path_is_one_user_location_per_platform[win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_foreground_run_is_refused_while_an_installer_holds_the_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_busy_pinokio_mutation_refuses_before_writing_install_state[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_busy_pinokio_mutation_refuses_before_writing_install_state[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_busy_pinokio_mutation_refuses_before_writing_install_state[uninstall]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_doctor_remains_read_only_while_foreground_holds_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recovered_owner",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_windows_foreground_keeps_lock_open_through_inline_runtime",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_posix_run_lock_is_not_inherited_by_child_and_crash_releases_it",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_locking.py::test_cli_recovery_releases_live_runtime_before_workspace_or_backup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_old_stop.py::test_receipt_free_old_stop_needs_custody_and_never_calls_newer_down",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_old_stop.py::test_receipt_free_old_stop_still_refuses_durable_busy_work",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_old_stop.py::test_remaining_publication_keeps_c1_authority[discovery_path]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_old_stop.py::test_remaining_publication_keeps_c1_authority[instance_lock_path]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pinokio_old_stop.py::test_receipt_free_old_stop_does_not_admit_live_controller",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "b235ee5f30da428dc98389b2fd81bc371940672e2cbb1c7e3f0c281c4e479185",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "deselected": 14,
+    "failed": 4,
+    "passed": 90
+  },
+  "unexpected_result_count": 0
+}

@@ -1,0 +1,265 @@
+{
+  "absent_ids": [
+    "tests/test_installer_local_update.py::test_local_failure_never_names_an_unsafe_log",
+    "tests/test_installer_local_update.py::test_local_failures_end_with_next_and_details",
+    "tests/test_installer_local_update.py::test_local_update_reaching_the_target_exits_0_with_an_updated_receipt",
+    "tests/test_installer_local_update.py::test_local_update_whose_live_runtime_did_not_move_exits_3_not_updated",
+    "tests/test_installer_local_update.py::test_start_time_recovery_is_announced_once"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 31,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "037",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 1,
+    "PASSED": 30
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_local_update.py::test_local_update_backend_uses_saved_skill_policy",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_local_activation_validates_canonical_runtime_identity[health0-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_local_activation_validates_canonical_runtime_identity[health1-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_local_activation_validates_canonical_runtime_identity[health2-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_local_activation_validates_canonical_runtime_identity[health3-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_local_activation_validates_canonical_runtime_identity[health4-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_local_activation_validates_canonical_runtime_identity[health5-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_local_activation_validates_canonical_runtime_identity[None-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_update_uses_shared_transaction_and_persists_app_context_before_stop",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_candidate_failure_rolls_back_checkout_pointer_runtime_and_editor",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_stage_failure_reports_its_step_before_any_stop_or_journal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_failed_rollback_reports_original_and_recovery_steps",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_same_release_uses_shared_repair_without_staging_runtime",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_selection_requires_service_and_install_marker_to_agree[owner]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_selection_requires_service_and_install_marker_to_agree[program_root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_selection_requires_service_and_install_marker_to_agree[data_root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_selection_requires_service_and_install_marker_to_agree[managed_by]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_selection_requires_service_and_install_marker_to_agree[realm_root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_fresh_controller_recovers_local_context_from_shared_journal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_final_busy_refusal_restores_editor_and_does_not_move_checkout",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_busy_terminal_write_failure_preserves_refusal_and_skips_app_cleanup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_hook_protocol_requires_matching_id_and_ok",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_isolated_module_subprocess_uses_only_jsonl_protocol",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_local_recovery_refuses_foreign_active_journal_before_backend_setup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_recovery_routing_refuses_local_journal_in_ordinary_paths",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_execute_uses_existing_lock_order_for_both_install_managers[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_execute_uses_existing_lock_order_for_both_install_managers[pinokio]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_pinokio_activation_records_each_launch_before_session_handoff",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_local_update.py::test_protocol_error_preserves_c1_report_without_stop_flags",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_maintained_guides.py::test_maintained_setup_guides_explain_approved_default_execution",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_maintained_guides.py::test_setup_guides_have_one_approved_installer_command_per_platform",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "35c9b57b02d49a8fbd6671bdcfea33eb9f3d397200204ad95bfab5c249053eed",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "failed": 1,
+    "passed": 30
+  },
+  "unexpected_result_count": 0
+}

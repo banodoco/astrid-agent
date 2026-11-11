@@ -1,0 +1,714 @@
+{
+  "absent_ids": [
+    "tests/core/pack/test_transaction.py::test_group_add_survives_deferred_install_cleanup"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 144,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "024",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "313bbd46f1e24bfe635655d78b27ab0b321145d5",
+      "42ae24aff8d2cb854f874ce134161077a3ba3641",
+      "e65f4941d09b1cb4d1dd5aae6171c73e648706f4",
+      "f2948817eeb94af8dee76be21f6d673724f1606e"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "base",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 2,
+    "PASSED": 142
+  },
+  "outcomes": [
+    {
+      "id": "tests/core/pack/test_transaction.py::test_base_group_accepts_inactive_extra_without_host_marker_snapshot",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[preparing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[validated]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[built:alpha]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[built:shared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[built]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[before_swap]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[swapped]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[durable]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[before_refresh]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_at_every_transaction_boundary_exposes_complete_old_or_new_group[refreshed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[preparing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[validated]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[built:alpha]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[built:shared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[built]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[before_swap]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[swapped]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[durable]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[before_refresh]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_process_death_during_first_install_exposes_absence_or_complete_new_group[refreshed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_old_generation_reader_keeps_previous_pin_and_bytes_after_next_commit",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_interrupt_after_kernel_exchange_keeps_new_root_and_retired_old_generation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_whole_root_swap_permission_failure_preserves_old_group",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_single_pack_primitive_refuses_to_mutate_a_group_transaction_root",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_scan_waits_for_stable_group_lock_and_reads_only_new_commit",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_refresh_happens_after_durable_commit_and_failed_ack_is_retryable",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_stale_or_malformed_refresh_ack_keeps_committed_retry_pending[stale]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_stale_or_malformed_refresh_ack_keeps_committed_retry_pending[malformed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_refresh_callback_can_read_the_committed_group_while_writer_owns_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_new_refresh_ack_covers_all_changes_since_previous_ack",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_durable_sync_failure_keeps_new_group_and_refresh_can_recover",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_default_empty_group_requires_sha_but_no_pack_digests",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_default_conflict_refuses_user_pack_without_changing_group",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_removal_tombstone_survives_default_upgrades_and_rollbacks",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_update_and_rollback_intents_keep_user_removals[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_update_and_rollback_intents_keep_user_removals[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_removing_dependency_needed_by_retained_pack_refuses_whole_group",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_explicit_reinstall_clears_a_previously_committed_removal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_folder_source_group_uses_real_pack_copy_and_folder_pins",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_folder_update_uses_each_installed_source_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_committed_group_is_visible_through_real_loader_and_external_discovery",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_named_update_does_not_implicitly_update_other_user_packs",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_packs_update_command_and_rollback_restore_previous_generation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_update_and_rollback_cli_default_to_configured_user_collection[1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_update_and_rollback_cli_default_to_configured_user_collection[2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_update_cli_uses_default_for_empty_path_and_refuses_relative_discovery_root[]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_update_cli_uses_default_for_empty_path_and_refuses_relative_discovery_root[relative/packs]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_update_cli_uses_explicit_selected_external_dependency_roots[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_update_cli_uses_explicit_selected_external_dependency_roots[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_cli_file_url_update_selects_dependency_added_by_verified_candidate",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_cli_validates_retained_unrelated_external_dependency_for_update_and_rollback",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_cli_retained_pack_cannot_import_rogue_pack_api",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_cli_retained_pack_can_import_selected_core_pack_api",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_selected_dependency_release_pin_requires_commit_and_installed_digest",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_inventory_mode_keeps_release_pinned_pack_edits_permitted",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_declined_consent_does_not_run_builder_or_change_live_bytes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_dependency_paths_are_rejected_before_outside_tree_access[update-absolute]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_dependency_paths_are_rejected_before_outside_tree_access[update-traversal]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_dependency_paths_are_rejected_before_outside_tree_access[rollback-absolute]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_dependency_paths_are_rejected_before_outside_tree_access[rollback-traversal]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_caller_supplied_dependency_facts_require_canonical_ids[facts0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_caller_supplied_dependency_facts_require_canonical_ids[facts1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_caller_supplied_dependency_facts_require_canonical_ids[facts2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_selection_fails_closed_for_update_and_rollback[update-duplicate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_selection_fails_closed_for_update_and_rollback[update-incompatible_api]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_selection_fails_closed_for_update_and_rollback[update-incompatible_requirement]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_selection_fails_closed_for_update_and_rollback[update-pin_mismatch]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_selection_fails_closed_for_update_and_rollback[rollback-duplicate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_selection_fails_closed_for_update_and_rollback[rollback-incompatible_api]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_selection_fails_closed_for_update_and_rollback[rollback-incompatible_requirement]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_selection_fails_closed_for_update_and_rollback[rollback-pin_mismatch]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_root_change_after_composition_refuses_publish",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_root_swap_at_exchange_rolls_back_complete_generation[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_external_root_swap_at_exchange_rolls_back_complete_generation[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_cli_refuses_when_collection_changes_during_consent",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_cli_git_child_receives_only_declared_environment",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_update_cli_allows_omitted_source_tree_digest_and_rejects_real_release_pin_mismatch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_rollback_uses_explicit_interpreter_snapshot_for_python_requirements",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_rollback_restores_build_hook_metadata_with_the_pack_generation",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_contract_admission_tamper_refuses_update_before_publication",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_contract_admission_interruption_retry_keeps_record_revision_aligned[before_swap]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_contract_admission_interruption_retry_keeps_record_revision_aligned[swapped]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_update_command_failure_keeps_previous_generation[build]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_update_command_failure_keeps_previous_generation[swap]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_update_and_rollback_preserve_removals_and_unrelated_packs",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_rollback_does_not_restore_tombstone_cleared_by_explicit_readd",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_rollback_refuses_conflicting_current_source_pin",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_rollback_interruption_refuses_without_live_change_and_can_retry",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_rollback_historical_pin_must_match_applicable_release_pin",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_update_refuses_a_different_installed_source_pin",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_source_or_real_builder_failure_preserves_old_group[source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_source_or_real_builder_failure_preserves_old_group[build]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_refresh_runs_after_custody_release_so_an_independent_reader_is_not_blocked",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_late_ack_does_not_clear_a_newer_commit_outbox",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_write_during_transaction_window_is_never_dropped[built-install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_write_during_transaction_window_is_never_dropped[built-update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_write_during_transaction_window_is_never_dropped[built-rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_write_during_transaction_window_is_never_dropped[before_swap-install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_write_during_transaction_window_is_never_dropped[before_swap-update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_write_during_transaction_window_is_never_dropped[before_swap-rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_write_racing_the_exchange_is_swapped_back[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_write_racing_the_exchange_is_swapped_back[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_write_racing_the_exchange_is_swapped_back[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_write_into_new_generation_before_swap_back_is_kept_and_named[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_write_into_new_generation_before_swap_back_is_kept_and_named[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_write_into_new_generation_before_swap_back_is_kept_and_named[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_unchanged_discarded_generation_is_still_removed_after_swap_back",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_failed_swap_back_names_the_generation_holding_the_late_write",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_pack_writers_take_exclusive_collection_custody",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_equal_byte_update_of_a_built_pack_is_a_no_op",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_real_update_command_reports_an_equal_byte_update_as_unchanged",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_does_not_hold_collection_lock_across_processes[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_does_not_hold_collection_lock_across_processes[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_does_not_hold_collection_lock_across_processes[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_edit_during_consent_fails_closed_and_survives[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_edit_during_consent_fails_closed_and_survives[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_personal_edit_during_consent_fails_closed_and_survives[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_refusal_or_exception_preserves_live_collection[decline-install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_refusal_or_exception_preserves_live_collection[decline-update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_refusal_or_exception_preserves_live_collection[decline-rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_refusal_or_exception_preserves_live_collection[exception-install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_refusal_or_exception_preserves_live_collection[exception-update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_refusal_or_exception_preserves_live_collection[exception-rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_transaction_refuses_caller_owned_custody_before_consent[False-install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_transaction_refuses_caller_owned_custody_before_consent[False-update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_transaction_refuses_caller_owned_custody_before_consent[False-rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_transaction_refuses_caller_owned_custody_before_consent[True-install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_transaction_refuses_caller_owned_custody_before_consent[True-update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_transaction_refuses_caller_owned_custody_before_consent[True-rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_target_pack_edit_during_consent_is_preserved_and_refused[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_target_pack_edit_during_consent_is_preserved_and_refused[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_prompt_exception_releases_custody_for_other_process",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_replacing_custody_lock_during_consent_refuses_publication[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_replacing_custody_lock_during_consent_refuses_publication[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_replacing_custody_lock_during_consent_refuses_publication[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_staged_pack_edit_during_consent_refuses_publication[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_staged_pack_edit_during_consent_refuses_publication[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_refuses_caller_custody_for_other_collection[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_consent_refuses_caller_custody_for_other_collection[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_retained_definitions_only_admission_is_accepted",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction.py::test_retained_admission_that_is_not_an_object_is_refused_by_name",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "519bd79e0cf9952060a8059ea4915932c29a9a9a50e8a66b75dcd64ef211f3ec",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "deselected": 46,
+    "failed": 2,
+    "passed": 142
+  },
+  "unexpected_result_count": 0
+}

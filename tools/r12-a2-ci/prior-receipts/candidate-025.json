@@ -1,0 +1,534 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 100,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "025",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "ec48555d8298d155390ffbb37d1950c3e80b43a4",
+      "42ae24aff8d2cb854f874ce134161077a3ba3641",
+      "8d065a8fef3dd602d5462e27d8eca088cf4e8262",
+      "f2948817eeb94af8dee76be21f6d673724f1606e"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "candidate",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "PASSED": 100
+  },
+  "outcomes": [
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_admission_binds_entry_lazy_assets_manifest_and_release_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[entry_tamper]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[chunk_tamper]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[css_tamper]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[missing_chunk]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[symlink]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[escape]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[case_collision]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[extra_output]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_pack]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_lock]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_shared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_extension]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_graph]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_entry_graph]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[bad_size]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_mime]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[missing_entry]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_metadata_is_only_accepted_for_the_expected_committed_transaction",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[manifest_lf]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[manifest_content]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[missing_manifest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[manifest_symlink]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[unlisted_metadata]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[packId]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[sourceDigest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[artifactManifestDigest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[committedRevision]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[transactionId]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[extra_field]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[duplicate_field]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[entry]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[chunk]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[missing_chunk]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_integrity.py::test_pin_only_exchange_keeps_pack_bytes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_integrity.py::test_equal_byte_exchange_is_a_no_op_update",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_folder_update_matches_installed_string_source_identity[.]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_folder_update_matches_installed_string_source_identity[packs/local # folder]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_folder_update_refuses_different_folder_identity[root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_folder_update_refuses_different_folder_identity[subpath]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[omitted-digests-missing-sha]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[omitted-digests-ref]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[omitted-digests-full-sha]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[empty-digests-missing-sha]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[empty-digests-ref]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[empty-digests-full-sha]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_packs_add_over_existing_collection",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_recovery_removes_readonly_candidate_preserving_old_bytes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_restore_retries_after_each_rename_without_deleting[1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_restore_retries_after_each_rename_without_deleting[2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_restore_retries_after_each_rename_without_deleting[3]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_recovery_cleanup_failure_retains_old_and_retries",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_swapback_crash_restores_admitted_generation[prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_swapback_crash_restores_admitted_generation[old_moved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_legacy_journal_blocks_ambiguous_recovery[prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_legacy_journal_blocks_ambiguous_recovery[old_moved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-before-prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-before-old_moved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-before-published]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-before-retired]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-after-prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-after-old_moved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-after-published]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-after-retired]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-before-prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-before-old_moved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-before-published]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-before-retired]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-after-prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-after-old_moved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-after-published]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-after-retired]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-before-prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-before-old_moved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-before-published]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-before-retired]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-after-prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-after-old_moved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-after-published]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-after-retired]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_crash_between_rename_and_journal_recovers[1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_crash_between_rename_and_journal_recovers[2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_crash_between_rename_and_journal_recovers[3]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_lock_covers_renames_journal_and_backup_retirement",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_posix_collection_still_uses_existing_atomic_exchange[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_posix_collection_still_uses_existing_atomic_exchange[darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_process_death_recovers_on_host_start[prepared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_process_death_recovers_on_host_start[old_moved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_process_death_recovers_on_host_start[published]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_process_death_recovers_on_host_start[retired]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_concurrent_reader_waits_until_complete_new_collection",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_recovery_itself_can_be_interrupted[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_recovery_itself_can_be_interrupted[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_rollback_keeps_retired_generation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_crash_removing_finished_journal[before]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_crash_removing_finished_journal[after]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_transaction_windows.py::test_windows_reader_reports_retry_if_recovery_has_a_sharing_violation",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "5127e758b7eee4005807b4a62a6ca76f0cead7c9599ef5c6447ce4838f1a67b9",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "passed",
+      "exit_code": 0,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "deselected": 1,
+    "passed": 100
+  },
+  "unexpected_result_count": 0
+}

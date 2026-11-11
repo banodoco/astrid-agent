@@ -1,0 +1,459 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 81,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "028",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 12,
+    "PASSED": 69
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_acl.py::test_windows_installer_lock_stays_outside_program_and_workspace[False]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_installer_lock_stays_outside_program_and_workspace[True]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_installer_does_not_bypass_existing_directory_validation[program]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_installer_does_not_bypass_existing_directory_validation[state]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_uninstall_deletes_default_workspace_while_lock_is_held",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_refuses_selected_roots_containing_installer_lock[state-root]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_refuses_selected_roots_containing_installer_lock[state-data]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_refuses_selected_roots_containing_installer_lock[parent-root]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_refuses_selected_roots_containing_installer_lock[parent-data]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_refuses_selected_roots_containing_installer_lock[child-root]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_refuses_selected_roots_containing_installer_lock[child-data]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_refuses_selected_roots_containing_installer_lock[bootstrap-root]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_refuses_selected_roots_containing_installer_lock[bootstrap-data]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_unix_installer_retains_original_per_user_lock[linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_unix_installer_retains_original_per_user_lock[darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_install_records_pass_the_runtime_private_read",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_posix_write_json_keeps_its_permissions",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_staged_version_folder_is_a_protected_record_parent",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_migrates_owned_legacy_selection_under_the_installer_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_leaves_unowned_or_contended_legacy_selection_untouched[foreign]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_leaves_unowned_or_contended_legacy_selection_untouched[malformed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_leaves_unowned_or_contended_legacy_selection_untouched[link]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_leaves_unowned_or_contended_legacy_selection_untouched[busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_retained_private_selection_wins_over_legacy_receipt",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_live_r0_login_selection_stays_where_r0_reads_it[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_live_r0_login_selection_stays_where_r0_reads_it[uninstalled-receipt]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_unproven_live_login_selection_is_left_untouched[no-current]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_unproven_live_login_selection_is_left_untouched[linked-root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_unproven_live_login_selection_is_left_untouched[malformed-version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_unproven_live_login_selection_is_left_untouched[no-program-root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_live_legacy_selection_beats_a_private_uninstalled_receipt",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_never_deletes_a_live_legacy_selection_it_did_not_migrate",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_uninstalled_receipt_migrates_for_reinstall[0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_windows_uninstalled_receipt_migrates_for_reinstall[1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_posix_selection_is_unchanged_and_never_migrated[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_posix_selection_is_unchanged_and_never_migrated[darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_acl.py::test_installer_migrates_before_any_selection_read",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_generated_service_uses_lock_held_by_installer_across_homes[switched-candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_generated_service_uses_lock_held_by_installer_across_homes[rollback_selected-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_journal_and_service_use_captured_lock_if_installer_environment_changes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_tampered_journal_path_does_not_probe_another_held_lock[relative]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_tampered_journal_path_does_not_probe_another_held_lock[other]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_tampered_journal_path_does_not_probe_another_held_lock[null]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_tampered_journal_path_does_not_probe_another_held_lock[noncanonical]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[delete-field-switched-candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[delete-field-rollback_selected-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[delete-context-switched-candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[delete-context-rollback_selected-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[null-context-switched-candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[null-context-rollback_selected-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[list-context-switched-candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[list-context-rollback_selected-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[false-context-switched-candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_or_malformed_context[false-context-rollback_selected-old]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_bound_action_refuses_missing_binding_even_when_expected_lock_is_held",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_unbound_legacy_journal_retains_service_home_fallback",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_unbound_action_rejects_malformed_present_context[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_unbound_action_rejects_malformed_present_context[context1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_unbound_action_rejects_malformed_present_context[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_unbound_action_rejects_malformed_present_context[]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_unbound_action_rejects_malformed_present_context[0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_activation_lock.py::test_pinokio_accepts_only_its_root_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_fixture_has_cases",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[untouched]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[already-set-up]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[edit-autostart-off]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[edit-command-off]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[edit-skills-off]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[edit-skill-copies-on]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-0000]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-0001]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-0010]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-0011]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-0100]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-0101]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-0111]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-1000]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-1001]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-1011]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[combined-1101]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_argv_fixture.py::test_app_argv_resolves_installer_choices[update-legacy-saved-defaults]",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "7472d67f0a0f23e4578175c057d411e7090411edf597af572a0a3b69fa40a828",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "failed": 12,
+    "passed": 69
+  },
+  "unexpected_result_count": 0
+}

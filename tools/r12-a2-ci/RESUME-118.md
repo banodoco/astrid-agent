@@ -1,3 +1,5 @@
+> Historical 118-pair draft, superseded by [DESIGN-080.md](DESIGN-080.md). Do not use its branch or scope for the current proposal.
+
 # A2 118-pair continuation — source draft, no run authority
 
 This handoff proposes one push-triggered workflow on the exact fresh scratch ref `scratch/r12-a2-resume-022-052-20261111`. No triggering ref or CI run is authorized by the preparation of this branch. Recheck that ref is absent, all related runs are stopped, provenance is resolved, and sufficient unpaid capacity exists immediately before any separately coordinated trigger. The workflow requires exact repository and ref, zero before-SHA, first attempt, no force/deletion, no dispatch or automatic retry.

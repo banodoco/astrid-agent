@@ -20,7 +20,7 @@ permissions:
   contents: read
 jobs:
   compare:
-    if: github.event_name == 'push' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-022-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    if: github.event_name == 'push' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-080-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:
@@ -66,6 +66,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 2
         id: slot02
+        if: inputs.group_range != '041-041'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -97,6 +98,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 3
         id: slot03
+        if: inputs.group_range != '041-041'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -128,7 +130,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 4
         id: slot04
-        if: inputs.side != 'r10' || inputs.group_range != '022-030'
+        if: inputs.group_range != '041-041'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -160,7 +162,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 5
         id: slot05
-        if: inputs.side != 'r10' || inputs.group_range != '022-030'
+        if: inputs.group_range != '041-041'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -192,7 +194,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 6
         id: slot06
-        if: inputs.side != 'r10' || inputs.group_range != '022-030'
+        if: inputs.group_range != '041-041'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -224,7 +226,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 7
         id: slot07
-        if: inputs.side != 'r10' || inputs.group_range != '022-030'
+        if: inputs.group_range != '041-041'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -256,7 +258,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 8
         id: slot08
-        if: inputs.side != 'r10' || inputs.group_range != '022-030'
+        if: inputs.group_range == '042-052'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -288,7 +290,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 9
         id: slot09
-        if: inputs.side != 'r10' || inputs.group_range != '022-030'
+        if: inputs.group_range == '042-052'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -320,7 +322,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 10
         id: slot10
-        if: inputs.group_range != '022-030'
+        if: inputs.group_range == '042-052'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -352,7 +354,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 11
         id: slot11
-        if: inputs.group_range != '022-030'
+        if: inputs.group_range == '042-052'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}

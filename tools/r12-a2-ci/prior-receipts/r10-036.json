@@ -1,0 +1,692 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 139,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "036",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 3,
+    "PASSED": 136
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_lifecycle.py::test_runtime_commands_do_not_inject_rejected_render_startup_overrides",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_reinstall_attaches_kept_realm_without_creating_another",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_fresh_install_runs_skills_sync_after_verify",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_reinstall_without_sandbox_rewrites_setting_after_sandbox_install",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_upgrade_runs_skills_sync_after_verify",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_staged_journal_publication_failure_keeps_old_owner_running",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_service_admission_publication_precedes_first_transaction_stop",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_service_admission_publication_failure_aborts_before_first_stop",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_recovery_admission_publication_failure_leaves_pending_journal_and_backup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_switched_journal_publication_failure_rolls_back_selected_candidate",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_runtime_stop_report_preserves_details_and_only_lifecycle_refusal_skips_rollback[busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_runtime_stop_report_preserves_details_and_only_lifecycle_refusal_skips_rollback[timeout]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_runtime_stop_report_preserves_details_and_only_lifecycle_refusal_skips_rollback[identity]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_terminal_survives_public_install_final_stop_refusal[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_terminal_survives_public_install_final_stop_refusal[restart-repair]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_terminal_survives_public_install_final_stop_refusal[recovery]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_post_stop_failure_runs_update_recovery",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_install_dispatches_by_numeric_release[0-None-a-b-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_install_dispatches_by_numeric_release[0-0-c-d-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_install_dispatches_by_numeric_release[9-10-a-b-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_install_dispatches_by_numeric_release[10-9-b-c-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_install_dispatches_by_numeric_release[10-10-c-d-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[None-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[None-0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[None-9]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[None-10]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[0-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[0-0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[0-9]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[0-10]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[9-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[9-0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[9-9]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[9-10]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[10-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[10-0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[10-9]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_legacy_version_record_release_dispatch_matrix[10-10]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_same_release_repair_keeps_installed_version_and_never_stages[healthy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_same_release_repair_keeps_installed_version_and_never_stages[unhealthy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_same_release_repair_keeps_installed_version_and_never_stages[restart-required]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_same_release_repair_applies_changed_skill_policy_without_staging",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_explicit_update_rejects_malformed_candidate_release_before_staging",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_explicit_update_forces_same_or_older_release_restage[9]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_explicit_update_forces_same_or_older_release_restage[10]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_newer_release_keeps_shared_transaction_safety[preparation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_newer_release_keeps_shared_transaction_safety[busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_newer_release_keeps_shared_transaction_safety[rollback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_release_comparison_reads_version_after_journal_recovery",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_non_stop_runtime_error_still_runs_update_recovery",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_fresh_install_runtime_refusal_does_not_retry_stop",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_repair_stop_refusal_does_not_persist_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_candidate_stop_refusal_retries_fenced_stop_before_any_restore",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_recovery_stop_refusal_is_rethrown_without_activation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_migration_stopping_recovery_fences_the_still_selected_old_version",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_skills_sync_failure_is_logged_as_one_line_and_install_succeeds",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_skill_sync_logs_output_and_failure_result",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_fresh_install_cleanup_preserves_primary_failure[None-failure0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_fresh_install_cleanup_preserves_primary_failure[None-failure1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_fresh_install_cleanup_preserves_primary_failure[cleanup1-failure0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_fresh_install_cleanup_preserves_primary_failure[cleanup1-failure1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_fresh_install_cleanup_preserves_primary_failure[cleanup2-failure0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_fresh_install_cleanup_preserves_primary_failure[cleanup2-failure1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_reinstall_ignores_current_pointer_to_removed_interpreter",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_unowned_existing_workspace_still_refuses_first_install",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_doctor_uses_installed_version_and_prints_bundle_path",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_successful_update_prints_retained_backup_location",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_storage_root_uses_install_selection_before_persisted_fallback",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_explicit_runtime_data_root_still_overrides_install_selection",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_exposes_doctor_as_an_exclusive_mode_with_optional_bundle_path",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_rejects_positional_operations[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_rejects_positional_operations[repair]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_rejects_positional_operations[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_rejects_positional_operations[uninstall]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_accepts_operation_flags[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_accepts_operation_flags[uninstall]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_accepts_operation_flags[doctor]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_explains_backup_space_failure_with_one_sentence",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_shows_safe_verification_context_but_not_raw_diagnostics",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics[SubprocessError]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics[RuntimeError]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_loads_manifest_when_current_pointer_targets_missing_interpreter[None-strict]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_loads_manifest_when_current_pointer_targets_missing_interpreter[--sandbox-sandbox]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_repeat_uninstall_removes_bootstrap_recreated_program_root",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_uses_runtime_fence_before_service_manager",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_authority_survives_new_controller_and_real_c1_replay[migration]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_authority_survives_new_controller_and_real_c1_replay[app]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_real_runtime_migration_bootstrap_follows_backend_c1_stop",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_installer_cli_recovers_realm_restore_gap_through_real_c1[realm_removed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_installer_cli_recovers_realm_restore_gap_through_real_c1[catalog_removed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_installer_cli_recovers_realm_restore_gap_through_real_c1[support_catalog_removed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_preserves_runtime_busy_details_and_owner",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_fails_closed_without_manager_action[changed_birth]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_fails_closed_without_manager_action[identity_error]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_fails_closed_without_manager_action[incomplete_discovery]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_fails_closed_without_manager_action[malformed_discovery]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_cleans_proven_stale_owner_under_runtime_fence",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_cli_rejects_removed_repair_flag",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[details1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[details2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[unsafe]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[details4]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[details5]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[details6]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[details7]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[details8]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_stop_without_explicit_lifecycle_report_rolls_back[details9]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_non_runtime_stop_exception_retries_before_rollback[ValueError]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_initial_non_runtime_stop_exception_retries_before_rollback[KeyboardInterrupt]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_uncertain_stop_then_refused_rollback_leaves_journal_for_repeated_recovery",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_later_lifecycle_report_runs_rollback_without_terminal_refusal[backup]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_later_lifecycle_report_runs_rollback_without_terminal_refusal[upgrade]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_later_lifecycle_report_runs_rollback_without_terminal_refusal[verify]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_real_c1_post_stop_failure_retries_fence_before_old_activation",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_repair_restarts_healthy_service_after_fixing_stale_chat_command",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_pinokio_repair_chat_command_before_registration",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_repair_skips_down_for_proven_dead_runtime_and_keeps_discovery",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_uses_runtime_down_for_matching_live_owner",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_fails_closed_when_runtime_owner_identity_is_uncertain[changed_birth]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_fails_closed_when_runtime_owner_identity_is_uncertain[error]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_fails_closed_for_incomplete_discovery_identity[True-birth-1-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_fails_closed_for_incomplete_discovery_identity[0-birth-1-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_fails_closed_for_incomplete_discovery_identity[7-birth-1-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_fails_closed_for_incomplete_discovery_identity[7--False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_fails_closed_for_incomplete_discovery_identity[7-None-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_does_not_treat_malformed_or_empty_discovery_as_removed[{}]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_does_not_treat_malformed_or_empty_discovery_as_removed[[]]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_does_not_treat_malformed_or_empty_discovery_as_removed[{]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_stop_treats_discovery_removed_during_read_as_stopped",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_backend_stop_reused_pid_with_matching_publications_never_signals_new_owner",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_uninstall_composes_owned_skill_cleanup_before_program_removal[False-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_uninstall_composes_owned_skill_cleanup_before_program_removal[False-pinokio]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_uninstall_composes_owned_skill_cleanup_before_program_removal[True-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_uninstall_composes_owned_skill_cleanup_before_program_removal[True-pinokio]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_uninstall_skill_cleanup_failure_retains_selected_source[process]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_uninstall_skill_cleanup_failure_retains_selected_source[invalid-json]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_ordinary_update_applies_saved_skill_policy[requested0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_lifecycle.py::test_ordinary_update_applies_saved_skill_policy[requested1]",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "9a5ddee4bac573b1ecd11eeb2b7f12db6808b96ab9dabcc9770acf0b891b62cf",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "deselected": 1,
+    "failed": 3,
+    "passed": 136
+  },
+  "unexpected_result_count": 0
+}

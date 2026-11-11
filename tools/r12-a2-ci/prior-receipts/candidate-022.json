@@ -1,0 +1,533 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 100,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "022",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "ec48555d8298d155390ffbb37d1950c3e80b43a4",
+      "42ae24aff8d2cb854f874ce134161077a3ba3641",
+      "8d065a8fef3dd602d5462e27d8eca088cf4e8262",
+      "f2948817eeb94af8dee76be21f6d673724f1606e"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "candidate",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "PASSED": 100
+  },
+  "outcomes": [
+    {
+      "id": "tests/core/pack/test_install.py::test_git_install_resolves_ref_checks_digest_and_writes_pin_without_executing",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_reachable_revisions[ancestor]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_reachable_revisions[tag]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_reachable_revisions[head]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unreachable_revision_preserves_old_install[unknown]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unreachable_revision_preserves_old_install[other_repository]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unreachable_revision_preserves_old_install[dangling_head]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unreachable_revision_preserves_old_install[dangling_sha]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[expected_digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[source_pin_digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[source_pin_commit]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[source_pin_source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[release_pin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_real_pure_validator_refusals_preserve_install[-3.0-api_major]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_real_pure_validator_refusals_preserve_install[dependencies: {packs: [absent]}\\n-2.0-missing_dep]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_real_pure_validator_refusals_preserve_install[dependencies: {python_requirements: [no-such-installed-distribution]}\\n-2.0-missing_python]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_real_pure_validator_refusals_preserve_install[-2.4-api_minor]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_real_import_checker_refusal[import astrid.core.audit\\n]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_real_import_checker_refusal[def bad(:\\n]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_canonical_schema_refusal[surprise: true\\n]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_canonical_schema_refusal[engines: {local: {recipe: ../escape.json}}\\n]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_folder_is_unpinned_and_does_not_publish_generated_artifacts",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_monorepo_subpath_and_source_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[payload]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[excluded]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[nested_excluded]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[destination]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[ancestor]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[lock]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[personal]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[../personal]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[/personal]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[hello_ext/../../personal]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[HELLO]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[core]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[generation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_subpath_escape_refused[../hello_ext]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_subpath_escape_refused[/hello_ext]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_subpath_escape_refused[packs/../../personal]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_subpath_escape_refused[packs\\\\hello_ext]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_subpath_escape_refused[.git]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_subpath_escape_refused[C:/escape]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_personal_manifest_disguised_as_normal_pack_refused",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_idempotence_and_atomic_update",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_host_hook_failure_and_tampering_never_publish",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_kill_between_verified_stage_and_swap_leaves_complete_old_install[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_kill_between_verified_stage_and_swap_leaves_complete_old_install[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_real_concurrent_installers_serialize_and_revalidate",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_shared_root_resolver_and_personal_preservation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_default_cannot_overwrite_user_pack",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_staged_dependencies_use_destination_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_folder_special_file_refusal_does_not_block_or_publish",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_git_submodule_refused_without_fetching_or_running_it",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_case_colliding_git_directory_prefixes_refused",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_actual_atomic_swap_permission_failure_preserves_old_install",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_git_sources_refused_without_execution_or_credentials[ext::sh -c evil]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_git_sources_refused_without_execution_or_credentials[https://TOKEN@github.com/repo.git]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_unsafe_git_sources_refused_without_execution_or_credentials[https://user:secret@github.com/repo.git]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_valid_default_is_digest_pinned_and_idempotent",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_folder_pin_source_cannot_be_relabelled_and_source_cannot_contain_staging",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_reachable_commit_with_unborn_remote_head_is_accepted",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_locked_environment_uses_only_selected_metadata_in_real_install",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[ambient_only]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[wrong_name]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[wrong_version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[missing_metadata]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[bad_interpreter]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_canonical_manifest_refusal_does_not_access_locked_inventory",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_no_python_requirements_never_acquires_locked_inventory",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_default_cannot_overwrite_an_existing_folder_without_a_pin",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_personal_origin_cannot_be_replaced_even_under_another_directory_id",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_host_build_outputs_publish_even_when_source_and_pin_are_unchanged",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_selected_install_never_reads_or_enumerates_bundled_siblings[git]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_selected_install_never_reads_or_enumerates_bundled_siblings[folder]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_selected_install_never_reads_or_enumerates_bundled_siblings[reserved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_native_publication_policy_is_bound_before_installation[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_native_publication_policy_is_bound_before_installation[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_supplied_unsupported_publication_policy_refuses_update_and_preserves_install",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_shared_publication_operations_do_not_select_platform_policy",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_install.py::test_selected_python_inventory_ignores_ambient_distributions",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_dependency_resolves_across_configured_roots",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_discovery_cache_separates_hidden_policy_in_both_call_orders[call_order0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_discovery_cache_separates_hidden_policy_in_both_call_orders[call_order1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_checker_refuses_forbidden_import",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_default_source_pin_conflict",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_malformed_optional_and_required",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_duplicate_ids_across_roots_are_refused",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_default_scan_collects_roots_before_closure",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_runtime_discovery_binds_default_and_configured_personal_root[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_runtime_discovery_binds_default_and_configured_personal_root[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_core_id_reuse_is_refused_at_shared_inventory_boundary",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_inventory_review_fix.py::test_rejected_dependency_quarantines_dependent",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_missing_project_pack_is_passive.py::test_project_reference_to_missing_pack_does_not_fetch_or_execute",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_nofollow_fallback.py::test_sync_directory_refuses_linked_directory_without_nofollow",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_nofollow_fallback.py::test_group_lock_refuses_linked_lock_file_without_nofollow",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_nofollow_fallback.py::test_install_lock_refuses_linked_lock_file_without_nofollow",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_nofollow_fallback.py::test_group_lock_opens_regular_lock_file_without_nofollow",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_nofollow_fallback.py::test_install_lock_opens_regular_lock_file_without_nofollow",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_nofollow_fallback.py::test_group_lock_refuses_linked_lock_file_with_real_nofollow",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "3d7ec96ca7dc5df91bc48042a1e72dc660ddd75ad5622c2bbcbcf653ca6d982f",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "passed",
+      "exit_code": 0,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "passed": 100
+  },
+  "unexpected_result_count": 0
+}

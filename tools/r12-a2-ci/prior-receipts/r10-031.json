@@ -1,0 +1,184 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 12,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "031",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 7,
+    "PASSED": 5
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_cli_source_refusal_precedes_record_writes_and_stop[explicit-custom]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_cli_source_refusal_precedes_record_writes_and_stop[default-selection]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_real_source_guard_preserves_retained_ownership_bytes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_real_cli_invalid_live_identity_refuses_before_writes_and_stop[health0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_real_cli_invalid_live_identity_refuses_before_writes_and_stop[health1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_real_cli_invalid_live_identity_refuses_before_writes_and_stop[health2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_selected_r0_refuses_before_preflight_or_stop[source]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_selected_r0_refuses_before_preflight_or_stop[unreadable]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_selected_r0_refuses_before_preflight_or_stop[changed]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_selected_r0_refuses_before_preflight_or_stop[legacy_birth]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_refusals.py::test_selected_r0_refuses_before_preflight_or_stop[legacy_unknown]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_bootstrap_schema.py::test_staged_canonical_schema_reaches_strict_consumer",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "4dd768756ec2494d394c6003380486b1f672042b6817e68fcdf522e9ee8de272",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "deselected": 6,
+    "failed": 7,
+    "passed": 5
+  },
+  "unexpected_result_count": 0
+}

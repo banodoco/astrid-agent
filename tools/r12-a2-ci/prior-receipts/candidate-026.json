@@ -1,0 +1,447 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 78,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "026",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "ec48555d8298d155390ffbb37d1950c3e80b43a4",
+      "42ae24aff8d2cb854f874ce134161077a3ba3641",
+      "8d065a8fef3dd602d5462e27d8eca088cf4e8262",
+      "f2948817eeb94af8dee76be21f6d673724f1606e"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "candidate",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 1,
+    "PASSED": 77
+  },
+  "outcomes": [
+    {
+      "id": "tests/core/pack/test_v3_core_worker_luna.py::test_non_strict_pack_scan_quarantines_optional_failure_without_downgrading_discovery",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/core/pack/test_v3_core_worker_luna.py::test_element_loading_isolates_invalid_sibling_and_keeps_diagnostic",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_v3_core_worker_luna.py::test_capability_execution_admission_fails_closed_for_unapproved_ids",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_unverified_bundled_shadow_is_rejected",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_only_verified_bundled_snapshot_keeps_bundled_collection_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_namespace_accepts_only_the_verified_bundled_relocation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_worker_imports_real_bundled_action_from_verified_snapshot",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_verified_relocation_rejects_changed_snapshot[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_verified_relocation_rejects_changed_snapshot[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_verified_relocation_must_match_exact_selection[original_root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_verified_relocation_must_match_exact_selection[root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_verified_relocation_must_match_exact_selection[source_digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_verified_relocation_must_match_exact_selection[pack_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_namespace_accepts_exact_canonical_personal_relocation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_personal_snapshot_keeps_original_collection_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_personal_relocation_always_rechecks_digest[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_personal_relocation_always_rechecks_digest[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_forged_personal_relocation_is_rejected[original]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_forged_personal_relocation_is_rejected[selection]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_forged_personal_relocation_is_rejected[digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_forged_personal_relocation_is_rejected[reused]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_forged_personal_relocation_is_rejected[outside]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_verified_relocations.py::test_forged_personal_relocation_is_rejected[public]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_windows_install_flushes_files_and_atomically_publishes[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_windows_install_flushes_files_and_atomically_publishes[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_windows_replace_failure_does_not_publish",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_windows_updates_keep_the_complete_prior_install",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_failure_diagnostic_is_sanitized_and_preserves_old_install[oserror-_copy_folder-copy_source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_failure_diagnostic_is_sanitized_and_preserves_old_install[oserror-_sync_tree-sync_tree]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_failure_diagnostic_is_sanitized_and_preserves_old_install[oserror-_publish-publish]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_failure_diagnostic_is_sanitized_and_preserves_old_install[valueerror-_copy_folder-copy_source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_failure_diagnostic_is_sanitized_and_preserves_old_install[valueerror-_sync_tree-sync_tree]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_failure_diagnostic_is_sanitized_and_preserves_old_install[valueerror-_publish-publish]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_windows_file_fsync_errors_are_not_skipped",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_posix_sync_flushes_files_and_all_directories[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_posix_sync_flushes_files_and_all_directories[darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_posix_directory_open_failure_is_not_ignored",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_windows_sync_preserves_group_update_and_rollback",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_readonly_git_objects_are_removed_on_windows_permission_failure",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_windows_publish.py::test_committed_install_records_cleanup_failure_and_keeps_residue",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_rejected_attach_names_mismatched_ready_key_on_stderr",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_refusal_text_carries_the_attach_reason",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_attach_observes_current_structured_refresh_with_runtime_owner",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_failed_renewal_removes_ready_until_recovery",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_attach_rejects_stale_nested_registration[source_epoch]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_attach_rejects_stale_nested_registration[source_digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_attach_rejects_stale_nested_registration[dependency_digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_attach_refuses_unsafe_owner_or_foreign_runtime[missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_attach_refuses_unsafe_owner_or_foreign_runtime[symlink]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_attach_refuses_unsafe_owner_or_foreign_runtime[permissions]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_host_attach_rejection.py::test_attach_refuses_unsafe_owner_or_foreign_runtime[foreign-runtime]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_an_installed_pack_declares_the_schema_and_every_check_uses_it",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_a_cached_schema_stays_on_its_provider_until_its_identity_changes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_removing_a_cached_provider_refuses_parameter_writes_after_registry_clear",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_replacing_a_cached_provider_with_a_malformed_manifest_refuses_with_its_code",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_a_moved_element_names_its_pack_and_install_command_and_writes_nothing",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_without_the_pack_a_timeline_still_shows_inspects_and_round_trips_unchanged",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_without_the_pack_schema_independent_edits_work_and_keep_the_params_exactly",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic[x=120-cli]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic[x=120-python]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic[x=120-sheet]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic[x='not-a-number'-cli]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic[x='not-a-number'-python]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic[x='not-a-number'-sheet]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic[zzbogus=2-cli]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic[zzbogus=2-python]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic[zzbogus=2-sheet]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_opaque_data_keeps_its_exact_json_bytes_without_the_pack",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_a_sheet_boolean_is_not_an_unchanged_opaque_number",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_resolving_timing_keeps_unresolved_params_and_their_formulas_opaque",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_baseline_exemption_preserves_opaque_params_but_refuses_changes_and_removals",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_native_equal_parameter_write_keeps_opaque_bytes_and_the_write_guard",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_attached_unchanged_parameters_work_without_the_pack",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_a_present_but_malformed_pack_manifest_has_its_own_code",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_a_malformed_element_manifest_has_its_own_code",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_a_registry_failure_has_its_own_code",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_an_unknown_element_is_not_reported_as_a_moved_pack",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/sdk/test_timeline_element_schema_resolution.py::test_a_media_clip_is_not_an_element_and_keeps_its_fade_params",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "c9fdb5372adc4d238b38ed1bb1d1d9b970addcd330db583e6cc7f1abb4b281d6",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "failed": 1,
+    "passed": 77
+  },
+  "unexpected_result_count": 0
+}

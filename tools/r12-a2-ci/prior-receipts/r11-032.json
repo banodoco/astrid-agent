@@ -1,0 +1,711 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 144,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "032",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "a105de3a4852cb61b9647dfe2c920118bd29f272",
+      "4f5477cb0f5b03d28bec991a1fe34edcd8fc309f",
+      "e65f4941d09b1cb4d1dd5aae6171c73e648706f4",
+      "f2948817eeb94af8dee76be21f6d673724f1606e"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r11",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 59,
+    "PASSED": 85
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-repair-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-repair-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-repair-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-update-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-update-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-update-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-uninstall-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-uninstall-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-uninstall-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-delete-data-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-delete-data-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-delete-data-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-recovery-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-recovery-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-recovery-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-candidate-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-candidate-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[running-candidate-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-repair-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-repair-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-repair-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-update-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-update-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-update-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-uninstall-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-uninstall-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-uninstall-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-delete-data-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-delete-data-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-delete-data-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-recovery-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-recovery-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-recovery-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-candidate-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-candidate-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[cancel-candidate-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-repair-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-repair-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-repair-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-update-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-update-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-update-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-uninstall-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-uninstall-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-uninstall-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-delete-data-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-delete-data-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-delete-data-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-recovery-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-recovery-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-recovery-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-candidate-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-candidate-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[attempt-candidate-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-repair-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-repair-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-repair-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-update-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-update-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-update-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-uninstall-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-uninstall-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-uninstall-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-delete-data-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-delete-data-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-delete-data-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-recovery-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-recovery-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-recovery-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-candidate-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-candidate-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[claimed-candidate-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-repair-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-repair-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-repair-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-update-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-update-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-update-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-uninstall-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-uninstall-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-uninstall-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-delete-data-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-delete-data-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-delete-data-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-recovery-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-recovery-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-recovery-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-candidate-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-candidate-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[stale-candidate-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-repair-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-repair-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-repair-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-update-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-update-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-update-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-uninstall-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-uninstall-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-uninstall-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-delete-data-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-delete-data-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-delete-data-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-recovery-linux]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-recovery-darwin]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-recovery-win32]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-candidate-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-candidate-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup[reservation-candidate-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_idle_owner_stops_once_before_manager_with_fence_held[linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_idle_owner_stops_once_before_manager_with_fence_held[darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_idle_owner_stops_once_before_manager_with_fence_held[win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_unknown_owner_stop_failure_never_falls_back_to_manager[failure0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_unknown_owner_stop_failure_never_falls_back_to_manager[failure1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_unknown_owner_stop_retry_succeeds_once_failure_clears",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_actual_subprocess_result_mapping_preserves_refusals[output0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_actual_subprocess_result_mapping_preserves_refusals[output1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_actual_subprocess_result_mapping_preserves_refusals[output2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_cli_busy_preflight_precedes_marker_and_selection_writes",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_cli_preflights_once_and_actual_stop_fences_staged_work[none]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_cli_preflights_once_and_actual_stop_fences_staged_work[staging]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_cli_preflights_once_and_actual_stop_fences_staged_work[final-fence]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_cli_repair_and_uninstall_preflight_once_before_stop_admission[repair]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_cli_repair_and_uninstall_preflight_once_before_stop_admission[uninstall]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_real_manager_methods_only_run_after_fenced_stop[False-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_real_manager_methods_only_run_after_fenced_stop[False-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_real_manager_methods_only_run_after_fenced_stop[False-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_real_manager_methods_only_run_after_fenced_stop[True-linux]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_real_manager_methods_only_run_after_fenced_stop[True-darwin]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_real_manager_methods_only_run_after_fenced_stop[True-win32]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_final_stop_holds_admission_until_first_signal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_replacement_before_manager_loses_stop_authority",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_fresh_backend_no_publication_runs_c1_before_manager_callback",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_service_record_must_belong_to_selected_install[owner-other]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_service_record_must_belong_to_selected_install[program_root-/elsewhere]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_service_record_must_belong_to_selected_install[data_root-/elsewhere]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success[busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success[late_busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success[replacement]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success[unknown]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success[timeout]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success[malformed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success[success]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_pinokio_controller_failure_retries_ownerless_through_fresh_c1[drain]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_busy_fence.py::test_pinokio_controller_failure_retries_ownerless_through_fresh_c1[timeout]",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "462a1bcfa89637788ae1947965ad0c75edad7190c2f9ea0dcdfe7ac798d71293",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "failed": 59,
+    "passed": 85
+  },
+  "unexpected_result_count": 0
+}

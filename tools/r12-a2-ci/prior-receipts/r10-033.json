@@ -1,0 +1,429 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 74,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "033",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "PASSED": 74
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_candidate_admits_supported_old_schema_without_requiring_migration_first",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_candidate_rejects_workspace_selection_change[realm_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_candidate_rejects_workspace_selection_change[realm_root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_incomplete_or_escaping_candidate_is_rejected_before_workspace_access[python]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_incomplete_or_escaping_candidate_is_rejected_before_workspace_access[profile]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_incomplete_or_escaping_candidate_is_rejected_before_workspace_access[external-source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_incomplete_or_escaping_candidate_is_rejected_before_workspace_access[missing-source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_runtime_profile_source_environment_and_services_are_admitted_before_workspace[bad-profile]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_runtime_profile_source_environment_and_services_are_admitted_before_workspace[incompatible-protocol]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_runtime_profile_source_environment_and_services_are_admitted_before_workspace[incompatible-schema]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_runtime_profile_source_environment_and_services_are_admitted_before_workspace[missing-source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_runtime_profile_source_environment_and_services_are_admitted_before_workspace[missing-environment]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_runtime_profile_source_environment_and_services_are_admitted_before_workspace[missing-services]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_runtime_profile_source_environment_and_services_are_admitted_before_workspace[bad-services]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_runtime_profile_source_environment_and_services_are_admitted_before_workspace[missing-pack-host]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_app_prepare_uses_runtime_candidate_admission_before_lifecycle_side_effects[bad-profile]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_app_prepare_uses_runtime_candidate_admission_before_lifecycle_side_effects[incompatible-protocol]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_app_prepare_uses_runtime_candidate_admission_before_lifecycle_side_effects[incompatible-schema]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_app_prepare_uses_runtime_candidate_admission_before_lifecycle_side_effects[missing-source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_app_prepare_uses_runtime_candidate_admission_before_lifecycle_side_effects[missing-environment]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_app_prepare_uses_runtime_candidate_admission_before_lifecycle_side_effects[missing-services]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_app_prepare_uses_runtime_candidate_admission_before_lifecycle_side_effects[bad-services]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_app_prepare_uses_runtime_candidate_admission_before_lifecycle_side_effects[missing-pack-host]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_windows_reparse_candidate_directory_is_rejected",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_schema_inspection_uses_candidate_interpreter_and_preserves_windows_arguments",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_candidate_schema_inspector_is_read_only_and_accepts_migration_source",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[download]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[hash]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[candidate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[malformed-profile]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[incompatible-profile-protocol]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[incompatible-profile-schema]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[missing-source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[missing-environment]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[missing-service]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[invalid-service]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_real_preparation_failure_leaves_old_owner_pointer_and_workspace[missing-pack-host]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_regular_update_admits_supported_older_schema_and_reaches_migration",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_regular_update_on_current_schema_preserves_workspace_without_backup_or_migration",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_candidate_validation.py::test_journal_uses_durable_lf_writer_with_windows_translation_and_missing_home",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_documented_choice_values_parse[on-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_documented_choice_values_parse[off-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_each_public_flag_accepts_on_and_off[on-True-autostart]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_each_public_flag_accepts_on_and_off[on-True-command]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_each_public_flag_accepts_on_and_off[on-True-skills]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_each_public_flag_accepts_on_and_off[on-True-skill_copies]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_each_public_flag_accepts_on_and_off[off-False-autostart]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_each_public_flag_accepts_on_and_off[off-False-command]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_each_public_flag_accepts_on_and_off[off-False-skills]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_each_public_flag_accepts_on_and_off[off-False-skill_copies]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_invalid_or_duplicate_choice_flags_fail_during_parsing[argv0-unrecognized arguments]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_invalid_or_duplicate_choice_flags_fail_during_parsing[argv1-Expected 'on' or 'off']",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_invalid_or_duplicate_choice_flags_fail_during_parsing[argv2-may only be supplied once]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_precedence_resolves_true_and_false_at_each_edge[explicit0-saved0-prompt0-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_precedence_resolves_true_and_false_at_each_edge[explicit1-saved1-prompt1-False-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_precedence_resolves_true_and_false_at_each_edge[None-saved2-prompt2-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_precedence_resolves_true_and_false_at_each_edge[None-saved3-prompt3-False-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_precedence_resolves_true_and_false_at_each_edge[None-None-prompt4-True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_precedence_resolves_true_and_false_at_each_edge[None-None-prompt5-False-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_precedence_resolves_true_and_false_at_each_edge[None-None-None-True-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_precedence_resolves_true_and_false_at_each_edge[None-None-None-False-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_invalid_saved_values_are_rejected[saved0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_invalid_saved_values_are_rejected[saved1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_invalid_saved_values_are_rejected[saved2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_legacy_install_resolves_all_effects_on_without_artifact_input",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_unattended_consent_only_blocks_fresh_without_yes_or_tty",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_fresh_unattended_cli_prints_plan_before_system_writes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_yes_or_saved_existing_choices_proceed_to_preflight[True-False-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_yes_or_saved_existing_choices_proceed_to_preflight[False-True-saved1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_service_registration_persists_choices_and_preserves_selection_fields",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_maintenance_identity_write_preserves_choices_and_owned_fields",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_consent_rerun_command_uses_public_install_line_and_user_flags",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_existing_install_update_needs_no_consent_flag_and_keeps_saved_policy",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_choices.py::test_exact_no_flag_update_argv_applies_the_saved_policy",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "e30fb9ef9dddb51980de2c9be884630a33bca2cc01fe362869b666c0f037c681",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "passed",
+      "exit_code": 0,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "passed": 74
+  },
+  "unexpected_result_count": 0
+}

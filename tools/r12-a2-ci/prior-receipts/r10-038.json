@@ -1,0 +1,422 @@
+{
+  "absent_ids": [
+    "tests/test_installer_outcome_copy.py::test_a_failed_fresh_install_says_it_was_not_installed_not_that_it_did_not_update",
+    "tests/test_installer_outcome_copy.py::test_a_failed_update_of_an_existing_install_still_says_did_not_update",
+    "tests/test_installer_outcome_copy.py::test_a_release_installed_but_not_running_does_not_claim_nothing_changed",
+    "tests/test_installer_outcome_copy.py::test_a_run_that_changed_nothing_still_says_so",
+    "tests/test_installer_outcome_copy.py::test_every_reason_the_installer_can_emit_has_receipt_copy_and_a_next_step",
+    "tests/test_installer_outcome_copy.py::test_the_approved_copy_for_the_two_pending_reasons_is_exact",
+    "tests/test_installer_outcome_copy.py::test_the_enum_and_its_next_steps_agree_and_no_pending_reason_already_has_copy",
+    "tests/test_installer_outcome_copy.py::test_the_scan_sees_the_reasons_the_installer_emits",
+    "tests/test_installer_pack_build_toolchain.py::test_existing_destination_alias_is_not_followed",
+    "tests/test_installer_pack_build_toolchain.py::test_publishes_exact_private_descriptor",
+    "tests/test_installer_pack_build_toolchain.py::test_refuses_tampering[alias]",
+    "tests/test_installer_pack_build_toolchain.py::test_refuses_tampering[api]",
+    "tests/test_installer_pack_build_toolchain.py::test_refuses_tampering[hash]",
+    "tests/test_installer_pack_build_toolchain.py::test_refuses_tampering[node_version]",
+    "tests/test_installer_pack_build_toolchain.py::test_refuses_tampering[version]",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_bad_release_contract[<lambda>0]",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_bad_release_contract[<lambda>1]",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_bad_release_contract[<lambda>2]",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_bad_release_contract[<lambda>3]",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_bad_release_contract[<lambda>4]",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_bad_release_contract[<lambda>5]",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_bad_release_contract[<lambda>6]",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_foreign_owned_input",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_node_outside_managed_tool_directory",
+    "tests/test_installer_pack_build_toolchain.py::test_rejects_release_lock_with_incomplete_singletons",
+    "tests/test_installer_pack_build_toolchain.py::test_shared_input_hardlinks_are_not_modified",
+    "tests/test_installer_pack_home.py::test_handoff_launcher_update_hot_refresh_uses_the_install_home",
+    "tests/test_installer_pack_home.py::test_linux_update_job_restart_keeps_the_installed_pack_collection"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 65,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "038",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "PASSED": 65
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_omp_source.py::test_selected_fork_freezes_graph_generates_only_views_and_does_not_patch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_native_archive_digest_failure_prevents_using_untrusted_bytes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_source_lock_version_or_native_fails_before_link[directory-directory layout]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_source_lock_version_or_native_fails_before_link[lock-lock]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_source_lock_version_or_native_fails_before_link[version-version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_source_lock_version_or_native_fails_before_link[path-Unsafe archive entry]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_source_lock_version_or_native_fails_before_link[native-native]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_lock_changes_at_any_build_step_are_refused[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_lock_changes_at_any_build_step_are_refused[generator]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_lock_changes_at_any_build_step_are_refused[link]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_host_native_abi_failure_never_registers_the_launcher",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsupported_native_target_fails_before_source_download",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_staging_rejects_old_manifest_before_any_download",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_bundled_recipe_pins_build_closure_without_selecting_or_patching_source",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_local_fork_uses_selected_commit_and_records_actual_tree",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_https_fork_uses_commit_archive_without_system_git",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_source_archive_links_are_refused_before_build[2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_source_archive_links_are_refused_before_build[1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_inherited_bun_registration_paths_are_overridden_only_during_build",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_default_and_comment_select_published_exact_release",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[latest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[omp]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[omp@latest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[omp@^18.12.6]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[omp@17.4]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[omp@18.12.6 --preload=evil]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[https://example.invalid/a.tgz]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[file:///tmp/omp]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[../omp@18.12.6]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[@owner/omp@18.12.6#bad]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[value10]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[value11]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[value12]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[value13]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[value14]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_invalid_or_unpinned_source_is_refused[12]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_ambiguous_old_source_knobs_and_invalid_metadata_are_refused[pin0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_ambiguous_old_source_knobs_and_invalid_metadata_are_refused[pin1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_ambiguous_old_source_knobs_and_invalid_metadata_are_refused[pin2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[https://github.com/owner/repo?x=1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[http://github.com/owner/repo]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[https://other.invalid/owner/repo]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[https://user@github.com/owner/repo]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[https://github.com/owner/repo/tree/main]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[relative/repo]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[git@example.invalid:repo]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[file://other-host/repo]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[file:///repo?x=1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_unsafe_fork_repositories_are_refused[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_remote_source_uses_commit_archive[https://github.com/owner/fork]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_remote_source_uses_commit_archive[https://github.com/owner/fork.git]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_exact_npm_source_uses_isolated_owned_global_prefix_and_records_lock[17.4.3]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_exact_npm_source_uses_isolated_owned_global_prefix_and_records_lock[omp/17.4.3]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_exact_npm_source_uses_isolated_owned_global_prefix_and_records_lock[arnold/17.4.3]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_npm_mismatch_or_missing_closure_never_records_success[name]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_npm_mismatch_or_missing_closure_never_records_success[version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_npm_mismatch_or_missing_closure_never_records_success[cli]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_npm_mismatch_or_missing_closure_never_records_success[lock]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_npm_mismatch_or_missing_closure_never_records_success[reported_version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_hostile_bun_settings_and_registration_paths_are_build_only[fork]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_hostile_bun_settings_and_registration_paths_are_build_only[npm]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_recipe_refresh_emits_only_the_candidate_build_closure[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_omp_source.py::test_recipe_refresh_emits_only_the_candidate_build_closure[True]",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "87f39094730e1c9945cf658e14f4074aeebd5241dd5b7f8beb4459cbc5d05c49",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "passed",
+      "exit_code": 0,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "passed": 65
+  },
+  "unexpected_result_count": 0
+}

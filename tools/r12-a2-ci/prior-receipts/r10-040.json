@@ -1,0 +1,526 @@
+{
+  "absent_ids": [
+    "tests/test_installer_platforms.py::test_systemd_install_and_update_pin_personal_packs_home",
+    "tests/test_installer_platforms.py::test_windows_task_pins_userprofile_for_personal_packs"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 97,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "040",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "PASSED": 96,
+    "SKIPPED": 1
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_platforms.py::test_bun_build_environment_scrubs_ambient_policy_but_keeps_explicit_cache_and_ca",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_service_definitions_match_reviewed_snapshots[darwin-launchd.plist]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_service_definitions_match_reviewed_snapshots[linux-systemd.service]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_service_definitions_match_reviewed_snapshots[win32-task.xml]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_launchd_is_foreground_keepalive_with_explicit_environment",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_launchd_pins_the_install_time_home",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_launchd_update_keeps_the_pinned_install_home",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_launchd_plist_from_before_the_pin_is_rewritten_with_home",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_launchd_operations_use_runtime_posix_user_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_windows_task_settings_and_no_console_executable",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_systemd_quotes_spaces_percent_dollar_and_supply_tool_path",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_non_systemd_fallback_is_explicit_and_requests_runtime_start",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_task_registration_is_no_profile_and_failure_is_not_hidden",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_service_record_preserves_an_unavailable_workspace_instead_of_falling_back",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_ffmpeg_probe_checks_every_required_encoder_and_analysis_filter",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_downloaded_archives_cannot_escape_owned_staging_directory[../escape]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_downloaded_archives_cannot_escape_owned_staging_directory[/absolute]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_downloaded_archives_cannot_escape_owned_staging_directory[C:/windows]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_downloaded_archives_cannot_escape_owned_staging_directory[safe\\\\..\\\\escape]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_tar_never_materializes_links_and_keeps_official_node_npm_entrypoint",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_uninstall_only_removes_owned_files_and_reports_windows_lock_residue",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_backend_native_failures_reach_transaction_and_log_details",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_stage_service_declaration_uses_candidate_and_preserves_chat_settings",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_stage_profile_points_to_candidate_service_declaration[None-None-None-17340]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_stage_profile_points_to_candidate_service_declaration[None-17391-None-17391]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_stage_profile_points_to_candidate_service_declaration[None-17391-17393-17393]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_stage_profile_points_to_candidate_service_declaration[pinokio-None-None-17340]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_stage_profile_points_to_candidate_service_declaration[pinokio-17391-None-17391]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_stage_profile_points_to_candidate_service_declaration[pinokio-17391-17393-17393]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_installed_product_root_uses_selected_interpreter_origins_and_rejects_checkout_imports",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_linux_backup_temporarily_starts_only_neutral_daemon_and_snapshots_stopped_support",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_mac_backup_uses_runtime_fsclone_only_after_stop_and_never_starts_daemon",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_clone_rollback_restores_workspace_and_support_without_deleting_other_realms",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17340-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17340-realm]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17340-instance]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17340-port]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17340-owner]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17340-restart-required]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17391-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17391-realm]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17391-instance]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17391-port]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17391-owner]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_requires_selected_realm_recorded_instance_and_live_owner[17391-restart-required]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_retries_status_observed_before_discovery_was_published",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_permanent_mismatch_reports_sanitized_endpoints",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_timeout_reports_sanitized_runtime_refusal_and_no_discovery",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_door_verification_retries_stale_discovery_until_candidate_endpoint_is_published",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_service_log_capture_reports_bounded_tail_and_unavailable_states",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_pack_host_verification_uses_declared_readiness_timeout[slow-ready]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_pack_host_verification_uses_declared_readiness_timeout[crash]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_pack_host_verification_uses_declared_readiness_timeout[failed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_pack_host_verification_uses_declared_readiness_timeout[hang]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_source_archives_are_flattened_to_shallow_managed_paths",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_source_retries_windows_sharing_violation_on_publish",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_python311_windows_reparse_points_are_rejected_using_mocked_file_attributes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_delete_data_includes_identity_checked_external_attached_workspace",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_no_systemd_starts_one_detached_runtime_with_recorded_birth_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_kept_reinstall_retains_explicit_chat_choices_from_external_selection",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_declaration_failure_can_retry_without_claiming_fresh_workspace",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[install-missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[install-bare]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[install-stale]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[install-version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[install-external]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[install-directory]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[update-missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[update-bare]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[update-stale]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[update-version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[update-external]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_carryover_uses_selected_default_or_external[update-directory]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_repair_chat_command_uses_selected_default_or_external[missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_repair_chat_command_uses_selected_default_or_external[bare]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_repair_chat_command_uses_selected_default_or_external[stale]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_repair_chat_command_uses_selected_default_or_external[version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_repair_chat_command_uses_selected_default_or_external[external]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_windows_rejects_text_and_accepts_external_cmd",
+      "status": "SKIPPED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_windows_extensions_without_native_runner",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_chat_command_rejects_non_executable_file",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_supervision_warning_checks_systemd_owner_read_only[missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_supervision_warning_checks_systemd_owner_read_only[inactive]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_supervision_warning_checks_systemd_owner_read_only[other-owner]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_supervision_warning_checks_systemd_owner_read_only[timeout]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_supervision_warning_checks_systemd_owner_read_only[active]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_supervision_warning_respects_pinokio_and_other_platforms",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_platforms.py::test_no_systemd_starts_foreground_runtime_supervisor_with_recorded_birth_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pre_stop_recovery.py::test_public_cli_recovers_crash_after_stop_intent_before_c1[install-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pre_stop_recovery.py::test_public_cli_recovers_crash_after_stop_intent_before_c1[install-busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pre_stop_recovery.py::test_public_cli_recovers_crash_after_stop_intent_before_c1[install-unknown-owner]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pre_stop_recovery.py::test_public_cli_recovers_crash_after_stop_intent_before_c1[install-replacement]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pre_stop_recovery.py::test_public_cli_recovers_crash_after_stop_intent_before_c1[update-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pre_stop_recovery.py::test_public_cli_recovers_crash_after_stop_intent_before_c1[update-busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pre_stop_recovery.py::test_public_cli_recovers_crash_after_stop_intent_before_c1[update-unknown-owner]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pre_stop_recovery.py::test_public_cli_recovers_crash_after_stop_intent_before_c1[update-replacement]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_pre_stop_recovery.py::test_pinokio_update_recovers_crash_after_stopping_save_after_busy_refusal",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "86cbc0083430278779fd2f77172f1b83678fff37ae2f20e0249899c11ab63717",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "passed",
+      "exit_code": 0,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "passed": 96,
+    "skipped": 1
+  },
+  "unexpected_result_count": 0
+}

@@ -41,9 +41,9 @@ def verify_run_control(group, event):
         allowed = event.get('A2_REF') == 'refs/heads/scratch/r12-a2-final-019-20261111' and group == '019'
     elif mode == 'full':
         control = json.loads((HERE/'full-control.json').read_text())
-        allowed = (control == {'purpose':'r12-a2-resume-022-052-20261111','before':BEFORE,'manifest_sha256':MANIFEST_SHA,'ranges':list(RANGES),'sides':list(SIDES)}
-                   and event.get('A2_REF') == FULL_REF and event.get('A2_RANGE') in RANGES
-                   and group in (group_for(event.get('A2_SIDE'),event['A2_RANGE'],slot) for slot in range(1,12)))
+        allowed = (control == {'purpose':'r12-a2-resume-080-20261111','before':BEFORE,'manifest_sha256':MANIFEST_SHA,'ranges':list(RANGES),'sides':list(SIDES)}
+                   and event.get('A2_REF') == FULL_REF and event.get('A2_SIDE') in SIDES and event.get('A2_RANGE') in RANGES
+                   and group in (group_for(event['A2_SIDE'],event['A2_RANGE'],slot) for slot in range(1,12)))
     else: allowed = False
     if not allowed or event.get('A2_BEFORE') != BEFORE or event.get('A2_ATTEMPT') != '1': raise ValueError('run control mismatch')
 

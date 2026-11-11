@@ -1,0 +1,587 @@
+{
+  "absent_ids": [
+    "tests/test_installer_app_update.py::test_strict_app_update_manifest_naming_another_release_is_not_updated",
+    "tests/test_installer_app_update.py::test_strict_app_update_manifest_naming_the_activated_release_is_updated",
+    "tests/test_installer_app_update.py::test_strict_app_update_manifest_without_release_targets_the_activated_release",
+    "tests/test_installer_app_update.py::test_strict_app_update_other_copy_warning_is_updated_with_repair_next_line[other-copy-and-skills]",
+    "tests/test_installer_app_update.py::test_strict_app_update_other_copy_warning_is_updated_with_repair_next_line[other-copy]",
+    "tests/test_installer_app_update.py::test_strict_app_update_receipt_names_release_and_skill_warning[skill-sync-failed]",
+    "tests/test_installer_app_update.py::test_strict_app_update_receipt_names_release_and_skill_warning[skill-sync-ok]"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 111,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "029",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 8,
+    "PASSED": 103
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_qualifies_noneditable_runtimes_for_both_versions",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_stopped_custody_accepts_runtime_without_stop_handshake",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_refuses_wrong_environment_and_unrelated_origin",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_refuses_unrelated_import_package_and_metadata_mismatch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_qualifies_encoded_and_symlinked_checkout_paths",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_interpreter_refuses_source_path_imports_without_installed_package",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_running_incapable_runtime_refuses_exact_i1_without_writes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_running_foreground_lock_refuses_with_xdg_override_before_writes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_start_racing_stopped_preflight_refuses_exact_i1_before_manifest_write",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selected_runtime_provenance_mismatch_refuses_before_handoff_probe",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_real_journal_and_installer_log_reach_doctor[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_real_journal_and_installer_log_reach_doctor[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_admission_is_durable_before_staged_and_stop[migration]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_admission_is_durable_before_staged_and_stop[app]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_admission_is_durable_before_staged_and_stop[repair]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_runner_publication_failure_aborts_before_destructive_work[write]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_runner_publication_failure_aborts_before_destructive_work[replace]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_runner_publication_failure_aborts_before_destructive_work[flush]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_recovery_publishes_admission_before_first_stop[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_recovery_publishes_admission_before_first_stop[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_ordinary_start_refuses_update_publication_and_stop_handoffs",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_same_schema_pinokio_update_skips_runtime_upgrade_under_stopped_custody",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_unified_pinokio_migration_uses_shared_transaction_and_readiness_gate",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_unified_pinokio_migration_readiness_failure_restores_workspace_and_old_owner",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_pinokio_update_refuses_older_served_release_with_pinokio_action",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_pinokio_update_routes_existing_install_through_unified_policy",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selection_check_is_read_only",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_stages_online_then_restarts_without_workspace_mutations",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_full_candidate_admission_precedes_pinokio_candidate_validation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_app_update_recovers_pending_app_transaction_before_new_stage",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_app_recovery_stops_selected_candidate_after_switch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_app_recovery_reconciles_old_identity_when_pointer_already_rolled_back",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_cli_allows_pending_app_transaction_through_selection",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_normal_installer_refuses_while_app_update_owns_shared_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_pinokio_update_refuses_nested_app_update_while_shared_lock_is_held",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_busy_details_survive_failure_to_terminalize_journal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_app_update_migrates_legacy_selected_identity_before_activation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_selection_identity_change_during_staging_refuses_before_stop",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_preparation_failure_keeps_old_running[download]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_preparation_failure_keeps_old_running[hash]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_preparation_failure_keeps_old_running[candidate-validation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_preparation_failure_keeps_old_running[schema]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_preparation_failure_keeps_old_running[selection]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_preparation_failure_keeps_old_running[realm]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_start_failure_restores_only_app_pointer_and_relaunches_old",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_generic_runtime_start_error_is_not_a_stop_refusal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_initial_stop_failure_uses_only_authentic_lifecycle_refusal[busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_initial_stop_failure_uses_only_authentic_lifecycle_refusal[timeout]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_initial_stop_failure_uses_only_authentic_lifecycle_refusal[identity]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_controller_cleanup_failure_after_down_restarts_old",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_candidate_stop_refusal_does_not_switch_or_relaunch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_rollback_launcher_incompatible_fails_before_stage",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_lock_failure_after_stop_restarts_old",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_stopped_start_retains_lifetime_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_update_custody_covers_stop_switch_readiness_and_terminal_write[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_update_custody_covers_stop_switch_readiness_and_terminal_write[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_pinokio_app_update_recovers_staged_migration_journal_before_staging",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_second_operator_is_rejected",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_schema_inspection_uses_candidate_readonly_layout_api",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_canonical_supervisor_is_detached_and_readiness_checked",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_choice_starts_session_with_editor_preparation_and_local_readiness",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_verification_uses_ready_pack_host_and_exact_transaction_binding",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_managed_version_identity[release-health]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_managed_version_identity[release-discovery]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-health]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-discovery]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_verification_rejects_missing_raw_managed_identity[None]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_verification_rejects_missing_raw_managed_identity[owner_health1]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_verification_rejects_missing_raw_managed_identity[owner_health2]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_transaction_binding",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_cli_requires_explicit_pinokio_mode",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_runtime_handoff_precedes_controller_cleanup[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_runtime_handoff_precedes_controller_cleanup[busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_runtime_handoff_precedes_controller_cleanup[timeout]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_runtime_handoff_precedes_controller_cleanup[identity]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_pinokio_controller_failure_reports_completed_runtime_stop",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_controller_exit_during_authenticated_stop_preserves_other_owners[exited]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_controller_exit_during_authenticated_stop_preserves_other_owners[remaining]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_controller_exit_during_authenticated_stop_preserves_other_owners[replacement]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_absent_controller_replacement_refuses_after_c1",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_dead_bound_controller_needs_only_c1",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_controller_observation_is_read_only_after_c1_and_fail_closed[live]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_controller_observation_is_read_only_after_c1_and_fail_closed[absent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_controller_observation_is_read_only_after_c1_and_fail_closed[unknown]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_controller_observation_is_read_only_after_c1_and_fail_closed[reappearing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_c1_refusal_causes_no_controller_request_or_signal[busy]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_c1_refusal_causes_no_controller_request_or_signal[replacement]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_c1_refusal_causes_no_controller_request_or_signal[preflight]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_controller_ignoring_report_fails_downstream_without_cleanup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_c1_unknown_result_sends_no_report[raises]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_c1_unknown_result_sends_no_report[timeout]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_c1_unknown_result_sends_no_report[non_dict]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_c1_unknown_result_sends_no_report[status_other]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_c1_unknown_result_sends_no_report[downstream]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_pinokio_validate_refuses_runtime_without_installed_distribution",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_custodian_loss_preserves_unconfirmed_journal_for_explicit_recovery",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_cli_app_update_applies_skill_policy_and_reports_without_migration[off-saved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_cli_app_update_applies_skill_policy_and_reports_without_migration[off-explicit]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_cli_app_update_applies_skill_policy_and_reports_without_migration[copies-saved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_cli_app_update_applies_skill_policy_and_reports_without_migration[copies-explicit]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_cli_app_update_applies_skill_policy_and_reports_without_migration[links-saved]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_cli_app_update_applies_skill_policy_and_reports_without_migration[links-explicit]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_app_update_failure_keeps_saved_skill_policy_and_targets[readiness]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_app_update_failure_keeps_saved_skill_policy_and_targets[schema]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_app_update_reports_skill_process_failure_after_successful_restart",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_app_update.py::test_strict_app_recovery_keeps_saved_policy_without_applying_new_request",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "d828131bccd62d7882b5f1c31323694e7de842e4131edd9d77e6e10c745e032c",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "failed": 8,
+    "passed": 103
+  },
+  "unexpected_result_count": 0
+}

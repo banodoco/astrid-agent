@@ -1,0 +1,479 @@
+{
+  "absent_ids": [
+    "tests/test_installer_installed_schema.py::test_pack_build_environment_is_persisted_before_declaration",
+    "tests/test_installer_installed_schema.py::test_pack_build_npm_failure_stops_before_service_declaration",
+    "tests/test_installer_installed_schema.py::test_pack_build_requires_pinned_node_archive",
+    "tests/test_installer_installed_schema.py::test_stage_keeps_guarded_inputs_private",
+    "tests/test_installer_installed_schema.py::test_stage_rejects_foreign_guarded_directory_before_declaration",
+    "tests/test_installer_installed_schema.py::test_stage_rejects_foreign_object_before_declaration",
+    "tests/test_installer_installed_schema.py::test_stage_umask_0002_subprocess"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 84,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "035",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 11,
+    "PASSED": 73
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_ic_done2.py::test_done2_unattended_fresh_install_without_yes_prints_plan_and_stops",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_ic_done2.py::test_done2_off_means_absent",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_ic_done2.py::test_done2_choice_does_not_return_after_repair_update_reinstall[autostart]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_ic_done2.py::test_done2_choice_does_not_return_after_repair_update_reinstall[command]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_ic_done2.py::test_done2_choice_does_not_return_after_repair_update_reinstall[skills]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_ic_done2.py::test_done2_end_summary_matches_reality[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_ic_done2.py::test_done2_end_summary_matches_reality[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_stage_binds_installed_reader_validator_and_service_to_verified_schema",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[missing-source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[missing-wheel]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[symlink-source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[symlink-wheel]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[mismatch-source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[mismatch-wheel]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_cached_installed_consumers_and_update_refuse_changed_schema_before_stop[missing]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_cached_installed_consumers_and_update_refuse_changed_schema_before_stop[symlink]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_installed_schema.py::test_cached_installed_consumers_and_update_refuse_changed_schema_before_stop[mismatch]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_launchd_cache_window.py::test_published_plist_interruption_recovers_only_through_c1_stop",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_handoff.py::test_shared_update_bootouts_exact_loaded_job_after_real_c1_and_completes[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_handoff.py::test_shared_update_bootouts_exact_loaded_job_after_real_c1_and_completes[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_handoff.py::test_fresh_recovery_bootouts_stopped_job_once_and_is_repeatable",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_handoff.py::test_downstream_update_failure_runs_real_c1_rollback_and_keeps_old_selected[backup]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_handoff.py::test_downstream_update_failure_runs_real_c1_rollback_and_keeps_old_selected[candidate_verify]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_handoff.py::test_cached_retained_action_survives_canonical_plist_publication[False-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_handoff.py::test_cached_retained_action_survives_canonical_plist_publication[False-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_handoff.py::test_cached_retained_action_survives_canonical_plist_publication[True-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_handoff.py::test_cached_retained_action_survives_canonical_plist_publication[True-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_nested_coalition_state_cannot_supply_or_hide_top_level_state[missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_nested_coalition_state_cannot_supply_or_hide_top_level_state[duplicate]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_initial_identity_refusal_precedes_runtime_signal[unrelated_loaded_identity]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_initial_identity_refusal_precedes_runtime_signal[changed_action]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_initial_identity_refusal_precedes_runtime_signal[changed_path]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_initial_identity_refusal_precedes_runtime_signal[replacement_pid_before_exit]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_initial_uncertain_observation_refuses_before_c1[unknown_state]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_initial_uncertain_observation_refuses_before_c1[malformed_state]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_initial_uncertain_observation_refuses_before_c1[query_error]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_initial_uncertain_observation_refuses_before_c1[running_without_pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[initial-malformed_pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[initial-duplicate_state]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[initial-duplicate_pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[initial-truncated_root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[initial-wrong_target]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[post_exit-malformed_pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[post_exit-duplicate_state]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[post_exit-duplicate_pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[post_exit-truncated_root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_valid_launchctl_observation_single_corruption_refuses[post_exit-wrong_target]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[changed_loaded_identity]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[changed_action]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[changed_path]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[replacement_pid_after_exit]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[changed_publication]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[unknown_state]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[malformed_state]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[query_error]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[final_changed_action]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[final_replacement_pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[retained_action_swap]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out[initially_unloaded_then_loaded]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_stopped_state_requires_explicit_clean_observation[not running-777]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_stopped_state_requires_explicit_clean_observation[mystery-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_exact_owned_stopped_job_reaches_one_bootout_after_c1",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_busy_realm_refuses_without_runtime_signal_or_launchd_mutation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_already_unloaded_launchd_job_is_idempotent_after_c1_exit",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_absent_plist_still_rechecks_loaded_job_at_c1_bootout_boundary[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launchd_stop_refusals.py::test_absent_plist_still_rechecks_loaded_job_at_c1_bootout_boundary[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_absolute_launcher_works_with_clean_home_and_unchanged_path",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_windows_handoff_waits_and_keeps_argv_and_environment",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_windows_launcher_sets_utf8_before_isolation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_consumes_stamped_env_without_deriving_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_requires_repair_for_missing_or_invalid_stamp[stamp0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_requires_repair_for_missing_or_invalid_stamp[stamp1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_requires_repair_for_missing_or_invalid_stamp[stamp2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_supports_selected_older_package_under_isolation[agent-native]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_supports_selected_older_package_under_isolation[agent-windows-wait]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_supports_selected_older_package_under_isolation[credential-native]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_supports_selected_older_package_under_isolation[credential-windows-wait]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_generated_runner_utf8_flag_proves_windows_default_off_control",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_verification_rejects_failed_declared_service[running-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_verification_rejects_failed_declared_service[failed-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_verification_rejects_pack_host_without_ready_file_with_service_evidence[restarting]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_verification_rejects_pack_host_without_ready_file_with_service_evidence[running]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_repair_restart_decision_preserves_or_replaces_real_processes[False]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_installer_launcher_repair.py::test_repair_restart_decision_preserves_or_replaces_real_processes[True]",
+      "status": "FAILED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "eda1927cb65c20704f918bb54c8cd5527a24437b7a5d4810a70f07ef2650823e",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "failed": 11,
+    "passed": 73
+  },
+  "unexpected_result_count": 0
+}

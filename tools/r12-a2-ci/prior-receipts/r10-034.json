@@ -1,0 +1,469 @@
+{
+  "absent_ids": [
+    "tests/test_installer_git_executable.py::test_install_never_records_git_from_the_working_directory",
+    "tests/test_installer_git_executable.py::test_install_records_nothing_and_continues_for_a_broken_git[failure1-failed to report its version (CalledProcessError)]",
+    "tests/test_installer_git_executable.py::test_install_records_nothing_and_continues_for_a_broken_git[failure2-failed to report its version (TimeoutExpired)]",
+    "tests/test_installer_git_executable.py::test_install_records_nothing_and_continues_for_a_broken_git[failure3-failed to report its version (PermissionError)]",
+    "tests/test_installer_git_executable.py::test_install_records_nothing_and_continues_for_a_broken_git[not a tool\\n-did not identify itself as Git]",
+    "tests/test_installer_git_executable.py::test_install_records_the_installing_users_git",
+    "tests/test_installer_git_executable.py::test_install_records_windows_git_on_the_installing_path",
+    "tests/test_installer_git_executable.py::test_install_without_git_records_nothing",
+    "tests/test_installer_git_executable.py::test_installer_diagnostic_appends_one_line_to_the_install_log",
+    "tests/test_installer_git_executable.py::test_invalid_previous_git_falls_back_to_path",
+    "tests/test_installer_git_executable.py::test_invalid_recorded_value_falls_back_to_path[/invalid\\x00path]",
+    "tests/test_installer_git_executable.py::test_invalid_recorded_value_falls_back_to_path[42]",
+    "tests/test_installer_git_executable.py::test_path_alias_to_cwd_is_never_executed_or_recorded",
+    "tests/test_installer_git_executable.py::test_path_git_symlink_is_recorded_as_its_canonical_target",
+    "tests/test_installer_git_executable.py::test_recorded_symlink_is_canonical_and_survives_retarget"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 80,
+  "incomplete_reasons": [],
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "034",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "PASSED": 80
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_installer_cleanup.py::test_custom_root_uninstall_removes_programs_and_keeps_data",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_custom_root_reports_locked_default_bootstrap",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_custom_root_does_not_remove_a_linked_bootstrap",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_custom_uv_does_not_authorize_removing_default_bootstrap",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_support_overlap_is_refused_before_any_removal[program-same]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_support_overlap_is_refused_before_any_removal[program-child]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_support_overlap_is_refused_before_any_removal[program-parent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_support_overlap_is_refused_before_any_removal[bootstrap-same]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_support_overlap_is_refused_before_any_removal[bootstrap-child]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_support_overlap_is_refused_before_any_removal[bootstrap-parent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_attached_overlap_is_refused_before_unregister[program-same]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_attached_overlap_is_refused_before_unregister[program-child]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_attached_overlap_is_refused_before_unregister[program-parent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_attached_overlap_is_refused_before_unregister[bootstrap-same]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_attached_overlap_is_refused_before_unregister[bootstrap-child]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_attached_overlap_is_refused_before_unregister[bootstrap-parent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_unknown_attached_identity_preserves_program_and_bootstrap",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_partial_uninstall_inspects_kept_catalog_with_bootstrap_runtime",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_missing_interpreter_uses_bootstrap_for_workspace_inspection",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_retained_external_identity_is_inspected_after_support_removal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_already_deleted_recorded_workspace_does_not_block_residue_cleanup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_retained_selection_recovers_version_with_only_support_logs[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_retained_selection_recovers_version_with_only_support_logs[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_windows_defers_running_bootstrap_to_parent_after_core_exit",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_windows_parent_cleanup_protects_workspace_beside_bootstrap[support]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_windows_parent_cleanup_protects_workspace_beside_bootstrap[attached]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cleanup.py::test_windows_program_cleanup_includes_retained_ownership_marker",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs[manifest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs[uv]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_recovery_only_cli_sweeps_owned_job_under_installer_lock_after_recovery[install]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_recovery_only_cli_sweeps_owned_job_under_installer_lock_after_recovery[update]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_regular_cli_recovers_app_journal_with_stopped_custody",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs[staged]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs[stopping]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs[stopped]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs[migrated]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs[switched]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs[verified]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_installed_cli_validates_candidate_without_requiring_staging_uv[explicit]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_installed_cli_validates_candidate_without_requiring_staging_uv[hosted]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_update_flag_is_hidden_but_remains_mutually_exclusive",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[explicit-newer]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[explicit-same]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[explicit-older]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[explicit-forced]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[explicit-unhealthy-same]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[hosted-newer]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[hosted-same]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[hosted-older]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[hosted-forced]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_dispatches_installed_release_through_real_installer[hosted-unhealthy-same]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_candidate_failures_preserve_installed_pointer_and_workspace[fetch]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_candidate_failures_preserve_installed_pointer_and_workspace[parse]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_gateway_candidate_failures_preserve_installed_pointer_and_workspace[release]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_recovery_only_return_then_next_gateway_call_compares_restored_release",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_update_app_cli_recovers_before_checking_manifest_or_uv",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_public_cli_restores_removed_realm_before_mutable_checks_or_update_inputs",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_public_cli_recovers_bound_windows_task_after_catalog_gap_refuses_mutation[early]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_public_cli_recovers_bound_windows_task_after_catalog_gap_refuses_mutation[callback]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_public_cli_recovers_bound_windows_task_after_catalog_gap_refuses_mutation[operation_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_cli_recovery.py::test_public_cli_recovers_bound_windows_task_after_candidate_activation_failure",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_partial_uninstall_can_finish_after_version_metadata_was_removed[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_partial_uninstall_can_finish_after_version_metadata_was_removed[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_absent_version_record_does_not_allow_linked_parents[versions]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_absent_version_record_does_not_allow_linked_parents[version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_present_malformed_version_record_is_not_treated_as_removed",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_current_version_identifier_cannot_escape_program_root",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_current_record_cannot_point_outside_managed_versions",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_version_identity_roundtrips_and_legacy_version_uses_manifest[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_version_identity_roundtrips_and_legacy_version_uses_manifest[pinokio]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_legacy_current_rejects_invalid_canonical_identity_without_writes[manifest0-marker0-nonnegative integer]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_legacy_current_rejects_invalid_canonical_identity_without_writes[manifest1-marker1-nonnegative integer]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_legacy_current_rejects_invalid_canonical_identity_without_writes[manifest2-marker2-nonnegative integer]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_legacy_current_rejects_invalid_canonical_identity_without_writes[manifest3-marker3-Invalid installation manager]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_release_must_be_nonnegative_integer",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_older_served_release_refusal_uses_install_type_action[None-This Astrid is newer than astrid.haus offers. Try again when astrid.haus has a newer release.]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_older_served_release_refusal_uses_install_type_action[pinokio-This Astrid is newer than astrid.haus offers. Choose Pinokio's Update button when a newer release is available.]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_same_and_newer_served_releases_keep_repair_and_update_dispatch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_explicit_null_version_identity_is_malformed",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_installer_current.py::test_managed_version_with_source_profile_is_still_an_installed_release",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "d3550f46260e4050ba043157c9df5c0cec7c2ef5fb1e06d6954f4a4e95942aad",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "passed",
+      "exit_code": 0,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "passed": 80
+  },
+  "unexpected_result_count": 0
+}
