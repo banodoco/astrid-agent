@@ -12,12 +12,12 @@ from typing import Any, Mapping
 from .compose import (
     CompositionError,
     _audio_witness,
+    _mask_segment_evidence,
     _sample_digest,
     _segments_with_spatial_masks,
     _spatial_video_masks,
     _validate_candidate_coverage,
     _verify_spatial_mask_complement,
-    _mask_segment_evidence,
 )
 
 

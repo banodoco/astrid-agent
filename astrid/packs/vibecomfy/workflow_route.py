@@ -6,10 +6,9 @@ this; it is not a registered backend and nothing selects it by name.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping
 
 from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
-
 
 if TYPE_CHECKING:
     from astrid.packs.vibecomfy.production_engine import ProductionRunResult
@@ -25,11 +24,15 @@ class WorkflowRunner(VibeComfyBackend):
         hc03_profile: Mapping[str, Any] | None = None,
         comfy_url: str = "", comfy_output_dir: str = "",
     ) -> ProductionRunResult:
-        from astrid.packs.vibecomfy.production_engine import (
-            ProductionEngineError, run_workflow_result_path,
-        )
         from astrid.core.generation.producer_result import (
-            complete_producer_result, preserve_result_on_error, source_input_ref, workflow_transport,
+            complete_producer_result,
+            preserve_result_on_error,
+            source_input_ref,
+            workflow_transport,
+        )
+        from astrid.packs.vibecomfy.production_engine import (
+            ProductionEngineError,
+            run_workflow_result_path,
         )
         transport = workflow_transport(profile_id, comfy_url)
 

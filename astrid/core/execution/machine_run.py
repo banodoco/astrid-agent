@@ -10,8 +10,8 @@ Every path ends with ``release``; the machine verifies whether it can settle idl
 
 from __future__ import annotations
 
-import time
 import inspect
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping

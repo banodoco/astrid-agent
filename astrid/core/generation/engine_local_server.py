@@ -35,9 +35,9 @@ def ensure_local_engine_server(
         return "not_installed"  # nothing to start: local_engine_endpoint raises EngineNotInstalled
     deadline = time.monotonic() + deadline_seconds
     if runner_factory is None:
-        from .engine_execution import create_local_backend
-        from .engine_runner import _Runner, _parse_receipt, plan_install, refresh_installed_launch
         from .engine_contracts import IntegrityError
+        from .engine_execution import create_local_backend
+        from .engine_runner import _parse_receipt, _Runner, plan_install, refresh_installed_launch
         context, adapter = create_local_backend(
             engine=engine, platform=platform, placement="local", root=root, deadline=deadline)
         with context.acquire_install_lock(root, deadline=deadline):

@@ -25,7 +25,6 @@ from typing import Mapping
 
 from . import engine_recipe as recipes
 from .engine_contracts import (
-    effective_models_root,
     CommandFailed,
     CommandRequest,
     CustodyUnresolved,

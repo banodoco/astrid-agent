@@ -12,7 +12,6 @@ import errno
 import hashlib
 import json
 import logging
-import os
 import re
 import shutil
 import sys
@@ -41,10 +40,6 @@ from astrid.core.generation.backends.comfy_target import (
 )
 from astrid.core.generation.backends.comfy_target import (
     validate_managed_url as _validate_engine_url,
-)
-from astrid.core.generation.vibecomfy_dependency import (
-    VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV,
-    VIBECOMFY_ATTESTED_REVISION_ENV,
 )
 from astrid.core.model_catalog.schema import BackendSpec, ModelEntry
 

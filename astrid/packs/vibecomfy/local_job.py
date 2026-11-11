@@ -28,11 +28,16 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
     import threading
     import time
 
-    from astrid.core.generation.managed_preparation import ManagedEnginePreparation, preparation_scope
+    from astrid.core.generation.managed_preparation import (
+        ManagedEnginePreparation,
+        preparation_scope,
+    )
     from astrid.core.generation.target_inventory import POD_STOP
     from astrid.packs.vibecomfy.actions.run import run as run_action
     from astrid.packs.vibecomfy.production_engine import (
-        _canonical_bundle_value, load_workflow_path, loaded_workflow_execution_identity,
+        _canonical_bundle_value,
+        load_workflow_path,
+        loaded_workflow_execution_identity,
     )
 
     if threading.current_thread() is not threading.main_thread():
@@ -234,6 +239,7 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
             entries.target_schema(described, built["workflow"], None, align=align)
             if assets:
                 import zipfile
+
                 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
                 asset_manifest = build_asset_manifest(assets)
                 archive = job_dir / "assets.zip"

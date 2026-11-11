@@ -273,6 +273,7 @@ def _owner_token(data_root: Path) -> str:
     # credential_file is the scoped Astrid connection saved for generation;
     # lifecycle control uses the Runtime's existing owner credential instead.
     from astrid_runtime.paths import RuntimePaths
+
     from astrid.sdk.workspace_client import _read_credential
 
     paths = RuntimePaths.current(data_root=data_root)

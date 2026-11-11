@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import importlib
 import json
-from contextlib import ExitStack, contextmanager
-from contextvars import ContextVar
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from functools import wraps
 from pathlib import Path
@@ -362,7 +361,6 @@ def _require_runpod_claim_host(client):
 def _runpod_operation(operation, *, client, wait, include_quote=False, preferences=None, machine_id=None,
                       consent=None, until_release=False, requested_idle_seconds=None, timeout_seconds=None, fresh_claim=False):
     """Submit an ordinary task to the retained host's target owner."""
-    from astrid.packs.runpod.target_selection import read_runpod_preferences
 
     if operation == "claim" or fresh_claim:
         _require_runpod_claim_host(client)
@@ -1835,7 +1833,7 @@ class GenerationFacade:
     def _resolve_public_entry(*, entry: str, model: str | None,
                               mode: str | None, modality: str,
                               inputs: Mapping[str, Any], registry: Any):
-        from astrid.core.generation.entries import describe_entry, resolve_entry_inputs, validate_inputs
+        from astrid.core.generation.entries import describe_entry, resolve_entry_inputs
 
         if model is not None and model != entry:
             raise CapabilityValidationError("model and entry select different generation entries")

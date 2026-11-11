@@ -11,13 +11,13 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Mapping
 
+from .errors import PreparationError
 from .masks import (
     MaskScheduleError,
     build_mask_schedule,
     interval_difference,
     merge_intervals,
 )
-from .errors import PreparationError
 from .request import H3Request, H3RequestError, _asset_ids
 from .request_v2 import branch_for
 
