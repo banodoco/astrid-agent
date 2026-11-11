@@ -19,6 +19,10 @@ uses. A claim and a later compatible generation share the same pod, custody
 journal and paid limit. The older `runpod.provision` handle belongs to the
 individual actions below; it is not a retained generation machine.
 
+Generation path: `astrid generate <image|video|audio> --entry ... --placement runpod --gpu ... --max-hourly-usd ... --max-usd ... --preparation-seconds ... --execution-seconds ... --idle-seconds ... --consent paid`. `runpod.provision`, `runpod.session`,
+`scripts/pod_session.py` and `scripts/claim_runpod_5090_backup.py` are operator
+tools and are not for generation.
+
 ### Set up and inspect preferences
 
 Run these from the installed Astrid launcher when the user asks to configure

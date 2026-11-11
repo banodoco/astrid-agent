@@ -37,6 +37,8 @@ agent:
   purpose: Choose this pack when you need ephemeral cloud GPU compute on RunPod —
     to spin up a pod, run a script remotely, retrieve artifacts/checkpoints, and shut
     it down. Prefer runpod.session for one-shot jobs that should always clean up.
+    These actions are operator tools and are not the generation path; generation is
+    `astrid generate ... --placement runpod`.
   do_not_use_for: Not for orchestrating LoRA training workflows end to end; use the
     training pack, which drives RunPod under the hood.
   normal_entrypoints:
@@ -49,10 +51,10 @@ actions:
   provision:
     name: RunPod Provision
     version: 0.1.0
-    short_description: Provision a RunPod GPU pod and emit a pod handle for later
+    short_description: Not for generation. Provision a RunPod GPU pod and emit a pod handle for later
       exec/teardown.
-    description: Provision a RunPod GPU pod and emit a pod_handle.json artifact. Does
-      not terminate.
+    description: Not the generation path; generation is `astrid generate ... --placement runpod`.
+      Provision a RunPod GPU pod and emit a pod_handle.json artifact. Does not terminate.
     keywords:
     - runpod
     - gpu
@@ -617,9 +619,10 @@ actions:
   session:
     name: RunPod Session
     version: 0.1.0
-    short_description: Composite provision → exec → teardown session with guaranteed
+    short_description: Not for generation. Composite provision → exec → teardown session with guaranteed
       cleanup.
-    description: Composite provision → exec → download → terminate session with guaranteed
+    description: Not the generation path; generation is `astrid generate ... --placement runpod`.
+      Composite provision → exec → download → terminate session with guaranteed
       cleanup via try/finally. Writes pod_handle.json as a sweeper breadcrumb immediately
       after provision and deletes it on graceful teardown.
     keywords:

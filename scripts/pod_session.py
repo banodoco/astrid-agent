@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """One command for a whole GPU pod session, fail closed at every step.
 
+NOT FOR GENERATION. This is an operator/validation launcher and is not the generation path.
+Generation is `astrid generate <image|video|audio> --entry ... --placement runpod ...`
+(with --gpu, --max-hourly-usd, --max-usd and --consent paid); it claims and releases its own pod.
+
 Usage: pod_session.py --datacenters EUR-NO-1 --storage-name storage --sources-dir DIR --workdir DIR
                       (--jobs jobs.yaml | --request job/request.json --asset-map job/asset-map.json)
 Held follow-up: use --resume-held-jobs jobs.yaml with the existing custody --workdir.
