@@ -12,6 +12,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/int/r1' }}
 
+env:
+  PYTEST_ADDOPTS: -rA
+
 jobs:
   windows-native-and-installer:
     runs-on: windows-latest
