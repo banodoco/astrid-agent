@@ -99,10 +99,12 @@ def test_serialized_runtime_registration_attaches_and_tampering_refuses(tmp_path
     epoch = host.runtime_state["runtime_epoch"]
     for obj in (current, ready, expected):
         obj.update(endpoint=daemon.endpoint, runtime_epoch=epoch)
-    ready.update(source_epoch=host.source_epoch, registration=envelope)
+    ready.update(python_executable=current["python_executable"],
+                 source_epoch=host.source_epoch, registration=envelope)
     ready_file = tmp_path / "ready.json"
     generic_host._write_ready_marker(ready_file, ready)
     ready = json.loads(ready_file.read_text())
+    assert host_bootstrap._attach_static_mismatches(current, ready, expected, "") == []
     assert isinstance(ready["registration"]["registration"], str)
     assert ready["registration"]["source_epoch"] == ready["source_epoch"]
     monkeypatch.setattr(generic_host, "source_checkout_digest", lambda _: "digest-1")
@@ -112,7 +114,7 @@ def test_serialized_runtime_registration_attaches_and_tampering_refuses(tmp_path
     def attach(payload):
         return host_bootstrap._attach_resident_host(
             current, payload, expected=expected, worker_path=worker, runtime_epoch=epoch,
-            runtime_instance_id="instance-1", inventory_identity="",
+            runtime_instance_id=current["runtime_instance_id"], inventory_identity="",
         )
 
     try:
