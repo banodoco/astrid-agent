@@ -13,11 +13,28 @@ from typing import TYPE_CHECKING, Any, Mapping
 from urllib.parse import urlsplit
 
 from .engine_contracts import (
-    DataRef, EngineRecipe, EnvironmentSpec, HealthSpec, IntegrityError, ModelLock,
-    ModelLockValidationError, ModelSpec, RecipeIndex, RecipeIndexEntry,
-    RecipeValidationError, RequirementsSpec, SourceFileRef, SourceInstall,
-    SourcePath, SourcePin, SourceSpec, StartSpec, UnsupportedPlatform,
-    UnknownEngine, UnsafePathError, WheelSpec,
+    DataRef,
+    EngineRecipe,
+    EnvironmentSpec,
+    HealthSpec,
+    IntegrityError,
+    ModelLock,
+    ModelLockValidationError,
+    ModelSpec,
+    RecipeIndex,
+    RecipeIndexEntry,
+    RecipeValidationError,
+    RequirementsSpec,
+    SourceFileRef,
+    SourceInstall,
+    SourcePath,
+    SourcePin,
+    SourceSpec,
+    StartSpec,
+    UnknownEngine,
+    UnsafePathError,
+    UnsupportedPlatform,
+    WheelSpec,
 )
 
 if TYPE_CHECKING:

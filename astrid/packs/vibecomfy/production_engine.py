@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 _PROFILE_CONFIGS = {
     "local_server": {
         "name": "local_server",
@@ -115,8 +114,8 @@ def _load_workflow(workflow: Mapping[str, Any], references: Mapping[str, str], s
     template_id = workflow.get("template_id")
     bindings = workflow.get("bindings")
     if isinstance(template_id, str) and isinstance(bindings, Mapping):
-        from vibecomfy.resources import ready_templates_root
         from vibecomfy.registry.ready import repo_ready_template_discovery, workflow_from_ready
+        from vibecomfy.resources import ready_templates_root
 
         discovery = repo_ready_template_discovery(root=ready_templates_root())
         resolved = workflow_from_ready(template_id, _discovery=discovery)
