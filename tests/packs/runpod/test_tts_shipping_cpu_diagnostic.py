@@ -17,6 +17,9 @@ from tests.packs.runpod.test_machine import (  # noqa: F401
 
 
 def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case, tmp_path, monkeypatch, capsys):
+    from copy import deepcopy
+    from functools import lru_cache
+
     from astrid.core.generation import cli, entries
     from astrid.core.generation.job_inputs import write_archive
     from astrid.packs.runpod import machine as rm
@@ -24,6 +27,15 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
     from vibecomfy.workflow_bundle import emit_bundle
 
     entry, mode = 'audio/qwen3_tts_custom_voice', 'tts'
+    # Freeze the pinned repository's discovery for this one test. Each real
+    # resolve still validates its own inputs; repeated ready-template scans and
+    # authoring-schema construction add work to this bounded CPU diagnostic.
+    # Copies prevent either route from mutating the other route's snapshot.
+    for name in ('_ready_entries_for', 'describe_entry'):
+        cached = lru_cache(maxsize=None)(getattr(entries, name))
+        def snapshot(*args, _cached=cached, **kwargs):
+            return deepcopy(_cached(*args, **kwargs))
+        monkeypatch.setattr(entries, name, snapshot)
     # Synthetic content only: never substitute a real prompt or live job artifacts.
     description, values = entries.resolve_entry_inputs(entry, {'text': 'synthetic fixture'}, mode=mode)
     described = entries.find_entry(entry)
@@ -93,7 +105,6 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
     # fixture is a projection of the pinned Vibe cache, not a live observation.
     # Reload each sealed bundle independently so target schema metadata captured
     # for one pass cannot mask a mismatch in the other.
-    from copy import deepcopy
     from types import SimpleNamespace
     import pytest
     from astrid.packs.vibecomfy import local_server_engine, production_engine
