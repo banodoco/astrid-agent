@@ -610,7 +610,7 @@ def test_graph_names_accept_api_and_editor_graphs_and_fail_closed_when_large(tmp
                                             'widgets_values': ['v_secret_value']}]}))
     assert fd.graph_facts(editor) == (frozenset({'5'}), frozenset({'KSampler', 'model'}))
     many_nodes = tmp_path / 'many_nodes.json'
-    many_nodes.write_text(json.dumps({str(i): {'class_type': 'N'} for i in range(257)}))
+    many_nodes.write_text(json.dumps({str(i): {'class_type': 'N'} for i in range(fd.MAX_GRAPH_NODE_IDS + 1)}))
     assert fd.graph_facts(many_nodes) == (frozenset(), frozenset())
     many_names = tmp_path / 'many_names.json'
     many_names.write_text(json.dumps({'1': {'class_type': 'N', 'inputs': {f'f{j}': 0 for j in range(fd.MAX_GRAPH_NAMES + 5)}}}))
@@ -646,3 +646,22 @@ def test_graph_names_survive_the_journal_round_trip_and_are_revalidated():
     assert 'field' not in fd.safe_stored_summary(source, node_ids={'1'})
     assert fd.stored_names(sorted(names)) == names
     assert fd.stored_names(['ok', SENTINEL]) == frozenset() and fd.stored_names('speaker') == frozenset()
+
+
+QWEN_EDIT = Path('/home/user/wt/vibecomfy-8d065a8/ready_templates/sources/official/edit/qwen_image_2_1_turbo_edit.json')
+
+
+@pytest.mark.skipif(not QWEN_EDIT.is_file(), reason='vibecomfy checkout not present')
+def test_large_real_edit_template_yields_names_and_ids():
+    # 100 KB release-cell source (editor format, nodes inside a subgraph definition): above the
+    # 64 KiB result-frame cap, which the graph no longer shares.
+    assert QWEN_EDIT.stat().st_size > fd.MAX_RESULT_BYTES
+    ids, names = fd.graph_facts(QWEN_EDIT)
+    assert {'451', '459', '461', '470'} <= ids
+    assert {'SaveImageAdvanced', 'LoadImage', 'KSamplerSelect', 'CFGGuider', 'TextEncodeQwenImage21', 'prompt'} <= names
+    assert fd.parse_frame(fd.MARK + json.dumps({'code': 'input_rejected', 'category': 'input', 'node_id': '470',
+                                               'node_class': 'KSamplerSelect', 'field': 'prompt'}),
+                          node_ids=ids, node_names=names) == {
+        'code': 'input_rejected', 'category': 'input', 'node_id': '470',
+        'node_class': 'KSamplerSelect', 'field': 'prompt'}
+    assert fd.MAX_RESULT_BYTES == 64 * 1024 and fd.MAX_GRAPH_BYTES == 8 * 1024 * 1024

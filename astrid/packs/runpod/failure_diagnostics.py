@@ -15,6 +15,10 @@ from collections.abc import Mapping
 MARK = 'astrid-generation-failure:'
 MAX_RESULT_BYTES = 64 * 1024
 MAX_FRAME_BYTES = 4096
+# The submitted graph is the controller's own file, read locally and never sent
+# anywhere; NAME_RE and MAX_GRAPH_NAMES still bound what can come out of it.
+MAX_GRAPH_BYTES = 8 * 1024 * 1024
+MAX_GRAPH_NODE_IDS = 4096
 CODES = {
     'input_rejected': 'input', 'missing_dependency': 'dependency',
     'engine_not_found': 'installation', 'unknown_engine': 'installation',
@@ -153,7 +157,14 @@ def _graph_nodes(graph):
     if isinstance(nodes, Mapping):
         return list(nodes.items())
     if isinstance(nodes, list):
-        return [(node.get('id'), node) for node in nodes if isinstance(node, Mapping)]
+        pairs = [(node.get('id'), node) for node in nodes if isinstance(node, Mapping)]
+        definitions = graph.get('definitions')
+        subgraphs = definitions.get('subgraphs') if isinstance(definitions, Mapping) else None
+        for sub in subgraphs if isinstance(subgraphs, list) else ():
+            inner = sub.get('nodes') if isinstance(sub, Mapping) else None
+            pairs.extend((node.get('id'), node) for node in inner if isinstance(node, Mapping)) \
+                if isinstance(inner, list) else None
+        return pairs
     return [(key, node) for key, node in graph.items() if isinstance(node, Mapping) and 'class_type' in node]
 
 
@@ -186,14 +197,14 @@ def graph_facts(path):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RESULT_BYTES:
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_GRAPH_BYTES:
                 return frozenset(), frozenset()
-            raw = stream.read(MAX_RESULT_BYTES + 1)
-        if len(raw) > MAX_RESULT_BYTES:
+            raw = stream.read(MAX_GRAPH_BYTES + 1)
+        if len(raw) > MAX_GRAPH_BYTES:
             return frozenset(), frozenset()
         ids, names = set(), set()
         for node_id, node in _graph_nodes(json.loads(raw)):
-            if len(ids) >= 256:
+            if len(ids) >= MAX_GRAPH_NODE_IDS:
                 return frozenset(), frozenset()
             canonical = _safe_fact('node_id', node_id)
             if canonical is not None:
