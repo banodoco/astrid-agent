@@ -41,5 +41,5 @@ def test_synthetic_failure():
     node='tests/test_summary_format.py::test_synthetic_failure'
     receipt=sanitized_result(proc.stdout,[node],[],{},proc.returncode,True)
     if proc.returncode != 1 or marker not in proc.stdout or receipt['classification'] != 'COMPLETE' or receipt['outcome_counts'] != {'FAILED':1}:
-        print('PYTEST_WARNING_COUNTEREXAMPLE failed',flush=True); sys.exit(1)
+        print('PYTEST_WARNING_COUNTEREXAMPLE failed', 'exit='+str(proc.returncode), 'final_heading='+str(marker in proc.stdout), 'classification='+receipt['classification'], 'outcomes='+str(receipt['outcome_counts']), 'reasons='+','.join(receipt['incomplete_reasons']),flush=True); sys.exit(1)
     print('PYTEST_WARNING_COUNTEREXAMPLE passed; 1 failed ID, native final-warning heading; exit 1',flush=True)
