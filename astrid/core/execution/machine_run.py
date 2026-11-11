@@ -51,6 +51,8 @@ class MachineJob:
     progress_path: Path
     align: str = "align"
     files: frozenset[str] = field(default=FILE_INPUTS)
+    #: Optional ``PhaseTiming`` collector; the machine stamps its phases into it.
+    timing: Any = None
 
 
 def resolve_machine(kind: str, registry: Any | None = None) -> Any:
@@ -67,16 +69,25 @@ def resolve_machine(kind: str, registry: Any | None = None) -> Any:
 def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
                    cancelled: Callable[[], bool], poll_seconds: float = 15.0,
                    sleep: Callable[[float], None] = time.sleep,
-                   on_claim: Callable[[Any], None] | None = None) -> Mapping[str, Any]:
+                   on_claim: Callable[[Any], None] | None = None,
+                   on_failure: Callable[[Mapping[str, Any]], None] | None = None) -> Mapping[str, Any]:
     """Claim, start, poll, fetch into ``destination``, then settle or release.
 
     ``on_claim(lease)`` records which machine runs the job as soon as it is claimed.
+    ``on_failure(facts)`` runs once after release on any failure (the claim included)
+    with ``failure``, ``stage``, ``lease`` and ``run`` (None if it never existed).
+    It can never change or mask the job's own error.
     """
     # Existing machine kinds keep their original claim contract. A machine
     # with a capacity wait can opt into the same host cancellation callback.
     claim_parameters = inspect.signature(machine.claim).parameters
-    lease = (machine.claim(job, cancelled=cancelled) if "cancelled" in claim_parameters
-             else machine.claim(job))
+    run = None
+    try:
+        lease = (machine.claim(job, cancelled=cancelled) if "cancelled" in claim_parameters
+                 else machine.claim(job))
+    except BaseException as exc:
+        _report_failure(on_failure, exc, "claim", None, None)
+        raise
     success = False
     failure = None
     stage = "start"
@@ -108,13 +119,34 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
         raise
     finally:
         release_parameters = inspect.signature(machine.release).parameters
-        if "failure" in release_parameters:
-            details = {"failure": failure}
-            if "stage" in release_parameters:
-                details["stage"] = stage
-            machine.release(lease, success, **details)
-        else:
-            machine.release(lease, success)
+        try:
+            if "failure" in release_parameters:
+                details = {"failure": failure}
+                if "stage" in release_parameters:
+                    details["stage"] = stage
+                machine.release(lease, success, **details)
+            else:
+                machine.release(lease, success)
+        except BaseException as release_error:
+            # A job that passed but could not be released is a release-stage failure.
+            if failure is None:
+                _report_failure(on_failure, release_error, "release", lease, run)
+            else:
+                _report_failure(on_failure, failure, stage, lease, run, release_failed=True)
+            raise
+        if failure is not None:
+            _report_failure(on_failure, failure, stage, lease, run)
+
+
+def _report_failure(on_failure: Callable[[Mapping[str, Any]], None] | None, failure: BaseException, stage: str,
+                    lease: Any, run: Any, *, release_failed: bool = False) -> None:
+    if on_failure is None:
+        return
+    try:
+        on_failure({"failure": failure, "stage": stage, "lease": lease, "run": run,
+                    "release_failed": release_failed})
+    except Exception:
+        pass  # A receipt problem never masks the job's own error.
 
 
 __all__ = ["WORKFLOW_FILE_ENTRY", "BUILT_IN", "FILE_INPUTS", "MachineJob", "MachineRunCancelled", "MachineRunError",

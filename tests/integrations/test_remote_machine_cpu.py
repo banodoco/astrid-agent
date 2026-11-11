@@ -78,6 +78,9 @@ class MachineProviderHTTP:
         self.seen_controller_progress = []
         # The pod's one Runtime (T5f): container-disk state of the current pod.
         self.fail_reset = False
+        self.job_failure = None  # (exit code, stdout bytes): the generation job fails instead of finishing
+        self.corrupt_manifest = False  # the job prints a manifest digest the uploaded manifest does not match
+        self.no_stock = False  # the data-centre stock query reports nothing available
         self.resets = []  # each detached pod_reset: when, what it removed, the lease then
         self._new_pod_state()
         self.job_hold = threading.Event()
@@ -137,7 +140,8 @@ class MachineProviderHTTP:
         if "DataCenterStock" in query:
             assert variables["availability"]["allowedCudaVersions"] == list(DEFAULT_ALLOWED_CUDA_VERSIONS)
             return {"dataCenters": [{"id": DC, "storageSupport": self.volume is not None,
-                    "gpuAvailability": [{"gpuTypeId": "gpu-exact", "available": True, "stockStatus": "High"}]}]}
+                    "gpuAvailability": [{"gpuTypeId": "gpu-exact", "available": not self.no_stock,
+                                         "stockStatus": "None" if self.no_stock else "High"}]}]}
         if "DataCenterPrices" in query:
             return {"gpuTypes": [{"id": "gpu-exact", "dc0": {"stockStatus": "High", "uninterruptablePrice": 1.0}}]}
         if "gpuTypes(input:" in query:
@@ -335,6 +339,10 @@ class MachineProviderHTTP:
                 self.seen_controller_progress.append(json.loads(path.read_text()))
         if index < len(PHASES) - 1:
             return
+        if self.job_failure is not None:
+            job["state"] = "exited"
+            self._exit(directory, self.job_failure[0], self.job_failure[1])
+            return
         out = root + "/out"
         # The producer's own result manifest, written by the same helpers vibecomfy.run uses.
         import tempfile
@@ -356,8 +364,9 @@ class MachineProviderHTTP:
         files = {path[len(out) + 1:]: {"sha256": _sha(data), "size": len(data)} for path, data in tree.items()}
         body = json.dumps({"schema_version": 1, "files": files}, sort_keys=True, indent=2) + "\n"
         self.files[f"{out}/{remote_placement.MANIFEST_NAME}"] = body.encode()
+        printed = _sha(b"not the manifest") if self.corrupt_manifest else _sha(body.encode())
         stdout = (f"{remote_placement.RESULT_MARK}{json.dumps(result)}\n"
-                  f"{remote_placement.MANIFEST_MARK}{_sha(body.encode())}\n").encode()
+                  f"{remote_placement.MANIFEST_MARK}{printed}\n").encode()
         job["state"] = "exited"
         self._exit(directory, 0, stdout)
 
@@ -1131,3 +1140,112 @@ def test_machine_claim_quote_after_owner_loss_refuses_without_releasing_custody(
     assert j.record() == before and state["provider"].pods and state["provider"].deploys == 1
     # Explicit release remains the separately authorized recovery path.
     _released(state["provider"], j.release())
+
+
+# -- G3 slices 1-2: timing on every job, and one local failure receipt per failed job ---------------------
+
+FRAME = "astrid-generation-failure: "
+
+
+def _receipts():
+    from astrid.packs.runpod import failure_receipt
+
+    root = failure_receipt.failures_root()
+    return root, sorted(root.glob("*/failure-receipt.json")) if root.exists() else []
+
+
+def _newest_receipt():
+    from astrid.packs.runpod import failure_receipt
+
+    path = failure_receipt.find_receipt(None)
+    assert path is not None, "no failure receipt was written"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _timing_ok(block):
+    assert block["schema"] == "astrid.generation.phase-timing.v1"
+    stamps = block["stamps"]
+    assert (stamps["capacity_wait_started_at"] <= stamps["claimed_at"] <= stamps["preparation_ended_at"]
+            <= stamps["job_started_at"] <= stamps["job_ended_at"] <= stamps["released_at"])
+
+
+def test_a_successful_job_carries_the_phase_timing_block_and_no_receipt(journey):
+    j = journey
+    s = j.start()
+    first = j.image()
+    assert first.ok, first.to_dict()
+    machine = s["client"].tasks.show(first.task_id).data["result"]["machine"]
+    _timing_ok(machine["timing"])
+    assert machine["timing"]["phases"]["collection"]["seconds"] is not None
+    assert _receipts()[1] == []
+    _released(s["provider"], j.release())
+
+
+def test_an_execution_failure_writes_a_receipt_and_both_records_carry_timing(journey):
+    j = journey
+    s = j.start()
+    s["provider"].job_failure = (1, (FRAME + json.dumps({"code": "generation_failed", "category": "execution"}) + "\n").encode())
+    with pytest.raises(Exception):
+        j.image()
+    receipt = _newest_receipt()
+    assert receipt["stage"] == "execution" and receipt["cause"]["exit_code"] == 1
+    assert receipt["collection"]["state"] == "not_collected" and receipt["files"] == []
+    _timing_ok(receipt["timing"])
+    _released(s["provider"], j.release())
+
+
+def test_a_pod_validation_exit_writes_a_workflow_validation_receipt(journey):
+    j = journey
+    s = j.start()
+    s["provider"].job_failure = (3, b"")
+    with pytest.raises(Exception):
+        j.image()
+    receipt = _newest_receipt()
+    assert receipt["stage"] == "workflow_validation" and receipt["stage_basis"] == "pod_exit"
+    _released(s["provider"], j.release())
+
+
+def test_a_manifest_digest_mismatch_writes_an_output_collection_receipt(journey):
+    j = journey
+    s = j.start()
+    s["provider"].corrupt_manifest = True
+    with pytest.raises(Exception):
+        j.image()
+    receipt = _newest_receipt()
+    assert receipt["stage"] == "output_collection" and receipt["cause"]["exception"] == "DigestMismatch"
+    assert receipt["machine"]["after"] == "released" and receipt["machine"]["release_reason"] == "unsafe_job_state"
+    _released(s["provider"], j.record())
+
+
+def test_no_stock_writes_a_no_machine_receipt(journey):
+    j = journey
+    s = j.start()
+    client = s["client"]
+    quote = GenerationFacade().describe(placement="runpod", client=client)
+    s["provider"].no_stock = True
+    with pytest.raises(Exception):
+        GenerationFacade().image(entry="cpu-image", placement="runpod", client=client, project=s["project"],
+            consent=("paid",), max_usd=1.5, deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
+            idle_seconds=1800, wait=True, wait_for_capacity=False)
+    root, found = _receipts()
+    if not found:
+        pytest.skip("admission refused the no-stock job before a task existed; no receipt is expected")
+    receipt = _newest_receipt()
+    assert receipt["stage"] == "no_machine" and receipt["collection"]["state"] == "local_only"
+    assert receipt["identity"]["machine_id"] is None
+
+
+def test_generate_failure_prints_the_journey_receipt(journey, capsys):
+    from astrid.core.generation.cli import main as generate
+
+    j = journey
+    s = j.start()
+    s["provider"].job_failure = (1, (FRAME + json.dumps({"code": "generation_failed", "category": "execution"}) + "\n").encode())
+    with pytest.raises(Exception):
+        j.image()
+    on_disk = _newest_receipt()
+    capsys.readouterr()
+    assert generate(["failure", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == on_disk
+    _released(s["provider"], j.release())

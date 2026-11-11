@@ -7162,6 +7162,7 @@ class GenericPackHost:
         """
         from types import SimpleNamespace
 
+        from astrid.core.execution import phase_timing
         from astrid.core.execution.machine_run import (
             WORKFLOW_FILE_ENTRY, MachineJob, resolve_machine, run_on_machine,
         )
@@ -7178,20 +7179,33 @@ class GenericPackHost:
         machine = resolve_machine(policy["kind"]).for_host(
             provider, begin=lambda lease: target_context.begin(lease, cancel_signal),
             done=target_context.done)
+        # Timing and the local failure receipt are RunPod's; other machine kinds behave as before.
+        is_runpod = policy.get("kind") == "runpod"
+        timing = phase_timing.PhaseTiming() if is_runpod else None
         job = MachineJob(
             entry=entry, mode=metadata.get("mode"), policy=policy,
             inputs={name: value for name, value in inputs.items() if value is not None},
             invocation_id=f"{task_id}:{attempt_id}:{fence}", task_id=str(task_id), attempt_id=str(attempt_id),
             scratch=root, progress_path=root / ".astrid-progress.json",
-            align=_machine_align_mode(task_data),
+            align=_machine_align_mode(task_data), timing=timing,
         )
         def claimed(lease):
             # Which machine runs this attempt, recorded as soon as it is claimed (failures keep it too).
             terminal["machine"] = dict(machine.describe(lease))
 
-        fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
-                                 poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 15.0),
-                                 on_claim=claimed)
+        # One local failure receipt per failed machine job, written after release.
+        failed = None
+        if is_runpod:
+            from astrid.packs.runpod.failure_receipt import recorder
+            failed = recorder(job, lambda: terminal.get("machine"), timing)
+
+        try:
+            fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
+                                     poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 15.0),
+                                     on_claim=claimed, on_failure=failed)
+        finally:
+            # Success and failure both carry the one timing block (release is done by now).
+            phase_timing.attach(terminal.get("machine"), timing)
         terminal["machine"] = {**terminal.get("machine", {}), "manifest_sha256": fetched.get("manifest_sha256"),
                                "files": sorted(fetched.get("files", {})), "process_id": fetched.get("process_id")}
         return SimpleNamespace(payload={}, output_root=output_root, process_id=fetched.get("process_id"),

@@ -333,6 +333,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('--placement', required=True)
     command.add_argument('--no-wait', action='store_true')
     command.add_argument('--json', action='store_true')
+    command = sub.add_parser('failure', help='Show the local failure receipt of a failed generation (newest by default).')
+    command.add_argument('task_id', nargs='?', help='Task id of the failed generation; omit for the newest receipt.')
+    command.add_argument('--json', action='store_true')
     return parser
 
 
@@ -550,6 +553,8 @@ def _main(argv: list[str]) -> int:
             consent=parsed.consent, timeout=parsed.timeout)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 2 if payload['status'] == 'blocked' else 0
+    if parsed.modality == 'failure':
+        return _failure_command(parsed)
     if parsed.modality == 'release':
         with _open_client() as client:
             result = _generate_facade().release(engine=parsed.engine, placement=parsed.placement,
@@ -715,6 +720,19 @@ def _main(argv: list[str]) -> int:
             print(path)
         if payload.get("run_dir"):
             print(f"run: {payload['run_dir']}")
+    return 0
+
+
+def _failure_command(parsed) -> int:
+    """Print one local failure receipt; it reads only the receipt file, never a machine."""
+    from astrid.packs.runpod import failure_receipt
+    path = failure_receipt.find_receipt(parsed.task_id)
+    if path is None:
+        what = f"task {parsed.task_id}" if parsed.task_id else "any failed generation"
+        print(f"no failure receipt for {what}", file=sys.stderr)
+        return 1
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    print(json.dumps(receipt, indent=2, sort_keys=True) if parsed.json else failure_receipt.render(receipt))
     return 0
 
 

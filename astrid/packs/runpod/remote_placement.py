@@ -348,7 +348,7 @@ class RemoteRun:
         return f"{self.remote_root}/out"
 
     def note(self, step: str, status: str, **detail: Any) -> None:
-        self.steps.append({"step": step, "status": status, **detail})
+        self.steps.append({"step": step, "status": status, "at": time.time(), **detail})
 
 
 # ----------------------------------------------------------------------------
