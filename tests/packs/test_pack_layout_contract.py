@@ -17,10 +17,6 @@ import subprocess
 from pathlib import Path
 
 from astrid.core.pack import discover_packs
-from astrid.core.pack.validate_first_party import (
-    _FIRST_PARTY_PACK_IDS,
-    _TRACKED_FIRST_PARTY_PACK_IDS,
-)
 
 # ── repo-root-relative paths ────────────────────────────────────────────────
 
@@ -51,8 +47,14 @@ _REMOVED_MARKER_IMPORT_PATHS = (
 # manifest is a "shipped pack".  The single source of truth is the first-party
 # validator's inventory; the tracked subset excludes the local-only packs that
 # may be gitignored in a given checkout.
-_SHIPPED_PACK_IDS = frozenset(_FIRST_PARTY_PACK_IDS)
-_TRACKED_SHIPPED_PACK_IDS = frozenset(_TRACKED_FIRST_PARTY_PACK_IDS)
+# The validator no longer carries a copied id list (inventory is derived from
+# manifests), so the expected set is pinned here: adding or removing a shipped
+# pack must be a deliberate edit of this test. No shipped pack is local-only.
+_SHIPPED_PACK_IDS = frozenset({
+    "comfy_wrap", "developer", "generation", "h3_av", "local", "rendering",
+    "runpod", "timeline", "training", "vibecomfy", "wan2gp",
+})
+_TRACKED_SHIPPED_PACK_IDS = _SHIPPED_PACK_IDS
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

@@ -10,7 +10,9 @@ from astrid.pack_build import build_pack_assets
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE = Path(os.environ.get('ASTRID_BUILD_TEST_NODE', '/opt/node22/bin/node'))
-ESBUILD = Path(os.environ['ASTRID_BUILD_TEST_ESBUILD'])
+_ESBUILD_ENV = os.environ.get('ASTRID_BUILD_TEST_ESBUILD')
+ESBUILD = Path(_ESBUILD_ENV) if _ESBUILD_ENV else None
+_TOOLS_PRESENT = bool(ESBUILD and ESBUILD.is_file() and NODE.is_file())
 SINGLETONS = ('react', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-dom/client', 'remotion', '@astrid/editor-sdk')
 
 
@@ -26,6 +28,10 @@ def toolchain():
                 for i, s in enumerate(SINGLETONS)}}
 
 
+@unittest.skipUnless(
+    _TOOLS_PRESENT,
+    'pack build tests need node (ASTRID_BUILD_TEST_NODE) and esbuild (ASTRID_BUILD_TEST_ESBUILD); neither is provisioned here',
+)
 class PackBuildTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
