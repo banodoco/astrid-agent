@@ -222,6 +222,8 @@ def test_launcher_attaches_to_healthy_host_from_another_checkout(harness, monkey
 
 def test_observer_uses_bound_runtime_arguments(monkeypatch, tmp_path):
     from astrid.sdk import autobootstrap
+    from astrid_runtime.paths import RuntimePaths
+    assert RuntimePaths.current(data_root=tmp_path).runtime_support == tmp_path / "runtime"
     monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: ["runtime-cli"])
     calls = []
     def run(argv, **kwargs):
@@ -232,7 +234,7 @@ def test_observer_uses_bound_runtime_arguments(monkeypatch, tmp_path):
         return _ObserverProcess(payload, 0)
     monkeypatch.setattr(host_bootstrap.subprocess, "Popen", run)
     assert host_bootstrap._observe_resident_host(
-        endpoint="http://runtime.test", support_root=tmp_path,
+        endpoint="http://runtime.test", support_root=tmp_path / "runtime",
         runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3,
     )["executor_id"] == "astrid-pack-host"
     assert calls[0][0] == ["runtime-cli", "observe-pack-host", "--data-root", str(tmp_path),
@@ -259,7 +261,7 @@ def test_observer_rejects_bad_output_without_exposing_it(monkeypatch, tmp_path, 
         return _ObserverProcess(output, returncode)
     monkeypatch.setattr(host_bootstrap.subprocess, "Popen", run)
     with pytest.raises(RuntimeError, match="runtime observer unavailable") as exc:
-        host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path,
+        host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path / "runtime",
             runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
     assert "secret" not in str(exc.value)
 
@@ -273,7 +275,7 @@ def test_observer_limits_a_real_child(monkeypatch, tmp_path, code):
     monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: [sys.executable, "-c", code])
     monkeypatch.setattr(host_bootstrap, "_OBSERVER_TIMEOUT_SECONDS", 0.5)
     with pytest.raises(RuntimeError, match="runtime observer unavailable"):
-        host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path,
+        host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path / "runtime",
             runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
     assert not any(t.name == "astrid-observer-reader" for t in threading.enumerate())
 

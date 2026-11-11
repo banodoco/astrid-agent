@@ -1863,8 +1863,12 @@ def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instanc
     if not isinstance(runtime_session_id, str) or not runtime_session_id.strip():
         raise RuntimeError("runtime session is unavailable")
     try:
+        # The worker credential lives under <data-root>/runtime/credentials;
+        # Runtime's --data-root selects its parent, not runtime_support itself.
+        if support_root.name != "runtime":
+            raise ValueError("invalid Runtime support root")
         with subprocess.Popen(
-                [*_launcher_command(), "observe-pack-host", "--data-root", str(support_root),
+                [*_launcher_command(), "observe-pack-host", "--data-root", str(support_root.parent),
                  "--endpoint", endpoint, "--runtime-instance-id", runtime_instance_id,
                  "--runtime-session-id", runtime_session_id, "--runtime-epoch", str(runtime_epoch), "--json"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
