@@ -184,6 +184,15 @@ def _row_lineage(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def resolve_media_handle(client: Any, project: str, value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     """Resolve one handle to ``(descriptor, lineage)`` inside *project*."""
+    descriptor, lineage, _output = _resolve_handle(client, project, value)
+    return descriptor, lineage
+
+
+def _resolve_handle(
+    client: Any, project: str, value: Any,
+) -> tuple[dict[str, Any], dict[str, Any], Mapping[str, Any] | None]:
+    """``resolve_media_handle`` plus the managed output row an output handle named (else None)."""
+    output: Mapping[str, Any] | None = None
     if client is None or not project:
         raise MediaHandleError("resolving a media handle needs client= and project=")
     if isinstance(value, Mapping) and "ref" in value:
@@ -191,6 +200,7 @@ def resolve_media_handle(client: Any, project: str, value: Any) -> tuple[dict[st
     lineage: dict[str, Any]
     name_hint = ""
     if isinstance(value, Mapping):
+        output = value
         digest = str(value.get("digest") or value.get("object_id") or "")
         lineage = _row_lineage(value)
         name_hint = str(value.get("filename") or "")
@@ -202,7 +212,7 @@ def resolve_media_handle(client: Any, project: str, value: Any) -> tuple[dict[st
     elif isinstance(value, str) and (match := _OUTPUT_HANDLE.fullmatch(value)):
         handle = value
         kind, ident, port, ordinal = match.groups()
-        row = _select_output(_output_rows(client, kind, ident), port, int(ordinal or 0), value)
+        row = output = _select_output(_output_rows(client, kind, ident), port, int(ordinal or 0), value)
         digest = str(row.get("digest") or row.get("object_id") or "")
         lineage = _row_lineage(row)
         name_hint = str(row.get("filename") or "")
@@ -228,7 +238,7 @@ def resolve_media_handle(client: Any, project: str, value: Any) -> tuple[dict[st
         "media_type": media_type,
         "size_bytes": int(media.get("size") or media.get("size_bytes") or 0),
     }
-    return descriptor, {"handle": handle, "digest": digest, **lineage}
+    return descriptor, {"handle": handle, "digest": digest, **lineage}, output
 
 
 def _expand_references(capability: Any, inputs: dict[str, Any]) -> list[dict[str, Any]]:
@@ -502,7 +512,7 @@ def resolve_timeline_asset(client: Any, project: str, handle: Any) -> dict[str, 
     "handle", "filename"}``; pass it to ``Clip.swap_asset`` (the ``key`` names
     the registry entry, the other fields are what the registry stores).
     """
-    descriptor, lineage = resolve_media_handle(client, project, handle)
+    descriptor, lineage, output = _resolve_handle(client, project, handle)
     digest = descriptor["digest"]
     reference = lineage.get("reference") if isinstance(lineage.get("reference"), Mapping) else None
     stem = Path(descriptor["filename"]).stem
@@ -515,6 +525,11 @@ def resolve_timeline_asset(client: Any, project: str, handle: Any) -> dict[str, 
         "handle": lineage.get("handle"),
         "filename": descriptor["filename"],
     }
+    selection = _output_catalog_selection(client, project, output, digest)
+    if selection is not None:
+        # The catalog association lets commit admit this output through its exact
+        # Runtime-verified selection, as it does an imported file.
+        entry["generationId"], entry["variantId"] = selection["generation_id"], selection["variant_id"]
     pixel = _pixel_provenance(client, lineage, digest)
     if pixel is not None:
         entry["pixel_provenance"] = pixel
@@ -529,6 +544,42 @@ def resolve_timeline_asset(client: Any, project: str, handle: Any) -> dict[str, 
         except Exception:  # noqa: BLE001 - resolution is optional registry metadata
             pass
     return entry
+
+
+def _output_catalog_selection(
+    client: Any, project: str, output: Mapping[str, Any] | None, digest: str,
+) -> dict[str, Any] | None:
+    """The catalog generation and variant the Runtime bound to this exact task output, else None.
+
+    Runtime answers only for a durable output of a completed, settled attempt that it
+    published as one registered variant; it reports anything else as not found or a
+    conflict, and that media stays without a catalog association (commit refuses it).
+    """
+    if not isinstance(output, Mapping):
+        return None
+    association = output.get("association_id")
+    lifecycle = output.get("lifecycle")
+    version = lifecycle.get("version") if isinstance(lifecycle, Mapping) else None
+    if not isinstance(association, str) or not association or type(version) is not int:
+        return None
+    transport = getattr(getattr(client, "_remote", None), "_transport", None)
+    reader = getattr(transport, "get_project_media_selection", None)
+    if not callable(reader):
+        return None
+    from .workspace_client import WorkspaceClientError
+
+    try:
+        selected = reader(project, {"association_id": association, "object_id": digest, "version": version})
+    except WorkspaceClientError as exc:
+        if exc.status in (404, 409):
+            return None
+        raise
+    if isinstance(selected, Mapping) and isinstance(selected.get("data"), Mapping):
+        selected = selected["data"]
+    if (not isinstance(selected, Mapping) or selected.get("object_id") != digest
+            or not all(isinstance(selected.get(key), str) and selected[key] for key in ("generation_id", "variant_id"))):
+        raise MediaHandleError(f"Runtime catalog selection for {association} differs from the task output")
+    return dict(selected)
 
 
 def _pixel_provenance(client: Any, lineage: Mapping[str, Any], digest: str) -> dict[str, Any] | None:

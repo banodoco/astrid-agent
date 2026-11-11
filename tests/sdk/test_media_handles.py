@@ -183,3 +183,56 @@ def test_timeline_asset_resolver_carries_pixel_sprites_report() -> None:
         "executor": "pixel.sprites", "run_id": "r-00", "lattice": {"detected": True, "block": 3.5},
         "drawn_block": 3.5, "outline_integrity": {"fraction": 0.70},
     }
+
+
+@pytest.mark.parametrize("answer", ["variant", "not_found", "conflict"])
+def test_timeline_asset_resolver_asks_runtime_for_the_task_output_catalog_variant(answer) -> None:
+    """A task output carries its catalog ids only when Runtime binds the exact output to one variant."""
+    from astrid.sdk.media_handles import resolve_timeline_asset
+    from astrid.sdk.workspace_client import WorkspaceClientError
+
+    row = {"association_id": "managed-output-1", "run_id": "r-1", "task_id": "t-1", "output_port": "generated_images",
+           "ordinal": 1, "role": "output", "filename": "cpu-1.png", "media_type": "video/mp4", "size": 11,
+           "digest": IMAGE, "object_id": IMAGE, "lifecycle": {"state": "available", "version": 1}}
+    asked = []
+
+    def selection(project, selector):
+        asked.append((project, selector))
+        if answer == "not_found":
+            raise WorkspaceClientError(404, "not_found", "output has no authoritative registered variant", {})
+        if answer == "conflict":
+            raise WorkspaceClientError(409, "conflict", "selected output is not an exact completed settlement", {})
+        return {"asset": "variant-1", "generation_id": "generation-1", "variant_id": "variant-1",
+                "object_id": IMAGE, "catalog_digest": "sha256:" + "c" * 64}
+
+    runtime = SimpleNamespace(
+        runs=SimpleNamespace(show=lambda run_id: _ok({"task_ids": ["t-1"]})),
+        tasks=SimpleNamespace(list_managed_outputs=lambda task_id: _ok([row])),
+        media=SimpleNamespace(show=lambda project, d: _ok({"digest": d, "filename": "cpu-1.mp4",
+                                                           "media_type": "video/mp4", "size": 11})),
+        _remote=SimpleNamespace(_transport=SimpleNamespace(get_project_media_selection=selection)),
+    )
+    for handle in ("task:t-1/generated_images#1", "run:r-1/generated_images#1"):
+        entry = resolve_timeline_asset(runtime, "demo", handle)
+        if answer == "variant":
+            assert (entry["generationId"], entry["variantId"]) == ("generation-1", "variant-1")
+        else:
+            assert "generationId" not in entry and "variantId" not in entry
+        assert entry["media_id"] == IMAGE
+    assert asked == [("demo", {"association_id": "managed-output-1", "object_id": IMAGE, "version": 1})] * 2
+
+
+def test_timeline_asset_resolver_refuses_a_runtime_selection_for_other_media() -> None:
+    from astrid.sdk.media_handles import resolve_timeline_asset
+
+    row = {"association_id": "managed-output-1", "task_id": "t-1", "output_port": "images", "ordinal": 0,
+           "role": "output", "digest": IMAGE, "lifecycle": {"version": 2}}
+    runtime = SimpleNamespace(
+        tasks=SimpleNamespace(list_managed_outputs=lambda task_id: _ok([row])),
+        media=SimpleNamespace(show=lambda project, d: _ok({"digest": d, "filename": "a.mp4",
+                                                           "media_type": "video/mp4", "size": 11})),
+        _remote=SimpleNamespace(_transport=SimpleNamespace(get_project_media_selection=lambda project, selector: {
+            "generation_id": "generation-1", "variant_id": "variant-1", "object_id": OTHER})),
+    )
+    with pytest.raises(MediaHandleError, match="differs from the task output"):
+        resolve_timeline_asset(runtime, "demo", "task:t-1/images#0")
