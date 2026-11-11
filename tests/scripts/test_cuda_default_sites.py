@@ -11,7 +11,7 @@ if "paramiko" not in sys.modules:
 
 from astrid.packs.runpod import h3_release as build  # noqa: E402
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS  # noqa: E402
-from astrid.packs.runpod import claim_capacity as claim  # noqa: E402
+from scripts import claim_runpod_5090_backup as claim  # noqa: E402
 from scripts import pod_session as pod  # noqa: E402
 
 EXPECTED = ("13.0", "13.1", "13.2", "13.3")

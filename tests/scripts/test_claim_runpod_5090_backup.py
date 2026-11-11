@@ -11,7 +11,7 @@ import runpod_lifecycle
 from runpod_lifecycle import AllocationUnknown, LaunchFailure, PostCreateHookFailure
 
 from astrid.packs.runpod import worker_preparation
-from astrid.packs.runpod import claim_capacity as claim
+from scripts import claim_runpod_5090_backup as claim
 
 @pytest.fixture(autouse=True)
 def offline_egress(monkeypatch):
