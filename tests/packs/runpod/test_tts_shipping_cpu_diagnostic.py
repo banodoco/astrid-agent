@@ -27,20 +27,15 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
     from vibecomfy.workflow_bundle import emit_bundle
 
     entry, mode = 'audio/qwen3_tts_custom_voice', 'tts'
-    # Freeze the pinned repository's discovery for this one test. Each real
-    # resolve still validates its own inputs; repeated ready-template scans and
-    # authoring-schema construction add work to this bounded CPU diagnostic.
-    # Copies prevent either route from mutating the other route's snapshot.
-    for name in ('_ready_entries_for', 'describe_entry'):
-        cached = lru_cache(maxsize=None)(getattr(entries, name))
-        def snapshot(*args, _cached=cached, **kwargs):
-            return deepcopy(_cached(*args, **kwargs))
-        monkeypatch.setattr(entries, name, snapshot)
+    # Share the pinned ready-template scan between initial description and
+    # lookup. Copy snapshots so neither path can mutate the other's entry.
+    ready_snapshot = lru_cache(maxsize=None)(entries._ready_entries_for)
+    monkeypatch.setattr(entries, '_ready_entries_for',
+                        lambda *args, **kwargs: deepcopy(ready_snapshot(*args, **kwargs)))
     # Synthetic content only: never substitute a real prompt or live job artifacts.
     # Resolve the pinned template's true native contract and entry once. Later
     # direct and shipped calls still run resolve_entry_inputs/validate_inputs;
     # only repeated discovery of this same immutable entry is replaced.
-    from copy import deepcopy
     native_description = entries.describe_entry(entry, mode=mode, _native=True)
     described = entries.find_entry(entry)
     assert described is not None
