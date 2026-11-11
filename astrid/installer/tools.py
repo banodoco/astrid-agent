@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
+
 from runtime_protocol import platform
 
 from ..core.generation.canonical_pins import canonical_pin
