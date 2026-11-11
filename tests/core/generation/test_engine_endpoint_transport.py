@@ -110,7 +110,7 @@ def canonical_session(tmp_path):
     """
     install_root = tmp_path / "engine"
     cwd = install_root / "runtime" / "ComfyUI"
-    registry = install_root / "runtime" / "out" / "sessions" / "vibecomfy-h3"
+    registry = install_root / "runtime" / "out" / "sessions" / "comfyui"
     config = {
         "runtime_root": str(install_root / "runtime"), "cwd": str(cwd), "port": 8188,
         "warm_policy": "never", "base_directory": str(cwd),
@@ -140,7 +140,7 @@ def observation_configuration():
 
 @pytest.fixture
 def network(tmp_path, engine_configuration, observation_configuration):
-    recipe = load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = load_recipe("comfyui", PLATFORM)
     facts = {"objects": {n: {} for n in recipe.health.required_nodes}, "upstream": [], "agent": [],
              "redirect": None, "recipient": [], "handler": None, "timeouts": [], "bounded_timeouts": [],
              "exchanges": [], "corrupt_digest": False, "responses": [], "image": b"image-data\x00\xff" * 200000,
@@ -259,7 +259,7 @@ def endpoint(tmp_path, network):
     token = private(tmp_path / "token", TOKEN.encode())
     attestation = RunPodAttestation("runpod-engine.v1", "account", "pod123", str(tmp_path / "snapshot"),
                                    "a" * 64, "/engine/.astrid-engine/install.json", "b" * 64, health, digest)
-    return EngineEndpoint("astrid.engine-endpoint.v1", "single", "vibecomfy-h3", PLATFORM, "runpod",
+    return EngineEndpoint("astrid.engine-endpoint.v1", "single", "comfyui", PLATFORM, "runpod",
                           "https://pod123-8000.proxy.runpod.net/engines/single",
                           EndpointAuth("bearer-file", SecretRef("file", str(token))), "ready", health,
                           LifecycleOwner("astrid-runpod", "original", str(tmp_path / "claim"), None, "pod123", False),
@@ -408,7 +408,8 @@ def prepared(tmp_path, endpoint, network):
                           claim_handle_sha256=hashlib.sha256(snapshot.read_bytes()).hexdigest(),
                           install_receipt_sha256=hashlib.sha256(receipt_bytes).hexdigest())
     profile = {"schema_version": "hc03-worker-readiness.v1", "status": "ready",
-               "vibecomfy_session": {"server_url": "http://127.0.0.1:8188"},
+               "engine_identity": {"engine": endpoint.engine, "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+                                   "root": receipt["root"]},
                "endpoint_evidence": {"schema": "astrid.runpod.endpoint-evidence.v1", "engine": endpoint.engine,
                                      "platform": PLATFORM, "claim_operation_id": "original", "claim_attestation": asdict(attestation)}}
     target = {"kind": "runpod", "pod_id": "pod123", "provider_account_ref": "account", "storage": {"network_volume_id": "volume"}}
@@ -593,49 +594,6 @@ def test_denied_gateway_operation_does_not_open_bearer(endpoint, network, local_
     assert network["agent"] == []
 
 
-@pytest.mark.parametrize("evidence_present", [True, False])
-def test_checkout_host_session_preserves_binding_and_uses_transport(endpoint, network, local_tls,
-                                                                   tmp_path, monkeypatch, evidence_present):
-    import astrid.core.generation.backends.vibecomfy as backend
-    from tests.core.generation.backends.test_checkout_server import _hc03_profile
-
-    root = tmp_path / "host"
-    root.mkdir()
-    profile = _hc03_profile(root)
-    session = profile["vibecomfy_session"]
-    session["server_url"] = "http://127.0.0.1:8188"
-    directory = Path(session["session_dir"])
-    canonical = canonical_session(tmp_path)
-    canonical.output.mkdir(parents=True)
-    (directory / "config.json").write_bytes(encoded(canonical.config))
-    session["config_digest"] = "sha256:" + hashlib.sha256(encoded(canonical.config)).hexdigest()
-    (directory / "url").write_text(session["server_url"])
-    marker = json.loads((directory / "launch.json").read_text())
-    marker["url"] = session["server_url"]
-    (directory / "launch.json").write_bytes(encoded(marker))
-    profile["verified_facts"]["exact"]["port"] = 8188
-    profile["verified_facts_digest"] = backend._canonical_sha256(profile["verified_facts"])
-    if evidence_present:
-        profile["endpoint_evidence"] = {"schema": "astrid.runpod.endpoint-evidence.v1", "engine": endpoint.engine,
-                                        "platform": PLATFORM, "claim_operation_id": "original",
-                                        "claim_attestation": asdict(endpoint.attestation)}
-    monkeypatch.setattr(backend, "_verify_owned_vibe_session", lambda *_: None)
-    with EngineEndpointTransport(endpoint, pod_id="pod123", agent_port=8000) as transport:
-        kwargs = dict(hc03_profile=profile, model_id="model", template_id="workflow", invocation_identity="task",
-                      endpoint_transport=transport)
-        if not evidence_present:
-            with pytest.raises(AttestationError):
-                backend.CheckoutServerAdapter.from_host_session(**kwargs)
-            assert network["agent"] == []
-            return
-        adapter = backend.CheckoutServerAdapter.from_host_session(**kwargs)
-        assert adapter._origin == session["server_url"]
-        assert adapter._engine._origin == session["server_url"]
-        assert adapter._http_origin == transport.server_url
-        assert adapter._host_session["input_directory"] == str(canonical.input)
-        assert adapter._engine._post("/api/free", {}) == {"ok": True}
-        with pytest.raises(RuntimeError, match="original-owner reconciliation"):
-            adapter._restart_owned_session()
 
 
 # ---- Configured normal egress and the narrow no-route retry ------------------

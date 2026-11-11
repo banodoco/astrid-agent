@@ -28,13 +28,11 @@ Chat and other service logs (`service-*.log`) are excluded from the bundle.
 
 On Linux, `XDG_DATA_HOME` sets the program and workspace roots, and `XDG_STATE_HOME` sets the log root.
 
-The optional service settings file is private JSON. It starts as `{}`. To change the engine idle timeout or allow a GPU
-pack that is not qualified yet, edit it with string values, for example:
+The optional service settings file is private JSON. It starts as `{}`. To change the engine idle timeout, edit it with string values, for example:
 
 ```json
 {
-  "ASTRID_WARM_IDLE_SECONDS": "600",
-  "ASTRID_ALLOW_UNQUALIFIED_GPU": "1"
+  "ASTRID_WARM_IDLE_SECONDS": "600"
 }
 ```
 

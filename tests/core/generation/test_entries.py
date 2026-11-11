@@ -59,7 +59,7 @@ def test_explicit_entry_plan_is_visible(loopback_comfy, tmp_path, monkeypatch, c
     source.write_text(json.dumps(load_bundle(workflow_from_ready("image/z_image_turbo")).materialize_ui()))
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path / "entries"))
     import_as_entry(source, "mine")
-    assert cli.main(["image", "hello", "--entry", "mine", "--target", loopback_comfy.url, "--dry-run"]) == 0
+    assert cli.main(["image", "hello", "--entry", "mine", "--placement", loopback_comfy.url, "--dry-run"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["entry"]["id"] == "mine" and plan["entry"]["reason"] == "explicitly selected workflow entry"
     assert plan["entry"]["bindings"]["prompt"] == "hello"
@@ -67,7 +67,7 @@ def test_explicit_entry_plan_is_visible(loopback_comfy, tmp_path, monkeypatch, c
 
 def test_default_plan_selects_highest_ranked_ready_entry(loopback_comfy, monkeypatch, capsys):
     monkeypatch.setattr(entries, "user_entries", lambda: [])
-    assert cli.main(["image", "hello", "--target", loopback_comfy.url, "--dry-run"]) == 0
+    assert cli.main(["image", "hello", "--placement", loopback_comfy.url, "--dry-run"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["entry"]["id"] == "qwen-image-2.1-turbo"
     assert "highest-ranked ready" in plan["entry"]["reason"]
@@ -193,7 +193,7 @@ def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, c
             settled = worker.submit(host.run, poll_seconds=0.02, max_tasks=1)
             try:
                 code = console.main(['generate', 'image', 'entry test prompt', '--entry', 'my-style',
-                    '--target', loopback_comfy.url, '--project', project.data['project_id'], '--json'])
+                    '--placement', loopback_comfy.url, '--project', project.data['project_id'], '--json'])
             finally:
                 host.shutdown()
             results = settled.result(timeout=15)
@@ -206,11 +206,68 @@ def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, c
         host.shutdown()
 
 
-def test_runpod_engines_derive_from_engine_index():
-    import json
+def test_runpod_engines_derive_from_engine_declarations():
     from astrid.core.generation import entries
-    from astrid.core.generation.engine_recipe import _INDEX_PATH
-    rows = json.loads(_INDEX_PATH.read_text(encoding="utf-8"))["entries"]
+    from astrid.core.generation.engine_recipe import _index_rows
+    rows = _index_rows()
     assert entries.runpod_engines() == tuple(
         row["engine"] for row in rows if row["platform"] == entries.RUNPOD_PLATFORM)
-    assert entries.runpod_engines() == ("comfyui", "vibecomfy-h3")
+    assert entries.runpod_engines() == ("comfyui",)
+
+
+def test_file_map_input_ships_in_the_managed_assets_archive(tmp_path):
+    """Plan 32 T6: a {id: path} input is a declared type, and rides the existing managed-assets archive."""
+    from astrid.packs.vibecomfy import asset_manifest
+
+    assert entries._input_type('file_map') == 'file_map'
+    assert entries._input_type('files') == 'file_map'
+    refs = {'hero': tmp_path / 'hero.png', 'side': tmp_path / 'side.png'}
+    refs['hero'].write_bytes(b'hero-bytes')
+    refs['side'].write_bytes(b'side-bytes')
+    description = {'inputs': [{'name': 'refs', 'type': 'file_map', 'required': True}]}
+
+    value = {key: str(path) for key, path in refs.items()}
+    assert entries.validate_inputs(description, {'refs': value}) == {'refs': value}
+    for bad in ({}, {'hero': 3}, {'': 'x.png'}, ['x.png'], {'hero': ''}):
+        with pytest.raises(ValueError, match="refs"):
+            entries.validate_inputs(description, {'refs': bad})
+
+    bindings = asset_manifest.file_map_bindings('refs', value)
+    assert sorted(bindings) == ['refs/hero', 'refs/side']
+    archive = tmp_path / 'assets.zip'
+    asset_manifest.write_archive(bindings, archive)
+    resolved = asset_manifest.read_archive(archive)
+    # The manifest keys by binding name; the map is recovered from it by input name.
+    assert sorted(record['binding'] for record in resolved.manifest['assets']) == ['refs/hero', 'refs/side']
+    recovered = asset_manifest.file_map_members('refs', resolved)
+    assert recovered == {'hero': b'hero-bytes', 'side': b'side-bytes'}
+    assert asset_manifest.file_map_members('other', resolved) == {}
+
+
+def test_generation_kinds_are_one_shared_set():
+    # Every entry source validates kind against the same constant, and every
+    # kind has exactly one default mode to try when the caller names none.
+    assert entries._KINDS == frozenset({'image', 'video', 'audio'})
+    assert set(entries._DEFAULT_MODE_CANDIDATES) == entries._KINDS
+    assert entries._DEFAULT_MODE_CANDIDATES == {'image': ('t2i',), 'video': ('t2v',), 'audio': ('music',)}
+
+
+@pytest.mark.parametrize("document", [
+    {}, [], {"": "a.mp4"}, {"a/b": "a.mp4"}, {"a": ""}, {"a": "  "}, {"a": 3}, {"a": None}])
+def test_a_file_map_document_gets_the_same_shape_checks_as_a_direct_map(tmp_path, document):
+    from astrid.core.generation.entries import file_map_is_valid, read_file_map_document
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(document))
+    assert not file_map_is_valid(document)
+    with pytest.raises(ValueError, match="nonempty JSON object of id to file path"):
+        read_file_map_document(str(path))
+
+
+def test_a_valid_file_map_document_reads_with_paths_relative_to_it(tmp_path):
+    from astrid.core.generation.entries import file_map_is_valid, read_file_map_document
+    (tmp_path / "source.mp4").write_bytes(b"x")
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps({"source": "source.mp4", "abs": "/tmp/abs.png"}))
+    value = read_file_map_document(str(path))
+    assert value == {"source": str(tmp_path / "source.mp4"), "abs": "/tmp/abs.png"}
+    assert file_map_is_valid(value)

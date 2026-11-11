@@ -29,7 +29,7 @@ def test_records_are_inert_and_frozen():
     health = HealthEvidence("healthy", "2026-10-27T00:00:00Z", "a" * 64, True)
     local = LocalAttestation("local-engine.v1", "/receipt", "b" * 64, health, "a" * 64)
     remote = RunPodAttestation("runpod-engine.v1", "account", "pod123", "/snapshot", "c" * 64, "/receipt", "b" * 64, health, "a" * 64)
-    endpoint = EngineEndpoint("astrid.engine-endpoint.v1", "endpoint", "vibecomfy-h3", "linux-x86_64-cu130", "local", "http://127.0.0.1:8188", EndpointAuth("none", None), "ready", health, LifecycleOwner("attached", "owner", None, None, None, False), local)
+    endpoint = EngineEndpoint("astrid.engine-endpoint.v1", "endpoint", "comfyui", "linux-x86_64-cu130", "local", "http://127.0.0.1:8188", EndpointAuth("none", None), "ready", health, LifecycleOwner("attached", "owner", None, None, None, False), local)
     assert remote.claim_handle_path == "/snapshot"
     assert SecretRef("file", "/private/token").kind == "file"
     assert not hasattr(endpoint, "ensure") and not hasattr(endpoint, "release")
@@ -55,9 +55,9 @@ def records():
     health = HealthEvidence("healthy", "2026-10-27T00:00:00Z", "a" * 64, True)
     local = LocalAttestation("local-engine.v1", "/engine/install.json", "b" * 64, health, "a" * 64)
     remote = RunPodAttestation("runpod-engine.v1", "account", "pod123", "/private/snapshot", "c" * 64, "/engine/install.json", "b" * 64, health, "a" * 64)
-    endpoint = EngineEndpoint("astrid.engine-endpoint.v1", "endpoint", "vibecomfy-h3", "linux-x86_64-cu130", "local", "http://127.0.0.1:8188", EndpointAuth("none", None), "ready", health, LifecycleOwner("attached", "owner", None, None, None, False), local)
+    endpoint = EngineEndpoint("astrid.engine-endpoint.v1", "endpoint", "comfyui", "linux-x86_64-cu130", "local", "http://127.0.0.1:8188", EndpointAuth("none", None), "ready", health, LifecycleOwner("attached", "owner", None, None, None, False), local)
     runpod = replace(endpoint, placement="runpod", url="https://pod123-8000.proxy.runpod.net/engines/endpoint", auth=EndpointAuth("bearer-file", SecretRef("file", "/private/token")), lifecycle_owner=LifecycleOwner("astrid-runpod", "owner", "/private/live", "job", "pod123", True), attestation=remote)
-    profile = EndpointProfileEvidence("astrid.runpod.endpoint-evidence.v1", "vibecomfy-h3", "linux-x86_64-cu130", "operation", remote)
+    profile = EndpointProfileEvidence("astrid.runpod.endpoint-evidence.v1", "comfyui", "linux-x86_64-cu130", "operation", remote)
     return endpoint, runpod, profile
 
 

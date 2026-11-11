@@ -1,0 +1,9 @@
+api: 1
+summary: Wan2GP's Windows engine recipe; execution support is pending.
+example: astrid generation engines
+effects: edit
+entry: wan2gp_engine.py:ENGINE
+recipes:
+  - platform: windows-x86_64-cu128
+    path: packs/wan2gp/recipe.windows-cu128.json
+    sha256: "c7b0457a62e35cdc056fee6b1fcb398053321c06fe896cb52ada9c69fbe71a5a"

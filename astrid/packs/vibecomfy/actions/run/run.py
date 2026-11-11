@@ -23,9 +23,10 @@ from types import SimpleNamespace
 from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, ContextManager
+from typing import Any
 from types import ModuleType
 
+from astrid.core.generation.progress import write_progress  # noqa: E402
 from astrid.pack_api import build_manifest, write_manifest
 from astrid.pack_api import AstridError, render_astrid_error  # noqa: E402
 from astrid.pack_api import add_choice_arg  # noqa: E402
@@ -73,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON object of scalar public workflow inputs; managed assets supply media basenames.",
     )
     parser.add_argument(
+        "--after-outputs-job",
+        default="{}",
+        help="JSON {entry, job_dir, inputs, files}: run that entry's after_outputs hook before sealing outputs.",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         help="Host-assigned output spool (required for run; optional for validate).",
@@ -110,25 +116,8 @@ def _source_video_input_directory(
     output_root: Path,
 ) -> Path:
     """Resolve the worker-owned Comfy input directory for source media."""
-    if isinstance(readiness_profile, dict) and isinstance(
-        readiness_profile.get("vibecomfy_session"), dict
-    ):
-        session = readiness_profile["vibecomfy_session"]
-        raw_session_dir = session.get("session_dir")
-        if not isinstance(raw_session_dir, str) or not raw_session_dir.strip():
-            raise AstridValueError("checkout_server readiness profile lacks session_dir")
-        session_dir = Path(raw_session_dir).expanduser()
-        config_path = session_dir / "config.json"
-        try:
-            config = json.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise AstridValueError("checkout_server session config is unreadable") from exc
-        raw_input_directory = config.get("input_directory") if isinstance(config, dict) else None
-        if not isinstance(raw_input_directory, str) or not raw_input_directory.strip():
-            raise AstridValueError("checkout_server session config lacks input_directory")
-        input_directory = Path(raw_input_directory).expanduser()
-    else:
-        input_directory = output_root.expanduser().resolve() / "engine-input"
+    # The engine-local run stages source media in its own engine-input directory.
+    input_directory = output_root.expanduser().resolve() / "engine-input"
     if not input_directory.is_absolute():
         raise AstridValueError("Comfy input_directory must be absolute")
     if input_directory.is_symlink():
@@ -195,22 +184,20 @@ def _stage_managed_asset_manifest(
             raise AstridValueError(f"managed asset destination collision: {destination.name}")
         if not destination.exists():
             destination.write_bytes(data)
-    if not (isinstance(readiness_profile, dict)
-            and isinstance(readiness_profile.get("vibecomfy_session"), dict)):
-        # Local placements upload from engine-input later; record the digests
-        # verified above so video/audio uploads can be checked against them.
-        ledger = input_directory / ".managed-asset-digests.json"
-        if ledger.is_symlink():
-            raise AstridValueError("managed asset digest ledger must not be a symlink")
-        try:
-            digests = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {}
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            digests = {}
-        digests.update({
-            Path(str(record["member"])).name: str(record["sha256"])
-            for record in resolved.manifest["assets"]
-        })
-        ledger.write_text(json.dumps(digests, sort_keys=True), encoding="utf-8")
+    # Local placements upload from engine-input later; record the digests
+    # verified above so video/audio uploads can be checked against them.
+    ledger = input_directory / ".managed-asset-digests.json"
+    if ledger.is_symlink():
+        raise AstridValueError("managed asset digest ledger must not be a symlink")
+    try:
+        digests = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        digests = {}
+    digests.update({
+        Path(str(record["member"])).name: str(record["sha256"])
+        for record in resolved.manifest["assets"]
+    })
+    ledger.write_text(json.dumps(digests, sort_keys=True), encoding="utf-8")
     return resolved
 
 
@@ -283,8 +270,13 @@ def _materialize_managed_generation_result(
     workflow_path: Path,
     source_snapshot: dict[str, Any] | None = None,
     producer_context: dict[str, Any] | None = None,
+    after_outputs: Any = None,
 ) -> dict[str, Any]:
-    """Rebase one producer envelope into the host-owned output spool."""
+    """Rebase one producer envelope into the host-owned output spool.
+
+    ``after_outputs`` (a vibecomfy.workflows hook, see ``_after_outputs``) sees the copied output
+    files before their digests are recorded here, and may replace them (h3's composed candidate).
+    """
     output_root = output_root.expanduser().resolve()
     envelope_path = Path(production_result.managed_generation_result_path).expanduser()
     if not envelope_path.is_file():
@@ -340,6 +332,17 @@ def _materialize_managed_generation_result(
         rebased["path"] = destination.relative_to(managed_root).as_posix()
         rebased["output_port"] = "vibecomfy_run"
         rebased_outputs.append(rebased)
+    if after_outputs is not None and rebased_outputs:
+        produced = [Path(item) for item in after_outputs([managed_root / row["path"] for row in rebased_outputs])]
+        if len(produced) != len(rebased_outputs):
+            raise AstridValueError("after_outputs must return one file per output")
+        for row, replacement in zip(rebased_outputs, produced):
+            target = managed_root / row["path"]
+            if replacement.resolve() != target.resolve():
+                shutil.copyfile(replacement, target)
+            data = target.read_bytes()
+            row.update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data))
+            row.pop("hash_check", None)  # compared the producer's bytes, not the hook's
     rebased_payload["outputs"] = rebased_outputs
     if source_snapshot is None and "source" not in result.inputs and workflow_path.is_file():
         original = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
@@ -439,6 +442,8 @@ def _materialize_managed_generation_result(
                 rebased_payload["warnings"].append(issue["message"])
     producer.setdefault("engine", {"id": "comfyui"})
     producer.setdefault("entry", {"id": None, "mode": None, "source": rebased_payload["inputs"].get("source")})
+    if isinstance(producer["entry"], dict) and context.get("requirements") is not None:
+        producer["entry"]["requirements"] = context["requirements"]
     producer.setdefault("models", [])
     producer.setdefault("versions", {
         "recorded": {"engine": None, "pack": None, "runtime": None},
@@ -592,7 +597,11 @@ def _t9_child_dispatch(
     if (profile_hash != "sha256:" + hashlib.sha256(profile_bytes).hexdigest()
             or json.loads(profile_bytes) != readiness_profile):
         raise AstridValueError("T9 child readiness profile differs from the paired Worker bytes")
-    from astrid.packs.h3_av.shared import generation
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av.shared import engine_facts, generation
+
+    # h3_av imports nothing from Astrid; this child is its host, so it installs the engine facts.
+    engine_facts.install(comfyui_facts())
 
     # Reuse the strict synthetic model/candidate/fixture inventory checks;
     # merely having a profile or an ambient Python module is not activation.
@@ -668,6 +677,140 @@ def _t9_child_dispatch(
     return run, marker
 
 
+def _engine_for(manifest: dict[str, Any]) -> Any:
+    """The generation.engine named by manifest["engine"] (default comfyui), from entries.engine_table()."""
+    from astrid.core.generation import entries
+
+    name = manifest.get("engine") or "comfyui"
+    engine = entries.engine_table().get(name)
+    if engine is None:
+        raise AstridValueError(f"no generation.engine contribution for {name!r}")
+    return engine
+
+
+def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
+    """The engine's own requirements for this workflow, rooted at the installed local engine's models.
+
+    Only a canonical bundle declares requirements; a UI-JSON or other file has none to read, so its manifest
+    lists nothing (the target's own preflight still checks what it needs).
+    """
+    from astrid.core.generation.engine_contracts import EngineError
+    from astrid.core.generation.engine_local_endpoint import default_engine_root
+
+    try:
+        manifest = engine.requirements({"bundle": str(workflow_path)}, {})
+    except Exception as exc:
+        if isinstance(exc, (EngineError, AstridError)):
+            raise
+        if getattr(exc, "unpinned", False):  # validate_extra: a custom node ref without its repo or commit
+            raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
+        # The bundle loader could not read this file (not a canonical bundle, or it does not execute on its own):
+        # it declares nothing here, and the run's own loader reports the real error. Limit: a loader that cannot
+        # run the bundle standalone means no pre-queue model check for that file.
+        return {"models": [], "extra": {"nodes": []}}
+    try:
+        root = default_engine_root("comfyui")
+    except EngineError:
+        root = None
+    # An engine that is not installed has no models directory to check; ensure_running names that failure.
+    return {**manifest, "models_root": f"{root}/models" if root and Path(root).is_dir() else ""}
+
+
+def _refuse_unsealed_hook(spec: Any) -> None:
+    """An after_outputs hook runs only where outputs are sealed from a managed result; never skip it silently."""
+    if _after_outputs(spec) is not None:
+        raise AstridValueError("after_outputs requires a managed generation result")
+
+
+def _after_outputs(spec: Any) -> Any:
+    """The after_outputs callable for ``--after-outputs-job``, or None.
+
+    The entry's hook runs through the engine's ``finish``, on this machine, with the job
+    directory build already wrote into.
+    """
+    job = json.loads(spec) if isinstance(spec, str) else dict(spec or {})
+    if not job or not job.get("entry"):
+        return None
+    from astrid.core.generation import entries
+
+    row = next((r for r in entries.user_entries() if r["id"] == job["entry"] and r.get("hooks_declared")), None)
+    hooks = entries.entry_hooks(row) if row else {}
+    if "after_outputs" not in hooks:
+        raise AstridValueError(f"entry {job['entry']!r} declares no after_outputs hook")
+    engine = _engine_for({"engine": "comfyui"})
+    run_job = {"hooks": hooks, "inputs": job.get("inputs", {}), "files": job.get("files", {}),
+               "job_dir": job.get("job_dir")}
+    return lambda outputs: engine.finish(run_job, outputs)
+
+
+class _LocalEngineServer:
+    """The ``local`` that ComfyUIEngine.run drives: the installed local ComfyUI, and one production submit."""
+
+    def __init__(self, adapter: Any, output_root: Path, production_kwargs: dict[str, Any]) -> None:
+        self._adapter, self._output_root, self._kwargs = adapter, output_root, production_kwargs
+        self._output_dir = ""
+        self.result: Any = None
+
+    def ensure_running(self) -> str:
+        write_progress("start_engine")
+        from astrid.core.generation.backends.vibecomfy_local_server import validate_comfy_url, validate_output_directory
+        from astrid.core.generation.engine_contracts import EngineError
+        from astrid.core.generation.engine_local_endpoint import (
+            EngineNotInstalled, local_engine_endpoint,
+        )
+        from astrid.core.generation.engine_local_server import ensure_local_engine_server
+
+        try:
+            # Start the installed engine's long-lived server, or reuse the owned one; never stop it.
+            ensure_local_engine_server("comfyui")
+            engine = local_engine_endpoint("comfyui")
+        except EngineError as exc:
+            reason = f" ({exc.reason_code})" if isinstance(exc, EngineNotInstalled) else ""
+            raise AstridValueError(
+                f"local ComfyUI engine is not ready: {exc.code}{reason}; run `astrid engines install comfyui`") from exc
+        self._output_dir = validate_output_directory(engine.comfy_output_dir, self._output_root.parent)
+        return validate_comfy_url(engine.endpoint.url)
+
+    def submit(self, url: str, workflow: Any) -> Any:
+        write_progress("run")
+        kwargs = {**self._kwargs, "comfy_url": url, "profile_id": "local_server", "hc03_profile": None}
+        if self._output_dir:
+            kwargs["comfy_output_dir"] = self._output_dir
+        self.result = self._adapter.workflow(Path(workflow), self._output_root, **kwargs)
+        return self.result
+
+
+def _entry_manifest(entry: str | None, inputs: dict[str, Any], *, workflow_path: Path | None = None) -> dict[str, Any] | None:
+    """The entry's requirements manifest (what align() judges), or None for an unnamed workflow."""
+    if not entry or entry == "workflow":
+        return None
+    from astrid.core.generation import entries
+
+    described = entries.find_entry(entry)
+    if workflow_path is not None:
+        # The facade already chose the mode and ran any build hook. Read exactly its
+        # emitted graph, without carried static requirements or a second hook invocation.
+        return entries.requirements({"engine": (described or {}).get("engine") or "comfyui",
+                                     "bundle": str(workflow_path)}, inputs)
+    if described is None:
+        raise ValueError(f"entry {entry!r} needs its resolved workflow path to determine requirements")
+    return entries.requirements(described, inputs)
+
+
+class _AttachedServer(_LocalEngineServer):
+    """The ``local`` for an attached run: the caller's ComfyUI at comfy_url, probed by the engine, never started here."""
+
+    def __init__(self, adapter: Any, output_root: Path, production_kwargs: dict[str, Any]) -> None:
+        super().__init__(adapter, output_root, production_kwargs)
+
+    def ensure_running(self) -> str:
+        return self._kwargs["comfy_url"]
+
+    def submit(self, url: str, workflow: Any) -> Any:
+        self.result = self._adapter.workflow(Path(workflow), self._output_root, **self._kwargs)
+        return self.result
+
+
 def _run_and_settle(
     workflow_path: Path,
     output_root: Path,
@@ -684,12 +827,17 @@ def _run_and_settle(
     workflow_inputs: str = "{}",
     comfy_url: str = "",
     comfy_output_dir: str = "",
-    placement: str | None = None,
     execution_request: Any = None,
-    registry: Any = None,
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
+    align: str | None = None,
+    manifest: dict[str, Any] | None = None,
+    entry: str | None = None,
+    after_outputs_job: Any = "{}",
 ) -> dict[str, Any]:
-    """Run *workflow_path*, copy every engine result, and write its receipt."""
+    """Run *workflow_path*, copy every engine result, and write its receipt.
+
+    ``align`` (align | check | trust) and ``manifest`` (the entry's requirements) reach
+    the engine's ``align``; the default is the old empty-manifest ``check``.
+    """
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise AstridValueError("host-issued task identity is required")
     output_root = output_root.expanduser().resolve()
@@ -698,35 +846,9 @@ def _run_and_settle(
     # UI graph. Save it before the backend can convert or delete its scratch.
     source_path = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
     source_snapshot = _evidence_snapshot(source_path, output_root) if source_path.is_file() else None
-    from astrid.core.generation.backends.registry import (
-        load_default_generation_backend_registry, resolve_workflow_descriptor,
-    )
-    from astrid.core.generation.backends.workflow import WorkflowBackendAdapter
+    from astrid.packs.vibecomfy.workflow_route import WorkflowRunner
 
-    # The host injects admitted scheduling intent and its original endpoint
-    # attachment. Neither value is part of the workflow's creative inputs.
-    registry = registry if registry is not None else load_default_generation_backend_registry()
-    if placement is None:
-        # An unplaced call carrying a RunPod target is the legacy prepared route.
-        target = execution_request.get("target") if isinstance(execution_request, dict) else None
-        if isinstance(target, dict) and target.get("kind") == "runpod":
-            placement = "runpod"
-    selected = resolve_workflow_descriptor(
-        registry, placement=placement, execution_request=execution_request,
-    )
-    runpod_route = selected.placement.resolve(placement) == "runpod"
-    if runpod_route:
-        if endpoint_checkout is None:
-            raise AstridValueError("RunPod workflow endpoint_checkout integration is unavailable (pending38)")
-        if comfy_url or comfy_output_dir:
-            raise AstridValueError("RunPod workflow cannot use local_server overrides")
-    elif endpoint_checkout is not None:
-        raise AstridValueError("endpoint_checkout requires the RunPod workflow route")
-    adapter = selected.create(init_overrides=(
-        {"endpoint_checkout": endpoint_checkout} if runpod_route else None
-    ))
-    if not isinstance(adapter, WorkflowBackendAdapter):
-        raise AstridValueError("selected generation backend does not support workflows")
+    adapter = WorkflowRunner()
 
     if comfy_url:
         from astrid.core.generation.backends.vibecomfy_local_server import (
@@ -744,18 +866,34 @@ def _run_and_settle(
     if (readiness_profile_path == "-") != (readiness_profile_hash == "-"):
         raise AstridValueError("readiness profile path and hash must be supplied together")
     if readiness_profile_path != "-":
-        from astrid.packs.vibecomfy.endpoint_checkout import read_workflow_profile
+        from astrid.core.generation.engine_endpoint import read_readiness_profile
         from astrid.core.generation.engine_contracts import EngineError
         try:
-            readiness_profile = read_workflow_profile(readiness_profile_path, readiness_profile_hash)
+            readiness_profile = read_readiness_profile(readiness_profile_path, readiness_profile_hash)
         except (EngineError, OSError):
             raise AstridValueError("Worker readiness profile could not be read or its hash does not match") from None
-    if comfy_url:
-        profile_id = "local_server"
-    elif isinstance(readiness_profile, dict) and isinstance(readiness_profile.get("vibecomfy_session"), dict):
-        profile_id = "checkout_server"
-    else:
-        profile_id = "pip_embedded"
+    # A run with no comfy_url that is not the RunPod route is the engine's local run: ComfyUIEngine.run
+    # starts or reuses the installed local ComfyUI and submits to it, so it is a local_server submit.
+    from astrid.core.generation.managed_preparation import read_preparation
+    prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=comfy_url,
+                                execution_identity=execution_identity,
+                                inputs=({"python": workflow_path, "companion": workflow_path.with_suffix(".vibe.json"),
+                                         "source": workflow_path.with_name("source.json")}
+                                        if workflow_path.suffix == ".py" else {"workflow": workflow_path}))
+    engine_local_run = not comfy_url
+    # The requirements this run resolved for its entry, recorded in the attempt's producer evidence on every
+    # route (align still judges the manifest above, on the local route only).
+    admitted_requirements = None
+    if entry:
+        admitted_requirements = manifest if manifest is not None else _entry_manifest(entry, _workflow_inputs(workflow_inputs), workflow_path=workflow_path)
+    if manifest is None and engine_local_run:
+        manifest = admitted_requirements
+    if manifest is not None and engine_local_run and not manifest.get("models_root"):
+        # The models directory the installed engine itself uses, so align judges and fetches
+        # only the rows this job lacks there.
+        from astrid.core.generation.engine_local_endpoint import default_engine_root
+        manifest = {**manifest, "models_root": os.path.join(default_engine_root("comfyui"), "models")}
+    profile_id = "local_server"
     workflow_input_bindings: dict[str, Any] = _workflow_inputs(workflow_inputs)
     if managed_assets:
         resolved_assets = _stage_managed_asset_manifest(
@@ -821,8 +959,6 @@ def _run_and_settle(
         production_kwargs["comfy_output_dir"] = comfy_output_dir
     if attempt_identity != "-":
         production_kwargs["attempt_identity"] = attempt_identity
-    if runpod_route and os.environ.get("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"):
-        raise AstridValueError("RunPod workflow endpoint route cannot use the T9 substitute")
     synthetic = _t9_child_dispatch(
         readiness_profile, profile_path=readiness_profile_path, profile_hash=readiness_profile_hash,
         task_identity=task_identity, attempt_identity=attempt_identity, execution_identity=execution_identity,
@@ -835,16 +971,45 @@ def _run_and_settle(
         "comfy_provenance": provenance,
         "values": dict(workflow_input_bindings),
         "target": (execution_request.get("target") if isinstance(execution_request, dict) else None)
-                  or {"kind": "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
+                  or {"kind": "managed" if prepared else "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
         "execution_binding": execution_request.get("execution_binding") if isinstance(execution_request, dict) else None,
+        "requirements": admitted_requirements,
     }
     producer_run_id = f"astrid-{uuid4().hex}"
     try:
         with provenance.capture():
-            if synthetic is None:
-                production_result = adapter.workflow(
-                    workflow_path, output_root, **production_kwargs,
-                )
+            if synthetic is None and engine_local_run:
+                local = _LocalEngineServer(adapter, output_root, production_kwargs)
+                write_progress("align")
+                engine = _engine_for(manifest or {"engine": "comfyui"})
+                if manifest is None:
+                    manifest = {**_engine_manifest(engine, workflow_path), "engine": "comfyui"}
+                mode = align or "check"
+                job = {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": mode,
+                       "refuse_missing": bool(manifest.get("models_root"))}  # a declared model absent: refuse before /prompt
+                try:
+                    engine.run(job, local)
+                except ValueError as exc:
+                    if getattr(exc, "missing", None):
+                        raise AstridValueError(str(exc)) from exc
+                    raise
+                write_progress("finalize")
+                production_result = local.result
+            elif synthetic is None and prepared is not None:
+                # Trusted host already aligned this exact attempt and verified
+                # the owned HTTP listener. The worker has no lifecycle authority.
+                local = _AttachedServer(adapter, output_root, production_kwargs)
+                local.submit(comfy_url, workflow_path)
+                production_result = local.result
+            elif synthetic is None:
+                # Attached: the engine probes the caller's endpoint, then trusts it. It never aligns by default.
+                manifest = {"engine": "comfyui", "models": [], "extra": {"nodes": []}}
+                local = _AttachedServer(adapter, output_root, production_kwargs)
+                _engine_for(manifest).run(
+                    # An explicit --align (ASTRID_ALIGN) reaches the engine; the attached default stays trust.
+                    {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": align or "trust",
+                     "endpoint": comfy_url}, local)
+                production_result = local.result
             else:
                 run, marker = synthetic
                 production_kwargs["profile_id"] = "t9_cpu_stub"
@@ -906,6 +1071,7 @@ def _run_and_settle(
             workflow_path=workflow_path,
             source_snapshot=source_snapshot,
             producer_context=producer_context,
+            after_outputs=_after_outputs(after_outputs_job),
         )
         execution = manifest["managed_generation_result"]["outcomes"]["execution"]
         if execution["status"] != "succeeded":
@@ -915,6 +1081,7 @@ def _run_and_settle(
             )
         return manifest
 
+    _refuse_unsealed_hook(after_outputs_job)
     inventory = production_result.outputs
     if comfy_url:
         raise AstridValueError("local_server requires VibeComfy managed_generation_result_path")
@@ -1012,28 +1179,6 @@ def _run_and_settle(
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        from astrid.packs.vibecomfy.endpoint_checkout import (
-            checkout_from_profile, read_host_workflow_execution_request, read_workflow_profile,
-        )
-        request = read_host_workflow_execution_request(os.environ)
-        profile = None
-        if args.readiness_profile_path != "-":
-            profile = read_workflow_profile(args.readiness_profile_path, args.readiness_profile_hash)
-        endpoint_bearing = isinstance(profile, dict) and (
-            "workflow_endpoint" in profile or "endpoint_evidence" in profile
-        )
-        runpod = isinstance(request, dict) and request.get("target", {}).get("kind") == "runpod"
-        if endpoint_bearing and not runpod:
-            raise AstridValueError("workflow endpoint requires its host-admitted execution request")
-        endpoint_checkout = None
-        if runpod:
-            if args.comfy_url or args.comfy_output_dir:
-                raise AstridValueError("RunPod workflow cannot use local_server overrides")
-            endpoint_checkout = checkout_from_profile(
-                profile_path=Path(args.readiness_profile_path), profile_hash=args.readiness_profile_hash,
-                execution_request=request, task_identity=args.task_identity,
-                attempt_identity=args.attempt_identity, execution_identity=args.execution_identity,
-            )
         scratch = (
             args.out.expanduser().resolve().parent
             if args.out is not None
@@ -1078,10 +1223,11 @@ def main(argv: list[str] | None = None) -> int:
                 source_video_widget=args.source_video_widget,
                 managed_assets=args.managed_assets,
                 workflow_inputs=args.workflow_inputs,
+                after_outputs_job=args.after_outputs_job,
                 comfy_url=args.comfy_url,
                 comfy_output_dir=args.comfy_output_dir,
-                execution_request=request, placement="runpod" if runpod else None,
-                endpoint_checkout=endpoint_checkout,
+                align=os.environ.get("ASTRID_ALIGN") if os.environ.get("ASTRID_ALIGN") in ("align", "check", "trust") else None,
+                entry=os.environ.get("ASTRID_GENERATION_ENTRY") or None,
             )
     except Exception as exc:
         sys.stderr.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))

@@ -55,6 +55,19 @@ def narrow(result: Any, *, capability: str | None, limit: int | None, as_json: b
     return narrowed, total
 
 
+def machine_label(task: Mapping[str, Any]) -> str:
+    """``<placement>:<machine id>`` from the attempt's machine record (Plan 32 T5c), else ``-``."""
+    result = task.get("result") if isinstance(task, Mapping) else None
+    machine = (result or {}).get("machine") if isinstance(result, Mapping) else None
+    if not isinstance(machine, Mapping) and isinstance(task, Mapping) and isinstance(task.get("machine"), Mapping):
+        machine = task["machine"]
+    if not isinstance(machine, Mapping):
+        return "-"
+    placement, ident, device = machine.get("placement"), machine.get("id"), machine.get("device")
+    label = f"{placement}:{ident}" if ident else str(placement or "-")
+    return f"{label} ({device})" if device not in (None, "", "auto") else label
+
+
 def primary_output_name(task: Mapping[str, Any]) -> str | None:
     """The file name of a task's primary output (else its first output), when it settled one."""
     result = task.get("result") if isinstance(task, Mapping) else None
@@ -101,10 +114,10 @@ def render_list_table(
     """A short aligned table (house style: header, one line per row, a footer), not the raw rows.
 
     Columns: id (short), capability, state, created (UTC), duration (elapsed
-    so far while active), and the output name once completed.
+    so far while active), the machine that ran it, and the output name once completed.
     """
     clock = now or datetime.now(timezone.utc)
-    header = ["ID", "CAPABILITY", "STATE", "CREATED (UTC)", "DURATION", "OUTPUT"]
+    header = ["ID", "CAPABILITY", "STATE", "CREATED (UTC)", "DURATION", "MACHINE", "OUTPUT"]
     body: list[list[str]] = []
     for row in rows:
         if not isinstance(row, Mapping):
@@ -126,6 +139,7 @@ def render_list_table(
             state,
             created.strftime("%Y-%m-%d %H:%M") if created is not None else "-",
             duration,
+            machine_label(row),
             output,
         ])
     widths = [max([len(header[i])] + [len(r[i]) for r in body]) for i in range(len(header))]

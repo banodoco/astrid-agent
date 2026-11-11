@@ -10,35 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-# These five identities are accepted B-lane fixture inputs.  They are carried
-# unchanged so a boot manifest cannot accidentally bless a different fixture
-# corpus.
-FROZEN_FIXTURE_DIGESTS: dict[str, str] = {
-    "attempt-output-fixture.json": "951b9b4ce85dfc3ab999af705c4a3732acaa1d45468fa0ce0eaaf9edc941b31e",
-    "fake-runner-transcript.json": "379c7821ecf6213ced2ede36c2fb991d82c56167616d7e21aa23d7e3890e43e0",
-    "host-instance-paired-fixture.json": "4171922e65ea94a2c1af9f9abb7c8d5559125e354ca6ebb7f5efe1266ca22b4f",
-    "portable-capability-fixture.json": "9284b056aa8a38f884599a7634be0fe0cb7fbfbd117823960e563375b3aa43b7",
-    "task-resource-fixture.json": "ddc2d00bb893ea214d000bf618f67785c89c81d68d892864d9676d3c8b8d5164",
-}
+# The former checkout boot row was removed with the checkout route.  No accepted
+# profile fixture remains, so the frozen manifest carries an empty profile set.
+FROZEN_FIXTURE_DIGESTS: dict[str, str] = {}
 
-VIBE_PROFILE_ORDER: tuple[str, str] = ("pip_embedded", "checkout_server")
+VIBE_PROFILE_ORDER: tuple[str, ...] = ()
 
-# Registry-derived identity.  ``binding`` is intentionally a generic profile
-# binding, not an engine route; transport/provider selection is out of scope.
-VIBE_PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
-    "pip_embedded": {
-        "definition_version": 1,
-        "binding": "vibe.profile",
-        "output_policy": "staged_artifact",
-        "probe": "accepted_profile_fixture",
-    },
-    "checkout_server": {
-        "definition_version": 1,
-        "binding": "vibe.profile",
-        "output_policy": "staged_artifact",
-        "probe": "accepted_profile_fixture",
-    },
-}
+# Registry-derived identity.  Empty: no profile row is admitted at boot.
+VIBE_PROFILE_REGISTRY: dict[str, dict[str, Any]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,20 +38,7 @@ class VibeProfileFixture:
         }
 
 
-_PROFILE_FIXTURES: tuple[VibeProfileFixture, ...] = (
-    VibeProfileFixture(
-        "pip_embedded",
-        "6a940bc5f16a332500a24fea729814a08846c9470b811556a16e3503be92976f",
-        tuple(sorted(FROZEN_FIXTURE_DIGESTS.items())[:3]),
-        "accepted D-3 profile evidence",
-    ),
-    VibeProfileFixture(
-        "checkout_server",
-        "7ac8da29bad6da2b7486df4fde4fa9a2a0c39fbd0911a6a60f988b3fb2f54fc8",
-        tuple(sorted(FROZEN_FIXTURE_DIGESTS.items())[3:]),
-        "accepted D-4/D-5 profile evidence",
-    ),
-)
+_PROFILE_FIXTURES: tuple[VibeProfileFixture, ...] = ()
 
 
 def vibe_profile_specs() -> tuple[VibeProfileFixture, ...]:

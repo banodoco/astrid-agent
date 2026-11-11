@@ -1,0 +1,8 @@
+description: A generation engine that turns a job into files; ComfyUI is the first.
+version: 1
+min_supported: 1
+side: agent
+cardinality: many
+effects_allowed: [read, edit]
+protocol: engine_protocol.py:Engine
+schema: engine.schema.json

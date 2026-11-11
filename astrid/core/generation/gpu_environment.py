@@ -20,8 +20,7 @@ from typing import Any
 
 from astrid.core.generation.engine_recipe import load_recipe
 
-# No longer changes anything; still accepted in service-env.json so old
-# settings files load (astrid/installer/service.py SERVICE_SETTINGS).
+# NOTICE: ASTRID_ALLOW_UNQUALIFIED_GPU is gone; it no longer changes anything and is read nowhere. Old settings files still load (astrid/installer/service.py SERVICE_SETTINGS).
 ALLOW_UNQUALIFIED_ENV = "ASTRID_ALLOW_UNQUALIFIED_GPU"
 # Add an exact (pack, OS, device name) only after testers qualify it.
 QUALIFIED_COMBINATIONS: frozenset[tuple[str, str, str]] = frozenset()
@@ -107,7 +106,8 @@ def _description(pack: str) -> tuple[Path, dict[str, Any]]:
     directory = _PACKS / pack
     description = json.loads((directory / "environment.windows-nvidia.json").read_text(encoding="utf-8"))
     platform = "windows-x86_64-cu130" if pack == "vibecomfy" else "windows-x86_64-cu128"
-    recipe = load_recipe(pack, platform)
+    # The only registered engine for the VibeComfy pack is "comfyui" (R1.6).
+    recipe = load_recipe("comfyui" if pack == "vibecomfy" else pack, platform)
     sources = {source.name: source.pin for source in recipe.sources}
     if pack == "vibecomfy":
         comfy = sources["comfyui"]
@@ -115,13 +115,8 @@ def _description(pack: str) -> tuple[Path, dict[str, Any]]:
         description["source"] = {"repository": comfy.repository, "revision": comfy.revision}
         description["vibecomfy_source"] = {"repository": vibecomfy.repository,
                                              "revision": vibecomfy.revision}
-        node_sources = {
-            "ComfyUI-H3-Motion-Context-MultiRef": sources["h3-motion-context"],
-            "ComfyUI-VideoHelperSuite": sources["videohelpersuite"],
-        }
         for node in description["custom_nodes"]:
-            pin = node_sources[node["name"]]
-            node.pop("pin", None)
+            pin = sources[node.pop("pin")]
             node.update(repository=pin.repository, revision=pin.revision)
     else:
         pin = sources["wan2gp"]

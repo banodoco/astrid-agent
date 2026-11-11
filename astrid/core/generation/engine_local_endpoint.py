@@ -30,6 +30,7 @@ from .engine_contracts import (
     LifecycleOwner,
     LocalAttestation,
     UnsafePathError,
+    effective_models_root,
 )
 
 DEFAULT_PLATFORM = "linux-x86_64-cu130"
@@ -210,7 +211,7 @@ def _installed_receipt(
 
 
 def local_engine_endpoint(
-    engine: str = "vibecomfy-h3",
+    engine: str = "comfyui",
     *,
     platform: str = DEFAULT_PLATFORM,
     root: str | None = None,
@@ -337,7 +338,7 @@ MODELS_RELATIVE_PATH = "models"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
-def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "vibecomfy-h3") -> Any:
+def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "comfyui") -> Any:
     """The model-root binding attested by an installed engine's receipt.
 
     The inventory is the receipt's verified model lock: one entry (path under ``<root>/models``,
@@ -351,10 +352,10 @@ def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "v
         validate_model_root_binding,
     )
 
-    models_root = posixpath.join(root, MODELS_RELATIVE_PATH)
+    models_root = effective_models_root(root, getattr(receipt, "models_root", None))
+    # A model-free install (Plan 32 T5h) records no models: an empty inventory is a valid binding;
+    # align fetches the rows a job needs and each row is then verified where it is used.
     models = tuple(getattr(receipt, "models", ()) or ())
-    if not models:
-        raise EngineNotInstalled(engine, "install receipt records no verified models")
     inventory = []
     for model in models:
         name = getattr(model, "model", "?")
@@ -387,7 +388,7 @@ def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "v
 
 
 def local_model_root_binding(
-    engine: str = "vibecomfy-h3",
+    engine: str = "comfyui",
     *,
     platform: str = DEFAULT_PLATFORM,
     root: str | None = None,

@@ -6,6 +6,7 @@ endpoint; it never provisions, starts or restarts an engine.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -20,15 +21,18 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .asset_gaps import align_argv, workflow_asset_gaps
-from .engine_contracts import EngineError, IntegrityError, ModelSpec, UnsafePathError
-from .engine_recipe import load_model_lock, load_recipe, load_recipe_index
-from .model_downloader import (
-    _matches,
-    _root_and_destination,
-    _safe_relative,
-    _validate_model,
-    download_model,
+from .engine_contracts import (
+    DeadlineExceeded,
+    DownloadError,
+    DownloadResult,
+    EngineError,
+    IntegrityError,
+    ModelSpec,
+    UnsafePathError,
+    effective_models_root,
 )
+from .engine_recipe import load_model_lock, load_recipe, load_recipe_index
+from .model_downloader import _matches, _root_and_destination, _safe_relative, _validate_model
 
 
 class AlignmentError(EngineError):
@@ -88,8 +92,9 @@ class ManagedAssetTarget:
 
         raw = json.loads(_safe_path(self.root, self.root / '.astrid-engine/install.json').read_bytes())
         recipe = load_recipe(raw['engine'], raw['platform'])
-        plan = plan_install(recipe, root=str(self.root), placement='local')
-        _parse_receipt(raw, plan)
+        # The receipt records the model directory the install bound (a volume cache, or <root>/models).
+        receipt = _parse_receipt(raw, plan_install(recipe, root=str(self.root), placement='local'))
+        plan = plan_install(recipe, root=str(self.root), placement='local', models_root=receipt.models_root)
         context, adapter = create_local_backend(engine=recipe.engine, platform=recipe.platform,
             placement='local', root=str(self.root), deadline=deadline)
         runner = _Runner(plan, context, adapter, deadline)
@@ -100,7 +105,7 @@ class ManagedAssetTarget:
                 runner.source(source, readonly=True)
         for environment in recipe.environments:
             runner.environment(environment, readonly=True)
-        if runner.helper('models-config-check') != {'valid': True}:
+        if runner.helper('models-config-check', models_root=plan.models_root) != {'valid': True}:
             raise IntegrityError('managed target models configuration differs; repair the engine installation')
 
     def install_lock(self, *, deadline: float):
@@ -130,6 +135,112 @@ def _safe_path(root: Path, path: Path) -> Path:
     return path
 
 
+class _ResumingClient:
+    """httpx-style client for VibeComfy fetch that keeps a verified-later `.part` prefix.
+
+    fetch streams to its own temp file and deletes it on failure, so resume lives here: the
+    streamed bytes are mirrored into `part`, and a later run asks for `Range: bytes=<prefix>-`
+    and replays the prefix ahead of the new bytes. A server that ignores Range restarts at 0.
+    """
+
+    def __init__(self, inner, part: Path, deadline: float):
+        self.inner, self.part, self.deadline = inner, part, deadline
+        self.resumed_from = 0
+
+    @contextlib.contextmanager
+    def stream(self, method, url, **kwargs):
+        prefix = self.part.stat().st_size if self.part.exists() else 0
+        headers = dict(kwargs.pop('headers', None) or {})
+        if prefix:
+            headers['Range'] = f'bytes={prefix}-'
+        with self.inner.stream(method, url, headers=headers, **kwargs) as response:
+            if prefix and response.status_code == 206:
+                start = re.match(r'bytes (\d+)-', str(response.headers.get('Content-Range', '')))
+                if start is None or int(start.group(1)) != prefix:
+                    raise DownloadError('server answered a resume request with a different range')
+            else:
+                prefix = 0
+            self.resumed_from = prefix
+            yield _SplicedResponse(response, self, prefix)
+
+
+class _SplicedResponse:
+    def __init__(self, response, client: _ResumingClient, prefix: int):
+        self._response, self._client, self._prefix = response, client, prefix
+        self.url = getattr(response, 'url', None)
+
+    @property
+    def status_code(self) -> int:
+        return 200 if 200 <= self._response.status_code < 300 else self._response.status_code
+
+    def iter_bytes(self):
+        client = self._client
+        if self._prefix:
+            with client.part.open('rb') as handle:
+                for chunk in iter(lambda: handle.read(8 << 20), b''):
+                    yield chunk
+        with client.part.open('ab' if self._prefix else 'wb') as handle:
+            for chunk in self._response.iter_bytes():
+                if time.monotonic() >= client.deadline:
+                    raise DeadlineExceeded('model download deadline exceeded')
+                handle.write(chunk)
+                handle.flush()
+                yield chunk
+
+
+def _fetch_model(model: ModelSpec, models_root: Path, *, deadline: float, client=None) -> DownloadResult:
+    """Fetch one locked model through VibeComfy fetch, then check it against the lock.
+
+    fetch publishes before it verifies, so a failed check unlinks what fetch just published:
+    nothing that differs from the lock stays at the destination, and no `.part` is kept for it.
+    """
+    from vibecomfy import fetch
+
+    relative, url = _validate_model(model)
+    _, path = _root_and_destination(str(models_root), relative)
+    _safe_path(models_root, path)
+    done = DownloadResult(model=model.name, path=str(path), action='skipped', bytes=model.bytes,
+                          sha256=model.sha256, verified=True, resumed_from_bytes=0)
+    if path.exists():
+        if _matches(path, model, deadline=deadline):
+            return done
+        raise IntegrityError(f'Existing asset {model.destination} differs from its lock; restore verified bytes')
+    part = path.with_name(path.name + '.part')
+    _safe_path(models_root, part)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if part.exists() and part.stat().st_size >= model.bytes:
+        part.unlink()  # nothing left to resume from
+    if client is None:
+        import httpx
+        client = httpx
+    resuming = _ResumingClient(client, part, deadline)
+    entry = {'name': path.name, 'url': url, 'sha256': model.sha256, 'size_bytes': model.bytes,
+             'target_path': f'{models_root.name}/{relative}'}
+    error = None
+    try:
+        fetch.download(entry, root=models_root, client=resuming, quiet=True)
+    except Exception as exc:  # fetch raises after publishing when size/SHA differ
+        error = exc
+    if path.exists():
+        try:
+            # fetch published first and left its source receipt over the verification sidecar
+            # model_root reads; force-verifying checks size and SHA-256 and rewrites that sidecar.
+            fetch.verify(entry, path, root=models_root, force=True)
+        except Exception as exc:
+            path.unlink()
+            part.unlink(missing_ok=True)
+            raise IntegrityError(f'{model.destination}: SHA-256 mismatch against the lock ({exc}); refused to publish') from exc
+    if not path.exists():
+        kept = '; prefix retained for resume' if part.exists() else ''
+        if isinstance(error, DownloadError):
+            raise error
+        raise DownloadError(f'{model.destination}: download failed ({error}){kept}') from error
+    part.unlink(missing_ok=True)
+    return DownloadResult(model=model.name, path=str(path), action='resumed' if resuming.resumed_from else 'downloaded',
+                          bytes=model.bytes, sha256=model.sha256, verified=True,
+                          resumed_from_bytes=resuming.resumed_from)
+
+
 def selected_target() -> ManagedAssetTarget:
     from vibecomfy.schema.cache import object_info_cache_path
 
@@ -152,7 +263,7 @@ def selected_target() -> ManagedAssetTarget:
         raise IntegrityError('managed target models_lock_sha256 differs from its verified recipe')
     comfy = root / next(source.relative_path for source in recipe.sources if source.name == 'comfyui')
     url = f'http://127.0.0.1:{recipe.start.port}'
-    models = root / 'models'
+    models = Path(effective_models_root(str(root), receipt.models_root))
     nodes = comfy / 'custom_nodes'
     # Validate directories without creating them; downloader validates again at use.
     for directory in (models, nodes):
@@ -387,7 +498,7 @@ def inspect_assets(manifests, target: ManagedAssetTarget, *, observed=None, dead
 
 
 def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=None, manifests=None,
-              opener=None, installer=None, deadline_seconds=3600) -> dict[str, Any]:
+              client=None, installer=None, deadline_seconds=3600) -> dict[str, Any]:
     # Check consent before target selection, probing, network or writes.
     if apply and (not isinstance(consent, (tuple, list, set, frozenset)) or 'user_env' not in consent):
         raise AlignmentError('Applying locked assets requires explicit consent; run ' + shlex.join(align_argv(entry_id)))
@@ -399,11 +510,11 @@ def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=N
     if apply:
         with target.install_lock(deadline=deadline):
             return _align_selected(manifests, target, entry_id=entry_id, apply=True,
-                opener=opener, installer=installer, deadline=deadline)
+                client=client, installer=installer, deadline=deadline)
     return _align_selected(manifests, target, entry_id=entry_id, apply=False, deadline=deadline)
 
 
-def _align_selected(manifests, target, *, entry_id, apply, deadline, opener=None, installer=None):
+def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None, installer=None):
     observed = target.cached_object_info()
     report = inspect_assets(manifests, target, observed=observed, deadline=deadline)
     report['align_command'] = shlex.join(align_argv(entry_id))
@@ -427,7 +538,7 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, opener=None
             for model in mode['models']:
                 if model.destination not in seen_models:
                     try:
-                        result = download_model(model, models_root=str(target.models_root), deadline=deadline, opener=opener)
+                        result = _fetch_model(model, target.models_root, deadline=deadline, client=client)
                     except EngineError as exc:
                         raise AlignmentError(f'Model {model.destination}: {exc}; retry {report["align_command"]}') from exc
                     actions.append(asdict(result))

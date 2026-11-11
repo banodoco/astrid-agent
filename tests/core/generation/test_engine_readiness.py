@@ -36,7 +36,7 @@ import pytest
 from astrid.core.generation import engine_custody as custody
 from astrid.core.generation import engine_readiness as readiness
 from astrid.core.generation.engine_contracts import (
-    DownloadResult, HealthEvidence, InstallReceipt, ModelLock, ModelSpec, StartSpec, StepReceipt,
+    HealthEvidence, InstallReceipt, ModelLock, ModelSpec, StartSpec, StepReceipt,
 )
 from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
@@ -45,7 +45,7 @@ from astrid.core.generation.engine_runner import _json, _plain, _sha, helper_man
 from tests._checkouts import runtime_checkout, vibecomfy_checkout, vibecomfy_git_root
 
 PLATFORM = "linux-x86_64-cu130"
-ENGINE = "vibecomfy-h3"
+ENGINE = "comfyui"
 CLONE = Path(__file__).resolve().parents[3]
 RUNTIME_SOURCE = runtime_checkout()
 VIBECOMFY_SOURCE = vibecomfy_checkout()
@@ -141,27 +141,8 @@ try:
     result=engine_readiness.run_readiness(root=cfg['root'],release_root=cfg['release'],profile_path=cfg['profile'],
                                           deadline=time.monotonic()+60,status=status,hardware=hardware,
                                           engine=cfg['tiny']['engine'])
-    # Consumer validation must use this same selected checkout, even when H3
-    # and plain ComfyUI select different client pins in the parent process.
-    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-    adapter=CheckoutServerAdapter.from_host_session(
-        hc03_profile=result.profile,model_id='vibecomfy.run',template_id='vibecomfy.run',
-        invocation_identity='readiness-producer-test')
-    # Check both A04 source-mismatch refusals in the same selected checkout.
-    import pytest
-    from astrid.core.generation.backends import vibecomfy as backend
-    profile = result.profile
-    source = profile["vibecomfy_session"]
-    for revision, digest in (("0" * 40, source["source_content_digest"]),
-                             (source["source_revision"], "sha256:" + "0" * 64)):
-        with pytest.MonkeyPatch.context() as mismatch:
-            mismatch.setattr(backend, "_observed_source_identity", lambda *_: (revision, digest))
-            with pytest.raises(ValueError, match="source revision does not match the live VibeComfy checkout"):
-                CheckoutServerAdapter.from_host_session(
-                    hc03_profile=profile, model_id="vibecomfy.run", template_id="vibecomfy.run",
-                    invocation_identity="readiness-source-mismatch", expected_comfyui_version="==0.25.0")
     out={'ok':True,'path':result.path,'sha256':result.sha256,'size':result.size,
-         'adapter_session':adapter._host_session}
+         }
 except engine_readiness.ReadinessError as exc:
     out={'ok':False,'reason':str(exc)}
 module=sys.modules.get('vibecomfy')
@@ -213,10 +194,10 @@ def _script(path, body):
     return str(path)
 
 
-@pytest.fixture(scope="module", params=[ENGINE, "comfyui", "vibecomfy-h3-a04"])
+@pytest.fixture(scope="module", params=[ENGINE, "comfyui", "comfyui-a04"])
 def installation(tmp_path_factory, request):
-    engine = ENGINE if request.param == "vibecomfy-h3-a04" else request.param
-    a04_source = request.param == "vibecomfy-h3-a04"
+    engine = ENGINE if request.param == "comfyui-a04" else request.param
+    a04_source = request.param == "comfyui-a04"
     version = COMFY_VERSION if engine == ENGINE else "0.43.2"
     mp = pytest.MonkeyPatch()
     tmp = tmp_path_factory.mktemp("readiness")
@@ -241,12 +222,11 @@ def installation(tmp_path_factory, request):
     server.write_text(_SERVER)
     mode.write_text("healthy")
     models = []
+    # Plan 32 T5h: a model-free install fetches no model bytes; the models root is empty.
+    (root / "models").mkdir(parents=True, exist_ok=True)
     for name, destination, data in (
             ("synthetic-test-diffusion", "diffusion_models/synthetic-test-a.safetensors", b"SYNTHETIC TEST MODEL A\n"),
             ("synthetic-test-lora", "loras/synthetic-test-b.safetensors", b"SYNTHETIC TEST MODEL B (lora)\n")):
-        path = root / "models" / destination
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
         models.append({"name": name, "repository": None, "revision": None, "path": None, "url": None,
                        "destination": destination, "bytes": len(data),
                        "sha256": hashlib.sha256(data).hexdigest()})
@@ -276,7 +256,8 @@ def installation(tmp_path_factory, request):
     from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
     # The engine env (pycache prefix included) comes from the adapter, as the runner builds it.
     bound = LinuxPlatformAdapter(PLATFORM).start_request(recipe, str(root), deadline=time.monotonic() + 5)
-    launch = {"argv": tiny["argv"], "cwd": str(comfy), "env": dict(bound.env)}
+    launch = {"argv": tiny["argv"], "cwd": str(comfy),
+              "env": {**dict(bound.env), "CUDA_VISIBLE_DEVICES": "2" if a04_source else os.environ.get("CUDA_VISIBLE_DEVICES")}}
     payload = {**identity, "schema": custody._SCHEMA, "launch": launch, "owner_id": None,
                "timeout_seconds": recipe.health.timeout_seconds,
                "poll_interval_seconds": recipe.health.poll_interval_seconds}
@@ -290,10 +271,10 @@ def installation(tmp_path_factory, request):
             "astrid.engine-install.v1", "synthetic-readiness-receipt", engine, PLATFORM, "local", str(root),
             "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
             {e.name: "a" * 64 for e in recipe.environments}, {s.name: s.pin.revision for s in recipe.sources},
-            tuple(DownloadResult(m.name, str(root / "models" / m.destination), "skipped", m.bytes, m.sha256, True, 0)
-                  for m in lock.models),
+            (),  # Plan 32 T5h: a model-free install records no model rows; align fetches a job's rows later.
             tuple(StepReceipt(s.id, s.kind, "executed", "passed",
-                              {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"]}
+                              {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"],
+                               "cuda_visible_devices": launch["env"]["CUDA_VISIBLE_DEVICES"]}
                               if s.kind == "start" else {}) for s in plan.steps),
             HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None,
         )
@@ -371,6 +352,9 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     bearer = (state / "engine-bearer.token").read_bytes()
     out = _harness(installation, state)
     assert out["ok"] is True, out.get("reason")
+    # The retained release runs without this variable; the receipt carries it.
+    if installation["tiny"].get("vibecomfy_revision"):
+        assert installation["payload"]["launch"]["env"]["CUDA_VISIBLE_DEVICES"] == "2"
     # Real producer ran from the retained release; VibeComfy came only from the selected checkout.
     assert Path(out["readiness_origin"]) == release / "site/astrid/core/generation/engine_readiness.py"
     assert Path(out["vibecomfy_origin"]) == root / "runtime/vibecomfy/vibecomfy/__init__.py"
@@ -392,13 +376,11 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     # Each fact recomputed here from its independent source, not copied from the producer.
     marker = json.loads(before["launch.json"])
     receipt = installation["receipt"]
-    if recipe.engine == "comfyui":
-        assert dict(receipt.source_commits) == {
-            "comfyui": "423cbd20511becb1f16122ab518e92e58bfa03d9",
-            "vibecomfy": VIBECOMFY_REVISION,
-        }
-    inventory = sorted(({"name": Path(m.destination).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
-                         "subdir": str(Path(m.destination).parent)} for m in installation["lock"].models),
+    # The recipe is the source of truth for every pinned source, including the custom nodes.
+    assert dict(receipt.source_commits) == {s.name: s.pin.revision for s in recipe.sources}
+    # Model-free install: the receipt carries no model rows, so the binding inventory is empty.
+    inventory = sorted(({"name": Path(m.path).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
+                         "subdir": str(Path(m.path).parent.relative_to(root / "models"))} for m in receipt.models),
                        key=lambda e: (e["subdir"], e["name"]))
     custom = {s.name: s.pin.revision for s in recipe.sources if "/custom_nodes/" in s.relative_path}
     node_lock = recipe.environments[0].node_lock
@@ -427,15 +409,10 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     assert "vibecomfy_candidate" not in profile
     assert profile["runtime"] == {"runtime_instance_id": str(__import__("uuid").UUID(marker["launch_token"])),
                                   "comfyui_version": "==" + installation["version"]}
-    assert profile["vibecomfy_session"] == {
-        "session_dir": str(installation["registry"]), "server_url": marker["url"],
-        "pid": marker["pid"], "process_birth_id": marker["process_start_identity"],
-        "comfy_pid": marker["comfy_pid"], "comfy_process_birth_id": marker["comfy_process_start_identity"],
-        "launch_token": marker["launch_token"],
-        "config_digest": "sha256:" + hashlib.sha256(before["config.json"]).hexdigest(),
-        "source_revision": before["source_revision"].decode().strip(),
-        "source_content_digest": before["source_content_digest"].decode().strip(),
-    }
+    # The engine identity is the attested install receipt under the engine root.
+    receipt = Path(root) / ".astrid-engine" / "install.json"
+    assert profile["engine_identity"] == {"engine": "comfyui", "root": str(root),
+                                          "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()}
     assert profile["launch"]["output_root"] == json.loads(before["config.json"])["output_directory"]
 
     # Existing GenericHost reader (hash fence) + normalizer accept the exact bytes.
@@ -448,10 +425,6 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     # Existing strict model-root binding re-hashes the declared files.
     binding = model_root_binding_from_profile(profile, verify_files=True)
     assert binding.inventory_digest == expected_exact["model_digest"] and binding.path == root / "models"
-    # Existing checkout adapter: digest, registry, live ownership, source and version gates.
-    session = out["adapter_session"]
-    assert session["pid"] == marker["pid"] and session["comfy_pid"] == marker["comfy_pid"]
-    assert session["model_root"] == str(root / "models")
     _assert_engine_retained(installation, before)
 
 
@@ -472,9 +445,6 @@ _REFUSALS = {
     "receipt_vibecomfy": "installed session evidence could not be verified",
     "receipt_owner": "installed session evidence could not be verified",
     "registry_source": "installed session evidence could not be verified",
-    "model_missing": "model root does not match the canonical lock",
-    "model_extra": "model root does not match the canonical lock",
-    "model_bytes": "model root does not match the canonical lock",
     "source_drift": "installed session evidence could not be verified",
     "health": "installed engine evidence could not be verified",
     "status_object_info": "canonical installed status differs",
@@ -518,7 +488,8 @@ def test_refusals_fail_closed_without_profile_or_engine_change(installation, sta
         original = target.read_bytes()
         forged = json.loads(original)
         if change == "receipt_engine":
-            forged["engine"] = "comfyui" if forged["engine"] == ENGINE else ENGINE
+            # Flip to an engine name that differs from the installed one (the old expression kept it unchanged).
+            forged["engine"] = "comfyui-a04" if forged["engine"] != "comfyui-a04" else ENGINE
         elif change == "receipt_owner":
             next(s for s in forged["steps"] if s["kind"] == "start")["facts"]["owner_id"] = "another-owner"
         else:
@@ -529,19 +500,6 @@ def test_refusals_fail_closed_without_profile_or_engine_change(installation, sta
         target = installation["registry"] / "source_revision"
         original = target.read_bytes()
         target.write_text("0" * 40)
-        restore.append(lambda: target.write_bytes(original))
-    elif change == "model_missing":
-        target = root / "models/loras/synthetic-test-b.safetensors"
-        target.rename(root / "moved-model")
-        restore.append(lambda: (root / "moved-model").rename(target))
-    elif change == "model_extra":
-        target = root / "models/loras/unlisted.safetensors"
-        target.write_bytes(b"not in the lock")
-        restore.append(target.unlink)
-    elif change == "model_bytes":
-        target = root / "models/diffusion_models/synthetic-test-a.safetensors"
-        original = target.read_bytes()
-        target.write_bytes(original.replace(b"A", b"Z"))
         restore.append(lambda: target.write_bytes(original))
     elif change == "source_drift":
         target = root / "runtime/vibecomfy/README.md"
@@ -561,8 +519,7 @@ def test_refusals_fail_closed_without_profile_or_engine_change(installation, sta
         for action in restore:
             action()
     assert out["ok"] is False and _REFUSALS[change] in out["reason"], out.get("reason")
-    if change in {"missing_driver", "two_gpus", "garbage_driver", "model_missing", "model_extra", "model_bytes",
-                  "status_object_info", "status_failed"}:
+    if change in {"missing_driver", "two_gpus", "garbage_driver", "status_object_info", "status_failed"}:
         # Refused after the real live session/health checks passed: nothing invented, nothing written.
         assert out["vibecomfy_origin"] == str(root / "runtime/vibecomfy/vibecomfy/__init__.py")
     assert not (state / "engine-readiness.json").exists()
@@ -640,12 +597,12 @@ def test_default_status_is_the_canonical_status_operation(monkeypatch):
                         lambda **kwargs: calls.append(("backend", kwargs)) or (context, object()))
     monkeypatch.setattr(engine_runner, "engine_status",
                         lambda engine, **kwargs: calls.append(("status", engine, kwargs)) or "receipt")
-    assert readiness.canonical_status(root="/workspace/astrid/engines/vibecomfy-h3", deadline=12.0) == "receipt"
+    assert readiness.canonical_status(root="/workspace/astrid/engines/comfyui", deadline=12.0) == "receipt"
     assert calls == [
         ("backend", {"engine": ENGINE, "platform": PLATFORM, "placement": "local",
-                     "root": "/workspace/astrid/engines/vibecomfy-h3", "deadline": 12.0}),
+                     "root": "/workspace/astrid/engines/comfyui", "deadline": 12.0}),
         ("status", ENGINE, {"platform": PLATFORM, "placement": "local",
-                            "root": "/workspace/astrid/engines/vibecomfy-h3", "context": context, "deadline": 12.0}),
+                            "root": "/workspace/astrid/engines/comfyui", "context": context, "deadline": 12.0}),
     ]
 
 

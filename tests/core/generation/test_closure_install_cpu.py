@@ -63,7 +63,7 @@ def test_linux_x86_64_h3_environment_closure_before_model_stages(tmp_path):
         "the real H3 CPU closure requires a Linux x86_64 worker"
     )
 
-    recipe = load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    recipe = load_recipe("comfyui", "linux-x86_64-cu130")
     adapter = platform_adapter(recipe.platform)
     program_root = tmp_path / "program"
     data_root = tmp_path / "data"
@@ -89,7 +89,7 @@ def test_linux_x86_64_h3_environment_closure_before_model_stages(tmp_path):
     venv_dir = adapter.join(str(engine_root), primary.relative_path)
     python = adapter.venv_python(venv_dir)
     client = _ProcessClient(uv_cache, stop, venv_dir)
-    context = LocalLinuxExecutionContext(engine="vibecomfy-h3", platform=recipe.platform,
+    context = LocalLinuxExecutionContext(engine="comfyui", platform=recipe.platform,
                                          root=str(engine_root), adapter=adapter,
                                          service_client=client)
     plan = engine_runner.plan_install(recipe, root=str(engine_root), placement="local")

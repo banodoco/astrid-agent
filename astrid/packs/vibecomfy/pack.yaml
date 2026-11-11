@@ -458,6 +458,7 @@ actions:
       - source
       - source_video
       - managed_assets
+      - entry_inputs
       provides:
       - vibecomfy_run
       - result_manifest
@@ -486,15 +487,25 @@ actions:
       name: managed_assets
       required: false
       type: file
+    - description: Portable public entry inputs for the pod-side named-entry runner.
+      name: entry_inputs
+      required: false
+      type: file
     - default: '{}'
       description: JSON object of scalar public workflow inputs. Media inputs are
         supplied by managed_assets.
       name: workflow_inputs
       required: false
       type: string
+    - default: '{}'
+      description: JSON {entry, job_dir, inputs, files} of a vibecomfy.workflows entry whose after_outputs hook
+        runs on this machine after the outputs are written and before they are sealed into the result.
+      name: after_outputs_job
+      required: false
+      type: string
     - default: ''
       description: Target policy for the retained host; endpoint selection remains host owned.
-      name: target_policy
+      name: placement_policy
       required: false
       type: string
     - default: ''
@@ -557,7 +568,7 @@ actions:
     - run
     metadata:
       catalog_source: none_declared
-      host_target_policy: true
+      host_placement_policy: true
       cli_module: vibecomfy.cli
       command_names:
       - run
@@ -641,6 +652,8 @@ actions:
         - '{managed_assets}'
         - --workflow-inputs
         - '{workflow_inputs}'
+        - --after-outputs-job
+        - '{after_outputs_job}'
         - --comfy-url
         - '{comfy_url}'
         - --comfy-output-dir
@@ -882,7 +895,7 @@ actions:
         - --capability
         - vibecomfy.video_enhance
         - --profile
-        - pip_embedded
+        - local_server
         - --task-identity
         - '{task_identity}'
         - --readiness-profile-path
@@ -1008,7 +1021,7 @@ actions:
         - --capability
         - vibecomfy.character_animation
         - --profile
-        - pip_embedded
+        - local_server
         - --task-identity
         - '{task_identity}'
         - --readiness-profile-path
@@ -1093,6 +1106,8 @@ resources:
   path: src/dimensional_vace.py
 extensions:
   astrid:
+    skills:
+      default: true
     generation_availability:
       actions:
         vibecomfy.character_animation:

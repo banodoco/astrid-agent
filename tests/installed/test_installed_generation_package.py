@@ -9,9 +9,9 @@ user site visible to the installed program (``python -I``, empty cwd, fresh HOME
 * ``vibecomfy.utils.find_repo_root()`` raises ``CheckoutRequiredError``
   (VibeComfy donor 1b2e242c vibecomfy/utils.py:18-31, vibecomfy/errors.py:81);
 * the ``generate list`` inventory contains the six defaults;
-* a dry run per default (``--target runpod --dry-run`` as D1b leaves it, plus an
+* a dry run per default (``--placement runpod --dry-run`` as D1b leaves it, plus an
   auto dry run of sound effects against the CLI-GOLD stand-in ComfyUI);
-* fail-closed guidance (``needs a local GPU or --target runpod``) with no engine and
+* fail-closed guidance (``needs a local GPU or --placement runpod``) with no engine and
   no RunPod.
 
 No weights, GPU, provider call or model download. Every installed command runs with
@@ -350,7 +350,7 @@ def test_installed_inventory_lists_the_six_defaults(installed, tmp_path):
 @pytest.mark.parametrize("slot", SLOTS, ids=SLOT_IDS)
 def test_installed_runpod_dry_run_per_default(slot, installed, tmp_path):
     stage = f"dry run {slot.name} runpod"
-    result = installed.generate(*slot_argv(slot, _inputs(tmp_path), target="runpod"),
+    result = installed.generate(*slot_argv(slot, _inputs(tmp_path), placement="runpod"),
                                 root=tmp_path, stage=stage)
     _expect(result, stage, ok=True)
     payload = _payload(result)
@@ -361,16 +361,16 @@ def test_installed_runpod_dry_run_per_default(slot, installed, tmp_path):
 
 
 def test_installed_sound_effects_auto_dry_run_resolves_foley(installed, tmp_path):
-    """RunPod refuses Foley, so sound effects resolves through `--target auto` against the
+    """RunPod refuses Foley, so sound effects resolves through `--placement auto` against the
     CLI-GOLD stand-in ComfyUI (reads only; no /prompt)."""
     slot = next(item for item in SLOTS if item.name == "sound-effects")
     files = _inputs(tmp_path)
     with StandInComfy(_stand_in_object_info()) as comfy:
-        saved = installed.generate("targets", "--target", comfy.url, "--save", "--json",
+        saved = installed.generate("targets", "--placement", comfy.url, "--save", "--json",
                                    root=tmp_path, stage="save stand-in target")
         _expect(saved, "save stand-in target", ok=True)
         stage = "dry run sound-effects auto"
-        result = installed.generate(*slot_argv(slot, files, target="auto"), root=tmp_path, stage=stage)
+        result = installed.generate(*slot_argv(slot, files, placement="auto"), root=tmp_path, stage=stage)
         _expect(result, stage, ok=True)
         payload = _payload(result)
         assert isinstance(payload, dict) and payload["entry"]["id"] == slot.entry, payload
@@ -382,8 +382,8 @@ def test_installed_sound_effects_auto_dry_run_resolves_foley(installed, tmp_path
 @pytest.mark.parametrize("case", ["image", "tts"])
 def test_installed_no_engine_fails_closed_with_guidance(case, installed, tmp_path):
     _require_no_discovered_comfy()
-    argv = (["image", "A tiny blue lighthouse.", "--target", "auto", "--json"] if case == "image" else
-            ["audio", "--mode", "tts", "--input", "text=The exact authored words.", "--target", "auto", "--json"])
+    argv = (["image", "A tiny blue lighthouse.", "--placement", "auto", "--json"] if case == "image" else
+            ["audio", "--mode", "tts", "--input", "text=The exact authored words.", "--placement", "auto", "--json"])
     stage = f"fail-closed {case}"
     result = installed.generate(*argv, root=tmp_path, stage=stage)
     _expect(result, stage, ok=False, contains=(GPU_GUIDANCE, EDGE_TTS) if case == "tts" else (GPU_GUIDANCE,))

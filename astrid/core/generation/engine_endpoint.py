@@ -163,7 +163,8 @@ def _url(url, placement, endpoint_id, owner, attestation):
         match = re.fullmatch(r"https://([a-z0-9]+)-([1-9][0-9]{0,4})\.proxy\.runpod\.net/engines/" + re.escape(endpoint_id), url)
     if not match or int(match.group(1 if placement == "local" else 2)) > 65535:
         _bad()
-    if placement == "runpod":
+    from astrid.core.generation.placement import is_runpod_placement
+    if is_runpod_placement(placement):
         pod = match.group(1)
         if (owner.pod_id is not None and owner.pod_id != pod) or (attestation is not None and attestation.pod_id != pod):
             _bad()
@@ -177,6 +178,7 @@ def parse_endpoint(value) -> EngineEndpoint:
     endpoint_id, engine = _id(v["endpoint_id"]), _id(v["engine"])
     platform = _enum(v["platform"], get_args(PlatformKey))
     placement = _enum(v["placement"], ("local", "runpod"))
+    from astrid.core.generation.placement import is_runpod_placement
     state = _enum(v["state"], get_args(EndpointState))
     auth, owner = _auth(v["auth"]), _owner(v["lifecycle_owner"])
     health = _optional(v["health"], _health)
@@ -193,7 +195,7 @@ def parse_endpoint(value) -> EngineEndpoint:
         _bad()
     if state == "ready":
         if (health is None or health.status != "healthy" or attestation is None
-                or health != attestation.health or (placement == "runpod" and auth.kind != "bearer-file")):
+                or health != attestation.health or (is_runpod_placement(placement) and auth.kind != "bearer-file")):
             _bad()
     url = _url(v["url"], placement, endpoint_id, owner, attestation)
     return EngineEndpoint(v["schema"], endpoint_id, engine, platform, placement, url, auth, state, health, owner, attestation)
@@ -336,13 +338,9 @@ def _prepared_session_evidence(reference, session_selection, session_receipt, pr
         _bad()
     snapshot = _load(snapshot_bytes)
     session = session_receipt
-    session_profile = profile.get("vibecomfy_session")
-    if type(session_profile) is not dict:
-        _bad()
     if (session is None or session.url != f"http://127.0.0.1:{recipe.start.port}"
             or session.config_digest != reference.session_config_digest
-            or session.session_ref != reference.session_ref
-            or session_profile.get("server_url") != session.url):
+            or session.session_ref != reference.session_ref):
         _bad()
     receipt_bytes = read_file(attestation.install_receipt_path, deadline=deadline)
     if (type(receipt_bytes) is not bytes or len(receipt_bytes) > 8 * 1024 * 1024
@@ -353,6 +351,10 @@ def _prepared_session_evidence(reference, session_selection, session_receipt, pr
         _bad()
     root = _path(raw_receipt.get("root"))
     if attestation.install_receipt_path != root + "/.astrid-engine/install.json":
+        _bad()
+    # The retained readiness names the exact installed engine it attested.
+    if profile.get("engine_identity") != {"engine": engine, "receipt_sha256": attestation.install_receipt_sha256,
+                                          "root": root}:
         _bad()
     # Self-start uses the same local installer *on the pod*. Preserve its bytes
     # and placement; never rewrite a local install receipt as a RunPod claim.
@@ -547,3 +549,18 @@ def ensure_prepared_session_endpoint(
         )
         _probe_prepared_endpoint(endpoint, recipe, agent_port=agent_port, deadline=deadline)
         return endpoint
+
+
+def read_readiness_profile(profile_path, profile_hash: str) -> dict:
+    """Read a Worker-issued readiness profile: the exact bytes must match their sha256 fence, then parse strictly."""
+    import hashlib
+    import time
+
+    raw = read_private_endpoint_file(str(profile_path), deadline=time.monotonic() + 20, private=False)
+    if not isinstance(profile_hash, str) or profile_hash != "sha256:" + hashlib.sha256(raw).hexdigest():
+        _bad()
+    value = _load(raw)
+    if not isinstance(value, dict):
+        _bad()
+    return value
+

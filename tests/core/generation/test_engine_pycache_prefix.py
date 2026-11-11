@@ -130,7 +130,7 @@ def test_real_service_launch_through_supervisor_keeps_pinned_source_clean(tmp_pa
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    base = load_recipe("vibecomfy-h3", platform)
+    base = load_recipe("comfyui", platform)
     argv = (sys.executable, str(root / "launch.py"), str(port), str(mode), str(started), str(record),
             str(source), str(root / "tiny_http.py"))
     recipe = replace(base, sources=tuple(replace(s, pin=replace(s.pin, revision=revision))
@@ -146,7 +146,7 @@ from dataclasses import replace
 from astrid.core.generation.engine_contracts import StartSpec
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_custody import _serve
-base = load_recipe({"vibecomfy-h3"!r}, {platform!r})
+base = load_recipe({"comfyui"!r}, {platform!r})
 recipe = replace(base, sources=tuple(replace(s, pin=replace(s.pin, revision={revision!r})) if s.name == "vibecomfy" else s for s in base.sources),
                  start=StartSpec({argv!r}, {str(comfy)!r}, {{"VIBECOMFY_HEADLESS": "1"}}, "127.0.0.1", {port}),
                  health=replace(base.health, timeout_seconds=4, poll_interval_seconds=0.02))

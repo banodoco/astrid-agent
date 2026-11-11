@@ -1,0 +1,962 @@
+{
+  "capture": "GET /object_info from genuine pinned ComfyUI --cpu --disable-all-custom-nodes",
+  "comfyui_version": "0.43.2",
+  "object_info": {
+    "CFGGuider": {
+      "api_node": false,
+      "category": "model/sampling/guiders",
+      "deprecated": false,
+      "description": "",
+      "dev_only": false,
+      "display_name": "CFG Guider",
+      "essentials_category": null,
+      "experimental": false,
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "cfg": [
+            "FLOAT",
+            {
+              "default": 8.0,
+              "max": 100.0,
+              "min": 0.0,
+              "round": 0.01,
+              "step": 0.1
+            }
+          ],
+          "model": [
+            "MODEL",
+            {}
+          ],
+          "negative": [
+            "CONDITIONING",
+            {}
+          ],
+          "positive": [
+            "CONDITIONING",
+            {}
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model",
+          "positive",
+          "negative",
+          "cfg"
+        ]
+      },
+      "is_input_list": false,
+      "name": "CFGGuider",
+      "output": [
+        "GUIDER"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_matchtypes": null,
+      "output_name": [
+        "GUIDER"
+      ],
+      "output_node": false,
+      "output_tooltips": [
+        null
+      ],
+      "price_badge": null,
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "search_aliases": null
+    },
+    "CLIPLoader": {
+      "category": "model/loaders",
+      "description": "Recipes:\nsd: clip-l\nstable cascade: clip-g\nsd3: t5 xxl / clip-g / clip-l\nstable audio: t5 base\nmochi: t5 xxl\ncogvideox: t5 xxl (226-token padding)\ncosmos: old t5 xxl\nlumina2: gemma 2 2B\nwan: umt5 xxl\nhidream: llama-3.1 (Recommend) or t5\nomnigen2: qwen vl 2.5 3B\njoyimage: qwen3-vl 8B\nlens: gpt-oss-20b\npixeldit: gemma 2 2B elm\nminimax: MiniMax H3 Qwen3-VL or Music3 Qwen/RVQ\nflux3: qwen3-vl 4B\nfibo2: qwen3-vl 4B",
+      "display_name": "Load CLIP",
+      "has_intermediate_output": false,
+      "input": {
+        "optional": {
+          "device": [
+            [
+              "default",
+              "cpu"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        },
+        "required": {
+          "clip_name": [
+            []
+          ],
+          "type": [
+            [
+              "stable_diffusion",
+              "stable_cascade",
+              "sd3",
+              "stable_audio",
+              "mochi",
+              "ltxv",
+              "pixart",
+              "cosmos",
+              "lumina2",
+              "wan",
+              "hidream",
+              "chroma",
+              "ace",
+              "omnigen2",
+              "qwen_image",
+              "hunyuan_image",
+              "flux2",
+              "ovis",
+              "longcat_image",
+              "cogvideox",
+              "lens",
+              "pixeldit",
+              "ideogram4",
+              "boogu",
+              "krea2",
+              "joyimage",
+              "mage",
+              "minimax",
+              "yue2",
+              "flux3",
+              "moss_image",
+              "fibo2"
+            ]
+          ]
+        }
+      },
+      "input_order": {
+        "optional": [
+          "device"
+        ],
+        "required": [
+          "clip_name",
+          "type"
+        ]
+      },
+      "is_input_list": false,
+      "name": "CLIPLoader",
+      "output": [
+        "CLIP"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "CLIP"
+      ],
+      "output_node": false,
+      "python_module": "nodes",
+      "search_aliases": []
+    },
+    "EmptyLatentImage": {
+      "category": "model/latent",
+      "description": "Create a new batch of empty latent images to be denoised via sampling.",
+      "display_name": "Empty Latent Image",
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "batch_size": [
+            "INT",
+            {
+              "default": 1,
+              "max": 4096,
+              "min": 1,
+              "tooltip": "The number of latent images in the batch."
+            }
+          ],
+          "height": [
+            "INT",
+            {
+              "default": 1024,
+              "max": 16384,
+              "min": 16,
+              "step": 8,
+              "tooltip": "The height of the latent images in pixels."
+            }
+          ],
+          "width": [
+            "INT",
+            {
+              "default": 1024,
+              "max": 16384,
+              "min": 16,
+              "step": 8,
+              "tooltip": "The width of the latent images in pixels."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "width",
+          "height",
+          "batch_size"
+        ]
+      },
+      "is_input_list": false,
+      "name": "EmptyLatentImage",
+      "output": [
+        "LATENT"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "LATENT"
+      ],
+      "output_node": false,
+      "output_tooltips": [
+        "The empty latent image batch."
+      ],
+      "python_module": "nodes",
+      "search_aliases": [
+        "empty",
+        "empty latent",
+        "new latent",
+        "create latent",
+        "blank latent",
+        "blank"
+      ]
+    },
+    "KSamplerSelect": {
+      "api_node": false,
+      "category": "model/sampling/samplers",
+      "deprecated": false,
+      "description": "",
+      "dev_only": false,
+      "display_name": null,
+      "essentials_category": null,
+      "experimental": false,
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "sampler_name": [
+            "COMBO",
+            {
+              "multiselect": false,
+              "options": [
+                "euler",
+                "euler_cfg_pp",
+                "euler_ancestral",
+                "euler_ancestral_cfg_pp",
+                "heun",
+                "heunpp2",
+                "exp_heun_2_x0",
+                "exp_heun_2_x0_sde",
+                "dpm_2",
+                "dpm_2_ancestral",
+                "lms",
+                "dpm_fast",
+                "dpm_adaptive",
+                "dpmpp_2s_ancestral",
+                "dpmpp_2s_ancestral_cfg_pp",
+                "dpmpp_sde",
+                "dpmpp_sde_gpu",
+                "dpmpp_2m",
+                "dpmpp_2m_cfg_pp",
+                "dpmpp_2m_sde",
+                "dpmpp_2m_sde_gpu",
+                "dpmpp_2m_sde_heun",
+                "dpmpp_2m_sde_heun_gpu",
+                "dpmpp_3m_sde",
+                "dpmpp_3m_sde_gpu",
+                "ddpm",
+                "lcm",
+                "ipndm",
+                "ipndm_v",
+                "deis",
+                "cfgpp_ud10_ab",
+                "res_multistep",
+                "res_multistep_cfg_pp",
+                "res_multistep_ancestral",
+                "res_multistep_ancestral_cfg_pp",
+                "gradient_estimation",
+                "gradient_estimation_cfg_pp",
+                "er_sde",
+                "seeds_2",
+                "seeds_3",
+                "sa_solver",
+                "sa_solver_pece",
+                "ddim",
+                "uni_pc",
+                "uni_pc_bh2"
+              ]
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "sampler_name"
+        ]
+      },
+      "is_input_list": false,
+      "name": "KSamplerSelect",
+      "output": [
+        "SAMPLER"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_matchtypes": null,
+      "output_name": [
+        "SAMPLER"
+      ],
+      "output_node": false,
+      "output_tooltips": [
+        null
+      ],
+      "price_badge": null,
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "search_aliases": null
+    },
+    "LoadImage": {
+      "category": "image",
+      "description": "",
+      "display_name": "Load Image",
+      "essentials_category": "Basics",
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "image": [
+            [
+              "example.png"
+            ],
+            {
+              "image_upload": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "image"
+        ]
+      },
+      "is_input_list": false,
+      "name": "LoadImage",
+      "output": [
+        "IMAGE",
+        "MASK"
+      ],
+      "output_is_list": [
+        false,
+        false
+      ],
+      "output_name": [
+        "IMAGE",
+        "MASK"
+      ],
+      "output_node": false,
+      "python_module": "nodes",
+      "search_aliases": [
+        "load image",
+        "open image",
+        "import image",
+        "image input",
+        "upload image",
+        "read image",
+        "image loader"
+      ]
+    },
+    "ManualSigmas": {
+      "api_node": false,
+      "category": "model/sampling/sigmas",
+      "deprecated": false,
+      "description": "",
+      "dev_only": false,
+      "display_name": null,
+      "essentials_category": null,
+      "experimental": true,
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "sigmas": [
+            "STRING",
+            {
+              "default": "1, 0.5",
+              "multiline": false
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "sigmas"
+        ]
+      },
+      "is_input_list": false,
+      "name": "ManualSigmas",
+      "output": [
+        "SIGMAS"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_matchtypes": null,
+      "output_name": [
+        "SIGMAS"
+      ],
+      "output_node": false,
+      "output_tooltips": [
+        null
+      ],
+      "price_badge": null,
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "search_aliases": [
+        "custom noise schedule",
+        "define sigmas"
+      ]
+    },
+    "QwenImage21Cache": {
+      "api_node": false,
+      "category": "model/conditioning/qwen image",
+      "deprecated": false,
+      "description": "Allows setting the KV cache device and quantization, by default the model uses the auto -option. Quantization potentially speeds up edit workflows when memory starved ",
+      "dev_only": false,
+      "display_name": "Qwen Image 2.1 Cache",
+      "essentials_category": null,
+      "experimental": true,
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "device": [
+            "COMBO",
+            {
+              "default": "auto",
+              "multiselect": false,
+              "options": [
+                "auto",
+                "gpu",
+                "cpu",
+                "off"
+              ],
+              "tooltip": "auto uses spare VRAM, then RAM. cpu (RAM) is prefetched behind compute and costs little speed. off recomputes the prefix every step, which is slower but is the one way to rule the cache out."
+            }
+          ],
+          "dtype": [
+            "COMBO",
+            {
+              "default": "default",
+              "multiselect": false,
+              "options": [
+                "default",
+                "int8",
+                "int4"
+              ],
+              "tooltip": "Storage precision. default is lossless. int8 halves the cache at about bf16 accuracy, int4 quarters it but roughly doubles the per-step error."
+            }
+          ],
+          "model": [
+            "MODEL",
+            {}
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model",
+          "device",
+          "dtype"
+        ]
+      },
+      "is_input_list": false,
+      "name": "QwenImage21Cache",
+      "output": [
+        "MODEL"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_matchtypes": null,
+      "output_name": [
+        "MODEL"
+      ],
+      "output_node": false,
+      "output_tooltips": [
+        null
+      ],
+      "price_badge": null,
+      "python_module": "comfy_extras.nodes_qwen",
+      "search_aliases": null
+    },
+    "RandomNoise": {
+      "api_node": false,
+      "category": "model/sampling/noise",
+      "deprecated": false,
+      "description": "",
+      "dev_only": false,
+      "display_name": null,
+      "essentials_category": null,
+      "experimental": false,
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "noise_seed": [
+            "INT",
+            {
+              "control_after_generate": true,
+              "default": 0,
+              "max": 18446744073709551615,
+              "min": 0
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "noise_seed"
+        ]
+      },
+      "is_input_list": false,
+      "name": "RandomNoise",
+      "output": [
+        "NOISE"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_matchtypes": null,
+      "output_name": [
+        "NOISE"
+      ],
+      "output_node": false,
+      "output_tooltips": [
+        null
+      ],
+      "price_badge": null,
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "search_aliases": null
+    },
+    "SamplerCustomAdvanced": {
+      "api_node": false,
+      "category": "model/sampling/custom",
+      "deprecated": false,
+      "description": "",
+      "dev_only": false,
+      "display_name": null,
+      "essentials_category": null,
+      "experimental": false,
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "guider": [
+            "GUIDER",
+            {}
+          ],
+          "latent_image": [
+            "LATENT",
+            {}
+          ],
+          "noise": [
+            "NOISE",
+            {}
+          ],
+          "sampler": [
+            "SAMPLER",
+            {}
+          ],
+          "sigmas": [
+            "SIGMAS",
+            {}
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "noise",
+          "guider",
+          "sampler",
+          "sigmas",
+          "latent_image"
+        ]
+      },
+      "is_input_list": false,
+      "name": "SamplerCustomAdvanced",
+      "output": [
+        "LATENT",
+        "LATENT"
+      ],
+      "output_is_list": [
+        false,
+        false
+      ],
+      "output_matchtypes": null,
+      "output_name": [
+        "output",
+        "denoised_output"
+      ],
+      "output_node": false,
+      "output_tooltips": [
+        null,
+        null
+      ],
+      "price_badge": null,
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "search_aliases": null
+    },
+    "SaveImage": {
+      "category": "image",
+      "description": "Saves the input images to your ComfyUI output directory.",
+      "display_name": "Save Image",
+      "essentials_category": "Basics",
+      "has_intermediate_output": false,
+      "input": {
+        "hidden": {
+          "extra_pnginfo": "EXTRA_PNGINFO",
+          "prompt": "PROMPT"
+        },
+        "required": {
+          "filename_prefix": [
+            "STRING",
+            {
+              "default": "ComfyUI",
+              "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."
+            }
+          ],
+          "images": [
+            "IMAGE",
+            {
+              "tooltip": "The images to save."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "hidden": [
+          "prompt",
+          "extra_pnginfo"
+        ],
+        "required": [
+          "images",
+          "filename_prefix"
+        ]
+      },
+      "is_input_list": false,
+      "name": "SaveImage",
+      "output": [
+        "IMAGE"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "images"
+      ],
+      "output_node": true,
+      "python_module": "nodes",
+      "search_aliases": [
+        "save",
+        "save image",
+        "export image",
+        "output image",
+        "write image",
+        "download"
+      ]
+    },
+    "SaveLatent": {
+      "category": "model/latent",
+      "description": "",
+      "display_name": "Save Latent",
+      "has_intermediate_output": false,
+      "input": {
+        "hidden": {
+          "extra_pnginfo": "EXTRA_PNGINFO",
+          "prompt": "PROMPT"
+        },
+        "required": {
+          "filename_prefix": [
+            "STRING",
+            {
+              "default": "latents/ComfyUI"
+            }
+          ],
+          "samples": [
+            "LATENT"
+          ]
+        }
+      },
+      "input_order": {
+        "hidden": [
+          "prompt",
+          "extra_pnginfo"
+        ],
+        "required": [
+          "samples",
+          "filename_prefix"
+        ]
+      },
+      "is_input_list": false,
+      "name": "SaveLatent",
+      "output": [
+        "LATENT"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "samples"
+      ],
+      "output_node": true,
+      "python_module": "nodes",
+      "search_aliases": [
+        "export latent"
+      ]
+    },
+    "TextEncodeQwenImage21": {
+      "api_node": false,
+      "category": "model/conditioning/qwen image",
+      "deprecated": false,
+      "description": "",
+      "dev_only": false,
+      "display_name": "Text Encode Qwen Image 2.1",
+      "essentials_category": null,
+      "experimental": false,
+      "has_intermediate_output": false,
+      "input": {
+        "optional": {
+          "vae": [
+            "VAE",
+            {}
+          ]
+        },
+        "required": {
+          "clip": [
+            "CLIP",
+            {}
+          ],
+          "images": [
+            "COMFY_AUTOGROW_V3",
+            {
+              "template": {
+                "input": {
+                  "required": {
+                    "image": [
+                      "IMAGE",
+                      {}
+                    ]
+                  }
+                },
+                "min": 0,
+                "names": [
+                  "image_1",
+                  "image_2",
+                  "image_3",
+                  "image_4",
+                  "image_5",
+                  "image_6",
+                  "image_7",
+                  "image_8",
+                  "image_9",
+                  "image_10",
+                  "image_11",
+                  "image_12",
+                  "image_13",
+                  "image_14",
+                  "image_15",
+                  "image_16"
+                ]
+              },
+              "tooltip": "Reference images, seen by the text encoder and spliced into the sequence as VAE latents."
+            }
+          ],
+          "negative_prompt": [
+            "STRING",
+            {
+              "dynamicPrompts": true,
+              "multiline": true
+            }
+          ],
+          "prompt": [
+            "STRING",
+            {
+              "dynamicPrompts": true,
+              "multiline": true
+            }
+          ],
+          "resolution": [
+            "INT",
+            {
+              "default": 1024,
+              "max": 4096,
+              "min": 0,
+              "step": 32,
+              "tooltip": "Reference images are resized to about resolution x resolution pixels, at multiples of 32, preserving aspect ratio. 0 keeps each reference at its own size, rounded to a multiple of 32. "
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "optional": [
+          "vae"
+        ],
+        "required": [
+          "clip",
+          "prompt",
+          "negative_prompt",
+          "resolution",
+          "images"
+        ]
+      },
+      "is_input_list": false,
+      "name": "TextEncodeQwenImage21",
+      "output": [
+        "CONDITIONING",
+        "CONDITIONING",
+        "LATENT"
+      ],
+      "output_is_list": [
+        false,
+        false,
+        false
+      ],
+      "output_matchtypes": null,
+      "output_name": [
+        "positive",
+        "negative",
+        "latent"
+      ],
+      "output_node": false,
+      "output_tooltips": [
+        null,
+        null,
+        "Empty latent on the first reference image's size, to match with sampling as any other size shifts the edit."
+      ],
+      "price_badge": null,
+      "python_module": "comfy_extras.nodes_qwen",
+      "search_aliases": null
+    },
+    "UNETLoader": {
+      "category": "model/loaders",
+      "description": "",
+      "display_name": "Load Diffusion Model",
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "unet_name": [
+            []
+          ],
+          "weight_dtype": [
+            [
+              "default",
+              "fp8_e4m3fn",
+              "fp8_e4m3fn_fast",
+              "fp8_e5m2"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "unet_name",
+          "weight_dtype"
+        ]
+      },
+      "is_input_list": false,
+      "name": "UNETLoader",
+      "output": [
+        "MODEL"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "MODEL"
+      ],
+      "output_node": false,
+      "python_module": "nodes",
+      "search_aliases": []
+    },
+    "VAEDecode": {
+      "category": "model/latent",
+      "description": "Decodes latent images back into pixel space images.",
+      "display_name": "VAE Decode",
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "samples": [
+            "LATENT",
+            {
+              "tooltip": "The latent to be decoded."
+            }
+          ],
+          "vae": [
+            "VAE",
+            {
+              "tooltip": "The VAE model used for decoding the latent."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "samples",
+          "vae"
+        ]
+      },
+      "is_input_list": false,
+      "name": "VAEDecode",
+      "output": [
+        "IMAGE"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "IMAGE"
+      ],
+      "output_node": false,
+      "output_tooltips": [
+        "The decoded image."
+      ],
+      "python_module": "nodes",
+      "search_aliases": [
+        "decode",
+        "decode latent",
+        "latent to image",
+        "render latent"
+      ]
+    },
+    "VAELoader": {
+      "category": "model/loaders",
+      "description": "",
+      "display_name": "Load VAE",
+      "has_intermediate_output": false,
+      "input": {
+        "required": {
+          "vae_name": [
+            [
+              "pixel_space"
+            ]
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "vae_name"
+        ]
+      },
+      "is_input_list": false,
+      "name": "VAELoader",
+      "output": [
+        "VAE"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "VAE"
+      ],
+      "output_node": false,
+      "python_module": "nodes",
+      "search_aliases": []
+    }
+  },
+  "python": "3.12.3",
+  "source_revision": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+  "torch": "2.10.0+cpu"
+}

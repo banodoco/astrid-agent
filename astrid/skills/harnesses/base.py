@@ -15,6 +15,13 @@ from astrid.core.contracts.errors import AstridError
 
 from ..discovery import SkillDescriptor
 
+def sync_target_name(descriptor: SkillDescriptor) -> str:
+    """Return the shared harness directory name for a skill."""
+    if descriptor.pack_id == "_core":
+        return "astrid"
+    return descriptor.sync_name or f"astrid-{descriptor.skill_id}"
+
+
 Action = Literal["install", "uninstall"]
 _COPY_MARKER = ".astrid-managed-skill.json"
 
@@ -131,6 +138,7 @@ def ours_link_to_pack_id(link_name: str) -> str | None:
 def prune_orphan_skill_links(
     skills_dir: Path, known_pack_ids: set[str], *,
     owned_sources: dict[Path, set[Path]] | None = None,
+    known_names: set[str] | None = None,
     declared_sources: Iterable[Path] = (),
     conflicts: list[PlannedStep] | None = None,
 ) -> list[Path]:
@@ -140,10 +148,15 @@ def prune_orphan_skill_links(
         return removed
     for entry in sorted(skills_dir.iterdir()):
         pack_id = ours_link_to_pack_id(entry.name)
-        if pack_id is None or pack_id == "_core" or pack_id in known_pack_ids:
+        if entry.name in (known_names or set()) or pack_id == "_core" or pack_id in known_pack_ids:
+            continue
+        if pack_id is None and entry not in (owned_sources or {}):
             continue
         try:
-            changed = remove_symlink(entry, sources=(*declared_sources, *(owned_sources or {}).get(entry, ())))
+            sources = (owned_sources or {}).get(entry, ())
+            if pack_id is not None:
+                sources = (*declared_sources, *sources)
+            changed = remove_symlink(entry, sources=sources)
         except AstridError as exc:
             if conflicts is not None:
                 conflicts.append(PlannedStep(str(exc), target=entry,

@@ -21,6 +21,7 @@ def staged_workflow_path(
     companion: str | Path | None,
     source: str | Path | None,
     scratch: str | Path | None = None,
+    preserve_on_error: tuple[type[BaseException], ...] = (),
 ) -> Iterator[tuple[Path, str]]:
     """Yield one workflow path and authority label, staging canonical siblings.
 
@@ -66,6 +67,7 @@ def staged_workflow_path(
             dir=scratch_root,
         )
     )
+    retained = False
     try:
         staged_python = staging / "workflow.py"
         staged_companion = staging / "workflow.vibe.json"
@@ -74,5 +76,11 @@ def staged_workflow_path(
         shutil.copyfile(paths[1], staged_companion)
         shutil.copyfile(paths[2], staged_source)
         yield staged_python, "canonical_bundle"
+    except preserve_on_error:
+        # An owned writer may still reference these exact paths. The host
+        # retains/fences their attempt until custody has been recovered.
+        retained = True
+        raise
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        if not retained:
+            shutil.rmtree(staging, ignore_errors=True)

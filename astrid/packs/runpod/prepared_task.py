@@ -556,117 +556,6 @@ def _task_inputs(task: Mapping[str, Any]) -> Mapping[str, Any]:
     return inputs
 
 
-class PreparedH3OwnerMonitor:
-    """Owner-only polling composition around the existing admitted parent receipt.
-
-    Interruption retains the exact activation for receipt-driven replay. This
-    monitor never admits, cancels, retries, or settles parent or child tasks.
-    """
-    def __init__(self, client: Any, selection_path: str | Path) -> None:
-        self.client = client
-        self.selection = load_prepared_worker_selection(selection_path)
-        self.workspace = getattr(getattr(client, "_remote", None), "_transport", None)
-        if self.workspace is None:
-            raise PreparedWorkerError("prepared H3 requires an explicit authenticated owner client")
-        self.parent_identity = None
-        self.child_id = None
-        self.runtime = None
-        self.retired = False
-        self.ensured = False
-
-    def __call__(self, parent: Mapping[str, Any]) -> None:
-        identity = tuple(parent.get(key) for key in ("task_id", "run_id", "project_id"))
-        if (any(not isinstance(value, str) or not value for value in identity)
-                or parent.get("capability_id") != "h3_av.transform"):
-            raise PreparedWorkerError("prepared custody requires one exact admitted H3 parent")
-        if self.parent_identity is None:
-            self.parent_identity = identity
-        elif self.parent_identity != identity:
-            raise PreparedWorkerError("prepared custody parent identity changed")
-        frozen = _task_inputs(parent).get("plan", {}).get("controls", {})
-        if frozen.get("prepared_selection_digest") != prepared_selection_digest(self.selection):
-            raise PreparedWorkerError("prepared owner selection differs from the admitted parent")
-        attempt = parent.get("attempt_id")
-        if not attempt:
-            return
-        children = []
-        cursor = None
-        seen = set()
-        while True:
-            from astrid.sdk.pagination import page_pair
-            page = page_pair(self.workspace.list_project_tasks(identity[2], cursor=cursor, limit=100))
-            if page is None:
-                raise PreparedWorkerError("prepared custody child listing is unavailable")
-            items, next_cursor = page
-            for child in items:
-                spec = child.get("spec", {}) if isinstance(child, Mapping) else {}
-                lineage = spec.get("delegated_parent", {})
-                if lineage.get("parent_task_id") != identity[0] or spec.get("delegated_stage") != "run":
-                    continue
-                if (lineage.get("parent_attempt_id") != attempt
-                        or lineage.get("project_id") != identity[2]
-                        or child.get("project_id") != identity[2]
-                        or lineage.get("runtime_epoch") != parent.get("runtime_epoch")
-                        or lineage.get("parent_fence") != parent.get("lease_fence")
-                        or child.get("capability_id") != "vibecomfy.run"):
-                    raise PreparedWorkerError("prepared child belongs to a stale or foreign parent attempt")
-                children.append(child)
-            cursor = next_cursor
-            if cursor is None:
-                break
-            if not isinstance(cursor, str) or not cursor or cursor in seen or len(seen) >= 100:
-                raise PreparedWorkerError("prepared custody listing cursor is invalid or exceeds bound")
-            seen.add(cursor)
-        if len(children) > 1:
-            raise PreparedWorkerError("prepared parent has ambiguous run children")
-        if not children:
-            return
-        child = _read_exact_task(self.client, children[0]["task_id"], capability_id="vibecomfy.run")
-        if child.get("spec", {}).get("delegated_parent") != children[0].get("spec", {}).get("delegated_parent"):
-            raise PreparedWorkerError("prepared child lineage changed during owner readback")
-        if self.child_id is None:
-            self.child_id = child["task_id"]
-        elif self.child_id != child["task_id"]:
-            raise PreparedWorkerError("prepared custody child identity changed")
-        request = child.get("execution_request", {})
-        if (request.get("remote_activation_required") is not True
-                or request.get("target") != dict(self.selection.target)):
-            raise PreparedWorkerError("prepared child target differs from the selected owner claim")
-        if self.runtime is None:
-            inputs = _task_inputs(child)
-            bundle = self.selection.journal_dir / ("parent-" + hashlib.sha256(identity[0].encode()).hexdigest()[:20]) / "workflow"
-            bundle.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if bundle.resolve() != bundle:
-                raise PreparedWorkerError("prepared workflow owner path is aliased")
-            for port, filename in (("python", "workflow.py"), ("companion", "workflow.vibe.json"), ("source", "source.json")):
-                binding = inputs.get(port, {})
-                oid = binding.get("object_id", binding.get("digest")) if isinstance(binding, Mapping) else None
-                if not isinstance(oid, str):
-                    raise PreparedWorkerError("prepared child canonical workflow binding is missing")
-                data = self.client.media.read_bytes(oid)
-                if type(data) is not bytes or "sha256:" + hashlib.sha256(data).hexdigest() != oid:
-                    raise PreparedWorkerError("prepared workflow managed bytes differ from admission")
-                destination = bundle / filename
-                if destination.is_symlink() or (destination.exists() and destination.read_bytes() != data):
-                    raise PreparedWorkerError("saved prepared workflow differs from admitted child")
-                destination.write_bytes(data)
-            factory = self.selection.composition_factory or _production_composition_factory
-            self.runtime = factory(client=self.client, selection=self.selection,
-                workflow_path=bundle / "workflow.py", workflow_bundle_path=bundle,
-                workflow_inputs=json.loads(inputs.get("workflow_inputs", "{}")))
-        state = str(child.get("state") or "").casefold()
-        if state in {"succeeded", "completed", "failed", "cancelled", "canceled"}:
-            if not self.retired:
-                self.runtime.retire_after_task(child)
-                self.retired = True
-        elif str(parent.get("state") or "").casefold() == "running":
-            if not self.ensured:
-                self.runtime.ensure_for_task(child)
-                self.ensured = True
-        else:
-            raise PreparedWorkerError("prepared parent ended while child custody remains outstanding")
-
-
 class _ProductionPreparedTaskRuntime:
     """Lazy composition of the existing P1/P2/Runtime/host owners for one task."""
 
@@ -888,7 +777,7 @@ class _ProductionPreparedTaskRuntime:
             self._restore_local_worker()
         # Recovery above always runs first. Only a genuinely new proof host
         # generation prepares its installed session and freezes final bytes.
-        if getattr(reference, "session_ref", None) == "vibecomfy-h3":
+        if getattr(reference, "session_ref", None) == "comfyui":
             import time
             from astrid.core.generation.engine_contracts import SecretRef
             from runpod_lifecycle.https import PORT
@@ -898,14 +787,14 @@ class _ProductionPreparedTaskRuntime:
                 return _run_sync(preparer.preparation_transport.read_endpoint_file(path, deadline=deadline))
 
             reference = preparer.finalize_endpoint_readiness(
-                reference, engine="vibecomfy-h3", platform="linux-x86_64-cu130",
-                endpoint_id="vibecomfy-h3", agent_port=PORT,
+                reference, engine="comfyui", platform="linux-x86_64-cu130",
+                endpoint_id="comfyui", agent_port=PORT,
                 token_ref=SecretRef("file", claim["https_token_file"]), read_file=read_file,
                 deadline=time.monotonic() + preparer.ready_timeout_seconds,
             )
             self._reference = reference
         elif getattr(reference, "session_ref", None) is not None:
-            raise PreparedWorkerError("prepared workflow requires the original installed vibecomfy-h3 session")
+            raise PreparedWorkerError("prepared workflow requires the original installed comfyui session")
         try:
             parked = launcher.park(reference, target=reference.effective_target)
             self._relinquish_local_worker(preparer, reference)

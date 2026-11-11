@@ -25,6 +25,15 @@ def _selected_runtime_commit():
     return json.loads((repo_root / "runtime.lock.json").read_text())["source_commit"]
 
 
+def _pod_plan(installation, command):
+    """The plan the pod's own ``engines install`` binds: the model root the command names (a saved volume cache)."""
+    from astrid.core.generation import engine_recipe, engine_runner
+
+    models_root = command.split("--models-root ", 1)[1].split()[0] if "--models-root " in command else None
+    recipe = engine_recipe.load_recipe(installation.engine, installation.platform)
+    return engine_runner.plan_install(recipe, root=installation.root, placement="local", models_root=models_root)
+
+
 @pytest.fixture
 def retained(small_lease, sources, tmp_path, monkeypatch, request):
     """Real adapter→A3→lifecycle→HTTPS→canonical runner, fake paid/OS edges."""
@@ -64,6 +73,11 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     c.module = module
     c.dc, c.quote_rate, c.stock, c.actual_rate = "DC-accepted", 1.0, "available", 1.0
     c.actual_gpu_id = "gpu-provider-exact"
+    c.accepted_gpu_id = "gpu-provider-exact"
+    # Confirmation returns the provider catalog display name, not its GPU ID.
+    from astrid.packs.runpod import worker_preparation
+    monkeypatch.setattr(worker_preparation, "confirm_acquired_machine",
+                        lambda api_key, contract, *, timeout_seconds: (c.prefs.gpu_types[0], contract.datacenter_id))
     c.create_kwargs, c.quotes, c.git_reads = [], [], []
     c.lost_start, c.cancel_unknown, c.dirty_sources = False, False, False
     # Opt-in: the fake pod's install honours the command's own --deadline
@@ -78,7 +92,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
 
     async def availability(**kw):
         c.quotes.append(kw)
-        return SimpleNamespace(gpu_type_id="gpu-provider-exact", datacenters=[SimpleNamespace(
+        return SimpleNamespace(gpu_type_id=c.accepted_gpu_id, datacenters=[SimpleNamespace(
             status=c.stock, price_per_hour=c.quote_rate, datacenter_id=c.dc)])
 
     monkeypatch.setattr(api, "get_network_volumes", volumes)
@@ -98,7 +112,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         assert journal["state"] == "allocation_pending" and journal["lease"]["state"] == "preparing"
         assert journal["network_volume_id"] == kw["network_volume_id"] == c.prefs.volume_id
         assert journal["network_volume_datacenter_id"] == kw["data_center_id"] == "DC-accepted"
-        assert journal["accepted_gpu_type_id"] == kw["gpu_type_id"] == "gpu-provider-exact"
+        assert journal["accepted_gpu_type_id"] == kw["gpu_type_id"] == c.accepted_gpu_id
         assert https.read_token_file(journal["https_token_file"]) == kw["https_token"]
         assert kw["https_token"] not in c.owner.path.read_text()
         c.create_kwargs.append(kw)
@@ -138,8 +152,20 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     context.deadline = time.monotonic() + 60
     monkeypatch.setattr(engine_platforms, "platform_adapter", lambda key: context.adapter)
 
+    c.mount_id = 7
+
     class RetainedPod(FakePod):
         def exec(self, command, timeout=600):
+            if command.startswith("python3 -c ") and "ASTRID_STORAGE_DIAGNOSTIC" in command:
+                # The shipped storage probe: answer with the receipt it prints.
+                self.exec_log.append("storage-probe")
+                import base64, shlex
+                request = json.loads(base64.b64decode(shlex.split(command)[-1]))
+                mapping = request.pop("provider_mapping")
+                assert mapping["volume_mounts"][0]["volume_id"] == request["volume_id"]
+                return 0, json.dumps({**request, "cache_device": 64768, "cache_mount_id": c.mount_id,
+                                      "free_bytes": 10**12, "total_bytes": 2 * 10**12,
+                                      "local_free_bytes": 10**12}), ""
             if "engines status" in command:
                 self.exec_log.append(command)
                 if not self.installed:
@@ -152,17 +178,23 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             return super().exec(command, timeout)
 
         def job_start(self, command, *, job_id):
-            preparation = c.read()["lease"]["preparation"]
-            assert preparation["job"] == {"id": job_id, "state": "starting"}
+            lease = c.read()["lease"]
+            # Preparation jobs and the machine's generation job are each checkpointed before start.
+            # The release-time reset is checkpointed on the lease; the claim-time one on the preparation.
+            custody = (lease["job"] if " generate " in command or ("pod_reset" in command and "--run-dir" in command)
+                       else lease["preparation"]["job"])
+            assert custody == {"id": job_id, "state": "starting"}
             old = super().job_start(command)
             self.jobs[job_id] = self.jobs.pop(old["id"])
             directory = "/workspace/.astrid-jobs/" + job_id
             for name in ("stdout", "stderr"):
                 self.files[directory + "/" + name] = self.files.pop(old["dir"] + "/" + name)
+            if self.active_job and self.active_job.get("job_dir") == old["dir"]:
+                self.active_job["job_dir"] = directory  # the agent folder under its checkpointed id
             if "engines install" in command and not self.jobs[job_id] and c.install_uses_command_deadline:
                 seconds = float(command.split("--deadline ", 1)[1].split()[0])
                 try:
-                    receipt = engine_runner.install_engine(plan, context=context, adapter=context.adapter,
+                    receipt = engine_runner.install_engine(_pod_plan(installation, command), context=context, adapter=context.adapter,
                                                            deadline=c.monotonic() + seconds)
                 except Exception as exc:  # the pod-side process exits non-zero
                     self.jobs[job_id] = 1
@@ -170,7 +202,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
                 else:
                     self.files[installation.root + "/.astrid-engine/install.json"] = engine_runner._json(receipt).encode()
             elif "engines install" in command and not self.jobs[job_id]:
-                receipt = engine_runner.install_engine(plan, context=context, adapter=context.adapter,
+                receipt = engine_runner.install_engine(_pod_plan(installation, command), context=context, adapter=context.adapter,
                                                        deadline=context.deadline)
                 self.files[installation.root + "/.astrid-engine/install.json"] = engine_runner._json(receipt).encode()
             if c.lost_start:
@@ -182,10 +214,13 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             return {"id": job_id, "state": "missing" if c.cancel_unknown else "cancelled"}
 
     pod = RetainedPod({}, provider.marker)
+    c.transport_deadlines = []
     class Transport:
-        def __init__(self, pod_id, token):
+        def __init__(self, pod_id, token, *, deadline=None):
             assert pod_id == "pod-1"
             assert token == https.read_token_file(c.read()["https_token_file"])
+            self.deadline = deadline
+            c.transport_deadlines.append(deadline)
         def execute_command(self, *a): return pod.exec(*a)
         def put(self, *a): return pod.put(*a)
         def get(self, *a): return pod.get(*a)
@@ -194,38 +229,30 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         def detached_cancel(self, *a): return pod.job_cancel(*a)
         def disconnect(self): pass
     monkeypatch.setattr(https, "HttpsPodTransport", Transport)
+    # The in-memory pod lives in this process. Real HTTPS deadline behavior is
+    # covered separately through a spawned observer and localhost transport.
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+    c.real_bounded_call = _HttpsOps._bounded_call
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", _HttpsOps._call_direct)
     c.host = c.fresh()
     c.installation, c.placement, c.pod, c.provider, c.context = installation, placement, pod, provider, context
     c.adapter = module.build_adapter(lease_owner=c.host, placement=placement, installation=installation,
                                     validate=lambda r: None)
+
+    def observe_mounts(pod_id, nonce):
+        # Shape of runpod_lifecycle.discovery.observe_pod_mounts (f2948817).
+        c.mount_observations = getattr(c, "mount_observations", 0) + 1
+        return {"schema": "runpod.provider-mounts.v1", "pod_id": pod_id, "nonce": nonce,
+                "volume_mounts": [{"volume_id": c.prefs.volume_id, "volume_type": "NETWORK_VOLUME",
+                                   "mount_path": c.prefs.mount_path, "read_only": False}],
+                "legacy_evidence": {"present": False, "valid": True, "conflict": False}}
+    c.adapter.observe_mounts = observe_mounts
     source, workflow = tmp_path / "entry.json", tmp_path / "compiled.py"
     source.write_text("{}")
     workflow.write_text("# CPU fake compiled workflow")
     c.request = RunPodPreparationRequest({"engine": "comfyui", "kind": "workflow"}, source, workflow,
                                         {}, c.grant.consent, c.grant.max_usd, c.grant.deadline)
     return c
-
-
-def test_inventory_is_the_parsed_receipt_rows_not_the_lock(retained):
-    """Cold and warm prepares carry the receipt's own model rows in memory, split under root/models."""
-    from astrid.core.generation import engine_runner
-    from astrid.core.generation.target_inventory import rows_from_receipt
-
-    c = retained
-    first = c.adapter.prepare(c.request, c.grant)
-    root = c.installation.root
-    receipt = engine_runner._parse_receipt(json.loads(c.pod.files[root + "/.astrid-engine/install.json"]),
-                                           c.installation.plan())
-    expected = rows_from_receipt(receipt.models, root)
-    assert first.models == expected and len(expected) == len(receipt.models) > 0
-    for row, model in zip(expected, receipt.models):
-        assert model.path == f"{root}/models/" + (row["subdir"] + "/" if row["subdir"] else "") + row["name"]
-        assert (row["size"], row["sha256"]) == (model.bytes, model.sha256.removeprefix("sha256:"))
-    assert "models" not in first.installed  # the strictly validated snapshot never carries rows
-    c.host.settle(first.lease)
-    second = c.adapter.prepare(c.request, replace(c.grant, invocation_id="invocation-2"))
-    assert second.models == expected  # reuse rebuilds the rows from the receipt again
-    c.host.settle(second.lease)
 
 
 @pytest.mark.parametrize("retained", [True, False, (True, False), (False, False)], indirect=True)
@@ -257,195 +284,23 @@ def test_path_loaded_adapter_cold_and_warm_use_exact_placement_canonical_install
     assert c.read()["cleanup"]["absence"]["exact_get_status"] == 404
 
 
-def test_retained_endpoint_records_custody_before_proxy_and_binds_once(retained, monkeypatch):
-    import hashlib
-    from runpod_lifecycle import engine_bridge, https
-    from astrid.core.generation.backends.comfy_target import ComfyTargetClient, HTTP_TRANSFER_SECONDS, MAX_JSON_BYTES
-
-    c = retained
-    events = []
-    monkeypatch.setattr(https.HttpsPodTransport, "enable_engine_proxy",
-                        lambda self, endpoint, port: events.append(("enable", endpoint, port)),
-                        raising=False)
-
-    class Bridge:
-        def __init__(self, transport, config):
-            assert c.read()["lease"]["endpoint_binding"]["state"] == "binding"
-            self.transport, self.url = transport, "http://127.0.0.1:12345"
-            events.append(("bridge", config))
-
-        def close(self):
-            events.append(("close",))
-            self.transport.disconnect()
-
-    def probe(self, path, *, timeout, response_limit):
-        assert c.read()["lease"]["endpoint_binding"]["state"] == "bound"
-        assert c.read()["lease"]["endpoint_binding"]["loopback_url"] == self.http_origin
-        assert timeout == HTTP_TRANSFER_SECONDS and response_limit == MAX_JSON_BYTES
-        events.append(("probe", path))
-        return c.context.health_objects
-
-    monkeypatch.setattr(engine_bridge, "EngineBridge", Bridge)
-    monkeypatch.setattr(ComfyTargetClient, "request_json", probe)
-    kept = []
-    prepared, evidence = c.adapter.bind_endpoint(
-        c.request, c.grant, begin_lease=lambda lease: None,
-        retain_bridge=lambda lease, bridge: kept.append((lease, bridge)),
-        retire_bridge=lambda lease, **kwargs: None)
-    assert len(kept) == 1 and kept[0][0] == prepared.lease
-    assert [event[0] for event in events] == ["enable", "bridge", "probe"]
-    assert evidence == c.read()["lease"]["endpoint_binding"]
-    assert evidence["state"] == "ready" and evidence["pod_id"] == "pod-1"
-    assert evidence["object_info_encoding"] == "json-utf8-sorted-v1"
-    canonical = json.dumps(c.context.health_objects, sort_keys=True, separators=(",", ":"),
-                           ensure_ascii=False, allow_nan=False).encode("utf-8")
-    assert evidence["object_info_sha256"] == "sha256:" + hashlib.sha256(canonical).hexdigest()
-    assert evidence["invocation_id"] == prepared.lease.invocation_id
-    assert evidence["installed_receipt_sha256"] == prepared.installed["receipt_sha256"]
-    kept[0][1].close()
-    c.host.release()
-    assert c.read()["state"] == "cleanup_complete"
-
-
-def test_retained_endpoint_failure_closes_bridge_and_releases_same_lease(retained, monkeypatch):
-    from runpod_lifecycle import engine_bridge, https
-    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
-
-    c = retained
-    closed = []
-    monkeypatch.setattr(https.HttpsPodTransport, "enable_engine_proxy", lambda *args: None,
-                        raising=False)
-
-    class Bridge:
-        url = "http://127.0.0.1:12345"
-
-        def __init__(self, transport, config):
-            self.transport = transport
-
-        def close(self):
-            closed.append(True)
-            self.transport.disconnect()
-
-    monkeypatch.setattr(engine_bridge, "EngineBridge", Bridge)
-    monkeypatch.setattr(ComfyTargetClient, "request_json", lambda self, path, **kwargs: {})
-    with pytest.raises(ValueError, match="canonical readiness"):
-        c.adapter.bind_endpoint(c.request, c.grant, begin_lease=lambda lease: None,
-                                retain_bridge=lambda lease, bridge: None,
-                                retire_bridge=lambda lease, **kwargs: None)
-    assert closed == [True] and c.deletes == ["pod-1"]
-    assert c.read()["state"] == "cleanup_complete"
-
-
 def test_retained_installation_accepts_only_the_existing_h3_recipe_and_root():
     from astrid.core.generation import engine_recipe, engine_runner
     from astrid.packs.runpod.remote_placement import RunPodInstallation
     from astrid.packs.runpod.target_selection import RunPodLeaseCompatibility
 
-    recipe = engine_recipe.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
-    root = "/root/astrid/engines/vibecomfy-h3"
+    recipe = engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130")
+    root = "/root/astrid/engines/comfyui"
     expected = engine_runner.plan_install(recipe, root=root, placement="local")
     vibe = next(source for source in recipe.sources if source.name == "vibecomfy")
     compatibility = RunPodLeaseCompatibility(
         "sha256:" + expected.recipe_sha256, "sha256:" + expected.models_lock_sha256,
         _selected_runtime_commit(), vibe.pin.revision,
     ).as_mapping()
-    installation = RunPodInstallation(compatibility, engine="vibecomfy-h3", root=root)
+    installation = RunPodInstallation(compatibility, engine="comfyui", root=root)
     assert installation.plan() == expected
     with pytest.raises(Exception, match="unsupported retained installation"):
-        replace(installation, root="/root/astrid/engines/comfyui").plan()
-
-
-@pytest.mark.parametrize("release_race", [False, True])
-def test_real_pack_host_binding_composes_retained_owner_adapter_and_release(retained, tmp_path, monkeypatch, release_race):
-    from astrid.core.execution.target_provider import resolve_target_provider
-    from astrid.core.generation.backends.comfy_target import ComfyTargetClient, HTTP_TRANSFER_SECONDS, MAX_JSON_BYTES
-    from astrid.packs.runpod import target_selection
-    from runpod_lifecycle import engine_bridge, https
-    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
-    from vibecomfy.workflow_bundle import emit_bundle
-
-    c = retained
-    c.host.close()
-    c.clock.now = datetime.now(timezone.utc).timestamp()
-    monkeypatch.setattr(target_selection, "resolve_runtime_data_root", lambda: tmp_path / "machine")
-    monkeypatch.setattr(https.HttpsPodTransport, "enable_engine_proxy", lambda *args: None, raising=False)
-    events = []
-
-    class Bridge:
-        url = "http://127.0.0.1:12345"
-
-        def __init__(self, transport, config):
-            self.transport = transport
-            events.append("bridge")
-
-        def close(self):
-            events.append("close")
-            self.transport.disconnect()
-
-    monkeypatch.setattr(engine_bridge, "EngineBridge", Bridge)
-    def probe(self, path, *, timeout, response_limit):
-        assert c.read()["lease"]["endpoint_binding"]["state"] == "bound"
-        assert self.http_origin == Bridge.url and path == "/object_info"
-        assert timeout == HTTP_TRANSFER_SECONDS and response_limit == MAX_JSON_BYTES
-        events.append("probe")
-        return c.context.health_objects
-    monkeypatch.setattr(ComfyTargetClient, "request_json", probe)
-    roots = (Path(__file__).resolve().parents[3] / "astrid" / "packs",)
-    bindings = resolve_target_provider("runpod", roots).TargetProviderBindings(pack_roots=roots, holds=c.host.holds,
-        credentials=lambda name: "fake-only", environ={})
-    monkeypatch.setattr("astrid.packs.runpod.managed_sources.ensure_managed_sources", lambda: c.placement.source_root)
-    selection = {"kind": "runpod", "engine": "comfyui", "preferences": c.prefs.as_mapping()}
-    provider = bindings.get(**selection)
-    c.owner = provider.lease_owner.selection
-    provider.lease_owner.clock, provider.lease_owner.timer = c.clock, c.clock.timer
-    c.owner.clock = lambda: datetime.fromtimestamp(c.clock(), timezone.utc)
-    c.owners.append(provider.lease_owner)
-    quote = provider.quote()
-    deadline = (datetime.fromtimestamp(c.clock(), timezone.utc) + timedelta(hours=2)).isoformat()
-    policy = {**selection, "offer_digest": quote["offer_digest"], "consent": ["paid"],
-              "max_usd": 1.0, "deadline": deadline, "preparation_seconds": 60,
-              "execution_seconds": 60, "idle_seconds": 1800}
-
-    root = tmp_path / "canonical"
-    root.mkdir()
-    source = root / "source.json"
-    source.write_text(json.dumps({"nodes": [{"id": 1, "type": "SaveImage", "inputs": [],
-                                              "widgets_values": ["proof"]}], "links": []}))
-    workflow = VibeWorkflow("retained-proof", WorkflowSource("retained-proof"))
-    workflow.add_node("SaveImage", _id="1", uid="sink", filename_prefix="proof")
-    workflow.register_input("filename_prefix", "1", "filename_prefix", "proof", type="STRING")
-    emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
-    inputs = {"python": str(root / "workflow.py"), "companion": str(root / "workflow.vibe.json"),
-              "source": str(source), "workflow_inputs": "{}"}
-    import threading
-    cancelled = threading.Event()
-    owner, invocation, evidence = bindings.bind(policy, inputs, invocation_id="task:attempt:1",
-                                                scratch=tmp_path, cancel=cancelled)
-    assert owner is provider and events == ["bridge", "probe"] and c.creates == 1
-    assert c.read()["lease"]["endpoint_binding"] == evidence
-    foreign = {**selection, "preferences": {**selection["preferences"], "provider_account_ref": "foreign"}}
-    with pytest.raises(ValueError, match="preferences differ"):
-        bindings.operate(foreign, "release")
-    assert c.deletes == []
-    if release_race:
-        results, errors = [], []
-        def release():
-            try:
-                results.append(bindings.operate(selection, "release"))
-            except BaseException as exc:
-                errors.append(exc)
-        thread = threading.Thread(target=release)
-        thread.start()
-        assert cancelled.wait(timeout=10)
-        bindings.finish(owner, invocation, success=False)
-        thread.join(timeout=10)
-        assert not thread.is_alive() and not errors and results[0]["state"] == "cleanup_complete"
-    else:
-        bindings.finish(owner, invocation, success=True)
-        assert bindings.operate(selection, "status")["lease"]["state"] == "idle"
-        assert bindings.operate(selection, "release")["state"] == "cleanup_complete"
-    assert events == ["bridge", "probe", "close"] and c.deletes == ["pod-1"]
-    bindings.close()
+        replace(installation, root="/root/astrid/engines/other").plan()
 
 
 @pytest.mark.parametrize("change", ["denied", "cap", "rate", "datacenter", "stock", "engine", "tuple", "dirty", "validate"])
@@ -504,70 +359,27 @@ def test_retained_install_failure_stays_with_a3_and_does_not_replay(retained):
     assert c.creates == 1 and c.deletes == ["pod-1"]
 
 
-def test_retained_slow_model_download_stops_at_preparation_seconds_and_releases(retained, monkeypatch, tmp_path):
-    """--preparation-seconds bounds the whole preparation, including the model download."""
-    import time as real_time
-    from astrid.core.generation import engine_runner, model_downloader
-    from tests.core.generation import test_engine_runner as canonical
-
+def test_retained_install_is_model_free_and_settles_through_a3(retained):
+    """Plan 32 T5h: preparation installs the engine only. No model transfer starts during it,
+    so a slow model download cannot consume the preparation deadline, and A3 still settles
+    and cleans up the lease."""
     c = retained
-    assert c.grant.preparation_seconds == 60
-    # The paid claim lifetime (USD cap at the quoted rate) alone would not bound preparation.
-    assert c.grant.max_usd / c.actual_rate * 3600 > 10 * c.grant.preparation_seconds
+    downloads = []
 
-    class FakeTime:  # one fake clock for controller, pod-side runner and downloader
-        def __getattr__(self, name):
-            return getattr(real_time, name)
-        monotonic = staticmethod(c.clock)
-        sleep = staticmethod(lambda seconds: None)
-    for module in (engine_runner, model_downloader, canonical):
-        monkeypatch.setattr(module, "time", FakeTime())
-    c.placement._clock = c.clock
-    c.monotonic = c.clock
-    c.install_uses_command_deadline = True
-    c.context.deadline = c.clock() + 10 ** 7
-    started = c.clock()
-    transferred = []
+    def reject_download(model, **kwargs):
+        downloads.append(model)
+        raise AssertionError("model download reached during the model-free install")
 
-    class SlowRange:  # a stalled transfer: 1 KiB per 5 fake seconds, never complete
-        status = 206
-
-        def __init__(self, request):
-            offset, end = request.headers["Range"].removeprefix("bytes=").split("-")
-            self.headers = {"Content-Range": f"bytes {offset}-{end}/{self.total}"}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self, size):
-            c.clock.now += 5
-            transferred.append(1024)
-            return b"\0" * min(1024, size)
-
-    def download(model, *, models_root, deadline):
-        SlowRange.total = model.bytes
-        return model_downloader.download_model(
-            model, models_root=str(tmp_path / "models"), deadline=deadline,
-            opener=lambda request, timeout: SlowRange(request))
-    c.context.download_model = download
-
-    with pytest.raises(Exception, match=r"preparation deadline of 60s exceeded during engine install"):
-        c.adapter.bind_endpoint(c.request, c.grant, begin_lease=lambda lease: None,
-                                retain_bridge=lambda lease, bridge: None,
-                                retire_bridge=lambda lease, **kwargs: None)
-    assert transferred, "the fake download never started"
-    assert c.clock() - started <= c.grant.preparation_seconds + 5
+    c.context.download_model = reject_download
+    prepared = c.adapter.prepare(c.request, c.grant)
+    assert downloads == []
     install = next(line for line in c.pod.job_log if "engines install" in line)
-    assert float(install.split("--deadline ", 1)[1].split()[0]) <= c.grant.preparation_seconds
-    record = c.read()
-    job = record["lease"]["preparation"]["job"]
-    assert record["lease"]["preparation"]["state"] == "unresolved"
-    assert c.pod.cancelled == [job["id"]] and job["state"] == "cancelled"
-    assert c.creates == 1 and c.deletes == ["pod-1"]
-    assert record["state"] == "cleanup_complete"
+    assert "--model-cache" not in install
+    assert c.read()["lease"]["preparation"]["state"] == "prepared"
+    c.host.settle(prepared.lease)
+    c.clock.advance(1800)
+    assert c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
 
 
 def test_retained_snapshot_bytes_changed_refuses_warm_reinstall(retained):
@@ -594,13 +406,16 @@ def test_retained_actual_gpu_id_mismatch_never_starts_preparation(retained, monk
     c = retained
     c.actual_gpu_id = "wrong-provider-gpu"
 
+    confirmations = []
     def provider_confirmation(api_key, contract, *, timeout_seconds):
-        if contract.gpu_type == "gpu-provider-exact":
+        confirmations.append(contract)
+        if len(confirmations) > 1:
             raise TargetObservationError(f"GPU mismatch: provider reports {c.actual_gpu_id!r}")
-        return contract.gpu_type, contract.datacenter_id
+        return c.prefs.gpu_types[0], contract.datacenter_id
     monkeypatch.setattr(worker_preparation, "confirm_acquired_machine", provider_confirmation)
     with pytest.raises(Exception, match="requires cleanup"):
         c.adapter.prepare(c.request, c.grant)
+    assert len(confirmations) == 2
     assert c.creates == 1 and not c.pod.job_log
     assert c.read()["state"] == "cleanup_pending"
     c.host.release()
@@ -830,19 +645,3 @@ def test_host_adapter_composition_quotes_approved_cuda_version(monkeypatch, tmp_
     finally:
         adapter.lease_owner.close()
 
-
-def test_host_refuses_bind_whose_receipt_differs_from_the_prepared_install():
-    from astrid.core.execution.generic_host import HostError, _target_inventory_document
-    from astrid.core.generation.target_inventory import parse_document
-
-    row = {"name": "a.bin", "subdir": "x", "size": 3, "sha256": "a" * 64}
-    installed = {"receipt_sha256": "sha256:" + "1" * 64}
-    evidence = {"installed_receipt_sha256": "sha256:" + "1" * 64, "loopback_url": "http://127.0.0.1:9"}
-    document = _target_inventory_document({"installed": installed, "models": (row,)}, evidence)
-    assert parse_document(document, evidence["loopback_url"]) == ("inventory", (row,))
-    for invocation, binding in (
-            ({"installed": installed, "models": (row,)}, {**evidence, "installed_receipt_sha256": "sha256:" + "2" * 64}),
-            ({"installed": {"receipt_sha256": "sha256:" + "2" * 64}, "models": (row,)}, evidence),
-            ({"models": (row,)}, evidence)):
-        with pytest.raises(HostError, match="receipt differs from the prepared installation"):
-            _target_inventory_document(invocation, binding)

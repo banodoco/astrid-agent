@@ -18,9 +18,9 @@ def _model_ref(tmp_path, value):
 
 
 def test_index_roundtrips_windows_and_linux_recipes_with_immutable_values():
-    windows = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    windows = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
     wan_windows = recipes.load_recipe("wan2gp", "windows-x86_64-cu128")
-    linux = recipes.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    linux = recipes.load_recipe("comfyui", "linux-x86_64-cu130")
     assert recipes.serialize_recipe(windows) == recipes.serialize_recipe(recipes.load_recipe(windows.engine, windows.platform))
     assert recipes.serialize_recipe(wan_windows) == recipes.serialize_recipe(recipes.load_recipe(wan_windows.engine, wan_windows.platform))
     assert recipes.serialize_recipe(linux) == recipes.serialize_recipe(recipes.load_recipe(linux.engine, linux.platform))
@@ -52,62 +52,48 @@ def test_index_roundtrips_windows_and_linux_recipes_with_immutable_values():
         windows.sources[0].pin.revision = "0" * 40
 
 
-def test_unknown_fields_are_rejected_in_recipe_index(monkeypatch, tmp_path):
-    index = tmp_path / "engine-index.json"
-    index.write_text(json.dumps({"schema": "astrid.engine-index.v1", "entries": [], "surprise": True}))
-    monkeypatch.setattr(recipes, "_INDEX_PATH", index)
+def test_unknown_fields_are_rejected_in_a_declared_recipe_row(monkeypatch, tmp_path):
+    declaration = tmp_path / "packs/x/extensions/generation.engine/x.yaml"
+    declaration.parent.mkdir(parents=True)
+    declaration.write_text("recipes:\n  - platform: linux-x86_64-cu130\n    path: packs/x/r.json\n    sha256: abc\n    surprise: 1\n")
+    monkeypatch.setattr(recipes, "_ROOT", tmp_path)
     with pytest.raises(RecipeValidationError, match="unknown surprise"):
         recipes.load_recipe_index()
 
 
-def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
+def test_the_linux_base_engine_is_one_package_owned_row_with_the_merged_locks():
     platform = "linux-x86_64-cu130"
     index = recipes.load_recipe_index()
     entries = {(entry.engine, entry.platform): entry for entry in index.entries}
-    comfy_entry = entries[("comfyui", platform)]
-    h3_entry = entries[("vibecomfy-h3", platform)]
-    assert comfy_entry.recipe.path == "packs/comfyui/recipe.linux-cu130.json"
-    assert comfy_entry.recipe.sha256 == hashlib.sha256(
-        (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
-    ).hexdigest()
-    assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == hashlib.sha256(
-        (recipes._ROOT / h3_entry.recipe.path).read_bytes()
-    ).hexdigest()
+    assert [key for key in entries if key[1] == platform] == [("comfyui", platform)]
+    entry = entries[("comfyui", platform)]
+    assert entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
+    assert entry.recipe.sha256 == hashlib.sha256((recipes._ROOT / entry.recipe.path).read_bytes()).hexdigest()
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
     requirements = recipe.environments[0].requirements.packaged_lock
-    assert requirements.path == "packs/comfyui/requirements.linux-cu130.lock"
-    assert requirements.sha256 == "75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7"
+    assert requirements.path == "packs/runpod/requirements.linux-cu130.lock"
     assert hashlib.sha256((recipes._ROOT / requirements.path).read_bytes()).hexdigest() == requirements.sha256
     lock_text = (recipes._ROOT / requirements.path).read_text(encoding="utf-8")
-    for pin in (
+    for pin in (  # ComfyUI at VibeComfy's pin brings its own requirements
         "comfyui-frontend-package==1.57.4", "comfyui-workflow-templates==0.11.100",
         "comfyui-embedded-docs==0.5.15", "comfy-aimdo==0.6.0", "comfy-kitchen==0.2.40",
         "opencv-python-headless==5.0.0.93",
     ):
         assert any(line.startswith(pin + " ") for line in lock_text.splitlines())
-    h3_requirements = recipes.load_recipe("vibecomfy-h3", platform).environments[0].requirements.packaged_lock
-    assert h3_requirements.path == "packs/runpod/requirements.linux-cu130.lock"
-    assert h3_requirements.sha256 == "b501e04a13951eb00f03412e9ab5288ab8e8eaca1caf61251268a976a36a1f99"
-    assert hashlib.sha256((recipes._ROOT / h3_requirements.path).read_bytes()).hexdigest() == h3_requirements.sha256
-    assert recipe.models_lock.path == "packs/comfyui/models.lock.json"
-    assert recipe.models_lock.sha256 == hashlib.sha256(
-        (recipes._ROOT / recipe.models_lock.path).read_bytes()
-    ).hexdigest()
+    assert recipe.models_lock.path == "packs/runpod/models.lock.json"
     assert recipe.sources[0].name == "comfyui"
-    assert recipe.start.argv[-1] == "{models_config}"
-    assert [model.destination for model in lock.models] == [
-        "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
-        "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
-        "vae/qwen_image_2.1_vae_bf16.safetensors",
-    ]
+    assert "{models_config}" in recipe.start.argv
+    destinations = {model.destination for model in lock.models}
+    assert {"diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+            "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+            "vae/qwen_image_2.1_vae_bf16.safetensors"} <= destinations
 
 
 def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
     plain = recipes.load_recipe("comfyui", "linux-x86_64-cu130")
-    packaged = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    packaged = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
     pins = recipes.load_pin_set(plain.pins)
     assert plain.pins == packaged.pins
     for recipe in (plain, packaged):
@@ -116,24 +102,24 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
         assert bindings[0].relative_path == "runtime/vibecomfy"
         assert bindings[0].pin == pins["vibecomfy"]
         assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
-        assert bindings[0].pin.revision == "e65f4941d09b1cb4d1dd5aae6171c73e648706f4"
+        assert bindings[0].pin.revision == "8d065a8fef3dd602d5462e27d8eca088cf4e8262"
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
-            "423cbd20511becb1f16122ab518e92e58bfa03d9")
+            "ee71d5c4993f29086b27fde1629a945ae48425bf")
     declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
                        for path in (recipes._ROOT / "packs").rglob("*.json"))
-    assert declarations == 3
+    assert declarations == 2  # the Windows and Linux recipes' shared pin manifests
 
 
 def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
-    recipe = recipes.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    recipe = recipes.load_recipe("comfyui", "linux-x86_64-cu130")
     pins = recipes.load_pin_set(recipe.pins)
     bindings = [source for source in recipe.sources if source.name == "vibecomfy"]
     assert len(bindings) == 1
     assert bindings[0].relative_path == "runtime/vibecomfy"
-    assert bindings[0].pin == pins["vibecomfy-h3"]
+    assert bindings[0].pin == pins["vibecomfy"]
     expected_sources = {
         "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "ee71d5c4993f29086b27fde1629a945ae48425bf"),
-        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "e65f4941d09b1cb4d1dd5aae6171c73e648706f4"),
+        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "8d065a8fef3dd602d5462e27d8eca088cf4e8262"),
         "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
         "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
         "comfyui-hunyuanvideo-foley": ("https://github.com/BobRandomNumber/ComfyUI-HunyuanVideo_Foley.git", "b94f7aca877ff2be5bc264b057abee3dac682c1b"),
@@ -183,8 +169,8 @@ def test_local_recipe_lookup_does_not_clone_or_call_network(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: pytest.fail("lookup spawned a process"))
     monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: pytest.fail("lookup accessed the network"))
-    recipe = recipes.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
-    assert recipe.engine == "vibecomfy-h3"
+    recipe = recipes.load_recipe("comfyui", "linux-x86_64-cu130")
+    assert recipe.engine == "comfyui"
 
 
 def test_engine_errors_expose_the_stable_public_fields():
@@ -201,31 +187,29 @@ def _recipe_workspace(tmp_path, monkeypatch, mutate):
     source_root = recipes._ROOT
     packs = tmp_path / "packs"
     shutil.copytree(source_root / "packs", packs)
-    index_path = packs / "engine-index.json"
-    index = json.loads(index_path.read_text(encoding="utf-8"))
-    entry = next(item for item in index["entries"] if item["engine"] == "vibecomfy")
-    recipe_path = packs / entry["recipe"]["path"].removeprefix("packs/")
+    declaration = packs / "vibecomfy/extensions/generation.engine/comfyui.yaml"
+    row = next(item for item in recipes._index_rows() if item["engine"] == "comfyui" and item["platform"] == "windows-x86_64-cu130")
+    recipe_path = packs / row["recipe"]["path"].removeprefix("packs/")
     recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
     mutate(recipe)
     recipe_bytes = json.dumps(recipe, separators=(",", ":"), ensure_ascii=False).encode()
     recipe_path.write_bytes(recipe_bytes)
-    entry["recipe"]["sha256"] = hashlib.sha256(recipe_bytes).hexdigest()
-    index_path.write_text(json.dumps(index), encoding="utf-8")
+    declaration.write_text(declaration.read_text(encoding="utf-8").replace(
+        row["recipe"]["sha256"], hashlib.sha256(recipe_bytes).hexdigest()), encoding="utf-8")
     monkeypatch.setattr(recipes, "_ROOT", tmp_path)
-    monkeypatch.setattr(recipes, "_INDEX_PATH", index_path)
 
 
 @pytest.mark.parametrize("schema", ["astrid.engine-recipe.v2", "wrong"])
 def test_invalid_recipe_schema_is_rejected(monkeypatch, tmp_path, schema):
     _recipe_workspace(tmp_path, monkeypatch, lambda recipe: recipe.update(schema=schema))
     with pytest.raises(RecipeValidationError, match="unknown recipe schema"):
-        recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+        recipes.load_recipe("comfyui", "windows-x86_64-cu130")
 
 
 def test_unknown_recipe_field_is_rejected(monkeypatch, tmp_path):
     _recipe_workspace(tmp_path, monkeypatch, lambda recipe: recipe.update(unreviewed=True))
     with pytest.raises(RecipeValidationError, match="unknown unreviewed"):
-        recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+        recipes.load_recipe("comfyui", "windows-x86_64-cu130")
 
 
 @pytest.mark.parametrize("path", ["//outside.invalid/system_stats", "https://outside.invalid/system_stats",
@@ -234,7 +218,7 @@ def test_unknown_recipe_field_is_rejected(monkeypatch, tmp_path):
 def test_health_paths_reject_cross_origin_and_non_path_references(monkeypatch, tmp_path, path):
     _recipe_workspace(tmp_path, monkeypatch, lambda recipe: recipe["health"].update(path=path))
     with pytest.raises(RecipeValidationError, match="same-origin absolute URL path"):
-        recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+        recipes.load_recipe("comfyui", "windows-x86_64-cu130")
 
 
 @pytest.mark.parametrize("field,value", [
@@ -246,11 +230,11 @@ def test_health_paths_reject_cross_origin_and_non_path_references(monkeypatch, t
 def test_health_durations_must_be_finite_positive_numbers(monkeypatch, tmp_path, field, value):
     _recipe_workspace(tmp_path, monkeypatch, lambda recipe: recipe["health"].update({field: value}))
     with pytest.raises(RecipeValidationError, match="health timeouts"):
-        recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+        recipes.load_recipe("comfyui", "windows-x86_64-cu130")
 
 
 def test_pin_set_mapping_is_immutable(monkeypatch):
-    recipe = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
     pins = recipes.load_pin_set(recipe.pins)
     with pytest.raises(TypeError):
         pins["other"] = recipe.sources[0].pin
@@ -261,7 +245,7 @@ def test_duplicate_source_paths_are_rejected(monkeypatch, tmp_path):
         recipe["source_bindings"][1]["relative_path"] = recipe["source_bindings"][0]["relative_path"]
     _recipe_workspace(tmp_path, monkeypatch, duplicate)
     with pytest.raises(RecipeValidationError, match="duplicate source path"):
-        recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+        recipes.load_recipe("comfyui", "windows-x86_64-cu130")
 
 
 def test_malformed_recipe_placeholders_are_rejected(monkeypatch, tmp_path):
@@ -269,7 +253,7 @@ def test_malformed_recipe_placeholders_are_rejected(monkeypatch, tmp_path):
         recipe["start"]["argv"][0] = "{python"
     _recipe_workspace(tmp_path, monkeypatch, malformed)
     with pytest.raises(RecipeValidationError, match="malformed recipe placeholder"):
-        recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+        recipes.load_recipe("comfyui", "windows-x86_64-cu130")
 
 
 def test_duplicate_requirements_source_paths_are_rejected(monkeypatch, tmp_path):
@@ -278,7 +262,7 @@ def test_duplicate_requirements_source_paths_are_rejected(monkeypatch, tmp_path)
         inputs.append(dict(inputs[0]))
     _recipe_workspace(tmp_path, monkeypatch, duplicate)
     with pytest.raises(RecipeValidationError, match="duplicate requirements source path"):
-        recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+        recipes.load_recipe("comfyui", "windows-x86_64-cu130")
 
 
 def test_packaged_pin_refresh_composes_all_indexed_engines():
@@ -288,7 +272,7 @@ def test_packaged_pin_refresh_composes_all_indexed_engines():
     environment = json.loads(
         (recipes._ROOT / "packs/vibecomfy/environment.windows-nvidia.json").read_text()
     )
-    windows = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    windows = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
     assert recipes.load_pin_set(DataRef(**environment["pins"]))["vibecomfy"] == (
         recipes.load_pin_set(windows.pins)["vibecomfy"]
     )

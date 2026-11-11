@@ -1,72 +1,23 @@
-"""The host-owned model inventory document handed to one local_server child.
+"""Declared model rows for ``--align trust`` on an attached ComfyUI.
 
-The host builds one JSON value, ``{"mode", "comfy_url", "models"}``, after it has
-checked the bound install, and sets it in ``ASTRID_TARGET_MODEL_ASSETS``. The
-child refuses it unless its ``comfy_url`` is its own. ``models`` are the rows
-of the pod's verified install receipt (never the engine lock), as
-``{name, subdir, size, sha256}``.
+The host never carries a machine's model inventory to a child (Plan 32 T5:
+a rented machine aligns its own disk). On an attached ComfyUI the host sets
+``ASTRID_ALIGN=trust`` only when the task asked to trust; the child then uses
+the workflow's own declared rows and marks the result unverified.
 """
 from __future__ import annotations
 
-import json
-import posixpath
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
+from contextvars import ContextVar
 from typing import Any
 
-ENV = "ASTRID_TARGET_MODEL_ASSETS"
-MODES = ("inventory", "trust")
-_ROW_KEYS = {"name", "subdir", "size", "sha256"}
+#: The child environment flag the host sets for ``--align trust`` (value ``trust``).
+TRUST_ENV = "ASTRID_ALIGN"
 
-
-class InventoryError(ValueError):
-    pass
-
-
-def rows_from_receipt(models: Iterable[Any], root: str) -> tuple[dict[str, Any], ...]:
-    """Split each verified receipt path into subdir and name under ``root/models``."""
-    base = posixpath.join(root, "models") + "/"
-    rows = []
-    for model in models:
-        path = model.path
-        if not path.startswith(base):
-            raise InventoryError("receipt model path is outside the engine model root")
-        subdir, _, name = path[len(base):].rpartition("/")
-        rows.append({"name": name, "subdir": subdir, "size": model.bytes,
-                     "sha256": model.sha256.removeprefix("sha256:")})
-    return tuple(rows)
-
-
-def build_document(mode: str, comfy_url: str, models: Iterable[Mapping[str, Any]] = ()) -> str:
-    if mode not in MODES:
-        raise InventoryError("unknown inventory mode")
-    return json.dumps({"mode": mode, "comfy_url": comfy_url, "models": [dict(row) for row in models]},
-                      sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
-def parse_document(raw: str, comfy_url: str) -> tuple[str, tuple[dict[str, Any], ...]]:
-    """Strictly parse the document; refuse one made for another ComfyUI."""
-    try:
-        value = json.loads(raw)
-    except ValueError as exc:
-        raise InventoryError("target model inventory is not valid JSON") from exc
-    if not isinstance(value, dict) or set(value) != {"mode", "comfy_url", "models"}:
-        raise InventoryError("target model inventory has unexpected fields")
-    if value["mode"] not in MODES:
-        raise InventoryError("target model inventory has an unknown mode")
-    if value["comfy_url"] != comfy_url:
-        raise InventoryError("target model inventory was made for another ComfyUI URL")
-    models = value["models"]
-    if not isinstance(models, list) or (value["mode"] == "trust" and models):
-        raise InventoryError("target model inventory models are malformed")
-    rows = []
-    for row in models:
-        if (not isinstance(row, dict) or set(row) != _ROW_KEYS or not isinstance(row["name"], str)
-                or not row["name"] or not isinstance(row["subdir"], str)
-                or type(row["size"]) is not int or row["size"] < 0
-                or not isinstance(row["sha256"], str) or len(row["sha256"]) != 64):
-            raise InventoryError("target model inventory row is malformed")
-        rows.append(dict(row))
-    return value["mode"], tuple(rows)
+# A pod job runs in-process, rather than in a host-launched action child. Keep
+# its validated alignment choice local to that execution context.
+POD_ALIGN = ContextVar("astrid_pod_align", default=None)
+POD_STOP = ContextVar("astrid_pod_stop", default=None)
 
 
 def declared_rows(workflow: Any) -> tuple[dict[str, Any], ...]:
@@ -81,3 +32,30 @@ def declared_rows(workflow: Any) -> tuple[dict[str, Any], ...]:
             rows.append({"name": name, "subdir": str(asset.get("subdir", asset.get("directory", "")) or ""),
                          "size": size, "sha256": digest.removeprefix("sha256:")})
     return tuple(rows)
+
+
+def trust_declared_loader_choices(observed: dict[str, Any], workflow: Any) -> dict[str, Any]:
+    """Overlay exact declared loader names for explicit trust, without changing live facts.
+
+    Callers retain node, socket, type and ordinary widget validation. A declaration
+    can extend an existing model menu, never create a missing node or socket.
+    """
+    from copy import deepcopy
+    from vibecomfy.model_assets import _referenced_model_values
+
+    trusted = deepcopy(observed)
+    for reference in _referenced_model_values(workflow):
+        row = trusted.get(reference['class_type'])
+        groups = row.get('input') if isinstance(row, dict) else None
+        if not isinstance(groups, dict):
+            continue
+        for section in ('required', 'optional'):
+            fields = groups.get(section)
+            spec = fields.get(reference['field']) if isinstance(fields, dict) else None
+            if not isinstance(spec, (list, tuple)) or not spec or not isinstance(spec[0], (list, tuple)):
+                continue
+            choices = list(spec[0])
+            if reference['value'] not in choices:
+                choices.append(reference['value'])
+            fields[reference['field']] = [choices, *spec[1:]]
+    return trusted

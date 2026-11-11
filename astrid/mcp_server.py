@@ -264,7 +264,7 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
         values = arguments.pop('inputs', {})
         if not isinstance(values, dict):
             from astrid.core.generation.preflight import generation_error
-            payload = generation_error(ValueError('inputs must be an object')).to_envelope()
+            payload = generation_error(ValueError('inputs must be an object'), code='input_rejected').to_envelope()
             return _text(json.dumps(payload), error=True, structured=payload)
         supplied = list(arguments.get('input') or [])
         supplied.extend(name + '=' + json.dumps(value) for name, value in values.items())

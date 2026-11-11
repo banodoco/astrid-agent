@@ -22,8 +22,8 @@ from typing import Any
 
 from filelock import FileLock
 
-_ALIASES = {"local": "comfyui", "vibecomfy": "comfyui", "vibecomfy-h3": "comfyui", "cloud": "fal"}
-_COMFY_TABLES = ("comfyui", "local", "vibecomfy", "vibecomfy-h3")
+_ALIASES = {"local": "comfyui", "vibecomfy": "comfyui", "cloud": "fal"}
+_COMFY_TABLES = ("comfyui", "local", "vibecomfy")
 _LAYOUTS = {"desktop", "git", "portable", "pinokio", "package", "unknown"}
 _DIRECTORIES = ("user_dir", "workflows_dir", "output_dir", "models_dir", "custom_nodes_dir")
 _LAUNCH = ("launch", "launch_argv", "launch_app", "argv", "app")

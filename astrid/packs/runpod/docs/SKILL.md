@@ -1,9 +1,9 @@
 ---
 name: runpod
 description: >
-  RunPod pack — provision GPU pods, execute scripts remotely, pull
-  artifacts, and tear down, including a guaranteed-cleanup composite
-  session. Requires a RunPod credential through Astrid's resolver.
+  Set up, claim, inspect, keep and release RunPod generation machines with
+  paid consent and bounded retention. Also provision GPU pods, execute
+  scripts remotely, pull artifacts and tear down through RunPod actions.
 ---
 
 # RunPod
@@ -12,58 +12,58 @@ The runpod pack manages ephemeral cloud GPU compute on RunPod through
 `runpod-lifecycle>=0.3`: provision pods, ship and run scripts, pull artifacts,
 and tear down with a composite session that guarantees cleanup.
 
-## Ordinary generation on a RunPod target
+## RunPod generation machines
 
-`--target runpod` requires an installed layout. The Agent derives its RunPod source root
-from the release manifest: it populates `<data-root>/runpod/sources` with clean checkouts at the
-pinned commits (Runtime from `runtime.lock.json`, VibeComfy from the recipe pin, and the other
-packages from the installed release manifest), then validates them. There is no developer-checkout
-route and no environment variable to set; outside an installed layout the command fails with a
-`ManagedSourcesError` (see M02-26).
+Use `astrid machines` for the retained RunPod machine that ordinary generation
+uses. A claim and a later compatible generation share the same pod, custody
+journal and paid limit. The older `runpod.provision` handle belongs to the
+individual actions below; it is not a retained generation machine.
 
-`astrid generate image --target runpod` uses the retained host adapter, its
-single lease owner, and the existing attached ComfyUI transport. The selected
-executor environment must contain the manifest-installed Agent, Runtime,
-VibeComfy, RunPod SDK and lifecycle packages; a source checkout or ambient
-`PYTHONPATH` does not install dependencies into a child interpreter. Use the
-official installer's local-source manifest route to select these packages.
-The default remains `--target auto`; saving RunPod preferences does not replace
-a configured human ComfyUI target.
+### Set up and inspect preferences
 
-The prepared RunPod path requires a fresh, explicit paid authorization for
-each invocation, including reuse. Before claiming, disclose the selected
-account, GPU offer and hourly USD rate, pinned image, optional network volume and mount,
-maximum USD spend, absolute UTC deadline, and estimated preparation, execution
-and idle times. The offer and rate must still match the authorization; a
-changed price or fallback offer needs new consent. Unknown rates, insufficient
-cap or deadline, and replayed consent block the claim or reuse. The paid bound
-includes preparation and idle as well as execution; reuse cannot extend the
-existing bound. A denied reuse must not postpone an existing idle deadline.
+Run these from the installed Astrid launcher when the user asks to configure
+RunPod. The credential command prompts for the key; never put key bytes in a
+command, settings, output or error message.
 
-Validate the entry or workflow and its inputs before claim. The journal owns
-only the exact pod it created; it must not adopt or terminate another broker's
-pod. A compatible retained worker can be reused after new consent and identity
-checks. The generic path defaults to a 1800-second warm lease. Paid preparation,
-execution and idle limits bound it. Expiry of the paid deadline fences even an
-active hold.
+```sh
+astrid credential set runpod
+astrid machines setup
+astrid machines setup --show
+```
 
-The prepared task adapter admits one ordinary Runtime task, activates that
-exact binding, and can return its receipt before completion. Same-host follow
-must recover the original receipt, source and settings and observe that same
-task and binding, without another claim or submission. Runtime's
-existing output settlement owns artifacts: verify the published output hashes
-and durable readback; a successful remote process alone is not delivery. Keep
-the existing spool when publication is unavailable, and resume the same
-receipt instead of replaying an uncertain submission.
+Setup lists existing account network volumes. Choose a volume, or press Enter
+for ephemeral disk. A volume fixes the datacenter. Without one, choose a
+datacenter or leave it at `any`. Choose a nonempty ordered GPU list and a
+maximum budget per paid run. Setup saves preferences; it neither creates a
+volume nor claims a pod, and saving a budget grants no permission to spend.
+Missing preferences refuse with `astrid machines setup`; setup never starts
+automatically.
 
-Idle expiry and explicit release must go through the Runtime release task and
-drain or fence the exact task, stop the owned worker and revoke its activation
-before terminating the journal-owned pod. Release is complete only when an
-independent exact pod GET returns 404 **and** a successful account list shows
-the pod absent; preserve the network volume. Ambiguous provider observations,
-unresolved cancellation, or missing stop evidence remain `cleanup_pending` and
-block reuse. Recover with the same host, journal, task and release receipt;
-never create a replacement to work around uncertain custody.
+For unattended setup, supply the choices and `--json`:
+
+```sh
+astrid machines setup --volume my-volume --gpu "RTX A6000" --gpu "RTX 4090" --budget-usd 5 --json
+```
+
+On a fresh setup, omitting `--volume` uses ephemeral disk. When updating with
+`--json`, omitted volume, GPU and budget choices keep their saved values.
+Use interactive setup to choose ephemeral disk after a saved volume. An
+optional `--datacenter ID` selects a datacenter; it must match a chosen volume.
+
+Setup derives account identity from the saved credential reference. The key
+is resolved in memory only to authenticate read-only setup lookups; it is
+never stored in preferences, shown, logged or used as identity. A missing
+image uses the validated default
+`runpod/base@sha256:820c605eaaa276de20a0d77993fb0846d54e180efff5de67d46341ed399b5a7f`.
+A saved image is kept; `--image name@sha256:DIGEST` explicitly replaces it.
+`setup --show` prints sanitized preferences and their Runtime data root and
+realm. The authoritative settings are `machines.runpod` in the Runtime's
+per-user `generation` app-state document, not a project config file.
+
+To replace preferences while a machine is held, release that machine using
+its original policy and confirm cleanup first. Setup refuses unresolved
+custody. It uses the existing `runpod.setup` action; do not edit a journal or
+restart Runtime to force a policy change.
 
 ### Replacing preferences
 
@@ -80,7 +80,7 @@ policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences}
 with AstridClient.open_from_launcher() as client:
     result = client.invoke_result(
         "runpod.setup", kind="action", project=None,
-        inputs={"target_policy": json.dumps(policy, sort_keys=True)},
+        inputs={"placement_policy": json.dumps(policy, sort_keys=True)},
         wait=True, read_managed_outputs=False,
     )
 assert result.ok, result.to_dict()
@@ -93,6 +93,158 @@ Release an existing lease using its original policy, verify cleanup, then call
 setup with the replacement. Setup replaces an absent or cleanup-complete
 owner only when no operation or invocation remains active; it does not quote,
 allocate, or clear unresolved custody. A Runtime restart is unnecessary.
+
+### Choose a GPU and datacenter
+
+The saved GPU list is tried in the user's order. Within each GPU type, the
+cheapest allowed datacenter is tried first. After a definite capacity
+rejection, Astrid tries the next allowed GPU/datacenter pair, then observes
+stock again. With no volume or selected datacenter, every datacenter returned
+by RunPod is eligible. There is no default geographic filter.
+
+Repeated `--gpu TYPE` replaces the saved GPU list for one generation or claim.
+`--datacenter ID` overrides its datacenter for that operation. Neither changes
+saved preferences, and a volume always stays in its own datacenter. A held
+machine with a different GPU or storage policy must be released before a new
+choice can be claimed; Astrid does not create a second pod around that refusal.
+
+Review the target with the same ordered GPU and datacenter choices you will
+use for generation:
+
+```sh
+astrid generate describe --placement runpod --gpu "RTX A6000" --datacenter US-TX-3 --max-hourly-usd 1 --json
+```
+
+The hourly figure is an example ceiling, not a current price quote. Ask the
+user to approve the actual disclosed GPU choices, storage, pinned image,
+hourly ceiling, spend cap and preparation/execution/idle allowances before
+submitting a paid job.
+
+To change just the saved GPU list after setup, the existing command is:
+
+```sh
+astrid generate targets --placement runpod --save --input 'gpu_types=["RTX 4090"]'
+```
+
+### Consent and capacity waiting
+
+Every paid invocation, including reuse, needs fresh consent. Validate the
+entry or workflow and its inputs before claim. The requested cap must fit
+the saved budget ceiling and cover the disclosed preparation, execution and
+idle allowances. There are two ways to approve a generation:
+
+- **Waiting policy:** `--max-hourly-usd` approves the chosen GPU list and saved
+  storage below that ceiling, with `--max-usd` bounding the paid lifetime.
+  Description can disclose this policy even when no matching GPU is in stock.
+  An optional `--deadline` is an additional hard UTC limit.
+- **Exact offer:** pass the described `--offer-digest` and an absolute UTC
+  `--deadline`. Use the same ordered `--gpu` list and `--datacenter` for
+  describe and generate. A changed offer or rate refuses and needs fresh
+  disclosure and consent. Do not combine an offer digest with an hourly ceiling.
+
+For example, after approval of these illustrative limits:
+
+```sh
+astrid generate image "A studio portrait" --placement runpod --gpu "RTX A6000" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --preparation-seconds 600 --execution-seconds 600 --idle-seconds 600 --consent paid
+```
+
+The default is to wait until a machine is claimed or the operation is
+cancelled. Each attempt reports GPU, datacenter and result. Ordinary retries
+are about five seconds apart; rate limits back off. Use `--capacity-timeout
+10m` to bound the wait, or `--no-wait-for-capacity` for one observation and at
+most one create attempt. `--no-wait` instead returns an admitted task to follow
+separately; it does not turn off capacity waiting.
+
+Capacity polling creates no new pod charges. A retained pod still costs
+money, and an ambiguous create may already have allocated a pod. The paid
+clock starts immediately before the create request that may succeed and
+includes preparation, execution and idle time; it is not restarted when the
+machine becomes ready. An uncertain create is reconciled, never retried as a
+second create. If a timeout or cancellation leaves the result unknown, check
+`astrid machines` and the original task before retrying. A host restart does
+not resume a capacity wait.
+
+The paid bound includes preparation and idle as well as execution; reuse
+cannot extend the existing bound. A denied reuse must not postpone an
+existing idle deadline. Unknown rates, insufficient limits, changed
+preferences and replayed consent refuse the operation.
+
+### Claim, inspect, keep and release
+
+Claim reserves a machine without running a generation. It shows the policy
+and asks for paid consent; `--consent paid` is the explicit unattended form.
+For example, after approving the displayed terms:
+
+```sh
+astrid machines claim --gpu "RTX A6000" --max-hourly-usd 1 --max-usd 3 --for 30m --consent paid
+astrid machines
+astrid machines --json
+```
+
+Claim uses saved storage, with optional per-claim `--gpu` and `--datacenter`.
+It supports the same `--capacity-timeout` and `--no-wait-for-capacity` controls.
+Without an hourly ceiling it uses the current quote; no current quote means
+it asks for `--max-hourly-usd`. `--for` is the initial idle retention after
+claim, capped by the paid expiry. Without `--for`, it uses saved idle retention
+or 30 minutes, disclosed before consent. The machine is idle once claimed; a
+compatible generation can reuse it with fresh paid consent and the same
+expiry, without another create.
+
+A running host is required. A first claim may initialize its owner only when
+custody is empty or confirmed ended. Existing or unresolved custody refuses
+without releasing an old pod as a side effect. Follow the refusal's release
+or reconciliation guidance before claiming again.
+
+The machine table shows live and recently ended leases: ID, GPU, state,
+scheduled release time in UTC, minutes left, estimated accrued USD cost,
+hourly rate and end reason. The release time is the idle expiry while idle
+and the paid expiry while active. Estimates are not a provider invoice.
+After a failed job, a verified machine stays idle until that release time; inspect its last job outcome and reuse it or release it explicitly.
+
+To authorize a separate extension for that exact live machine:
+
+```sh
+astrid machines keep MACHINE_ID --for 2h --max-usd 3
+astrid machines keep MACHINE_ID --until-release --max-usd 3
+astrid machines release MACHINE_ID
+```
+
+Both keep forms require a fresh additional spend cap. `--for` keeps for up to
+that duration, shortened by the cap. `--until-release` disables idle release
+until explicit release or the cap's expiry; it is never uncapped. Keep needs
+the live owner and refuses an ended machine, a different pod, a stale owner,
+a release already in progress or replayed consent. If its result is unknown,
+check `astrid machines` before sending another keep.
+
+**Automatic release only happens while the owning Astrid host is running.**
+If it stops or the computer sleeps, the timer cannot enforce the cap on time
+and the pod can keep billing. Do not promise a provider-side spending cap.
+Release explicitly before stopping the host when the machine is no longer
+needed. Recovery must preserve the original custody and release receipt.
+Release is complete only when the exact pod GET returns 404 and a successful
+account list confirms its absence; unresolved cleanup blocks reuse. Releasing a pod preserves its network volume.
+
+### Runtime and storage
+
+RunPod generation needs an installed Astrid layout. Pinned Runtime,
+VibeComfy and other worker sources come from the installed release manifest
+and are cached at `<data-root>/runpod/sources`; a developer checkout or ambient
+`PYTHONPATH` is not a worker installation. The default placement remains
+`auto`; saving RunPod preferences does not replace a configured human
+ComfyUI target.
+
+The lease journal owns only the exact pod Astrid created. Never adopt or
+terminate another owner's pod, delete custody evidence to unblock a claim,
+or create a replacement around uncertain cleanup. See the
+[RunPod storage lifetimes](../../../../docs/packs/data-storage.md#runpod-machine-storage)
+for settings, journals, model caches and temporary files.
+
+A prepared generation is one Runtime task. Follow its original receipt and
+binding after a disconnect instead of submitting again. Runtime output
+settlement verifies published hashes and durable readback; a successful
+remote process alone is not delivery. Preserve the existing local spool if
+publication is unavailable, and resume the same receipt. Caller-local output
+copies default to `./outputs/<task-id>/`, or the explicit `--out` destination.
 
 When checking Runtime down/up, pass the same canonical `--data-root` and
 `--source-manifest` on both calls. Record discovery and owner PID, birth ID,

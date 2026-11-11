@@ -21,7 +21,7 @@ class InstallResult:
 
 
 ROOT = '/TARGET_ONLY/engine'
-BASE = ['vibecomfy-h3', '--root', ROOT]
+BASE = ['comfyui', '--root', ROOT]
 
 
 def invoke(args, capsys, **kwargs):
@@ -46,7 +46,7 @@ def test_packaged_vibecomfy_checkout_supports_generate_list_json(tmp_path):
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     source = next(s for s in recipe.sources if s.name == 'vibecomfy')
     assert source.pin.repository == 'https://github.com/banodoco/VibeComfy.git'
-    assert source.pin.revision == 'e65f4941d09b1cb4d1dd5aae6171c73e648706f4'
+    assert source.pin.revision == '8d065a8fef3dd602d5462e27d8eca088cf4e8262'
     source_checkout = Path(os.environ['ASTRID_VIBECOMFY_CHECKOUT'])
     packaged = tmp_path / 'packaged-vibecomfy'
     for argv in (
@@ -113,7 +113,7 @@ def test_install_disk_check_is_read_only_on_refusal(tmp_path, monkeypatch, capsy
         seen.append('backend')
         return object(), object()
     monkeypatch.setattr('astrid.core.generation.engine_local_endpoint.record_engine_root', lambda *a: None)
-    rc, out, err = invoke(['install', 'vibecomfy-h3', '--root', str(root)], capsys, backend_factory=backend)
+    rc, out, err = invoke(['install', 'comfyui', '--root', str(root)], capsys, backend_factory=backend)
     if status == 'blocked':
         error = json.loads(err)['error']
         assert rc == 1 and not out and not seen and not root.exists()
@@ -122,11 +122,11 @@ def test_install_disk_check_is_read_only_on_refusal(tmp_path, monkeypatch, capsy
         assert '--root' in error['message']
     else:
         assert rc == 0 and seen == ['backend', 'install'] and not err
-    rc, out, err = invoke(['install', 'vibecomfy-h3', '--root', str(root), '--dry-run'], capsys)
+    rc, out, err = invoke(['install', 'comfyui', '--root', str(root), '--dry-run'], capsys)
     disk = json.loads(out)['disk_check']
-    assert rc == 0 and not err and disk == {'required_bytes': disk['required_bytes'], 'free_bytes': free,
-                                           'status': status, 'basis': 'locked_model_bytes'}
-    assert disk['required_bytes'] > 0 and not root.exists()
+    assert rc == 0 and not err and disk == {'required_bytes': engine_cli.ENGINE_INSTALL_MIN_FREE_BYTES,
+                                           'free_bytes': free, 'status': status, 'basis': 'minimum_free_space_floor'}
+    assert not root.exists()
 
 
 def test_dry_run_is_pure_and_includes_identity(monkeypatch, capsys):
@@ -142,7 +142,7 @@ def test_dry_run_is_pure_and_includes_identity(monkeypatch, capsys):
     code, out, err = invoke(['install', *BASE, '--dry-run'], capsys, backend_factory=lambda **kw: pytest.fail('backend'))
     data = json.loads(out)
     assert code == 0 and not err
-    assert {step['kind'] for step in data['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
+    assert {step['kind'] for step in data['plan']['steps']} == {'source', 'environment', 'start', 'health'}
     assert data['plan']['steps'][-1]['depends_on'] == ['start']
     assert data['recipe']['pins']['sha256'] and data['plan']['models_lock_sha256']
     assert data['recipe']['sources'][0]['pin']['revision']
@@ -159,12 +159,12 @@ def test_comfyui_linux_dry_run_resolves_packaged_recipe_and_model_lock(capsys):
     assert data['recipe']['engine'] == 'comfyui'
     assert data['recipe']['platform'] == 'linux-x86_64-cu130'
     assert data['recipe']['environments'][0]['requirements']['packaged_lock'] == {
-        'path': 'packs/comfyui/requirements.linux-cu130.lock',
-        'sha256': '75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7',
+        'path': 'packs/runpod/requirements.linux-cu130.lock',
+        'sha256': '62fcd247ea1e9503e04da94bc08f4513b814e31badc54114392db46e7c2dba7a',
     }
-    assert data['recipe']['models_lock']['path'] == 'packs/comfyui/models.lock.json'
+    assert data['recipe']['models_lock']['path'] == 'packs/runpod/models.lock.json'
     assert data['plan']['models_lock_sha256'] == data['recipe']['models_lock']['sha256']
-    assert data['recipe']['start']['argv'][-1] == '{models_config}'
+    assert '{models_config}' in data['recipe']['start']['argv']
 
 
 @pytest.mark.parametrize('placement', ['local', 'runpod'])
@@ -182,43 +182,44 @@ def test_install_cache_argument_reaches_installer_without_changing_local_root(mo
         seen['plan'], seen['install'] = plan, kwargs
         return InstallResult(status='installed')
     monkeypatch.setattr(engine_cli, 'install_engine', install)
-    rc, out, err = invoke(['install', *BASE, '--model-cache-root', '/mounted/models'], capsys,
+    rc, out, err = invoke(['install', *BASE, '--models-root', '/mounted/models'], capsys,
                           backend_factory=backend)
     assert rc == 0 and not err and json.loads(out)['status'] == 'installed'
-    assert seen['install']['model_cache_root'] == '/mounted/models'
+    # The model directory is part of the install plan; the engine root and backend are unchanged.
+    assert seen['plan'].models_root == '/mounted/models'
     assert seen['plan'].root == seen['backend']['root'] == ROOT
-    assert 'model_cache_root' not in seen['backend']
-    assert recorded_engine_root('vibecomfy-h3') == ROOT
+    assert 'models_root' not in seen['backend']
+    assert recorded_engine_root('comfyui') == ROOT
 
 
 def test_model_cache_is_an_install_only_argument(capsys):
     with pytest.raises(SystemExit) as caught:
-        engine_cli.main(['status', *BASE, '--model-cache-root', '/mounted/models'])
+        engine_cli.main(['status', *BASE, '--models-root', '/mounted/models'])
     assert caught.value.code == 2
     capsys.readouterr()
 
 
-@pytest.mark.parametrize(('cache', 'placement', 'error'), [
+@pytest.mark.parametrize(('models_root', 'placement', 'error'), [
     (ROOT, 'local', 'unsafe_path'),
     (ROOT + '/models', 'local', 'unsafe_path'),
     ('/TARGET_ONLY', 'local', 'unsafe_path'),
     ('relative/cache', 'local', 'unsafe_path'),
     ('/mounted/models', 'runpod', 'unsupported_placement'),
 ])
-def test_invalid_cache_binding_refuses_before_backend(cache, placement, error, capsys):
-    rc, out, err = invoke(['install', *BASE, '--placement', placement, '--model-cache-root', cache],
-                          capsys, backend_factory=lambda **kw: pytest.fail('backend'))
+def test_invalid_models_root_refuses_before_backend(models_root, placement, error, capsys):
+    rc, out, err = invoke(['install', *BASE, '--placement', placement, '--models-root', models_root], capsys,
+                          backend_factory=lambda **kw: pytest.fail('backend'))
     assert rc == 1 and not out and json.loads(err)['error']['code'] == error
 
 
 @pytest.mark.parametrize(('args', 'code'), [
     (['install', 'unknown', '--dry-run'], 'unknown_engine'),
     (['install', *BASE, '--platform', 'linux-x86_64-cu124', '--dry-run'], 'unsupported_platform'),
-    (['install', 'vibecomfy-h3', '--root', '../bad', '--dry-run'], 'unsafe_path'),
+    (['install', 'comfyui', '--root', '../bad', '--dry-run'], 'unsafe_path'),
     (['install', *BASE, '--deadline', 'nan', '--dry-run'], 'invalid_recipe'),
     (['install', *BASE, '--placement', 'runpod'], 'unsupported_placement'),
-    (['install', 'vibecomfy-h3', '--platform', 'windows-x86_64-cu130', '--root', 'C:\\engines\\h3', '--placement', 'runpod', '--dry-run'], 'unsupported_platform'),
-    (['install', 'vibecomfy-h3', '--platform', 'windows-x86_64-cu130', '--root', 'C:\\engines\\h3'], 'unsupported_platform'),
+    (['install', 'comfyui', '--platform', 'windows-x86_64-cu130', '--root', 'C:\\engines\\h3', '--placement', 'runpod', '--dry-run'], 'unsupported_platform'),
+    (['install', 'comfyui', '--platform', 'windows-x86_64-cu130', '--root', 'C:\\engines\\h3'], 'unsupported_platform'),
 ])
 def test_errors(args, code, capsys):
     rc, out, err = invoke(args, capsys)
@@ -248,7 +249,8 @@ def test_runner_execution_and_missing_status(capsys):
     result = json.loads(out)
     assert rc == 0 and result['status'] == 'installed' and result['qualified'] is False
     assert seen[-1]['root'] == ROOT and seen[-1]['placement'] == 'local'
-    assert any(event[0] == 'download' for event in context.events)
+    # Plan 32 T5h: the install is model-free, so it downloads nothing.
+    assert not any(event[0] == 'download' for event in context.events)
 
 
 def test_status_json_retains_integrity_gate_without_raw_target_output(monkeypatch, capsys):
@@ -296,7 +298,7 @@ assert entry.value == "astrid.console:main"
 fn = entry.load()
 import astrid.console
 assert astrid.console.__file__.startswith(sys.argv[1])
-sys.argv = ["astrid", "engines", "install", "vibecomfy-h3", "--root", sys.argv[2], "--dry-run"]
+sys.argv = ["astrid", "engines", "install", "comfyui", "--root", sys.argv[2], "--dry-run"]
 rc = fn()
 assert not any(name == "omp" or name.startswith("omp.") or name in ("astrid.omp_agent", "astrid.core.auth") for name in sys.modules)
 raise SystemExit(rc)
@@ -304,10 +306,10 @@ raise SystemExit(rc)
     root = tmp_path / 'never-created'
     env = dict(os.environ, PYTHONPATH=str(repo), PYTHONDONTWRITEBYTECODE='1')
     for command in ([sys.executable, '-c', script, str(repo), str(root)],
-                    [sys.executable, '-m', 'astrid', 'engines', 'install', 'vibecomfy-h3', '--root', str(root), '--dry-run']):
+                    [sys.executable, '-m', 'astrid', 'engines', 'install', 'comfyui', '--root', str(root), '--dry-run']):
         result = subprocess.run(command, env=env, cwd=tmp_path, text=True, capture_output=True, timeout=30)
         assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout)['plan']['engine'] == 'vibecomfy-h3'
+        assert json.loads(result.stdout)['plan']['engine'] == 'comfyui'
         assert not root.exists()
 
 
@@ -324,10 +326,10 @@ def test_default_factory_constructs_agreed_client(monkeypatch, tmp_path):
     module.LinuxEngineServiceClient = Client
     monkeypatch.setitem(sys.modules, module.__name__, module)
     root = str(tmp_path / 'engine')
-    context, adapter = engine_cli._default_backend(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+    context, adapter = engine_cli._default_backend(engine='comfyui', platform='linux-x86_64-cu130',
                                                    placement='local', root=root, deadline=time.monotonic() + 10)
     assert isinstance(context, LocalLinuxExecutionContext) and context.adapter is adapter
-    assert captured['root'] == root and captured['engine'] == 'vibecomfy-h3'
+    assert captured['root'] == root and captured['engine'] == 'comfyui'
     assert len(captured['recipe_sha256']) == len(captured['helper_sha256']) == 64
     assert not (tmp_path / 'engine').exists()
 
@@ -339,19 +341,19 @@ def test_successful_local_install_records_its_root(capsys):
         return context, context.adapter
     rc, out, _ = invoke(['install', *BASE], capsys, backend_factory=backend)
     assert rc == 0 and json.loads(out)['status'] == 'installed'
-    assert recorded_engine_root('vibecomfy-h3') == ROOT
+    assert recorded_engine_root('comfyui') == ROOT
 
 
 def test_failed_install_records_nothing(capsys):
     def fail(**kwargs):
         raise CommandFailed('secret', step_id='source:comfyui')
     rc, _, _ = invoke(['install', *BASE], capsys, backend_factory=fail)
-    assert rc == 1 and recorded_engine_root('vibecomfy-h3') is None
+    assert rc == 1 and recorded_engine_root('comfyui') is None
 
 
 def test_dry_run_and_runpod_install_record_nothing(capsys):
     rc, _, _ = invoke(['install', *BASE, '--dry-run'], capsys, backend_factory=lambda **kw: pytest.fail('backend'))
-    assert rc == 0 and recorded_engine_root('vibecomfy-h3') is None
+    assert rc == 0 and recorded_engine_root('comfyui') is None
     class RunpodContext(_runner_fixture().FakeContext):
         placement = 'runpod'
     context = RunpodContext()
@@ -360,7 +362,7 @@ def test_dry_run_and_runpod_install_record_nothing(capsys):
         return context, context.adapter
     rc, out, _ = invoke(['install', *BASE, '--placement', 'runpod'], capsys, backend_factory=backend)
     assert rc == 0 and json.loads(out)['status'] == 'installed'
-    assert recorded_engine_root('vibecomfy-h3') is None
+    assert recorded_engine_root('comfyui') is None
 
 
 def test_fuse_workspace_custody_install_refuses_a_777_directory_before_any_backend(tmp_path, capsys):
@@ -368,11 +370,11 @@ def test_fuse_workspace_custody_install_refuses_a_777_directory_before_any_backe
     custody = root / '.astrid-engine'
     custody.mkdir(parents=True)
     custody.chmod(0o777)
-    code, _, err = invoke(['install', 'vibecomfy-h3', '--root', str(root)], capsys,
+    code, _, err = invoke(['install', 'comfyui', '--root', str(root)], capsys,
                           backend_factory=lambda **kwargs: pytest.fail('backend built for an unsafe custody directory'))
     assert code == 1 and json.loads(err)['error']['code'] == 'custody_not_owner_only'
     assert '/workspace' in err and 'FUSE-unsafe' in err
-    assert recorded_engine_root('vibecomfy-h3') is None
+    assert recorded_engine_root('comfyui') is None
 
 
 def test_fuse_workspace_custody_owner_only_directory_passes_the_preflight(tmp_path, capsys):
@@ -384,7 +386,7 @@ def test_fuse_workspace_custody_owner_only_directory_passes_the_preflight(tmp_pa
     def backend(**kwargs):
         reached.append(kwargs['root'])
         raise CommandFailed('stop after preflight', step_id='preflight')
-    _, _, err = invoke(['install', 'vibecomfy-h3', '--root', str(root)], capsys, backend_factory=backend)
+    _, _, err = invoke(['install', 'comfyui', '--root', str(root)], capsys, backend_factory=backend)
     assert reached == [str(root)] and 'custody_not_owner_only' not in err
 
 
@@ -406,10 +408,10 @@ def test_last_explicit_install_drives_implicit_install_status_and_run(tmp_path, 
         run_roots.append(kwargs['root'])
         return SimpleNamespace(status='installed', health=HealthEvidence('healthy', '2026-10-28T00:00:00Z', 'ab' * 32, True))
     for root in roots:
-        rc, _, err = invoke(['install', 'vibecomfy-h3', '--root', root], capsys, backend_factory=backend)
+        rc, _, err = invoke(['install', 'comfyui', '--root', root], capsys, backend_factory=backend)
         assert rc == 0, err
-        assert recorded_engine_root('vibecomfy-h3') == root
-        rc, _, err = invoke(['status', 'vibecomfy-h3'], capsys, backend_factory=backend)
+        assert recorded_engine_root('comfyui') == root
+        rc, _, err = invoke(['status', 'comfyui'], capsys, backend_factory=backend)
         assert rc == 0, err
         receipt = Path(root) / '.astrid-engine' / 'install.json'
         receipt.parent.mkdir(parents=True, mode=0o700)
@@ -418,7 +420,7 @@ def test_last_explicit_install_drives_implicit_install_status_and_run(tmp_path, 
         assert run_roots[-1] == root
         assert local.endpoint.attestation.install_receipt_path == str(receipt)
 
-    rc, _, err = invoke(['install', 'vibecomfy-h3'], capsys, backend_factory=backend)
+    rc, _, err = invoke(['install', 'comfyui'], capsys, backend_factory=backend)
     assert rc == 0, err
     assert seen == [roots[0], roots[0], roots[1], roots[1], roots[1]]
     assert run_roots == roots
@@ -428,7 +430,7 @@ def test_implicit_local_root_without_registration_uses_default(monkeypatch, caps
     from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
 
     monkeypatch.delenv('ASTRID_ENGINE_ROOT', raising=False)
-    expected = str(Path.home() / '.astrid-data' / 'engines' / 'vibecomfy-h3')
+    expected = str(Path.home() / '.astrid-data' / 'engines' / 'comfyui')
     seen = []
     def backend(**kwargs):
         seen.append(kwargs['root'])
@@ -436,7 +438,7 @@ def test_implicit_local_root_without_registration_uses_default(monkeypatch, caps
     monkeypatch.setattr(engine_cli, 'install_engine', lambda *args, **kwargs: InstallResult(status='failed'))
     monkeypatch.setattr(engine_cli, 'engine_status', lambda *args, **kwargs: None)
     for command in ('status', 'install'):
-        rc, _, err = invoke([command, 'vibecomfy-h3'], capsys, backend_factory=backend)
+        rc, _, err = invoke([command, 'comfyui'], capsys, backend_factory=backend)
         assert rc == 0, err
     def status(engine, **kwargs):
         seen.append(kwargs['root'])
@@ -450,10 +452,10 @@ def test_implicit_cli_root_prefers_record_to_environment(monkeypatch, tmp_path, 
     from astrid.core.generation.engine_local_endpoint import record_engine_root
 
     registered = str(tmp_path / 'registered')
-    record_engine_root('vibecomfy-h3', registered)
+    record_engine_root('comfyui', registered)
     override = str(tmp_path / 'override')
     monkeypatch.setenv('ASTRID_ENGINE_ROOT', override)
-    rc, out, err = invoke(['install', 'vibecomfy-h3', '--dry-run'], capsys)
+    rc, out, err = invoke(['install', 'comfyui', '--dry-run'], capsys)
     assert rc == 0, err
     assert json.loads(out)['plan']['root'] == registered
 
@@ -461,7 +463,7 @@ def test_implicit_cli_root_prefers_record_to_environment(monkeypatch, tmp_path, 
 def test_only_successful_explicit_local_installs_change_registration(monkeypatch, tmp_path, capsys):
     from astrid.core.generation.engine_local_endpoint import record_engine_root
 
-    engine = 'vibecomfy-h3'
+    engine = 'comfyui'
     original = str(tmp_path / 'original')
     other = str(tmp_path / 'other')
     record_engine_root(engine, original)
@@ -490,23 +492,3 @@ def test_only_successful_explicit_local_installs_change_registration(monkeypatch
     assert rc == 0 and seen[-1] == other and recorded_engine_root(engine) is None
 
 
-def test_authenticated_cache_binding_reaches_installer(monkeypatch, capsys):
-    seen = {}
-    monkeypatch.setattr(engine_cli, 'install_engine',
-                        lambda plan, **kwargs: seen.update(kwargs) or InstallResult(status='installed'))
-    rc, out, err = invoke(['install', *BASE, '--model-cache-root', '/mounted/models',
-                          '--model-cache-device', '99', '--model-cache-mount-id', '71'], capsys,
-                         backend_factory=lambda **kw: (object(), object()))
-    assert rc == 0 and not err
-    assert seen['model_cache_device'] == 99 and seen['model_cache_mount_id'] == 71
-
-
-@pytest.mark.parametrize('flags', [
-    ['--model-cache-device', '99'], ['--model-cache-mount-id', '71'],
-    ['--model-cache-root', '/mounted/models', '--model-cache-device', '99'],
-    ['--model-cache-root', '/mounted/models', '--model-cache-device', '-1', '--model-cache-mount-id', '71'],
-])
-def test_invalid_cache_binding_stops_before_backend(capsys, flags):
-    rc, out, err = invoke(['install', *BASE, *flags], capsys,
-                         backend_factory=lambda **kw: pytest.fail('unbound cache backend'))
-    assert rc == 1 and not out and json.loads(err)['error']['code'] == 'unsafe_path'

@@ -1,10 +1,10 @@
 {
   "schema": "astrid.engine-recipe.v1",
-  "engine": "vibecomfy-h3",
+  "engine": "comfyui",
   "platform": "linux-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "b7ba074fa02423312dc033b5fcb3b3d952ac12393130e23064b9401811c8d18c"
+    "sha256": "b32d172a614dfeb0f0a05cb2aab4b0273260cfc14605a675a50f5d20fa29c41a"
   },
   "source_bindings": [
     {
@@ -14,7 +14,7 @@
     },
     {
       "name": "vibecomfy",
-      "pin": "vibecomfy-h3",
+      "pin": "vibecomfy",
       "relative_path": "runtime/vibecomfy"
     },
     {
@@ -48,7 +48,7 @@
         "mode": "packaged",
         "packaged_lock": {
           "path": "packs/runpod/requirements.linux-cu130.lock",
-          "sha256": "b501e04a13951eb00f03412e9ab5288ab8e8eaca1caf61251268a976a36a1f99"
+          "sha256": "62fcd247ea1e9503e04da94bc08f4513b814e31badc54114392db46e7c2dba7a"
         },
         "input_paths": [],
         "constraints": [],
@@ -130,6 +130,8 @@
     "object_info_path": "/object_info",
     "required_nodes": [
       "MiniMaxH3ReferenceToVideo",
+      "UNETLoader",
+      "VAELoader",
       "VHS_VideoCombine"
     ],
     "timeout_seconds": 180,

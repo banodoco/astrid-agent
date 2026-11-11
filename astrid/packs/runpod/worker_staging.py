@@ -240,15 +240,12 @@ for name in ("astrid_root","vibecomfy_root"):
  expected=request["expected_tree_digests"][name]
  if digest!=expected: raise RuntimeError(name+" remote bytes changed after staging")
  tree_facts[name]={"tree_digest":digest,"file_count":count}
-comfy_tree_digest,comfy_file_count=tree_digest(comfy_root)
 custom_node_tree_facts={}
 for name,row in contract["custom_node_roots"].items():
  digest,count=tree_digest(Path(row["path"]).resolve(strict=True))
  custom_node_tree_facts[name]={"tree_digest":digest,"file_count":count}
 engine=str(cfg.get("engine_mode") or "")
-if engine not in {"checkout_server","pip_embedded"}: raise RuntimeError("unsupported Comfy engine mode")
-if engine=="checkout_server" and not (comfy_root/"main.py").is_file(): raise RuntimeError("selected Comfy checkout has no main.py")
-if engine=="pip_embedded" and not (comfy_root/"comfy/client/embedded_comfy_client.py").is_file(): raise RuntimeError("selected embedded Comfy release is incomplete")
+if engine!="local_server": raise RuntimeError("unsupported Comfy engine mode")
 workflow=Path(request["workflow_path"]).resolve(strict=True)
 workflow_bundle=request.get("workflow_bundle")
 if workflow_bundle is None:
@@ -281,7 +278,7 @@ for pack_name in required:
  bindings=[fact for fact in custom_node_facts.values() if norm_pack(fact["pack_name"])==norm_pack(pack_name)]
  if len(bindings)!=1: raise RuntimeError("selected workflow requires a custom-node pack without exactly one manifest-pinned checkout/root: "+pack_name)
  if bindings[0]["lock_entry"]!=table_name or lock_row_commit(table_name,lock_row)!=bindings[0]["commit"]: raise RuntimeError("selected workflow custom-node pack is not bound to its pinned lock entry and observed checkout: "+pack_name)
-print(json.dumps({"schema_version":1,"status":"cpu_ready","gpu_qualified":False,"capability_id":request["capability_id"],"python_executable":str(Path(sys.executable).resolve()),"python_version":sys.version.split()[0],"imports":{"astrid":astrid_import,"model_root_verifier":model_import,"vibecomfy_preflight":preflight_import,"vibecomfy":vibe_import},"effective_paths":{"astrid_root":str(astrid_root),"vibecomfy_root":str(vibe_root),"comfy_root":str(comfy_root),"model_root":str(binding.path),"output_root":str(output_root.resolve(strict=True)),"candidate_namespace":str(candidate),"launcher_path":str(launcher)},"release_facts":{"release_id":cfg["comfy_release_id"],"manifest_state":contract["manifest_state"],"candidate_namespace":str(candidate),"comfyui_commit":comfy_commit,"comfy_tree_digest":comfy_tree_digest,"comfy_file_count":comfy_file_count,"launcher_path":str(launcher),"launcher_sha256":"sha256:"+hashlib.sha256(launcher.read_bytes()).hexdigest(),"custom_nodes_lock_sha256":lock_digest,"custom_node_commits":custom_node_facts,"custom_node_trees":custom_node_tree_facts,"required_custom_nodes":sorted(required)},"tree_facts":tree_facts,"model_root":binding.as_dict(),"workflow_preflight":compiled},sort_keys=True,separators=(",",":")))
+print(json.dumps({"schema_version":1,"status":"cpu_ready","gpu_qualified":False,"capability_id":request["capability_id"],"python_executable":str(Path(sys.executable).resolve()),"python_version":sys.version.split()[0],"imports":{"astrid":astrid_import,"model_root_verifier":model_import,"vibecomfy_preflight":preflight_import,"vibecomfy":vibe_import},"effective_paths":{"astrid_root":str(astrid_root),"vibecomfy_root":str(vibe_root),"comfy_root":str(comfy_root),"model_root":str(binding.path),"output_root":str(output_root.resolve(strict=True)),"candidate_namespace":str(candidate),"launcher_path":str(launcher)},"release_facts":{"release_id":cfg["comfy_release_id"],"manifest_state":contract["manifest_state"],"candidate_namespace":str(candidate),"comfyui_commit":comfy_commit,"launcher_path":str(launcher),"launcher_sha256":"sha256:"+hashlib.sha256(launcher.read_bytes()).hexdigest(),"custom_nodes_lock_sha256":lock_digest,"custom_node_commits":custom_node_facts,"custom_node_trees":custom_node_tree_facts,"required_custom_nodes":sorted(required)},"tree_facts":tree_facts,"model_root":binding.as_dict(),"workflow_preflight":compiled},sort_keys=True,separators=(",",":")))
 '''
 
 
@@ -390,7 +387,7 @@ class RunPodPreparationTransport:
                 or PurePosixPath(profile).name in {"engine-bearer.token", "executor.token"}):
             raise WorkerPreparationError("trusted startup endpoint readiness selection is unavailable")
         root = str(PurePosixPath(runtime).parent)
-        registry = runtime + "/out/sessions/vibecomfy-h3/"
+        registry = runtime + "/out/sessions/comfyui/"
         selected = frozenset({profile, root + "/.astrid-engine/install.json", *(
             registry + name for name in (
                 "config.json", "launch.json", "pid", "comfy_pid", "comfy_process_start_identity",
@@ -969,8 +966,8 @@ def _build_plan(
     _secret_free(workflow_inputs, path="workflow_inputs")
     capability = _safe_token(capability_id, label="capability_id")
     python = _remote_absolute(python_executable, label="python_executable")
-    if engine_mode not in {"checkout_server", "pip_embedded"}:
-        raise WorkerPreparationError("engine_mode must be checkout_server or pip_embedded")
+    if engine_mode != "local_server":
+        raise WorkerPreparationError("engine_mode must be local_server")
     profile = json.loads(json.dumps(resolved_compute_profile, sort_keys=True, ensure_ascii=False))
     readiness = json.loads(json.dumps(readiness_profile, sort_keys=True, ensure_ascii=False))
     source_paths = {

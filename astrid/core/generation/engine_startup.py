@@ -168,7 +168,7 @@ def _run(argv, *, cwd, env, deadline, logs, stop_event, on_started=None):
 def _validate_output(raw, *, root, rerun):
     from .engine_recipe import load_recipe
     from .engine_runner import _parse_receipt, plan_install
-    recipe = load_recipe('vibecomfy-h3', 'linux-x86_64-cu130')
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     plan = plan_install(recipe, root=str(root), placement='local')
     value = json.loads(raw)
     receipt = _parse_receipt(value, plan)
@@ -243,7 +243,7 @@ def run_sequence(*, cli_prefix, root, observations, private, timeout_seconds=360
             remaining = min(step_seconds, end - time.monotonic())
             if remaining <= 0 or stop_event.is_set():
                 raise TimeoutError('startup budget exhausted')
-            argv = (*cli_prefix, 'engines', command, 'vibecomfy-h3', '--placement', 'local',
+            argv = (*cli_prefix, 'engines', command, 'comfyui', '--placement', 'local',
                     '--platform', 'linux-x86_64-cu130', '--root', str(root),
                     '--deadline', str(remaining))
             result, raw = _run(argv, cwd=private, env=_public_environment(private, root),
@@ -364,7 +364,7 @@ def main(argv=None, *, release_root=None):
             if installer_started:
                 def stop_owned(*, deadline):
                     from .engine_execution import create_local_backend
-                    context, _ = create_local_backend(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+                    context, _ = create_local_backend(engine='comfyui', platform='linux-x86_64-cu130',
                                                        placement='local', root=str(root), deadline=deadline)
                     context.service_client.stop_owned(deadline=deadline)
                 _finish_session(stop_owned, observation)

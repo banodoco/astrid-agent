@@ -249,7 +249,7 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    if argv and argv[0] in {"workflow", "describe", "targets", "launch", "release", '--help', '-h'}:
+    if argv and argv[0] in {"workflow", "describe", "targets", "launch", "release", "defaults", "settings", '--help', '-h'}:
         from astrid.core.generation.cli import main as workflow_main
         return workflow_main(argv)
     parser = argparse.ArgumentParser(prog="astrid generate", description="Discover generation capabilities and readiness.")

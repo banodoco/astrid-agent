@@ -16,7 +16,8 @@ INSTALLER_IMPORT_RESOURCES = (
     "core/generation/engine_contracts.py",
     "core/generation/engine_recipe.py",
     "core/generation/vibecomfy_dependency.py",
-    "packs/engine-index.json",
+    "packs/vibecomfy/extensions/generation.engine/comfyui.yaml",
+    "packs/wan2gp/extensions/generation.engine/wan2gp.yaml",
     "packs/runpod/pins.json",
     "packs/vibecomfy/pins.json",
     "packs/vibecomfy/recipe.windows-cu130.json",
@@ -29,10 +30,10 @@ GENERATION_GUIDE_RESOURCES = (
 
 
 def _engine_resources():
-    from astrid.core.generation.engine_recipe import load_recipe, load_recipe_index
+    from astrid.core.generation.engine_recipe import declaration_paths as recipes_declarations, load_recipe, load_recipe_index
     from astrid.core.generation.engine_runner import _A2_PATHS, _CODE_PATHS
 
-    resources = {'packs/engine-index.json', *_CODE_PATHS, *_A2_PATHS}
+    resources = {*recipes_declarations(), *_CODE_PATHS, *_A2_PATHS}
     locks = set()
     for entry in load_recipe_index().entries:
         recipe = load_recipe(entry.engine, entry.platform)

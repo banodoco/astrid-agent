@@ -293,7 +293,7 @@ class RunPodManagedVibeComfySessionOwner:
             raise ManagedSessionError("managed session paths differ from Runtime selection")
         # The engine-ID reference is reserved for the canonical installer.
         # Never reconstruct its config, or fall back to the legacy daemon.
-        if session_ref == "vibecomfy-h3":
+        if session_ref == "comfyui":
             read_installed = getattr(self.transport, "read_installed", None)
             if read_installed is None:
                 raise ManagedSessionError("installer-owned session requires installed registry observation")
@@ -376,7 +376,7 @@ class RunPodManagedVibeComfySessionOwner:
                 or value.get("ownership_verified") is not True
                 or value.get("gpu_qualified") is not False):
             raise ManagedSessionError("live managed session config, output or ownership changed")
-        if (selection.session_ref == "vibecomfy-h3"
+        if (selection.session_ref == "comfyui"
                 and value.get("config_digest") != selection.config_digest):
             raise ManagedSessionError("live installed session config bytes changed")
         daemon_pid, daemon_birth = _process(value.get("daemon"), "managed daemon")
@@ -400,7 +400,7 @@ class RunPodManagedVibeComfySessionOwner:
             # A prior start may have succeeded while its SSH response was
             # lost. Reuse only the same selected config and owned process pair.
             return existing
-        if selection.session_ref == "vibecomfy-h3":
+        if selection.session_ref == "comfyui":
             raise ManagedSessionError("installer-owned session is absent; legacy start is forbidden")
         try:
             self.transport.start(selection)
@@ -427,7 +427,7 @@ class RunPodManagedVibeComfySessionOwner:
 
     def stop(self, selection: ManagedSessionSelection,
              receipt: ManagedSessionReceipt | Mapping[str, Any]) -> dict[str, Any]:
-        if selection.session_ref == "vibecomfy-h3":
+        if selection.session_ref == "comfyui":
             # An attachment cannot assert engine quiescence or acquire native
             # stop authority from the receipt. Original provider release stays
             # gated on a real supervisor stop, never a synthetic detach receipt.
@@ -465,7 +465,7 @@ class RunPodManagedVibeComfySessionOwner:
 def create_managed_session_owner(pod: Any, *, session_ref: str,
                                  preparation_transport: Any = None) -> RunPodManagedVibeComfySessionOwner:
     """Original prepared composition; the proof engine ID cannot opt out."""
-    if session_ref == "vibecomfy-h3":
+    if session_ref == "comfyui":
         from .installed_session import RunPodInstalledVibeComfySessionTransport
 
         transport = RunPodInstalledVibeComfySessionTransport(

@@ -1,0 +1,8 @@
+description: A workflow family that VibeComfy runs; the entries, an optional build and an optional after_outputs.
+version: 1
+min_supported: 1
+side: agent
+cardinality: many
+effects_allowed: [none]
+protocol: data
+schema: workflows.schema.json

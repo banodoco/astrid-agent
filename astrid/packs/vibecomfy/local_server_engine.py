@@ -9,6 +9,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import stat
+import sys
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -65,7 +68,7 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
 
 
 def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path, *,
-                    client: Any = None, target_custody: Any = None) -> Any:
+                    client: Any = None, target_custody: Any = None, prepared_models: Any = None) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
@@ -105,16 +108,23 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
                     or any(group in inputs and not isinstance(inputs[group], Mapping)
                            for group in ('required', 'optional'))):
                 raise ProductionEngineError(f'invalid live schema for {node.class_type}')
+        if target_custody is not None:
+            from astrid.core.generation.target_inventory import trust_declared_loader_choices
+            return trust_declared_loader_choices(observed, bundle.workflow)
         return observed
 
     custody = {}
+    if prepared_models is not None:
+        custody = {"auxiliary_model_custody": "target", "target_model_assets": list(prepared_models)}
     if target_custody is not None:
-        # Rows the host verified for this exact ComfyUI; approval skips the local-disk presence check.
+        # Explicitly trusted declarations; approval skips local byte checks, without asserting verification.
         custody = {"auxiliary_model_custody": "target", "target_model_assets": list(target_custody)}
     provider = UploadedTargetSchema.from_object_info(
         read_object_info(), server_url=url, model_availability="target",
         refresh_object_info=read_object_info, **custody,
     )
+    if target_custody is not None:
+        provider.trust_model_assets(target_custody)
     # Force a fresh read, including an empty registry (which VibeComfy's
     # general validator treats as an unavailable, skippable schema).
     provider.object_info()
@@ -128,6 +138,27 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
     # Missing classes must fail here, before ambient/on-demand authoring lookup.
     _capture_live_schemas(bundle, provider)
     api = {} if missing_nodes else bundle.workflow.compile("api", run_inputs=dict(run_inputs or {}))
+    # A blank LoadImage may be an unused workflow placeholder. Refuse it when
+    # it actually feeds an output, before sending the prompt to ComfyUI.
+    observed = provider.object_info()
+    pending = {str(output.node_id) for output in bundle.workflow.outputs}
+    pending.update(node_id for node_id, node in api.items()
+                   if observed.get(node.get("class_type"), {}).get("output_node"))
+    if api and (not pending or any(node_id not in api for node_id in pending)):
+        raise ProductionEngineError("ComfyUI workflow output roots could not be established")
+    reached = set()
+    while pending:
+        node_id = pending.pop()
+        if node_id in reached or node_id not in api:
+            continue
+        reached.add(node_id)
+        node = api[node_id]
+        if node.get("class_type") == "LoadImage" and not str(node.get("inputs", {}).get("image") or "").strip():
+            raise ProductionEngineError("ComfyUI workflow has a connected LoadImage without an image binding")
+        for value in node.get("inputs", {}).values():
+            if (isinstance(value, list) and len(value) == 2 and isinstance(value[0], str)
+                    and isinstance(value[1], int)):
+                pending.add(value[0])
     issues = [*validate_api_against_schema(api, provider), *validate_api_link_shapes(api, provider)] if api else []
     missing_models: list[str] = []
     for node_id, node in api.items():
@@ -198,7 +229,32 @@ def _capture_live_schemas(bundle: Any, provider: Any) -> None:
             node.metadata['schema'] = schema
 
 
-def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None) -> Any:
+def run_scoped_overrides(workflow: Any, attempt_id: str, *, empty_prefix_nodes: frozenset[str] = frozenset()) -> Any:
+    """Clone the built graph and namespace only its declared output prefixes for this attempt.
+
+    This is the sole run-scoped graph transform shared by every local-server placement.
+    Its attempt identity is assigned by the host, never generated during submission.
+    """
+    from astrid.core.generation.backends.vibecomfy_local_server import validate_identity
+
+    validate_identity(attempt_id)
+    workflow = workflow.clone()
+    for output in workflow.outputs:
+        node = workflow.nodes[output.node_id]
+        prefix = node.inputs.get("filename_prefix", node.widgets.get("filename_prefix"))
+        if isinstance(prefix, str) and (prefix or str(output.node_id) in empty_prefix_nodes):
+            fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
+            scoped_prefix = f"{prefix}_astrid_{attempt_id}"
+            fields["filename_prefix"] = scoped_prefix
+            # Compilation reapplies public input values to the execution graph.
+            for name, spec in getattr(workflow, "inputs", {}).items():
+                if str(spec.node_id) == str(output.node_id) and spec.field == "filename_prefix":
+                    workflow.set_input(name, scoped_prefix)
+    return workflow
+
+
+def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None,
+                        allow_empty_image: bool = False, run_inputs: Mapping[str, Any] | None = None) -> Any:
     """Derive attempt-owned image bindings and fresh output filenames.
 
     A seedless graph can otherwise reuse SaveImage's cached result from an
@@ -221,7 +277,7 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
         if nodes:
             node = nodes[0]
             value = node.inputs.get("image", node.widgets.get("image"))
-            if (isinstance(value, str) and not any(
+            if (isinstance(value, str) and (value.strip() or allow_empty_image) and not any(
                     spec.node_id == node.id and spec.field == "image"
                     for spec in workflow.inputs.values())):
                 input_types = dict(zip(node.native_input_names or (), node.native_input_types or ()))
@@ -230,13 +286,25 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
                     type=input_types.get("image", "STRING"), media_semantics="image",
                 )
                 changed = True
-    for output in workflow.outputs:
-        node = workflow.nodes[output.node_id]
-        prefix = node.inputs.get("filename_prefix", node.widgets.get("filename_prefix"))
-        if output_identity is not None and isinstance(prefix, str) and prefix:
-            fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
-            fields["filename_prefix"] = f"{prefix}_astrid_{output_identity}"
-            changed = True
+    if output_identity is not None:
+        output_ids = {str(output.node_id) for output in workflow.outputs}
+        empty_prefix_nodes = set()
+        for name, value in (run_inputs or {}).items():
+            spec = workflow.inputs.get(name)
+            if spec is not None and str(spec.node_id) in output_ids and spec.field == "filename_prefix":
+                node = workflow.nodes[str(spec.node_id)]
+                fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
+                fields["filename_prefix"] = value
+                workflow.set_input(name, value)
+                changed = True
+                if value == "":
+                    empty_prefix_nodes.add(str(spec.node_id))
+        changed = changed or any(isinstance(workflow.nodes[output.node_id].inputs.get(
+            "filename_prefix", workflow.nodes[output.node_id].widgets.get("filename_prefix")), str)
+            and workflow.nodes[output.node_id].inputs.get(
+                "filename_prefix", workflow.nodes[output.node_id].widgets.get("filename_prefix"))
+            for output in workflow.outputs)
+        workflow = run_scoped_overrides(workflow, output_identity, empty_prefix_nodes=frozenset(empty_prefix_nodes))
     if not changed:
         return bundle
     root = destination / "local-server-workflow"
@@ -279,18 +347,43 @@ def _staged_digest(destination: Path, name: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _inventory_from_environment(bundle: Any, url: str) -> tuple[dict[str, Any], ...] | None:
-    """The host's one inventory document, consumed once; none means this machine's disk is the inventory."""
+def _trust_from_environment(bundle: Any) -> tuple[dict[str, Any], ...] | None:
+    """``--align trust`` on an attached ComfyUI: the workflow's declared rows; otherwise none."""
     from astrid.core.generation import target_inventory
 
-    raw = os.environ.pop(target_inventory.ENV, None)
-    if raw is None:
+    child_trust = os.environ.pop(target_inventory.TRUST_ENV, None) == "trust"
+    pod_align = target_inventory.POD_ALIGN.get()
+    if not (child_trust if pod_align is None else pod_align == "trust"):
         return None
-    try:
-        mode, rows = target_inventory.parse_document(raw, url)
-    except target_inventory.InventoryError as exc:
-        raise ProductionEngineError(str(exc)) from exc
-    return target_inventory.declared_rows(bundle.workflow) if mode == "trust" else rows
+    return target_inventory.declared_rows(bundle.workflow)
+
+
+def _custody_file(path: Path, destination: Path, label: str) -> Path:
+    """Check the native file and all ancestors before reading or replacing it."""
+    if (path.is_symlink() or not path.is_file()
+            or not path.resolve(strict=True).is_relative_to(destination.resolve(strict=True))
+            or any(part.is_symlink() for part in path.parents)
+            or not stat.S_ISREG(path.lstat().st_mode)):
+        raise ProductionEngineError(f"local_server {label} escaped attempt custody")
+    return path
+
+
+def _project_native_attempt(path: Path, destination: Path, *, alignment: Any, prepared: Any = None) -> None:
+    from astrid.core.foundation.atomic_io import write_json_atomic
+
+    _custody_file(path, destination, "native attempt")
+    attempt = json.loads(path.read_text(encoding="utf-8"))
+    attempt["alignment"] = alignment
+    if prepared is not None:
+        # Placement and preparation belong to Astrid. Native target/adapter
+        # remain the external HTTP transport that actually executed this run.
+        attempt["placement"] = "managed"
+        attempt["managed_engine_preparation"] = prepared
+        embedded = attempt.get("managed_generation_result", {}).get("evidence", {}).get("producer", {}).get("attempt", {}).get("record")
+        if isinstance(embedded, dict):
+            embedded.update(placement="managed", alignment=alignment, managed_engine_preparation=prepared)
+    _custody_file(path, destination, "native attempt")
+    write_json_atomic(path, attempt)
 
 
 def run_local_server(
@@ -334,15 +427,26 @@ def run_local_server(
     config = SessionConfig.from_dict(values)
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
+    from astrid.core.generation.managed_preparation import read_preparation
+    prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=url)
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
-    custody = _inventory_from_environment(bundle, url)
-    provider = _live_preflight(bundle, run_inputs, url, destination, target_custody=custody)
+    custody = _trust_from_environment(bundle)
+    from astrid.core.generation.target_inventory import declared_rows
+    provider = _live_preflight(bundle, run_inputs, url, destination, client=client, target_custody=custody,
+                               prepared_models=declared_rows(bundle.workflow) if prepared is not None else None)
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.
     bundle = local_server_bundle(
-        bundle, destination, output_identity=attempt_identity or task_identity,
+        bundle, destination, output_identity=attempt_identity or task_identity, run_inputs=run_inputs,
     )
     bindings = dict(run_inputs or {})
+    output_ids = {str(output.node_id) for output in bundle.workflow.outputs}
+    original_prefixes = {}
+    for name, value in list(bindings.items()):
+        spec = bundle.workflow.inputs[name]
+        if str(spec.node_id) in output_ids and spec.field == "filename_prefix":
+            original_prefixes[name] = value
+            bindings[name] = spec.value
     for name, value in bindings.items():
         spec = bundle.workflow.inputs[name]
         media = str(getattr(spec, "media_semantics", "") or "").lower()
@@ -359,7 +463,13 @@ def run_local_server(
                 )
     record = _approve_live(bundle, bindings, provider)
 
+    from astrid.core.generation.target_inventory import POD_STOP
+    pod_stop = POD_STOP.get()
+
     def stop(signum: int, _frame: Any) -> None:
+        if pod_stop is not None:
+            pod_stop(signum, _frame)
+            return
         raise SystemExit(128 + signum)
 
     pins = {"VIBECOMFY_COMFY_CONFIGURATION": "{}", "VIBECOMFY_WARM": "never",
@@ -369,34 +479,77 @@ def run_local_server(
     try:
         os.environ.update(pins)
         try:
-            result = run_sync(
-                record, bundle, server_url=url, config=config, schema_provider=provider,
-                server_client=TargetRuntimeClient(client),
-                artifact_client=AttachedArtifacts(client, legacy_output_directory=output_directory),
-            )
+            context = None
+            if prepared is not None:
+                from vibecomfy.runtime.run_context import RunContext
+                run_id = "run-" + uuid.uuid4().hex
+                run_dir = destination / ".vibecomfy-runtime" / "out" / "runs" / run_id
+                if any(part.is_symlink() for part in (run_dir, *run_dir.parents)):
+                    raise ProductionEngineError("local_server native attempt escaped attempt custody")
+                run_dir.mkdir(parents=True, exist_ok=False)
+                if not run_dir.resolve().is_relative_to(destination.resolve()):
+                    raise ProductionEngineError("local_server native attempt escaped attempt custody")
+                context = RunContext(run_id, run_dir, task_id=task_identity,
+                                     attempt_id=attempt_identity, execution_id=prepared.get("execution_identity"))
+                context.begin(str(bundle.python_path))
+                _custody_file(context.receipt_path, destination, "native attempt")
+            try:
+                result = run_sync(
+                    record, bundle, server_url=url, config=config, schema_provider=provider,
+                    server_client=TargetRuntimeClient(client),
+                    artifact_client=AttachedArtifacts(client, legacy_output_directory=output_directory),
+                    **({"run_context": context} if context is not None else {}),
+                )
+            finally:
+                if context is not None:
+                    original_error = sys.exc_info()[1]
+                    try:
+                        _project_native_attempt(context.receipt_path, destination,
+                                                alignment=prepared["alignment"], prepared=prepared)
+                    except Exception as projection_error:
+                        if original_error is None:
+                            raise
+                        original_error.add_note(f"native attempt projection failed: {projection_error}")
             if not getattr(result, "managed_generation_result_path", None):
                 raise ProductionEngineError(
                     "local_server requires VibeComfy managed_generation_result_path; "
                     "check that the selected target exposes /view and declares its final output nodes"
                 )
             result_path = Path(result.managed_generation_result_path)
-            if (result_path.is_symlink() or not result_path.resolve().is_relative_to(destination.resolve())
-                    or any(part.is_symlink() for part in result_path.parents)):
-                raise ProductionEngineError("local_server managed result escaped attempt custody")
+            _custody_file(result_path, destination, "managed result")
             # The pinned producer reports public-input defaults in metadata.
             # Preserve its evidence, but report the detached invocation values
             # (including the chosen seed) that actually reached /prompt.
             payload = json.loads(result_path.read_text(encoding="utf-8"))
-            payload["inputs"].update(bindings)
+            payload["inputs"].update({**bindings, **original_prefixes})
+            if custody is not None:
+                alignment = {"mode": "trust", "status": "unverified", "verified": False}
+                payload["evidence"]["producer"]["alignment"] = alignment
+                _project_native_attempt(result_path.with_name("attempt.json"), destination, alignment=alignment)
+            if prepared is not None:
+                payload["evidence"]["producer"]["alignment"] = prepared["alignment"]
+                payload["evidence"]["transport"]["placement"] = "managed"
+                payload["evidence"]["producer"]["attempt"]["record"].update(
+                    placement="managed", alignment=prepared["alignment"], managed_engine_preparation=prepared)
             if workflow_conversion_object_info_sha256 is not None:
                 schema_provenance = payload["evidence"]["producer"]["runtime"]["schema_provenance"]
                 schema_provenance["workflow_conversion_object_info_sha256"] = (
                     workflow_conversion_object_info_sha256
                 )
-            result_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            from astrid.core.foundation.atomic_io import write_json_atomic
+            _custody_file(result_path, destination, "managed result")
+            write_json_atomic(result_path, payload)
             return _result_from_runtime_result(result, tuple(Path(path) for path in result.outputs))
         except BaseException as exc:
-            cleanup_prompts(url, destination)
+            try:
+                cleanup_prompts(url, destination)
+            except Exception as cleanup_error:
+                # Preserve the failure that triggered cleanup (especially a
+                # custody refusal) while retaining the cleanup failure as
+                # diagnostic context. cleanup_prompts validates journals
+                # before trusting their prompt IDs, so an unsafe journal must
+                # never replace the original attempt error.
+                exc.add_note(f"local_server prompt cleanup failed: {cleanup_error}")
             if "vibecomfy schema refresh" in str(exc) or getattr(exc, "next_action", None) == "vibecomfy schema refresh":
                 from astrid.core.generation.asset_gaps import align_argv
                 import shlex

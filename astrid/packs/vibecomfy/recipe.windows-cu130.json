@@ -1,15 +1,15 @@
 {
   "schema": "astrid.engine-recipe.v1",
-  "engine": "vibecomfy",
+  "engine": "comfyui",
   "platform": "windows-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "b7ba074fa02423312dc033b5fcb3b3d952ac12393130e23064b9401811c8d18c"
+    "sha256": "b32d172a614dfeb0f0a05cb2aab4b0273260cfc14605a675a50f5d20fa29c41a"
   },
   "source_bindings": [
     {
       "name": "comfyui",
-      "pin": "comfyui-plain",
+      "pin": "comfyui",
       "relative_path": "runtime/ComfyUI"
     },
     {

@@ -15,7 +15,7 @@ notes remain linked beside their v3 entrypoints: [prepare](../actions/prepare/ST
 [compile](../actions/compile/STAGE.md), [compose](../actions/compose/STAGE.md),
 [verify](../actions/verify/STAGE.md), and [transform](../actions/transform/STAGE.md).
 
-Use `h3_av.transform` when the desired result is a generated or edited H3
+Use `astrid generate video --entry h3` when the desired result is a generated or edited H3
 video/audio candidate. The agent writes one request document; the pack resolves
 assets and time ranges, compiles the selected H3 workflow, optionally executes
 it through `vibecomfy.run`, composes protected material, and emits verification
@@ -178,7 +178,7 @@ admission or compilation.
 Do not add request-level reference strategies or fixture-specific production
 workflows to bypass these limits.
 
-For source-free reference-guided generation, use the same `h3_av.transform`
+For source-free reference-guided generation, use the same `h3` entry
 entrypoint with `operation: generate`, omit `source`, supply `output.duration`,
 and leave both change lists empty. This creates the entire audiovisual timeline.
 The compiler builds one ordinary `MiniMaxH3ReferenceToVideo` sampling graph with
@@ -246,7 +246,7 @@ last frame.
 
 Run preparation and compilation before any GPU submission. The compiler emits
 the exact request digest, asset bindings, graph capacity, and resolved mask
-schedule. `h3_av.verify` checks that generated outputs exist and that protected
+schedule. `after_outputs` (compose, then `shared/verify.py`) checks that generated outputs exist and that protected
 intervals/regions have not been claimed as changed. A passing runtime model
 check is not editorial approval; review the candidate and evidence separately.
 

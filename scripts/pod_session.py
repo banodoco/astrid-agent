@@ -18,7 +18,7 @@ Verified identities are saved in each packet's logs; held custody retains its
 original source identity. Cmd rows and lists without this option keep their defaults.
 A held list may put one {id: recover, type: h3-install, timeout: 3600} row before
 an H3 row. It requires the same source selection, runs canonical engines install
-vibecomfy-h3 at the fixed existing registered root, and verifies receipt/readiness.
+comfyui at the fixed existing registered root, and verifies receipt/readiness.
 No install command, root, engine id or input/output path is accepted in that row.
 
 Legacy steps: claim, bundle, bootstrap, install, rerun, S0, CLIP, download, release.
@@ -95,12 +95,12 @@ JOB_LIMIT = 100
 DEFAULT_GPUS = ("RTX 5090", "RTX PRO 4500")
 STORAGE_NAME = "storage"
 CACHE_MOUNT = "/workspace"
-MODEL_CACHE_ROOT = CACHE_MOUNT + "/astrid/engines/vibecomfy-h3/models"
+MODEL_CACHE_ROOT = CACHE_MOUNT + "/astrid/engines/comfyui/models"
 DATACENTER = "EUR-NO-1"
 CUDA_VERSIONS = ",".join(DEFAULT_ALLOWED_CUDA_VERSIONS)
-ENGINE = "vibecomfy-h3"
+ENGINE = "comfyui"
 PLATFORM = "linux-x86_64-cu130"
-ENGINE_ROOT = "/root/astrid/engines/vibecomfy-h3"
+ENGINE_ROOT = "/root/astrid/engines/comfyui"
 BUNDLE_DIR = "/root/bundle"
 BUNDLE_REMOTE = BUNDLE_DIR + "/pod-src.tgz"
 SRC_DIR = BUNDLE_DIR + "/src"
@@ -1078,7 +1078,7 @@ class Session:
                    "required_volume_bytes": self.args.volume_gb * 10**9,
                    "required_local_bytes": (footprint + 20 if local_free_gb is None else local_free_gb) * 10**9,
                    "provider_mapping": provider}
-        source = (REPO / "scripts/pod_storage_probe.py").read_text()
+        source = (REPO / "astrid/packs/runpod/storage_probe.py").read_text()
         blob = base64.b64encode(json.dumps(request).encode()).decode()
         command = "python3 -c " + shlex.quote(source) + " " + shlex.quote(blob)
         code, out, err = self.execute("storage mount verification", command)

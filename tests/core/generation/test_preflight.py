@@ -110,7 +110,7 @@ def test_missing_comfyui_runtime_is_actionable(
     assert "astrid engines install comfyui --platform linux-x86_64-cu130 --placement local" in result.recovery_command
     assert f"installs Astrid-managed ComfyUI under {tmp_path / 'comfyui'}; user scope; no system changes" in result.recovery_command
     assert "bytes of locked models; additional runtime download size unknown" in result.recovery_command
-    assert "astrid generate image --target http://127.0.0.1:8188" in result.recovery_command
+    assert "astrid generate image --placement http://127.0.0.1:8188" in result.recovery_command
     assert "ComfyUI version provenance is unknown until the selected runtime is observed" in result.recovery_command
     assert "pip" not in result.recovery_command
 
@@ -128,7 +128,7 @@ def test_missing_comfyui_runtime_is_actionable(
     assert fixes[0]['details']['additional_bytes'] is None
     assert fixes[0]['details']['scope'] == (
         f"installs Astrid-managed ComfyUI under {tmp_path / 'comfyui'}; user scope; no system changes")
-    assert fixes[1]['argv'] == ['astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
+    assert fixes[1]['argv'] == ['astrid', 'generate', 'image', '--placement', 'http://127.0.0.1:8188']
     assert caught.value.recovery_command == ' '.join(fixes[0]['argv'])
 
 

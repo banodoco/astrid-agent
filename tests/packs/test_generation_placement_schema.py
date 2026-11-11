@@ -13,7 +13,7 @@ from astrid.core.pack.validate import validate_pack
 
 
 PLACEMENT = {"schema": "astrid.generation-placement.v1", "supported": ["local", "runpod"],
-             "default": "runpod", "engine": "vibecomfy-h3", "requires_endpoint": True}
+             "default": "runpod", "engine": "comfyui", "requires_endpoint": True}
 SCHEMAS = Path(__file__).resolve().parents[2] / "astrid/core/pack/schemas"
 INVALID = [
     None, False, "local", [], {},

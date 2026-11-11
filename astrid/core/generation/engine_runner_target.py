@@ -21,7 +21,16 @@ from .engine_runner import _HELPER_SCHEMA, _json, _object_info_sha256, _root, _s
 
 _OPERATIONS = {"identity", "empty-source", "node-lock", "lock-inputs", "commit-lock",
                "install-locks", "environment-spec", "models-config", "models-config-check"}
+_MODEL_OPERATIONS = {"models-config", "models-config-check"}
 _ENV_OPERATIONS = {"node-lock", "lock-inputs", "commit-lock", "install-locks", "environment-spec"}
+
+
+def _models_base(root, models_root):
+    """No explicit model root: <root>/models with no symlinks. An explicit volume cache is named as given."""
+    if models_root is None:
+        return str(_safe(root, "models"))
+    from .engine_runner import _models_root
+    return _models_root(str(root), models_root)
 
 
 def _safe(root, *relative):
@@ -256,6 +265,8 @@ def dispatch(operation, payload):
         keys.add("environment")
     if operation == "empty-source":
         keys.add("source")
+    if operation in _MODEL_OPERATIONS:
+        keys.add("models_root")
     if not isinstance(payload, dict) or set(payload) != keys or payload["schema"] != _HELPER_SCHEMA:
         raise RecipeValidationError("invalid engine helper request")
     recipe = recipes.load_recipe(payload["engine"], payload["platform"])
@@ -365,7 +376,7 @@ def dispatch(operation, payload):
     elif operation == "environment-spec":
         facts = _environment_spec(recipe, environment, root, digest)
     else:  # JSON is also valid YAML, avoids unsafe YAML interpolation.
-        configuration = {"astrid_engine": {"base_path": str(_safe(root, "models")),
+        configuration = {"astrid_engine": {"base_path": _models_base(root, payload["models_root"]),
                          **{name: name for name in ("diffusion_models", "text_encoders", "vae", "loras")}}}
         configuration_path = _safe(root, "runtime/extra_model_paths.yaml")
         configuration_bytes = _json(configuration).encode()

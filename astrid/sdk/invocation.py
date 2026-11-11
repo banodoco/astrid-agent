@@ -13,6 +13,7 @@ import os
 import platform
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -56,13 +57,9 @@ _INTERNAL_DISPATCH_TOKEN = object()
 
 class _RetainedPreparedOwner:
     """One host-owned monitor for one exact task and binding, including follow."""
-    def __init__(self, monitor, owner=None, execution_request=None, endpoint_checkout=None,
-                 h3_target=None, h3_endpoint=None):
+    def __init__(self, monitor, owner=None, execution_request=None):
         self.monitor, self.owner = monitor, owner
         self.execution_request = execution_request
-        self.endpoint_checkout = endpoint_checkout
-        self.h3_target = h3_target
-        self.h3_endpoint = json.loads(json.dumps(h3_endpoint)) if h3_endpoint is not None else None
         self.identity = None
         self.locator = None
         self.retained = False
@@ -87,9 +84,6 @@ class _RetainedPreparedOwner:
             raise CapabilityInvocationError('prepared owner requires exact task/run/capability identity')
         if self.locator is not None and self.locator != identity:
             raise CapabilityInvocationError('prepared owner observed a foreign task/run/capability')
-        if self.h3_endpoint is not None and self.retired and self.identity == identity:
-            return
-        self.verify_h3_endpoint()
         if self.execution_request is not None:
             if task.get('execution_request') != self.execution_request:
                 raise CapabilityInvocationError('prepared owner request differs from admitted RunPod task')
@@ -100,7 +94,7 @@ class _RetainedPreparedOwner:
                     or binding.get('effective_target', binding.get('target')) != self.execution_request['target']):
                 raise CapabilityInvocationError('prepared owner binding differs from the exact RunPod target')
             identity += (json.dumps(binding, sort_keys=True),)
-        # H3's parent runs on the default target. Its pack monitor verifies
+        # The audiovisual parent runs on the default target. Its pack monitor verifies
         # the delegated run child's exact binding once that child appears.
         if self.identity is not None and self.identity != identity:
             raise CapabilityInvocationError('prepared owner task or execution binding changed')
@@ -116,31 +110,10 @@ class _RetainedPreparedOwner:
             else:
                 self.activated = True
             return
-        if self.h3_endpoint is not None:
-            terminal = str(task.get('state') or task.get('status') or '').casefold() in {
-                'succeeded', 'completed', 'failed', 'cancelled', 'canceled'}
-            if terminal and self.retired:
-                return
-            self.monitor(task)
-            if terminal:
-                self.retired = True
-            return
         self.monitor(task)
 
-    def verify_h3_endpoint(self):
-        if self.h3_endpoint is not None:
-            from astrid.core.generation.preflight import freeze_h3_endpoint
-            try:
-                observed = freeze_h3_endpoint(self.h3_target)
-            except (ValueError, RuntimeError, OSError) as exc:
-                raise CapabilityInvocationError('H3 original retained endpoint is unavailable; retain custody') from exc
-            if observed != self.h3_endpoint['target']:
-                raise CapabilityInvocationError('H3 retained endpoint identity changed; retain original custody')
-
-
 def retain_prepared_owner(client, *, recovery_path, capability_id, monitor,
-                          owner=None, execution_request=None, endpoint_checkout=None,
-                          h3_target=None, h3_endpoint=None):
+                          owner=None, execution_request=None):
     """F07 host seam: retain the owner on the authenticated client, not a CLI stack."""
     if client is None or recovery_path is None:
         raise CapabilityValidationError('prepared generation requires an owner client and recovery_path')
@@ -150,12 +123,9 @@ def retain_prepared_owner(client, *, recovery_path, capability_id, monitor,
         client._generation_prepared_owners = owners
     key = (str(Path(recovery_path).expanduser().absolute()), capability_id)
     if key not in owners:
-        owners[key] = _RetainedPreparedOwner(monitor, owner, execution_request, endpoint_checkout,
-                                             h3_target, h3_endpoint)
+        owners[key] = _RetainedPreparedOwner(monitor, owner, execution_request)
     elif (owners[key].monitor is not monitor or owners[key].owner is not owner
-          or owners[key].execution_request != execution_request
-          or owners[key].endpoint_checkout is not endpoint_checkout
-          or owners[key].h3_target is not h3_target or owners[key].h3_endpoint != h3_endpoint):
+          or owners[key].execution_request != execution_request):
         raise CapabilityValidationError('prepared recovery path already belongs to another owner')
     return owners[key]
 
@@ -2236,9 +2206,22 @@ def _validate_generation_intent(
     return result
 
 
+# Builtin generation capability ids and their modality; the one table the
+# generation preflight and the modality resolver both read.
+_GENERATION_MODALITY_BY_CAPABILITY = {
+    "generation.generate_image": "image",
+    "generation.generate_image_codex": "image",
+    "generation.generate_image_openai": "image",
+    "generation.generate_video": "video",
+    "generation.generate_audio": "audio",
+}
+
+
 def _generation_capability_modality(capability: Any) -> str | None:
     """Resolve a generation modality, including metadata opt-in capabilities."""
     capability_id = str(getattr(capability, "id", capability))
+    if capability_id in _GENERATION_MODALITY_BY_CAPABILITY:
+        return _GENERATION_MODALITY_BY_CAPABILITY[capability_id]
     if capability_id.startswith("generation.generate_image"):
         return "image"
     if capability_id.startswith("generation.generate_video"):
@@ -3418,7 +3401,62 @@ def _capability_declares_outputs(capability: Any) -> bool:
     return bool(declared)
 
 
+def _runpod_generation_policy(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    spec = task.get("spec")
+    inputs = spec.get("inputs") if isinstance(spec, Mapping) else None
+    policy = inputs.get("placement_policy") if isinstance(inputs, Mapping) else None
+    try:
+        policy = json.loads(policy) if isinstance(policy, str) else policy
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(spec, Mapping) or not isinstance(policy, Mapping) or policy.get("kind") != "runpod":
+        return None
+    if spec.get("capability_id") == "runpod.claim":
+        paid = policy.get("paid_consent")
+        return paid if isinstance(paid, Mapping) else None
+    return policy if spec.get("capability_id") == "vibecomfy.run" else None
+
+
 def _wait_for_kernel_task(
+    client: Any,
+    *,
+    task_id: str,
+    run_id: str,
+    timeout_seconds: float,
+    poll_seconds: float,
+    read_managed_outputs: bool = False,
+    expects_outputs: bool = False,
+    owner_tick: Any | None = None,
+    initial_task: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool, str]:
+    """Follow a task, cancelling an admitted RunPod generation on caller Ctrl-C."""
+    latest: dict[str, Any] = dict(initial_task) if isinstance(initial_task, Mapping) else {}
+
+    def observed(task):
+        latest.clear()
+        latest.update(task)
+        if owner_tick is not None:
+            owner_tick(task)
+
+    try:
+        return _wait_for_kernel_task_loop(
+            client, task_id=task_id, run_id=run_id, timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds, read_managed_outputs=read_managed_outputs,
+            expects_outputs=expects_outputs, owner_tick=observed)
+    except KeyboardInterrupt as interrupt:
+        policy = _runpod_generation_policy(latest)
+        cancel = getattr(getattr(client, "tasks", None), "cancel", None)
+        if policy is not None and callable(cancel):
+            try:
+                result = cancel(task_id, idempotency_key=f"runpod-interrupt-{uuid.uuid4().hex}")
+                if getattr(result, "ok", True) is False:
+                    interrupt.add_note("RunPod task cancellation was not confirmed; inspect this task before retrying.")
+            except Exception:
+                interrupt.add_note("RunPod task cancellation was not confirmed; inspect this task before retrying.")
+        raise
+
+
+def _wait_for_kernel_task_loop(
     client: Any,
     *,
     task_id: str,
@@ -3441,7 +3479,9 @@ def _wait_for_kernel_task(
             "runtime client does not expose task status for synchronous invocation"
         )
 
-    deadline = time.monotonic() + float(timeout_seconds)
+    started = last_heartbeat = time.monotonic()
+    effective_timeout = float(timeout_seconds)
+    deadline = started + effective_timeout
     while True:
         try:
             observed = show(task_id)
@@ -3478,6 +3518,18 @@ def _wait_for_kernel_task(
         task = dict(data)
         if owner_tick is not None:
             owner_tick(task)
+        runpod_policy = _runpod_generation_policy(task)
+        if runpod_policy is not None and runpod_policy.get("wait_for_capacity", True) is not False:
+            capacity_timeout = runpod_policy.get("capacity_timeout_seconds")
+            if capacity_timeout is None and float(timeout_seconds) == 3600.0:
+                deadline = None
+            elif (type(capacity_timeout) in (int, float) and math.isfinite(capacity_timeout)
+                  and capacity_timeout > 0):
+                effective_timeout = float(timeout_seconds) + capacity_timeout
+                deadline = started + effective_timeout
+            if time.monotonic() - last_heartbeat >= 60:
+                print(f"Still following RunPod task {task_id}; press Ctrl-C to cancel.", file=sys.stderr, flush=True)
+                last_heartbeat = time.monotonic()
         state = str(task.get("state") or task.get("status") or "").lower()
         attempt_id = str(task.get("attempt_id") or "")
         if state in {"succeeded", "completed"}:
@@ -3574,8 +3626,8 @@ def _wait_for_kernel_task(
                 },
             }, False, attempt_id
 
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        remaining = deadline - time.monotonic() if deadline is not None else float(poll_seconds)
+        if deadline is not None and remaining <= 0:
             return {
                 "ok": False,
                 "run_id": run_id,
@@ -3589,11 +3641,11 @@ def _wait_for_kernel_task(
                     "message": "render task did not reach a terminal state before the wait timeout",
                     "details": {
                         "state": state or "unknown",
-                        "timeout_seconds": float(timeout_seconds),
+                        "timeout_seconds": effective_timeout,
                     },
                 },
             }, False, attempt_id
-        time.sleep(min(float(poll_seconds), remaining))
+        time.sleep(min(float(poll_seconds), remaining, 60.0 if runpod_policy is not None else float(poll_seconds)))
 
 
 def _observe_task_invocation(
@@ -3728,6 +3780,7 @@ def _observe_task_invocation(
             read_managed_outputs=read_managed_outputs,
             expects_outputs=expects_outputs,
             owner_tick=owner_tick,
+            initial_task=raw_result.get("task"),
         )
         if waited_attempt_id:
             attempt_id = waited_attempt_id
@@ -4381,30 +4434,9 @@ def invoke(
         raise TypeError("private capabilities can only be invoked through internal dispatch")
     if not isinstance(read_managed_outputs, bool):
         raise CapabilityValidationError("read_managed_outputs must be a boolean")
-    if resume and recovery_path is None and capability_id != "h3_av.transform":
+    if resume and recovery_path is None:
         raise CapabilityValidationError("resume requires recovery_path")
     owner_tick = _prepared_owner_for(client, recovery_path, capability_id)
-    if capability_id == "h3_av.transform" and not child_mode:
-        public_inputs = dict(inputs or {})
-        for name in ("resume", "dry_run"):
-            if name in public_inputs and type(public_inputs[name]) is not bool:
-                raise CapabilityValidationError(f"H3 {name} must be an explicit boolean")
-        resume = public_inputs.pop("resume", resume)
-        dry_run = public_inputs.pop("dry_run", dry_run)
-        inputs = public_inputs
-        if recovery_path is None and out is not None and (resume or public_inputs.get("prepared_worker") is not None):
-            recovery_path = Path(out) / "h3-parent-recovery.json"
-        if resume and recovery_path is None:
-            raise CapabilityValidationError("resume requires recovery_path")
-        if public_inputs.get("prepared_worker") is not None and not dry_run:
-            if recovery_path is None:
-                raise CapabilityValidationError("prepared H3 requires a parent recovery receipt")
-            owner_tick = _prepared_owner_for(client, recovery_path, capability_id)
-            if owner_tick is None:
-                from astrid.packs.runpod.prepared_task import PreparedH3OwnerMonitor
-                owner_tick = retain_prepared_owner(client, recovery_path=recovery_path,
-                    capability_id=capability_id,
-                    monitor=PreparedH3OwnerMonitor(client, public_inputs["prepared_worker"]))
     if owner_tick is not None and not wait and not dry_run:
         if (not callable(getattr(getattr(owner_tick, 'owner', None), 'retain', None))
                 and not callable(getattr(client, 'retain_generation_owner', None))):
@@ -4423,9 +4455,6 @@ def invoke(
             "execution_request", "idempotency_context", "project_root", "extra_pack_roots",
             "python_exec", "orchestrator_args", "argv", "read_managed_outputs", "child_delegation",
         )}
-        if getattr(owner_tick, 'h3_endpoint', None) is not None:
-            owner_tick.verify_h3_endpoint()
-            request['h3_endpoint'] = owner_tick.h3_endpoint
         try:
             with AdmissionReceipt(recovery_path, request=request, client=client, resume=resume) as receipt:
                 if resume:
@@ -4482,9 +4511,6 @@ def invoke(
     # Runtime task kinds and existing SDK result DTOs retain their contracts.
     if kind == "action":
         kind = capability.capability_type
-
-    if capability.id == "h3_av.transform" and "host_output_root" in (inputs or {}):
-        raise CapabilityValidationError("H3 output custody is host-owned")
 
     intent_modality = _generation_capability_modality(capability)
     request_inputs = dict(inputs or {})
@@ -4546,7 +4572,7 @@ def invoke(
         variant_context = {"variant_of": variant_of, "primary": primary}
     generation_intent: dict[str, Any] | None = None
     if "generation_intent" in request_inputs:
-        if intent_modality is None and capability.id not in {"vibecomfy.run", "h3_av.publication_finalizer"}:
+        if intent_modality is None and capability.id != "vibecomfy.run":
             raise CapabilityValidationError(
                 "generation_intent is only accepted for generation capabilities"
             )
@@ -4579,37 +4605,9 @@ def invoke(
                 "output cardinality is not safely inferable at admission"
             )
 
-    h3_preview_controls = None
-    if dry_run and capability.id == "h3_av.transform" and not child_mode:
-        from astrid.packs.h3_av.actions.transform.run import PUBLIC_CONTROLS, public_controls
-        h3_preview_controls = public_controls(request_inputs)
-        request_inputs = {key: value for key, value in request_inputs.items() if key not in PUBLIC_CONTROLS}
-    if not dry_run and capability.id == "h3_av.transform" and not child_mode:
-        if capability.capability_type != "executor":
-            raise CapabilityPreconditionError("H3 requires a Runtime-admitted executor parent")
-        if validated_child_policy is not None or outputs or orchestrator_args:
-            raise CapabilityValidationError("tracked H3 parent owns its stage and output mapping")
-        if normalized_execution_request is not None:
-            target = normalized_execution_request.get("target", {"kind": "default"})
-            if target != {"kind": "default"} or normalized_execution_request.get("inputs"):
-                raise CapabilityValidationError("tracked H3 parent requires its default target and managed roots")
-        project = project or _runtime_selected_project(_client)
-        from astrid.core.contracts.errors import AstridError
-        from astrid.packs.h3_av.actions.transform.run import project_parent
-        try:
-            request_inputs, validated_child_policy = project_parent(
-                request_inputs, project=project, client=_client, registry=registries[0],
-                **({'h3_endpoint': owner_tick.h3_endpoint}
-                   if getattr(owner_tick, 'h3_endpoint', None) is not None else {}))
-            project = request_inputs["plan"]["project"]
-        except (AstridError, ValueError, OSError) as exc:
-            raise CapabilityPreconditionError(str(exc)) from exc
-
     from .actions import validate_action_inputs
 
     effective_inputs = dict(request_inputs)
-    if child_mode and capability.id == "h3_av.publication_finalizer" and generation_intent is not None:
-        effective_inputs["generation_intent"] = generation_intent
     for port in capability.inputs if hasattr(capability, "inputs") else ():
         if port.name not in effective_inputs and port.default is not None:
             effective_inputs[port.name] = port.default
@@ -4870,13 +4868,7 @@ def invoke(
     # and live invocation.  This keeps generic ``sdk.invoke`` from accepting
     # an impossible model/mode/backend cell (or FLF request missing its end
     # frame) and discovering the problem only after kernel admission.
-    modality = {
-        "generation.generate_image": "image",
-        "generation.generate_image_codex": "image",
-        "generation.generate_image_openai": "image",
-        "generation.generate_video": "video",
-        "generation.generate_audio": "audio",
-    }.get(str(capability.id))
+    modality = _GENERATION_MODALITY_BY_CAPABILITY.get(str(capability.id))
     if modality is not None:
         model_registry = sdk_module._load_model_registry(
             project_root=project_root,
@@ -4926,13 +4918,6 @@ def invoke(
     # already resolved manifest DTO and does not import either runner or any
     # local project/run authority.
     if dry_run:
-        if h3_preview_controls is not None:
-            from astrid.packs.h3_av.actions.transform.run import STAGES
-            return InvocationResult(capability_id=capability.id, capability_type=capability.capability_type,
-                native_kind=capability.native_kind, ok=True, outputs={}, raw_result={
-                    "status": "planned", "parent_target": {"kind": "default"},
-                    "run_execution_request": h3_preview_controls["run_execution_request"],
-                    "stages": [{"stage": name, "capability_id": child} for name, child in STAGES]})
         try:
             raw_result, preview_ok = _manifest_dry_run_result(
                 capability,
@@ -5064,8 +5049,6 @@ def invoke(
             kernel_kwargs["registry"] = registry
         if rerun:
             kernel_kwargs["rerun"] = True
-        if getattr(owner_tick, 'h3_endpoint', None) is not None:
-            owner_tick.verify_h3_endpoint()
         kr, kt, ka, mpath, raw_result, ok, _ = _kernel_invoke(
             capability,
             **kernel_kwargs,

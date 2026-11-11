@@ -1,6 +1,7 @@
 """CPU composition proof: selected target provisioning owns auxiliary custody."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -135,11 +136,11 @@ def test_engine_model_locks_leave_foley_assets_in_the_workflow_declaration():
     # Foley is part of the H3/RunPod engine closure; keep it out of unrelated locks.
     for path in (engine_recipe._ROOT / 'packs').glob('*/models.lock.json'):
         assert ('hunyuan_foley' in path.read_text()) == (path.parent.name == 'runpod'), path
-    for engine in ('comfyui', 'vibecomfy-h3'):
+    for engine in ('comfyui',):
         models = engine_recipe.load_recipe_model_lock(engine, 'linux-x86_64-cu130').models
         foley_models = [model for model in models
                         if model.destination.startswith('hunyuan_foley/')]
-        if engine == 'vibecomfy-h3':
+        if engine == 'comfyui':
             assert len(foley_models) == len(assets) == 10
             assert {
                 (model.destination, model.repository, model.revision,
@@ -161,8 +162,8 @@ def test_target_source_and_manifest_pins_use_the_current_custody_provider():
     vc = Path(vibecomfy.__file__).resolve().parents[1]
     revision = subprocess.check_output(['git', '-C', str(vc), 'rev-parse', 'HEAD'], text=True).strip()
     for engine, platform in [('comfyui', 'linux-x86_64-cu130'),
-                             ('vibecomfy-h3', 'linux-x86_64-cu130'),
-                             ('vibecomfy', 'windows-x86_64-cu130')]:
+                             ('comfyui', 'linux-x86_64-cu130'),
+                             ('comfyui', 'windows-x86_64-cu130')]:
         recipe = engine_recipe.load_recipe(engine, platform)
         assert next(source.pin.revision for source in recipe.sources if source.name == 'vibecomfy') == revision
         for environment in recipe.environments:
@@ -294,15 +295,25 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
         return copy.deepcopy(observed)
     monkeypatch.setattr(ComfyTargetClient, 'request_json', http)
     downloads = []
-    def opener(request, timeout):
-        data = contents[request.full_url]
-        start, end = map(int, request.get_header('Range').removeprefix('bytes=').split('-'))
-        downloads.append(request.full_url)
-        response = io.BytesIO(data[start:end + 1])
-        response.status = 206
-        response.headers = {'Content-Range': f'bytes {start}-{end}/{len(data)}'}
-        return response
-    return SimpleNamespace(root=root, entry=entry, workflow=workflow, opener=opener,
+    class Response:
+        def __init__(self, data, start):
+            self.status_code, self.url, self._body = (206 if start else 200), None, data[start:]
+            self.headers = {'Content-Range': f'bytes {start}-{len(data) - 1}/{len(data)}'} if start else {}
+
+        def iter_bytes(self):
+            yield self._body
+
+    class Client:
+        """The httpx-style client seam of VibeComfy fetch."""
+
+        @contextlib.contextmanager
+        def stream(self, method, url, headers=None, **kwargs):
+            data = contents[url]
+            start = int((headers or {}).get('Range', 'bytes=0-').removeprefix('bytes=').split('-')[0])
+            downloads.append(url)
+            yield Response(data, start)
+    client = Client()
+    return SimpleNamespace(root=root, entry=entry, workflow=workflow, client=client,
         downloads=downloads, events=events, receipt=receipt_path, alignment=alignment)
 
 
@@ -313,9 +324,9 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
     entry_id = fixture.entry['id']
     original_receipt = fixture.receipt.read_bytes()
     with pytest.raises(fixture.alignment.AlignmentError, match='explicit consent'):
-        align(entry_id=entry_id, apply=True, opener=fixture.opener)
+        align(entry_id=entry_id, apply=True, client=fixture.client)
     assert fixture.downloads == []
-    result = align(entry_id=entry_id, apply=True, consent=['user_env'], opener=fixture.opener)
+    result = align(entry_id=entry_id, apply=True, consent=['user_env'], client=fixture.client)
     assert result['status'] == 'ready'
     assert len(fixture.downloads) == len(fixture.workflow.metadata['model_assets'])
     client = preflight.select_generation_target('managed', entry_id=entry_id)
@@ -338,7 +349,7 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
         if change in {'hash', 'size'}:
             with pytest.raises(fixture.alignment.IntegrityError, match='differs from its lock'):
                 align(entry_id=entry_id, apply=True, consent=['user_env'],
-                      opener=lambda *a, **k: pytest.fail('download after corruption'))
+                      client=SimpleNamespace(stream=lambda *a, **k: pytest.fail('download after corruption')))
         if change == 'missing':
             with pytest.raises(preflight.GenerationReadinessError) as caught:
                 preflight.select_generation_target('managed', entry_id=entry_id)
@@ -522,7 +533,7 @@ def test_user_authored_managed_selection_uses_receipt_custody(tmp_path, monkeypa
     assert set(fixture.requests) == {'/object_info'}
 
 
-# --- interim inventory wire: receipt rows -> host document -> child -----------------------------
+# --- target custody rows (declared rows for --align trust) ---------------------------------------
 
 def _rows_for(workflow):
     from astrid.core.generation.target_inventory import declared_rows
@@ -571,29 +582,21 @@ def test_local_comfy_url_without_inventory_keeps_the_local_disk_check(tmp_path, 
         local_server_engine._approve_live(bundle, {}, provider)
 
 
-def test_host_inventory_channel_is_absent_for_local_and_strict_when_present(tmp_path, monkeypatch):
+def test_trust_flag_is_the_only_host_channel_and_is_consumed_once(monkeypatch):
+    """Plan 32 T5: no machine inventory reaches a child; --align trust uses the declared rows."""
     from astrid.core.generation import target_inventory
-    url = 'http://127.0.0.1:12345'
-    monkeypatch.delenv(target_inventory.ENV, raising=False)
-    assert local_server_engine._inventory_from_environment(SimpleNamespace(), url) is None
-    row = {'name': 'a.bin', 'subdir': 'x', 'size': 3, 'sha256': 'a' * 64}
-    for bad in ('not json', '[]', json.dumps({'mode': 'inventory', 'comfy_url': url}),
-                json.dumps({'mode': 'other', 'comfy_url': url, 'models': []}),
-                json.dumps({'mode': 'inventory', 'comfy_url': url, 'models': [{**row, 'extra': 1}]}),
-                json.dumps({'mode': 'inventory', 'comfy_url': url, 'models': [{**row, 'size': '3'}]}),
-                json.dumps({'mode': 'trust', 'comfy_url': url, 'models': [row]})):
-        monkeypatch.setenv(target_inventory.ENV, bad)
-        with pytest.raises(local_server_engine.ProductionEngineError):
-            local_server_engine._inventory_from_environment(SimpleNamespace(), url)
-        assert target_inventory.ENV not in os.environ  # consumed, never inherited by a subprocess
-    monkeypatch.setenv(target_inventory.ENV, target_inventory.build_document('inventory', url, [row]))
-    assert local_server_engine._inventory_from_environment(SimpleNamespace(), url) == (row,)
+    workflow = SimpleNamespace(metadata={'model_assets': [
+        {'name': 'a.bin', 'subdir': 'x', 'sha256': 'sha256:' + 'a' * 64, 'size_bytes': 3}]})
+    bundle = SimpleNamespace(workflow=workflow)
+    monkeypatch.delenv(target_inventory.TRUST_ENV, raising=False)
+    assert local_server_engine._trust_from_environment(bundle) is None
+    for other in ('align', 'check', 'inventory', ''):
+        monkeypatch.setenv(target_inventory.TRUST_ENV, other)
+        assert local_server_engine._trust_from_environment(bundle) is None
+        assert target_inventory.TRUST_ENV not in os.environ  # consumed, never inherited by a subprocess
+    monkeypatch.setenv(target_inventory.TRUST_ENV, 'trust')
+    assert local_server_engine._trust_from_environment(bundle) == (
+        {'name': 'a.bin', 'subdir': 'x', 'size': 3, 'sha256': 'a' * 64},)
+    assert not hasattr(target_inventory, 'ENV') and not hasattr(target_inventory, 'build_document')
 
 
-def test_child_refuses_inventory_for_another_comfy_url(monkeypatch):
-    from astrid.core.generation import target_inventory
-    row = {'name': 'a.bin', 'subdir': '', 'size': 3, 'sha256': 'a' * 64}
-    monkeypatch.setenv(target_inventory.ENV, target_inventory.build_document(
-        'inventory', 'http://127.0.0.1:1111', [row]))
-    with pytest.raises(local_server_engine.ProductionEngineError, match='another ComfyUI URL'):
-        local_server_engine._inventory_from_environment(SimpleNamespace(), 'http://127.0.0.1:2222')

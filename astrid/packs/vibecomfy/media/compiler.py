@@ -60,38 +60,22 @@ class VibeProfileSemantics:
     required_runtime_fields: tuple[str, ...]
 
 
-_PIP_EMBEDDED = VibeProfileSemantics(
-    profile_id="pip_embedded",
-    engine_identity=f"vibecomfy.pip_embedded@{ENGINE_REVISION}",
-    lifecycle="embedded_session",
+_LOCAL_SERVER = VibeProfileSemantics(
+    profile_id="local_server",
+    engine_identity=f"vibecomfy.local_server@{ENGINE_REVISION}",
+    lifecycle="external_server",
     output_transport="published_outputs",
     required_runtime_fields=("task_identity", "profile_digest", "model_bytes_digest"),
-)
-_CHECKOUT_SERVER = VibeProfileSemantics(
-    profile_id="checkout_server",
-    engine_identity=f"vibecomfy.checkout_server@{ENGINE_REVISION}",
-    lifecycle="managed_checkout_session",
-    output_transport="checkout_server_publication",
-    required_runtime_fields=(
-        "task_identity",
-        "runtime_instance_id",
-        "environment_fingerprint",
-        "model_bytes_digest",
-        "declared_root",
-        "declared_port",
-    ),
 )
 
 
 def profile_semantics(profile_id: str) -> VibeProfileSemantics:
     """Resolve one of the two explicitly supported Vibe execution profiles."""
 
-    if profile_id == _PIP_EMBEDDED.profile_id:
-        return _PIP_EMBEDDED
-    if profile_id == _CHECKOUT_SERVER.profile_id:
-        return _CHECKOUT_SERVER
+    if profile_id == _LOCAL_SERVER.profile_id:
+        return _LOCAL_SERVER
     raise MediaCompileError(
-        f"unsupported Vibe profile {profile_id!r}; expected pip_embedded or checkout_server"
+        f"unsupported Vibe profile {profile_id!r}; expected local_server"
     )
 
 
@@ -304,7 +288,7 @@ def _compile(
     )
 
 
-def compile_wan_2_2_t2i(request: WanT2IRequest, *, profile: str = "pip_embedded") -> CompiledVibeMedia:
+def compile_wan_2_2_t2i(request: WanT2IRequest, *, profile: str = "local_server") -> CompiledVibeMedia:
     """Compile direct Vibe Wan 2.2 text-to-image semantics.
 
     This is intentionally a VibeComfy capability, not an invocation of the
@@ -336,7 +320,7 @@ def compile_wan_2_2_t2i(request: WanT2IRequest, *, profile: str = "pip_embedded"
     )
 
 
-def compile_wan_2_2_i2v(request: WanI2VRequest, *, profile: str = "pip_embedded") -> CompiledVibeMedia:
+def compile_wan_2_2_i2v(request: WanI2VRequest, *, profile: str = "local_server") -> CompiledVibeMedia:
     """Compile direct Vibe Wan 2.2 image-to-video semantics."""
 
     image_ref = _required_text(request.image_ref, "image_ref")
@@ -361,7 +345,7 @@ def compile_wan_2_2_i2v(request: WanI2VRequest, *, profile: str = "pip_embedded"
     )
 
 
-def compile_video_enhance(request: VideoEnhanceRequest, *, profile: str = "pip_embedded") -> CompiledVibeMedia:
+def compile_video_enhance(request: VideoEnhanceRequest, *, profile: str = "local_server") -> CompiledVibeMedia:
     """Compile the bounded canonical video-upscale profile.
 
     The ready graph is deliberately narrower than the historical UI request:
@@ -421,7 +405,7 @@ def compile_video_enhance(request: VideoEnhanceRequest, *, profile: str = "pip_e
     )
 
 
-def compile_character_animation(request: CharacterAnimationRequest, *, profile: str = "pip_embedded") -> CompiledVibeMedia:
+def compile_character_animation(request: CharacterAnimationRequest, *, profile: str = "local_server") -> CompiledVibeMedia:
     """Compile Wan Animate reference-image plus driving-video semantics."""
 
     ensure_media_capability_supported("vibecomfy.character_animation")

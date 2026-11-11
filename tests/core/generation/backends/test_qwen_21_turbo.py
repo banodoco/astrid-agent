@@ -108,7 +108,7 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
         monkeypatch.setattr(entries, 'ready_entries', lambda: [])
         selected = GenerationFacade()._generate_on_target(
             registry=ModelRegistry.load_default(), model=None, mode=mode, modality='image',
-            target=client.target.url, execution='local', inputs=params, dry_run=True,
+            placement=client.target.url, execution='local', inputs=params, dry_run=True,
         )
         assert selected['entry']['id'] == model
         assert selected['entry']['model'] == model
@@ -158,7 +158,7 @@ def test_public_lock_matches_workflow_assets():
 
 def test_shipped_windows_recipe_accepts_updated_lock():
     from astrid.core.generation.engine_recipe import load_recipe_model_lock
-    lock = load_recipe_model_lock('vibecomfy', 'windows-x86_64-cu130')
+    lock = load_recipe_model_lock('comfyui', 'windows-x86_64-cu130')
     assert {model.path for model in lock.models} == set(ASSETS)
 
 
@@ -167,7 +167,7 @@ def test_shipped_graph_assets_match_indexed_recipe_lock(model, mode, template):
     """Follow the shipped graph through the verified recipe to its model lock."""
     from astrid.core.generation.engine_recipe import load_recipe, load_recipe_model_lock
 
-    recipe = load_recipe('vibecomfy', 'windows-x86_64-cu130')
+    recipe = load_recipe('comfyui', 'windows-x86_64-cu130')
     lock = load_recipe_model_lock(recipe.engine, recipe.platform)
     rows = {row.destination: row for row in lock.models}
     workflow = workflow_from_ready(template)
@@ -189,11 +189,11 @@ def test_shipped_graph_assets_match_indexed_recipe_lock(model, mode, template):
 def test_generate_and_h3_share_vibecomfy_pin():
     from astrid.core.generation.engine_recipe import load_recipe
 
-    generate = load_recipe('vibecomfy', 'windows-x86_64-cu130')
-    h3 = load_recipe('vibecomfy-h3', 'linux-x86_64-cu130')
+    generate = load_recipe('comfyui', 'windows-x86_64-cu130')
+    h3 = load_recipe('comfyui', 'linux-x86_64-cu130')
     generate_sources = {s.name: (s.pin.repository, s.pin.revision) for s in generate.sources}
     h3_sources = {s.name: (s.pin.repository, s.pin.revision) for s in h3.sources}
-    assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
+    assert generate_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'  # v0.36.0
     assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
     assert generate_sources['vibecomfy'] == (
         'https://github.com/banodoco/VibeComfy.git', VIBECOMFY_ENGINE_REVISION)

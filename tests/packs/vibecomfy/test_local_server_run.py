@@ -255,10 +255,11 @@ def test_missing_model_fails_before_queueing(comfy, tmp_path, choices):
     assert not comfy.prompts
 
 
-def test_managed_image_is_uploaded_and_bound_to_load_image(comfy, tmp_path):
+@pytest.mark.parametrize('default_image', ['original.png', ''])
+def test_managed_image_is_uploaded_and_bound_to_load_image(comfy, tmp_path, default_image):
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     workflow = _workflow()
-    workflow["nodes"][0].update(type="LoadImage", widgets_values=["original.png"],
+    workflow["nodes"][0].update(type="LoadImage", widgets_values=[default_image],
                                  inputs=[{"name": "image", "type": "COMBO", "widget": {"name": "image"}, "link": None}],
                                  properties={"Node name for S&R": "LoadImage"})
     comfy.workflow.write_text(json.dumps(workflow))
@@ -277,6 +278,22 @@ def test_managed_image_is_uploaded_and_bound_to_load_image(comfy, tmp_path):
     assert comfy.prompts[0]["1"]["inputs"]["image"] == "astrid/task-1/uploaded.png"
     upload = next(body for method, path, body in comfy.calls if path == "/upload/image")
     assert b"astrid/task-1" in upload
+
+
+def test_connected_blank_image_without_binding_is_refused(comfy, tmp_path):
+    workflow = _workflow()
+    workflow["nodes"][0].update(type="LoadImage", widgets_values=[""],
+        inputs=[{"name": "image", "type": "COMBO", "widget": {"name": "image"}, "link": None}],
+        properties={"Node name for S&R": "LoadImage"})
+    comfy.workflow.write_text(json.dumps(workflow))
+    comfy.schema.pop("SeedImage")
+    comfy.schema["LoadImage"] = {"input": {"required": {"image": [["available.png"], {"image_upload": True}]}},
+                                 "output": ["IMAGE", "MASK"], "output_node": False}
+    with pytest.raises(production_engine.ProductionEngineError):
+        production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="task-1",
+            comfy_url=comfy.url, comfy_output_dir=str(comfy.output), profile_id="local_server")
+    assert not comfy.prompts
 
 
 def test_explicit_seed_is_preserved(comfy, tmp_path):
@@ -521,3 +538,171 @@ def test_seedless_rerun_uses_attempt_specific_save_prefix(comfy, tmp_path):
     assert prefixes[0] != prefixes[1]
     assert all(prefix.startswith("astrid") for prefix in prefixes)
     assert comfy.workflow.read_bytes() == original
+
+
+@pytest.mark.parametrize('prefix', ['custom/name', ''])
+def test_explicit_save_prefix_keeps_attempt_namespace_and_user_evidence(comfy, tmp_path, prefix):
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    loaded = production_engine.load_workflow_path(comfy.workflow, tmp_path / 'author', comfy_url=comfy.url)
+    bundle = production_engine._canonical_bundle_value(loaded.resolved)
+    bundle.workflow.register_input('save_name', '2', 'filename_prefix', 'astrid', type='STRING')
+    emitted = emit_bundle(bundle.workflow, tmp_path / 'canonical/workflow.py', {'operation': 'authored'})
+    result = production_engine.run_workflow_result_path(
+        emitted.python_path, tmp_path / 'attempt/outputs', task_identity='task', attempt_identity='attempt-1',
+        comfy_url=comfy.url, comfy_output_dir=str(comfy.output), profile_id='local_server',
+        workflow_input_bindings={'save_name': prefix})
+    assert comfy.prompts[-1]['2']['inputs']['filename_prefix'] == prefix + '_astrid_attempt-1'
+    assert result.managed_generation_result['inputs']['save_name'] == prefix
+
+
+def test_explicit_trust_is_unverified_in_native_attempt_and_published_receipt(comfy, tmp_path, monkeypatch):
+    monkeypatch.setenv('ASTRID_ALIGN', 'trust')
+    result = production_engine.run_workflow_result_path(
+        comfy.workflow, tmp_path / 'attempt' / 'outputs', task_identity='task-trust',
+        attempt_identity='attempt-trust', comfy_url=comfy.url, profile_id='local_server',
+    )
+    receipt_path = Path(result.managed_generation_result_path)
+    receipt = json.loads(receipt_path.read_text())
+    attempt = json.loads(receipt_path.with_name('attempt.json').read_text())
+    expected = {'mode': 'trust', 'status': 'unverified', 'verified': False}
+    assert receipt['evidence']['producer']['alignment'] == expected
+    assert attempt['alignment'] == expected
+
+
+def test_trust_refuses_a_native_attempt_symlink(comfy, tmp_path, monkeypatch):
+    run = importlib.import_module('vibecomfy.runtime.run')
+    monkeypatch.setenv('ASTRID_ALIGN', 'trust')
+    original = run.run_sync
+    outside = tmp_path / 'outside-attempt.json'
+    outside.write_text('{"sentinel": true}')
+    def substitute_attempt(*args, **kwargs):
+        result = original(*args, **kwargs)
+        native = Path(result.managed_generation_result_path).with_name('attempt.json')
+        native.unlink()
+        native.symlink_to(outside)
+        return result
+    monkeypatch.setattr(run, 'run_sync', substitute_attempt)
+    with pytest.raises(production_engine.ProductionEngineError, match='native attempt escaped attempt custody'):
+        production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / 'attempt' / 'outputs', task_identity='task-trust',
+            attempt_identity='attempt-trust', comfy_url=comfy.url, profile_id='local_server',
+        )
+    assert outside.read_text() == '{"sentinel": true}'
+
+
+@pytest.mark.parametrize('outcome', ['success', 'failure', 'cancel'])
+def test_managed_preparation_retains_native_http_identity_on_all_outcomes(comfy, tmp_path, monkeypatch, outcome):
+    prepared = {'placement': 'managed', 'alignment': {'mode': 'align', 'status': 'ready', 'verified': True},
+                'manifest': {'models': []}, 'execution_identity': 'execution'}
+    monkeypatch.setattr('astrid.core.generation.managed_preparation.read_preparation', lambda **kwargs: prepared)
+    run = importlib.import_module('vibecomfy.runtime.run')
+    original = run.run_sync
+    observed = {}
+    def invoke(*args, **kwargs):
+        context = kwargs.get('run_context')
+        assert context is not None, 'managed run needs an exact native context on failure too'
+        observed['path'] = context.receipt_path
+        if outcome == 'failure':
+            raise ValueError('forced native failure')
+        if outcome == 'cancel':
+            raise SystemExit(143)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(run, 'run_sync', invoke)
+    def execute():
+        return production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / 'attempt' / 'outputs', task_identity='task-managed',
+            attempt_identity='attempt-managed', comfy_url=comfy.url, profile_id='local_server')
+    if outcome == 'success':
+        observed['result'] = execute()
+    else:
+        with pytest.raises(ValueError if outcome == 'failure' else SystemExit): execute()
+    attempt = json.loads(observed['path'].read_text())
+    assert attempt['placement'] == 'managed'
+    assert attempt['alignment'] == prepared['alignment']
+    assert attempt['managed_engine_preparation'] == prepared
+    if outcome == 'success':
+        assert attempt['adapter']['kind'] == 'external'
+        payload = json.loads(Path(observed['result'].managed_generation_result_path).read_text())
+        embedded = payload['evidence']['producer']['attempt']['record']
+        assert embedded['managed_engine_preparation'] == prepared
+        assert embedded['adapter']['kind'] == 'external'
+
+
+def test_managed_preparation_refuses_native_attempt_symlink(comfy, tmp_path, monkeypatch):
+    monkeypatch.setattr('astrid.core.generation.managed_preparation.read_preparation', lambda **kwargs:
+        {'placement': 'managed', 'alignment': {'mode': 'align'}, 'manifest': {'models': []}})
+    run = importlib.import_module('vibecomfy.runtime.run')
+    original = run.run_sync
+    outside = tmp_path / 'outside-managed-attempt.json'
+    outside.write_text('{"sentinel": true}')
+    def substitute(*args, **kwargs):
+        result = original(*args, **kwargs)
+        native = Path(result.managed_generation_result_path).with_name('attempt.json')
+        native.unlink()
+        native.symlink_to(outside)
+        return result
+    monkeypatch.setattr(run, 'run_sync', substitute)
+    with pytest.raises(production_engine.ProductionEngineError, match='native attempt escaped attempt custody'):
+        production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / 'attempt' / 'outputs', task_identity='task-managed',
+            attempt_identity='attempt-managed', comfy_url=comfy.url, profile_id='local_server')
+    assert outside.read_text() == '{"sentinel": true}'
+
+
+
+@pytest.mark.parametrize('outcome', ['success', 'pre-post-failure', 'accepted-failure'])
+def test_trust_absent_auxiliary_asset_is_unverified_in_every_astrid_record(comfy, tmp_path, monkeypatch, outcome):
+    from vibecomfy.workflow_bundle import emit_bundle
+    loaded = production_engine.load_workflow_path(comfy.workflow, tmp_path / 'author-trust', comfy_url=comfy.url)
+    bundle = production_engine._canonical_bundle_value(loaded.resolved)
+    bundle.workflow.metadata['model_assets'] = [{'name': 'absent-aux.bin', 'subdir': 'auxiliary',
+        'url': 'https://example.invalid/absent-aux.bin', 'sha256': 'a' * 64, 'size_bytes': 123}]
+    canonical = emit_bundle(bundle.workflow, tmp_path / 'trusted-aux/workflow.py', {'operation': 'authored'})
+    monkeypatch.setenv('ASTRID_ALIGN', 'trust')
+    destination = tmp_path / 'attempt-aux/outputs'
+    observed = []
+    def snapshot():
+        documents = list(destination.rglob('*.json')) + list(destination.rglob('*.jsonl'))
+        text = '\n'.join(path.read_text() for path in documents)
+        assert 'verified_target_provisioning' not in text
+        assert 'declared_unverified' in text and 'absent-aux.bin' in text
+        observed.append(True)
+    from astrid.core.generation.backends.vibecomfy_local_server import TargetRuntimeClient, AttachedArtifacts
+    post = TargetRuntimeClient._post_prompt
+    async def submit(self, *args, **kwargs):
+        snapshot()
+        if outcome == 'pre-post-failure': raise ValueError('forced failure before POST')
+        return await post(self, *args, **kwargs)
+    monkeypatch.setattr(TargetRuntimeClient, '_post_prompt', submit)
+    if outcome == 'accepted-failure':
+        async def retrieval(self, **kwargs):
+            snapshot()
+            raise ValueError('forced accepted retrieval failure')
+        monkeypatch.setattr(AttachedArtifacts, 'download_artifacts', retrieval)
+    def execute():
+        return production_engine.run_workflow_result_path(
+            canonical.python_path, destination, task_identity='task-aux',
+            attempt_identity='attempt-aux', comfy_url=comfy.url, profile_id='local_server')
+    if outcome == 'success': assert execute().outputs
+    else:
+        with pytest.raises(Exception): execute()
+    assert observed
+    snapshot()
+
+
+
+@pytest.mark.parametrize('gap', ['missing-node', 'scalar-type'])
+def test_explicit_trust_preserves_unrelated_target_schema_refusals(comfy, tmp_path, monkeypatch, gap):
+    from vibecomfy.workflow_bundle import emit_bundle
+    loaded = production_engine.load_workflow_path(comfy.workflow, tmp_path / 'author-schema', comfy_url=comfy.url)
+    bundle = production_engine._canonical_bundle_value(loaded.resolved)
+    canonical = emit_bundle(bundle.workflow, tmp_path / 'trust-schema/workflow.py', {'operation': 'authored'})
+    if gap == 'missing-node': del comfy.schema['SaveImage']
+    else: comfy.schema['SeedImage']['input']['required']['seed'] = ['STRING']
+    monkeypatch.setenv('ASTRID_ALIGN', 'trust')
+    with pytest.raises(production_engine.ProductionEngineError):
+        production_engine.run_workflow_result_path(
+            canonical.python_path, tmp_path / 'trust-schema-attempt/outputs', task_identity='schema-task',
+            attempt_identity='schema-attempt', comfy_url=comfy.url, profile_id='local_server')
+    assert not comfy.prompts
