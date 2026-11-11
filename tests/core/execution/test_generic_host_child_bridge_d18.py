@@ -3142,11 +3142,11 @@ def test_declared_command_output_input_alias_does_not_replace_another_canonical_
     assert command_values["target"] == "B" and command_values["source"] == "A"
     assert harvest_values["target"] == str(root / "B.json")
     binding = expand_command({"argv": ["program", "{target}"],
-        "input_args": [{"input": "target", "flag": "--placement"}, {"input": "source", "flag": "--source"}]},
+        "input_args": [{"input": "target", "flag": "--target"}, {"input": "source", "flag": "--source"}]},
         record.definition.inputs, command_values, {})
     # Normal port-order alias expansion is preserved, while mapped arguments
     # still consume their own canonical values.
-    assert binding.argv == ("program", "A", "--placement", "B", "--source", "A")
+    assert binding.argv == ("program", "A", "--target", "B", "--source", "A")
 
 
 def test_declared_command_outputs_expand_and_settle_through_normal_host(world):

@@ -758,6 +758,14 @@ def _kept_failure(before: set[tuple[str, int]]) -> None:
         pass  # Diagnostic reads cannot change settlement or mask the original error.
 
 
+def subcommand_names() -> tuple[str, ...]:
+    """Every subcommand this CLI defines, read from its own parser."""
+    for action in _parser()._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return tuple(action.choices)
+    return ()
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error

@@ -249,7 +249,10 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    if argv and argv[0] in {"workflow", "describe", "targets", "launch", "release", "defaults", "settings", '--help', '-h'}:
+    from astrid.core.generation.cli import subcommand_names
+    if argv and (argv[0] in {"-h", "--help"} or (argv[0] != "list" and argv[0] in subcommand_names())):
+        # The generation CLI owns every subcommand but `list`; its own parser
+        # is the source of the set, not a list kept here.
         from astrid.core.generation.cli import main as workflow_main
         return workflow_main(argv)
     parser = argparse.ArgumentParser(prog="astrid generate", description="Discover generation capabilities and readiness.")

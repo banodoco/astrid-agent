@@ -78,8 +78,13 @@ def _dispatch_skills(args: list[str]) -> int:
 
 
 def _dispatch_generate(args: list[str]) -> int:
-    if "--job" in args or (args and args[0] in {"image", "video", "audio", "align", "-h", "--help"}):
-        from astrid.core.generation.cli import main
+    # The generation CLI owns every subcommand it defines except `list`, which
+    # the registry listing serves (the CLI itself hands `list` to listing). The
+    # set comes from the CLI's own parser, so it cannot drift. Empty or unknown
+    # first words go to listing, whose parser reports them.
+    from astrid.core.generation.cli import main as cli_main, subcommand_names
+    if "--job" in args or (args and (args[0] in {"-h", "--help"} or (args[0] != "list" and args[0] in subcommand_names()))):
+        main = cli_main
     else:
         from astrid.core.generation.listing import main
 
