@@ -221,10 +221,11 @@ def test_launcher_attaches_to_healthy_host_from_another_checkout(harness, monkey
 
 
 def test_observer_uses_bound_runtime_arguments(monkeypatch, tmp_path):
-    from astrid.sdk import autobootstrap
     from astrid_runtime.paths import RuntimePaths
     assert RuntimePaths.current(data_root=tmp_path).runtime_support == tmp_path / "runtime"
-    monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: ["runtime-cli"])
+    monkeypatch.setattr(host_bootstrap, "_observer_command", lambda: ["runtime-python", "-I", "-m", "astrid_runtime.pack_host_observer"])
+    monkeypatch.setattr(host_bootstrap, "terminate_tree", lambda process, **kwargs: None)
+    monkeypatch.setattr(host_bootstrap, "verify_tree_absent", lambda process: None)
     calls = []
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -233,13 +234,13 @@ def test_observer_uses_bound_runtime_arguments(monkeypatch, tmp_path):
             "source_digest": "source", "dependency_digest": "dependency", "capabilities": [{"status": "ready"}]}
         payload = json.dumps({"observer_pid": 123, "observer_parent_pid": os.getpid(), "observation": observation}).encode()
         return _ObserverProcess(payload, 0)
-    monkeypatch.setattr(host_bootstrap.subprocess, "Popen", run)
+    monkeypatch.setattr(host_bootstrap, "popen_owned_process", run)
     monkeypatch.setattr(host_bootstrap, "_read_observer_pipe", lambda process, deadline: process.stdout.read())
     assert host_bootstrap._observe_resident_host(
         endpoint="http://runtime.test", support_root=tmp_path / "runtime",
         runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3,
     )["executor_id"] == "astrid-pack-host"
-    assert calls[0][0] == ["runtime-cli", "observe-pack-host", "--data-root", str(tmp_path),
+    assert calls[0][0] == ["runtime-python", "-I", "-m", "astrid_runtime.pack_host_observer", "--data-root", str(tmp_path),
                            "--endpoint", "http://runtime.test", "--runtime-instance-id", "instance-1",
                            "--runtime-session-id", "session-1", "--runtime-epoch", "3", "--json"]
     assert calls[0][1]["stdin"] == subprocess.DEVNULL
@@ -257,11 +258,12 @@ class _ObserverProcess:
     (b"{}", 0), (b"not json", 0), (b"x" * 65537, 0), (b"secret", 1),
 ])
 def test_observer_rejects_bad_output_without_exposing_it(monkeypatch, tmp_path, output, returncode):
-    from astrid.sdk import autobootstrap
-    monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: ["runtime-cli"])
+    monkeypatch.setattr(host_bootstrap, "_observer_command", lambda: ["runtime-python"])
+    monkeypatch.setattr(host_bootstrap, "terminate_tree", lambda process, **kwargs: None)
+    monkeypatch.setattr(host_bootstrap, "verify_tree_absent", lambda process: None)
     def run(_argv, **kwargs):
         return _ObserverProcess(output, returncode)
-    monkeypatch.setattr(host_bootstrap.subprocess, "Popen", run)
+    monkeypatch.setattr(host_bootstrap, "popen_owned_process", run)
     def read(process, deadline):
         data = process.stdout.read()
         if process.returncode != 0 or len(data) > 65536:
@@ -279,13 +281,59 @@ def test_observer_rejects_bad_output_without_exposing_it(monkeypatch, tmp_path, 
     "import sys;sys.stdout.write('x'*1000000);sys.stdout.flush()",
 ])
 def test_observer_limits_a_real_child(monkeypatch, tmp_path, code):
-    from astrid.sdk import autobootstrap
-    monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: [sys.executable, "-c", code])
+    monkeypatch.setattr(host_bootstrap, "_observer_command", lambda: [sys.executable, "-c", code])
     monkeypatch.setattr(host_bootstrap, "_OBSERVER_TIMEOUT_SECONDS", 0.5)
     with pytest.raises(RuntimeError, match="runtime observer unavailable"):
         host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path / "runtime",
             runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
     assert not any(t.name == "astrid-observer-reader" for t in threading.enumerate())
+
+
+def test_observer_cleanup_failure_retains_custody(monkeypatch, tmp_path):
+    process = _ObserverProcess(b"{}", 0)
+    monkeypatch.setattr(host_bootstrap, "_observer_command", lambda: ["runtime-python"])
+    monkeypatch.setattr(host_bootstrap, "popen_owned_process", lambda *args, **kwargs: process)
+    monkeypatch.setattr(host_bootstrap, "_read_observer_pipe", lambda *args: b"{}")
+    def uncertain(_process, **kwargs):
+        raise RuntimeError("census unavailable")
+    monkeypatch.setattr(host_bootstrap, "terminate_tree", uncertain)
+    retained = host_bootstrap._UNCERTAIN_OBSERVERS
+    before = len(retained)
+    try:
+        with pytest.raises(host_bootstrap.ObserverCleanupUncertain, match="cleanup uncertain"):
+            host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path / "runtime",
+                runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
+        assert retained[before:] == [process]
+    finally:
+        del retained[before:]
+
+
+def test_observer_real_child_success(monkeypatch, tmp_path):
+    code = ("import json,os; print(json.dumps({'observer_pid':os.getpid(), "
+            "'observer_parent_pid':os.getppid(), 'observation':{'executor_id':'astrid-pack-host', "
+            "'readiness':'ready', 'runtime_epoch':3, 'runtime_session_id':'session-1', "
+            "'source_epoch':'source-1', 'source_digest':'source', 'dependency_digest':'dependency', "
+            "'capabilities':[{'status':'ready'}]}}))")
+    monkeypatch.setattr(host_bootstrap, "_observer_command", lambda: [sys.executable, "-c", code])
+    assert host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path / "runtime",
+        runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)["executor_id"] == "astrid-pack-host"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="uses Linux process state for independent absence evidence")
+def test_observer_timeout_cleans_descendant_holding_stdout(monkeypatch, tmp_path):
+    pid_file = tmp_path / "descendant.pid"
+    code = ("import subprocess,sys,time; "
+            "p=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+            "open(sys.argv[1], 'w').write(str(p.pid)); time.sleep(60)")
+    monkeypatch.setattr(host_bootstrap, "_observer_command", lambda: [sys.executable, "-c", code, str(pid_file)])
+    monkeypatch.setattr(host_bootstrap, "_OBSERVER_TIMEOUT_SECONDS", 1.0)
+    with pytest.raises(RuntimeError, match="runtime observer unavailable") as exc:
+        host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path / "runtime",
+            runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
+    assert not isinstance(exc.value, host_bootstrap.ObserverCleanupUncertain), repr(exc.value.__cause__)
+    pid = int(pid_file.read_text())
+    stat = Path(f"/proc/{pid}/stat")
+    assert not stat.exists() or stat.read_text().split(") ", 1)[1].startswith("Z ")
 
 
 def test_attach_does_not_require_worker_to_observe_executor(harness, monkeypatch, tmp_path):

@@ -37,7 +37,10 @@ from astrid.core.execution.process_group import (
     CleanupUncertainError,
     _process_snapshot,
     popen_owned_group,
+    popen_owned_process,
     terminate_group,
+    terminate_tree,
+    verify_tree_absent,
 )
 from astrid.core.generation.vibecomfy_dependency import (
     VibeComfyDependencyError,
@@ -1854,6 +1857,7 @@ def _reject_attach(current: Mapping[str, Any], mismatches: list[dict[str, str]],
 
 
 _OBSERVER_TIMEOUT_SECONDS = 30.0
+_OBSERVER_CLEANUP_SECONDS = 30.0
 
 
 
@@ -1936,11 +1940,15 @@ def _observer_envelope(value: Any, *, process_pid: int, parent_pid: int) -> Any:
     return value["observation"]
 
 
+def _observer_command() -> list[str]:
+    """Resolve the existing Runtime launcher for the observation command."""
+    from astrid.sdk.autobootstrap import _launcher_command
+    return [*_launcher_command(), "observe-pack-host"]
+
+
 def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instance_id: str,
                            runtime_session_id: str, runtime_epoch: Any) -> Mapping[str, Any]:
     """Ask Runtime's operator to observe its fixed pack host, without owner credentials."""
-    from astrid.sdk.autobootstrap import _launcher_command
-
     if not isinstance(runtime_session_id, str) or not runtime_session_id.strip():
         raise RuntimeError("runtime session is unavailable")
     try:
@@ -1948,21 +1956,25 @@ def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instanc
         # Runtime's --data-root selects its parent, not runtime_support itself.
         if support_root.name != "runtime":
             raise ValueError("invalid Runtime support root")
-        process = subprocess.Popen(
-            [*_launcher_command(), "observe-pack-host", "--data-root", str(support_root.parent),
+        process = popen_owned_process(
+            [*_observer_command(), "--data-root", str(support_root.parent),
              "--endpoint", endpoint, "--runtime-instance-id", runtime_instance_id,
              "--runtime-session-id", runtime_session_id, "--runtime-epoch", str(runtime_epoch), "--json"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
         )
         try:
-            raw = _read_observer_pipe(process, time.monotonic() + _OBSERVER_TIMEOUT_SECONDS)
-        except Exception as exc:
-            _UNCERTAIN_OBSERVERS.append(process)
+            try:
+                raw = _read_observer_pipe(process, time.monotonic() + _OBSERVER_TIMEOUT_SECONDS)
+            finally:
+                try:
+                    terminate_tree(process, cleanup_deadline=time.monotonic() + _OBSERVER_CLEANUP_SECONDS)
+                    verify_tree_absent(process)
+                except Exception as exc:
+                    _UNCERTAIN_OBSERVERS.append(process)
+                    raise ObserverCleanupUncertain("runtime observer unavailable: cleanup uncertain") from exc
+        finally:
             if process.stdout is not None:
                 process.stdout.close()
-            raise ObserverCleanupUncertain("runtime observer unavailable: cleanup uncertain") from exc
-        if process.stdout is not None:
-            process.stdout.close()
         observed = _observer_envelope(json.loads(raw), process_pid=process.pid, parent_pid=os.getpid())
         string_fields = {"executor_id", "readiness", "runtime_session_id", "source_epoch",
                          "source_digest", "dependency_digest"}
@@ -1981,6 +1993,11 @@ def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instanc
     except ObserverCleanupUncertain:
         raise
     except Exception as exc:
+        # A failed custody admission may itself retain an unresolved child.
+        process = getattr(exc, "process", None)
+        if process is not None and getattr(process, "_astrid_tree_uncertain", None):
+            _UNCERTAIN_OBSERVERS.append(process)
+            raise ObserverCleanupUncertain("runtime observer unavailable: cleanup uncertain") from exc
         raise RuntimeError("runtime observer unavailable") from exc
 
 
