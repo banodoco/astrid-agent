@@ -197,6 +197,43 @@ def test_lifecycle_pin_has_one_source():
     assert 'runpod>=1.12,<2; sys_platform != \'darwin\' or platform_machine != \'x86_64\'' in core
 
 
+def test_failed_clone_cleans_readonly_objects_and_raises_the_original_error(tmp_path, monkeypatch):
+    import errno
+    import stat
+    from types import SimpleNamespace
+
+    from astrid.installer import _pack_cleanup
+
+    destination = tmp_path / "cloned"
+    temporary = tmp_path / "cloned.clone"
+    monkeypatch.setattr(tools, "_source_git", lambda: "git")
+    monkeypatch.setattr(tools, "source_repo", lambda repo: tmp_path / "upstream")
+
+    def failed_clone(command, **kwargs):
+        objects = temporary / ".git" / "objects"
+        objects.mkdir(parents=True)
+        (objects / "pack").write_bytes(b"x")
+        (objects / "pack").chmod(stat.S_IREAD)
+        return SimpleNamespace(returncode=128, stderr=b"clone exploded", stdout=b"")
+
+    monkeypatch.setattr(tools.subprocess, "run", failed_clone)
+    real_unlink = os.unlink
+
+    def windows_unlink(path, *args, **kwargs):
+        info = os.stat(path, dir_fd=kwargs.get("dir_fd"), follow_symlinks=False)
+        if not info.st_mode & stat.S_IWRITE:
+            raise PermissionError(errno.EACCES, "read-only", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", windows_unlink)
+    monkeypatch.setattr(_pack_cleanup, "_is_windows", lambda: True)
+
+    with pytest.raises(ValueError, match="clone exploded"):
+        tools.clone_source("repo", "a" * 40, destination)
+
+    assert not temporary.exists()
+
+
 def test_full_clone_source_keeps_tags_and_checks_out_only_the_manifest_commit(repository, tmp_path):
     repo, sha = repository
     git(repo, "tag", "v1.0.0", sha)
