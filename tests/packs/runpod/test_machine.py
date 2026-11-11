@@ -2179,3 +2179,125 @@ def test_refresh_projection_rejects_parsed_receipt_tampering(machine_case, tampe
         else:
             assert _refresh_projection(changed, parsed, parsed) != baseline
     c.machine.release(lease, False)
+
+
+@pytest.mark.parametrize('change', ['generation', 'invocation', 'preparation', 'job'])
+def test_candidate_fenced_by_invocation_or_checkpoint_change(machine_case, monkeypatch, change):
+    from copy import deepcopy
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {'id': 'a' * 32, 'state': 'exited'})
+    assert lease.state.receipt_baseline is not None
+    previous = dict(lease.state.installed)
+    candidate = {**previous, 'receipt_sha256': 'sha256:' + 'f' * 64}
+
+    def mutate(state, **_kwargs):
+        state.receipt_candidate = {'installed': candidate, 'projection': state.receipt_baseline}
+        with c.host.lock:
+            record = c.host._read()
+            row = deepcopy(record['lease'])
+            if change == 'generation':
+                row['generation'] += 1
+            elif change == 'invocation':
+                row['invocation_id'] = 'synthetic-other-invocation'
+            elif change == 'preparation':
+                row['preparation']['installed']['receipt_sha256'] = 'sha256:' + 'e' * 64
+            else:
+                row['job']['id'] = 'b' * 32
+            c.host._save(record, row)
+        return True
+
+    monkeypatch.setattr(c.placement, '_canonical_installed', mutate)
+    c.machine.release(lease, False, failure=rm.MachineError('synthetic failure'))
+    result = c.read()
+    assert result['lease']['state'] != 'idle'
+    assert result['lease']['preparation']['installed']['receipt_sha256'] != candidate['receipt_sha256']
+    assert c.creates == 1
+
+
+@pytest.mark.parametrize('field', ['owner_id', 'launch_sha256', 'cuda_visible_devices',
+                                   'object_info_sha256', 'required_nodes_present'])
+def test_saved_live_launch_fact_mismatch_is_not_accepted(machine_case, field):
+    from copy import deepcopy
+    import time
+    from astrid.core.generation import engine_runner
+    from astrid.packs.runpod.remote_placement import _refresh_projection
+    c = machine_case
+    c.context.deadline = time.monotonic() + 120
+    lease = c.machine.claim(c.job())
+    key = c.installation.root + '/.astrid-engine/install.json'
+    raw = deepcopy(c.context.files[key])
+    original = engine_runner._parse_receipt(raw, lease.state.installation.plan())
+    changed = deepcopy(raw)
+    kind = 'health' if field in {'object_info_sha256', 'required_nodes_present'} else 'start'
+    facts = next(row for row in changed['steps'] if row['kind'] == kind)['facts']
+    facts[field] = {'owner_id': 'different-owner', 'launch_sha256': 'f' * 64,
+                    'cuda_visible_devices': 'different-visibility', 'object_info_sha256': 'f' * 64,
+                    'required_nodes_present': False}[field]
+    saved = engine_runner._parse_receipt(changed, lease.state.installation.plan())
+    with pytest.raises(rm.RemotePlacementError):
+        _refresh_projection(changed, original, saved)
+    c.machine.release(lease, False)
+
+
+def test_failed_verification_fences_receipt_change_between_status_and_download(machine_case, monkeypatch):
+    import time
+    c = machine_case
+    c.context.deadline = time.monotonic() + 120
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {'id': 'a' * 32, 'state': 'exited'})
+    key = c.installation.root + '/.astrid-engine/install.json'
+    original_exec = c.pod.exec
+    changed = []
+    def mutate_after_status(command, timeout=600):
+        result = original_exec(command, timeout)
+        if 'engines status' in command and not changed:
+            receipt = json.loads(c.pod.files[key])
+            receipt['receipt_id'] = 'foreign-receipt'
+            c.pod.files[key] = json.dumps(receipt).encode()
+            changed.append(True)
+        return result
+    monkeypatch.setattr(c.pod, 'exec', mutate_after_status)
+    c.machine.release(lease, False, failure=rm.MachineError('synthetic failure'))
+    assert changed
+    assert c.read()['state'] == 'cleanup_complete'
+    assert c.read()['lease']['ended'] == 'unsafe_job_state'
+    assert c.deletes == ['pod-1']
+
+
+def test_promoted_refresh_is_not_retained_when_reset_fails(machine_case, monkeypatch):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {'id': 'a' * 32, 'state': 'exited'})
+    assert lease.state.receipt_baseline is not None
+    candidate = {**lease.state.installed, 'receipt_sha256': 'sha256:' + 'f' * 64}
+    def verified(state, **_kwargs):
+        state.receipt_candidate = {'installed': candidate, 'projection': state.receipt_baseline}
+        return True
+    monkeypatch.setattr(c.placement, '_canonical_installed', verified)
+    c.pod.fail_jobs = {'--run-dir'}
+    c.machine.release(lease, False, failure=rm.MachineError('synthetic failure'))
+    result = c.read()
+    assert result['lease']['preparation']['installed']['receipt_sha256'] == candidate['receipt_sha256']
+    assert result['state'] == 'cleanup_complete' and result['lease']['ended'] == 'reset_failed'
+    assert c.deletes == ['pod-1']
+
+
+@pytest.mark.parametrize('changed', [False, True], ids=['unchanged', 'changed'])
+def test_missing_baseline_only_allows_exact_receipt(machine_case, monkeypatch, changed):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {'id': 'a' * 32, 'state': 'exited'})
+    lease.state.receipt_baseline = None
+    original = dict(lease.state.installed)
+    candidate = {**original, **({'receipt_sha256': 'sha256:' + 'f' * 64} if changed else {})}
+    def verified(state, **_kwargs):
+        state.receipt_candidate = {'installed': candidate, 'projection': {'fingerprint': 'unused'}}
+        return True
+    monkeypatch.setattr(c.placement, '_canonical_installed', verified)
+    c.machine.release(lease, False, failure=rm.MachineError('synthetic failure'))
+    result = c.read()
+    if changed:
+        assert result['state'] == 'cleanup_complete' and c.deletes == ['pod-1']
+    else:
+        assert result['state'] == 'claimed' and result['lease']['state'] == 'idle' and not c.deletes
