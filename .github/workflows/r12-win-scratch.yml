@@ -1,0 +1,33 @@
+name: r12-win-scratch
+on:
+  push:
+    branches:
+      - "scratch/r12-win-*"
+
+jobs:
+  windows-git-source-repair:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      ASTRID_CI_JOB: windows-native-and-installer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore pip cache (C-08)
+        id: c08-agent-ci-5
+        uses: actions/cache/restore@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package with dev extras
+        run: python -m pip install -e '.[dev]'
+      - name: Install the pinned Runtime and client
+        run: python scripts/ci_install_runtime.py
+      - name: Whole installer sources file
+        if: always()
+        run: python -m pytest -rA tests/test_installer_sources.py
+      - name: Installer tools restricted-environment test
+        if: always()
+        run: python -m pytest -rA tests/test_installer_tools.py::test_update_stages_recorded_git_from_restricted_service_environment
