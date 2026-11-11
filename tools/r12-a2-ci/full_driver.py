@@ -61,6 +61,9 @@ def main():
     except Exception:
         print('A2_RECEIPT invalid',flush=True); return 3
     accepted=decide(result.returncode,data,clear,side,group)
+    if not accepted:
+        for reason in data.get('incomplete_reasons', []): print('A2_INCOMPLETE '+reason,flush=True)
+        if not data.get('incomplete_reasons'): print('A2_INCOMPLETE DECISION_REJECTED',flush=True)
     if accepted and result.returncode == 1:
         (pathlib.Path(os.environ['RUNNER_TEMP'])/'r12-a2-full-had-failure').write_text('failure\n')
     return 0 if accepted else 3

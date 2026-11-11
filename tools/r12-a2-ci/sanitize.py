@@ -4,7 +4,7 @@ from stages import validate_events
 
 STATUSES = ('PASSED', 'FAILED', 'ERROR', 'SKIPPED', 'XFAIL', 'XPASS')
 SUMMARY_KEYS = ('passed', 'failed', 'error', 'errors', 'skipped', 'xfailed', 'xpassed', 'warnings', 'warning', 'deselected')
-OUTCOME = re.compile(r'^(tests/.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?: \[\s*\d{1,3}%\])?$')
+OUTCOME = re.compile(r'^(tests/.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?: +\[ *\d{1,3}%\])?$')
 HEADINGS = {'test session starts', 'FAILURES', 'ERRORS', 'PASSES', 'XFAILURES', 'XPASSES', 'SKIPPED', 'warnings summary', 'short test summary info'}
 SUMMARY = re.compile(r'^=+ ((?:\d+ (?:passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected)(?:, )?)+) in \d+(?:\.\d+)?s(?: \([0-9:]+\))? =+$')
 
@@ -46,7 +46,19 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
     complete = bool(preflight and raw is not None and valid_exit and not missing and not duplicates and unknown_count == 0 and malformed_outcome_count == 0 and malformed_summary_count == 0 and counts_match)
     no_results = bool(preflight and not expected and absent and raw is None and exit_code == 0)
     classification = 'COMPLETE' if complete else ('NO_RESULTS' if no_results else 'INCOMPLETE')
-    return {'schema':1, 'stage_events':validate_events(stage_events if stage_events is not None else []), 'classification':classification, 'metadata':metadata,
+    reasons = []
+    if classification == 'INCOMPLETE':
+        if not preflight: reasons.append('PREFLIGHT_INCOMPLETE')
+        if raw is None: reasons.append('NO_PYTEST_LOG')
+        if not valid_exit: reasons.append('EXIT_INCONSISTENT')
+        if missing: reasons.append('MISSING_IDS')
+        if duplicates: reasons.append('DUPLICATE_IDS')
+        if unknown_count: reasons.append('UNEXPECTED_IDS')
+        if malformed_outcome_count: reasons.append('MALFORMED_OUTCOME')
+        if malformed_summary_count: reasons.append('MALFORMED_SUMMARY')
+        if summary is None: reasons.append('SUMMARY_MISSING_OR_MULTIPLE')
+        elif not counts_match: reasons.append('SUMMARY_MISMATCH')
+    return {'schema':1, 'incomplete_reasons':reasons, 'stage_events':validate_events(stage_events if stage_events is not None else []), 'classification':classification, 'metadata':metadata,
             'expected_count':len(expected), 'missing_ids':missing, 'duplicate_ids':duplicates,
             'unexpected_result_count':unknown_count, 'malformed_outcome_count':malformed_outcome_count, 'malformed_summary_count':malformed_summary_count, 'absent_ids':sorted(absent),
             'outcomes':outcomes, 'outcome_counts':status_counts, 'summary_counts':summary,

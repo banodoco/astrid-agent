@@ -32,6 +32,27 @@ class Sanitization(unittest.TestCase):
     def test_ordinary_chatter_is_ignored(self):
         raw=f'=== test session starts ===\nplatform linux -- Python 3.11\n{A} PASSED\n{B} FAILED\n=== FAILURES ===\ntraceback {SECRET}\n=== short test summary info ===\nFAILED {B} - {SECRET}\n=== 1 failed, 1 passed in 1.0s ===\n'
         result=make(raw); self.assertEqual(result['classification'],'COMPLETE'); self.assertNotIn(SECRET,json.dumps(result))
+    def test_short_real_group_022_ids_accept_pytest_ascii_padding(self):
+        tag='tests/core/pack/test_install.py::test_reachable_revisions[tag]'
+        head='tests/core/pack/test_install.py::test_reachable_revisions[head]'
+        raw=f'{tag} PASSED    [ 12%]\n{head} PASSED   [ 13%]\n=== 2 passed in 1.0s ===\n'
+        result=make(raw,expected=(tag,head),exit_code=0)
+        self.assertEqual(result['classification'],'COMPLETE'); self.assertEqual(result['missing_ids'],[])
+        self.assertEqual(result['malformed_outcome_count'],0); self.assertEqual(result['incomplete_reasons'],[])
+    def test_progress_padding_rejects_tabs_suffixes_and_injected_lines(self):
+        tag='tests/core/pack/test_install.py::test_reachable_revisions[tag]'
+        head='tests/core/pack/test_install.py::test_reachable_revisions[head]'
+        for forged in (f'{tag} PASSED  \t[ 12%]',f'{tag} PASSED    [ 12%] {SECRET}',f'{tag} PASSED    [ 12%]\n{tag} FAILED {SECRET}'):
+            raw=f'{forged}\n{head} PASSED   [ 13%]\n=== 2 passed in 1.0s ===\n'
+            with self.subTest(forged=forged):
+                result=make(raw,expected=(tag,head),exit_code=0)
+                self.assertEqual(result['classification'],'INCOMPLETE')
+                self.assertIn('MALFORMED_OUTCOME',result['incomplete_reasons'])
+                self.assertNotIn(SECRET,json.dumps(result))
+    def test_incomplete_reason_codes_are_fixed(self):
+        result=make(f'{A} PASSED\n=== 1 passed in 1.0s ===\n',exit_code=0)
+        self.assertEqual(result['classification'],'INCOMPLETE'); self.assertIn('MISSING_IDS',result['incomplete_reasons'])
+        self.assertNotIn(B, result['incomplete_reasons'])
     def test_only_structured_file_is_uploaded(self):
         root=pathlib.Path(__file__).resolve().parents[2]; workflow=(root/'.github/workflows/r12-a2-once.yml').read_text()
         self.assertIn('path: ${{ runner.temp }}/r12-a2-receipt/receipt.json',workflow)
