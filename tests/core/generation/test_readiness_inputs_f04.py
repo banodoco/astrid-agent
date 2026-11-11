@@ -375,3 +375,17 @@ def test_dry_run_is_the_readiness_envelope_without_source_or_config_writes(monke
     assert all(set(row) == {'name', 'type', 'default'} for row in result['entry']['inputs'])
     assert result['entry']['inputs'] == description['inputs']
     assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('error, expected', [
+    ('validation', 'input_rejected'),
+    ('missing_input', 'input_rejected'),
+    ('unknown', 'generation_failed'),
+])
+def test_generation_error_uses_explicit_sdk_category(error, expected):
+    payload = preflight.generation_error({'sdk_category': error, 'message': 'failure'}).to_envelope()
+    assert payload['issues'][0]['code'] == expected
+    # A producer's explicit code takes precedence over the coarse category.
+    coded = preflight.generation_error({'sdk_category': error, 'code': 'download_failed',
+                                        'message': 'failure'}).to_envelope()
+    assert coded['issues'][0]['code'] == 'download_failed'

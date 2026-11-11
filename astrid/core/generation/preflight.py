@@ -139,6 +139,7 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
     get = error.get if isinstance(error, Mapping) else lambda key, default=None: getattr(error, key, default)
     category = get('category') or get('sdk_category')
     native = code or get('code') or {
+        'validation': 'input_rejected', 'missing_input': 'input_rejected',
         'precondition': 'missing_dependency', 'runtime': 'generation_failed',
     }.get(category, 'generation_failed')
     normalized = _CORE_CODES.get(native, native)
