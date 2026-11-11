@@ -1919,9 +1919,9 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
 
     c = machine_case
     stage('RETENTION_TEST_BEGIN')
-    original_generate = c.pod._generate
     original_start, original_poll = c.pod.job_start, c.pod.job_poll
     failed_jobs = set()
+    limits = {}
 
     def generate(command):
         stage('RECEIPT_REFRESH_BEGIN')
@@ -1934,18 +1934,20 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
         with c.context.acquire_install_lock(c.installation.root, deadline=c.context.deadline):
             start_action, start_facts = runner.start()
             health_action, health_facts = runner.check_health()
-            digest = engine_runner.refresh_installed_launch(
+            engine_runner.refresh_installed_launch(
                 runner, raw, start_action=start_action, start_facts=start_facts,
                 health_action=health_action, health_facts=health_facts, check=lambda: None)
         c.pod.files[key] = engine_runner._json(c.context.files[key]).encode()
         assert c.pod.files[key] != before
         stage('RECEIPT_REFRESH_CHANGED')
-        return original_generate(command)
+        return 'astrid-generation-failure:{"code":"input_rejected","category":"input"}\n'
 
     def start(command, *, job_id):
         result = original_start(command, job_id=job_id)
         if ' generate ' in command and '--placement local' in command:
             failed_jobs.add(job_id)
+            lease = c.read()['lease']
+            limits.update(paid_expires_at=lease['paid_expires_at'], idle_seconds=lease['idle_seconds'])
         return result
 
     def poll(job_id):
@@ -1974,6 +1976,10 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
     assert record['lease']['state'] == 'idle'
     assert record['lease']['last_job']['outcome'] == 'failed'
     assert c.creates == 1 and c.deletes == []
+    assert record['lease']['paid_expires_at'] == limits['paid_expires_at']
+    assert record['lease']['idle_seconds'] == limits['idle_seconds']
+    assert record['lease']['idle_expires_at'] <= limits['paid_expires_at']
+    assert c.pod.resets[-1]['ok']
 
 
 def test_refresh_projection_preserves_unknown_and_legacy_fields():
