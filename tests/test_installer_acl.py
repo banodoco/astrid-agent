@@ -335,7 +335,11 @@ def test_windows_staged_version_folder_is_a_protected_record_parent(tmp_path, mo
     class Staged(Exception):
         pass
 
-    def source(*_args, **_kwargs):
+    def source(name, _sha, destination, **_kwargs):
+        # 297056f writes manifest.json after the Agent fetch (it validates the
+        # explicit pin against the staged Agent first), so stop at the Runtime.
+        if name == "agent":
+            return destination
         raise Staged
 
     monkeypatch.setattr(backend_module, "source", source)
