@@ -1923,6 +1923,19 @@ def _read_observer_pipe(process: subprocess.Popen, deadline: float) -> bytes:
             selector.close()
 
 
+
+def _observer_envelope(value: Any, *, process_pid: int, parent_pid: int) -> Any:
+    # These are consistency checks, never authority to signal a process.
+    if (not isinstance(value, dict)
+            or set(value) != {"observer_pid", "observer_parent_pid", "observation"}
+            or type(value["observer_pid"]) is not int
+            or type(value["observer_parent_pid"]) is not int
+            or value["observer_pid"] != process_pid
+            or value["observer_parent_pid"] != parent_pid):
+        raise ValueError("observer identity mismatch")
+    return value["observation"]
+
+
 def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instance_id: str,
                            runtime_session_id: str, runtime_epoch: Any) -> Mapping[str, Any]:
     """Ask Runtime's operator to observe its fixed pack host, without owner credentials."""
@@ -1950,7 +1963,7 @@ def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instanc
             raise ObserverCleanupUncertain("runtime observer unavailable: cleanup uncertain") from exc
         if process.stdout is not None:
             process.stdout.close()
-        observed = json.loads(raw)
+        observed = _observer_envelope(json.loads(raw), process_pid=process.pid, parent_pid=os.getpid())
         string_fields = {"executor_id", "readiness", "runtime_session_id", "source_epoch",
                          "source_digest", "dependency_digest"}
         if (not isinstance(observed, dict)

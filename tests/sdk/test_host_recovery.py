@@ -228,9 +228,10 @@ def test_observer_uses_bound_runtime_arguments(monkeypatch, tmp_path):
     calls = []
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
-        payload = json.dumps({"executor_id": "astrid-pack-host", "readiness": "ready",
+        observation = {"executor_id": "astrid-pack-host", "readiness": "ready",
             "runtime_epoch": 3, "runtime_session_id": "session-1", "source_epoch": "source-1",
-            "source_digest": "source", "dependency_digest": "dependency", "capabilities": [{"status": "ready"}]}).encode()
+            "source_digest": "source", "dependency_digest": "dependency", "capabilities": [{"status": "ready"}]}
+        payload = json.dumps({"observer_pid": 123, "observer_parent_pid": os.getpid(), "observation": observation}).encode()
         return _ObserverProcess(payload, 0)
     monkeypatch.setattr(host_bootstrap.subprocess, "Popen", run)
     monkeypatch.setattr(host_bootstrap, "_read_observer_pipe", lambda process, deadline: process.stdout.read())
@@ -246,7 +247,7 @@ def test_observer_uses_bound_runtime_arguments(monkeypatch, tmp_path):
 
 class _ObserverProcess:
     def __init__(self, output, returncode):
-        self.stdout, self.returncode = io.BytesIO(output), returncode
+        self.stdout, self.returncode, self.pid = io.BytesIO(output), returncode, 123
     def __enter__(self): return self
     def __exit__(self, *_args): pass
     def wait(self, timeout=None): return self.returncode
@@ -1558,3 +1559,15 @@ def test_observer_windows_peek_limits_reads_and_recognizes_eof(monkeypatch):
         patch.setattr(host_bootstrap.os, "read", lambda fd, size: reads.append(size) or b"abc")
         assert host_bootstrap._read_observer_pipe(process, time.monotonic() + 1) == b"abc"
     assert reads == [3]
+
+
+@pytest.mark.parametrize("pid,parent", [(12, 99), (11, 100), (True, 99), ("11", 99)])
+def test_observer_rejects_foreign_or_malformed_identity(pid, parent):
+    envelope = {"observer_pid": pid, "observer_parent_pid": parent, "observation": {}}
+    with pytest.raises(ValueError):
+        host_bootstrap._observer_envelope(envelope, process_pid=11, parent_pid=99)
+
+
+def test_observer_accepts_consistent_identity():
+    envelope = {"observer_pid": 11, "observer_parent_pid": 99, "observation": {"ok": True}}
+    assert host_bootstrap._observer_envelope(envelope, process_pid=11, parent_pid=99) == {"ok": True}
