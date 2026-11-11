@@ -45,6 +45,11 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
         'source': str(source), 'entry_inputs': str(archive),
         'workflow_inputs': json.dumps(plan['bindings'], sort_keys=True),
     })
+    # The shared fake install context creates its deadline during fixture setup;
+    # entry discovery here can consume that unrelated wall-clock budget. Begin
+    # the fake install window at claim, as the real route does for preparation.
+    import time
+    machine_case.context.deadline = time.monotonic() + 60
     lease = machine_case.machine.claim(job)
     run = machine_case.machine.start(lease, job)
     raw = machine_case.pod.files[f'{run.remote_root}/{rm.JOB_NAME}']
