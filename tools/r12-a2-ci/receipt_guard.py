@@ -12,7 +12,7 @@ def read_regular(root, directory, filename, missing_ok=False):
     try:
         child = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         try:
-            try: f = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=child)
+            try: f = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=child)
             except FileNotFoundError:
                 if missing_ok: return None
                 raise

@@ -66,6 +66,21 @@ class FullPlanTests(unittest.TestCase):
             with patch.dict(os.environ,env), patch.object(full_driver,'census',side_effect=[{(1,1)},{(1,1),(2,3)}]), patch.object(full_driver.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)), patch.object(full_driver,'rebuild') as rebuild:
                 self.assertEqual(full_driver.main(),3); rebuild.assert_not_called()
             self.assertFalse((pathlib.Path(tmp)/'r12-a2-final-slot-01/receipt.json').exists())
+    def test_unverified_census_stops_without_uploadable_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'019-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1'}
+            with patch.dict(os.environ,env), patch.object(full_driver,'census',side_effect=[{(1,1)},RuntimeError('synthetic')]), patch.object(full_driver.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)), patch.object(full_driver,'rebuild') as rebuild:
+                self.assertEqual(full_driver.main(),3); rebuild.assert_not_called()
+            self.assertFalse((pathlib.Path(tmp)/'r12-a2-final-slot-01/receipt.json').exists())
+    def test_precreated_slot_path_fails_and_cannot_be_sealed(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'019-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1'}
+            slot=pathlib.Path(tmp)/'r12-a2-final-slot-01'; slot.mkdir(); (slot/'receipt.json').write_text('synthetic-secret')
+            data={'classification':'COMPLETE','exit_code':0,'preflight_complete':True,'metadata':{'side':'base','group':'019','manifest_sha256':MANIFEST_SHA}}
+            with patch.dict(os.environ,env), patch.object(full_driver,'census',side_effect=[{(1,1)},{(1,1)}]), patch.object(full_driver.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)), patch.object(full_driver,'rebuild',return_value=data):
+                self.assertEqual(full_driver.main(),3)
+            called=(pathlib.Path(__file__).resolve().parents[2]/'.github/workflows/r12-a2-full-range.yml').read_text()
+            self.assertIn("steps.slot01.outcome == 'success'",called)
     def test_workflow_bounds_and_per_slot_checkpoint(self):
         root=pathlib.Path(__file__).resolve().parents[2]/'.github/workflows'
         caller=(root/'r12-a2-full.yml').read_text(); called=(root/'r12-a2-full-range.yml').read_text()
@@ -87,6 +102,7 @@ class FullPlanTests(unittest.TestCase):
         self.assertNotIn('outputs.artifact_path',called)
         for slot in range(1,13): self.assertIn('path: ${{ runner.temp }}/r12-a2-final-slot-%02d/receipt.json' % slot, called)
         self.assertEqual(called.count('if-no-files-found: error'),12)
+        for slot in range(1,13): self.assertIn("steps.slot%02d.outcome == 'success'" % slot,called)
         for slot in range(1,13): self.assertIn("A2_SLOT: '%s'" % slot, called)
         self.assertEqual(called.count('A2_SLOT:'),24)
         self.assertIn('r12-a2-full-had-failure',called)

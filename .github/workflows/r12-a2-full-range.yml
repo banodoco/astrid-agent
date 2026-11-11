@@ -47,7 +47,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 1
         id: seal01
-        if: always() && steps.slot01.outcome != 'skipped'
+        if: always() && steps.slot01.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -76,7 +76,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 2
         id: seal02
-        if: always() && steps.slot02.outcome != 'skipped'
+        if: always() && steps.slot02.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -105,7 +105,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 3
         id: seal03
-        if: always() && steps.slot03.outcome != 'skipped'
+        if: always() && steps.slot03.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -134,7 +134,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 4
         id: seal04
-        if: always() && steps.slot04.outcome != 'skipped'
+        if: always() && steps.slot04.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -163,7 +163,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 5
         id: seal05
-        if: always() && steps.slot05.outcome != 'skipped'
+        if: always() && steps.slot05.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -192,7 +192,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 6
         id: seal06
-        if: always() && steps.slot06.outcome != 'skipped'
+        if: always() && steps.slot06.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -221,7 +221,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 7
         id: seal07
-        if: always() && steps.slot07.outcome != 'skipped'
+        if: always() && steps.slot07.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -250,7 +250,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 8
         id: seal08
-        if: always() && steps.slot08.outcome != 'skipped'
+        if: always() && steps.slot08.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -279,7 +279,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 9
         id: seal09
-        if: always() && steps.slot09.outcome != 'skipped'
+        if: always() && steps.slot09.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -308,7 +308,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 10
         id: seal10
-        if: always() && steps.slot10.outcome != 'skipped'
+        if: always() && steps.slot10.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -337,7 +337,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 11
         id: seal11
-        if: always() && steps.slot11.outcome != 'skipped'
+        if: always() && steps.slot11.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -367,7 +367,7 @@ jobs:
           exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 12
         id: seal12
-        if: always() && steps.slot12.outcome != 'skipped'
+        if: always() && steps.slot12.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}

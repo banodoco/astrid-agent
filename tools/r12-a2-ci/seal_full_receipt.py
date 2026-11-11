@@ -10,10 +10,11 @@ def main():
     temp=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
     root=temp/('r12-a2-full-'+side+'-'+group)
     expected=rebuild(root,side,group,os.environ['A2_SHA'])
-    expected['process_census']={'status':'clear'}
     # Fixed slot directory and filename; never accept a path from the tested process.
     data=read_regular(temp,'r12-a2-final-slot-%02d'%slot,'receipt.json')
     candidate=json.loads(data)
+    if not isinstance(candidate,dict) or candidate.get('process_census') != {'status':'clear'}: raise ValueError('unclean census')
+    expected['process_census'] = candidate['process_census']
     if json.dumps(candidate,sort_keys=True,separators=(',',':')) != json.dumps(expected,sort_keys=True,separators=(',',':')): raise ValueError('sealed receipt mismatch')
     with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output: output.write('receipt_ready=true\n')
     return 0

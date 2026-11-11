@@ -40,6 +40,17 @@ class ReceiptGuardTests(unittest.TestCase):
         path=self.root/'r12-a2-private/pytest.log'; path.unlink(); path.symlink_to(self.temp/'sensitive')
         (self.temp/'sensitive').write_text(SECRET)
         with self.assertRaises(OSError): rebuild(self.root,'base','019',SHA)
+    def test_nonregular_fifo_is_rejected_without_blocking(self):
+        path=self.root/'r12-a2-private/pytest.log'; path.unlink(); os.mkfifo(path)
+        with self.assertRaises(ValueError): rebuild(self.root,'base','019',SHA)
+    def test_sealer_rejects_dirty_or_unverified_census(self):
+        slot=self.temp/'r12-a2-final-slot-01'; slot.mkdir()
+        out=self.temp/'github-output'; out.write_text('')
+        env={'RUNNER_TEMP':str(self.temp),'A2_SIDE':'base','A2_RANGE':'019-030','A2_SLOT':'1','A2_SHA':SHA,'GITHUB_OUTPUT':str(out)}
+        for state in ('residue','unverified'):
+            (slot/'receipt.json').write_text(json.dumps({**self.good,'process_census':{'status':state}}))
+            with self.subTest(state=state), patch.dict(os.environ,env), self.assertRaises(ValueError): seal_full_receipt.main()
+            self.assertEqual(out.read_text(),'')
     def test_sealer_has_only_boolean_output_and_literal_workflow_artifact_path(self):
         slot=self.temp/'r12-a2-final-slot-01'; slot.mkdir(); (slot/'receipt.json').write_text(json.dumps({**self.good,'process_census':{'status':'clear'}}))
         out=self.temp/'github-output'; out.write_text('artifact_path=/forged/raw.log\n')
