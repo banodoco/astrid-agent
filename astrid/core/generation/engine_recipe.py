@@ -445,14 +445,17 @@ def _load_model_lock_ref(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] 
         destinations.add(destination)
         size = row["bytes"]
         if type(size) is not int or size <= 0: raise ModelLockValidationError("model.bytes must be a positive integer")
-        try: digest = _digest(row["sha256"], "model.sha256")
-        except RecipeValidationError as exc: raise ModelLockValidationError(str(exc)) from exc
+        try:
+            digest = _digest(row["sha256"], "model.sha256")
+        except RecipeValidationError as exc:
+            raise ModelLockValidationError(str(exc)) from exc
         models.append(ModelSpec(name, repo, revision, source_path, url, destination, size, digest))
     return ModelLock(top["schema"], tuple(models))
 
 
 def load_model_lock(ref: DataRef, *, registry: BundledCatalog | None = None) -> ModelLock:
-    if not isinstance(ref, DataRef): raise ModelLockValidationError("load_model_lock requires a DataRef")
+    if not isinstance(ref, DataRef):
+        raise ModelLockValidationError("load_model_lock requires a DataRef")
     try:
         return _load_model_lock_ref(ref, allowed=_selected_resources(registry))
     except (ModelLockValidationError, UnsafePathError):

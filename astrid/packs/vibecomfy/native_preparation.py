@@ -58,14 +58,17 @@ def prepare_native_workflow(workflow_path, runtime_root, python_executable, uv_e
             for statement in ast.parse(version_file.read_text()).body:
                 if isinstance(statement, ast.Assign) and any(isinstance(target, ast.Name) and target.id == '__version__' for target in statement.targets):
                     value = ast.literal_eval(statement.value)
-                    if isinstance(value, str): actual['comfy_version'] = value
+                    if isinstance(value, str):
+                        actual['comfy_version'] = value
         return actual
     def install(packages, offline_install):
         argv = [uv_executable, '--no-config', 'pip', 'install', '--python', python_executable, '--no-deps']
-        if offline_install: argv.append('--offline')
+        if offline_install:
+            argv.append('--offline')
         if requirements and requirements.package_indexes:
             argv += ['--index-url', requirements.package_indexes[0]]
-            for index in requirements.package_indexes[1:]: argv += ['--extra-index-url', index]
+            for index in requirements.package_indexes[1:]:
+                argv += ['--extra-index-url', index]
         subprocess.run([*argv, *packages], check=True, capture_output=True, text=True)
     report = sync_runtime(requirements, runtime_root=root, installer=install, verify=observe,
                           launch_flags=list(launch_flags), sync_packages=sync_packages, offline=offline)
@@ -121,8 +124,10 @@ def ensure_native_pip(python_executable):
         wheel_path = str(wheel)
         bundled_version = ensurepip.version()
         spec = importlib.util.find_spec('pip')
-        try: installed = importlib.metadata.version('pip')
-        except importlib.metadata.PackageNotFoundError: installed = None
+        try:
+            installed = importlib.metadata.version('pip')
+        except importlib.metadata.PackageNotFoundError:
+            installed = None
         if (spec is None) != (installed is None):
             raise ValueError("managed pip installation is partial")
         existed = spec is not None
