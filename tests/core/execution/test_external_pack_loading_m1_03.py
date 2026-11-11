@@ -280,8 +280,14 @@ def test_unsupported_bare_module_command_refuses_before_child_execution(tmp_path
     assert runtime.settlements == [] and runtime.uploaded_objects == {}
 
 
-@pytest.mark.parametrize("pack_id", ["personal", "generation"])
-def test_selected_import_reuses_reserved_and_core_namespace_policy(tmp_path, pack_id):
+@pytest.mark.parametrize("pack_id, refusal", [
+    # cbf7b424 deliberately made the canonical-personal-root guard run before
+    # the in-tree collision check, so a personal pack outside that root is
+    # refused with this exact message.
+    ("personal", "selected personal pack must use the canonical personal root"),
+    ("generation", "reserved|collides"),
+])
+def test_selected_import_reuses_reserved_and_core_namespace_policy(tmp_path, pack_id, refusal):
     from astrid.core.pack.imports import install_pack_imports
 
     root = tmp_path / pack_id
@@ -289,7 +295,7 @@ def test_selected_import_reuses_reserved_and_core_namespace_policy(tmp_path, pac
     sentinel = tmp_path / "foreign-initializer"
     (root / "__init__.py").write_text(
         f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n", encoding="utf-8")
-    with pytest.raises((ValueError, ModuleNotFoundError), match="reserved|collides"):
+    with pytest.raises((ValueError, ModuleNotFoundError), match=refusal):
         install_pack_imports(pack_id, root)
     assert not sentinel.exists()
 
