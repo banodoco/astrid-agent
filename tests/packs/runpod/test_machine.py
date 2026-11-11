@@ -2055,13 +2055,21 @@ def test_failed_refresh_without_matching_baseline_releases(machine_case, monkeyp
 
 @pytest.mark.parametrize('race', ['expiry', 'explicit_release', 'shutdown'])
 def test_refreshed_candidate_cannot_promote_after_lease_fence(machine_case, monkeypatch, race):
+    import os
     import threading
     import time
+
+    def stage(name):
+        fd = os.environ.get('ASTRID_TTS_DIAGNOSTIC_MARKER_FD')
+        if fd is not None:
+            stamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+            os.write(int(fd), (stamp + ' ' + name + '\n').encode())
 
     c = machine_case
     lease = c.machine.claim(c.job())
     c.machine._checkpoint(lease, {'id': 'a' * 32, 'state': 'exited'})
     assert lease.state.receipt_baseline is not None
+    stage('RACE_BASELINE_PRESENT')
     previous = dict(lease.state.installed)
     candidate = {**previous, 'receipt_sha256': 'sha256:' + 'f' * 64}
     entered, resume = threading.Event(), threading.Event()
@@ -2069,6 +2077,7 @@ def test_refreshed_candidate_cannot_promote_after_lease_fence(machine_case, monk
 
     def blocked(state, **_kwargs):
         state.receipt_candidate = {'installed': candidate, 'projection': state.receipt_baseline}
+        stage('RACE_CANDIDATE_READY')
         entered.set()
         assert resume.wait(10)
         return True
@@ -2079,6 +2088,8 @@ def test_refreshed_candidate_cannot_promote_after_lease_fence(machine_case, monk
             c.machine.release(lease, False, failure=rm.MachineError('synthetic failure'))
         except Exception as exc:
             errors.append(type(exc).__name__)
+            known = {'RunPodWorkerOwnerError', 'AcquisitionUnresolvedError', 'AssertionError', 'RuntimeError'}
+            stage('RACE_WORKER_ERROR_' + (type(exc).__name__.upper() if type(exc).__name__ in known else 'OTHER'))
 
     verifier = threading.Thread(target=settle)
     verifier.start()
@@ -2088,7 +2099,9 @@ def test_refreshed_candidate_cannot_promote_after_lease_fence(machine_case, monk
         if race == 'expiry':
             c.clock.now = c.read()['lease']['paid_expires_at']
         elif race == 'shutdown':
+            stage('RACE_SHUTDOWN_BEGIN')
             c.host.close()
+            stage('RACE_SHUTDOWN_END')
         else:
             releaser = threading.Thread(target=lambda: c.host.release(
                 reason='explicit', _expected_operation=lease.lease.operation_id,
@@ -2104,9 +2117,15 @@ def test_refreshed_candidate_cannot_promote_after_lease_fence(machine_case, monk
         verifier.join(10)
         if releaser is not None:
             releaser.join(10)
+    stage('RACE_THREADS_ALIVE_' + ('YES' if verifier.is_alive() or releaser is not None and releaser.is_alive() else 'NO'))
     assert not verifier.is_alive() and (releaser is None or not releaser.is_alive())
+    stage('RACE_THREADS_FINISHED')
+    stage('RACE_ERRORS_' + ('PRESENT' if errors else 'ABSENT'))
     assert not errors
     record = c.read()
+    stage('RACE_STATE_NOT_IDLE_' + ('YES' if record['lease']['state'] != 'idle' else 'NO'))
+    stage('RACE_HASH_UNCHANGED_' + ('YES' if record['lease']['preparation']['installed']['receipt_sha256'] == previous['receipt_sha256'] else 'NO'))
+    stage('RACE_ONE_CREATE_' + ('YES' if c.creates == 1 else 'NO'))
     assert record['lease']['state'] != 'idle'
     assert record['lease']['preparation']['installed']['receipt_sha256'] == previous['receipt_sha256']
     assert c.creates == 1
