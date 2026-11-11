@@ -414,6 +414,8 @@ class RunPodSelectionOwner:
         self.https_token_file = https_token_file
         self.sleep, self.monotonic, self.progress = sleep, monotonic, progress
         self.observe_offers = observe_offers
+        #: Optional zero-argument callback fired once when this owner's capacity wait begins.
+        self.wait_hook: Callable[[], None] | None = None
 
     def _read(self) -> dict[str, Any] | None:
         # Legacy sibling handles cannot quietly become a second product owner.
@@ -576,6 +578,12 @@ class RunPodSelectionOwner:
             number = 0
             rate_limit_failures = 0
             pending_offers: list[RunPodOffer] = []
+            hook = getattr(self, "wait_hook", None)
+            if hook is not None:
+                try:
+                    hook()
+                except Exception:
+                    pass  # A timing stamp never changes selection.
             while True:
                 check()
                 number += 1

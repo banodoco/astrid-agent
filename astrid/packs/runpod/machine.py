@@ -404,6 +404,11 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
     )
 
 
+def _stamp(timing: Any, name: str, **kw: Any) -> None:
+    from astrid.core.execution.phase_timing import stamp
+    stamp(timing, name, **kw)
+
+
 # ----------------------------------------------------------------------------
 # The machine
 # ----------------------------------------------------------------------------
@@ -423,6 +428,11 @@ class MachineLease:
     run_dir: str | None = None
     job_dir: str | None = None
     node_ids: frozenset[str] = frozenset()
+    #: This job's phase-timing collector (``astrid.core.execution.phase_timing``), if the host supplied one.
+    timing: Any = None
+    #: What release decided, for the failure receipt: the exact-release reason, and whether the pod was kept.
+    release_reason: str | None = None
+    kept: bool | None = None
 
 
 @dataclass
@@ -550,8 +560,12 @@ class RunPodMachine:
         manifest_rows = _job_manifest_rows(job.entry, values, mode=job.mode, execution=inputs)
         acquired: list[Any] = []
 
+        timing = getattr(job, "timing", None)
+
         def on_acquired(lease: Any) -> None:
             acquired.append(lease)
+            _stamp(timing, "claimed_at")
+            _stamp(timing, "preparation_started_at")
             if self._begin is not None:
                 self._begin(lease)
 
@@ -560,6 +574,7 @@ class RunPodMachine:
             request = RunPodPreparationRequest({"engine": adapter.installation.engine},
                                                workflow.with_name("source.json"), workflow, values,
                                                consent.consent, consent.max_usd, consent.deadline)
+            owner.selection.wait_hook = lambda: _stamp(timing, "capacity_wait_started_at")
             try:
                 prepared = prepare_retained_generation(
                     request, consent=consent, lease_owner=owner, placement=adapter.placement,
@@ -570,6 +585,11 @@ class RunPodMachine:
                     manifest_rows=manifest_rows,
                     **({"cancelled": cancelled} if cancelled is not None else {}),
                 )
+                _stamp(timing, "preparation_ended_at")
+                try:
+                    timing.paid_started_at = float(prepared.lease.claim["lease"]["started_at"])
+                except Exception:
+                    pass
                 # Preparation and execution have separate disclosed budgets. Arm once
                 # at handoff, clipped to this lease's original paid expiry.
                 adapter.placement.begin_execution(deadline_seconds=min(
@@ -578,6 +598,13 @@ class RunPodMachine:
                 ))
             except BaseException as exc:
                 if acquired:
+                    try:
+                        # Read by the failure receipt: a bootstrap/install job was started if it was checkpointed.
+                        journal = owner.selection._read() or {}
+                        exc.claim_context = {"acquired": True, "preparation_job": bool(
+                            ((journal.get("lease") or {}).get("preparation") or {}).get("job"))}
+                    except Exception:
+                        pass
                     # Only a fully attested preparation can be reused. Failure
                     # before or during installation leaves unknown pod state.
                     self._finish(acquired[0])
@@ -618,7 +645,10 @@ class RunPodMachine:
                         owner.release(reason="custody_changed", _expected_operation=identity[0],
                                       expected_machine_id=identity[1])
                 raise
-        return MachineLease(prepared.lease, prepared.claim, prepared.state, prepared.custody, prepared.reused)
+            finally:
+                owner.selection.wait_hook = None
+        return MachineLease(prepared.lease, prepared.claim, prepared.state, prepared.custody, prepared.reused,
+                            timing=timing)
 
     def describe(self, lease: MachineLease) -> dict[str, Any]:
         """Which machine runs this job: recorded on the attempt when the machine is claimed."""
@@ -692,6 +722,7 @@ class RunPodMachine:
         if started.get("id") != job_id:
             raise MachineError("detached job differs from the checkpointed job custody")
         self._checkpoint(lease, {"id": job_id, "state": "running"})
+        _stamp(getattr(lease, "timing", None), "job_started_at")
         lease.job_dir = str(started.get("dir") or "") or None
         state.note("job", "started", job_id=job_id)
         return MachineRun(lease, job_id, str(started.get("dir") or ""), remote_root,
@@ -706,7 +737,14 @@ class RunPodMachine:
         record = run.lease.claim.ops.job_poll(run.job_id)
         progress = self._copy_progress(run)
         state = record.get("state")
+        timing = getattr(run.lease, "timing", None)
+        if timing is not None and isinstance(progress, Mapping):
+            try:
+                timing.pod_phase(progress.get("phase"))
+            except Exception:
+                pass
         if state == "exited":
+            _stamp(timing, "job_ended_at", first=True)
             run.state = "exited"
         elif state in {"missing", "cancelled"}:
             run.state = str(state)
@@ -760,6 +798,9 @@ class RunPodMachine:
         placement, state, ops = adapter.placement, run.lease.state, run.lease.claim.ops
         record = ops.job_poll(run.job_id)
         self._checkpoint(run.lease, {"id": run.job_id, "state": "exited"})
+        timing = getattr(run.lease, "timing", None)
+        _stamp(timing, "job_ended_at", first=True)
+        _stamp(timing, "collection_started_at")
         from .failure_diagnostics import MAX_FRAME_BYTES, parse_frame
         failed = type(record.get("exit_code")) is not int or record["exit_code"] != 0
         stdout = ""
@@ -776,6 +817,8 @@ class RunPodMachine:
             run.lease.failure_diagnostic = diagnostic
             exit_code = record.get("exit_code")
             safe_exit = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else "unknown"
+            run.lease.failure_exit_code = safe_exit if type(safe_exit) is int else None
+            _stamp(timing, "collection_ended_at")
             raise MachineError(f"remote generation failed (exit {safe_exit}; "
                                f"category={diagnostic['category']}; code={diagnostic['code']})")
         lines = stdout.splitlines()
@@ -788,9 +831,32 @@ class RunPodMachine:
         except ValueError:
             raise MachineError("remote result is not JSON") from None
         placement._check_deadline("fetch")
-        manifest_local = run.scratch / MANIFEST_NAME
-        ops.get(f"{run.remote_root}/out/{MANIFEST_NAME}", manifest_local)
-        if sha256_file(manifest_local) != manifest_line[len(MANIFEST_MARK):].strip():
+        files = self._fetch_verified(ops, f"{run.remote_root}/out", destination, run.scratch,
+                                     manifest_line[len(MANIFEST_MARK):].strip())
+        self._checkpoint_installed(run, files)
+        state.note("fetch", "done", files=len(files))
+        _stamp(timing, "collection_ended_at")
+        pid = str(record.get("pid") or "").strip()
+        return {"files": files, "result": result if isinstance(result, Mapping) else {},
+                "manifest_sha256": manifest_line[len(MANIFEST_MARK):].strip(),
+                "progress": list(run.progress),
+                # The remote detached job's own process evidence (its pid on the pod).
+                "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
+
+    @staticmethod
+    def _fetch_verified(ops: Any, remote_dir: str, destination: Path, scratch: Path,
+                        manifest_digest: str) -> dict[str, str]:
+        """Copy one pod folder back, every file against its digest manifest.
+
+        The manifest is downloaded and checked against the digest the pod
+        printed, then each file is downloaded over the same pod-agent transport,
+        rejecting unsafe paths and any digest or size mismatch. Returns
+        ``{relative path: local path}``. Shared by the output fetch and any
+        later folder fetch (the failure folder).
+        """
+        manifest_local = scratch / MANIFEST_NAME
+        ops.get(f"{remote_dir}/{MANIFEST_NAME}", manifest_local)
+        if sha256_file(manifest_local) != manifest_digest:
             manifest_local.unlink(missing_ok=True)
             raise DigestMismatch("downloaded manifest does not match the digest the job reported")
         recorded = json.loads(manifest_local.read_text(encoding="utf-8")).get("files", {})
@@ -806,19 +872,12 @@ class RunPodMachine:
                 raise DigestMismatch(f"pod manifest names an unsafe path: {relative!r}")
             local = destination / relative
             local.parent.mkdir(parents=True, exist_ok=True)
-            ops.get(f"{run.remote_root}/out/{relative}", local)
+            ops.get(f"{remote_dir}/{relative}", local)
             if sha256_file(local) != entry.get("sha256") or local.stat().st_size != entry.get("size"):
                 local.unlink(missing_ok=True)
                 raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
             files[relative] = str(local)
-        self._checkpoint_installed(run, files)
-        state.note("fetch", "done", files=len(files))
-        pid = str(record.get("pid") or "").strip()
-        return {"files": files, "result": result if isinstance(result, Mapping) else {},
-                "manifest_sha256": manifest_line[len(MANIFEST_MARK):].strip(),
-                "progress": list(run.progress),
-                # The remote detached job's own process evidence (its pid on the pod).
-                "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
+        return files
 
     def _checkpoint_installed(self, run: MachineRun, files: Mapping[str, str]) -> None:
         """Retain only the canonical receipt attested by this successful job.
@@ -868,6 +927,7 @@ class RunPodMachine:
     def release(self, lease: MachineLease, warm: bool, *, reason: str = "task_failed",
                 failure: BaseException | None = None, stage: str = "execution") -> None:
         owner = self._require().lease_owner
+        _stamp(getattr(lease, "timing", None), "release_started_at", first=True)
         observer_key = abort_event = None
         if failure is not None and not lease.released:
             try:
@@ -878,6 +938,7 @@ class RunPodMachine:
             self._release_impl(lease, warm, reason=reason, failure=failure, stage=stage,
                                abort_event=abort_event, observer_key=observer_key)
         finally:
+            _stamp(getattr(lease, "timing", None), "released_at")
             if observer_key is not None:
                 owner.end_failure_observation(observer_key)
 
@@ -996,10 +1057,12 @@ class RunPodMachine:
                               expected_machine_id=lease.claim.pod_id)
                 raise
             lease.released = True
+            lease.kept, lease.release_reason = True, None
             return
         try:
             if observer_key is not None:
                 owner.end_failure_observation(observer_key)
+            lease.kept, lease.release_reason = False, reason
             owner.release(reason=reason, _expected_operation=lease.lease.operation_id,
                           expected_machine_id=lease.claim.pod_id)
         except AcquisitionUnresolvedError:
