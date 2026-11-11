@@ -314,6 +314,7 @@ def test_attach_does_not_require_worker_to_observe_executor(harness, monkeypatch
 
 @pytest.mark.parametrize("fault", [
     "unavailable", "foreign", "wrong-epoch", "wrong-session", "unready", "wrong-source",
+    "wrong-source-digest", "wrong-dependency", "no-ready-capability",
 ])
 def test_attach_refusal_preserves_resident(harness, monkeypatch, tmp_path, fault):
     h = harness
@@ -336,7 +337,10 @@ def test_attach_refusal_preserves_resident(harness, monkeypatch, tmp_path, fault
                               "wrong-epoch": ("runtime_epoch", "epoch-2"),
                               "wrong-session": ("runtime_session_id", "session-2"),
                               "unready": ("readiness", "starting"),
-                              "wrong-source": ("source_epoch", "source-epoch-2")}[fault]
+                              "wrong-source": ("source_epoch", "source-epoch-2"),
+                              "wrong-source-digest": ("source_digest", "other"),
+                              "wrong-dependency": ("dependency_digest", "other"),
+                              "no-ready-capability": ("capabilities", [])}[fault]
         value[field] = replacement
         return value
     monkeypatch.setattr(host_bootstrap, "_observe_resident_host", observe)
