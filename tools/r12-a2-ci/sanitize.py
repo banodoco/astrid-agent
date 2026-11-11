@@ -14,9 +14,22 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
     expected_set = set(expected)
     if len(expected_set) != len(expected): raise ValueError('duplicate frozen IDs')
     found = []; unknown_count = 0; malformed_outcome_count = 0; malformed_summary_count = 0; summaries = []
+    in_warning_section = False
     if raw is not None:
         for line in raw.decode('utf-8', errors='replace').splitlines():
+            title = line.strip('= ').strip() if line.startswith('==') else None
+            if title in ('warnings summary', 'warnings summary (final)'):
+                in_warning_section = True
+            elif line == '-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html':
+                in_warning_section = False
+            # Pytest prints warning-origin node IDs without statuses in this section.
+            # They are not outcomes; allow only exact frozen IDs, never arbitrary text.
+            if in_warning_section and line in expected_set:
+                continue
             match = OUTCOME.fullmatch(line)
+            if in_warning_section and match:
+                malformed_outcome_count += 1
+                continue
             if match:
                 node, status = match.groups()
             else:
@@ -24,6 +37,9 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
                 for known_id, reason in KNOWN_SKIP.items():
                     pattern = re.escape(known_id) + r' SKIPPED \(' + re.escape(reason) + r'\)(?: +\[ *\d{1,3}%\])?'
                     if re.fullmatch(pattern,line): node, status = known_id, 'SKIPPED'; break
+            if in_warning_section and node is not None:
+                malformed_outcome_count += 1
+                continue
             if node is not None:
                 if node in expected_set: found.append((node, status))
                 else: unknown_count += 1

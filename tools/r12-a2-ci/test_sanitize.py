@@ -84,6 +84,13 @@ class Sanitization(unittest.TestCase):
         forged=raw.replace('=== warnings summary (final) ===',f'=== warnings summary (final) {SECRET} ===')
         result=make(forged,expected=(A,),exit_code=1)
         self.assertEqual(result['classification'],'INCOMPLETE'); self.assertIn('MALFORMED_SUMMARY',result['incomplete_reasons']); self.assertNotIn(SECRET,json.dumps(result))
+    def test_warning_location_is_not_an_outcome(self):
+        raw=f'{A} FAILED [100%]\n=== warnings summary ===\n{A}\n  warning {SECRET}\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=== 1 failed, 1 warning in 1.0s ===\n'
+        result=make(raw,expected=(A,),exit_code=1)
+        self.assertEqual(result['classification'],'COMPLETE'); self.assertEqual(result['outcome_counts'],{'FAILED':1}); self.assertNotIn(SECRET,json.dumps(result))
+        for forged in (raw.replace(A+'\n  warning',B+'\n  warning'), raw.replace(A+'\n  warning',A+' PASSED\n  warning'), raw.replace('-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n===', '-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n'+A+'\n===')):
+            result=make(forged,expected=(A,),exit_code=1)
+            self.assertEqual(result['classification'],'INCOMPLETE'); self.assertIn('MALFORMED_OUTCOME',result['incomplete_reasons']); self.assertNotIn(SECRET,json.dumps(result))
     def test_only_structured_file_is_uploaded(self):
         root=pathlib.Path(__file__).resolve().parents[2]; workflow=(root/'.github/workflows/r12-a2-once.yml').read_text()
         self.assertIn('path: ${{ runner.temp }}/r12-a2-receipt/receipt.json',workflow)
