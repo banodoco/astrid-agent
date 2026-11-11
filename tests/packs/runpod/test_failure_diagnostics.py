@@ -32,11 +32,11 @@ def _malformed_bounded_child(send, _pod, _token, deadline, _base_url, _name, arg
     send.close()
 
 
-def emit(tmp_path, raw):
+def emit(tmp_path, raw, *, node_class='KSampler'):
     path = tmp_path / 'result.json'
     path.write_bytes(raw)
     graph = tmp_path / 'source.json'
-    graph.write_text(json.dumps({'nodes': {'17': {'class_type': 'KSampler'}}}))
+    graph.write_text(json.dumps({'nodes': {'17': {'class_type': node_class}}}))
     job = tmp_path / 'job.json'
     job.write_text(json.dumps({'execution': {'source': str(graph)}}))
     command = rm.generation_command('cpu-image', '/fake/run', mode='t2i')
@@ -108,6 +108,18 @@ def test_remote_issue_fields_are_allowlisted_and_redacted(tmp_path):
     assert fd.parse_frame(frame, node_ids={'17'}) == {'code': 'generation_failed', 'category': 'execution',
                                      'node_id': '17', 'node_class': 'KSampler',
                                      'constraint': 'min_value'}
+    assert SENTINEL not in frame
+
+
+def test_qwen_failure_frame_omits_unlisted_class_and_field(tmp_path):
+    payload = {'issues': [{'severity': 'error', 'code': 'input_rejected', 'message': SENTINEL,
+                           'details': {'node_id': '17', 'node_class': 'AILab_Qwen3TTSCustomVoice',
+                                       'field': 'speaker', 'constraint': 'enum', 'untrusted': SENTINEL}}]}
+    frame = emit(tmp_path, json.dumps(payload).encode(), node_class='AILab_Qwen3TTSCustomVoice')
+    assert fd.parse_frame(frame, node_ids={'17'}) == {
+        'code': 'input_rejected', 'category': 'input', 'node_id': '17', 'constraint': 'enum'}
+    assert fd.parse_frame(frame, node_ids={'18'}) == {
+        'code': 'input_rejected', 'category': 'input', 'constraint': 'enum'}
     assert SENTINEL not in frame
 
 
