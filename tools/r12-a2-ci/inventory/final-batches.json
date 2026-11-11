@@ -1,0 +1,2654 @@
+[
+  {
+    "batch": "001",
+    "modules": [
+      "tests/core/execution/test_bug14_settlement_liveness.py"
+    ],
+    "original_shards": [
+      "001"
+    ],
+    "counts": {
+      "r10": 18,
+      "r11": 18,
+      "base": 18,
+      "candidate": 18
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 18,
+        "ids_sha256": "e26f64a2047bd86487bbe6b4ba5afedbffaf0dfe7f769fc01c556a2a1ac8c73a",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 18
+      },
+      "r11": {
+        "ids_count": 18,
+        "ids_sha256": "e26f64a2047bd86487bbe6b4ba5afedbffaf0dfe7f769fc01c556a2a1ac8c73a",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 18
+      },
+      "base": {
+        "ids_count": 18,
+        "ids_sha256": "e26f64a2047bd86487bbe6b4ba5afedbffaf0dfe7f769fc01c556a2a1ac8c73a",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 18
+      },
+      "candidate": {
+        "ids_count": 18,
+        "ids_sha256": "e26f64a2047bd86487bbe6b4ba5afedbffaf0dfe7f769fc01c556a2a1ac8c73a",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 18
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "002",
+    "modules": [
+      "tests/core/execution/test_child_import_receipt.py",
+      "tests/core/execution/test_child_request_transport_264.py",
+      "tests/core/execution/test_claim_head_of_line.py",
+      "tests/core/execution/test_comfy_hooks_f07.py"
+    ],
+    "original_shards": [
+      "002",
+      "003",
+      "004",
+      "005"
+    ],
+    "counts": {
+      "r10": 77,
+      "r11": 77,
+      "base": 77,
+      "candidate": 77
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 77,
+        "ids_sha256": "2d87474785289ca2bda38ab90ed4a6b4c34e2542c9c33e1f6241b2e2a7477545",
+        "historical_duration_known_ids": 6,
+        "historical_duration_known_seconds": 4.75,
+        "historical_duration_unknown_ids": 71
+      },
+      "r11": {
+        "ids_count": 77,
+        "ids_sha256": "2d87474785289ca2bda38ab90ed4a6b4c34e2542c9c33e1f6241b2e2a7477545",
+        "historical_duration_known_ids": 6,
+        "historical_duration_known_seconds": 4.75,
+        "historical_duration_unknown_ids": 71
+      },
+      "base": {
+        "ids_count": 77,
+        "ids_sha256": "2d87474785289ca2bda38ab90ed4a6b4c34e2542c9c33e1f6241b2e2a7477545",
+        "historical_duration_known_ids": 6,
+        "historical_duration_known_seconds": 4.75,
+        "historical_duration_unknown_ids": 71
+      },
+      "candidate": {
+        "ids_count": 77,
+        "ids_sha256": "2d87474785289ca2bda38ab90ed4a6b4c34e2542c9c33e1f6241b2e2a7477545",
+        "historical_duration_known_ids": 6,
+        "historical_duration_known_seconds": 4.75,
+        "historical_duration_unknown_ids": 71
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "003",
+    "modules": [
+      "tests/core/execution/test_comfy_session_f07.py"
+    ],
+    "original_shards": [
+      "006"
+    ],
+    "counts": {
+      "r10": 26,
+      "r11": 26,
+      "base": 26,
+      "candidate": 26
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 26,
+        "ids_sha256": "c91bf815203c0d6de5fc994dc10b2c90fe72342f7c37a775213315653a0cacac",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 26
+      },
+      "r11": {
+        "ids_count": 26,
+        "ids_sha256": "c91bf815203c0d6de5fc994dc10b2c90fe72342f7c37a775213315653a0cacac",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 26
+      },
+      "base": {
+        "ids_count": 26,
+        "ids_sha256": "c91bf815203c0d6de5fc994dc10b2c90fe72342f7c37a775213315653a0cacac",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 26
+      },
+      "candidate": {
+        "ids_count": 26,
+        "ids_sha256": "c91bf815203c0d6de5fc994dc10b2c90fe72342f7c37a775213315653a0cacac",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 26
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "004",
+    "modules": [
+      "tests/core/execution/test_custody_broker.py"
+    ],
+    "original_shards": [
+      "007"
+    ],
+    "counts": {
+      "r10": 591,
+      "r11": 591,
+      "base": 591,
+      "candidate": 591
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 591,
+        "ids_sha256": "38d9cb44889d6fdaa17d26f24e7ab598e612be45724e4726e2e539e59ee7df88",
+        "historical_duration_known_ids": 563,
+        "historical_duration_known_seconds": 4.84,
+        "historical_duration_unknown_ids": 28
+      },
+      "r11": {
+        "ids_count": 591,
+        "ids_sha256": "38d9cb44889d6fdaa17d26f24e7ab598e612be45724e4726e2e539e59ee7df88",
+        "historical_duration_known_ids": 563,
+        "historical_duration_known_seconds": 4.84,
+        "historical_duration_unknown_ids": 28
+      },
+      "base": {
+        "ids_count": 591,
+        "ids_sha256": "38d9cb44889d6fdaa17d26f24e7ab598e612be45724e4726e2e539e59ee7df88",
+        "historical_duration_known_ids": 563,
+        "historical_duration_known_seconds": 4.84,
+        "historical_duration_unknown_ids": 28
+      },
+      "candidate": {
+        "ids_count": 591,
+        "ids_sha256": "38d9cb44889d6fdaa17d26f24e7ab598e612be45724e4726e2e539e59ee7df88",
+        "historical_duration_known_ids": 563,
+        "historical_duration_known_seconds": 4.84,
+        "historical_duration_unknown_ids": 28
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "005",
+    "modules": [
+      "tests/core/execution/test_declared_action_secrets.py",
+      "tests/core/execution/test_delegated_publication_transport_g31.py",
+      "tests/core/execution/test_execution_guards.py",
+      "tests/core/execution/test_execution_reconciler.py",
+      "tests/core/execution/test_external_pack_loading_m1_03.py"
+    ],
+    "original_shards": [
+      "008",
+      "009",
+      "010",
+      "011",
+      "012"
+    ],
+    "counts": {
+      "r10": 66,
+      "r11": 86,
+      "base": 86,
+      "candidate": 86
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 66,
+        "ids_sha256": "06c4d5690704ad9ab59dbe513d4cdbabeb039228a7b8b9b9164fc7a43294dfd2",
+        "historical_duration_known_ids": 38,
+        "historical_duration_known_seconds": 2.48,
+        "historical_duration_unknown_ids": 28
+      },
+      "r11": {
+        "ids_count": 86,
+        "ids_sha256": "6327f1945347ca419f4bc6b4edf67df05595d2cd521e26ddb0790b9925ede32e",
+        "historical_duration_known_ids": 38,
+        "historical_duration_known_seconds": 2.48,
+        "historical_duration_unknown_ids": 48
+      },
+      "base": {
+        "ids_count": 86,
+        "ids_sha256": "6327f1945347ca419f4bc6b4edf67df05595d2cd521e26ddb0790b9925ede32e",
+        "historical_duration_known_ids": 38,
+        "historical_duration_known_seconds": 2.48,
+        "historical_duration_unknown_ids": 48
+      },
+      "candidate": {
+        "ids_count": 86,
+        "ids_sha256": "6327f1945347ca419f4bc6b4edf67df05595d2cd521e26ddb0790b9925ede32e",
+        "historical_duration_known_ids": 38,
+        "historical_duration_known_seconds": 2.48,
+        "historical_duration_unknown_ids": 48
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "006",
+    "modules": [
+      "tests/core/execution/test_fail_closed_g28.py"
+    ],
+    "original_shards": [
+      "013"
+    ],
+    "counts": {
+      "r10": 80,
+      "r11": 80,
+      "base": 80,
+      "candidate": 80
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 80,
+        "ids_sha256": "368c9439c756537cb38433b1890c6c8d1a39d700aaaf13671219d3261c3f2522",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 80
+      },
+      "r11": {
+        "ids_count": 80,
+        "ids_sha256": "368c9439c756537cb38433b1890c6c8d1a39d700aaaf13671219d3261c3f2522",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 80
+      },
+      "base": {
+        "ids_count": 80,
+        "ids_sha256": "368c9439c756537cb38433b1890c6c8d1a39d700aaaf13671219d3261c3f2522",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 80
+      },
+      "candidate": {
+        "ids_count": 80,
+        "ids_sha256": "368c9439c756537cb38433b1890c6c8d1a39d700aaaf13671219d3261c3f2522",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 80
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "007",
+    "modules": [
+      "tests/core/execution/test_generic_host_actions_v3.py"
+    ],
+    "original_shards": [
+      "014"
+    ],
+    "counts": {
+      "r10": 217,
+      "r11": 196,
+      "base": 196,
+      "candidate": 196
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 217,
+        "ids_sha256": "d660406bcc8ecf653ef8335d3e005feb9d9c640b22b36fc0200c989c60c2d3ea",
+        "historical_duration_known_ids": 197,
+        "historical_duration_known_seconds": 186.45,
+        "historical_duration_unknown_ids": 20
+      },
+      "r11": {
+        "ids_count": 196,
+        "ids_sha256": "483eb57f361395a79e0ba20e05665d120cb005ceaa9569be111362dec698f9d0",
+        "historical_duration_known_ids": 179,
+        "historical_duration_known_seconds": 177.78,
+        "historical_duration_unknown_ids": 17
+      },
+      "base": {
+        "ids_count": 196,
+        "ids_sha256": "483eb57f361395a79e0ba20e05665d120cb005ceaa9569be111362dec698f9d0",
+        "historical_duration_known_ids": 179,
+        "historical_duration_known_seconds": 177.78,
+        "historical_duration_unknown_ids": 17
+      },
+      "candidate": {
+        "ids_count": 196,
+        "ids_sha256": "483eb57f361395a79e0ba20e05665d120cb005ceaa9569be111362dec698f9d0",
+        "historical_duration_known_ids": 179,
+        "historical_duration_known_seconds": 177.78,
+        "historical_duration_unknown_ids": 17
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "008",
+    "modules": [
+      "tests/core/execution/test_generic_host_activation.py"
+    ],
+    "original_shards": [
+      "015"
+    ],
+    "counts": {
+      "r10": 39,
+      "r11": 39,
+      "base": 39,
+      "candidate": 39
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 39,
+        "ids_sha256": "fd73dd15b8dd46b1b7bfdeaf90a60fa0aafb2edf1a3094dbe913da95d7beb573",
+        "historical_duration_known_ids": 38,
+        "historical_duration_known_seconds": 0.96,
+        "historical_duration_unknown_ids": 1
+      },
+      "r11": {
+        "ids_count": 39,
+        "ids_sha256": "fd73dd15b8dd46b1b7bfdeaf90a60fa0aafb2edf1a3094dbe913da95d7beb573",
+        "historical_duration_known_ids": 38,
+        "historical_duration_known_seconds": 0.96,
+        "historical_duration_unknown_ids": 1
+      },
+      "base": {
+        "ids_count": 39,
+        "ids_sha256": "fd73dd15b8dd46b1b7bfdeaf90a60fa0aafb2edf1a3094dbe913da95d7beb573",
+        "historical_duration_known_ids": 38,
+        "historical_duration_known_seconds": 0.96,
+        "historical_duration_unknown_ids": 1
+      },
+      "candidate": {
+        "ids_count": 39,
+        "ids_sha256": "fd73dd15b8dd46b1b7bfdeaf90a60fa0aafb2edf1a3094dbe913da95d7beb573",
+        "historical_duration_known_ids": 38,
+        "historical_duration_known_seconds": 0.96,
+        "historical_duration_unknown_ids": 1
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "009",
+    "modules": [
+      "tests/core/execution/test_generic_host_child_bridge_d18.py"
+    ],
+    "original_shards": [
+      "016"
+    ],
+    "counts": {
+      "r10": 226,
+      "r11": 226,
+      "base": 226,
+      "candidate": 226
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 226,
+        "ids_sha256": "00720b7e8ce4ed59a75d54ce57084afb054daf3feebe6856ce942c6bc4a39049",
+        "historical_duration_known_ids": 203,
+        "historical_duration_known_seconds": 6.46,
+        "historical_duration_unknown_ids": 23
+      },
+      "r11": {
+        "ids_count": 226,
+        "ids_sha256": "00720b7e8ce4ed59a75d54ce57084afb054daf3feebe6856ce942c6bc4a39049",
+        "historical_duration_known_ids": 203,
+        "historical_duration_known_seconds": 6.46,
+        "historical_duration_unknown_ids": 23
+      },
+      "base": {
+        "ids_count": 226,
+        "ids_sha256": "00720b7e8ce4ed59a75d54ce57084afb054daf3feebe6856ce942c6bc4a39049",
+        "historical_duration_known_ids": 203,
+        "historical_duration_known_seconds": 6.46,
+        "historical_duration_unknown_ids": 23
+      },
+      "candidate": {
+        "ids_count": 226,
+        "ids_sha256": "00720b7e8ce4ed59a75d54ce57084afb054daf3feebe6856ce942c6bc4a39049",
+        "historical_duration_known_ids": 203,
+        "historical_duration_known_seconds": 6.46,
+        "historical_duration_unknown_ids": 23
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "010",
+    "modules": [
+      "tests/core/execution/test_generic_host_claim_loop.py",
+      "tests/core/execution/test_generic_host_contract.py",
+      "tests/core/execution/test_generic_host_handoff.py"
+    ],
+    "original_shards": [
+      "017",
+      "018",
+      "019"
+    ],
+    "counts": {
+      "r10": 92,
+      "r11": 92,
+      "base": 92,
+      "candidate": 92
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 92,
+        "ids_sha256": "f4a7ee0fba98e59c8c4fa463758d974583ae3e0a059c3a4b69b91cd515f7cffb",
+        "historical_duration_known_ids": 88,
+        "historical_duration_known_seconds": 37.98,
+        "historical_duration_unknown_ids": 4
+      },
+      "r11": {
+        "ids_count": 92,
+        "ids_sha256": "f4a7ee0fba98e59c8c4fa463758d974583ae3e0a059c3a4b69b91cd515f7cffb",
+        "historical_duration_known_ids": 88,
+        "historical_duration_known_seconds": 37.98,
+        "historical_duration_unknown_ids": 4
+      },
+      "base": {
+        "ids_count": 92,
+        "ids_sha256": "f4a7ee0fba98e59c8c4fa463758d974583ae3e0a059c3a4b69b91cd515f7cffb",
+        "historical_duration_known_ids": 88,
+        "historical_duration_known_seconds": 37.98,
+        "historical_duration_unknown_ids": 4
+      },
+      "candidate": {
+        "ids_count": 92,
+        "ids_sha256": "f4a7ee0fba98e59c8c4fa463758d974583ae3e0a059c3a4b69b91cd515f7cffb",
+        "historical_duration_known_ids": 88,
+        "historical_duration_known_seconds": 37.98,
+        "historical_duration_unknown_ids": 4
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "011",
+    "modules": [
+      "tests/core/execution/test_generic_host_verified_preparation_gr03.py",
+      "tests/core/execution/test_hivemind_destination_matcher.py",
+      "tests/core/execution/test_host_cleanup_ack_barrier.py",
+      "tests/core/execution/test_local_runtime_reconnect.py"
+    ],
+    "original_shards": [
+      "020",
+      "021",
+      "022",
+      "023"
+    ],
+    "counts": {
+      "r10": 86,
+      "r11": 89,
+      "base": 89,
+      "candidate": 89
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 86,
+        "ids_sha256": "5746961df971dadd208182e929964f44a69308d7817adc2db12e3a8311c6dac9",
+        "historical_duration_known_ids": 8,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 78
+      },
+      "r11": {
+        "ids_count": 89,
+        "ids_sha256": "4adc70d79eb24604149578e4f98f871c3bd4ac7437676b4c6f7c63bcad0fc7d7",
+        "historical_duration_known_ids": 8,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 81
+      },
+      "base": {
+        "ids_count": 89,
+        "ids_sha256": "4adc70d79eb24604149578e4f98f871c3bd4ac7437676b4c6f7c63bcad0fc7d7",
+        "historical_duration_known_ids": 8,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 81
+      },
+      "candidate": {
+        "ids_count": 89,
+        "ids_sha256": "4adc70d79eb24604149578e4f98f871c3bd4ac7437676b4c6f7c63bcad0fc7d7",
+        "historical_duration_known_ids": 8,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 81
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "012",
+    "modules": [
+      "tests/core/execution/test_m1_13_pack_provenance.py",
+      "tests/core/execution/test_managed_tool_session.py",
+      "tests/core/execution/test_pack_host_cleanup_doctor.py"
+    ],
+    "original_shards": [
+      "024",
+      "025",
+      "026"
+    ],
+    "counts": {
+      "r10": 20,
+      "r11": 65,
+      "base": 91,
+      "candidate": 99
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 20,
+        "ids_sha256": "035f26b4e7c9e70d96ca7031dfcd494a99c1be71ee9d42afeb08d575750b7304",
+        "historical_duration_known_ids": 18,
+        "historical_duration_known_seconds": 9.25,
+        "historical_duration_unknown_ids": 2
+      },
+      "r11": {
+        "ids_count": 65,
+        "ids_sha256": "b9b2b8f4f5b3d5a53db76a29d134f090068811fbed7fd74318afe027ff402997",
+        "historical_duration_known_ids": 18,
+        "historical_duration_known_seconds": 9.25,
+        "historical_duration_unknown_ids": 47
+      },
+      "base": {
+        "ids_count": 91,
+        "ids_sha256": "48f7e0dcba664c928ffe5ddb2639a172a6eda95055b914df2c3ddad882f4c7fa",
+        "historical_duration_known_ids": 18,
+        "historical_duration_known_seconds": 9.25,
+        "historical_duration_unknown_ids": 73
+      },
+      "candidate": {
+        "ids_count": 99,
+        "ids_sha256": "1f6b9b6695b6c4c36da8e182cdeea0b358c5f4969a740c8257bca09cb24a9232",
+        "historical_duration_known_ids": 18,
+        "historical_duration_known_seconds": 9.25,
+        "historical_duration_unknown_ids": 81
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "013",
+    "modules": [
+      "tests/core/execution/test_pidfd_callers.py",
+      "tests/core/execution/test_pipe_io.py",
+      "tests/core/execution/test_pipeline_step.py",
+      "tests/core/execution/test_platform_boundary.py"
+    ],
+    "original_shards": [
+      "027",
+      "028",
+      "029",
+      "030"
+    ],
+    "counts": {
+      "r10": 78,
+      "r11": 82,
+      "base": 82,
+      "candidate": 82
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 78,
+        "ids_sha256": "85a87f10a312e16d4cbf01e0ff7b16b34b4338b5f2bf6453df5a1424c775e8ea",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 78
+      },
+      "r11": {
+        "ids_count": 82,
+        "ids_sha256": "670781b5460fb3adeb7feb8337c873772296576b80789c86860515e3689cfb0c",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 82
+      },
+      "base": {
+        "ids_count": 82,
+        "ids_sha256": "670781b5460fb3adeb7feb8337c873772296576b80789c86860515e3689cfb0c",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 82
+      },
+      "candidate": {
+        "ids_count": 82,
+        "ids_sha256": "670781b5460fb3adeb7feb8337c873772296576b80789c86860515e3689cfb0c",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 82
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "014",
+    "modules": [
+      "tests/core/execution/test_platform_helpers.py",
+      "tests/core/execution/test_private_network_command.py"
+    ],
+    "original_shards": [
+      "031",
+      "032"
+    ],
+    "counts": {
+      "r10": 42,
+      "r11": 42,
+      "base": 42,
+      "candidate": 42
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 42,
+        "ids_sha256": "b8391c85ea149cfa982ce39b39b48af707279f74bd08ca84fd8a3c376a346641",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 42
+      },
+      "r11": {
+        "ids_count": 42,
+        "ids_sha256": "b8391c85ea149cfa982ce39b39b48af707279f74bd08ca84fd8a3c376a346641",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 42
+      },
+      "base": {
+        "ids_count": 42,
+        "ids_sha256": "b8391c85ea149cfa982ce39b39b48af707279f74bd08ca84fd8a3c376a346641",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 42
+      },
+      "candidate": {
+        "ids_count": 42,
+        "ids_sha256": "b8391c85ea149cfa982ce39b39b48af707279f74bd08ca84fd8a3c376a346641",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 42
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "015",
+    "modules": [
+      "tests/core/execution/test_process_group.py"
+    ],
+    "original_shards": [
+      "033"
+    ],
+    "counts": {
+      "r10": 91,
+      "r11": 91,
+      "base": 91,
+      "candidate": 91
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 91,
+        "ids_sha256": "0162cbec9ec67f4b92e4b0fd3f683bce52a20b6d7870db58f7dd6d5e87ef4cb3",
+        "historical_duration_known_ids": 61,
+        "historical_duration_known_seconds": 13.03,
+        "historical_duration_unknown_ids": 30
+      },
+      "r11": {
+        "ids_count": 91,
+        "ids_sha256": "0162cbec9ec67f4b92e4b0fd3f683bce52a20b6d7870db58f7dd6d5e87ef4cb3",
+        "historical_duration_known_ids": 61,
+        "historical_duration_known_seconds": 13.03,
+        "historical_duration_unknown_ids": 30
+      },
+      "base": {
+        "ids_count": 91,
+        "ids_sha256": "0162cbec9ec67f4b92e4b0fd3f683bce52a20b6d7870db58f7dd6d5e87ef4cb3",
+        "historical_duration_known_ids": 61,
+        "historical_duration_known_seconds": 13.03,
+        "historical_duration_unknown_ids": 30
+      },
+      "candidate": {
+        "ids_count": 91,
+        "ids_sha256": "0162cbec9ec67f4b92e4b0fd3f683bce52a20b6d7870db58f7dd6d5e87ef4cb3",
+        "historical_duration_known_ids": 61,
+        "historical_duration_known_seconds": 13.03,
+        "historical_duration_unknown_ids": 30
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "016",
+    "modules": [
+      "tests/core/execution/test_producer_evidence_transport_f06.py",
+      "tests/core/execution/test_remote_activation_owner.py",
+      "tests/core/execution/test_remotion_frame_owner.py"
+    ],
+    "original_shards": [
+      "034",
+      "035",
+      "036"
+    ],
+    "counts": {
+      "r10": 85,
+      "r11": 85,
+      "base": 85,
+      "candidate": 85
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 85,
+        "ids_sha256": "ce8655e0d88306a3672693b605e26df8cdf8ef0bb664ab61374367d3177c96b3",
+        "historical_duration_known_ids": 72,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 13
+      },
+      "r11": {
+        "ids_count": 85,
+        "ids_sha256": "ce8655e0d88306a3672693b605e26df8cdf8ef0bb664ab61374367d3177c96b3",
+        "historical_duration_known_ids": 72,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 13
+      },
+      "base": {
+        "ids_count": 85,
+        "ids_sha256": "ce8655e0d88306a3672693b605e26df8cdf8ef0bb664ab61374367d3177c96b3",
+        "historical_duration_known_ids": 72,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 13
+      },
+      "candidate": {
+        "ids_count": 85,
+        "ids_sha256": "ce8655e0d88306a3672693b605e26df8cdf8ef0bb664ab61374367d3177c96b3",
+        "historical_duration_known_ids": 72,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 13
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "017",
+    "modules": [
+      "tests/core/execution/test_remotion_host_session.py",
+      "tests/core/execution/test_render_scope_cleanup.py",
+      "tests/core/execution/test_render_scope_launch.py",
+      "tests/core/execution/test_render_storage.py",
+      "tests/core/execution/test_runpod_destination_scheme.py",
+      "tests/core/execution/test_runtime_epoch_fence.py",
+      "tests/core/execution/test_runtime_orchestrator_custody_d40.py",
+      "tests/core/execution/test_runtime_source_custody_d40.py"
+    ],
+    "original_shards": [
+      "037",
+      "038",
+      "039",
+      "040",
+      "041",
+      "042",
+      "043",
+      "044"
+    ],
+    "counts": {
+      "r10": 96,
+      "r11": 96,
+      "base": 96,
+      "candidate": 96
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 96,
+        "ids_sha256": "f3e7685c71b990dda7933e09a4bee6f5834f658b2397ab548dd72415a4eb7efd",
+        "historical_duration_known_ids": 21,
+        "historical_duration_known_seconds": 2.75,
+        "historical_duration_unknown_ids": 75
+      },
+      "r11": {
+        "ids_count": 96,
+        "ids_sha256": "3b88a1d92e377baf99a19ee952ac84edd23139b38266aa1e2c2f2634325f9e8f",
+        "historical_duration_known_ids": 21,
+        "historical_duration_known_seconds": 2.75,
+        "historical_duration_unknown_ids": 75
+      },
+      "base": {
+        "ids_count": 96,
+        "ids_sha256": "3b88a1d92e377baf99a19ee952ac84edd23139b38266aa1e2c2f2634325f9e8f",
+        "historical_duration_known_ids": 21,
+        "historical_duration_known_seconds": 2.75,
+        "historical_duration_unknown_ids": 75
+      },
+      "candidate": {
+        "ids_count": 96,
+        "ids_sha256": "3b88a1d92e377baf99a19ee952ac84edd23139b38266aa1e2c2f2634325f9e8f",
+        "historical_duration_known_ids": 21,
+        "historical_duration_known_seconds": 2.75,
+        "historical_duration_unknown_ids": 75
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "018",
+    "modules": [
+      "tests/core/execution/test_selected_root_map_composition.py",
+      "tests/core/execution/test_target_adapter.py",
+      "tests/core/execution/test_task_scope.py",
+      "tests/core/execution/test_terminal_evidence_transport_f05.py",
+      "tests/core/execution/test_terminal_result.py"
+    ],
+    "original_shards": [
+      "045",
+      "046",
+      "047",
+      "048",
+      "049"
+    ],
+    "counts": {
+      "r10": 20,
+      "r11": 25,
+      "base": 25,
+      "candidate": 25
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 20,
+        "ids_sha256": "35493f136a0d50b102829b389c02d55e8598784b5f1b737eba57bbe51b576b31",
+        "historical_duration_known_ids": 9,
+        "historical_duration_known_seconds": 5.13,
+        "historical_duration_unknown_ids": 11
+      },
+      "r11": {
+        "ids_count": 25,
+        "ids_sha256": "c5a982617c4cae7f310968a16038b34d67adf0c17bd2f0f3aacfcba767745bd5",
+        "historical_duration_known_ids": 9,
+        "historical_duration_known_seconds": 5.13,
+        "historical_duration_unknown_ids": 16
+      },
+      "base": {
+        "ids_count": 25,
+        "ids_sha256": "c5a982617c4cae7f310968a16038b34d67adf0c17bd2f0f3aacfcba767745bd5",
+        "historical_duration_known_ids": 9,
+        "historical_duration_known_seconds": 5.13,
+        "historical_duration_unknown_ids": 16
+      },
+      "candidate": {
+        "ids_count": 25,
+        "ids_sha256": "c5a982617c4cae7f310968a16038b34d67adf0c17bd2f0f3aacfcba767745bd5",
+        "historical_duration_known_ids": 9,
+        "historical_duration_known_seconds": 5.13,
+        "historical_duration_unknown_ids": 16
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "019",
+    "modules": [
+      "tests/core/execution/test_vibecomfy_engine_adapter.py"
+    ],
+    "original_shards": [
+      "050"
+    ],
+    "counts": {
+      "r10": 107,
+      "r11": 107,
+      "base": 107,
+      "candidate": 107
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 107,
+        "ids_sha256": "c4cd4d39367860a3fe3e03c0858a3f6a4e550562f286d20a82670042745156d9",
+        "historical_duration_known_ids": 107,
+        "historical_duration_known_seconds": 0.01,
+        "historical_duration_unknown_ids": 0
+      },
+      "r11": {
+        "ids_count": 107,
+        "ids_sha256": "c4cd4d39367860a3fe3e03c0858a3f6a4e550562f286d20a82670042745156d9",
+        "historical_duration_known_ids": 107,
+        "historical_duration_known_seconds": 0.01,
+        "historical_duration_unknown_ids": 0
+      },
+      "base": {
+        "ids_count": 107,
+        "ids_sha256": "c4cd4d39367860a3fe3e03c0858a3f6a4e550562f286d20a82670042745156d9",
+        "historical_duration_known_ids": 107,
+        "historical_duration_known_seconds": 0.01,
+        "historical_duration_unknown_ids": 0
+      },
+      "candidate": {
+        "ids_count": 107,
+        "ids_sha256": "c4cd4d39367860a3fe3e03c0858a3f6a4e550562f286d20a82670042745156d9",
+        "historical_duration_known_ids": 107,
+        "historical_duration_known_seconds": 0.01,
+        "historical_duration_unknown_ids": 0
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "historical durations only; execution and startup may vary"
+  },
+  {
+    "batch": "020",
+    "modules": [
+      "tests/core/execution/test_warm_hold.py",
+      "tests/core/execution/test_windows_comfy_refusal.py",
+      "tests/core/execution/test_windows_diagnostic_sinks.py",
+      "tests/core/execution/test_worker_qualification.py",
+      "tests/core/execution/test_worker_startup_identity.py",
+      "tests/core/pack/test_agent_index_selected.py",
+      "tests/core/pack/test_cli_basic_starter.py",
+      "tests/core/pack/test_cli_manage.py",
+      "tests/core/pack/test_cli_symlink_collection.py",
+      "tests/core/pack/test_defaults.py",
+      "tests/core/pack/test_definitions_record.py",
+      "tests/core/pack/test_deleted_dependency_discovery.py",
+      "tests/core/pack/test_filelock.py"
+    ],
+    "original_shards": [
+      "051",
+      "052",
+      "053",
+      "054",
+      "055",
+      "056",
+      "057",
+      "058",
+      "059",
+      "060",
+      "061",
+      "062",
+      "063"
+    ],
+    "counts": {
+      "r10": 53,
+      "r11": 85,
+      "base": 91,
+      "candidate": 91
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 53,
+        "ids_sha256": "497ca446ad8efb8067fd06cf715758ffc5ca84795a3c2bfac1dacd3228625a19",
+        "historical_duration_known_ids": 30,
+        "historical_duration_known_seconds": 0.45,
+        "historical_duration_unknown_ids": 23
+      },
+      "r11": {
+        "ids_count": 85,
+        "ids_sha256": "9dcc613301018c14bb2b0b203730b4c26f9298c478ac998f11ea60185a953c5a",
+        "historical_duration_known_ids": 30,
+        "historical_duration_known_seconds": 0.45,
+        "historical_duration_unknown_ids": 55
+      },
+      "base": {
+        "ids_count": 91,
+        "ids_sha256": "a0fd76a7802a1615616383b18ff689b4d21d4f6dd755924cc3c87ff99fa561c5",
+        "historical_duration_known_ids": 30,
+        "historical_duration_known_seconds": 0.45,
+        "historical_duration_unknown_ids": 61
+      },
+      "candidate": {
+        "ids_count": 91,
+        "ids_sha256": "a0fd76a7802a1615616383b18ff689b4d21d4f6dd755924cc3c87ff99fa561c5",
+        "historical_duration_known_ids": 30,
+        "historical_duration_known_seconds": 0.45,
+        "historical_duration_unknown_ids": 61
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "021",
+    "modules": [
+      "tests/core/pack/test_git_environment.py",
+      "tests/core/pack/test_identity.py"
+    ],
+    "original_shards": [
+      "064",
+      "065"
+    ],
+    "counts": {
+      "r10": 0,
+      "r11": 17,
+      "base": 45,
+      "candidate": 45
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 0,
+        "ids_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 0
+      },
+      "r11": {
+        "ids_count": 17,
+        "ids_sha256": "20af2cf672016649074a6f0870fadd48f4e546a411e60d7aa03431e494b4d6f3",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 17
+      },
+      "base": {
+        "ids_count": 45,
+        "ids_sha256": "a065d619dd642eeea8443750dc37a41659ce3aee9b65ff606d832846b9f06b29",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 45
+      },
+      "candidate": {
+        "ids_count": 45,
+        "ids_sha256": "a065d619dd642eeea8443750dc37a41659ce3aee9b65ff606d832846b9f06b29",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 45
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "022",
+    "modules": [
+      "tests/core/pack/test_install.py",
+      "tests/core/pack/test_inventory_review_fix.py",
+      "tests/core/pack/test_missing_project_pack_is_passive.py",
+      "tests/core/pack/test_nofollow_fallback.py"
+    ],
+    "original_shards": [
+      "066",
+      "067",
+      "068",
+      "069"
+    ],
+    "counts": {
+      "r10": 0,
+      "r11": 94,
+      "base": 100,
+      "candidate": 100
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 0,
+        "ids_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 0
+      },
+      "r11": {
+        "ids_count": 94,
+        "ids_sha256": "51b4dd0749035df6d6b9cd73e4187e74c569ee98daf8c388aa24e5fc5e538db0",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 94
+      },
+      "base": {
+        "ids_count": 100,
+        "ids_sha256": "6f1df8d158d717c8d28e162e9b4ce05f7677ecc443c03e10aa1e436801eeee07",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 100
+      },
+      "candidate": {
+        "ids_count": 100,
+        "ids_sha256": "6f1df8d158d717c8d28e162e9b4ce05f7677ecc443c03e10aa1e436801eeee07",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 100
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "023",
+    "modules": [
+      "tests/core/pack/test_package_data_b04.py",
+      "tests/core/pack/test_personal_initializer.py",
+      "tests/core/pack/test_project_open_entrypoints_are_passive.py",
+      "tests/core/pack/test_r8_prod_cli_discovery.py",
+      "tests/core/pack/test_r8_prod_refusals.py",
+      "tests/core/pack/test_r8_prod_release_pins.py",
+      "tests/core/pack/test_release_manifest.py",
+      "tests/core/pack/test_source_setup.py"
+    ],
+    "original_shards": [
+      "070",
+      "071",
+      "072",
+      "073",
+      "074",
+      "075",
+      "076",
+      "077"
+    ],
+    "counts": {
+      "r10": 31,
+      "r11": 68,
+      "base": 68,
+      "candidate": 68
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 31,
+        "ids_sha256": "0beffd8ff96963b4599e0941571d2b36339a49ab84130a5b343fdb6e30758139",
+        "historical_duration_known_ids": 28,
+        "historical_duration_known_seconds": 4.97,
+        "historical_duration_unknown_ids": 3
+      },
+      "r11": {
+        "ids_count": 68,
+        "ids_sha256": "f96fba282709676441e089a0b12421872c8f5ea97655f9afe6648257ef5869a9",
+        "historical_duration_known_ids": 26,
+        "historical_duration_known_seconds": 4.97,
+        "historical_duration_unknown_ids": 42
+      },
+      "base": {
+        "ids_count": 68,
+        "ids_sha256": "f96fba282709676441e089a0b12421872c8f5ea97655f9afe6648257ef5869a9",
+        "historical_duration_known_ids": 26,
+        "historical_duration_known_seconds": 4.97,
+        "historical_duration_unknown_ids": 42
+      },
+      "candidate": {
+        "ids_count": 68,
+        "ids_sha256": "f96fba282709676441e089a0b12421872c8f5ea97655f9afe6648257ef5869a9",
+        "historical_duration_known_ids": 26,
+        "historical_duration_known_seconds": 4.97,
+        "historical_duration_unknown_ids": 42
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "024",
+    "modules": [
+      "tests/core/pack/test_transaction.py"
+    ],
+    "original_shards": [
+      "078"
+    ],
+    "counts": {
+      "r10": 0,
+      "r11": 144,
+      "base": 144,
+      "candidate": 145
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 0,
+        "ids_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 0
+      },
+      "r11": {
+        "ids_count": 144,
+        "ids_sha256": "73884e0f28590a0c9a84b845e3f6c95616280f4deac8c79cad84ee0b7b95d5c6",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 144
+      },
+      "base": {
+        "ids_count": 144,
+        "ids_sha256": "73884e0f28590a0c9a84b845e3f6c95616280f4deac8c79cad84ee0b7b95d5c6",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 144
+      },
+      "candidate": {
+        "ids_count": 145,
+        "ids_sha256": "ec22ccb787e969b998eb0f24cfa77d81a5efed16917459d312c704f2b6dde980",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 145
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "025",
+    "modules": [
+      "tests/core/pack/test_transaction_artifacts.py",
+      "tests/core/pack/test_transaction_integrity.py",
+      "tests/core/pack/test_transaction_source_contracts.py",
+      "tests/core/pack/test_transaction_windows.py"
+    ],
+    "original_shards": [
+      "079",
+      "080",
+      "081",
+      "082"
+    ],
+    "counts": {
+      "r10": 0,
+      "r11": 49,
+      "base": 91,
+      "candidate": 100
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 0,
+        "ids_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 0
+      },
+      "r11": {
+        "ids_count": 49,
+        "ids_sha256": "58659d6433eb3aef266d6ebc30da97c13ee01f497904a3b5f4b5d97e7f76873e",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 49
+      },
+      "base": {
+        "ids_count": 91,
+        "ids_sha256": "fd759895805b95c598198fa24b873b8a02b23ddff97fa2bca505affabae76b09",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 91
+      },
+      "candidate": {
+        "ids_count": 100,
+        "ids_sha256": "905da05d2261fd48a2f307ab58e561f8a7eb2352a8a567eab18b833dea7008fe",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 100
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "026",
+    "modules": [
+      "tests/core/pack/test_v3_core_worker_luna.py",
+      "tests/core/pack/test_verified_relocations.py",
+      "tests/core/pack/test_windows_publish.py",
+      "tests/sdk/test_host_attach_rejection.py",
+      "tests/sdk/test_timeline_element_schema_resolution.py"
+    ],
+    "original_shards": [
+      "083",
+      "084",
+      "085",
+      "086",
+      "087"
+    ],
+    "counts": {
+      "r10": 5,
+      "r11": 5,
+      "base": 62,
+      "candidate": 78
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 5,
+        "ids_sha256": "d71b31ea46615d6604cc9b4c1bc63d627ed4a8f169b9218920431b1b272f50f2",
+        "historical_duration_known_ids": 3,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 2
+      },
+      "r11": {
+        "ids_count": 5,
+        "ids_sha256": "d71b31ea46615d6604cc9b4c1bc63d627ed4a8f169b9218920431b1b272f50f2",
+        "historical_duration_known_ids": 3,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 2
+      },
+      "base": {
+        "ids_count": 62,
+        "ids_sha256": "4077498f88ec53210b4c21ffc6a39bfa39342b9760d91d5339b2806f955bb508",
+        "historical_duration_known_ids": 3,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 59
+      },
+      "candidate": {
+        "ids_count": 78,
+        "ids_sha256": "41c85988b5a118f0fffca9e8497ccc647664ec064ff3988e636c458d27befd08",
+        "historical_duration_known_ids": 3,
+        "historical_duration_known_seconds": 0.0,
+        "historical_duration_unknown_ids": 75
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "027",
+    "modules": [
+      "tests/test_generic_host.py"
+    ],
+    "original_shards": [
+      "088"
+    ],
+    "counts": {
+      "r10": 268,
+      "r11": 275,
+      "base": 305,
+      "candidate": 307
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 268,
+        "ids_sha256": "13501edf38bb4bab682601c7e5492d9c1ab58cd529eb9475ea731b4bff9b3280",
+        "historical_duration_known_ids": 221,
+        "historical_duration_known_seconds": 163.66,
+        "historical_duration_unknown_ids": 47
+      },
+      "r11": {
+        "ids_count": 275,
+        "ids_sha256": "b7fdf3676276ad2eb9842de61ddebb015b5c82f9cd8dcd474887f4dceab8ee9c",
+        "historical_duration_known_ids": 221,
+        "historical_duration_known_seconds": 163.66,
+        "historical_duration_unknown_ids": 54
+      },
+      "base": {
+        "ids_count": 305,
+        "ids_sha256": "cce3554d516a07ed64afb4e287affb1276469d69540e818df710334bbfa31712",
+        "historical_duration_known_ids": 221,
+        "historical_duration_known_seconds": 163.66,
+        "historical_duration_unknown_ids": 84
+      },
+      "candidate": {
+        "ids_count": 307,
+        "ids_sha256": "e027e7da741202b63082351991b155cea9fb51d60e0ec0c8bfb44c13f2725245",
+        "historical_duration_known_ids": 221,
+        "historical_duration_known_seconds": 163.66,
+        "historical_duration_unknown_ids": 86
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "028",
+    "modules": [
+      "tests/test_installer_acl.py",
+      "tests/test_installer_activation_lock.py",
+      "tests/test_installer_app_argv_fixture.py"
+    ],
+    "original_shards": [
+      "089",
+      "090",
+      "091"
+    ],
+    "counts": {
+      "r10": 81,
+      "r11": 81,
+      "base": 81,
+      "candidate": 81
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 81,
+        "ids_sha256": "fce6c1582812fcbcb5270c56bc6fe74c4e0ecad09084dc7620b2a190cee25782",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 81
+      },
+      "r11": {
+        "ids_count": 81,
+        "ids_sha256": "fce6c1582812fcbcb5270c56bc6fe74c4e0ecad09084dc7620b2a190cee25782",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 81
+      },
+      "base": {
+        "ids_count": 81,
+        "ids_sha256": "fce6c1582812fcbcb5270c56bc6fe74c4e0ecad09084dc7620b2a190cee25782",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 81
+      },
+      "candidate": {
+        "ids_count": 81,
+        "ids_sha256": "fce6c1582812fcbcb5270c56bc6fe74c4e0ecad09084dc7620b2a190cee25782",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 81
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "029",
+    "modules": [
+      "tests/test_installer_app_update.py"
+    ],
+    "original_shards": [
+      "092"
+    ],
+    "counts": {
+      "r10": 111,
+      "r11": 111,
+      "base": 118,
+      "candidate": 118
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 111,
+        "ids_sha256": "6ec11850974af31001b4d24a452a7aad26b2746e2e04820adf6fa8061a24395e",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 111
+      },
+      "r11": {
+        "ids_count": 111,
+        "ids_sha256": "6ec11850974af31001b4d24a452a7aad26b2746e2e04820adf6fa8061a24395e",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 111
+      },
+      "base": {
+        "ids_count": 118,
+        "ids_sha256": "8f02a04aa91f24329b7b6cc20ca50e0eb775f823bd19e7ba8560895ffe1c9b85",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 118
+      },
+      "candidate": {
+        "ids_count": 118,
+        "ids_sha256": "8f02a04aa91f24329b7b6cc20ca50e0eb775f823bd19e7ba8560895ffe1c9b85",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 118
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "030",
+    "modules": [
+      "tests/test_installer_asset_checksums.py",
+      "tests/test_installer_autostart.py",
+      "tests/test_installer_backup.py",
+      "tests/test_installer_bootstrap_imports.py"
+    ],
+    "original_shards": [
+      "093",
+      "094",
+      "095",
+      "096"
+    ],
+    "counts": {
+      "r10": 95,
+      "r11": 95,
+      "base": 96,
+      "candidate": 96
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 95,
+        "ids_sha256": "8b141848a622953f83288c24ccf9610b191a926e445b4e0d461d0af590b32d6b",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 95
+      },
+      "r11": {
+        "ids_count": 95,
+        "ids_sha256": "8b141848a622953f83288c24ccf9610b191a926e445b4e0d461d0af590b32d6b",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 95
+      },
+      "base": {
+        "ids_count": 96,
+        "ids_sha256": "2be451e71af4a6f7b8f4a80b5fbb190a48d6944f7042155cb08f53cdf9301683",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 96
+      },
+      "candidate": {
+        "ids_count": 96,
+        "ids_sha256": "2be451e71af4a6f7b8f4a80b5fbb190a48d6944f7042155cb08f53cdf9301683",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 96
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "031",
+    "modules": [
+      "tests/test_installer_bootstrap_refusals.py",
+      "tests/test_installer_bootstrap_schema.py"
+    ],
+    "original_shards": [
+      "097",
+      "098"
+    ],
+    "counts": {
+      "r10": 12,
+      "r11": 7,
+      "base": 7,
+      "candidate": 7
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 12,
+        "ids_sha256": "cf28d90c0c92534475c7b2ead3147460c64574c3bb9053ab28c27e466750b5a5",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 12
+      },
+      "r11": {
+        "ids_count": 7,
+        "ids_sha256": "5a3f2727f402bf1fdba040c2c6dd0383fec889a2f729ccbb30be5202d99bfa7f",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 7
+      },
+      "base": {
+        "ids_count": 7,
+        "ids_sha256": "5a3f2727f402bf1fdba040c2c6dd0383fec889a2f729ccbb30be5202d99bfa7f",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 7
+      },
+      "candidate": {
+        "ids_count": 7,
+        "ids_sha256": "5a3f2727f402bf1fdba040c2c6dd0383fec889a2f729ccbb30be5202d99bfa7f",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 7
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "032",
+    "modules": [
+      "tests/test_installer_busy_fence.py"
+    ],
+    "original_shards": [
+      "099"
+    ],
+    "counts": {
+      "r10": 144,
+      "r11": 144,
+      "base": 144,
+      "candidate": 144
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 144,
+        "ids_sha256": "0935cb357f3aad8263c7838f66e61e71d184691fd2d74bbb2a949bff7f6e11b2",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 144
+      },
+      "r11": {
+        "ids_count": 144,
+        "ids_sha256": "0935cb357f3aad8263c7838f66e61e71d184691fd2d74bbb2a949bff7f6e11b2",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 144
+      },
+      "base": {
+        "ids_count": 144,
+        "ids_sha256": "0935cb357f3aad8263c7838f66e61e71d184691fd2d74bbb2a949bff7f6e11b2",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 144
+      },
+      "candidate": {
+        "ids_count": 144,
+        "ids_sha256": "0935cb357f3aad8263c7838f66e61e71d184691fd2d74bbb2a949bff7f6e11b2",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 144
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "033",
+    "modules": [
+      "tests/test_installer_candidate_validation.py",
+      "tests/test_installer_choices.py"
+    ],
+    "original_shards": [
+      "100",
+      "101"
+    ],
+    "counts": {
+      "r10": 74,
+      "r11": 74,
+      "base": 74,
+      "candidate": 74
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 74,
+        "ids_sha256": "8d2aa1c1aa825eb0f177c66278f0f993fef931323c418b8dd8acd2e4f4d698b8",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 74
+      },
+      "r11": {
+        "ids_count": 74,
+        "ids_sha256": "8d2aa1c1aa825eb0f177c66278f0f993fef931323c418b8dd8acd2e4f4d698b8",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 74
+      },
+      "base": {
+        "ids_count": 74,
+        "ids_sha256": "8d2aa1c1aa825eb0f177c66278f0f993fef931323c418b8dd8acd2e4f4d698b8",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 74
+      },
+      "candidate": {
+        "ids_count": 74,
+        "ids_sha256": "8d2aa1c1aa825eb0f177c66278f0f993fef931323c418b8dd8acd2e4f4d698b8",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 74
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "034",
+    "modules": [
+      "tests/test_installer_cleanup.py",
+      "tests/test_installer_cli_recovery.py",
+      "tests/test_installer_current.py",
+      "tests/test_installer_git_executable.py"
+    ],
+    "original_shards": [
+      "102",
+      "103",
+      "104",
+      "105"
+    ],
+    "counts": {
+      "r10": 80,
+      "r11": 80,
+      "base": 95,
+      "candidate": 95
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 80,
+        "ids_sha256": "5fcd200f8d3df67115c8cf85437f5cddd9e725bbbf65e947c6e773f4679dfc6d",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 80
+      },
+      "r11": {
+        "ids_count": 80,
+        "ids_sha256": "5fcd200f8d3df67115c8cf85437f5cddd9e725bbbf65e947c6e773f4679dfc6d",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 80
+      },
+      "base": {
+        "ids_count": 95,
+        "ids_sha256": "5c123d90cc1b0f5d725efb8ac7132b3b65f953dc4d706905426d759d6c1581c8",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 95
+      },
+      "candidate": {
+        "ids_count": 95,
+        "ids_sha256": "5c123d90cc1b0f5d725efb8ac7132b3b65f953dc4d706905426d759d6c1581c8",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 95
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "035",
+    "modules": [
+      "tests/test_installer_ic_done2.py",
+      "tests/test_installer_installed_schema.py",
+      "tests/test_installer_launchd_cache_window.py",
+      "tests/test_installer_launchd_stop_handoff.py",
+      "tests/test_installer_launchd_stop_refusals.py",
+      "tests/test_installer_launcher_repair.py"
+    ],
+    "original_shards": [
+      "106",
+      "107",
+      "108",
+      "109",
+      "110",
+      "111"
+    ],
+    "counts": {
+      "r10": 84,
+      "r11": 91,
+      "base": 91,
+      "candidate": 91
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 84,
+        "ids_sha256": "5ce1943028749ea0530cccfa03440ea1366be85c9fb55f1fdfc452d342f827df",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 84
+      },
+      "r11": {
+        "ids_count": 91,
+        "ids_sha256": "0bbced2737d4869b2990d1b643c13669381d0ac24f3cacfd21f2b27b07c40834",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 91
+      },
+      "base": {
+        "ids_count": 91,
+        "ids_sha256": "0bbced2737d4869b2990d1b643c13669381d0ac24f3cacfd21f2b27b07c40834",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 91
+      },
+      "candidate": {
+        "ids_count": 91,
+        "ids_sha256": "0bbced2737d4869b2990d1b643c13669381d0ac24f3cacfd21f2b27b07c40834",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 91
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "036",
+    "modules": [
+      "tests/test_installer_lifecycle.py"
+    ],
+    "original_shards": [
+      "112"
+    ],
+    "counts": {
+      "r10": 139,
+      "r11": 139,
+      "base": 139,
+      "candidate": 139
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 139,
+        "ids_sha256": "aa242b91722fa497285e1661c861a5a258592b7faea35706ee0dc4278a843577",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 139
+      },
+      "r11": {
+        "ids_count": 139,
+        "ids_sha256": "aa242b91722fa497285e1661c861a5a258592b7faea35706ee0dc4278a843577",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 139
+      },
+      "base": {
+        "ids_count": 139,
+        "ids_sha256": "aa242b91722fa497285e1661c861a5a258592b7faea35706ee0dc4278a843577",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 139
+      },
+      "candidate": {
+        "ids_count": 139,
+        "ids_sha256": "aa242b91722fa497285e1661c861a5a258592b7faea35706ee0dc4278a843577",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 139
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "037",
+    "modules": [
+      "tests/test_installer_local_update.py",
+      "tests/test_installer_maintained_guides.py"
+    ],
+    "original_shards": [
+      "113",
+      "114"
+    ],
+    "counts": {
+      "r10": 31,
+      "r11": 31,
+      "base": 36,
+      "candidate": 36
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 31,
+        "ids_sha256": "375e3d7a7913156d1f1c23dc14b5494146bbdc01b8be6db0c3af770be2ac5f02",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 31
+      },
+      "r11": {
+        "ids_count": 31,
+        "ids_sha256": "375e3d7a7913156d1f1c23dc14b5494146bbdc01b8be6db0c3af770be2ac5f02",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 31
+      },
+      "base": {
+        "ids_count": 36,
+        "ids_sha256": "eacab593e684e6658eb9d726d0893379926156f32bfba17605c3979f8c824c91",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 36
+      },
+      "candidate": {
+        "ids_count": 36,
+        "ids_sha256": "eacab593e684e6658eb9d726d0893379926156f32bfba17605c3979f8c824c91",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 36
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "038",
+    "modules": [
+      "tests/test_installer_omp_source.py",
+      "tests/test_installer_outcome_copy.py",
+      "tests/test_installer_pack_build_toolchain.py",
+      "tests/test_installer_pack_home.py"
+    ],
+    "original_shards": [
+      "115",
+      "116",
+      "117",
+      "118"
+    ],
+    "counts": {
+      "r10": 65,
+      "r11": 83,
+      "base": 91,
+      "candidate": 93
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 65,
+        "ids_sha256": "22028dc004729099cacef9f928bfea0ab09df2bab25106bb01866572c6d561ca",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 65
+      },
+      "r11": {
+        "ids_count": 83,
+        "ids_sha256": "4e24e31e0920a741693ff38a8c4b5a48fb8c2b5737923f52f3ad65517ef55bd4",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 83
+      },
+      "base": {
+        "ids_count": 91,
+        "ids_sha256": "c188b7a89aa856a70de1802d2c93d225d4c0845c203cd81032b7a1ed7ddd30a6",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 91
+      },
+      "candidate": {
+        "ids_count": 93,
+        "ids_sha256": "474ed1370731182254129185bd9ce8665a47e7a97686d2335df49e1b41ae3069",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 93
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "039",
+    "modules": [
+      "tests/test_installer_pinokio_custody.py",
+      "tests/test_installer_pinokio_integration.py",
+      "tests/test_installer_pinokio_launcher.py",
+      "tests/test_installer_pinokio_lifecycle.py",
+      "tests/test_installer_pinokio_locking.py",
+      "tests/test_installer_pinokio_old_stop.py"
+    ],
+    "original_shards": [
+      "119",
+      "120",
+      "121",
+      "122",
+      "123",
+      "124"
+    ],
+    "counts": {
+      "r10": 94,
+      "r11": 94,
+      "base": 94,
+      "candidate": 94
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 94,
+        "ids_sha256": "546585f3bae5c304df4f4a9b2b61c5541aa6bd6613472c391349a9a99e9eb306",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 94
+      },
+      "r11": {
+        "ids_count": 94,
+        "ids_sha256": "546585f3bae5c304df4f4a9b2b61c5541aa6bd6613472c391349a9a99e9eb306",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 94
+      },
+      "base": {
+        "ids_count": 94,
+        "ids_sha256": "546585f3bae5c304df4f4a9b2b61c5541aa6bd6613472c391349a9a99e9eb306",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 94
+      },
+      "candidate": {
+        "ids_count": 94,
+        "ids_sha256": "546585f3bae5c304df4f4a9b2b61c5541aa6bd6613472c391349a9a99e9eb306",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 94
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "040",
+    "modules": [
+      "tests/test_installer_platforms.py",
+      "tests/test_installer_pre_stop_recovery.py"
+    ],
+    "original_shards": [
+      "125",
+      "126"
+    ],
+    "counts": {
+      "r10": 97,
+      "r11": 97,
+      "base": 99,
+      "candidate": 99
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 97,
+        "ids_sha256": "9378e1188a8337542e9d4e7dfc1b6b78c4d02d6d249b35d90ebe01c3d981ebad",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 97
+      },
+      "r11": {
+        "ids_count": 97,
+        "ids_sha256": "9378e1188a8337542e9d4e7dfc1b6b78c4d02d6d249b35d90ebe01c3d981ebad",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 97
+      },
+      "base": {
+        "ids_count": 99,
+        "ids_sha256": "5bb38ae9a91d881a77b9c3e0a7e5211900536f6edf2a8f82067f8b88b09bbbe9",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 99
+      },
+      "candidate": {
+        "ids_count": 99,
+        "ids_sha256": "5bb38ae9a91d881a77b9c3e0a7e5211900536f6edf2a8f82067f8b88b09bbbe9",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 99
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "041",
+    "modules": [
+      "tests/test_installer_r0_detection.py",
+      "tests/test_installer_r0_entry.py",
+      "tests/test_installer_r0_stop.py"
+    ],
+    "original_shards": [
+      "127",
+      "128",
+      "129"
+    ],
+    "counts": {
+      "r10": 96,
+      "r11": 96,
+      "base": 98,
+      "candidate": 98
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 96,
+        "ids_sha256": "cecf3e52260fc5462183b3b9e80bc1ccf9f495d1572c41318b4b2d6e49f06c29",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 96
+      },
+      "r11": {
+        "ids_count": 96,
+        "ids_sha256": "cecf3e52260fc5462183b3b9e80bc1ccf9f495d1572c41318b4b2d6e49f06c29",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 96
+      },
+      "base": {
+        "ids_count": 98,
+        "ids_sha256": "63ea50ebe3cbece355c8cef30ec0bec996926b687c44f742f5eb99ddb5d75598",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 98
+      },
+      "candidate": {
+        "ids_count": 98,
+        "ids_sha256": "63ea50ebe3cbece355c8cef30ec0bec996926b687c44f742f5eb99ddb5d75598",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 98
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "042",
+    "modules": [
+      "tests/test_installer_receipt_warnings.py",
+      "tests/test_installer_release0_rollback.py",
+      "tests/test_installer_release0_service_adoption.py",
+      "tests/test_installer_remotion.py",
+      "tests/test_installer_runtime_error.py",
+      "tests/test_installer_schema.py",
+      "tests/test_installer_self_contained_launchers.py"
+    ],
+    "original_shards": [
+      "130",
+      "131",
+      "132",
+      "133",
+      "134",
+      "135",
+      "136"
+    ],
+    "counts": {
+      "r10": 40,
+      "r11": 40,
+      "base": 65,
+      "candidate": 65
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 40,
+        "ids_sha256": "412fc28d35d9fbed1f3a7db02e23bd02c89f2cb59543a95d6d1acc82c0781488",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 40
+      },
+      "r11": {
+        "ids_count": 40,
+        "ids_sha256": "412fc28d35d9fbed1f3a7db02e23bd02c89f2cb59543a95d6d1acc82c0781488",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 40
+      },
+      "base": {
+        "ids_count": 65,
+        "ids_sha256": "f908a7b64a8878f9b0152dc412e17e53eacfbc16b04fe06b7eba210ad6d69019",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 65
+      },
+      "candidate": {
+        "ids_count": 65,
+        "ids_sha256": "f908a7b64a8878f9b0152dc412e17e53eacfbc16b04fe06b7eba210ad6d69019",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 65
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "043",
+    "modules": [
+      "tests/test_installer_service_env.py"
+    ],
+    "original_shards": [
+      "137"
+    ],
+    "counts": {
+      "r10": 114,
+      "r11": 114,
+      "base": 115,
+      "candidate": 115
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 114,
+        "ids_sha256": "de21c0426b6e686b4a127293ac95b80b8ae3108753407ad9b488f175f5dd7f91",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 114
+      },
+      "r11": {
+        "ids_count": 114,
+        "ids_sha256": "de21c0426b6e686b4a127293ac95b80b8ae3108753407ad9b488f175f5dd7f91",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 114
+      },
+      "base": {
+        "ids_count": 115,
+        "ids_sha256": "5a8cc704799a2af8da4639d982f76c2fa80615d14823d8283e66660ce31baccd",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 115
+      },
+      "candidate": {
+        "ids_count": 115,
+        "ids_sha256": "5a8cc704799a2af8da4639d982f76c2fa80615d14823d8283e66660ce31baccd",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 115
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "044",
+    "modules": [
+      "tests/test_installer_service_repair_integration.py",
+      "tests/test_installer_service_restart_policy.py",
+      "tests/test_installer_shim.py"
+    ],
+    "original_shards": [
+      "138",
+      "139",
+      "140"
+    ],
+    "counts": {
+      "r10": 70,
+      "r11": 70,
+      "base": 70,
+      "candidate": 70
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 70,
+        "ids_sha256": "abf17c5e145647b5e07357bdf59589f0bb779d678e48088763be4a7d0c250df7",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 70
+      },
+      "r11": {
+        "ids_count": 70,
+        "ids_sha256": "abf17c5e145647b5e07357bdf59589f0bb779d678e48088763be4a7d0c250df7",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 70
+      },
+      "base": {
+        "ids_count": 70,
+        "ids_sha256": "abf17c5e145647b5e07357bdf59589f0bb779d678e48088763be4a7d0c250df7",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 70
+      },
+      "candidate": {
+        "ids_count": 70,
+        "ids_sha256": "abf17c5e145647b5e07357bdf59589f0bb779d678e48088763be4a7d0c250df7",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 70
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "045",
+    "modules": [
+      "tests/test_installer_source_ownership.py"
+    ],
+    "original_shards": [
+      "141"
+    ],
+    "counts": {
+      "r10": 32,
+      "r11": 32,
+      "base": 32,
+      "candidate": 32
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 32,
+        "ids_sha256": "6ea35f11ffdf2183942bb72ab8fd27a470660c5573c40795f609b61906484f9d",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 32
+      },
+      "r11": {
+        "ids_count": 32,
+        "ids_sha256": "6ea35f11ffdf2183942bb72ab8fd27a470660c5573c40795f609b61906484f9d",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 32
+      },
+      "base": {
+        "ids_count": 32,
+        "ids_sha256": "6ea35f11ffdf2183942bb72ab8fd27a470660c5573c40795f609b61906484f9d",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 32
+      },
+      "candidate": {
+        "ids_count": 32,
+        "ids_sha256": "6ea35f11ffdf2183942bb72ab8fd27a470660c5573c40795f609b61906484f9d",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 32
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "046",
+    "modules": [
+      "tests/test_installer_sources.py"
+    ],
+    "original_shards": [
+      "142"
+    ],
+    "counts": {
+      "r10": 71,
+      "r11": 73,
+      "base": 82,
+      "candidate": 84
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 71,
+        "ids_sha256": "6fa8a53d988297af2cfeb4292755770cc4241cf278372f46b3aa18fb7a66fb5b",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 71
+      },
+      "r11": {
+        "ids_count": 73,
+        "ids_sha256": "df8c8aea61ff3f85aaa3dde1c398a3e6ee6928f9a09572cb556f592f8d090e9c",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 73
+      },
+      "base": {
+        "ids_count": 82,
+        "ids_sha256": "a99ebd5c99ea188e8473ca25e3771d380b1799b569960e0c4d0e97bd5b4d7867",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 82
+      },
+      "candidate": {
+        "ids_count": 84,
+        "ids_sha256": "255e097a8f9a0cd538ab89baf263cd0744975b034e838ea33aee6b714b289ac0",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 84
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "047",
+    "modules": [
+      "tests/test_installer_startup_stop.py",
+      "tests/test_installer_support.py",
+      "tests/test_installer_terminal_summary.py"
+    ],
+    "original_shards": [
+      "143",
+      "144",
+      "145"
+    ],
+    "counts": {
+      "r10": 81,
+      "r11": 81,
+      "base": 85,
+      "candidate": 85
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 81,
+        "ids_sha256": "b3abba14e89ab5895e0f4ca5c560c06a97c65be1b8a2f189eb9450c74bf81186",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 81
+      },
+      "r11": {
+        "ids_count": 81,
+        "ids_sha256": "b3abba14e89ab5895e0f4ca5c560c06a97c65be1b8a2f189eb9450c74bf81186",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 81
+      },
+      "base": {
+        "ids_count": 85,
+        "ids_sha256": "52c815b819b124158293f2f95e7c677716f4363e771702f29bf4a5faaca5dd7f",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 85
+      },
+      "candidate": {
+        "ids_count": 85,
+        "ids_sha256": "52c815b819b124158293f2f95e7c677716f4363e771702f29bf4a5faaca5dd7f",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 85
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "048",
+    "modules": [
+      "tests/test_installer_tools.py"
+    ],
+    "original_shards": [
+      "146"
+    ],
+    "counts": {
+      "r10": 14,
+      "r11": 14,
+      "base": 16,
+      "candidate": 16
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 14,
+        "ids_sha256": "89abcd8d051507bb1641dba92e320750d6f44dc4e00a72b9b74cdce95bd2db31",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 14
+      },
+      "r11": {
+        "ids_count": 14,
+        "ids_sha256": "89abcd8d051507bb1641dba92e320750d6f44dc4e00a72b9b74cdce95bd2db31",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 14
+      },
+      "base": {
+        "ids_count": 16,
+        "ids_sha256": "05c131be6c4fdad0a75a873948d4f25ee36103c14142d1cb68f78d6ea980086c",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 16
+      },
+      "candidate": {
+        "ids_count": 16,
+        "ids_sha256": "05c131be6c4fdad0a75a873948d4f25ee36103c14142d1cb68f78d6ea980086c",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 16
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "049",
+    "modules": [
+      "tests/test_installer_transaction_authority.py"
+    ],
+    "original_shards": [
+      "147"
+    ],
+    "counts": {
+      "r10": 101,
+      "r11": 101,
+      "base": 101,
+      "candidate": 101
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 101,
+        "ids_sha256": "59bcd390283349f4b55b340bc0d15cff686b031e466847da4f0422deae991dce",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 101
+      },
+      "r11": {
+        "ids_count": 101,
+        "ids_sha256": "59bcd390283349f4b55b340bc0d15cff686b031e466847da4f0422deae991dce",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 101
+      },
+      "base": {
+        "ids_count": 101,
+        "ids_sha256": "59bcd390283349f4b55b340bc0d15cff686b031e466847da4f0422deae991dce",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 101
+      },
+      "candidate": {
+        "ids_count": 101,
+        "ids_sha256": "59bcd390283349f4b55b340bc0d15cff686b031e466847da4f0422deae991dce",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 101
+      }
+    },
+    "oversized_singleton": true,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "050",
+    "modules": [
+      "tests/test_installer_update_continuation.py",
+      "tests/test_installer_update_continuation_worker.py",
+      "tests/test_installer_update_end_to_end.py"
+    ],
+    "original_shards": [
+      "148",
+      "149",
+      "150"
+    ],
+    "counts": {
+      "r10": 66,
+      "r11": 66,
+      "base": 66,
+      "candidate": 66
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 66,
+        "ids_sha256": "2b750b68b4c690b7c3187bafebb46cdd7f3548b6a6d3324b3269ca48a6bcece3",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 66
+      },
+      "r11": {
+        "ids_count": 66,
+        "ids_sha256": "2b750b68b4c690b7c3187bafebb46cdd7f3548b6a6d3324b3269ca48a6bcece3",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 66
+      },
+      "base": {
+        "ids_count": 66,
+        "ids_sha256": "2b750b68b4c690b7c3187bafebb46cdd7f3548b6a6d3324b3269ca48a6bcece3",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 66
+      },
+      "candidate": {
+        "ids_count": 66,
+        "ids_sha256": "2b750b68b4c690b7c3187bafebb46cdd7f3548b6a6d3324b3269ca48a6bcece3",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 66
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "051",
+    "modules": [
+      "tests/test_installer_update_job.py"
+    ],
+    "original_shards": [
+      "151"
+    ],
+    "counts": {
+      "r10": 86,
+      "r11": 86,
+      "base": 97,
+      "candidate": 97
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 86,
+        "ids_sha256": "e2fb6cf995f6661650884d59a7af1387b36b645ed809e50e9d044e961377bf89",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 86
+      },
+      "r11": {
+        "ids_count": 86,
+        "ids_sha256": "e2fb6cf995f6661650884d59a7af1387b36b645ed809e50e9d044e961377bf89",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 86
+      },
+      "base": {
+        "ids_count": 97,
+        "ids_sha256": "664ef1fa4deb42ec43cfbdb217a0f0ccf892fd9e640d9c8a564c1636bad7b997",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 97
+      },
+      "candidate": {
+        "ids_count": 97,
+        "ids_sha256": "664ef1fa4deb42ec43cfbdb217a0f0ccf892fd9e640d9c8a564c1636bad7b997",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 97
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  },
+  {
+    "batch": "052",
+    "modules": [
+      "tests/test_installer_update_legacy_record.py",
+      "tests/test_installer_update_maintenance.py",
+      "tests/test_installer_update_reconcile.py",
+      "tests/test_installer_wheel.py",
+      "tests/test_installer_windows_tasks.py"
+    ],
+    "original_shards": [
+      "152",
+      "153",
+      "154",
+      "155",
+      "156"
+    ],
+    "counts": {
+      "r10": 73,
+      "r11": 73,
+      "base": 73,
+      "candidate": 73
+    },
+    "side_receipts": {
+      "r10": {
+        "ids_count": 73,
+        "ids_sha256": "2d7243ca8d03e0e551daa9b1361665ebc724a1ca371a9319c4c3cce0c76515b5",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 73
+      },
+      "r11": {
+        "ids_count": 73,
+        "ids_sha256": "2d7243ca8d03e0e551daa9b1361665ebc724a1ca371a9319c4c3cce0c76515b5",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 73
+      },
+      "base": {
+        "ids_count": 73,
+        "ids_sha256": "2d7243ca8d03e0e551daa9b1361665ebc724a1ca371a9319c4c3cce0c76515b5",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 73
+      },
+      "candidate": {
+        "ids_count": 73,
+        "ids_sha256": "2d7243ca8d03e0e551daa9b1361665ebc724a1ca371a9319c4c3cce0c76515b5",
+        "historical_duration_known_ids": 0,
+        "historical_duration_known_seconds": 0,
+        "historical_duration_unknown_ids": 73
+      }
+    },
+    "oversized_singleton": false,
+    "risk": "unknown duration"
+  }
+]

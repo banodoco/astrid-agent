@@ -1,0 +1,44 @@
+name: R12 A2 bounded comparison (one push)
+on:
+  push:
+    branches: ['harness/29-r12']
+permissions:
+  contents: read
+concurrency:
+  group: r12-a2-once
+  cancel-in-progress: false
+jobs:
+  compare:
+    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/harness/29-r12' && github.event.before == 'b550ecadf07d7a4b377be1b7af1d6252642f1b48' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        side: [r10, r11, base, candidate]
+        group: ['019','020','021','022','023','024','025','026','027','028','029','030','031','032','033','034','035','036','037','038','039','040','041','042','043','044','045','046','047','048','049','050','051','052']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11.17'
+      - name: Validate and execute isolated group
+        env:
+          A2_SIDE: ${{ matrix.side }}
+          A2_GROUP: ${{ matrix.group }}
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/runner.py
+      - name: Upload receipt even after failure or cancellation
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ matrix.group }}-${{ matrix.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-receipt/
+          if-no-files-found: warn
+          retention-days: 90
