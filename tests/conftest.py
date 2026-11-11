@@ -29,6 +29,22 @@ from astrid.core.subprocess_env import (
 )
 from tests.lanes import pytest_collection_modifyitems, pytest_configure, pytest_ignore_collect  # noqa: F401  (lanes, skip registry and guard, fd guard)
 from tests.process_groups import ProcessGroups
+from tests import runpod_guard
+
+# Repo-wide safety net: tests never reach RunPod (see tests/runpod_guard.py).
+runpod_guard.scrub_credentials()
+runpod_guard.install()
+
+
+@pytest.fixture(autouse=True)
+def _no_runpod_network_or_credentials(request):
+    """Name the running test in guard errors and keep RunPod credentials out of the env."""
+    runpod_guard.scrub_credentials()
+    runpod_guard.set_current_test(request.node.nodeid)
+    try:
+        yield
+    finally:
+        runpod_guard.set_current_test("<outside a test>")
 
 
 @pytest.fixture(autouse=True)
