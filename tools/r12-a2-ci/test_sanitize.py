@@ -19,6 +19,19 @@ class Sanitization(unittest.TestCase):
     def test_newline_injection_cannot_be_a_summary(self):
         raw=f'{A} PASSED\n{B} FAILED\n=== 1 failed, 1 passed {SECRET} in 1.0s ===\n'
         result=make(raw); self.assertEqual(result['classification'],'INCOMPLETE'); self.assertIsNone(result['summary_counts']); self.assertNotIn(SECRET,json.dumps(result))
+    def test_extra_malformed_outcome_lines_fail_closed(self):
+        good=f'{A} PASSED\n{B} FAILED\n=== 1 failed, 1 passed in 1.0s ===\n'
+        for injected in (f'{A} FAILED {SECRET}',f'{B} PASSED [100%] {SECRET}',f'tests/other.py::test_new SKIPPED ({SECRET})',f'{A} passed',f'  {A} FAILED'):
+            with self.subTest(injected=injected):
+                result=make(good+injected+'\n'); self.assertEqual(result['classification'],'INCOMPLETE'); self.assertEqual(result['malformed_outcome_count'],1); self.assertNotIn(SECRET,json.dumps(result))
+    def test_extra_malformed_summaries_fail_closed(self):
+        good=f'{A} PASSED\n{B} FAILED\n=== 1 failed, 1 passed in 1.0s ===\n'
+        for injected in (f'=== 1 failed {SECRET} in 1.0s ===', '=== 2 passed in nope ===', '=== 1 passed, 1 passed in 1.0s ===', '=== 1 failure', '== 1 passed in 1.0s =='):
+            with self.subTest(injected=injected):
+                result=make(good+injected+'\n'); self.assertEqual(result['classification'],'INCOMPLETE'); self.assertEqual(result['malformed_summary_count'],1); self.assertNotIn(SECRET,json.dumps(result))
+    def test_ordinary_chatter_is_ignored(self):
+        raw=f'=== test session starts ===\nplatform linux -- Python 3.11\n{A} PASSED\n{B} FAILED\n=== FAILURES ===\ntraceback {SECRET}\n=== short test summary info ===\nFAILED {B} - {SECRET}\n=== 1 failed, 1 passed in 1.0s ===\n'
+        result=make(raw); self.assertEqual(result['classification'],'COMPLETE'); self.assertNotIn(SECRET,json.dumps(result))
     def test_only_structured_file_is_uploaded(self):
         root=pathlib.Path(__file__).resolve().parents[2]; workflow=(root/'.github/workflows/r12-a2-once.yml').read_text()
         self.assertIn('path: ${{ runner.temp }}/r12-a2-receipt/receipt.json',workflow)
