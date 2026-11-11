@@ -32,11 +32,11 @@ def _malformed_bounded_child(send, _pod, _token, deadline, _base_url, _name, arg
     send.close()
 
 
-def emit(tmp_path, raw):
+def emit(tmp_path, raw, graph_body=None):
     path = tmp_path / 'result.json'
     path.write_bytes(raw)
     graph = tmp_path / 'source.json'
-    graph.write_text(json.dumps({'nodes': {'17': {'class_type': 'KSampler'}}}))
+    graph.write_text(json.dumps(graph_body if graph_body is not None else {'nodes': {'17': {'class_type': 'KSampler'}}}))
     job = tmp_path / 'job.json'
     job.write_text(json.dumps({'execution': {'source': str(graph)}}))
     command = rm.generation_command('cpu-image', '/fake/run', mode='t2i')
@@ -549,3 +549,100 @@ def test_job_failure_crosses_cli_frame_and_journal_without_private_text(
                                                'failure': journal}}})
     assert row['last_job']['failure'] == journal
     assert SENTINEL not in frame and SENTINEL not in json.dumps(row)
+
+
+# The real TTS workflow: vibecomfy ready_templates/sources/custom_nodes/qwen_tts/1038lab/
+# qwen3_tts_custom_voice.json (ComfyUI API format, the bundle's ``source`` member;
+# entry audio/qwen3_tts_custom_voice). Node class and input names are verbatim.
+TTS_PROMPT = 'PROMPT_SECRET say this private sentence aloud'
+TTS_GRAPH = {
+    '1': {'class_type': 'AILab_Qwen3TTSCustomVoice',
+          'inputs': {'text': TTS_PROMPT, 'speaker': 'Ryan', 'model_size': '0.6B', 'language': 'English',
+                     'instruct': 'Calm, clear, friendly delivery.', 'unload_models': True, 'seed': 123}},
+    '2': {'class_type': 'SaveAudioMP3',
+          'inputs': {'audio': ['1', 0], 'filename_prefix': 'audio/qwen3_tts_custom_voice', 'quality': 'V0'}},
+}
+
+
+def _tts_failure(tmp_path, details, graph=TTS_GRAPH):
+    payload = {'issues': [{'severity': 'error', 'code': 'input_rejected', 'message': SENTINEL, 'details': details}]}
+    frame = emit(tmp_path, json.dumps(payload).encode(), graph)
+    source = tmp_path / 'source.json'
+    ids, names = fd.graph_facts(source)
+    return frame, fd.parse_frame(frame, node_ids=ids, node_names=names), ids, names
+
+
+def test_tts_failure_names_the_real_node_class_and_field(tmp_path):
+    frame, projected, ids, names = _tts_failure(
+        tmp_path, {'node_id': '1', 'node_class': 'AILab_Qwen3TTSCustomVoice', 'field': 'speaker'})
+    assert projected == {'code': 'input_rejected', 'category': 'input', 'node_id': '1',
+                         'node_class': 'AILab_Qwen3TTSCustomVoice', 'field': 'speaker'}
+    assert 'AILab_Qwen3TTSCustomVoice' in frame and 'speaker' in frame  # survived the pod-side projection too
+    # The same frame on the controller with no graph is reduced as before.
+    assert fd.parse_frame(frame) == {'code': 'input_rejected', 'category': 'input'}
+    assert ids == {'1', '2'} and {'AILab_Qwen3TTSCustomVoice', 'SaveAudioMP3', 'model_size', 'speaker'} <= names
+
+
+def test_names_outside_the_submitted_graph_are_still_unknown(tmp_path):
+    frame, projected, _ids, _names = _tts_failure(
+        tmp_path, {'node_id': '1', 'node_class': 'SomeOtherCustomNode', 'field': 'not_in_this_graph'})
+    assert projected == {'code': 'input_rejected', 'category': 'input', 'node_id': '1'}
+    assert 'SomeOtherCustomNode' not in frame and 'not_in_this_graph' not in frame
+
+
+def test_prompt_values_and_unsafe_names_never_authorize_or_appear(tmp_path):
+    graph = {**TTS_GRAPH, '3': {'class_type': 'Load Image (private note)',
+                                'inputs': {'a sentence typed as a key': 1, 'k' * 65: 1, TTS_PROMPT: 2,
+                                           'ok_name': {'nested_key': 'v'}}}}
+    for claim in (TTS_PROMPT, 'say this private sentence aloud', 'Ryan', '0.6B', 'Calm, clear, friendly delivery.',
+                  'a sentence typed as a key', 'k' * 65, 'nested_key', 'Load Image (private note)'):
+        frame, projected, _ids, names = _tts_failure(tmp_path, {'node_class': claim, 'field': claim}, graph)
+        assert projected == {'code': 'input_rejected', 'category': 'input'}, claim
+        assert 'PROMPT_SECRET' not in frame and 'PROMPT_SECRET' not in json.dumps(projected)
+    assert 'ok_name' in names and not any('PROMPT_SECRET' in n or ' ' in n or len(n) > 64 for n in names)
+    # A value that is also identifier-shaped is still not a name unless used as a class/input name.
+    assert 'Ryan' not in names and 'English' not in names
+
+
+def test_graph_names_accept_api_and_editor_graphs_and_fail_closed_when_large(tmp_path):
+    editor = tmp_path / 'editor.json'
+    editor.write_text(json.dumps({'nodes': [{'id': 5, 'type': 'KSampler', 'inputs': [{'name': 'model'}],
+                                            'widgets_values': ['v_secret_value']}]}))
+    assert fd.graph_facts(editor) == (frozenset({'5'}), frozenset({'KSampler', 'model'}))
+    many_nodes = tmp_path / 'many_nodes.json'
+    many_nodes.write_text(json.dumps({str(i): {'class_type': 'N'} for i in range(257)}))
+    assert fd.graph_facts(many_nodes) == (frozenset(), frozenset())
+    many_names = tmp_path / 'many_names.json'
+    many_names.write_text(json.dumps({'1': {'class_type': 'N', 'inputs': {f'f{j}': 0 for j in range(fd.MAX_GRAPH_NAMES + 5)}}}))
+    assert fd.graph_facts(many_names) == (frozenset(), frozenset())
+    assert fd.graph_facts(tmp_path / 'missing') == (frozenset(), frozenset())
+    assert fd.graph_facts(None) == (frozenset(), frozenset())
+
+
+def test_no_graph_fallback_keeps_the_fixed_list():
+    source = {'code': 'generation_failed', 'category': 'execution', 'node_class': 'KSampler',
+              'field': 'seed', 'constraint': 'min_value'}
+    assert fd.host_summary(RuntimeError(), source, stage='fetch')['node_class'] == 'KSampler'
+    tts = {**source, 'node_class': 'AILab_Qwen3TTSCustomVoice', 'field': 'speaker'}
+    projected = fd.host_summary(RuntimeError(), tts, stage='fetch')
+    assert 'node_class' not in projected and 'field' not in projected and projected['constraint'] == 'min_value'
+    # constraint stays on its fixed list even when the graph names it.
+    assert 'constraint' not in fd.host_summary(RuntimeError(), {**source, 'constraint': 'speaker'}, stage='fetch',
+                                              node_names={'speaker'})
+
+
+def test_graph_names_survive_the_journal_round_trip_and_are_revalidated():
+    names = frozenset({'AILab_Qwen3TTSCustomVoice', 'speaker'})
+    source = {'exception': 'MachineError', 'stage': 'fetch', 'code': 'input_rejected', 'category': 'input',
+              'node_id': '1', 'node_class': 'AILab_Qwen3TTSCustomVoice', 'field': 'speaker'}
+    projected = fd.safe_stored_summary(source, node_ids={'1'}, node_names=names)
+    assert projected == source
+    row = rm.lease_row({'pod_id': 'pod-1', 'state': 'claimed',
+                        'lease': {'state': 'idle', 'paid_expires_at': 1000, 'idle_expires_at': 900,
+                                  'hourly_usd': 1, 'accounted_at': 100,
+                                  'last_job': {'outcome': 'failed', 'generation': 1, 'failure': projected,
+                                               'structural_node_ids': ['1'], 'structural_names': sorted(names)}}})
+    assert row['last_job']['failure'] == projected
+    assert 'field' not in fd.safe_stored_summary(source, node_ids={'1'})
+    assert fd.stored_names(sorted(names)) == names
+    assert fd.stored_names(['ok', SENTINEL]) == frozenset() and fd.stored_names('speaker') == frozenset()
