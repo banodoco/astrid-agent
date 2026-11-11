@@ -15,9 +15,9 @@ Mechanism (all installed once per pytest process by ``install()``):
 * ``socket.socket.send``/``sendall`` refuse an HTTP request whose first line or
   ``Host:`` header names a RunPod host (CONNECT, absolute-URI and plain requests).
 
-Loopback is allowed so tests can run a local fake RunPod server (including a TLS
-server whose certificate claims a RunPod name), but a connection to a configured
-proxy port is never treated as loopback.
+Loopback is allowed so tests can run a local fake RunPod server or fake egress proxy
+(including a TLS server whose certificate claims a RunPod name), but a connection to the
+environment's real proxy port (read from HTTPS_PROXY etc. at import) is never treated as loopback.
 
 RunPod hosts: ``runpod.io``, ``runpod.ai``, ``runpod.net`` and ``runpod.com`` (and any
 subdomain, e.g. ``api.runpod.io``, ``rest.runpod.io``, ``api.runpod.ai``,
@@ -81,10 +81,10 @@ def _check_host(host: object, via: str) -> None:
         _refuse(str(host), via)
 
 
-def _proxy_ports() -> set[int]:
+def _env_proxy_ports(environ=os.environ) -> frozenset[int]:
     ports: set[int] = set()
     for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
-        value = os.environ.get(name)
+        value = environ.get(name)
         if value:
             try:
                 port = urlsplit(value if "://" in value else "http://" + value).port
@@ -92,7 +92,13 @@ def _proxy_ports() -> set[int]:
                 port = None
             if port:
                 ports.add(port)
-    return ports
+    return frozenset(ports)
+
+
+# The environment's real egress proxy (possibly on loopback), read once when the guard is
+# installed, before any test edits the environment.  A test's own local fake proxy has a
+# different port and stays allowed.
+_REAL_PROXY_PORTS: frozenset[int] = _env_proxy_ports()
 
 
 def _peer_is_local_server(sock: socket.socket) -> bool:
@@ -106,7 +112,7 @@ def _peer_is_local_server(sock: socket.socket) -> bool:
                 return False
         except ValueError:
             return False
-        return len(peer) < 2 or peer[1] not in _proxy_ports()
+        return len(peer) < 2 or peer[1] not in _REAL_PROXY_PORTS
     return True  # AF_UNIX
 
 

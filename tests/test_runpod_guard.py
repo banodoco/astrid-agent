@@ -51,7 +51,7 @@ def test_tls_handshake_with_runpod_sni_is_refused_when_tunnelled_via_a_proxy(mon
     server = socket.socket()
     server.bind(("127.0.0.1", 0)); server.listen(1)
     port = server.getsockname()[1]
-    monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
+    monkeypatch.setattr(runpod_guard, "_REAL_PROXY_PORTS", frozenset({port}))
     client = socket.create_connection(("127.0.0.1", port))
     try:
         with pytest.raises(RunPodNetworkBlocked, match="SNI"):
@@ -76,7 +76,7 @@ def test_request_to_runpod_through_a_proxy_port_on_loopback_is_refused(monkeypat
     server = socket.socket()
     server.bind(("127.0.0.1", 0)); server.listen(1)
     port = server.getsockname()[1]
-    monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
+    monkeypatch.setattr(runpod_guard, "_REAL_PROXY_PORTS", frozenset({port}))
     try:
         client = socket.create_connection(("127.0.0.1", port))
         with pytest.raises(RunPodNetworkBlocked, match="api.runpod.io"):
@@ -129,3 +129,14 @@ def test_only_the_exact_documented_opt_in_disables_the_guard(monkeypatch):
         monkeypatch.setenv(name, runpod_guard.LIVE_OPT_IN_VALUE)
         with pytest.raises(RunPodNetworkBlocked):
             socket.getaddrinfo("api.runpod.io", 443)
+
+
+def test_a_tests_own_loopback_fake_proxy_is_not_the_real_proxy():
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0)); server.listen(1)
+    client = socket.create_connection(server.getsockname())
+    try:
+        assert server.getsockname()[1] not in runpod_guard._REAL_PROXY_PORTS
+        client.sendall(b"CONNECT pod123-8000.proxy.runpod.net:443 HTTP/1.1\r\n\r\n")  # a fake egress proxy
+    finally:
+        client.close(); server.close()
