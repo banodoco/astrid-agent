@@ -1535,3 +1535,26 @@ def test_observer_refuses_descendant_open_pipe_at_deadline(monkeypatch, tmp_path
             runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
     assert host_bootstrap._UNCERTAIN_OBSERVERS[-1].poll() == 0
     assert time.monotonic() - started < 1.0
+
+
+def test_observer_windows_peek_limits_reads_and_recognizes_eof(monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+
+    reads = []
+    calls = []
+    def peek(_handle, _buffer, _size, _read, available, _remaining):
+        calls.append(True)
+        if len(calls) == 1:
+            ctypes.cast(available, ctypes.POINTER(ctypes.c_ulong)).contents.value = 3
+            return 1
+        return 0
+    process = SimpleNamespace(stdout=SimpleNamespace(fileno=lambda: 42), wait=lambda timeout: 0)
+    with monkeypatch.context() as patch:
+        patch.setattr(host_bootstrap.os, "name", "nt")
+        patch.setitem(sys.modules, "msvcrt", SimpleNamespace(get_osfhandle=lambda fd: fd))
+        patch.setattr(ctypes, "WinDLL", lambda *a, **k: SimpleNamespace(PeekNamedPipe=peek), raising=False)
+        patch.setattr(ctypes, "get_last_error", lambda: 109, raising=False)
+        patch.setattr(host_bootstrap.os, "read", lambda fd, size: reads.append(size) or b"abc")
+        assert host_bootstrap._read_observer_pipe(process, time.monotonic() + 1) == b"abc"
+    assert reads == [3]
