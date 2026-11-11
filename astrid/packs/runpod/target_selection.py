@@ -672,7 +672,9 @@ class RunPodSelectionOwner:
         try:
             config = self.config_factory(offer)
         except Exception:
-            raise PaidSelectionError("authenticated RunPod configuration is unavailable") from None
+            error = PaidSelectionError("authenticated RunPod configuration is unavailable")
+            error.cause = "credential"
+            raise error from None
         if (tuple(config.gpu_type_candidates) != (offer.gpu_type,) or config.worker_image != p.image
                 or config.volume_mount_path != p.mount_path
                 or getattr(config, "network_volume_id", None) != p.volume_id
@@ -718,7 +720,9 @@ class RunPodSelectionOwner:
                     p.volume_size_gb, datacenter_id=datacenter,
                 ), volumes=[observed_volume] if observed_volume is not None else [])
             except Exception:
-                raise AcquisitionUnresolvedError("existing account volume cannot be confirmed before claim or reuse") from None
+                error = AcquisitionUnresolvedError("existing account volume cannot be confirmed before claim or reuse")
+                error.cause = "volume"
+                raise error from None
             if record is not None:
                 safe_capacity = (record.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
                                  and record.get("safe_to_retry") is True and not record.get("pod_id")
@@ -793,7 +797,9 @@ class RunPodSelectionOwner:
                         p.volume_size_gb, record["request_name"], datacenter, defer_machine=True,
                     ))
                 except Exception:
-                    raise AcquisitionUnresolvedError("exact journal-owned pod observation is unresolved") from None
+                    error = AcquisitionUnresolvedError("exact journal-owned pod observation is unresolved")
+                    error.cause = "machine"
+                    raise error from None
                 acquired_record = dict(record)
             else:
                 # Paid limits survive a lost create response and process restart.
