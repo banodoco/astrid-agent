@@ -1947,7 +1947,7 @@ def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instanc
             _UNCERTAIN_OBSERVERS.append(process)
             if process.stdout is not None:
                 process.stdout.close()
-            raise ObserverCleanupUncertain("observer cleanup uncertain") from exc
+            raise ObserverCleanupUncertain("runtime observer unavailable: cleanup uncertain") from exc
         if process.stdout is not None:
             process.stdout.close()
         observed = json.loads(raw)
@@ -1965,6 +1965,8 @@ def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instanc
                        or cap["status"] != "ready" for cap in observed["capabilities"])):
             raise ValueError("invalid observer response")
         return observed
+    except ObserverCleanupUncertain:
+        raise
     except Exception as exc:
         raise RuntimeError("runtime observer unavailable") from exc
 

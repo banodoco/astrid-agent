@@ -1530,7 +1530,8 @@ def test_observer_refuses_descendant_open_pipe_at_deadline(monkeypatch, tmp_path
     monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: [sys.executable, "-c", code])
     monkeypatch.setattr(host_bootstrap, "_OBSERVER_TIMEOUT_SECONDS", 0.2)
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match="runtime observer unavailable"):
+    with pytest.raises(host_bootstrap.ObserverCleanupUncertain, match="cleanup uncertain"):
         host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path / "runtime",
             runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
+    assert host_bootstrap._UNCERTAIN_OBSERVERS[-1].poll() == 0
     assert time.monotonic() - started < 1.0
