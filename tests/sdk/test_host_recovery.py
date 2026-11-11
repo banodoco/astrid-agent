@@ -233,6 +233,7 @@ def test_observer_uses_bound_runtime_arguments(monkeypatch, tmp_path):
             "source_digest": "source", "dependency_digest": "dependency", "capabilities": [{"status": "ready"}]}).encode()
         return _ObserverProcess(payload, 0)
     monkeypatch.setattr(host_bootstrap.subprocess, "Popen", run)
+    monkeypatch.setattr(host_bootstrap, "_read_observer_pipe", lambda process, deadline: process.stdout.read())
     assert host_bootstrap._observe_resident_host(
         endpoint="http://runtime.test", support_root=tmp_path / "runtime",
         runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3,
@@ -260,6 +261,12 @@ def test_observer_rejects_bad_output_without_exposing_it(monkeypatch, tmp_path, 
     def run(_argv, **kwargs):
         return _ObserverProcess(output, returncode)
     monkeypatch.setattr(host_bootstrap.subprocess, "Popen", run)
+    def read(process, deadline):
+        data = process.stdout.read()
+        if process.returncode != 0 or len(data) > 65536:
+            raise ValueError("observer failed")
+        return data
+    monkeypatch.setattr(host_bootstrap, "_read_observer_pipe", read)
     with pytest.raises(RuntimeError, match="runtime observer unavailable") as exc:
         host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path / "runtime",
             runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
@@ -1515,3 +1522,15 @@ def test_no_supervisor_and_no_registration_keeps_the_launch_path(harness, monkey
 
     assert result["host_status"] == "ready"
     assert len(h.launches) == 1
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX inherited pipe fixture")
+def test_observer_refuses_descendant_open_pipe_at_deadline(monkeypatch, tmp_path):
+    from astrid.sdk import autobootstrap
+    code = "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time;time.sleep(3)'])"
+    monkeypatch.setattr(autobootstrap, "_launcher_command", lambda: [sys.executable, "-c", code])
+    monkeypatch.setattr(host_bootstrap, "_OBSERVER_TIMEOUT_SECONDS", 0.2)
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="runtime observer unavailable"):
+        host_bootstrap._observe_resident_host(endpoint="http://runtime.test", support_root=tmp_path / "runtime",
+            runtime_instance_id="instance-1", runtime_session_id="session-1", runtime_epoch=3)
+    assert time.monotonic() - started < 1.0

@@ -15,6 +15,7 @@ import math
 import os
 import re
 import secrets
+import selectors
 import shlex
 import shutil
 import socket
@@ -1855,6 +1856,73 @@ def _reject_attach(current: Mapping[str, Any], mismatches: list[dict[str, str]],
 _OBSERVER_TIMEOUT_SECONDS = 30.0
 
 
+
+class ObserverCleanupUncertain(RuntimeError):
+    """The observer or an inherited pipe remains outside proven cleanup."""
+
+
+# Keep the original Popen objects when cleanup cannot be proved. A PID from a
+# response is never a substitute for this custody and is never used to signal.
+_UNCERTAIN_OBSERVERS: list[subprocess.Popen] = []
+
+
+def _read_observer_pipe(process: subprocess.Popen, deadline: float) -> bytes:
+    """Read a bounded pipe until EOF and reap the direct child by the deadline."""
+    assert process.stdout is not None
+    fd = process.stdout.fileno()
+    data = bytearray()
+    eof = False
+    if os.name != "nt":
+        os.set_blocking(fd, False)
+        selector = selectors.DefaultSelector()
+        selector.register(fd, selectors.EVENT_READ)
+    else:
+        selector = None
+    try:
+        while not eof:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("observer pipe deadline")
+            if selector is not None:
+                if not selector.select(min(remaining, 0.05)):
+                    continue
+            else:
+                import ctypes
+                import msvcrt
+                available = ctypes.c_ulong()
+                handle = msvcrt.get_osfhandle(fd)
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                peek = kernel32.PeekNamedPipe
+                if not peek(ctypes.c_void_p(handle), None, 0, None, ctypes.byref(available), None):
+                    # ERROR_BROKEN_PIPE is EOF; other errors are uncertain.
+                    if ctypes.get_last_error() == 109:
+                        eof = True
+                        break
+                    raise OSError("observer pipe unavailable")
+                if available.value == 0:
+                    time.sleep(min(remaining, 0.01))
+                    continue
+            try:
+                chunk = os.read(fd, min(65537 - len(data), 4096, available.value if selector is None else 4096))
+            except BlockingIOError:
+                continue
+            if not chunk:
+                eof = True
+            else:
+                data.extend(chunk)
+                if len(data) > 65536:
+                    raise ValueError("observer response too large")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("observer exit deadline")
+        if process.wait(timeout=remaining) != 0:
+            raise ValueError("observer failed")
+        return bytes(data)
+    finally:
+        if selector is not None:
+            selector.close()
+
+
 def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instance_id: str,
                            runtime_session_id: str, runtime_epoch: Any) -> Mapping[str, Any]:
     """Ask Runtime's operator to observe its fixed pack host, without owner credentials."""
@@ -1867,34 +1935,21 @@ def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instanc
         # Runtime's --data-root selects its parent, not runtime_support itself.
         if support_root.name != "runtime":
             raise ValueError("invalid Runtime support root")
-        with subprocess.Popen(
-                [*_launcher_command(), "observe-pack-host", "--data-root", str(support_root.parent),
-                 "--endpoint", endpoint, "--runtime-instance-id", runtime_instance_id,
-                 "--runtime-session-id", runtime_session_id, "--runtime-epoch", str(runtime_epoch), "--json"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            ) as process:
-            chunks: list[bytes] = []
-            def read_output() -> None:
-                assert process.stdout is not None
-                try:
-                    chunks.append(process.stdout.read(65537))
-                finally:
-                    process.stdout.close()
-            reader = threading.Thread(target=read_output, name="astrid-observer-reader", daemon=True)
-            reader.start()
-            try:
-                returncode = process.wait(timeout=_OBSERVER_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-                reader.join(timeout=1)
-                raise
-            reader.join(timeout=1)
-            if reader.is_alive() or returncode != 0:
-                raise ValueError("observer failed")
-            raw = chunks[0]
-            if len(raw) > 65536:
-                raise ValueError("observer response too large")
+        process = subprocess.Popen(
+            [*_launcher_command(), "observe-pack-host", "--data-root", str(support_root.parent),
+             "--endpoint", endpoint, "--runtime-instance-id", runtime_instance_id,
+             "--runtime-session-id", runtime_session_id, "--runtime-epoch", str(runtime_epoch), "--json"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
+        )
+        try:
+            raw = _read_observer_pipe(process, time.monotonic() + _OBSERVER_TIMEOUT_SECONDS)
+        except Exception as exc:
+            _UNCERTAIN_OBSERVERS.append(process)
+            if process.stdout is not None:
+                process.stdout.close()
+            raise ObserverCleanupUncertain("observer cleanup uncertain") from exc
+        if process.stdout is not None:
+            process.stdout.close()
         observed = json.loads(raw)
         string_fields = {"executor_id", "readiness", "runtime_session_id", "source_epoch",
                          "source_digest", "dependency_digest"}
