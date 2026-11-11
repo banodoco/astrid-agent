@@ -324,6 +324,45 @@ def manifest_command(out_dir: str, python: str = f"{POD_VENV}/bin/python") -> st
     return f"echo {encoded} | base64 -d | {python} - {shlex.quote(out_dir)}"
 
 
+def _refresh_projection(raw: Mapping[str, Any], live: Any, saved: Any) -> Mapping[str, Any]:
+    """Fingerprint all receipt data except the precise verified launch refresh fields."""
+    import copy
+
+    projected = copy.deepcopy(raw)
+    rows = projected.get("steps")
+    if not isinstance(rows, list):
+        raise RemotePlacementError("invalid receipt projection")
+    for kind, mutable in (("start", ("owner_id", "launch_sha256", "cuda_visible_devices")),
+                          ("health", ("object_info_sha256", "required_nodes_present"))):
+        found = [row for row in rows if isinstance(row, dict) and row.get("kind") == kind]
+        saved_rows = [row for row in saved.steps if row.kind == kind]
+        live_rows = [row for row in live.steps if row.kind == kind]
+        if len(found) != 1 or len(saved_rows) != 1 or len(live_rows) != 1:
+            raise RemotePlacementError("invalid receipt launch evidence")
+        facts, current = saved_rows[0].facts, live_rows[0].facts
+        if any(key not in facts or key not in current or facts[key] != current[key] for key in mutable):
+            raise RemotePlacementError("live launch evidence differs")
+        if kind == "start":
+            if not isinstance(facts["owner_id"], str) or not facts["owner_id"]:
+                raise RemotePlacementError("invalid launch owner")
+            visibility = facts["cuda_visible_devices"]
+            if visibility is not None and (not isinstance(visibility, str) or "\0" in visibility
+                                           or len(visibility.encode("utf-8")) > 4096):
+                raise RemotePlacementError("invalid launch visibility")
+        else:
+            if facts["required_nodes_present"] is not True:
+                raise RemotePlacementError("invalid launch health")
+        row = found[0]
+        row.pop("action", None)
+        row.pop("validation", None)
+        for key in mutable:
+            row["facts"].pop(key, None)
+    projected.pop("health", None)
+    return {"fingerprint": hashlib.sha256(json.dumps(projected, sort_keys=True, separators=(",", ":"),
+                                                     ensure_ascii=True).encode()).hexdigest(),
+            "visibility": visibility, "object_info_sha256": saved.health.object_info_sha256}
+
+
 @dataclass
 class RemoteRun:
     """Mutable bookkeeping for one wrapper run."""
@@ -338,6 +377,9 @@ class RemoteRun:
     installation: RunPodInstallation | None = None
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None
     installed: Mapping[str, Any] | None = None
+    # Ephemeral controller-only evidence; never written into the durable lease.
+    receipt_baseline: Mapping[str, Any] | None = None
+    receipt_candidate: Mapping[str, Any] | None = None
 
     @property
     def remote_in(self) -> str:
@@ -686,18 +728,30 @@ class RemotePlacement:
                 return False
             if len(data) > 1024 * 1024:
                 return False
-        saved = engine_runner._parse_receipt(json.loads(data), plan)
+        saved_raw = json.loads(data)
+        saved = engine_runner._parse_receipt(saved_raw, plan)
         if (saved.status != "installed" or live.receipt_id != saved.receipt_id
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks
                 or live.health.object_info_sha256 != saved.health.object_info_sha256):
             raise RemotePlacementError("live installation differs from its canonical receipt")
-        state.installed = {
+        snapshot = {
             "schema": "astrid.runpod.installed-snapshot.v1", "engine": installation.engine,
             "platform": installation.platform, "root": installation.root,
             "compatibility": dict(installation.compatibility), "receipt_id": saved.receipt_id,
             "receipt_sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
         }
+        try:
+            projection = _refresh_projection(saved_raw, live, saved)
+        except (RemotePlacementError, KeyError, TypeError, ValueError):
+            projection = None  # Legacy or unverified projection permits exact hash only.
+        if verification_seconds is None:
+            state.installed = snapshot
+            if state.receipt_baseline is None:
+                state.receipt_baseline = projection
+        else:
+            # Candidate remains separate until the owner lock and custody are rechecked.
+            state.receipt_candidate = {"installed": snapshot, "projection": projection}
         return True
 
     # -- step 4 ------------------------------------------------------------

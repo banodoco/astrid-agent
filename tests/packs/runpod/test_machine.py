@@ -1901,3 +1901,131 @@ def test_two_jobs_retain_verified_managed_launch_refresh(machine_case, monkeypat
         assert record['lease']['preparation']['installed']['receipt_sha256'] == 'sha256:' + refreshed[-1]
     assert len(refreshed) == 2 and c.creates == 1 and not c.deletes
     c.host.release()
+
+def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_case, monkeypatch):
+    """A job failure after a valid launch refresh should not alone discard its pod.
+
+    No success manifest or failed-job attestation authorizes the refresh.
+    """
+    import os
+    import time
+    from astrid.core.generation import engine_runner
+
+    def stage(name):
+        fd = os.environ.get('ASTRID_TTS_DIAGNOSTIC_MARKER_FD')
+        if fd is not None:
+            stamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+            os.write(int(fd), (stamp + ' ' + name + '\n').encode())
+
+    c = machine_case
+    stage('RETENTION_TEST_BEGIN')
+    original_generate = c.pod._generate
+    original_start, original_poll = c.pod.job_start, c.pod.job_poll
+    failed_jobs = set()
+
+    def generate(command):
+        stage('RECEIPT_REFRESH_BEGIN')
+        c.context.deadline = time.monotonic() + 60
+        key = c.installation.root + '/.astrid-engine/install.json'
+        raw = c.context.files[key]
+        before = c.pod.files[key]
+        runner = engine_runner._Runner(c.installation.plan(), c.context, c.context.adapter,
+                                      c.context.deadline)
+        with c.context.acquire_install_lock(c.installation.root, deadline=c.context.deadline):
+            start_action, start_facts = runner.start()
+            health_action, health_facts = runner.check_health()
+            digest = engine_runner.refresh_installed_launch(
+                runner, raw, start_action=start_action, start_facts=start_facts,
+                health_action=health_action, health_facts=health_facts, check=lambda: None)
+        c.pod.files[key] = engine_runner._json(c.context.files[key]).encode()
+        assert c.pod.files[key] != before
+        stage('RECEIPT_REFRESH_CHANGED')
+        return original_generate(command)
+
+    def start(command, *, job_id):
+        result = original_start(command, job_id=job_id)
+        if ' generate ' in command and '--placement local' in command:
+            failed_jobs.add(job_id)
+        return result
+
+    def poll(job_id):
+        result = original_poll(job_id)
+        return {**result, 'exit_code': 1} if job_id in failed_jobs else result
+
+    monkeypatch.setattr(c.pod, '_generate', generate)
+    monkeypatch.setattr(c.pod, 'job_start', start)
+    monkeypatch.setattr(c.pod, 'job_poll', poll)
+    job = c.job()
+    # The fake install context's wall-clock deadline is unrelated to the paid
+    # lease; discovery after fixture setup can otherwise exhaust it prematurely.
+    c.context.deadline = time.monotonic() + 120
+    stage('RUN_MACHINE_BEGIN')
+    with pytest.raises(rm.MachineError):
+        run_on_machine(c.machine, job, destination=job.scratch / 'outputs', cancelled=lambda: False,
+                       sleep=lambda _: None)
+    stage('EXPECTED_MACHINE_ERROR_OBSERVED')
+    record = c.read()
+    stage('LEASE_RECORD_READ')
+    stage('CLAIM_STATE_MATCH_' + ('YES' if record.get('state') == 'claimed' else 'NO'))
+    stage('IDLE_STATE_MATCH_' + ('YES' if record.get('lease', {}).get('state') == 'idle' else 'NO'))
+    stage('FAILED_OUTCOME_MATCH_' + ('YES' if (record.get('lease', {}).get('last_job') or {}).get('outcome') == 'failed' else 'NO'))
+    stage('NO_DELETION_MATCH_' + ('YES' if c.creates == 1 and c.deletes == [] else 'NO'))
+    assert record['state'] == 'claimed'
+    assert record['lease']['state'] == 'idle'
+    assert record['lease']['last_job']['outcome'] == 'failed'
+    assert c.creates == 1 and c.deletes == []
+
+
+def test_refresh_projection_preserves_unknown_and_legacy_fields():
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from astrid.packs.runpod.remote_placement import _refresh_projection
+
+    start = {'owner_id': 'owner', 'launch_sha256': 'a' * 64, 'cuda_visible_devices': None,
+             'extension': 'kept'}
+    health = {'object_info_sha256': 'b' * 64, 'required_nodes_present': True, 'extension': 'kept'}
+    raw = {'receipt_id': 'same', 'legacy': {'retained': 1}, 'health': {'checked_at': 'old'},
+           'steps': [{'kind': 'start', 'action': 'executed', 'validation': 'passed', 'facts': start},
+                     {'kind': 'health', 'action': 'executed', 'validation': 'passed', 'facts': health},
+                     {'kind': 'model', 'facts': {'legacy': 1}}]}
+    def parsed(row):
+        return SimpleNamespace(steps=[SimpleNamespace(kind=item['kind'], facts=item['facts'])
+                                      for item in row['steps']],
+                               health=SimpleNamespace(object_info_sha256='b' * 64))
+    baseline = _refresh_projection(raw, parsed(raw), parsed(raw))
+    refreshed = deepcopy(raw)
+    refreshed['steps'][0]['action'] = 'skipped'
+    refreshed['steps'][0]['facts']['owner_id'] = 'new-owner'
+    refreshed['health']['checked_at'] = 'new'
+    assert _refresh_projection(refreshed, parsed(refreshed), parsed(refreshed)) == baseline
+    for mutate in (lambda v: v['legacy'].update(retained=2),
+                   lambda v: v['steps'][0]['facts'].update(extension='changed'),
+                   lambda v: v['steps'][2]['facts'].update(legacy=2),
+                   lambda v: v['steps'][0]['facts'].update(unknown='injected')):
+        changed = deepcopy(refreshed)
+        mutate(changed)
+        assert _refresh_projection(changed, parsed(changed), parsed(changed)) != baseline
+    mismatch = deepcopy(refreshed)
+    mismatch['steps'][0]['facts']['owner_id'] = 'foreign'
+    with pytest.raises(rm.RemotePlacementError):
+        _refresh_projection(refreshed, parsed(mismatch), parsed(refreshed))
+
+
+@pytest.mark.parametrize('baseline_mode', ['missing', 'mismatch'])
+def test_failed_refresh_without_matching_baseline_releases(machine_case, monkeypatch, baseline_mode):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {'id': 'a' * 32, 'state': 'exited'})
+    lease.state.receipt_baseline = None if baseline_mode == 'missing' else {'fingerprint': 'original'}
+    original = dict(lease.state.installed)
+
+    def changed(state, **_kwargs):
+        state.receipt_candidate = {'installed': {**original, 'receipt_sha256': 'sha256:' + 'f' * 64},
+                                   'projection': {'fingerprint': 'different'}}
+        return True
+
+    monkeypatch.setattr(c.placement, '_canonical_installed', changed)
+    c.machine.release(lease, False, failure=rm.MachineError('synthetic failure'))
+    assert c.read()['state'] == 'cleanup_complete'
+    assert c.read()['lease']['ended'] == 'unsafe_job_state'
+    assert c.deletes == ['pod-1']

@@ -941,8 +941,19 @@ class RunPodMachine:
         if safe and failure is not None and job is not None:
             try:
                 remaining = min(paid_expiry - owner.clock(), verify_deadline - time.monotonic())
-                safe = (remaining > 0 and adapter.placement._canonical_installed(
-                    lease.state, verification_seconds=remaining) and lease.state.installed == expected_install
+                lease.state.receipt_candidate = None
+                verified = remaining > 0 and adapter.placement._canonical_installed(
+                    lease.state, verification_seconds=remaining)
+                candidate = lease.state.receipt_candidate
+                installed = candidate["installed"] if candidate is not None else lease.state.installed
+                unchanged = installed == expected_install
+                refreshed = (candidate is not None and lease.state.receipt_baseline is not None
+                             and candidate["projection"] == lease.state.receipt_baseline
+                             and {k: v for k, v in installed.items() if k != "receipt_sha256"}
+                             == {k: v for k, v in expected_install.items() if k != "receipt_sha256"})
+                safe = (verified and (unchanged or refreshed) and not owner.closed
+                        and not getattr(lease, "unsafe_job_stop", False)
+                        and not isinstance(failure, (DigestMismatch, CustodyChanged))
                         and owner.clock() < paid_expiry and time.monotonic() < verify_deadline)
                 # A concurrent paid/idle release can fence us while the remote
                 # receipt download is in flight. Recheck exact custody before reset.
@@ -952,7 +963,13 @@ class RunPodMachine:
                         safe = (latest["lease"].get("preparation") == preparation
                                 and latest.get("pod_id") == lease.claim.pod_id
                                 and latest["lease"].get("job") == job
-                                and owner.clock() < latest["lease"]["paid_expires_at"])
+                                and latest["lease"]["paid_expires_at"] == paid_expiry
+                                and not owner.closed and owner.clock() < paid_expiry
+                                and time.monotonic() < verify_deadline)
+                        if safe and not unchanged:
+                            owner._save(latest, {**latest["lease"], "preparation": {
+                                **preparation, "installed": dict(installed)}})
+                            lease.state.installed = dict(installed)
             except Exception:
                 safe = False
         if ((not warm and failure is None) or getattr(lease, "unsafe_job_stop", False)
