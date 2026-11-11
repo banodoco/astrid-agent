@@ -18,7 +18,7 @@ def validate(side, group):
     manifest = HERE/'inventory/final-batches.json'
     if digest(manifest) != MANIFEST_SHA: raise ValueError('manifest digest mismatch')
     control = json.loads((HERE/'run-control.json').read_text())
-    if control != {'purpose':'r12-a2-stage-019-20261111','before':BEFORE,'manifest_sha256':MANIFEST_SHA}: raise ValueError('control mismatch')
+    if control != {'purpose':'r12-a2-final-019-20261111','before':BEFORE,'manifest_sha256':MANIFEST_SHA}: raise ValueError('control mismatch')
     batches = json.loads(manifest.read_text()); matches = [b for b in batches if b['batch'] == group]
     if len(matches) != 1: raise ValueError('invalid batch')
     b = matches[0]
@@ -38,7 +38,7 @@ def run_main(tracker):
     tracker.enter('input_validation')
     side, group = os.environ['A2_SIDE'], os.environ['A2_GROUP']
     b, expected = validate(side, group)
-    if os.environ.get('A2_REF') != 'refs/heads/scratch/r12-a2-stage-019-20261111' or group != '019' or os.environ.get('A2_BEFORE') != BEFORE or os.environ.get('A2_ATTEMPT') != '1': raise ValueError('run control mismatch')
+    if os.environ.get('A2_REF') != 'refs/heads/scratch/r12-a2-final-019-20261111' or group != '019' or os.environ.get('A2_BEFORE') != BEFORE or os.environ.get('A2_ATTEMPT') != '1': raise ValueError('run control mismatch')
     root = pathlib.Path(os.environ['RUNNER_TEMP']).resolve(); receipt = root/'r12-a2-receipt'; out = root/'r12-a2-private'; out.mkdir(exist_ok=False)
     preflight = False; rc = None
     envdir = root/'r12-a2-isolated'; envdir.mkdir(exist_ok=False)

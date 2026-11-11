@@ -1,15 +1,15 @@
 name: R12 A2 no-credit shakedown (one push)
 on:
   push:
-    branches: ['scratch/r12-a2-stage-019-20261111']
+    branches: ['scratch/r12-a2-final-019-20261111']
 permissions:
   contents: read
 concurrency:
-  group: r12-a2-stage-019-20261111
+  group: r12-a2-final-019-20261111
   cancel-in-progress: false
 jobs:
   compare:
-    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-stage-019-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-final-019-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
