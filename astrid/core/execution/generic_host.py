@@ -6602,7 +6602,7 @@ class GenericPackHost:
         pack_capture: Callable[[Any], Any] | None = None,
         personal_collection: bool = False,
     ):
-        self._pack_capture = _select_pack_capture() if pack_capture is None else pack_capture
+        self._pack_capture: Callable[..., Any] = _select_pack_capture() if pack_capture is None else pack_capture
         configured_roots = [Path(root).expanduser().resolve() for root in pack_roots]
         # ASTRID_PACKS_PATH is an explicit discovery input, never an implicit
         # directory. Keep it in the same admitted root set so env-only packs
@@ -7569,10 +7569,10 @@ class GenericPackHost:
         # snapshot belongs to discovery, never to a later read of edited bytes.
         from astrid.core.pack.identity import pack_digest
 
-        source_roots = {self._pack_source_roots[pack_id] for pack_id in admitted_pack_ids}
+        admitted_roots = {self._pack_source_roots[pack_id] for pack_id in admitted_pack_ids}
         for record in records.values():
-            source_roots.update(_admitted_source_roots(record.source_root, record.definition))
-        inventory = {str(path): pack_digest(path) for path in source_roots}
+            admitted_roots.update(_admitted_source_roots(record.source_root, record.definition))
+        inventory = {str(path): pack_digest(path) for path in admitted_roots}
         definitions: dict[str, dict[str, str]] = {path: {} for path in inventory}
         for record in records.values():
             roots = _admitted_source_roots(record.source_root, record.definition)
@@ -12171,13 +12171,13 @@ class GenericPackHost:
                     raise HostError(
                         f"capability {capability_id!r} requires a whole-task storage_estimate"
                     )
-                expected = {
+                expected_storage = {
                     "scratch_bytes": record.estimated_scratch_bytes,
                     "output_bytes": record.estimated_output_bytes,
                 }
-                if storage_estimate != expected:
+                if storage_estimate != expected_storage:
                     raise HostError(
-                        f"capability {capability_id!r} requires storage_estimate={expected}, "
+                        f"capability {capability_id!r} requires storage_estimate={expected_storage}, "
                         f"got {storage_estimate}"
                     )
             input_size_limits = _storage_input_limits(record.definition.metadata)
