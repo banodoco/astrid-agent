@@ -1911,15 +1911,24 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
     this is a hypothetical controller regression, not an end-to-end proof.
     """
     import hashlib
+    import os
     import time
     from astrid.core.generation import engine_runner
 
+    def stage(name):
+        fd = os.environ.get('ASTRID_TTS_DIAGNOSTIC_MARKER_FD')
+        if fd is not None:
+            stamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+            os.write(int(fd), (stamp + ' ' + name + '\n').encode())
+
     c = machine_case
+    stage('RETENTION_TEST_BEGIN')
     original_generate = c.pod._generate
     original_start, original_poll = c.pod.job_start, c.pod.job_poll
     failed_jobs = set()
 
     def generate(command):
+        stage('RECEIPT_REFRESH_BEGIN')
         c.context.deadline = time.monotonic() + 60
         key = c.installation.root + '/.astrid-engine/install.json'
         raw = c.context.files[key]
@@ -1934,6 +1943,7 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
                 health_action=health_action, health_facts=health_facts, check=lambda: None)
         c.pod.files[key] = engine_runner._json(c.context.files[key]).encode()
         assert c.pod.files[key] != before
+        stage('RECEIPT_REFRESH_CHANGED')
         output = original_generate(command)
         root = c.pod.active_job['run_dir']
         job = json.loads(c.pod.files[root + '/job.json'])
@@ -1950,6 +1960,7 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
         manifest['files']['manifest.json'] = {'sha256': hashlib.sha256(c.pod.files[path]).hexdigest(),
                                             'size': len(c.pod.files[path])}
         c.pod.files[manifest_path] = json.dumps(manifest).encode()
+        stage('HYPOTHETICAL_EVIDENCE_BUILT')
         return output.split(rm.MANIFEST_MARK)[0] + rm.MANIFEST_MARK + hashlib.sha256(c.pod.files[manifest_path]).hexdigest() + '\n'
 
     def start(command, *, job_id):
@@ -1969,10 +1980,17 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
     # The fake install context's wall-clock deadline is unrelated to the paid
     # lease; discovery after fixture setup can otherwise exhaust it prematurely.
     c.context.deadline = time.monotonic() + 120
+    stage('RUN_MACHINE_BEGIN')
     with pytest.raises(rm.MachineError):
         run_on_machine(c.machine, job, destination=job.scratch / 'outputs', cancelled=lambda: False,
                        sleep=lambda _: None)
+    stage('EXPECTED_MACHINE_ERROR_OBSERVED')
     record = c.read()
+    stage('LEASE_RECORD_READ')
+    stage('CLAIM_STATE_MATCH_' + ('YES' if record.get('state') == 'claimed' else 'NO'))
+    stage('IDLE_STATE_MATCH_' + ('YES' if record.get('lease', {}).get('state') == 'idle' else 'NO'))
+    stage('FAILED_OUTCOME_MATCH_' + ('YES' if (record.get('lease', {}).get('last_job') or {}).get('outcome') == 'failed' else 'NO'))
+    stage('NO_DELETION_MATCH_' + ('YES' if c.creates == 1 and c.deletes == [] else 'NO'))
     assert record['state'] == 'claimed'
     assert record['lease']['state'] == 'idle'
     assert record['lease']['last_job']['outcome'] == 'failed'
