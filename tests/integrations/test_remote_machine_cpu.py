@@ -7,7 +7,9 @@ it writes the job's output tree,
 ``progress.json`` once per poll. No ``/engines/`` request is ever made.
 
 Journeys: a cold run then a warm second run; a custody change that refuses
-reuse; cancel mid-poll; a bad mount mapping that fails before install.
+reuse; cancel mid-poll; a bad mount mapping that fails before install; G3 failure
+receipts, and a failed job's redacted bundle, collected by the real pod-side
+collector source before the reset.
 """
 from __future__ import annotations
 
@@ -39,10 +41,13 @@ from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
+from tests.packs.runpod import pod_collector
 
 pytestmark = pytest.mark.integration
 
 POD = "cpupod"
+#: The engine's server log on the pod (engine_custody's session registry ``comfy.log``).
+ENGINE_LOG = "/root/astrid/engines/comfyui/runtime/out/sessions/comfyui/comfy.log"
 VOLUME = {"id": "volcpu1", "name": "cpu-models", "size_gb": 100, "mount_path": "/workspace"}
 DC = "DC-unpinned"
 #: Pod polls before the fake generation job exits (each poll writes one phase).
@@ -81,6 +86,9 @@ class MachineProviderHTTP:
         self.job_failure = None  # (exit code, stdout bytes): the generation job fails instead of finishing
         self.corrupt_manifest = False  # the job prints a manifest digest the uploaded manifest does not match
         self.no_stock = False  # the data-centre stock query reports nothing available
+        self.job_stderr = None  # bytes: the failing generation job's stderr
+        self.engine_log = None  # bytes: the engine's server log when the generation job fails
+        self.collector_requests = []  # each failure-bundle collector request the pod ran
         self.resets = []  # each detached pod_reset: when, what it removed, the lease then
         self._new_pod_state()
         self.job_hold = threading.Event()
@@ -240,6 +248,12 @@ class MachineProviderHTTP:
             return 0, json.dumps(self._receipt_for(engine) if installed else None)
         if command.startswith("python3 -c ") and "ASTRID_STORAGE_DIAGNOSTIC" in command:
             return self._storage_probe(command)
+        if pod_collector.is_collector(command):
+            # The real shipped collector source runs against this pod's files (pod_collector).
+            code, stdout = pod_collector.run(self.files, command, Path(self.attempts).parent / "pod-collector",
+                                             log=self.collector_requests)
+            self.events.append(("failure-bundle", self.collector_requests[-1]["name"]))
+            return code, stdout
         if command.startswith(("cat ", "tail ")):
             return 0, self.files.get(shlex.split(command)[-1], b"").decode()
         if command.startswith("sha256sum "):
@@ -342,6 +356,10 @@ class MachineProviderHTTP:
         if self.job_failure is not None:
             job["state"] = "exited"
             self._exit(directory, self.job_failure[0], self.job_failure[1])
+            if self.job_stderr is not None:
+                self.files[directory + "/stderr"] = self.job_stderr
+            if self.engine_log is not None:
+                self.files[ENGINE_LOG] = self.engine_log
             return
         out = root + "/out"
         # The producer's own result manifest, written by the same helpers vibecomfy.run uses.
@@ -1147,6 +1165,18 @@ def test_machine_claim_quote_after_owner_loss_refuses_without_releasing_custody(
 FRAME = "astrid-generation-failure: "
 
 
+@pytest.fixture
+def in_process_bounded(monkeypatch):
+    """The pod agent here answers only in this test process; a spawned bounded caller cannot reach it.
+
+    Failure verification and failure-bundle collection therefore run their bounded
+    pod calls in-process, over the same HTTPS transport, as a real pod would answer them.
+    """
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", _HttpsOps._call_direct)
+
+
 def _receipts():
     from astrid.packs.runpod import failure_receipt
 
@@ -1181,7 +1211,7 @@ def test_a_successful_job_carries_the_phase_timing_block_and_no_receipt(journey)
     _released(s["provider"], j.release())
 
 
-def test_an_execution_failure_writes_a_receipt_and_both_records_carry_timing(journey):
+def test_an_execution_failure_writes_a_receipt_and_both_records_carry_timing(journey, in_process_bounded):
     j = journey
     s = j.start()
     s["provider"].job_failure = (1, (FRAME + json.dumps({"code": "generation_failed", "category": "execution"}) + "\n").encode())
@@ -1189,12 +1219,56 @@ def test_an_execution_failure_writes_a_receipt_and_both_records_carry_timing(jou
         j.image()
     receipt = _newest_receipt()
     assert receipt["stage"] == "execution" and receipt["cause"]["exit_code"] == 1
-    assert receipt["collection"]["state"] == "not_collected" and receipt["files"] == []
+    assert receipt["collection"]["state"] == "collected" and receipt["files"]
+    assert receipt["machine"]["after"] == "kept"
     _timing_ok(receipt["timing"])
     _released(s["provider"], j.release())
 
 
-def test_a_pod_validation_exit_writes_a_workflow_validation_receipt(journey):
+def test_an_execution_failure_brings_back_a_redacted_bundle_that_names_the_cause(journey, in_process_bounded, capsys):
+    """H10: the bundle is collected before the reset and names the engine error without SSH."""
+    from astrid.core.generation.cli import main as generate
+    from astrid.packs.runpod import failure_receipt
+
+    j = journey
+    s = j.start()
+    provider = s["provider"]
+    key, url, ip = "hf_" + "Q7x" * 12, "https://user:pw@private.example.org/v1/run?token=abc123", "10.77.88.99"
+    provider.job_failure = (1, (FRAME + json.dumps({"code": "generation_failed", "category": "execution"}) + "\n").encode())
+    provider.job_stderr = (f"Traceback (most recent call last):\nusing {key} from {url} at {ip}\n"
+                           "ValueError: node 1 failed: seed out of range\n").encode()
+    provider.engine_log = (f"got prompt\nAuthorization: Bearer {key}\n!!! Exception during processing !!!\n"
+                           "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB\n").encode()
+    with pytest.raises(Exception):
+        j.image()
+    receipt = _newest_receipt()
+    assert receipt["stage"] == "execution"
+    collection = receipt["collection"]
+    assert collection["state"] == "collected" and collection["bytes"] <= collection["cap_bytes"] == 262144
+    folder = failure_receipt.failures_root() / receipt["identity"]["task_id"] / "files"
+    texts = {row["name"]: (folder / row["name"]).read_text() for row in receipt["files"]}
+    assert "ValueError: node 1 failed: seed out of range" in texts["error-tail.txt"]
+    assert "CUDA out of memory" in texts["engine-log-tail.txt"]
+    shaped = json.loads(texts["workflow.redacted.json"])
+    assert shaped["nodes"][0]["widgets_values"] == [{"redacted": "string", "len": 3}]  # structure only
+    pod = {path: data.decode() for path, data in provider.files.items() if path.startswith(collection["pod_folder"] + "/")}
+    assert pod, "the redacted folder stays on the pod"
+    for text in [*texts.values(), *pod.values(), json.dumps(receipt)]:
+        for planted in (key, url, "private.example.org", "token=abc123", ip):
+            assert planted not in text
+    # Collected before the reset that removes the run folder and truncates logs; the pod is kept.
+    events = [event[0] for event in provider.events]
+    run_reset = max(i for i, event in enumerate(provider.events) if event[0] == "reset" and event[1])
+    assert events.index("failure-bundle") < run_reset
+    assert receipt["machine"]["after"] == "kept"
+    capsys.readouterr()
+    assert generate(["failure"]) == 0
+    human = capsys.readouterr().out
+    assert "Bundle: collected" in human and "seed out of range" in human and key not in human
+    _released(provider, j.release())
+
+
+def test_a_pod_validation_exit_writes_a_workflow_validation_receipt(journey, in_process_bounded):
     j = journey
     s = j.start()
     s["provider"].job_failure = (3, b"")
@@ -1205,7 +1279,7 @@ def test_a_pod_validation_exit_writes_a_workflow_validation_receipt(journey):
     _released(s["provider"], j.release())
 
 
-def test_a_manifest_digest_mismatch_writes_an_output_collection_receipt(journey):
+def test_a_manifest_digest_mismatch_writes_an_output_collection_receipt(journey, in_process_bounded):
     j = journey
     s = j.start()
     s["provider"].corrupt_manifest = True
@@ -1236,7 +1310,7 @@ def test_no_stock_writes_a_no_machine_receipt(journey):
     assert receipt["identity"]["machine_id"] is None
 
 
-def test_generate_failure_prints_the_journey_receipt(journey, capsys):
+def test_generate_failure_prints_the_journey_receipt(journey, capsys, in_process_bounded):
     from astrid.core.generation.cli import main as generate
 
     j = journey

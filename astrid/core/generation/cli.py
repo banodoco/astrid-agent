@@ -726,7 +726,7 @@ def _failure_command(parsed) -> int:
         print(f"no failure receipt for {what}", file=sys.stderr)
         return 1
     receipt = json.loads(path.read_text(encoding="utf-8"))
-    print(json.dumps(receipt, indent=2, sort_keys=True) if parsed.json else failure_receipt.render(receipt))
+    print(json.dumps(receipt, indent=2, sort_keys=True) if parsed.json else failure_receipt.render(receipt, path.parent))
     return 0
 
 

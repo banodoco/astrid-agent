@@ -1,7 +1,8 @@
 """G3 slices 1-2: phase timing on every machine job, and one local failure receipt per failed job.
 
 The pod and provider are the fakes of ``test_machine.py``; the real machine, lease owner,
-``run_on_machine`` and host job function run. No log or file ever comes back from the pod.
+``run_on_machine`` and host job function run. This fake pod runs no failure-bundle collector,
+so no log or file comes back here; collected bundles are ``test_failure_bundle.py``'s.
 """
 from __future__ import annotations
 
@@ -97,8 +98,10 @@ def test_execution_failure_names_execution_and_carries_timing(machine_case, rece
     assert receipt["identity"]["task_id"] == "task" and receipt["identity"]["machine_id"] == "pod-1"
     assert receipt["identity"]["run_id"] and receipt["identity"]["remote_job_id"]
     assert receipt["machine"]["after"] == "kept" and receipt["machine"]["release_at"] is not None
-    assert receipt["collection"] == {"state": "not_collected", "reason": "collector_not_built",
-                                     "bundle_manifest_sha256": None, "bytes": 0, "cap_bytes": 262144}
+    collection = receipt["collection"]
+    # This fake pod answers the collector command with nothing: no digest, so nothing is fetched.
+    assert (collection["state"], collection["reason"]) == ("collector_failed", "no_digest")
+    assert collection["bundle_manifest_sha256"] is None and collection["bytes"] == 0 and collection["cap_bytes"] == 262144
     assert receipt["files"] == []
     assert receipt["timing"]["stamps"]["job_ended_at"] and receipt["timing"]["phases"]["execution"]["seconds"] is not None
     assert machine["timing"] == receipt["timing"], "the attempt's machine record carries the same block"
@@ -322,7 +325,7 @@ def test_generate_failure_prints_the_newest_or_named_receipt(machine_case, tmp_p
     assert generate(["failure", "task"]) == 0
     human = capsys.readouterr().out
     assert human.startswith("Failure: execution (controller_step)\n") and "Task: task  attempt: attempt-1" in human
-    assert "Bundle: not collected (collector not built)" in human
+    assert "Bundle: collector failed (no digest)" in human
     assert generate(["failure", "no-such-task"]) == 1
     assert "no failure receipt for task no-such-task" in capsys.readouterr().err
 

@@ -30,6 +30,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import shlex
 import time
@@ -178,6 +179,10 @@ POD_STATE_MARK = "pod-state:"
 #: Bound on one detached reset (restore + replace + one ensure) before the pod is released.
 RESET_SECONDS = 600.0
 FAILURE_VERIFY_SECONDS = 120.0
+#: The failure-bundle collection slice, before the verification budget; clipped to the paid limit.
+COLLECT_SECONDS = 45.0
+#: Where the pod keeps its newest failure bundles (``failure_bundle.KEEP_POD_FOLDERS``); outside the reset sweep.
+FAILURE_ROOT = "/root/astrid/failures"
 
 
 def pod_paths() -> dict[str, str]:
@@ -409,6 +414,106 @@ def _stamp(timing: Any, name: str, **kw: Any) -> None:
     stamp(timing, name, **kw)
 
 
+class BundleOverCap(MachineError):
+    """The pod's failure-bundle manifest breaks the bundle caps; nothing is fetched."""
+
+
+#: Release reasons a collection abort may record (fixed literals only).
+_ABORT_REASONS = frozenset({"paid_deadline", "idle", "explicit", "host_shutdown", "restart", "recovery",
+                            "provider_terminated"})
+
+
+def _collects(failure: BaseException) -> bool:
+    """Cancelled runs write no receipt, so nothing is collected for them."""
+    from astrid.core.execution.machine_run import MachineRunCancelled
+    from .target_selection import CapacityWaitCancelled
+
+    return isinstance(failure, Exception) and not isinstance(
+        failure, (MachineRunCancelled, MachineCancelled, CapacityWaitCancelled))
+
+
+def _json_strings(value: Any) -> list[str]:
+    from .failure_bundle import _strings
+
+    found: list[str] = []
+    _strings(value, found)
+    return found
+
+
+def _job_file_prompts(path: Path | None) -> list[str]:
+    """The shipped job's bindings and inputs strings, read from the controller's own copy."""
+    from .failure_bundle import job_prompts
+
+    try:
+        return job_prompts(json.loads(Path(path).read_text(encoding="utf-8"))) if path is not None else []
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+class _CollectionAbort:
+    """``is_set()`` for the bounded transport: an exact release (paid expiry, explicit) or host shutdown."""
+
+    def __init__(self, owner: Any, event: Any) -> None:
+        self.owner, self.event = owner, event
+
+    def is_set(self) -> bool:
+        return bool((self.event is not None and self.event.is_set()) or getattr(self.owner, "closed", False))
+
+    def reason(self) -> str:
+        if getattr(self.owner, "closed", False):
+            return "host_shutdown"
+        try:
+            lease = (self.owner._read() or {}).get("lease") or {}
+        except Exception:
+            lease = {}
+        for reason in (lease.get("release_reason"), lease.get("ended")):
+            if isinstance(reason, str) and reason in _ABORT_REASONS:
+                return reason
+        return "release"
+
+
+def _detached_root() -> str:
+    try:
+        from runpod_lifecycle.https import DETACHED_ROOT
+        return str(DETACHED_ROOT)
+    except Exception:
+        return "/workspace/.astrid-jobs"
+
+
+def _counts(value: Any, keys: tuple[str, ...]) -> dict[str, int]:
+    """Pod-reported counts, kept only as bounded integers."""
+    value = value if isinstance(value, Mapping) else {}
+    return {key: value[key] if type(value.get(key)) is int and 0 <= value[key] < 10**9 else 0 for key in keys}
+
+
+def _admit_bundle(recorded: Mapping[str, Any], manifest_bytes: int) -> None:
+    """Refuse, before any file is fetched, a bundle manifest whose names or sizes break the caps."""
+    from . import failure_bundle as fb
+
+    if manifest_bytes > fb.MANIFEST_CAP:
+        raise BundleOverCap("bundle manifest is over its cap")
+    total = manifest_bytes
+    for relative, entry in recorded.items():
+        cap = fb.FILE_CAPS.get(relative)
+        size = entry.get("size") if isinstance(entry, Mapping) else None
+        if cap is None or type(size) is not int or not 0 <= size <= cap:
+            raise BundleOverCap("bundle file is unexpected or over its cap")
+        total += size
+    if total > fb.TOTAL_CAP:
+        raise BundleOverCap("bundle is over the total cap")
+
+
+def _controller_secrets(ops: Any) -> list[str]:
+    """What only the controller holds: the pod-agent token and credential-named environment values."""
+    from .failure_bundle import SECRET_MIN, SECRET_NAME
+
+    values = [value for name, value in os.environ.items() if SECRET_NAME.search(name) and len(value) >= SECRET_MIN]
+    token = getattr(ops, "token", None)
+    if isinstance(token, str) and token:
+        values.append(token)
+    return values
+
+
 # ----------------------------------------------------------------------------
 # The machine
 # ----------------------------------------------------------------------------
@@ -433,6 +538,11 @@ class MachineLease:
     #: What release decided, for the failure receipt: the exact-release reason, and whether the pod was kept.
     release_reason: str | None = None
     kept: bool | None = None
+    #: The job's local scratch and its shipped ``job.json`` (prompt strings for the controller redaction pass).
+    scratch: Path | None = None
+    job_file: Path | None = None
+    #: The collected failure bundle record (``RunPodMachine._collect_failure``), set before reset and release.
+    failure_bundle: Any = None
 
 
 @dataclass
@@ -598,6 +708,8 @@ class RunPodMachine:
                 ))
             except BaseException as exc:
                 if acquired:
+                    # First: collect the failure bundle while the pod still holds the preparation logs.
+                    self._collect_preparation_failure(owner, acquired[0], exc, job, timing)
                     try:
                         # Read by the failure receipt: a bootstrap/install job was started if it was checkpointed.
                         journal = owner.selection._read() or {}
@@ -648,7 +760,7 @@ class RunPodMachine:
             finally:
                 owner.selection.wait_hook = None
         return MachineLease(prepared.lease, prepared.claim, prepared.state, prepared.custody, prepared.reused,
-                            timing=timing)
+                            timing=timing, scratch=Path(job.scratch))
 
     def describe(self, lease: MachineLease) -> dict[str, Any]:
         """Which machine runs this job: recorded on the attempt when the machine is claimed."""
@@ -700,6 +812,7 @@ class RunPodMachine:
                 "inputs": public_inputs, "bindings": bindings, "execution": shipped}
         local_job = staging / JOB_NAME
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        lease.job_file = local_job
         from .failure_diagnostics import graph_node_ids
         lease.node_ids = graph_node_ids(job.inputs.get("source"))
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
@@ -845,7 +958,8 @@ class RunPodMachine:
 
     @staticmethod
     def _fetch_verified(ops: Any, remote_dir: str, destination: Path, scratch: Path,
-                        manifest_digest: str) -> dict[str, str]:
+                        manifest_digest: str,
+                        admit: Callable[[Mapping[str, Any], int], None] | None = None) -> dict[str, str]:
         """Copy one pod folder back, every file against its digest manifest.
 
         The manifest is downloaded and checked against the digest the pod
@@ -862,6 +976,9 @@ class RunPodMachine:
         recorded = json.loads(manifest_local.read_text(encoding="utf-8")).get("files", {})
         if not isinstance(recorded, Mapping) or not recorded:
             raise MachineError("remote job reported no output files")
+        if admit is not None:
+            # The failure folder refuses a manifest that breaks its caps before any file is fetched.
+            admit(recorded, manifest_local.stat().st_size)
         destination = Path(destination)
         destination.mkdir(parents=True, exist_ok=True)
         files: dict[str, str] = {}
@@ -954,6 +1071,7 @@ class RunPodMachine:
         owner = adapter.lease_owner
         paid_expiry = None
         verify_deadline = None
+        unbounded_ops = None
         if failure is not None:
             try:
                 with owner.lock:
@@ -963,8 +1081,10 @@ class RunPodMachine:
                 bounded = getattr(lease.claim.ops, "bounded", None)
                 if remaining > 0 and bounded is not None:
                     # The first cancellation is part of the same one-shot
-                    # observation budget as status, receipt and reset.
-                    verify_deadline = time.monotonic() + min(FAILURE_VERIFY_SECONDS, remaining)
+                    # observation budget as status, receipt and reset; the
+                    # failure-bundle collection adds its own slice.
+                    unbounded_ops = lease.claim.ops
+                    verify_deadline = time.monotonic() + min(FAILURE_VERIFY_SECONDS + COLLECT_SECONDS, remaining)
                     lease.claim.ops = bounded(verify_deadline, abort_event=abort_event)
             except Exception:
                 pass  # Exact release below reconciles any unresolved job.
@@ -981,6 +1101,21 @@ class RunPodMachine:
                     self._checkpoint(lease, {"id": pending["id"], "state": stopped["state"]})
         except Exception:
             pass  # Unknown stop is classified unsafe below; exact release reconciles it.
+        # Collect the failure bundle now: the reset below deletes the run and job
+        # folders and truncates the logs. Its own slice, clipped to the paid limit;
+        # any release outside this path aborts it.
+        bundle = None
+        if (failure is not None and lease.run_dir and _collects(failure)
+                and getattr(lease.claim.ops, "unreaped_child", None) is None):
+            bundle = lease.failure_bundle = self._collect_failure(
+                owner=owner, ops=unbounded_ops, abort_event=abort_event, paid_expiry=paid_expiry,
+                limit=verify_deadline, scratch=lease.scratch, name=lease.run_dir.rsplit("/", 1)[-1],
+                run_dir=lease.run_dir, job_dir=lease.job_dir, phase=stage,
+                exit_code=getattr(lease, "failure_exit_code", None), include_install=False,
+                prompts=_job_file_prompts(lease.job_file), timing=lease.timing)
+            if bundle.get("unreaped") is not None:
+                # A collection caller that could not be reaped fences custody exactly like a verifier.
+                lease.claim.ops.unreaped_child = bundle.pop("unreaped")
         # A stopped or exited job can reuse the pod only after its canonical
         # installation and Runtime reset have both been verified. An unknown
         # job stop, custody change, lost lease or host shutdown is never warm.
@@ -998,6 +1133,8 @@ class RunPodMachine:
             except Exception:
                 safe = False
         if failure is not None and verify_deadline is None:
+            safe = False
+        if getattr(lease.claim.ops, "unreaped_child", None) is not None:
             safe = False
         if safe and failure is not None and job is not None:
             try:
@@ -1017,7 +1154,9 @@ class RunPodMachine:
             except Exception:
                 safe = False
         if ((not warm and failure is None) or getattr(lease, "unsafe_job_stop", False)
-                or isinstance(failure, (DigestMismatch, CustodyChanged))):
+                or isinstance(failure, (DigestMismatch, CustodyChanged))
+                or (bundle is not None and bundle.get("state") == "digest_mismatch")):
+            # A failure-bundle digest mismatch is an output mismatch: the pod is unsafe.
             safe = False
         if not safe:
             warm, reason = False, "unsafe_job_state"
@@ -1075,6 +1214,192 @@ class RunPodMachine:
                         and record.get("lease", {}).get("state") == "releasing"):
                     raise
         lease.released = True
+
+    # -- failure bundle ------------------------------------------------------
+
+    def _collect_failure(self, *, owner: Any, ops: Any, abort_event: Any, paid_expiry: float | None,
+                         limit: float | None, scratch: Path | None, name: str, run_dir: str | None,
+                         job_dir: str | None, phase: str, exit_code: Any, include_install: bool,
+                         prompts: list[str], timing: Any) -> dict[str, Any]:
+        """Collect one failure bundle before any reset or release; never raises.
+
+        One ``exec`` runs the shipped collector (``failure_bundle.py``), which
+        redacts the job's logs and writes a capped folder with a digest
+        manifest. That folder is fetched with the output fetch's verification,
+        refusing a manifest over the caps, then redacted again here with what
+        only the controller holds. Bounded by ``COLLECT_SECONDS`` and the paid
+        limit; an exact release (paid expiry, explicit) or host shutdown aborts it.
+        """
+        import shutil
+
+        from . import failure_bundle as fb
+        from .remote_placement import POD_ROOT, BoundedObserverUnreaped
+
+        began = time.monotonic()
+        _stamp(timing, "failure_collection_started_at")
+        abort = _CollectionAbort(owner, abort_event)
+        record: dict[str, Any] = {"state": "not_collected", "cap_bytes": fb.TOTAL_CAP,
+                                  "pod_folder": f"{FAILURE_ROOT}/{name}"}
+        staging = pod_copy = collect_ops = None
+        try:
+            bounded = getattr(ops, "bounded", None)
+            if bounded is None or paid_expiry is None or scratch is None:
+                record["reason"] = "no_budget"
+                return record
+            now = time.monotonic()
+            deadline = now + min(COLLECT_SECONDS, paid_expiry - owner.clock())
+            if limit is not None:
+                deadline = min(deadline, limit)
+            if deadline <= now:
+                record.update(state="timed_out", reason="paid_limit")
+                return record
+            if abort.is_set():
+                record.update(state="aborted_by_release", reason=abort.reason())
+                return record
+            paths = pod_paths()
+            request = {
+                "schema": fb.SCHEMA, "name": name, "failures_root": FAILURE_ROOT,
+                "roots": [POD_ROOT, _detached_root()], "run_dir": run_dir, "job_dir": job_dir,
+                "engine_root": getattr(getattr(self._require(), "installation", None), "root", None),
+                "include_install": include_install, "phase": phase,
+                "exit_code": exit_code if type(exit_code) is int else None,
+                "prepared": paths["prepared"],
+                "secret_dirs": [f"{paths['data_root']}/runtime/credentials", f"{paths['data_root']}/credentials"],
+            }
+            collect_ops = bounded(deadline, abort_event=abort)
+            try:
+                code, stdout, _err = collect_ops.exec(fb.command(request, python=f"{POD_VENV}/bin/python"),
+                                                      max(1.0, deadline - time.monotonic()))
+                if abort.is_set():
+                    record.update(state="aborted_by_release", reason=abort.reason())
+                    return record
+                found = re.search(rf"^{re.escape(fb.MANIFEST_MARK)}([0-9a-f]{{64}})\s*$", stdout or "", re.M)
+                if code != 0 or found is None:
+                    record.update(state="collector_failed", reason=(
+                        "no_digest" if code == 0 else f"exit_{code}" if type(code) is int and -255 <= code <= 255
+                        else "unknown"))
+                    return record
+                digest = found[1]
+                staging = Path(scratch) / f"failure-bundle-{uuid.uuid4().hex}"
+                pod_copy = staging / "pod"
+                pod_copy.mkdir(parents=True)
+                fetched = self._fetch_verified(collect_ops, f"{FAILURE_ROOT}/{name}", pod_copy, staging, digest,
+                                               admit=_admit_bundle)
+            except BundleOverCap:
+                record.update(state="over_cap", reason="manifest_over_cap")
+                return record
+            except DigestMismatch:
+                record.update(state="digest_mismatch", reason="bundle_digest")
+                return record
+            except BoundedObserverUnreaped:
+                record.update(state="timed_out", reason="observer_unreaped",
+                              unreaped=getattr(collect_ops, "unreaped_child", None))
+                return record
+            except Exception as exc:  # noqa: BLE001 (classified by fixed names only)
+                if abort.is_set():
+                    record.update(state="aborted_by_release", reason=abort.reason())
+                elif "deadline expired" in str(exc):
+                    record.update(state="timed_out", reason="collect_budget")
+                else:
+                    record.update(state="unreachable", reason="transport")
+                return record
+            record.update(self._redact_locally(fetched, staging, prompts=prompts, ops=ops))
+            record.update(state="collected", manifest_sha256=digest)
+            return record
+        except Exception:  # noqa: BLE001 (a collection problem never changes release)
+            record.update(state="collector_failed", reason="controller")
+            return record
+        finally:
+            if pod_copy is not None:
+                shutil.rmtree(pod_copy, ignore_errors=True)
+            if staging is not None and record.get("state") != "collected":
+                shutil.rmtree(staging, ignore_errors=True)
+            record["seconds"] = round(time.monotonic() - began, 3)
+            _stamp(timing, "failure_collection_ended_at")
+
+    @staticmethod
+    def _redact_locally(fetched: Mapping[str, str], staging: Path, *, prompts: list[str], ops: Any) -> dict[str, Any]:
+        """The controller's own pass over the verified pod copy; the caps hold again afterwards."""
+        from . import failure_bundle as fb
+
+        try:
+            collector = json.loads(Path(fetched["collector.json"]).read_text(encoding="utf-8"))
+        except (KeyError, OSError, ValueError):
+            collector = {}
+        collector = collector if isinstance(collector, Mapping) else {}
+        local = fb.Redactor(prompts=prompts, secrets=_controller_secrets(ops))
+        bodies = {}
+        for name in fb.BUNDLE_FILES:
+            if name in fetched:
+                data = Path(fetched[name]).read_bytes()
+                bodies[name] = (data, fb.redact_file(name, data, local))
+        total = sum(len(body) for _data, body in bodies.values())
+        if total > fb.TOTAL_CAP and "engine-log-tail.txt" in bodies:
+            data, body = bodies["engine-log-tail.txt"]
+            room = max(0, fb.TOTAL_CAP - (total - len(body)))
+            bodies["engine-log-tail.txt"] = (data, fb.fit_text(body.decode("utf-8", "replace"), room)[0].encode())
+        final = staging / "final"
+        final.mkdir(parents=True, exist_ok=True)
+        facts = collector.get("files") if isinstance(collector.get("files"), Mapping) else {}
+        rows = []
+        for name, (data, body) in bodies.items():
+            (final / name).write_bytes(body)
+            fact = facts.get(name) if isinstance(facts.get(name), Mapping) else {}
+            source = fact.get("source_bytes")
+            rows.append({"name": name, "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(),
+                         "pod_bytes": len(data), "pod_sha256": hashlib.sha256(data).hexdigest(),
+                         "truncated": fact.get("truncated") is True,
+                         "source_bytes": source if type(source) is int and source >= 0 else None})
+        return {"dir": str(final), "files": rows, "bytes": sum(row["bytes"] for row in rows),
+                "pod_counts": _counts(collector.get("redaction"), fb.COUNTS),
+                "local_counts": dict(local.counts),
+                "workflow": _counts(collector.get("workflow"), ("strings_replaced", "values_replaced"))}
+
+    def _collect_preparation_failure(self, owner: Any, invocation: Any, exc: BaseException, job: Any,
+                                     timing: Any) -> None:
+        """First in ``claim``'s failure handler: collect over the preparation's own connection."""
+        claim = getattr(exc, "failure_claim", None)
+        try:
+            del exc.failure_claim  # the connection never travels further with the error
+        except Exception:
+            pass
+        if not _collects(exc):
+            return
+        from . import failure_bundle as fb
+
+        bundle: dict[str, Any] = {"state": "unreachable", "reason": "no_transport", "cap_bytes": fb.TOTAL_CAP}
+        key = None
+        try:
+            ops = getattr(claim, "ops", None)
+            journal = owner._read() or {}
+            lease = journal.get("lease") or {}
+            pod_id = journal.get("pod_id")
+            if ops is not None and pod_id == getattr(claim, "pod_id", None):
+                key, event = owner.begin_release_observation(invocation, pod_id)
+                job_id = ((lease.get("preparation") or {}).get("job") or {}).get("id")
+                job_dir = (f"{_detached_root()}/{job_id}" if isinstance(job_id, str)
+                           and re.fullmatch(r"[0-9a-f]{32}", job_id) else None)
+                try:
+                    prompts = _json_strings(json.loads(job.inputs.get("workflow_inputs") or "{}"))
+                except (ValueError, TypeError, AttributeError):
+                    prompts = []
+                name = "prep-" + re.sub(r"[^A-Za-z0-9_-]", "", str(invocation.operation_id))[:80]
+                bundle = self._collect_failure(
+                    owner=owner, ops=ops, abort_event=event, paid_expiry=lease.get("paid_expires_at"), limit=None,
+                    scratch=Path(job.scratch), name=name, run_dir=None, job_dir=job_dir, phase="preparation",
+                    exit_code=None, include_install=True, prompts=prompts, timing=timing)
+                unreaped = bundle.pop("unreaped", None)
+                if unreaped is not None:
+                    owner.fence_unreaped_observer(invocation, pod_id, unreaped)
+        except Exception:  # noqa: BLE001 (collection never replaces the preparation error)
+            pass
+        finally:
+            if key is not None:
+                owner.end_failure_observation(key)
+        try:
+            exc.failure_bundle = bundle
+        except Exception:
+            pass
 
     def _reset(self, lease: MachineLease, *, verify_deadline: float | None = None,
                paid_expiry: float | None = None) -> dict[str, Any]:

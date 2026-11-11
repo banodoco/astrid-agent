@@ -1,13 +1,16 @@
 """The local failure receipt for a generation that failed on a rented machine.
 
 ``failure-receipt.json`` (``astrid.generation.failure-receipt.v1``) is written under
-``<runtime data root>/generation/failures/<task_id>/`` using only what the controller
-already holds: the validated cause facts, the stage, identities and the phase-timing
-block. No pod folder, log or output is read here; the ``collection`` section says so.
+``<runtime data root>/generation/failures/<task_id>/`` from what the controller holds:
+the validated cause facts, the stage, identities and the phase-timing block. When the
+machine collected a failure bundle before its reset (``RunPodMachine._collect_failure``),
+its files, already redacted on the pod and again on the controller and size-capped,
+land in ``files/`` beside the receipt. Receipts and bundles never leave this machine.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -145,6 +148,8 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     after = ("none" if lease is None else "unknown" if kept is None or facts.get("release_failed")
              else "kept" if kept else "released")
     cost = None
+    bundle = _bundle_of(facts)
+    collection, files, redaction = _collection(stage, lease, bundle)
     return {
         "schema": SCHEMA, "receipt_id": uuid.uuid4().hex, "outcome": "failed",
         "stage": stage, "stage_basis": basis, "phase": phase,
@@ -153,22 +158,84 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
         "timing": block,
         "machine": {"after": after, "release_reason": getattr(lease, "release_reason", None),
                     "release_at": stamps.get("released_at"), "cost_usd": cost},
-        # No pod folder, redactor or log fetch exists yet: nothing was collected.
-        "collection": {"state": "local_only" if stage == "no_machine" else "not_collected",
-                       "reason": "local_only" if stage == "no_machine" else "collector_not_built", "bundle_manifest_sha256": None, "bytes": 0,
-                       "cap_bytes": CAP_BYTES},
-        "files": [],
-        "redaction": {"policy": "astrid.failure-redaction.v1", "applied": False, "reason": "no bundle collected"},
+        "collection": collection,
+        "files": files,
+        "redaction": redaction,
     }
 
 
-def write_receipt(receipt: Mapping[str, Any], *, root: Path | None = None) -> Path:
-    """Write atomically under ``<root>/<task_id>/`` and prune to the newest ``KEEP_RECEIPTS``."""
+def _bundle_of(facts: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The bundle the machine collected: on the lease (job path) or the error (claim path)."""
+    for holder in (facts.get("lease"), facts.get("failure")):
+        bundle = getattr(holder, "failure_bundle", None)
+        if isinstance(bundle, Mapping):
+            return bundle
+    return None
+
+
+def _collection(stage: str, lease: Any, bundle: Mapping[str, Any] | None) -> tuple[dict, list, dict]:
+    from .failure_bundle import FILE_CAPS, LINE_DROP, POLICY, PROMPT_LINE_MIN, PROMPT_MIN, SECRET_MIN, TOTAL_CAP
+
+    not_applied = {"policy": POLICY, "applied": False, "reason": "no bundle collected"}
+    if stage == "no_machine":
+        return ({"state": "local_only", "reason": "local_only", "bundle_manifest_sha256": None, "bytes": 0,
+                 "cap_bytes": CAP_BYTES}, [], not_applied)
+    if bundle is None:
+        reason = "no_job_started" if lease is not None else "no_machine_reached"
+        return ({"state": "not_collected", "reason": reason, "bundle_manifest_sha256": None, "bytes": 0,
+                 "cap_bytes": CAP_BYTES}, [], not_applied)
+    state = bundle.get("state")
+    collection = {"state": _clean(state), "reason": _clean(bundle.get("reason")),
+                  "bundle_manifest_sha256": _clean(bundle.get("manifest_sha256")),
+                  "bytes": bundle.get("bytes", 0) if type(bundle.get("bytes", 0)) is int else 0,
+                  "cap_bytes": CAP_BYTES, "pod_folder": _clean(bundle.get("pod_folder")),
+                  "seconds": _clean(bundle.get("seconds")), "local_only": True}
+    if state != "collected":
+        return collection, [], not_applied
+    files = [{"name": row["name"], "path": f"files/{row['name']}", "bytes": row["bytes"], "sha256": row["sha256"],
+              "pod_bytes": row.get("pod_bytes"), "pod_sha256": row.get("pod_sha256"),
+              "truncated": bool(row.get("truncated")), "source_bytes": _clean(row.get("source_bytes"))}
+             for row in bundle.get("files") or [] if isinstance(row, Mapping) and row.get("name") in FILE_CAPS]
+    workflow = bundle.get("workflow") or {}
+    redaction = {
+        "policy": POLICY, "applied": True,
+        "pod": dict(bundle.get("pod_counts") or {}), "local": dict(bundle.get("local_counts") or {}),
+        "workflow_strings_replaced": workflow.get("strings_replaced", 0),
+        "workflow_values_replaced": workflow.get("values_replaced", 0),
+        "rule": {"order": "redact, then truncate", "prompt_min_chars": PROMPT_MIN,
+                 "prompt_line_min_chars": PROMPT_LINE_MIN, "line_drop_chars": LINE_DROP,
+                 "secret_min_chars": SECRET_MIN, "always_removed": ["keys and tokens", "URLs", "IP addresses"],
+                 "workflow": "structure only", "total_cap_bytes": TOTAL_CAP, "file_caps": dict(FILE_CAPS)},
+    }
+    return collection, files, redaction
+
+
+def write_receipt(receipt: Mapping[str, Any], *, root: Path | None = None, bundle_dir: Path | None = None) -> Path:
+    """Write atomically under ``<root>/<task_id>/`` and prune to the newest ``KEEP_RECEIPTS``.
+
+    The collected bundle's redacted files are copied into ``files/`` first, each
+    rechecked against the digest the receipt records; a file that differs is left out.
+    """
     root = Path(root) if root is not None else failures_root()
     task = receipt["identity"].get("task_id")
     name = "".join(ch for ch in str(task or "") if ch.isalnum() or ch in "-_")[:128] or f"local-{uuid.uuid4().hex}"
     folder = root / name
     folder.mkdir(parents=True, exist_ok=True)
+    files = folder / "files"
+    shutil.rmtree(files, ignore_errors=True)
+    if receipt.get("files"):
+        receipt = dict(receipt)
+        files.mkdir()
+        kept = []
+        for row in receipt["files"]:
+            try:
+                data = (Path(bundle_dir) / row["name"]).read_bytes() if bundle_dir is not None else None
+            except OSError:
+                data = None
+            if data is not None and hashlib.sha256(data).hexdigest() == row["sha256"]:
+                (files / row["name"]).write_bytes(data)
+                kept.append(row)
+        receipt["files"] = kept
     path = folder / RECEIPT_NAME
     partial = path.with_name(RECEIPT_NAME + f".{os.getpid()}.partial")
     partial.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -191,13 +258,19 @@ def _prune(root: Path, *, keep: Path) -> None:
 def record_failure(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, Any] | None, timing: Any,
                    root: Path | None = None) -> Path | None:
     """Build and write one receipt; a problem here is logged by class and never raised."""
+    bundle = _bundle_of(facts)
+    bundle_dir = Path(bundle["dir"]) if bundle is not None and isinstance(bundle.get("dir"), str) else None
     try:
         receipt = build_receipt(facts, job=job, machine=machine, timing=timing)
-        return write_receipt(receipt, root=root) if receipt is not None else None
+        return write_receipt(receipt, root=root, bundle_dir=bundle_dir) if receipt is not None else None
     except Exception as exc:  # noqa: BLE001 (never masks the original error)
         import sys
         print(f"failure receipt not written ({type(exc).__name__})", file=sys.stderr)
         return None
+    finally:
+        if bundle_dir is not None:
+            # The attempt's staging copy is removed once the receipt holds the bundle.
+            shutil.rmtree(bundle_dir.parent, ignore_errors=True)
 
 
 def recorder(job: Any, machine_of: Any, timing: Any, *, root: Path | None = None) -> Any:
@@ -229,8 +302,22 @@ def find_receipt(task_id: str | None = None, *, root: Path | None = None) -> Pat
     return max(rows, key=lambda row: row[0])[1] if rows else None
 
 
-def render(receipt: Mapping[str, Any]) -> str:
-    """The human form: a few fixed lines from the receipt."""
+def _printable(text: str) -> str:
+    """Pod-written text with terminal control characters made visible."""
+    return "".join(ch if ch == "\t" or (" " <= ch and ch != "\x7f" and not "\x80" <= ch <= "\x9f") else "?"
+                   for ch in text)
+
+
+def _last_lines(path: Path, count: int = 6) -> list[str]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    return [_printable(line)[:200] for line in lines if line.strip()][-count:]
+
+
+def render(receipt: Mapping[str, Any], folder: Path | None = None) -> str:
+    """The human form: a few fixed lines from the receipt, and the bundle's last error lines."""
     cause, ident = receipt.get("cause") or {}, receipt.get("identity") or {}
     machine, collection = receipt.get("machine") or {}, receipt.get("collection") or {}
     timing = ((receipt.get("timing") or {}).get("phases") or {})
@@ -241,7 +328,22 @@ def render(receipt: Mapping[str, Any]) -> str:
              f"Machine: {ident.get('machine_id') or 'none'}  after: {machine.get('after')}"
              + (f"  release: {machine['release_reason']}" if machine.get("release_reason") else ""),
              "Bundle: " + (f"{str(collection.get('state')).replace('_', ' ')} "
-                           f"({str(collection.get('reason', 'n/a')).replace('_', ' ')})")]
+                           f"({str(collection.get('reason') or 'n/a').replace('_', ' ')})")]
+    files = [row for row in receipt.get("files") or [] if isinstance(row, Mapping)]
+    if collection.get("state") == "collected":
+        lines[-1] = (f"Bundle: collected, {len(files)} files, {collection.get('bytes')} bytes "
+                     f"(cap {collection.get('cap_bytes')}), redacted on the pod and on this machine; local only")
+        lines += [f"  {row.get('path')}  {row.get('bytes')} bytes" + ("  (tail)" if row.get("truncated") else "")
+                  for row in files]
+        if folder is not None:
+            lines.append(f"Folder: {folder}")
+            for name in ("error-tail.txt", "engine-log-tail.txt"):
+                if any(row.get("name") == name for row in files):
+                    tail = _last_lines(Path(folder) / "files" / name)
+                    if tail:
+                        lines.append(f"Last lines of {name}:")
+                        lines += ["  " + line for line in tail]
+                        break
     seconds = [f"{name}={row['seconds']}s" for name, row in timing.items()
                if isinstance(row, Mapping) and row.get("seconds") is not None]
     if seconds:

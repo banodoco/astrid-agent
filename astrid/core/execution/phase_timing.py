@@ -18,6 +18,7 @@ PHASES = {
     "preparation": ("preparation_started_at", "preparation_ended_at"),
     "execution": ("job_started_at", "job_ended_at"),
     "collection": ("collection_started_at", "collection_ended_at"),
+    "failure_collection": ("failure_collection_started_at", "failure_collection_ended_at"),
     "release": ("release_started_at", "released_at"),
 }
 

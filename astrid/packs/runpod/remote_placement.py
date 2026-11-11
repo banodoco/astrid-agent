@@ -787,7 +787,8 @@ class _HttpsOps:
 
     def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Kill a slow-drip caller before it can hold the host's drain forever."""
-        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
+        # ``get`` lands one failure-bundle file; its digest is verified by the caller.
+        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel", "get"}:
             raise RemotePlacementError("unsupported bounded pod operation")
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:

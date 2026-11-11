@@ -619,6 +619,25 @@ class RunPodLeaseOwner:
                 self._failure_observers[key] = event
         return key, event
 
+    def begin_release_observation(self, invocation: RunPodLease, pod_id: str) -> tuple[tuple[str, str, int, str], threading.Event]:
+        """Register an exact invocation whose preparation failed, so any release aborts a probe of it.
+
+        Unlike ``begin_failure_observation`` the lease need not be active: a failed
+        preparation leaves it ``cleanup_pending`` until the caller releases it.
+        """
+        key = (invocation.operation_id, invocation.owner_epoch, invocation.generation, pod_id)
+        with self.lock:
+            record = self._read()
+            lease = (record or {}).get("lease") or {}
+            if (record is None or record.get("operation_id") != invocation.operation_id
+                    or record.get("pod_id") != pod_id or lease.get("owner_epoch") != invocation.owner_epoch
+                    or lease.get("generation") != invocation.generation):
+                raise RunPodWorkerOwnerError("release observation differs from machine custody")
+            event = threading.Event()
+            with self._observer_lock:
+                self._failure_observers[key] = event
+        return key, event
+
     def end_failure_observation(self, key: tuple[str, str, int, str]) -> None:
         with self._observer_lock:
             self._failure_observers.pop(key, None)

@@ -179,13 +179,19 @@ def prepare_retained_generation(
                            for name, path in (("source", request.source), ("workflow", request.workflow)))):
                 raise PreparedWorkerError("preparation consumed its paid lifetime or source bytes changed")
             saved = save(state="prepared", installed=dict(state.installed))
-        except BaseException:
+        except BaseException as exc:
             # A failed current mount/custody observation cannot prove that an
             # old installed snapshot is still safe, even before installation.
             # Preserve exact custody for immediate release/recovery.
             current = lease_owner._read()
             lease_owner._save(current, {**current["lease"], "preparation": {**preparation, "state": "unresolved"}},
                               state="cleanup_pending", reconciliation_required=True)
+            if "claim" in locals():
+                try:
+                    # The failure bundle is collected over this connection before the caller releases the pod.
+                    exc.failure_claim = claim
+                except Exception:
+                    pass
             raise
         return PreparedRunPodLease(
             RunPodLease(invocation.operation_id, invocation.owner_epoch, invocation.generation,
