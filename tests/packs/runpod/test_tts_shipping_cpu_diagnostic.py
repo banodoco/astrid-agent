@@ -7,6 +7,8 @@ this does not prove Comfy execution, prepared Runtime health, or provider behavi
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path
 
@@ -25,6 +27,14 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
     from astrid.packs.runpod import machine as rm
     from astrid.packs.vibecomfy import local_job
     from vibecomfy.workflow_bundle import emit_bundle
+
+    def stage(name):
+        # The lease-only harness supplies its private marker pipe. Ordinary test
+        # runs need no pipe, and no input values or exception text are emitted.
+        fd = os.environ.get('ASTRID_TTS_DIAGNOSTIC_MARKER_FD')
+        if fd is not None:
+            stamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+            os.write(int(fd), (stamp + ' ' + name + '\n').encode())
 
     entry, mode = 'audio/qwen3_tts_custom_voice', 'tts'
     # Freeze the pinned repository's discovery for this one test. Each real
@@ -93,13 +103,20 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
     argv = rm.generation_argv(entry, str(landing), mode=mode)
     assert argv[1:5] == ['generate', entry, '--placement', 'local']
     assert argv[argv.index('--job') + 1] == str(job_file)
-    assert cli._main(argv[2:]) == 0
+    stage('ASSERT_CLI_STATUS_BEGIN')
+    cli_status = cli._main(argv[2:])
+    assert cli_status == 0
+    stage('ASSERT_CLI_STATUS_PASS')
     capsys.readouterr()  # Never print synthetic or untrusted command output.
     shipped = calls.pop()
     assert shipped['entry'] == direct['entry'] == entry
+    stage('ASSERT_ENTRY_PASS')
     assert shipped['align'] == direct['align'] == job.align
+    stage('ASSERT_ALIGN_PASS')
     assert json.loads(shipped['workflow_inputs']) == json.loads(direct['workflow_inputs'])
+    stage('ASSERT_BINDINGS_PASS')
     assert schemas == [job.align]  # prepared non-hook path intentionally does not repeat target_schema
+    stage('ASSERT_TARGET_SCHEMA_PASS')
 
     # Exercise the later engine preflight separately with a fake target: the
     # fixture is a projection of the pinned Vibe cache, not a live observation.
@@ -117,6 +134,7 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
                       'output': [item['type'] for item in row['outputs']],
                       'output_node': kind == 'SaveAudioMP3'}
     assert set(info) == {'AILab_Qwen3TTSCustomVoice', 'SaveAudioMP3'}
+    stage('ASSERT_FIXTURE_KINDS_PASS')
     observed = {'schema': info}
     client = SimpleNamespace(object_info=lambda: deepcopy(observed['schema']))
 
@@ -128,8 +146,11 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
             bundle, plan['bindings'], 'http://127.0.0.1:1', tmp_path, client=client,
             target_custody=())
 
+    stage('PREFLIGHT_ORIGINAL_BEGIN')
     preflight(root / 'workflow.py', info)
+    stage('PREFLIGHT_ORIGINAL_PASS')
     preflight(landing / 'workflow.py', info)
+    stage('PREFLIGHT_SHIPPED_PASS')
     changed = deepcopy(info)
     # Remove the retained voice from the target's allowed enum without exposing
     # inputs in logs; this is synthetic drift, not a claim about the real pod.
@@ -137,8 +158,10 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
     choices[:] = [choice for choice in choices if choice != 'Ryan']
     with pytest.raises(local_server_engine.ProductionEngineError):
         preflight(root / 'workflow.py', changed)
+    stage('PREFLIGHT_DRIFT_ORIGINAL_PASS')
     with pytest.raises(local_server_engine.ProductionEngineError):
         preflight(landing / 'workflow.py', changed)
+    stage('PREFLIGHT_DRIFT_SHIPPED_PASS')
 
 
 def test_error_frame_keeps_only_allowlisted_structural_facts():
