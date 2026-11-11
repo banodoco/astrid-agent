@@ -5035,9 +5035,16 @@ def test_host_execution_failure_keeps_coded_fields_and_recovery(tmp_path, monkey
     assert message.startswith(str(errors[kind]))
     if kind == "astrid":
         assert message.endswith(" Next: astrid doctor")
+    # Failure terminalization carries empty verified evidence outputs and a
+    # terminal result (a8f8ab682, "Add failure and cancellation result evidence transport").
+    expected_message = {"astrid": "bad input", "exec": "ffmpeg missing", "sdk": "bad mode"}
     assert kwargs == {
         "attempt_id": "attempt-coded", "fence": 1, "retryable": False,
         "failure_diagnostic": None, "structured_error": expected[kind],
+        "outputs": [],
+        "result": {"status": "failed", "error": {
+            "code": expected[kind]["code"], "message": expected_message[kind],
+        }},
     }
 
 
@@ -5078,7 +5085,9 @@ def test_host_without_explicit_roots_discovers_the_personal_collection(tmp_path,
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
 
-    host = GenericPackHost(pack_roots=[])
+    # Only the `run --register` host resolves the personal collection outside
+    # Runtime custody (5877ce623); the service passes personal_collection=True.
+    host = GenericPackHost(pack_roots=[], personal_collection=True)
     assert host.pack_roots == (personal.resolve(),)
     host.discover()
 
