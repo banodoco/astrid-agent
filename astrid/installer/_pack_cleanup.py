@@ -5,6 +5,10 @@ import shutil
 import stat
 
 
+def _is_windows():
+    return os.name == "nt"
+
+
 def remove_pack_tree(path, *, ignore_errors=False):
     """Remove a tree, retrying permission failures after clearing read-only.
 
@@ -15,7 +19,12 @@ def remove_pack_tree(path, *, ignore_errors=False):
         if (not isinstance(exc_info[1], PermissionError)
                 or function not in (os.unlink, os.remove, os.rmdir)):
             raise exc_info[1].with_traceback(exc_info[2])
-        os.chmod(name, stat.S_IWRITE)
+        if _is_windows():
+            # Only Windows needs the read-only bit cleared; on POSIX removal depends
+            # on the parent directory, and chmod would follow symlinks out of the tree.
+            mode = os.lstat(name).st_mode
+            if not stat.S_ISLNK(mode):
+                os.chmod(name, mode | stat.S_IWRITE)
         function(name)
 
     try:

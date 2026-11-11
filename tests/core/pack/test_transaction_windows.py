@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.installer import _pack_cleanup as pack_cleanup
 from astrid.core.pack import cli_manage, install as installer, transaction as txn
 from astrid.pack_api import VERSION
 
@@ -45,6 +46,7 @@ def windows(monkeypatch):
     windows_os.replace = replace
     monkeypatch.setattr(txn, "sys", SimpleNamespace(platform="win32", executable=sys.executable))
     monkeypatch.setattr(txn, "os", windows_os)
+    monkeypatch.setattr(pack_cleanup, "_is_windows", lambda: True)
     monkeypatch.setattr(installer, "os", windows_os)
     publish = installer._publish
     policy = installer.PublicationPolicy.for_platform("win32")
