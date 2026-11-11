@@ -2098,13 +2098,12 @@ def test_refreshed_candidate_cannot_promote_after_lease_fence(machine_case, monk
     try:
         if race == 'expiry':
             c.clock.now = c.read()['lease']['paid_expires_at']
-        elif race == 'shutdown':
-            stage('RACE_SHUTDOWN_BEGIN')
-            c.host.close()
-            stage('RACE_SHUTDOWN_END')
         else:
+            if race == 'shutdown':
+                stage('RACE_SHUTDOWN_BEGIN')
             releaser = threading.Thread(target=lambda: c.host.release(
-                reason='explicit', _expected_operation=lease.lease.operation_id,
+                reason='host_shutdown' if race == 'shutdown' else 'explicit',
+                _expected_operation=lease.lease.operation_id,
                 expected_machine_id=lease.claim.pod_id))
             releaser.start()
             for _ in range(100):
@@ -2117,6 +2116,10 @@ def test_refreshed_candidate_cannot_promote_after_lease_fence(machine_case, monk
         verifier.join(10)
         if releaser is not None:
             releaser.join(10)
+    if race == 'shutdown' and releaser is not None and not releaser.is_alive():
+        # Production adapter closes the owner only after exact release returns.
+        c.host.close()
+        stage('RACE_SHUTDOWN_END')
     stage('RACE_THREADS_ALIVE_' + ('YES' if verifier.is_alive() or releaser is not None and releaser.is_alive() else 'NO'))
     assert not verifier.is_alive() and (releaser is None or not releaser.is_alive())
     stage('RACE_THREADS_FINISHED')
@@ -2129,6 +2132,7 @@ def test_refreshed_candidate_cannot_promote_after_lease_fence(machine_case, monk
     assert record['lease']['state'] != 'idle'
     assert record['lease']['preparation']['installed']['receipt_sha256'] == previous['receipt_sha256']
     assert c.creates == 1
+    assert record['state'] == 'cleanup_complete' and c.deletes == ['pod-1']
 
 
 @pytest.mark.parametrize('tamper', ['legacy_step', 'unknown_fact', 'started_at', 'source_pin', 'root', 'extra_key', 'owner'])
