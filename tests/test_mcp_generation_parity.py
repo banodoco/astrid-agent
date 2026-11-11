@@ -523,3 +523,17 @@ def test_engine_install_success_and_coded_error_envelopes(monkeypatch):
         "disk_check": {"required_bytes": engine_cli.ENGINE_INSTALL_MIN_FREE_BYTES, "free_bytes": 100 * 1024 ** 3,
                        "status": "ok", "basis": "minimum_free_space_floor"},
     }
+
+
+def test_generation_mcp_rejects_non_object_inputs_before_invocation(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid inputs must not invoke the CLI")
+    monkeypatch.setattr(mcp_server, "_run", unexpected)
+    result = mcp_server.call_tool(mcp_server._generation_tools()["generate_image"],
+                                  {"entry": "example", "inputs": ["invalid"]})
+    assert result["isError"]
+    payload = result["structuredContent"]
+    assert payload["status"] == "blocked"
+    assert payload["issues"][0]["code"] == "input_rejected"
+    assert payload["issues"][0]["message"] == "inputs must be an object"
+    assert json.loads(result["content"][0]["text"]) == payload
