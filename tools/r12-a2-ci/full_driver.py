@@ -2,6 +2,8 @@
 import json, os, pathlib, subprocess, sys
 from full_plan import group_for
 from runner import MANIFEST_SHA
+from receipt_guard import rebuild
+from sanitize import write_receipt
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -31,32 +33,31 @@ def decide(returncode, receipt, census_clear, side, group):
 def main():
     side, group_range, slot = os.environ['A2_SIDE'], os.environ['A2_RANGE'], int(os.environ['A2_SLOT'])
     group = group_for(side,group_range,slot)
-    with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
-        output.write('group='+ (group or 'none')+'\n')
     if group is None: return 0
     root = pathlib.Path(os.environ['RUNNER_TEMP']).resolve() / ('r12-a2-full-'+side+'-'+group)
     root.mkdir(exist_ok=False)
-    receipt = root/'r12-a2-receipt/receipt.json'
-    with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
-        output.write('artifact_path='+str(receipt)+'\n')
     try:
         before=census()
     except RuntimeError:
         print('A2_PROCESS_CENSUS unverified',flush=True); return 3
-    env=os.environ.copy(); env.update({'RUNNER_TEMP':str(root),'A2_MODE':'full','A2_GROUP':group})
+    keys=('PATH','A2_SIDE','A2_RANGE','A2_REF','A2_SHA','A2_BEFORE','A2_ATTEMPT')
+    env={key:os.environ[key] for key in keys}
+    env.update({'RUNNER_TEMP':str(root),'A2_MODE':'full','A2_GROUP':group,'PYTHONDONTWRITEBYTECODE':'1'})
     result=subprocess.run([sys.executable,str(HERE/'runner.py')],env=env,start_new_session=True)
     try:
         after=census(); added=after-before; clear=not added; state='clear' if clear else 'residue'
     except RuntimeError:
         clear=False; state='unverified'
     print('A2_PROCESS_CENSUS '+state,flush=True)
+    if not clear: return 3
     try:
-        data=json.loads(receipt.read_text())
-        data['process_census']={'status':state}
-        if not clear: data['classification']='INCOMPLETE'
-        # Receipt already contains only the runner's allowlisted structured data.
-        temp=receipt.with_suffix('.tmp'); temp.write_text(json.dumps(data,sort_keys=True,indent=2)+'\n'); os.replace(temp,receipt)
-    except (OSError,ValueError,TypeError): return 3
+        data=rebuild(root,side,group,os.environ['A2_SHA'])
+        data['process_census']={'status':'clear'}
+        output_dir=pathlib.Path(os.environ['RUNNER_TEMP'])/('r12-a2-final-slot-%02d'%slot)
+        output_dir.mkdir(exist_ok=False)
+        write_receipt(output_dir,data)
+    except Exception:
+        print('A2_RECEIPT invalid',flush=True); return 3
     accepted=decide(result.returncode,data,clear,side,group)
     if accepted and result.returncode == 1:
         (pathlib.Path(os.environ['RUNNER_TEMP'])/'r12-a2-full-had-failure').write_text('failure\n')

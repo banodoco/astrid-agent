@@ -128,7 +128,8 @@ def run_main(tracker):
         result = sanitized_result(raw, expected, absent, metadata, rc, preflight, tracker.events)
         receipt.mkdir(exist_ok=True)
         write_receipt(receipt, result)
-        with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output: output.write('receipt_ready=true\n')
+        if os.environ.get('A2_MODE') != 'full':
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output: output.write('receipt_ready=true\n')
 def main():
     tracker = StageTracker()
     try: return run_main(tracker)
@@ -139,7 +140,8 @@ def main():
             receipt = pathlib.Path(os.environ['RUNNER_TEMP']).resolve()/'r12-a2-receipt'
             receipt.mkdir(exist_ok=True)
             write_receipt(receipt, sanitized_result(None, [], [], {}, None, False, tracker.events))
-            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output: output.write('receipt_ready=true\n')
+            if os.environ.get('A2_MODE') != 'full':
+                with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output: output.write('receipt_ready=true\n')
         except Exception:
             pass
         return 3

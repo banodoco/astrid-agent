@@ -43,13 +43,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 1
+        id: seal01
+        if: always() && steps.slot01.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '1'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 1
-        if: always() && steps.slot01.outputs.receipt_ready == 'true'
+        if: always() && steps.seal01.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot01.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot01.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-01-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-01/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 2
@@ -62,13 +72,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 2
+        id: seal02
+        if: always() && steps.slot02.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '2'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 2
-        if: always() && steps.slot02.outputs.receipt_ready == 'true'
+        if: always() && steps.seal02.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot02.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot02.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-02-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-02/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 3
@@ -81,13 +101,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 3
+        id: seal03
+        if: always() && steps.slot03.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '3'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 3
-        if: always() && steps.slot03.outputs.receipt_ready == 'true'
+        if: always() && steps.seal03.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot03.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot03.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-03-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-03/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 4
@@ -100,13 +130,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 4
+        id: seal04
+        if: always() && steps.slot04.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '4'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 4
-        if: always() && steps.slot04.outputs.receipt_ready == 'true'
+        if: always() && steps.seal04.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot04.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot04.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-04-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-04/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 5
@@ -119,13 +159,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 5
+        id: seal05
+        if: always() && steps.slot05.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '5'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 5
-        if: always() && steps.slot05.outputs.receipt_ready == 'true'
+        if: always() && steps.seal05.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot05.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot05.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-05-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-05/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 6
@@ -138,13 +188,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 6
+        id: seal06
+        if: always() && steps.slot06.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '6'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 6
-        if: always() && steps.slot06.outputs.receipt_ready == 'true'
+        if: always() && steps.seal06.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot06.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot06.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-06-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-06/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 7
@@ -157,13 +217,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 7
+        id: seal07
+        if: always() && steps.slot07.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '7'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 7
-        if: always() && steps.slot07.outputs.receipt_ready == 'true'
+        if: always() && steps.seal07.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot07.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot07.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-07-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-07/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 8
@@ -176,13 +246,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 8
+        id: seal08
+        if: always() && steps.slot08.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '8'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 8
-        if: always() && steps.slot08.outputs.receipt_ready == 'true'
+        if: always() && steps.seal08.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot08.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot08.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-08-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-08/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 9
@@ -195,13 +275,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 9
+        id: seal09
+        if: always() && steps.slot09.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '9'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 9
-        if: always() && steps.slot09.outputs.receipt_ready == 'true'
+        if: always() && steps.seal09.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot09.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot09.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-09-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-09/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 10
@@ -214,13 +304,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 10
+        id: seal10
+        if: always() && steps.slot10.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '10'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 10
-        if: always() && steps.slot10.outputs.receipt_ready == 'true'
+        if: always() && steps.seal10.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot10.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot10.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-10-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-10/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 11
@@ -233,17 +333,28 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 11
+        id: seal11
+        if: always() && steps.slot11.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '11'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 11
-        if: always() && steps.slot11.outputs.receipt_ready == 'true'
+        if: always() && steps.seal11.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot11.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot11.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-11-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-11/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Execute bounded group slot 12
         id: slot12
+        if: inputs.group_range == '019-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -252,13 +363,23 @@ jobs:
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
-        run: python tools/r12-a2-ci/full_driver.py
+        run: |
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+      - name: Seal sanitized receipt 12
+        id: seal12
+        if: always() && steps.slot12.outcome != 'skipped'
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '12'
+          A2_SHA: ${{ github.sha }}
+        run: python tools/r12-a2-ci/seal_full_receipt.py
       - name: Persist group receipt 12
-        if: always() && steps.slot12.outputs.receipt_ready == 'true'
+        if: always() && steps.seal12.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: r12-a2-${{ steps.slot12.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ steps.slot12.outputs.artifact_path }}
+          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-12-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r12-a2-final-slot-12/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Checkpoint completed range

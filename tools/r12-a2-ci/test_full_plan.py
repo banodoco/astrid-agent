@@ -47,34 +47,25 @@ class FullPlanTests(unittest.TestCase):
             for groups in RANGES.values():
                 for group in groups:
                     batch,ids=validate(side,group); self.assertEqual(len(ids),batch['counts'][side])
-    def test_driver_preserves_accounted_failure_and_marks_job_red(self):
+    def test_driver_strips_runtime_secrets_and_marks_accounted_failure(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
-            output=pathlib.Path(tmp)/'github-output'
-            env={'RUNNER_TEMP':tmp,'GITHUB_OUTPUT':str(output),'A2_SIDE':'base','A2_RANGE':'019-030','A2_SLOT':'1'}
+            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'019-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1','ACTIONS_RUNTIME_TOKEN':'synthetic-token','GITHUB_OUTPUT':'/synthetic-output'}
+            data={'classification':'COMPLETE','exit_code':1,'preflight_complete':True,'metadata':{'side':'base','group':'019','manifest_sha256':MANIFEST_SHA}}
             def child(command,env,start_new_session):
-                self.assertTrue(start_new_session)
-                self.assertEqual(env['A2_GROUP'],'019'); self.assertEqual(env['A2_MODE'],'full')
-                receipt=pathlib.Path(env['RUNNER_TEMP'])/'r12-a2-receipt/receipt.json'; receipt.parent.mkdir()
-                receipt.write_text(json.dumps({'classification':'COMPLETE','exit_code':1,'preflight_complete':True,'metadata':{'side':'base','group':'019','manifest_sha256':MANIFEST_SHA}}))
-                with open(env['GITHUB_OUTPUT'],'a') as f: f.write('receipt_ready=true\n')
+                self.assertTrue(start_new_session); self.assertEqual(env['A2_GROUP'],'019'); self.assertEqual(env['A2_MODE'],'full')
+                self.assertNotIn('ACTIONS_RUNTIME_TOKEN',env); self.assertNotIn('GITHUB_OUTPUT',env)
                 return types.SimpleNamespace(returncode=1)
-            with patch.dict(os.environ,env), patch.object(full_driver,'census',side_effect=[{(1,1)},{(1,1)}]), patch.object(full_driver.subprocess,'run',side_effect=child):
+            with patch.dict(os.environ,env), patch.object(full_driver,'census',side_effect=[{(1,1)},{(1,1)}]), patch.object(full_driver.subprocess,'run',side_effect=child), patch.object(full_driver,'rebuild',return_value=data):
                 self.assertEqual(full_driver.main(),0)
             self.assertTrue((pathlib.Path(tmp)/'r12-a2-full-had-failure').is_file())
-            receipt=json.loads((pathlib.Path(tmp)/'r12-a2-full-base-019/r12-a2-receipt/receipt.json').read_text())
+            receipt=json.loads((pathlib.Path(tmp)/'r12-a2-final-slot-01/receipt.json').read_text())
             self.assertEqual(receipt['classification'],'COMPLETE'); self.assertEqual(receipt['exit_code'],1); self.assertEqual(receipt['process_census']['status'],'clear')
-    def test_residual_process_marks_receipt_incomplete_and_stops(self):
+    def test_residual_process_stops_without_uploadable_receipt(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
-            output=pathlib.Path(tmp)/'github-output'
-            env={'RUNNER_TEMP':tmp,'GITHUB_OUTPUT':str(output),'A2_SIDE':'base','A2_RANGE':'019-030','A2_SLOT':'1'}
-            def child(command,env,start_new_session):
-                receipt=pathlib.Path(env['RUNNER_TEMP'])/'r12-a2-receipt/receipt.json'; receipt.parent.mkdir()
-                receipt.write_text(json.dumps({'classification':'COMPLETE','exit_code':0,'preflight_complete':True,'metadata':{'side':'base','group':'019','manifest_sha256':MANIFEST_SHA}}))
-                return types.SimpleNamespace(returncode=0)
-            with patch.dict(os.environ,env), patch.object(full_driver,'census',side_effect=[{(1,1)},{(1,1),(2,3)}]), patch.object(full_driver.subprocess,'run',side_effect=child):
-                self.assertEqual(full_driver.main(),3)
-            receipt=json.loads((pathlib.Path(tmp)/'r12-a2-full-base-019/r12-a2-receipt/receipt.json').read_text())
-            self.assertEqual(receipt['classification'],'INCOMPLETE'); self.assertEqual(receipt['process_census']['status'],'residue')
+            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'019-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1'}
+            with patch.dict(os.environ,env), patch.object(full_driver,'census',side_effect=[{(1,1)},{(1,1),(2,3)}]), patch.object(full_driver.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)), patch.object(full_driver,'rebuild') as rebuild:
+                self.assertEqual(full_driver.main(),3); rebuild.assert_not_called()
+            self.assertFalse((pathlib.Path(tmp)/'r12-a2-final-slot-01/receipt.json').exists())
     def test_workflow_bounds_and_per_slot_checkpoint(self):
         root=pathlib.Path(__file__).resolve().parents[2]/'.github/workflows'
         caller=(root/'r12-a2-full.yml').read_text(); called=(root/'r12-a2-full-range.yml').read_text()
@@ -86,10 +77,18 @@ class FullPlanTests(unittest.TestCase):
                 self.assertIn(f"needs.{prev}.outputs.safe_to_continue == 'true'",caller)
                 self.assertIn(f'needs.{prev}.outputs.has_failure',caller)
         self.assertIn('timeout-minutes: 360',called)
-        self.assertEqual(called.count('run: python tools/r12-a2-ci/full_driver.py'),12)
+        self.assertEqual(called.count('python tools/r12-a2-ci/full_driver.py'),12)
+        self.assertEqual(called.count('exec env -i PATH='),12)
+        for line in called.splitlines():
+            if 'exec env -i PATH=' in line:
+                self.assertIn('RUNNER_TEMP="$RUNNER_TEMP"',line)
+                self.assertNotIn('GITHUB_OUTPUT',line)
+                self.assertNotIn('ACTIONS_RUNTIME_TOKEN',line)
+        self.assertNotIn('outputs.artifact_path',called)
+        for slot in range(1,13): self.assertIn('path: ${{ runner.temp }}/r12-a2-final-slot-%02d/receipt.json' % slot, called)
         self.assertEqual(called.count('if-no-files-found: error'),12)
         for slot in range(1,13): self.assertIn("A2_SLOT: '%s'" % slot, called)
-        self.assertEqual(called.count('A2_SLOT:'),12)
+        self.assertEqual(called.count('A2_SLOT:'),24)
         self.assertIn('r12-a2-full-had-failure',called)
         self.assertIn('safe_to_continue=true',called)
         self.assertNotIn('workflow_dispatch:',caller)
