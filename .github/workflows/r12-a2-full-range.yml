@@ -20,7 +20,7 @@ permissions:
   contents: read
 jobs:
   compare:
-    if: github.event_name == 'push' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    if: github.event_name == 'push' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-022-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:
@@ -38,19 +38,21 @@ jobs:
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '1'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 1
         id: seal01
         if: always() && steps.slot01.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '1'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -67,19 +69,21 @@ jobs:
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '2'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 2
         id: seal02
         if: always() && steps.slot02.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '2'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -96,19 +100,21 @@ jobs:
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '3'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 3
         id: seal03
         if: always() && steps.slot03.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '3'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -122,22 +128,25 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 4
         id: slot04
+        if: inputs.side != 'r10' || inputs.group_range != '022-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '4'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 4
         id: seal04
         if: always() && steps.slot04.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '4'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -151,22 +160,25 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 5
         id: slot05
+        if: inputs.side != 'r10' || inputs.group_range != '022-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '5'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 5
         id: seal05
         if: always() && steps.slot05.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '5'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -180,22 +192,25 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 6
         id: slot06
+        if: inputs.side != 'r10' || inputs.group_range != '022-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '6'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 6
         id: seal06
         if: always() && steps.slot06.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '6'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -209,22 +224,25 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 7
         id: slot07
+        if: inputs.side != 'r10' || inputs.group_range != '022-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '7'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 7
         id: seal07
         if: always() && steps.slot07.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '7'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -238,22 +256,25 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 8
         id: slot08
+        if: inputs.side != 'r10' || inputs.group_range != '022-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '8'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 8
         id: seal08
         if: always() && steps.slot08.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '8'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -267,22 +288,25 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 9
         id: slot09
+        if: inputs.side != 'r10' || inputs.group_range != '022-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '9'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 9
         id: seal09
         if: always() && steps.slot09.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '9'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -296,22 +320,25 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 10
         id: slot10
+        if: inputs.group_range != '022-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '10'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 10
         id: seal10
         if: always() && steps.slot10.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '10'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py
@@ -325,23 +352,25 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 11
         id: slot11
-        if: inputs.side != 'r10' || inputs.group_range != '020-030'
+        if: inputs.group_range != '022-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '11'
           A2_BEFORE: ${{ github.event.before }}
           A2_REF: ${{ github.ref }}
           A2_SHA: ${{ github.sha }}
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
+          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
       - name: Seal sanitized receipt 11
         id: seal11
         if: always() && steps.slot11.outcome == 'success'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
+          A2_PRIOR_FAILURE: ${{ inputs.prior_failure }}
           A2_SLOT: '11'
           A2_SHA: ${{ github.sha }}
         run: python tools/r12-a2-ci/seal_full_receipt.py

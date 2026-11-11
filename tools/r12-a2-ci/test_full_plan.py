@@ -8,35 +8,35 @@ from full_plan import FULL_REF
 from sanitize import sanitized_result
 
 class FullPlanTests(unittest.TestCase):
-    def test_matrix_exactly_covers_131_new_side_groups(self):
+    def test_matrix_exactly_covers_118_new_side_groups(self):
         pairs=[]
         for side in SIDES:
             for name in RANGES:
                 for slot in range(1,13):
                     group=group_for(side,name,slot)
                     if group: pairs.append((side,group))
-        self.assertEqual(len(pairs),131); self.assertEqual(len(set(pairs)),131)
-        self.assertEqual(set(pairs),{(s,f'{n:03}') for s in SIDES for n in range(20,53)} - {('r10','020')})
+        self.assertEqual(len(pairs),118); self.assertEqual(len(set(pairs)),118)
+        self.assertEqual(set(pairs),{(s,f'{n:03}') for s in SIDES for n in range(22,53)} - {('r10',f'{n:03}') for n in range(22,28)})
     def test_invalid_matrix_inputs_fail_closed(self):
-        for args in [('r10','020-030',0),('r10','020-030',13),('../r10','020-030',1),('r10','018-030',1),('base','031-041',True)]:
+        for args in [('r10','022-030',0),('r10','022-030',13),('../r10','022-030',1),('r10','018-030',1),('base','031-041',True)]:
             with self.assertRaises(ValueError): group_for(*args)
         self.assertIsNone(group_for('base','031-041',12)); self.assertIsNone(group_for('base','042-052',12))
     def test_continue_only_complete_results_or_explicit_absence(self):
-        meta={'side':'base','group':'020','manifest_sha256':MANIFEST_SHA}
+        meta={'side':'base','group':'022','manifest_sha256':MANIFEST_SHA}
         complete={'classification':'COMPLETE','exit_code':1,'metadata':meta,'preflight_complete':True}
-        self.assertTrue(decide(1,complete,True,'base','020'))
-        self.assertFalse(decide(1,complete,False,'base','020'))
-        self.assertFalse(decide(3,complete,True,'base','020'))
-        self.assertFalse(decide(1,complete,True,'candidate','020'))
-        self.assertFalse(decide(1,{**complete,'classification':'INCOMPLETE'},True,'base','020'))
+        self.assertTrue(decide(1,complete,True,'base','022'))
+        self.assertFalse(decide(1,complete,False,'base','022'))
+        self.assertFalse(decide(3,complete,True,'base','022'))
+        self.assertFalse(decide(1,complete,True,'candidate','022'))
+        self.assertFalse(decide(1,{**complete,'classification':'INCOMPLETE'},True,'base','022'))
         noresults={'classification':'NO_RESULTS','exit_code':0,'expected_count':0,'absent_ids':['known-id'],'metadata':meta,'preflight_complete':True}
-        self.assertTrue(decide(0,noresults,True,'base','020'))
-        self.assertFalse(decide(0,{**noresults,'absent_ids':[]},True,'base','020'))
-        self.assertFalse(decide(0,{**noresults,'preflight_complete':False},True,'base','020'))
+        self.assertTrue(decide(0,noresults,True,'base','022'))
+        self.assertFalse(decide(0,{**noresults,'absent_ids':[]},True,'base','022'))
+        self.assertFalse(decide(0,{**noresults,'preflight_complete':False},True,'base','022'))
     def test_run_control_rejects_cross_range_or_replay(self):
-        event={'A2_MODE':'full','A2_SIDE':'base','A2_REF':FULL_REF,'A2_RANGE':'020-030','A2_BEFORE':'0'*40,'A2_ATTEMPT':'1'}
-        verify_run_control('020',event)
-        for group,override in [('031',{}),('019',{}),('020',{'A2_SIDE':'r10'}),('020',{'A2_REF':'refs/heads/main'}),('020',{'A2_ATTEMPT':'2'}),('020',{'A2_BEFORE':'a'*40}),('020',{'A2_RANGE':'anything'}),('020',{'A2_MODE':'anything'})]:
+        event={'A2_MODE':'full','A2_SIDE':'base','A2_REF':FULL_REF,'A2_RANGE':'022-030','A2_BEFORE':'0'*40,'A2_ATTEMPT':'1','A2_PRIOR_FAILURE':'false'}
+        verify_run_control('022',event)
+        for group,override in [('031',{}),('021',{}),('022',{'A2_SIDE':'r10'}),('027',{'A2_SIDE':'r10'}),('022',{'A2_REF':'refs/heads/main'}),('022',{'A2_ATTEMPT':'2'}),('022',{'A2_BEFORE':'a'*40}),('022',{'A2_RANGE':'anything'}),('022',{'A2_MODE':'anything'})]:
             with self.subTest(group=group,override=override), self.assertRaises(ValueError): verify_run_control(group,{**event,**override})
     def test_zero_results_require_verified_absence(self):
         self.assertEqual(sanitized_result(None,[],['known'],{},0,True)['classification'],'NO_RESULTS')
@@ -49,10 +49,10 @@ class FullPlanTests(unittest.TestCase):
                     batch,ids=validate(side,group); self.assertEqual(len(ids),batch['counts'][side])
     def test_driver_strips_runtime_secrets_and_marks_accounted_failure(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
-            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'020-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1','ACTIONS_RUNTIME_TOKEN':'synthetic-token','GITHUB_OUTPUT':'/synthetic-output'}
-            data={'classification':'COMPLETE','exit_code':1,'preflight_complete':True,'metadata':{'side':'base','group':'020','manifest_sha256':MANIFEST_SHA}}
+            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'022-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1','A2_PRIOR_FAILURE':'false','ACTIONS_RUNTIME_TOKEN':'synthetic-token','GITHUB_OUTPUT':'/synthetic-output'}
+            data={'classification':'COMPLETE','exit_code':1,'preflight_complete':True,'metadata':{'side':'base','group':'022','manifest_sha256':MANIFEST_SHA}}
             def child(command,env,start_new_session):
-                self.assertTrue(start_new_session); self.assertEqual(env['A2_GROUP'],'020'); self.assertEqual(env['A2_MODE'],'full')
+                self.assertTrue(start_new_session); self.assertEqual(env['A2_GROUP'],'022'); self.assertEqual(env['A2_MODE'],'full')
                 self.assertNotIn('ACTIONS_RUNTIME_TOKEN',env); self.assertNotIn('GITHUB_OUTPUT',env)
                 return types.SimpleNamespace(returncode=1)
             with patch.dict(os.environ,env), patch.object(full_driver,'verify_prior_receipts',return_value=True), patch.object(full_driver,'census',side_effect=[{(1,1)},{(1,1)}]), patch.object(full_driver.subprocess,'run',side_effect=child), patch.object(full_driver,'rebuild',return_value=data):
@@ -62,29 +62,37 @@ class FullPlanTests(unittest.TestCase):
             self.assertEqual(receipt['classification'],'COMPLETE'); self.assertEqual(receipt['exit_code'],1); self.assertEqual(receipt['process_census']['status'],'clear')
     def test_residual_process_stops_without_uploadable_receipt(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
-            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'020-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1'}
+            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'022-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1','A2_PRIOR_FAILURE':'false'}
             with patch.dict(os.environ,env), patch.object(full_driver,'verify_prior_receipts',return_value=True), patch.object(full_driver,'census',side_effect=[{(1,1)},{(1,1),(2,3)}]), patch.object(full_driver.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)), patch.object(full_driver,'rebuild') as rebuild:
                 self.assertEqual(full_driver.main(),3); rebuild.assert_not_called()
             self.assertFalse((pathlib.Path(tmp)/'r12-a2-final-slot-01/receipt.json').exists())
     def test_unverified_census_stops_without_uploadable_receipt(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
-            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'020-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1'}
+            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'022-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1','A2_PRIOR_FAILURE':'false'}
             with patch.dict(os.environ,env), patch.object(full_driver,'verify_prior_receipts',return_value=True), patch.object(full_driver,'census',side_effect=[{(1,1)},RuntimeError('synthetic')]), patch.object(full_driver.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)), patch.object(full_driver,'rebuild') as rebuild:
                 self.assertEqual(full_driver.main(),3); rebuild.assert_not_called()
             self.assertFalse((pathlib.Path(tmp)/'r12-a2-final-slot-01/receipt.json').exists())
     def test_precreated_slot_path_fails_and_cannot_be_sealed(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
-            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'020-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1'}
+            env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'022-030','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1','A2_PRIOR_FAILURE':'false'}
             slot=pathlib.Path(tmp)/'r12-a2-final-slot-01'; slot.mkdir(); (slot/'receipt.json').write_text('synthetic-secret')
-            data={'classification':'COMPLETE','exit_code':0,'preflight_complete':True,'metadata':{'side':'base','group':'020','manifest_sha256':MANIFEST_SHA}}
+            data={'classification':'COMPLETE','exit_code':0,'preflight_complete':True,'metadata':{'side':'base','group':'022','manifest_sha256':MANIFEST_SHA}}
             with patch.dict(os.environ,env), patch.object(full_driver,'verify_prior_receipts',return_value=True), patch.object(full_driver,'census',side_effect=[{(1,1)},{(1,1)}]), patch.object(full_driver.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)), patch.object(full_driver,'rebuild',return_value=data):
                 self.assertEqual(full_driver.main(),3)
             called=(pathlib.Path(__file__).resolve().parents[2]/'.github/workflows/r12-a2-full-range.yml').read_text()
             self.assertIn("steps.slot01.outcome == 'success'",called)
+    def test_r10_prior_failure_flag_cannot_be_cleared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env={'RUNNER_TEMP':tmp,'A2_SIDE':'r10','A2_RANGE':'022-030','A2_SLOT':'1','A2_PRIOR_FAILURE':'false'}
+            with patch.dict(os.environ,env), patch.object(full_driver,'verify_prior_receipts') as prior, self.assertRaisesRegex(ValueError,'prior failure flag'):
+                full_driver.main()
+            prior.assert_not_called()
     def test_workflow_bounds_and_per_slot_checkpoint(self):
         root=pathlib.Path(__file__).resolve().parents[2]/'.github/workflows'
         caller=(root/'r12-a2-full.yml').read_text(); called=(root/'r12-a2-full-range.yml').read_text()
         self.assertEqual(caller.count('uses: ./.github/workflows/r12-a2-full-range.yml'),12)
+        self.assertIn("side: r10\n      group_range: '022-030'\n      prior_failure: 'true'",caller)
+        self.assertIn('A2_PRIOR_FAILURE="$A2_PRIOR_FAILURE"',called)
         for side in SIDES:
             for number in (1,2):
                 prev=f'{side}_range{number}'

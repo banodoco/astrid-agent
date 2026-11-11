@@ -1,0 +1,163 @@
+{
+  "absent_ids": [
+    "tests/core/pack/test_git_environment.py::test_askpass_name_cannot_collide_with_a_pack_id",
+    "tests/core/pack/test_git_environment.py::test_askpass_program_is_a_no_op_for_each_platform",
+    "tests/core/pack/test_git_environment.py::test_backslash_led_path_entry_is_relative_on_posix_and_never_runs",
+    "tests/core/pack/test_git_environment.py::test_default_platform_follows_os_name_posix",
+    "tests/core/pack/test_git_environment.py::test_default_platform_follows_os_name_windows",
+    "tests/core/pack/test_git_environment.py::test_git_child_path_keeps_only_absolute_entries_outside_the_working_directory",
+    "tests/core/pack/test_git_environment.py::test_git_diagnostic_names_operation_and_exit_or_error_class_only[outcome0-Git source operation failed (fetch; exit 128).]",
+    "tests/core/pack/test_git_environment.py::test_git_diagnostic_names_operation_and_exit_or_error_class_only[outcome1-Git source operation failed (fetch; OSError).]",
+    "tests/core/pack/test_git_environment.py::test_git_is_resolved_from_the_real_path",
+    "tests/core/pack/test_git_environment.py::test_git_missing_from_absolute_path_entries_is_refused",
+    "tests/core/pack/test_git_environment.py::test_git_source_uses_recorded_install_path_when_service_path_lacks_git",
+    "tests/core/pack/test_git_environment.py::test_missing_git_is_a_safe_refusal",
+    "tests/core/pack/test_git_environment.py::test_missing_git_message_names_git_for_windows_only_on_windows",
+    "tests/core/pack/test_git_environment.py::test_planted_git_in_the_working_directory_is_never_run",
+    "tests/core/pack/test_git_environment.py::test_planted_ssh_in_working_directory_never_runs",
+    "tests/core/pack/test_git_environment.py::test_planted_windows_ssh_in_working_directory_is_not_resolved",
+    "tests/core/pack/test_git_environment.py::test_posix_environment_is_isolated_and_uses_null_devices",
+    "tests/core/pack/test_git_environment.py::test_posix_resolver_skips_cwd_and_finds_the_real_git",
+    "tests/core/pack/test_git_environment.py::test_recorded_git_inside_the_working_directory_is_still_only_a_recorded_path",
+    "tests/core/pack/test_git_environment.py::test_recorded_git_that_lost_its_execute_bit_falls_back_to_absolute_path_lookup",
+    "tests/core/pack/test_git_environment.py::test_recorded_installing_git_is_used_when_absolute_and_present",
+    "tests/core/pack/test_git_environment.py::test_ssh_is_resolved_to_an_absolute_path_when_found",
+    "tests/core/pack/test_git_environment.py::test_unusable_recorded_git_falls_back_to_absolute_path_lookup[/astrid-test-missing/git]",
+    "tests/core/pack/test_git_environment.py::test_unusable_recorded_git_falls_back_to_absolute_path_lookup[git]",
+    "tests/core/pack/test_git_environment.py::test_unusable_recorded_git_falls_back_to_absolute_path_lookup[relative/git]",
+    "tests/core/pack/test_git_environment.py::test_windows_environment_passes_only_required_system_variables",
+    "tests/core/pack/test_git_environment.py::test_windows_resolver_skips_cwd_and_finds_the_real_git",
+    "tests/core/pack/test_git_environment.py::test_windows_variable_names_are_matched_case_insensitively",
+    "tests/core/pack/test_identity.py::test_digest_changes_when_payload_bytes_change",
+    "tests/core/pack/test_identity.py::test_digest_omits_pin_builds_caches_and_bytecode_but_keeps_nested_pin",
+    "tests/core/pack/test_identity.py::test_digest_rejects_symlink_even_when_named_as_excluded_directory",
+    "tests/core/pack/test_identity.py::test_pack_digest_matches_published_pack_tree_v1_vector",
+    "tests/core/pack/test_identity.py::test_pin_accepts_absolute_local_file_sources_for_unpinned_origins[file:///packs/personal-folder]",
+    "tests/core/pack/test_identity.py::test_pin_accepts_absolute_local_file_sources_for_unpinned_origins[file:///packs/personal-personal]",
+    "tests/core/pack/test_identity.py::test_pin_accepts_absolute_local_file_sources_for_unpinned_origins[file://localhost/packs/personal-folder]",
+    "tests/core/pack/test_identity.py::test_pin_accepts_absolute_local_file_sources_for_unpinned_origins[file://localhost/packs/personal-personal]",
+    "tests/core/pack/test_identity.py::test_pin_accepts_absolute_local_file_sources_for_unpinned_origins[file:/packs/personal-folder]",
+    "tests/core/pack/test_identity.py::test_pin_accepts_absolute_local_file_sources_for_unpinned_origins[file:/packs/personal-personal]",
+    "tests/core/pack/test_identity.py::test_pin_rejects_non_file_source_for_unpinned_origins",
+    "tests/core/pack/test_identity.py::test_pin_rejects_nonlocal_or_nonabsolute_file_sources[folder-file://remote-host/path]",
+    "tests/core/pack/test_identity.py::test_pin_rejects_nonlocal_or_nonabsolute_file_sources[folder-file:relative]",
+    "tests/core/pack/test_identity.py::test_pin_rejects_nonlocal_or_nonabsolute_file_sources[personal-file://remote-host/path]",
+    "tests/core/pack/test_identity.py::test_pin_rejects_nonlocal_or_nonabsolute_file_sources[personal-file:relative]",
+    "tests/core/pack/test_identity.py::test_pin_requires_newline_and_local_unpinned_origins",
+    "tests/core/pack/test_identity.py::test_pin_round_trip_has_exact_c4_fields_and_terminal_newline"
+  ],
+  "classification": "NO_RESULTS",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 0,
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "021",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2"
+  },
+  "missing_ids": [],
+  "outcome_counts": {},
+  "outcomes": [],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": null,
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    }
+  ],
+  "summary_counts": null,
+  "unexpected_result_count": 0
+}

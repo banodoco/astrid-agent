@@ -1,0 +1,218 @@
+{
+  "absent_ids": [
+    "tests/core/pack/test_install.py::test_actual_atomic_swap_permission_failure_preserves_old_install",
+    "tests/core/pack/test_install.py::test_canonical_manifest_refusal_does_not_access_locked_inventory",
+    "tests/core/pack/test_install.py::test_canonical_schema_refusal[engines: {local: {recipe: ../escape.json}}\\n]",
+    "tests/core/pack/test_install.py::test_canonical_schema_refusal[surprise: true\\n]",
+    "tests/core/pack/test_install.py::test_case_colliding_git_directory_prefixes_refused",
+    "tests/core/pack/test_install.py::test_default_cannot_overwrite_an_existing_folder_without_a_pin",
+    "tests/core/pack/test_install.py::test_default_cannot_overwrite_user_pack",
+    "tests/core/pack/test_install.py::test_folder_is_unpinned_and_does_not_publish_generated_artifacts",
+    "tests/core/pack/test_install.py::test_folder_pin_source_cannot_be_relabelled_and_source_cannot_contain_staging",
+    "tests/core/pack/test_install.py::test_folder_special_file_refusal_does_not_block_or_publish",
+    "tests/core/pack/test_install.py::test_git_install_resolves_ref_checks_digest_and_writes_pin_without_executing",
+    "tests/core/pack/test_install.py::test_git_submodule_refused_without_fetching_or_running_it",
+    "tests/core/pack/test_install.py::test_host_build_outputs_publish_even_when_source_and_pin_are_unchanged",
+    "tests/core/pack/test_install.py::test_host_hook_failure_and_tampering_never_publish",
+    "tests/core/pack/test_install.py::test_idempotence_and_atomic_update",
+    "tests/core/pack/test_install.py::test_kill_between_verified_stage_and_swap_leaves_complete_old_install[False]",
+    "tests/core/pack/test_install.py::test_kill_between_verified_stage_and_swap_leaves_complete_old_install[True]",
+    "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[ambient_only]",
+    "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[bad_interpreter]",
+    "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[missing_metadata]",
+    "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[wrong_name]",
+    "tests/core/pack/test_install.py::test_locked_environment_refusals_preserve_pin_bytes_and_inode[wrong_version]",
+    "tests/core/pack/test_install.py::test_locked_environment_uses_only_selected_metadata_in_real_install",
+    "tests/core/pack/test_install.py::test_monorepo_subpath_and_source_identity",
+    "tests/core/pack/test_install.py::test_native_publication_policy_is_bound_before_installation[False]",
+    "tests/core/pack/test_install.py::test_native_publication_policy_is_bound_before_installation[True]",
+    "tests/core/pack/test_install.py::test_no_python_requirements_never_acquires_locked_inventory",
+    "tests/core/pack/test_install.py::test_personal_manifest_disguised_as_normal_pack_refused",
+    "tests/core/pack/test_install.py::test_personal_origin_cannot_be_replaced_even_under_another_directory_id",
+    "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[expected_digest]",
+    "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[release_pin]",
+    "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[source_pin_commit]",
+    "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[source_pin_digest]",
+    "tests/core/pack/test_install.py::test_pin_mismatches_preserve_old_install[source_pin_source]",
+    "tests/core/pack/test_install.py::test_reachable_commit_with_unborn_remote_head_is_accepted",
+    "tests/core/pack/test_install.py::test_reachable_revisions[ancestor]",
+    "tests/core/pack/test_install.py::test_reachable_revisions[head]",
+    "tests/core/pack/test_install.py::test_reachable_revisions[tag]",
+    "tests/core/pack/test_install.py::test_real_concurrent_installers_serialize_and_revalidate",
+    "tests/core/pack/test_install.py::test_real_import_checker_refusal[def bad(:\\n]",
+    "tests/core/pack/test_install.py::test_real_import_checker_refusal[import astrid.core.audit\\n]",
+    "tests/core/pack/test_install.py::test_real_pure_validator_refusals_preserve_install[-2.4-api_minor]",
+    "tests/core/pack/test_install.py::test_real_pure_validator_refusals_preserve_install[-3.0-api_major]",
+    "tests/core/pack/test_install.py::test_real_pure_validator_refusals_preserve_install[dependencies: {packs: [absent]}\\n-2.0-missing_dep]",
+    "tests/core/pack/test_install.py::test_real_pure_validator_refusals_preserve_install[dependencies: {python_requirements: [no-such-installed-distribution]}\\n-2.0-missing_python]",
+    "tests/core/pack/test_install.py::test_selected_install_never_reads_or_enumerates_bundled_siblings[folder]",
+    "tests/core/pack/test_install.py::test_selected_install_never_reads_or_enumerates_bundled_siblings[git]",
+    "tests/core/pack/test_install.py::test_selected_install_never_reads_or_enumerates_bundled_siblings[reserved]",
+    "tests/core/pack/test_install.py::test_selected_python_inventory_ignores_ambient_distributions",
+    "tests/core/pack/test_install.py::test_shared_publication_operations_do_not_select_platform_policy",
+    "tests/core/pack/test_install.py::test_shared_root_resolver_and_personal_preservation",
+    "tests/core/pack/test_install.py::test_staged_dependencies_use_destination_identity",
+    "tests/core/pack/test_install.py::test_subpath_escape_refused[../hello_ext]",
+    "tests/core/pack/test_install.py::test_subpath_escape_refused[.git]",
+    "tests/core/pack/test_install.py::test_subpath_escape_refused[/hello_ext]",
+    "tests/core/pack/test_install.py::test_subpath_escape_refused[C:/escape]",
+    "tests/core/pack/test_install.py::test_subpath_escape_refused[packs/../../personal]",
+    "tests/core/pack/test_install.py::test_subpath_escape_refused[packs\\\\hello_ext]",
+    "tests/core/pack/test_install.py::test_supplied_unsupported_publication_policy_refuses_update_and_preserves_install",
+    "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[ancestor]",
+    "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[destination]",
+    "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[excluded]",
+    "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[lock]",
+    "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[nested_excluded]",
+    "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[payload]",
+    "tests/core/pack/test_install.py::test_symlinks_refused_and_previous_install_intact[source]",
+    "tests/core/pack/test_install.py::test_unreachable_revision_preserves_old_install[dangling_head]",
+    "tests/core/pack/test_install.py::test_unreachable_revision_preserves_old_install[dangling_sha]",
+    "tests/core/pack/test_install.py::test_unreachable_revision_preserves_old_install[other_repository]",
+    "tests/core/pack/test_install.py::test_unreachable_revision_preserves_old_install[unknown]",
+    "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[../personal]",
+    "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[/personal]",
+    "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[HELLO]",
+    "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[core]",
+    "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[generation]",
+    "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[hello_ext/../../personal]",
+    "tests/core/pack/test_install.py::test_unsafe_and_reserved_ids_cannot_touch_personal[personal]",
+    "tests/core/pack/test_install.py::test_unsafe_git_sources_refused_without_execution_or_credentials[ext::sh -c evil]",
+    "tests/core/pack/test_install.py::test_unsafe_git_sources_refused_without_execution_or_credentials[https://TOKEN@github.com/repo.git]",
+    "tests/core/pack/test_install.py::test_unsafe_git_sources_refused_without_execution_or_credentials[https://user:secret@github.com/repo.git]",
+    "tests/core/pack/test_install.py::test_valid_default_is_digest_pinned_and_idempotent",
+    "tests/core/pack/test_inventory_review_fix.py::test_checker_refuses_forbidden_import",
+    "tests/core/pack/test_inventory_review_fix.py::test_core_id_reuse_is_refused_at_shared_inventory_boundary",
+    "tests/core/pack/test_inventory_review_fix.py::test_default_scan_collects_roots_before_closure",
+    "tests/core/pack/test_inventory_review_fix.py::test_default_source_pin_conflict",
+    "tests/core/pack/test_inventory_review_fix.py::test_dependency_resolves_across_configured_roots",
+    "tests/core/pack/test_inventory_review_fix.py::test_discovery_cache_separates_hidden_policy_in_both_call_orders[call_order0]",
+    "tests/core/pack/test_inventory_review_fix.py::test_discovery_cache_separates_hidden_policy_in_both_call_orders[call_order1]",
+    "tests/core/pack/test_inventory_review_fix.py::test_duplicate_ids_across_roots_are_refused",
+    "tests/core/pack/test_inventory_review_fix.py::test_malformed_optional_and_required",
+    "tests/core/pack/test_inventory_review_fix.py::test_rejected_dependency_quarantines_dependent",
+    "tests/core/pack/test_inventory_review_fix.py::test_runtime_discovery_binds_default_and_configured_personal_root[False]",
+    "tests/core/pack/test_inventory_review_fix.py::test_runtime_discovery_binds_default_and_configured_personal_root[True]",
+    "tests/core/pack/test_missing_project_pack_is_passive.py::test_project_reference_to_missing_pack_does_not_fetch_or_execute",
+    "tests/core/pack/test_nofollow_fallback.py::test_group_lock_opens_regular_lock_file_without_nofollow",
+    "tests/core/pack/test_nofollow_fallback.py::test_group_lock_refuses_linked_lock_file_with_real_nofollow",
+    "tests/core/pack/test_nofollow_fallback.py::test_group_lock_refuses_linked_lock_file_without_nofollow",
+    "tests/core/pack/test_nofollow_fallback.py::test_install_lock_opens_regular_lock_file_without_nofollow",
+    "tests/core/pack/test_nofollow_fallback.py::test_install_lock_refuses_linked_lock_file_without_nofollow",
+    "tests/core/pack/test_nofollow_fallback.py::test_sync_directory_refuses_linked_directory_without_nofollow"
+  ],
+  "classification": "NO_RESULTS",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 0,
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "022",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2"
+  },
+  "missing_ids": [],
+  "outcome_counts": {},
+  "outcomes": [],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": null,
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    }
+  ],
+  "summary_counts": null,
+  "unexpected_result_count": 0
+}

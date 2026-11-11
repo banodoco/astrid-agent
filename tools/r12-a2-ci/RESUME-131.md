@@ -1,3 +1,5 @@
+> Historical 131-pair draft, superseded by [RESUME-118.md](RESUME-118.md). Do not use its branch or scope for the current proposal.
+
 # A2 comparison resume: preparation only
 
 No ref was changed and no CI was started for this design. Await the explicit provenance/coordination decision before preparing or pushing any triggering ref. This plan assumes the independently reported verification of the five named artifacts from cancelled run [43023353123](https://github.com/banodoco/astrid-agent/actions/runs/43023353123); direct artifact download returned 403 in this session; the embedded files were subsequently validated against the exact independently committed receipt bytes, rather than downloaded again from the artifact service. Do not infer receipt validity from artifact names alone.

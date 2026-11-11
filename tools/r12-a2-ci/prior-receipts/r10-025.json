@@ -1,0 +1,218 @@
+{
+  "absent_ids": [
+    "tests/core/pack/test_transaction_artifacts.py::test_admission_binds_entry_lazy_assets_manifest_and_release_lock",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[bad_size]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[case_collision]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[chunk_tamper]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[css_tamper]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[entry_tamper]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[escape]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[extra_output]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[missing_chunk]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[missing_entry]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[symlink]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_entry_graph]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_extension]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_graph]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_lock]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_mime]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_pack]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_shared]",
+    "tests/core/pack/test_transaction_artifacts.py::test_corrupt_or_unbound_build_outputs_are_refused[wrong_source]",
+    "tests/core/pack/test_transaction_artifacts.py::test_metadata_is_only_accepted_for_the_expected_committed_transaction",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[artifactManifestDigest]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[chunk]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[committedRevision]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[digest]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[duplicate_field]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[entry]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[extra_field]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[manifest_content]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[manifest_lf]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[manifest_symlink]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[missing_chunk]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[missing_manifest]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[packId]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[sourceDigest]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[transactionId]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[unlisted_metadata]",
+    "tests/core/pack/test_transaction_artifacts.py::test_sealed_metadata_never_weakens_artifact_or_record_checks[version]",
+    "tests/core/pack/test_transaction_integrity.py::test_equal_byte_exchange_is_a_no_op_update",
+    "tests/core/pack/test_transaction_integrity.py::test_pin_only_exchange_keeps_pack_bytes",
+    "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[empty-digests-full-sha]",
+    "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[empty-digests-missing-sha]",
+    "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[empty-digests-ref]",
+    "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[omitted-digests-full-sha]",
+    "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[omitted-digests-missing-sha]",
+    "tests/core/pack/test_transaction_source_contracts.py::test_empty_default_group_requires_full_sha_but_no_pack_digests[omitted-digests-ref]",
+    "tests/core/pack/test_transaction_source_contracts.py::test_folder_update_matches_installed_string_source_identity[.]",
+    "tests/core/pack/test_transaction_source_contracts.py::test_folder_update_matches_installed_string_source_identity[packs/local # folder]",
+    "tests/core/pack/test_transaction_source_contracts.py::test_folder_update_refuses_different_folder_identity[root]",
+    "tests/core/pack/test_transaction_source_contracts.py::test_folder_update_refuses_different_folder_identity[subpath]",
+    "tests/core/pack/test_transaction_windows.py::test_posix_collection_still_uses_existing_atomic_exchange[darwin]",
+    "tests/core/pack/test_transaction_windows.py::test_posix_collection_still_uses_existing_atomic_exchange[linux]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_concurrent_reader_waits_until_complete_new_collection",
+    "tests/core/pack/test_transaction_windows.py::test_windows_crash_between_rename_and_journal_recovers[1]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_crash_between_rename_and_journal_recovers[2]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_crash_between_rename_and_journal_recovers[3]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_crash_removing_finished_journal[after]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_crash_removing_finished_journal[before]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-after-old_moved]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-after-prepared]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-after-published]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-after-retired]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-before-old_moved]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-before-prepared]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-before-published]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[discovery-before-retired]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-after-old_moved]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-after-prepared]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-after-published]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-after-retired]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-before-old_moved]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-before-prepared]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-before-published]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[host-before-retired]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-after-old_moved]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-after-prepared]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-after-published]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-after-retired]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-before-old_moved]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-before-prepared]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-before-published]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_journal_step_crash_recovers[transaction-before-retired]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_legacy_journal_blocks_ambiguous_recovery[old_moved]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_legacy_journal_blocks_ambiguous_recovery[prepared]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_lock_covers_renames_journal_and_backup_retirement",
+    "tests/core/pack/test_transaction_windows.py::test_windows_packs_add_over_existing_collection",
+    "tests/core/pack/test_transaction_windows.py::test_windows_process_death_recovers_on_host_start[old_moved]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_process_death_recovers_on_host_start[prepared]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_process_death_recovers_on_host_start[published]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_process_death_recovers_on_host_start[retired]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_reader_reports_retry_if_recovery_has_a_sharing_violation",
+    "tests/core/pack/test_transaction_windows.py::test_windows_recovery_cleanup_failure_retains_old_and_retries",
+    "tests/core/pack/test_transaction_windows.py::test_windows_recovery_itself_can_be_interrupted[False]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_recovery_itself_can_be_interrupted[True]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_recovery_removes_readonly_candidate_preserving_old_bytes",
+    "tests/core/pack/test_transaction_windows.py::test_windows_restore_retries_after_each_rename_without_deleting[1]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_restore_retries_after_each_rename_without_deleting[2]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_restore_retries_after_each_rename_without_deleting[3]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_rollback_keeps_retired_generation",
+    "tests/core/pack/test_transaction_windows.py::test_windows_swapback_crash_restores_admitted_generation[old_moved]",
+    "tests/core/pack/test_transaction_windows.py::test_windows_swapback_crash_restores_admitted_generation[prepared]"
+  ],
+  "classification": "NO_RESULTS",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 0,
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "025",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2"
+  },
+  "missing_ids": [],
+  "outcome_counts": {},
+  "outcomes": [],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": null,
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    }
+  ],
+  "summary_counts": null,
+  "unexpected_result_count": 0
+}

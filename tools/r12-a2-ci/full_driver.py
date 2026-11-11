@@ -35,6 +35,8 @@ def main():
     side, group_range, slot = os.environ['A2_SIDE'], os.environ['A2_RANGE'], int(os.environ['A2_SLOT'])
     group = group_for(side,group_range,slot)
     if group is None: return 0
+    prior_failure=os.environ.get('A2_PRIOR_FAILURE')
+    if prior_failure not in ('true','false') or (side == 'r10' and prior_failure != 'true'): raise ValueError('prior failure flag mismatch')
     verify_prior_receipts()
     root = pathlib.Path(os.environ['RUNNER_TEMP']).resolve() / ('r12-a2-full-'+side+'-'+group)
     root.mkdir(exist_ok=False)

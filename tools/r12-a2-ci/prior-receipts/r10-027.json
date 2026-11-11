@@ -1,0 +1,1247 @@
+{
+  "absent_ids": [
+    "tests/test_generic_host.py::test_a_claim_blocked_host_still_reaches_the_ack_and_recovers",
+    "tests/test_generic_host.py::test_a_non_deliberate_source_epoch_change_is_still_refused",
+    "tests/test_generic_host.py::test_a_real_fence_and_a_failed_refresh_still_reach_the_ack_and_recover",
+    "tests/test_generic_host.py::test_an_uncommitted_source_change_is_never_adopted_by_the_loop",
+    "tests/test_generic_host.py::test_committed_pack_add_changes_the_epoch_and_is_adopted_deliberately_then_claimed",
+    "tests/test_generic_host.py::test_committed_refresh_accepts_carried_forward_additions_and_a_committed_removal",
+    "tests/test_generic_host.py::test_committed_refresh_keeps_its_source_binding_through_preflight",
+    "tests/test_generic_host.py::test_committed_refresh_refuses_sources_outside_its_committed_delta[committed-edit]",
+    "tests/test_generic_host.py::test_committed_refresh_refuses_sources_outside_its_committed_delta[context]",
+    "tests/test_generic_host.py::test_committed_refresh_refuses_sources_outside_its_committed_delta[definition]",
+    "tests/test_generic_host.py::test_committed_refresh_refuses_sources_outside_its_committed_delta[edit]",
+    "tests/test_generic_host.py::test_committed_refresh_refuses_sources_outside_its_committed_delta[removed]",
+    "tests/test_generic_host.py::test_committed_refresh_refuses_sources_outside_its_committed_delta[stray-without-actions]",
+    "tests/test_generic_host.py::test_committed_refresh_refuses_sources_outside_its_committed_delta[stray]",
+    "tests/test_generic_host.py::test_deliberate_refresh_acknowledges_a_retained_outbox_on_a_registered_host",
+    "tests/test_generic_host.py::test_deliberate_refresh_serves_a_pack_added_mid_run_after_the_host_registered",
+    "tests/test_generic_host.py::test_failed_registration_does_not_publish_ready_marker",
+    "tests/test_generic_host.py::test_failed_registration_leaves_the_packs_add_outbox_pending",
+    "tests/test_generic_host.py::test_host_acknowledges_a_pending_packs_add_through_its_one_registrar",
+    "tests/test_generic_host.py::test_host_without_explicit_roots_discovers_the_personal_collection",
+    "tests/test_generic_host.py::test_host_without_the_personal_collection_never_acknowledges_the_outbox",
+    "tests/test_generic_host.py::test_nested_claim_slots_share_the_coordinating_host",
+    "tests/test_generic_host.py::test_pack_refresh_failures_log_at_powers_of_two_and_back_off",
+    "tests/test_generic_host.py::test_personal_pack_under_custody_is_admitted_only_with_a_derived_grant[with-derived-grant]",
+    "tests/test_generic_host.py::test_personal_pack_under_custody_is_admitted_only_with_a_derived_grant[without-derived-grant]",
+    "tests/test_generic_host.py::test_personal_root_is_not_added_to_scoped_host_and_is_added_to_default_host",
+    "tests/test_generic_host.py::test_ready_marker_tracks_successful_deliberate_refresh[False]",
+    "tests/test_generic_host.py::test_ready_marker_tracks_successful_deliberate_refresh[True]",
+    "tests/test_generic_host.py::test_refresh_not_matching_the_committed_packs_stays_pending",
+    "tests/test_generic_host.py::test_run_once_leaves_the_packs_add_outbox_pending",
+    "tests/test_generic_host.py::test_runtime_registration_fence_removes_ready_marker[runtime_epoch]",
+    "tests/test_generic_host.py::test_runtime_registration_fence_removes_ready_marker[schema_digest]",
+    "tests/test_generic_host.py::test_runtime_restart_recovers_only_the_same_registered_source[None]",
+    "tests/test_generic_host.py::test_runtime_restart_recovers_only_the_same_registered_source[addition]",
+    "tests/test_generic_host.py::test_runtime_restart_recovers_only_the_same_registered_source[edit]",
+    "tests/test_generic_host.py::test_runtime_restart_recovers_only_the_same_registered_source[epoch]",
+    "tests/test_generic_host.py::test_single_worker_claim_loop_registers_and_acknowledges_a_pending_packs_add",
+    "tests/test_generic_host.py::test_single_worker_loop_acknowledges_a_pack_that_declares_no_actions",
+    "tests/test_generic_host.py::test_the_pre_claim_ack_is_throttled_and_adds_no_runtime_calls"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 1,
+  "expected_count": 268,
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "027",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "FAILED": 5,
+    "PASSED": 263
+  },
+  "outcomes": [
+    {
+      "id": "tests/test_generic_host.py::test_runtime_failure_preserves_structured_guard_diagnostic",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admitted_definition_and_source_are_fenced_before_child_dispatch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_external_pack_import_root_is_fenced_before_direct_command",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_child_environment_carries_explicit_runtime_connection",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_manifest_credentials_use_shared_precedence_at_host_boundary",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_manifest_credential_missing_from_all_sources_does_not_block_readiness",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_input_materialization_rejects_traversal_names",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_hc04_params_bind_only_definition_declared_ports",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_input_materialization_preserves_exact_length_ordinary_path",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_hc04_cas_param_materializes_authorized_image_reference",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_hc04_multi_cas_materialization_preserves_role_order_and_names",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_hc04_optional_video_end_frame_preserves_ordered_flf_roles",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_hc04_cas_materialization_enforces_declared_size_before_write",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_bounded_qwen_admission_rejects_legacy_media_authority",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_unified_edit_materialization_allows_optional_mask_for_source_profile",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_input_materialization_rejects_foreign_nested_digest",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_managed_asset_identity_accepts_runtime_canonical_film_media_id",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_managed_asset_identity_keeps_locator_rejection_and_explicit_opaque_digest",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_materialize_inputs_fetches_media_id_only_registry_entry",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_command_cwd_must_stay_in_attempt_or_source_scope",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cancellation_terminates_descendant_process_group",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cancellation_reaps_descendant_spawned_by_sigterm_handler",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cleanup_does_not_signal_a_reused_group_after_leader_exit",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_signal_revalidates_group_identity_immediately_before_killpg",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_tree_cleanup_rejects_reused_child_before_adopting_descendants",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_discovery_digest_and_truthful_preflight",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_bad_adapter_is_registered_unavailable_without_changing_admission_digests[bad_metadata0-bad_matrix0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_bad_adapter_is_registered_unavailable_without_changing_admission_digests[bad_metadata1-bad_matrix1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_bad_adapter_is_registered_unavailable_without_changing_admission_digests[bad_metadata2-bad_matrix2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_replaced_capability_record_reparses_current_adapter_matrix",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_invalid_capability_matrix_carries_only_safe_startup_context",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_malformed_network_policy_is_a_capability_scoped_registration_and_admission_error",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_remotion_status_exception_only_unreadies_remotion_capability",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_shared_host_integrity_error_from_remotion_stays_fatal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_claim_only_admits_capabilities_that_are_currently_ready",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_hivemind_contributor_key_file_satisfies_provider_readiness",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_source_and_dependency_digests_invalidate_registration",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_removed_capability_invalidates_and_is_withdrawn_on_deliberate_reregistration",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_registration_carries_epochs_and_runtime_epoch_change_is_deterministic",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_protocol_mismatch_blocks_registration_before_publish",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_unhealthy_status_blocks_registration_before_publish",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_registration_failure_is_typed_and_has_no_capability_prepublication",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_failed_replacement_registration_does_not_withdraw_removed_capability",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_protocol_client_rejects_non_loopback_or_malformed_endpoint[https://runtime.example]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_protocol_client_rejects_non_loopback_or_malformed_endpoint[http://192.0.2.1:8000]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_protocol_client_rejects_non_loopback_or_malformed_endpoint[http://127.0.0.1:not-a-port]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_protocol_client_uses_worker_token_contract_without_user_handshake",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_protocol_client_registration_retries_are_session_idempotent",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_claim_loop_renews_executor_registration_after_liveness_interval",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_vendored_runtime_client_timeout_is_bounded_and_request_correlated",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_vendored_runtime_client_sends_its_credential_to_loopback_only",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_vendored_runtime_client_rejects_unbounded_timeout[0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_vendored_runtime_client_rejects_unbounded_timeout[-1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_vendored_runtime_client_rejects_unbounded_timeout[nan]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_vendored_runtime_client_rejects_unbounded_timeout[inf]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_vendored_runtime_client_preserves_server_failure_diagnostic",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cli_writes_terminal_correlated_registration_failure_marker",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_protocol_client_settlement_preserves_structured_result",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_register_without_readiness_profile_publishes_empty_verified_facts",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_register_with_profile_missing_verified_facts_fails_closed",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_register_with_profile_publishes_valid_verified_facts",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_register_rejects_malformed_verified_facts[profile_value0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_register_rejects_malformed_verified_facts[profile_value1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_register_rejects_malformed_verified_facts[profile_value2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_protocol_client_uses_a_fresh_idempotency_key_for_each_heartbeat",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_register_and_run_uses_attempt_local_typed_output_and_cleanup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_terminal_sidecar_progress_is_heartbeated_before_settlement",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_run_accepts_at_free_disk_floor_without_task_estimate",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_structure_pack_members_survive_harvest_cleanup_and_reopen",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_output_capture_diagnostics_do_not_exhaust_task_evidence",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_mid_render_evidence_abort_keeps_measurement_on_runtime_failure",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_explicit_task_storage_envelope_rejects_output_overrun_and_cleans_up",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_render_uses_free_space_through_execution_evidence_and_settlement",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_live_storage_overrun_preserves_bounded_scratch_diagnostic_before_cleanup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_live_storage_envelope_charges_atomic_temps_to_scratch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_live_storage_envelope_charges_render_workspace_to_scratch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_live_storage_counters_tolerate_a_file_vanishing_during_scan[_attempt_tree_bytes]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_live_storage_counters_tolerate_a_file_vanishing_during_scan[_storage_tree_bytes]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_live_storage_counters_tolerate_a_directory_vanishing_during_scan[_attempt_tree_bytes]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_live_storage_counters_tolerate_a_directory_vanishing_during_scan[_storage_tree_bytes]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_final_storage_envelope_counts_published_temps_and_rejects_escape",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_final_storage_envelope_counts_stable_and_published_paths_as_a_union",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_required_storage_admission_failure_is_terminal_and_not_dispatched",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fixed_request_scope_rejects_conflicting_task_parameters",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fixed_request_scope_rejects_unsupported_legacy_inputs",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_completed_process_evidence_reads_settlement_payload_when_result_omits_identity",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_completed_process_evidence_fails_closed_without_returncode",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_unready_capability_is_not_dispatched",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_optional_capability_still_requires_storage_admission",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_claim_loop_fails_explicitly_without_canonical_claim_operation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_long_running_claim_loop_survives_and_backs_off_after_runtime_failure",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_adapter_registry_classifies_provider_local_generation_and_render",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_render_is_ready_without_remotion_and_reports_remotion_separately",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_missing_source_remotion_install_registers_actionable_reasons",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_unavailable_reason_reports_the_gpu_gate_not_the_task_gated_remotion_check",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_a_task_selecting_remotion_fails_at_lease_with_the_remotion_reason",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_an_omitted_selector_renders_with_ffmpeg_when_remotion_is_unavailable",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_an_omitted_selector_renders_with_remotion_when_available",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_an_explicit_ffmpeg_task_runs_whatever_the_remotion_state[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_an_explicit_ffmpeg_task_runs_whatever_the_remotion_state[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_a_timeline_ffmpeg_refuses_still_fails_with_both_reasons_when_the_host_chose_ffmpeg",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_missing_remotion_is_the_headline_and_recovery_matches_the_install[source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_missing_remotion_is_the_headline_and_recovery_matches_the_install[installer]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_missing_remotion_is_the_headline_and_recovery_matches_the_install[pinokio]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_a_failed_render_is_not_blamed_on_remotion_unless_the_host_chose_ffmpeg_for_it[True-None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_a_failed_render_is_not_blamed_on_remotion_unless_the_host_chose_ffmpeg_for_it[False-rendering.ffmpeg]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_requires_remotion_accepts_only_true_false_or_selected[True-always]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_requires_remotion_accepts_only_true_false_or_selected[False-never]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_requires_remotion_accepts_only_true_false_or_selected[selected-selected]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_adapter_registry_preserves_explicit_empty_matrix_lists",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_register_preserves_declared_dispositions_and_block_reasons",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_command_host_harvests_result_manifest_media",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_command_host_fail_closes_success_without_media",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_command_host_rejects_media_receipt_with_wrong_port_name",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_local_preparation_replay_never_launches_twice_and_is_not_activation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_local_partial_spawn_retains_original_failure_and_cleanup_obligation",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_local_preparation_rejects_stale_private_binders_before_spawn[owner_epoch]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_local_preparation_rejects_stale_private_binders_before_spawn[channel_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_local_preparation_rejects_stale_private_binders_before_spawn[operation_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_bound_native_abort_clean_ack_requires_verified_graph_and_replays_exactly",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_abort_unknown_keeps_all_partial_unreported_obligations",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_prepared_engine_uses_ordinary_signal[sealed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_prepared_engine_uses_ordinary_signal[ready-bound]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_exited_engine_cleans_listener_but_stays_unresolved",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_missing_or_stale_listener_authority_retains_obligations[missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_missing_or_stale_listener_authority_retains_obligations[unvalidated]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_missing_or_stale_listener_authority_retains_obligations[stale]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_missing_or_stale_listener_authority_retains_obligations[transferred]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_timeout_selects_current_listener_signal_path[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_timeout_selects_current_listener_signal_path[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_graph_abort_failed_admission_uses_validated_path",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_cleans_original_or_stale_chain_member_after_refresh_during_abort[False-0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_cleans_original_or_stale_chain_member_after_refresh_during_abort[False-1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_cleans_original_or_stale_chain_member_after_refresh_during_abort[False-2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_cleans_original_or_stale_chain_member_after_refresh_during_abort[True-0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_cleans_original_or_stale_chain_member_after_refresh_during_abort[True-1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_cleans_original_or_stale_chain_member_after_refresh_during_abort[True-2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[operation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[profile]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[base-digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[foreign-token]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[float-generation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[engine]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[listener-pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[role]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_rejects_foreign_binding_before_intent_or_cleanup[scope]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_reports_authority_or_cleanup_failure_explicitly[anchor-generation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_reports_authority_or_cleanup_failure_explicitly[anchor-requester]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_reports_authority_or_cleanup_failure_explicitly[disk-extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_reports_authority_or_cleanup_failure_explicitly[disk-prefix]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_reports_authority_or_cleanup_failure_explicitly[engine-token]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_reports_authority_or_cleanup_failure_explicitly[missing-exit]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_host_reports_authority_or_cleanup_failure_explicitly[proof-target]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_abort_intents_exclude_other_version[v1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_abort_intents_exclude_other_version[v2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_control_thread_answers_next_frame_after_unresolved[foreign]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_control_thread_answers_next_frame_after_unresolved[anchor]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_control_thread_answers_next_frame_after_unresolved[ledger]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_control_thread_answers_next_frame_after_unresolved[engine]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_control_thread_answers_next_frame_after_unresolved[exit]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_concurrent_mixed_versions_cannot_begin_two_cleanup_actions[v1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_cr1a_concurrent_mixed_versions_cannot_begin_two_cleanup_actions[v2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_cleans_both_roles_without_fabricating_ready[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_cleans_both_roles_without_fabricating_ready[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[birth]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[token]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[missing-role]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[operation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[ready]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[missing-wait]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[disk]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[v1-intent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_host_fences_foreign_or_unproved_cleanup[v2-intent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_admission_intent_excludes_v1_and_ready_v2",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_engine_peer_capture_waits_for_release_on_same_descriptor",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_engine_peer_capture_rejects_foreign_or_unreleased_peer[pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_engine_peer_capture_rejects_foreign_or_unreleased_peer[birth]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_engine_peer_capture_rejects_foreign_or_unreleased_peer[uid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_engine_peer_capture_rejects_foreign_or_unreleased_peer[no-release]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_owner_retention_retries_bounded_abort_until_positive_cleanup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_engine_control_first_frame_pins_only_post_release_token",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_owner_retention_keeps_control_serving_until_actual_cleanup",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_executes_at_call_time_without_ready_listener_baseline",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[operation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[channel]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[epoch]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[engine-pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[pid-type]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[version]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[fact]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[unexpected-pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unbound_request_before_any_helper[foreign-actor]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unknown_or_changed_retained_fact[unknown-pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unknown_or_changed_retained_fact[bool-pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unknown_or_changed_retained_fact[different-birth]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unknown_or_changed_retained_fact[changed-token]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_host_fact_rejects_unknown_or_changed_retained_fact[changed-source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_accepts_only_retained_ready_chain_and_persists_current[0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_accepts_only_retained_ready_chain_and_persists_current[1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_accepts_only_retained_ready_chain_and_persists_current[2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[default]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[foreign-token]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[birth]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[generation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[float-generation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[exit-type]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[binder]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[actor]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[pre-ready]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_unproved_or_foreign_chain[ledger]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_fences_refresh_during_persistence_and_conflicting_replay",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_listener_exit_default_v1_bytes_and_strict_current_reference",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_birth_normalization_preserves_exact_incarnation[Wed Oct  7 12:00:00 2026-ps-lstart:Wed Oct  7 12:00:00 2026-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_birth_normalization_preserves_exact_incarnation[Wed Oct  7 12:00:01 2026-ps-lstart:Wed Oct  7 12:00:00 2026-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_birth_normalization_preserves_exact_incarnation[same-same-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_birth_normalization_preserves_exact_incarnation[None-ps-lstart:same-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_selected_birth_normalization_preserves_exact_incarnation[-ps-lstart:-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_native_registry_normalizes_both_engine_and_listener_births_only",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_exit_v2_cleanup_uses_persisted_current_target_after_real_parent_wait",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_fake_listener_exit_v2_conflicting_replay_cannot_replace_persisted_wait",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_installed_worker_registry_projection_matches_host_without_second_root",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_readiness_preserves_network_guard_in_final_command_popen_environment",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_child_environment_writes_exact_network_hook_bytes_on_windows[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_child_environment_writes_exact_network_hook_bytes_on_windows[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_empty_polls_and_canonical_renewal_skip_only_native_walk",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_changed_or_unknown_context_never_inherits_ready[project]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_changed_or_unknown_context_never_inherits_ready[node]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_changed_or_unknown_context_never_inherits_ready[schema]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_claimed_task_full_preflight_failure_settles_exact_lease[unavailable]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_claimed_task_full_preflight_failure_settles_exact_lease[exception]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_observed_runtime_identity_change_fences_without_native_walk[runtime_instance_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_observed_runtime_identity_change_fences_without_native_walk[runtime_session_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_observed_runtime_identity_change_fences_without_native_walk[runtime_epoch]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_observed_runtime_identity_change_fences_without_native_walk[schema_digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_runtime_transport_failure_blocks_claims_until_successful_renewal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_dead_runtime_checked_before_initial_full_preflight",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_parallel_slots_copy_observation_and_honor_parent_fence",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_parallel_real_claim_loop_renews_without_full_walk",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_parent_fence_during_idle_check_prevents_claim_rpc",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_parent_fence_during_selected_full_check_fails_lease",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_idle_remotion_parallel_failed_full_check_cannot_restore_parent_success",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_instance_fixture_does_not_relax_identity_refusals[missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_instance_fixture_does_not_relax_identity_refusals[instance-mismatch]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_instance_fixture_does_not_relax_identity_refusals[coordinator-mismatch]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_failed_command_finalizer_retains_original_and_attempt",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_failed_worker_release_retains_original",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_shutdown_cpu_uncertainty_drains_retained_owners_and_graph_before_refusal",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_command_task_scope_unresolved_fails_task_without_latching_host",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_attempt_cleanup_failure_fails_that_task_and_next_task_runs",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_failure_preserves_coded_error_and_guard_diagnostic",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_host_carries_coded_admission_failure_to_client",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_failure_coerces_error_objects_without_changing_fencing[astrid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_failure_coerces_error_objects_without_changing_fencing[exec]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_failure_coerces_error_objects_without_changing_fencing[sdk]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_failure_coerces_error_objects_without_changing_fencing[service]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_runtime_failure_coerces_error_objects_without_changing_fencing[unknown]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_host_execution_failure_keeps_coded_fields_and_recovery[astrid]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_host_execution_failure_keeps_coded_fields_and_recovery[exec]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_host_execution_failure_keeps_coded_fields_and_recovery[sdk]",
+      "status": "FAILED"
+    },
+    {
+      "id": "tests/test_generic_host.py::test_wan_qualification_refuses_before_host_preflight",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "0cc83f7641007883ad02e906723eca75508812ce1cadd7809090c8aa02fe0414",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "failed",
+      "exit_code": 1,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "deselected": 1,
+    "failed": 5,
+    "passed": 263
+  },
+  "unexpected_result_count": 0
+}
