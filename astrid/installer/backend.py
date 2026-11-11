@@ -1231,32 +1231,22 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
     @staticmethod
     def _staged_vibecomfy_revision(agent: Path) -> str:
-        """Read the target Agent's digest-bound engine recipe using only stdlib."""
-        root = agent / "astrid"
+        """Read the target Agent's VibeComfy pin from its runpod pins file, stdlib only.
 
-        def referenced(ref):
-            path = ref["path"]
-            if not isinstance(path, str) or not path.startswith("packs/") or any(
-                part in {"", ".", ".."} for part in path.split("/")
-            ) or "\\" in path or ":" in path:
+        packs/runpod/pins.json is the single declaration (one revision for all
+        platforms). Its digest is bound by the Windows recipe's pins reference.
+        """
+        root = agent / "astrid"
+        try:
+            recipe = json.loads((root / "packs/vibecomfy/recipe.windows-cu130.json").read_bytes())
+            ref = recipe["pins"]
+            if ref["path"] != "packs/runpod/pins.json":
                 raise ValueError("Invalid staged Agent recipe reference.")
-            content = (root / path).read_bytes()
+            content = (root / ref["path"]).read_bytes()
             if hashlib.sha256(content).hexdigest() != ref["sha256"]:
                 raise ValueError("Staged Agent recipe digest mismatch.")
-            return json.loads(content)
-
-        try:
-            index = json.loads((root / "packs/engine-index.json").read_bytes())
-            entries = [entry for entry in index["entries"] if entry["engine"] == "vibecomfy"
-                       and entry["platform"] == "windows-x86_64-cu130"]
-            if len(entries) != 1:
-                raise ValueError("Invalid staged Agent VibeComfy recipe selection.")
-            recipe = referenced(entries[0]["recipe"])
-            bindings = [entry for entry in recipe["source_bindings"] if entry["name"] == "vibecomfy"]
-            if len(bindings) != 1:
-                raise ValueError("Invalid staged Agent VibeComfy source binding.")
-            pins = referenced(recipe["pins"])
-            revision = pins["sources"][bindings[0]["pin"]]["revision"]
+            source = json.loads(content)["sources"]["vibecomfy"]
+            revision = source["revision"]
             if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
                 raise ValueError("Invalid staged Agent VibeComfy revision.")
             return revision

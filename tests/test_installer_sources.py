@@ -905,3 +905,14 @@ def test_staged_recipe_pin_comes_from_target_and_rejects_corruption(tmp_path):
     (packs / "runpod/pins.json").write_text('{}')
     with pytest.raises(ValueError, match="digest mismatch"):
         Backend._staged_vibecomfy_revision(tmp_path)
+
+
+def test_staged_pin_reader_accepts_the_real_repository_tree_and_returns_the_canonical_revision(tmp_path):
+    # Copy the real tree of this commit (no hand-written fixture) so a change to
+    # where the Agent declares its pins cannot merge without breaking this reader.
+    from astrid.core.generation.canonical_pins import canonical_pin
+
+    shutil.copytree(Path(__file__).parents[1] / "astrid/packs", tmp_path / "astrid/packs")
+    revision = Backend._staged_vibecomfy_revision(tmp_path)
+    assert revision == "8d065a8fef3dd602d5462e27d8eca088cf4e8262"
+    assert revision == canonical_pin("vibecomfy")["revision"]
