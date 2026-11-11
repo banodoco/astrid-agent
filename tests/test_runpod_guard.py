@@ -140,3 +140,79 @@ def test_a_tests_own_loopback_fake_proxy_is_not_the_real_proxy():
         client.sendall(b"CONNECT pod123-8000.proxy.runpod.net:443 HTTP/1.1\r\n\r\n")  # a fake egress proxy
     finally:
         client.close(); server.close()
+
+
+@pytest.fixture
+def real_proxy_listener(monkeypatch):
+    """A loopback listener standing in for the environment's real proxy; records any bytes sent to it."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0)); server.listen(5)
+    server.settimeout(0.2)
+    port = server.getsockname()[1]
+    received: list[bytes] = []
+    stop = threading.Event()
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _ = server.accept()
+            except (socket.timeout, OSError):
+                continue
+            conn.settimeout(0.2)
+            try:
+                data = conn.recv(4096)
+                if data:
+                    received.append(data)
+            except OSError:
+                pass
+            conn.close()
+
+    t = threading.Thread(target=serve, daemon=True); t.start()
+    url = f"http://127.0.0.1:{port}"
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(name, url)
+    monkeypatch.delenv("NO_PROXY", raising=False); monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setattr(runpod_guard, "_REAL_PROXY_PORTS", frozenset({port}))
+    try:
+        yield received
+    finally:
+        stop.set(); t.join(2); server.close()
+
+
+def test_async_httpx_client_to_runpod_via_the_real_proxy_is_refused_with_no_request_sent(real_proxy_listener):
+    import asyncio
+    import httpx
+
+    async def go():
+        async with httpx.AsyncClient(trust_env=True, timeout=3) as client:
+            await client.get("https://api.runpod.io/graphql")
+
+    before = len(runpod_guard.blocked_attempts)
+    with pytest.raises(Exception):  # httpx/anyio may turn the guard error into a ReadError
+        asyncio.run(go())
+    assert [h for _, h, _ in runpod_guard.blocked_attempts[before:]] == ["api.runpod.io"]
+    assert real_proxy_listener == []
+
+
+def test_sync_httpx_client_to_runpod_via_the_real_proxy_is_refused_with_no_request_sent(real_proxy_listener):
+    import httpx
+
+    before = len(runpod_guard.blocked_attempts)
+    with httpx.Client(trust_env=True, timeout=3) as client:
+        with pytest.raises(Exception):
+            client.get("https://rest.runpod.io/v1/pods")
+    assert [h for _, h, _ in runpod_guard.blocked_attempts[before:]] == ["rest.runpod.io"]
+    assert real_proxy_listener == []
+
+
+def test_requests_and_urllib_to_runpod_via_the_real_proxy_send_nothing(real_proxy_listener):
+    import urllib.request
+    import requests
+
+    before = len(runpod_guard.blocked_attempts)
+    with pytest.raises(Exception):
+        requests.get("https://api.runpod.io/graphql", timeout=3)
+    with pytest.raises(Exception):
+        urllib.request.urlopen("https://rest.runpod.io/v1/pods", timeout=3)
+    assert len(runpod_guard.blocked_attempts) - before >= 2
+    assert real_proxy_listener == []

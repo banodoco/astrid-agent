@@ -15,6 +15,11 @@ Mechanism (all installed once per pytest process by ``install()``):
 * ``socket.socket.send``/``sendall`` refuse an HTTP request whose first line or
   ``Host:`` header names a RunPod host (CONNECT, absolute-URI and plain requests).
 
+Known limit: a raw-IP connect to a non-loopback address is not refused by address. Nothing
+resolves a RunPod name to an address in tests (name resolution of RunPod hosts is refused
+above), and all real egress goes through the loopback proxy, whose port is a refused target
+for RunPod-named requests; so there is no address for the guard to remember.
+
 Loopback is allowed so tests can run a local fake RunPod server or fake egress proxy
 (including a TLS server whose certificate claims a RunPod name), but a connection to the
 environment's real proxy port (read from HTTPS_PROXY etc. at import) is never treated as loopback.
@@ -43,6 +48,7 @@ CREDENTIAL_ENV_VARS = ("RUNPOD_API_KEY", "RUNPOD_AI_API_KEY", "RUNPOD_HTTPS_TOKE
 
 _installed = False
 _current_test = "<outside a test>"
+blocked_attempts: list[tuple[str, str, str]] = []  # (test, host, via); lets tests see a refusal even if a library swallows the error
 
 
 class RunPodNetworkBlocked(RuntimeError):
@@ -68,6 +74,7 @@ def set_current_test(name: str) -> None:
 
 
 def _refuse(host: str, via: str) -> None:
+    blocked_attempts.append((_current_test, host, via))
     raise RunPodNetworkBlocked(
         f"RunPod network access blocked by tests/runpod_guard.py: test {_current_test!r} "
         f"tried to reach {host!r} via {via}. Tests must never contact RunPod (the real "
