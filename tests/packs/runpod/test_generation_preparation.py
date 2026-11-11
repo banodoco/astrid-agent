@@ -310,8 +310,10 @@ def test_retained_adapter_refuses_unsupported_or_unconsented_routes_before_creat
     if change == "denied": grant = replace(grant, consent=()); request = replace(request, consent=())
     if change == "cap": grant = replace(grant, max_usd=0.0001); request = replace(request, max_usd=0.0001)
     if change == "rate": c.quote_rate = 2.0
-    if change == "datacenter": c.dc = "other"
-    if change == "stock": c.stock = "unavailable"
+    # No stock in the pinned datacenter now means "wait" by default (16ffaa601);
+    # this test is about the opted-out route, which must refuse before any create.
+    if change == "datacenter": c.dc, grant = "other", replace(grant, wait_for_capacity=False)
+    if change == "stock": c.stock, grant = "unavailable", replace(grant, wait_for_capacity=False)
     if change == "engine": request = replace(request, entry={"engine": "wan"})
     if change == "tuple":
         c.adapter.installation = replace(c.installation, compatibility={**c.installation.compatibility, "model_lock_digest": "sha256:" + "f" * 64})
