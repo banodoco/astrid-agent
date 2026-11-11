@@ -515,7 +515,7 @@ def test_failed_producer_receipt_survives_executor_to_safe_remote_frame(tmp_path
     job.write_text(json.dumps({'schema': local_job.SCHEMA, 'align': 'trust', 'inputs': {}}))
     action = importlib.import_module('astrid.packs.vibecomfy.actions.run.run')
     def execute(entry, job_data, out, **kwargs):
-        return action._run_and_settle(workflow, out, task_identity='task-1', attempt_identity='attempt-1')
+        return action._run_and_settle(workflow, Path(out), task_identity='task-1', attempt_identity='attempt-1')
     monkeypatch.setattr(local_job, '_run_job', execute)
     with local_engine_patch():
         assert cli.main(['workflow', '--placement', 'local', '--job', str(job),
