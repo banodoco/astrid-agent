@@ -26,7 +26,7 @@ class Sanitization(unittest.TestCase):
                 result=make(good+injected+'\n'); self.assertEqual(result['classification'],'INCOMPLETE'); self.assertEqual(result['malformed_outcome_count'],1); self.assertNotIn(SECRET,json.dumps(result))
     def test_extra_malformed_summaries_fail_closed(self):
         good=f'{A} PASSED\n{B} FAILED\n=== 1 failed, 1 passed in 1.0s ===\n'
-        for injected in (f'=== 1 failed {SECRET} in 1.0s ===', '=== 2 passed in nope ===', '=== 1 passed, 1 passed in 1.0s ===', '=== 1 failure', '== 1 passed in 1.0s =='):
+        for injected in (f'=== 1 failed {SECRET} in 1.0s ===', '=== 2 passed in nope ===', '=== 1 passed, 1 passed in 1.0s ===', '=== 1 failure', '== 1 passed in nope =='):
             with self.subTest(injected=injected):
                 result=make(good+injected+'\n'); self.assertEqual(result['classification'],'INCOMPLETE'); self.assertEqual(result['malformed_summary_count'],1); self.assertNotIn(SECRET,json.dumps(result))
     def test_ordinary_chatter_is_ignored(self):
