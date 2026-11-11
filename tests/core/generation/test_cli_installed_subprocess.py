@@ -16,7 +16,7 @@ def test_installed_module_generate_subprocesses(tmp_path):
     target = tmp_path / "installed"
     install = subprocess.run(
         [sys.executable, "-m", "pip", "install", "--no-deps", "--no-build-isolation",
-         "--placement", str(target), str(repo)],
+         "--target", str(target), str(repo)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -51,9 +51,9 @@ def test_installed_module_generate_subprocesses(tmp_path):
         "  def __init__(self, values): self.values = values\n"
         "  def to_dict(self): return self.values\n"
         "def image(self, **kwargs):\n"
-        "  if kwargs['target'].startswith('http'):\n"
-        "    urlopen(kwargs['target'] + '/system_stats', timeout=5).read()\n"
-        "  return Result({'entry': kwargs['entry'], 'target': kwargs['target'], 'dry_run': kwargs['dry_run']})\n"
+        "  if kwargs['placement'].startswith('http'):\n"
+        "    urlopen(kwargs['placement'] + '/system_stats', timeout=5).read()\n"
+        "  return Result({'entry': kwargs['entry'], 'target': kwargs['placement'], 'dry_run': kwargs['dry_run']})\n"
         "type(generate).image = image\n"
         "cli._open_client = lambda: nullcontext(object())\n"
     )
