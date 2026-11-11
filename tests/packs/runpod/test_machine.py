@@ -1901,3 +1901,56 @@ def test_two_jobs_retain_verified_managed_launch_refresh(machine_case, monkeypat
         assert record['lease']['preparation']['installed']['receipt_sha256'] == 'sha256:' + refreshed[-1]
     assert len(refreshed) == 2 and c.creates == 1 and not c.deletes
     c.host.release()
+
+
+def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_case, monkeypatch):
+    """A job failure after a valid launch refresh should not alone discard its pod.
+
+    WIP regression: this exercises the current fail-closed behavior before an
+    identity-bound failure attestation has been implemented.
+    """
+    from astrid.core.generation import engine_runner
+
+    c = machine_case
+    original_generate = c.pod._generate
+    original_start, original_poll = c.pod.job_start, c.pod.job_poll
+    failed_jobs = set()
+
+    def generate(command):
+        key = c.installation.root + '/.astrid-engine/install.json'
+        raw = c.context.files[key]
+        before = c.pod.files[key]
+        runner = engine_runner._Runner(c.installation.plan(), c.context, c.context.adapter,
+                                      c.context.deadline)
+        with c.context.acquire_install_lock(c.installation.root, deadline=c.context.deadline):
+            start_action, start_facts = runner.start()
+            health_action, health_facts = runner.check_health()
+            engine_runner.refresh_installed_launch(
+                runner, raw, start_action=start_action, start_facts=start_facts,
+                health_action=health_action, health_facts=health_facts, check=lambda: None)
+        c.pod.files[key] = engine_runner._json(c.context.files[key]).encode()
+        assert c.pod.files[key] != before
+        return original_generate(command)
+
+    def start(command, *, job_id):
+        result = original_start(command, job_id=job_id)
+        if ' generate ' in command and '--placement local' in command:
+            failed_jobs.add(job_id)
+        return result
+
+    def poll(job_id):
+        result = original_poll(job_id)
+        return {**result, 'exit_code': 1} if job_id in failed_jobs else result
+
+    monkeypatch.setattr(c.pod, '_generate', generate)
+    monkeypatch.setattr(c.pod, 'job_start', start)
+    monkeypatch.setattr(c.pod, 'job_poll', poll)
+    job = c.job()
+    with pytest.raises(rm.MachineError):
+        run_on_machine(c.machine, job, destination=job.scratch / 'outputs', cancelled=lambda: False,
+                       sleep=lambda _: None)
+    record = c.read()
+    assert record['state'] == 'claimed'
+    assert record['lease']['state'] == 'idle'
+    assert record['lease']['last_job']['outcome'] == 'failed'
+    assert c.creates == 1 and c.deletes == []
