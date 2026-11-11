@@ -3,7 +3,7 @@ import json, os, pathlib, subprocess, sys
 from full_plan import group_for
 from runner import MANIFEST_SHA
 from receipt_guard import rebuild
-from sanitize import write_receipt
+from sanitize import MALFORMED_SHAPES, write_receipt
 from verify_prior import verify_prior_receipts
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -70,6 +70,8 @@ def main():
         print('A2_RECEIPT invalid',flush=True); return 3
     accepted=decide(result.returncode,data,clear,side,group)
     if not accepted:
+        for shape in MALFORMED_SHAPES:
+            print('A2_MALFORMED_SHAPE '+shape+' '+str(data['malformed_outcome_shapes'][shape]),flush=True)
         for reason in data.get('incomplete_reasons', []): print('A2_INCOMPLETE '+reason,flush=True)
         if not data.get('incomplete_reasons'): print('A2_INCOMPLETE DECISION_REJECTED',flush=True)
     if accepted and result.returncode == 1:

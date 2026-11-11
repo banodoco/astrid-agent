@@ -72,7 +72,7 @@ class FullPlanTests(unittest.TestCase):
             with patch.dict(os.environ,env), patch.object(full_driver,'verify_prior_receipts',return_value=True), patch.object(full_driver,'census',side_effect=[{(1,1)},RuntimeError('synthetic')]), patch.object(full_driver.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)), patch.object(full_driver,'rebuild') as rebuild:
                 self.assertEqual(full_driver.main(),3); rebuild.assert_not_called()
             self.assertFalse((pathlib.Path(tmp)/'r12-a2-final-slot-01/receipt.json').exists())
-    def test_precreated_slot_path_fails_and_cannot_be_sealed(self):
+    def test_precreated_slot_path_cannot_make_driver_succeed(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
             env={'RUNNER_TEMP':tmp,'A2_SIDE':'base','A2_RANGE':'028-034','A2_SLOT':'1','A2_REF':FULL_REF,'A2_SHA':'a'*40,'A2_BEFORE':'0'*40,'A2_ATTEMPT':'1','A2_PRIOR_FAILURE':'true'}
             slot=pathlib.Path(tmp)/'r12-a2-final-slot-01'; slot.mkdir(); (slot/'receipt.json').write_text('synthetic-secret')
@@ -113,7 +113,10 @@ class FullPlanTests(unittest.TestCase):
         self.assertNotIn('outputs.artifact_path',called)
         for slot in range(1,12): self.assertIn('path: ${{ runner.temp }}/r12-a2-final-slot-%02d/receipt.json' % slot, called)
         self.assertEqual(called.count('if-no-files-found: error'),11)
-        for slot in range(1,12): self.assertIn("steps.slot%02d.outcome == 'success'" % slot,called)
+        for slot in range(1,12):
+            self.assertIn("steps.slot%02d.outcome == 'success'" % slot,called)
+            self.assertIn("steps.slot%02d.outcome == 'failure'" % slot,called)
+            self.assertIn('A2_DRIVER_OUTCOME: ${{ steps.slot%02d.outcome }}' % slot,called)
         for slot in range(1,12): self.assertIn("A2_SLOT: '%s'" % slot, called)
         self.assertEqual(called.count('A2_SLOT:'),22)
         self.assertIn('r12-a2-full-had-failure',called)

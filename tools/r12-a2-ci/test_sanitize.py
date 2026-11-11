@@ -93,6 +93,17 @@ class Sanitization(unittest.TestCase):
         for forged in (raw.replace(A+'\n  warning',B+'\n  warning'), raw.replace(A+'\n  warning',A+' PASSED\n  warning'), raw.replace('-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n===', '-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n'+A+'\n===')):
             result=make(forged,expected=(A,),exit_code=1)
             self.assertEqual(result['classification'],'INCOMPLETE'); self.assertIn('MALFORMED_OUTCOME',result['incomplete_reasons']); self.assertNotIn(SECRET,json.dumps(result))
+    def test_malformed_shape_counts_are_bounded_fixed_and_do_not_change_acceptance(self):
+        raw=(f'{A} SKIPPED ({SECRET}) [ 1%]\n' + f'{B} PASSED {SECRET}\n' + A + '\n' + f'tests/unknown.py::x FAILED {SECRET}\n' + '=== 1 passed, 1 skipped in 1.0s ===\n')
+        result=make(raw,exit_code=0)
+        self.assertEqual(result['classification'],'INCOMPLETE')
+        self.assertEqual(result['malformed_outcome_shapes'],{'KNOWN_SKIP_DETAIL':1,'KNOWN_STATUS_SUFFIX':1,'KNOWN_BARE_ID':1,'OTHER_TEST_LINE':1})
+        self.assertNotIn(SECRET,json.dumps(result))
+    def test_many_malformed_shapes_are_capped(self):
+        raw=(f'{A} PASSED {SECRET}\n'*10005)+'=== 1 passed in 1.0s ===\n'
+        result=make(raw,expected=(A,),exit_code=0)
+        self.assertEqual(result['classification'],'INCOMPLETE'); self.assertEqual(result['malformed_outcome_shapes']['KNOWN_STATUS_SUFFIX'],9999)
+        self.assertNotIn(SECRET,json.dumps(result))
     def test_only_structured_file_is_uploaded(self):
         root=pathlib.Path(__file__).resolve().parents[2]; workflow=(root/'.github/workflows/r12-a2-once.yml').read_text()
         self.assertIn('path: ${{ runner.temp }}/r12-a2-receipt/receipt.json',workflow)

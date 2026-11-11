@@ -43,18 +43,44 @@ class ReceiptGuardTests(unittest.TestCase):
     def test_nonregular_fifo_is_rejected_without_blocking(self):
         path=self.root/'r12-a2-private/pytest.log'; path.unlink(); os.mkfifo(path)
         with self.assertRaises(ValueError): rebuild(self.root,'base','028',SHA)
-    def test_sealer_rejects_dirty_or_unverified_census(self):
+    def test_sealer_never_claims_clear_after_bad_census(self):
         slot=self.temp/'r12-a2-final-slot-01'; slot.mkdir()
         out=self.temp/'github-output'; out.write_text('')
-        env={'RUNNER_TEMP':str(self.temp),'A2_SIDE':'base','A2_RANGE':'028-034','A2_SLOT':'1','A2_SHA':SHA,'GITHUB_OUTPUT':str(out)}
+        env={'RUNNER_TEMP':str(self.temp),'A2_SIDE':'base','A2_RANGE':'028-034','A2_SLOT':'1','A2_SHA':SHA,'GITHUB_OUTPUT':str(out),'A2_DRIVER_OUTCOME':'success'}
         for state in ('residue','unverified'):
-            (slot/'receipt.json').write_text(json.dumps({**self.good,'process_census':{'status':state}}))
-            with self.subTest(state=state), patch.dict(os.environ,env), self.assertRaises(ValueError): seal_full_receipt.main()
-            self.assertEqual(out.read_text(),'')
+            out.write_text(''); (slot/'receipt.json').write_text(json.dumps({**self.good,'process_census':{'status':state}}))
+            with self.subTest(state=state), patch.dict(os.environ,env): self.assertEqual(seal_full_receipt.main(),3)
+            fallback=json.loads((slot/'receipt.json').read_text())
+            self.assertEqual(fallback['classification'],'INCOMPLETE');self.assertEqual(fallback['process_census'],{'status':'unverified'})
+            self.assertEqual(fallback['failure_kind'],'SEAL_VERIFICATION_FAILED');self.assertEqual(out.read_text(),'receipt_ready=true\n')
+    def test_failed_driver_overwrites_forged_clear_with_safe_incomplete(self):
+        slot=self.temp/'r12-a2-final-slot-01';slot.mkdir();(slot/'receipt.json').write_text(json.dumps({**self.good,'process_census':{'status':'clear'},'secret':SECRET}))
+        out=self.temp/'github-output';out.write_text('')
+        env={'RUNNER_TEMP':str(self.temp),'A2_SIDE':'base','A2_RANGE':'028-034','A2_SLOT':'1','A2_SHA':SHA,'GITHUB_OUTPUT':str(out),'A2_DRIVER_OUTCOME':'failure'}
+        with patch.dict(os.environ,env): self.assertEqual(seal_full_receipt.main(),3)
+        data=(slot/'receipt.json').read_text(); result=json.loads(data)
+        self.assertEqual(result['classification'],'INCOMPLETE');self.assertEqual(result['process_census'],{'status':'unverified'});self.assertEqual(result['failure_kind'],'DRIVER_FAILED')
+        self.assertNotIn(SECRET,data);self.assertEqual(out.read_text(),'receipt_ready=true\n')
+    def test_failure_receipt_contains_only_reconstructed_shape_counts(self):
+        slot=self.temp/'r12-a2-final-slot-01';out=self.temp/'github-output';out.write_text('')
+        first=self.ids[0];raw=(f'{first} SKIPPED ({SECRET}) [ 1%]\n'+''.join(x+' PASSED\n' for x in self.ids[1:])+f'=== {len(self.ids)-1} passed, 1 skipped in 1.0s ===\n').encode()
+        (self.root/'r12-a2-private/pytest.log').write_bytes(raw)
+        incomplete=sanitized_result(raw,self.ids,self.good['absent_ids'],self.good['metadata'],0,True,self.good['stage_events']);self.write(incomplete)
+        env={'RUNNER_TEMP':str(self.temp),'A2_SIDE':'base','A2_RANGE':'028-034','A2_SLOT':'1','A2_SHA':SHA,'GITHUB_OUTPUT':str(out),'A2_DRIVER_OUTCOME':'failure'}
+        with patch.dict(os.environ,env):self.assertEqual(seal_full_receipt.main(),3)
+        text=(slot/'receipt.json').read_text();result=json.loads(text)
+        self.assertEqual(result['diagnostic_source'],'RECONSTRUCTED_INCOMPLETE');self.assertEqual(result['malformed_outcome_shapes']['KNOWN_SKIP_DETAIL'],1)
+        self.assertIn('MALFORMED_OUTCOME',result['incomplete_reasons']);self.assertNotIn(SECRET,text)
+    def test_symlinked_output_directory_fails_closed(self):
+        target=self.temp/'target';target.mkdir();(self.temp/'r12-a2-final-slot-01').symlink_to(target,target_is_directory=True)
+        out=self.temp/'github-output';out.write_text('')
+        env={'RUNNER_TEMP':str(self.temp),'A2_SIDE':'base','A2_RANGE':'028-034','A2_SLOT':'1','A2_SHA':SHA,'GITHUB_OUTPUT':str(out),'A2_DRIVER_OUTCOME':'failure'}
+        with patch.dict(os.environ,env), self.assertRaises(OSError):seal_full_receipt.main()
+        self.assertEqual(list(target.iterdir()),[]);self.assertEqual(out.read_text(),'')
     def test_sealer_has_only_boolean_output_and_literal_workflow_artifact_path(self):
         slot=self.temp/'r12-a2-final-slot-01'; slot.mkdir(); (slot/'receipt.json').write_text(json.dumps({**self.good,'process_census':{'status':'clear'}}))
         out=self.temp/'github-output'; out.write_text('artifact_path=/forged/raw.log\n')
-        env={'RUNNER_TEMP':str(self.temp),'A2_SIDE':'base','A2_RANGE':'028-034','A2_SLOT':'1','A2_SHA':SHA,'GITHUB_OUTPUT':str(out)}
+        env={'RUNNER_TEMP':str(self.temp),'A2_SIDE':'base','A2_RANGE':'028-034','A2_SLOT':'1','A2_SHA':SHA,'GITHUB_OUTPUT':str(out),'A2_DRIVER_OUTCOME':'success'}
         with patch.dict(os.environ,env), contextlib.redirect_stdout(io.StringIO()): self.assertEqual(seal_full_receipt.main(),0)
         self.assertEqual(out.read_text(),'artifact_path=/forged/raw.log\nreceipt_ready=true\n')
         workflow=(pathlib.Path(__file__).resolve().parents[2]/'.github/workflows/r12-a2-full-range.yml').read_text()

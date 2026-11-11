@@ -4,6 +4,20 @@ from stages import validate_events
 
 STATUSES = ('PASSED', 'FAILED', 'ERROR', 'SKIPPED', 'XFAIL', 'XPASS')
 SUMMARY_KEYS = ('passed', 'failed', 'error', 'errors', 'skipped', 'xfailed', 'xpassed', 'warnings', 'warning', 'deselected')
+MALFORMED_SHAPES = ('KNOWN_SKIP_DETAIL', 'KNOWN_STATUS_SUFFIX', 'KNOWN_BARE_ID', 'OTHER_TEST_LINE')
+MAX_SHAPE_COUNT = 9999
+
+def malformed_shape(line, expected):
+    candidate = line.lstrip()
+    for node in sorted(expected, key=len, reverse=True):
+        if candidate == node: return 'KNOWN_BARE_ID'
+        if candidate.startswith(node + ' '):
+            tail = candidate[len(node):]
+            if tail.startswith(' SKIPPED ('): return 'KNOWN_SKIP_DETAIL'
+            if any(tail.startswith(' ' + status) for status in STATUSES): return 'KNOWN_STATUS_SUFFIX'
+            return 'OTHER_TEST_LINE'
+    return 'OTHER_TEST_LINE'
+
 OUTCOME = re.compile(r'^(tests/.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?: +\[ *\d{1,3}%\])?$')
 KNOWN_SKIP = {'tests/test_installer_r0_entry.py::test_captures_match_real_r0_evidence': 'local R0 evidence is not present'}
 HEADINGS = {'test session starts', 'FAILURES', 'ERRORS', 'PASSES', 'XFAILURES', 'XPASSES', 'SKIPPED', 'warnings summary', 'warnings summary (final)', 'short test summary info'}
@@ -14,6 +28,11 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
     expected_set = set(expected)
     if len(expected_set) != len(expected): raise ValueError('duplicate frozen IDs')
     found = []; unknown_count = 0; malformed_outcome_count = 0; malformed_summary_count = 0; summaries = []
+    shapes = {name:0 for name in MALFORMED_SHAPES}
+    def record_malformed(line):
+        nonlocal malformed_outcome_count
+        malformed_outcome_count += 1
+        key=malformed_shape(line,expected_set); shapes[key]=min(MAX_SHAPE_COUNT,shapes[key]+1)
     in_warning_section = False
     if raw is not None:
         for line in raw.decode('utf-8', errors='replace').splitlines():
@@ -29,7 +48,7 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
                 continue
             match = OUTCOME.fullmatch(line)
             if in_warning_section and match:
-                malformed_outcome_count += 1
+                record_malformed(line)
                 continue
             if match:
                 node, status = match.groups()
@@ -39,13 +58,13 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
                     pattern = re.escape(known_id) + r' SKIPPED \(' + re.escape(reason) + r'\)(?: +\[ *\d{1,3}%\])?'
                     if re.fullmatch(pattern,line): node, status = known_id, 'SKIPPED'; break
             if in_warning_section and node is not None:
-                malformed_outcome_count += 1
+                record_malformed(line)
                 continue
             if node is not None:
                 if node in expected_set: found.append((node, status))
                 else: unknown_count += 1
             elif line.lstrip().startswith('tests/') and ('::' in line or re.search(r'\b(?:PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b', line)):
-                malformed_outcome_count += 1
+                record_malformed(line)
             match = SUMMARY.fullmatch(line)
             if match:
                 pairs = re.findall(r'(\d+) (passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected)', match.group(1))
@@ -89,7 +108,7 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
         elif not counts_match: reasons.append('SUMMARY_MISMATCH')
     return {'schema':1, 'incomplete_reasons':reasons, 'stage_events':validate_events(stage_events if stage_events is not None else []), 'classification':classification, 'metadata':metadata,
             'expected_count':len(expected), 'missing_ids':missing, 'duplicate_ids':duplicates, 'additional_error_after_outcome_ids':extra_errors,
-            'unexpected_result_count':unknown_count, 'malformed_outcome_count':malformed_outcome_count, 'malformed_summary_count':malformed_summary_count, 'absent_ids':sorted(absent),
+            'unexpected_result_count':unknown_count, 'malformed_outcome_count':malformed_outcome_count, 'malformed_outcome_shapes':shapes, 'malformed_summary_count':malformed_summary_count, 'absent_ids':sorted(absent),
             'outcomes':outcomes, 'outcome_counts':status_counts, 'summary_counts':summary,
             'exit_code':exit_code if isinstance(exit_code,int) and -255 <= exit_code <= 255 else None,
             'preflight_complete':bool(preflight), 'raw_pytest_sha256':hashlib.sha256(raw).hexdigest() if raw is not None else None}
