@@ -1909,6 +1909,7 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
     WIP regression: this exercises the current fail-closed behavior before an
     identity-bound failure attestation has been implemented.
     """
+    import hashlib
     from astrid.core.generation import engine_runner
 
     c = machine_case
@@ -1925,12 +1926,28 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
         with c.context.acquire_install_lock(c.installation.root, deadline=c.context.deadline):
             start_action, start_facts = runner.start()
             health_action, health_facts = runner.check_health()
-            engine_runner.refresh_installed_launch(
+            digest = engine_runner.refresh_installed_launch(
                 runner, raw, start_action=start_action, start_facts=start_facts,
                 health_action=health_action, health_facts=health_facts, check=lambda: None)
         c.pod.files[key] = engine_runner._json(c.context.files[key]).encode()
         assert c.pod.files[key] != before
-        return original_generate(command)
+        output = original_generate(command)
+        root = c.pod.active_job['run_dir']
+        job = json.loads(c.pod.files[root + '/job.json'])
+        report = {'schema': 'astrid.managed-engine-preparation.v1',
+                  'task_id': job['task_identity'], 'attempt_id': job['attempt_identity'],
+                  'installation': {'root': c.installation.root, 'receipt_sha256': digest,
+                                   'recipe_sha256': c.installation.plan().recipe_sha256}}
+        payload = {'task_id': job['task_identity'], 'attempt_id': job['attempt_identity'],
+                   'evidence': {'producer': {'attempt': {'record': {'managed_engine_preparation': report}}}}}
+        path = root + '/out/manifest.json'
+        c.pod.files[path] = json.dumps({'managed_generation_result': payload}).encode()
+        manifest_path = root + '/out/' + rm.MANIFEST_NAME
+        manifest = json.loads(c.pod.files[manifest_path])
+        manifest['files']['manifest.json'] = {'sha256': hashlib.sha256(c.pod.files[path]).hexdigest(),
+                                            'size': len(c.pod.files[path])}
+        c.pod.files[manifest_path] = json.dumps(manifest).encode()
+        return output.split(rm.MANIFEST_MARK)[0] + rm.MANIFEST_MARK + hashlib.sha256(c.pod.files[manifest_path]).hexdigest() + '\n'
 
     def start(command, *, job_id):
         result = original_start(command, job_id=job_id)
