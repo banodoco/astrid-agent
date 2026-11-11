@@ -140,7 +140,7 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
     category = get('category') or get('sdk_category')
     native = code or get('code') or {
         'precondition': 'missing_dependency', 'runtime': 'generation_failed',
-    }.get(category, 'input_rejected')
+    }.get(category, 'generation_failed')
     normalized = _CORE_CODES.get(native, native)
     detail = {**(get('details') or {}), **(details or {})}
     if normalized == 'generation_route_unqualified':

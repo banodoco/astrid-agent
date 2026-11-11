@@ -71,7 +71,7 @@ class _GenerationParser(argparse.ArgumentParser):
     def error(self, message):
         if self.json_errors:
             from astrid.core.generation.preflight import generation_error
-            raise generation_error(ValueError(message), details={'constraint': message})
+            raise generation_error(ValueError(message), code='input_rejected', details={'constraint': message})
         super().error(message)
 
 
@@ -499,14 +499,14 @@ def _job_command(argv: list[str]) -> int:
     parser.add_argument('--json', action='store_true')
     parsed = parser.parse_args(argv)
     from astrid.core.contracts.errors import AstridError
-    from astrid.core.generation.local_job import JobFileError, run_job
+    from astrid.core.generation.local_job import JobInputError, run_job
     from astrid.core.generation.progress import write_progress
     try:
         result = run_job(parsed.entry, parsed.job, parsed.out, mode=parsed.mode, align=parsed.align)
     except AstridError:
         # Preserve the typed failure for main's structured JSON renderer.
         raise
-    except (JobFileError, ValueError) as exc:
+    except JobInputError as exc:
         parser.error(str(exc))
     write_progress('done')
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
