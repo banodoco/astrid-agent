@@ -100,3 +100,34 @@ def test_pod_preparation_failure_never_executes_and_closes(tmp_path, monkeypatch
         local_job.run_owned_action(workflow, tmp_path / 'out', task_identity='task', attempt_identity='attempt',
                                    align='align')
     assert calls == ['prepare', 'close']
+
+
+def test_execution_failure_closes_preparation_and_removes_scratch(tmp_path, monkeypatch):
+    from astrid.core.generation.engine_contracts import DownloadError
+    workflow = tmp_path / 'workflow.py'
+    workflow.write_text('pass')
+    workflow.with_suffix('.vibe.json').write_text('{}')
+    workflow.with_name('source.json').write_text('{}')
+    events = []
+    class Preparation:
+        def __init__(self, **kwargs):
+            events.append('opened')
+        def prepare(self, *args, **kwargs):
+            return {'endpoint': 'http://127.0.0.1:8188'}
+        def close(self, *, execution_root, worker_drained):
+            assert worker_drained
+            events.append('closed')
+    monkeypatch.setattr(managed_preparation, 'ManagedEnginePreparation', Preparation)
+    monkeypatch.setattr(managed_preparation, 'preparation_scope', lambda report: _scope())
+    monkeypatch.setattr(production_engine, 'load_workflow_path', lambda *args: SimpleNamespace(resolved=object()))
+    monkeypatch.setattr(production_engine, '_canonical_bundle_value', lambda value: SimpleNamespace(workflow=object()))
+    monkeypatch.setattr(production_engine, 'loaded_workflow_execution_identity', lambda value: 'identity')
+    def fail(*args, **kwargs):
+        raise DownloadError('private failure')
+    monkeypatch.setattr(action, '_run_and_settle', fail)
+    with pytest.raises(DownloadError):
+        local_job.run_owned_action(workflow, tmp_path / 'out', task_identity='task',
+                                   attempt_identity='attempt', align='trust')
+    assert events == ['opened', 'closed']
+    assert target_inventory.POD_STOP.get() is None
+    assert not list(tmp_path.glob('astrid-pod-preparation-*'))
