@@ -20,12 +20,12 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable, Mapping
 
 from astrid.core.foundation.atomic_io import read_json, write_json_atomic
-from astrid.installer._pack_cleanup import remove_pack_tree
 from astrid.core.pack.canonical import (
     CanonicalPackValidationError,
     ExternalPackSource,
     read_normalize_validate,
 )
+from astrid.installer._pack_cleanup import remove_pack_tree
 
 SOURCE_STATE_VERSION = 1
 _LOGGER = logging.getLogger(__name__)

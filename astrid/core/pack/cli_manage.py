@@ -22,12 +22,12 @@ from typing import Any, Mapping
 
 import yaml
 
-from astrid.installer._pack_cleanup import remove_pack_tree
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import pack_digest, read_pin
 from astrid.core.pack.install import PackInstallError, _fetch_tree, _git_source
 from astrid.core.pack.personal import resolve_personal_packs_root
 from astrid.core.pack.transaction import GroupCommitError, install_group, rollback_group
+from astrid.installer._pack_cleanup import remove_pack_tree
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -182,8 +182,9 @@ def _file_sha256(path: Path) -> str:
 
 def _managed_toolchain() -> Path | None:
     """Find a descriptor only in the currently selected, executing install."""
-    from astrid.installer.core import current
     from runtime_protocol import platform
+
+    from astrid.installer.core import current
 
     prefix = Path(sys.prefix)
     if not prefix.is_absolute() or prefix.name != "py":

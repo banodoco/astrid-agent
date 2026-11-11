@@ -43,8 +43,10 @@ def _read_captured_source(fd: int):
         raise ValueError("external source descriptor bytes differ")
     if "snapshot_root" in selected:
         from runtime_protocol import platform
-        from .generic_host import _pack_capture_inventory
+
         from astrid.core.pack.identity import _EXCLUDED_DIRS, pack_digest
+
+        from .generic_host import _pack_capture_inventory
 
         root = Path(selected["snapshot_root"])
         if not root.is_absolute() or root.resolve(strict=True) != root or not platform.is_owner_only(root.parent):
@@ -242,8 +244,9 @@ def run(payload_path: str | Path, *, captured=None) -> int:
         selected_root = Path(selected.get("snapshot_root") or selected["source"]["root"])
         definition_digest = _capability_digest(definition_payload)
         if "snapshot_root" in selected:
-            from .generic_host import _relocate_pack_definition
             from astrid.core.execution.executor.schema import validate_executor_definition
+
+            from .generic_host import _relocate_pack_definition
 
             # The grant still authorizes the original definition. Only the
             # deterministic relocation to its verified byte copy is accepted.

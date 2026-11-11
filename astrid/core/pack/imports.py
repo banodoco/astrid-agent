@@ -128,6 +128,7 @@ def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, ver
                     or str(original) != relocation["original_root"]):
                 raise ValueError("invalid verified pack original root")
             from runtime_protocol import platform
+
             from astrid.sdk.storage_root import resolve_runtime_data_root
 
             area = resolve_runtime_data_root() / "runtime" / "pack-captures"
