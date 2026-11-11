@@ -1851,10 +1851,34 @@ def _reject_attach(current: Mapping[str, Any], mismatches: list[dict[str, str]],
     return None
 
 
+def _observe_resident_host(*, endpoint: str, support_root: Path, runtime_instance_id: str,
+                           runtime_session_id: str, runtime_epoch: Any) -> Mapping[str, Any]:
+    """Ask Runtime's operator to observe its fixed pack host, without owner credentials."""
+    from astrid.sdk.autobootstrap import _launcher_command
+
+    if not runtime_session_id:
+        raise RuntimeError("runtime session is unavailable")
+    try:
+        result = subprocess.run(
+            [*_launcher_command(), "observe-pack-host", "--data-root", str(support_root),
+             "--endpoint", endpoint, "--runtime-instance-id", runtime_instance_id,
+             "--runtime-session-id", runtime_session_id, "--runtime-epoch", str(runtime_epoch), "--json"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=30,
+        )
+        if result.returncode != 0:
+            raise ValueError("observer failed")
+        observed = json.loads(result.stdout)
+        if not isinstance(observed, Mapping):
+            raise ValueError("observer response is not an object")
+        return observed
+    except Exception as exc:
+        raise RuntimeError("runtime observer unavailable") from exc
+
+
 def _attach_resident_host(
     current: Mapping[str, Any], ready: Mapping[str, Any], *,
     expected: Mapping[str, Any], worker_path: Path, runtime_epoch: Any,
-    runtime_instance_id: str, inventory_identity: str,
+    runtime_instance_id: str, runtime_session_id: str, inventory_identity: str,
     rejections: list[str] | None = None,
 ) -> Mapping[str, Any] | None:
     """Return a receipt for a live Runtime-registered host from another checkout.
@@ -1892,7 +1916,11 @@ def _attach_resident_host(
         resident_token = worker_path.read_text(encoding="utf-8").strip()
         resident_client = RuntimeProtocolClient(str(expected["endpoint"]), resident_token)
         resident_client._authenticate_worker(PACK_HOST_ACTOR)
-        registration = resident_client.generated.get_executor(PACK_HOST_ACTOR)
+        registration = _observe_resident_host(
+            endpoint=str(expected["endpoint"]), support_root=Path(str(expected["support_root"])),
+            runtime_instance_id=runtime_instance_id, runtime_session_id=runtime_session_id,
+            runtime_epoch=runtime_epoch,
+        )
         def field(name: str):
             return registration.get(name) if isinstance(registration, Mapping) else getattr(registration, name, None)
         ready_registration = ready.get("registration")
@@ -2122,6 +2150,7 @@ def ensure_pack_host(
         "runtime_epoch": getattr(health, "runtime_epoch", None),
         "schema_digest": getattr(health, "schema_digest", None),
         "runtime_instance_id": getattr(health, "runtime_instance_id", None),
+        "runtime_session_id": getattr(health, "runtime_session_id", None),
         "coordinator_epoch": getattr(health, "coordinator_epoch", None),
     }
     runtime_supervised = _PACK_HOST_SERVICE in _supervised_service_rows(health)
@@ -2196,10 +2225,14 @@ def ensure_pack_host(
                 worker_path=worker_path,
                 runtime_epoch=runtime_epoch,
                 runtime_instance_id=str(runtime_instance_id),
+                runtime_session_id=health_value.get("runtime_session_id") or "",
                 inventory_identity=inventory_identity,
             )
             if receipt is not None:
                 return receipt
+            raise PackHostBootstrapError(
+                f"generic Astrid pack host attachment was refused; {reconfigure_action}"
+            )
         from astrid.core.gateway.dispatch import compose_profile_handoff
         try:
             boot_handoff = compose_profile_handoff(
