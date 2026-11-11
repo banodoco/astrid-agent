@@ -37,9 +37,32 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
             return deepcopy(_cached(*args, **kwargs))
         monkeypatch.setattr(entries, name, snapshot)
     # Synthetic content only: never substitute a real prompt or live job artifacts.
-    description, values = entries.resolve_entry_inputs(entry, {'text': 'synthetic fixture'}, mode=mode)
+    # Resolve the pinned template's true native contract and entry once. Later
+    # direct and shipped calls still run resolve_entry_inputs/validate_inputs;
+    # only repeated discovery of this same immutable entry is replaced.
+    from copy import deepcopy
+    native_description = entries.describe_entry(entry, mode=mode, _native=True)
     described = entries.find_entry(entry)
     assert described is not None
+    original_describe, original_find = entries.describe_entry, entries.find_entry
+    discovery_hits = {'description': 0, 'entry': 0}
+
+    def cached_describe(entry_id, mode=None, *, registry=None, _native=False):
+        if entry_id != entry or mode != 'tts' or registry is not None:
+            return original_describe(entry_id, mode=mode, registry=registry, _native=_native)
+        discovery_hits['description'] += 1
+        result = deepcopy(native_description)
+        return result if _native else entries.public_description(result)
+
+    def cached_find(entry_id):
+        if entry_id != entry:
+            return original_find(entry_id)
+        discovery_hits['entry'] += 1
+        return deepcopy(described)
+
+    monkeypatch.setattr(entries, 'describe_entry', cached_describe)
+    monkeypatch.setattr(entries, 'find_entry', cached_find)
+    description, values = entries.resolve_entry_inputs(entry, {'text': 'synthetic fixture'}, mode=mode)
     assert not entries.entry_hooks(described).get('build'), 'diagnostic must be extended for build hooks'
     workflow = entries._load_entry_workflow(described)
     workflow, plan, assets = entries.apply_workflow_inputs(
@@ -100,6 +123,7 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
     assert shipped['align'] == direct['align'] == job.align
     assert json.loads(shipped['workflow_inputs']) == json.loads(direct['workflow_inputs'])
     assert schemas == [job.align]  # prepared non-hook path intentionally does not repeat target_schema
+    assert discovery_hits['description'] >= 3 and discovery_hits['entry'] >= 2
 
     # Exercise the later engine preflight separately with a fake target: the
     # fixture is a projection of the pinned Vibe cache, not a live observation.
