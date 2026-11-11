@@ -214,6 +214,71 @@ def test_full_clone_source_keeps_tags_and_checks_out_only_the_manifest_commit(re
     assert not (tmp_path / "cloned source.clone").exists()
 
 
+@pytest.mark.parametrize("method", ["archive", "clone"])
+def test_source_staging_uses_recorded_git_with_restricted_path(repository, tmp_path, monkeypatch, method):
+    repo, sha = repository
+    executable = shutil.which("git")
+    assert executable is not None
+    (repo / "pyproject.toml").write_text("later source\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "--quiet", "-m", "Later source")
+    # The service's PATH does not include the installing user's Git. A hostile
+    # inherited Git configuration must still not redirect the source reads.
+    monkeypatch.setenv("ASTRID_GIT_EXECUTABLE", os.path.realpath(executable))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "wrong-repository"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "wrong-index"))
+    destination = tmp_path / "installed"
+
+    if method == "archive":
+        tools.source("agent", sha, destination, repo=str(repo))
+    else:
+        tools.clone_source(str(repo), sha, destination)
+        head = subprocess.run([executable, "-C", str(destination), "rev-parse", "HEAD"],
+                              env={key: value for key, value in os.environ.items()
+                                   if not key.startswith("GIT_")},
+                              check=True, stdout=subprocess.PIPE).stdout.decode().strip()
+        assert head == sha
+    assert (destination / "pyproject.toml").read_text(encoding="utf-8") == "pinned source\n"
+    assert not destination.with_name(destination.name + ".clone").exists()
+
+
+def test_clone_with_recorded_git_cleans_up_missing_pin(repository, tmp_path, monkeypatch):
+    repo, _sha = repository
+    executable = shutil.which("git")
+    assert executable is not None
+    monkeypatch.setenv("ASTRID_GIT_EXECUTABLE", os.path.realpath(executable))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    destination = tmp_path / "installed"
+
+    with pytest.raises(ValueError, match="pinned source SHA is not a commit"):
+        tools.clone_source(str(repo), "0" * 40, destination)
+    assert not destination.exists()
+    assert not destination.with_name(destination.name + ".clone").exists()
+
+
+@pytest.mark.parametrize("method", ["archive", "clone"])
+def test_source_staging_rejects_current_directory_git(repository, tmp_path, monkeypatch, method):
+    repo, sha = repository
+    work = tmp_path / "untrusted-work"
+    work.mkdir()
+    planted = work / ("git.exe" if os.name == "nt" else "git")
+    planted.write_text("not git", encoding="utf-8")
+    planted.chmod(0o755)
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("ASTRID_GIT_EXECUTABLE", str(planted))
+    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", str(work)]))
+    destination = tmp_path / "installed"
+
+    with pytest.raises(ValueError, match="require Git on PATH"):
+        if method == "archive":
+            tools.source("agent", sha, destination, repo=str(repo))
+        else:
+            tools.clone_source(str(repo), sha, destination)
+    assert not destination.exists()
+    assert not destination.with_name(destination.name + ".clone").exists()
+
+
 @pytest.mark.parametrize("sha", ["main", "a" * 7, "A" * 40, "a" * 39 + "/"])
 def test_source_override_still_requires_full_commit_sha(tmp_path, sha):
     value = manifest()

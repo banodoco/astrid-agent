@@ -244,9 +244,21 @@ def source_repo(value: str) -> str | Path:
     return local_repository(value)
 
 
+def _source_git() -> str:
+    """Use the install-recorded Git or a safe absolute PATH entry for staging."""
+    from .git_lookup import _git_executable
+
+    git = _git_executable(os.environ.get("PATH", os.defpath), windows=os.name == "nt",
+                          cwd=os.getcwd(), recorded=os.environ.get("ASTRID_GIT_EXECUTABLE"))
+    if git is None:
+        raise ValueError("Source staging operations require Git on PATH or a valid recorded Git executable.")
+    return git
+
+
 def local_source(repo: str, sha: str, archive: Path) -> None:
     """Archive a committed Git tree, without consulting the checkout's worktree."""
     repository = local_repository(repo)
+    executable = _source_git()
     # Inherited Git overrides must not redirect reads to some other repository.
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
@@ -254,10 +266,10 @@ def local_source(repo: str, sha: str, archive: Path) -> None:
 
     def git(*args, **kwargs):
         try:
-            result = subprocess.run(["git", "-C", str(repository), *args], env=env,
+            result = subprocess.run([executable, "-C", str(repository), *args], env=env,
                                     stderr=subprocess.PIPE, check=False, **kwargs)
         except FileNotFoundError as error:
-            raise ValueError("Local source overrides require Git on PATH.") from error
+            raise ValueError("Source staging operations require Git on PATH or a valid recorded Git executable.") from error
         if result.returncode:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise ValueError(f"Cannot read local source {repository} at {sha}: {detail}")
@@ -279,6 +291,7 @@ def clone_source(repo: str, sha: str, destination: Path) -> Path:
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("A source must be pinned to a full git SHA.")
     repository = source_repo(repo)
+    executable = _source_git()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".clone")
     if temporary.exists():
@@ -287,25 +300,25 @@ def clone_source(repo: str, sha: str, destination: Path) -> Path:
     env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
                 "GIT_NO_REPLACE_OBJECTS": "1"})
     try:
-        result = subprocess.run(["git", "clone", "--quiet", "--tags", "--no-checkout",
+        result = subprocess.run([executable, "clone", "--quiet", "--tags", "--no-checkout",
                                  "--no-hardlinks", "--no-single-branch", str(repository), str(temporary)],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 check=False, timeout=1800)
         if result.returncode:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise ValueError(f"Cannot clone pinned source repository: {detail}")
-        check = subprocess.run(["git", "-C", str(temporary), "cat-file", "-t", sha],
+        check = subprocess.run([executable, "-C", str(temporary), "cat-file", "-t", sha],
                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                check=False, timeout=60)
         if check.returncode or check.stdout.strip() != b"commit":
             raise ValueError("The pinned source SHA is not a commit in the cloned repository.")
-        checkout = subprocess.run(["git", "-C", str(temporary), "checkout", "--quiet",
+        checkout = subprocess.run([executable, "-C", str(temporary), "checkout", "--quiet",
                                   "--detach", sha], env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, check=False, timeout=60)
         if checkout.returncode:
             detail = checkout.stderr.decode("utf-8", errors="replace").strip()
             raise ValueError(f"Cannot check out pinned source commit: {detail}")
-        head = subprocess.run(["git", "-C", str(temporary), "rev-parse", "HEAD"], env=env,
+        head = subprocess.run([executable, "-C", str(temporary), "rev-parse", "HEAD"], env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
                               timeout=60).stdout.decode("ascii").strip()
         if head != sha:
