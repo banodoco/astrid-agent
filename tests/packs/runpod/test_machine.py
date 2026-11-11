@@ -1901,3 +1901,79 @@ def test_two_jobs_retain_verified_managed_launch_refresh(machine_case, monkeypat
         assert record['lease']['preparation']['installed']['receipt_sha256'] == 'sha256:' + refreshed[-1]
     assert len(refreshed) == 2 and c.creates == 1 and not c.deletes
     c.host.release()
+
+
+def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_case, monkeypatch):
+    """A job failure after a valid launch refresh should not alone discard its pod.
+
+    WIP: the fake exposes a success-shaped, identity-bound manifest despite a
+    failed exit. The real failure command does not yet transport this evidence;
+    this is a hypothetical controller regression, not an end-to-end proof.
+    """
+    import hashlib
+    import time
+    from astrid.core.generation import engine_runner
+
+    c = machine_case
+    original_generate = c.pod._generate
+    original_start, original_poll = c.pod.job_start, c.pod.job_poll
+    failed_jobs = set()
+
+    def generate(command):
+        c.context.deadline = time.monotonic() + 60
+        key = c.installation.root + '/.astrid-engine/install.json'
+        raw = c.context.files[key]
+        before = c.pod.files[key]
+        runner = engine_runner._Runner(c.installation.plan(), c.context, c.context.adapter,
+                                      c.context.deadline)
+        with c.context.acquire_install_lock(c.installation.root, deadline=c.context.deadline):
+            start_action, start_facts = runner.start()
+            health_action, health_facts = runner.check_health()
+            digest = engine_runner.refresh_installed_launch(
+                runner, raw, start_action=start_action, start_facts=start_facts,
+                health_action=health_action, health_facts=health_facts, check=lambda: None)
+        c.pod.files[key] = engine_runner._json(c.context.files[key]).encode()
+        assert c.pod.files[key] != before
+        output = original_generate(command)
+        root = c.pod.active_job['run_dir']
+        job = json.loads(c.pod.files[root + '/job.json'])
+        report = {'schema': 'astrid.managed-engine-preparation.v1',
+                  'task_id': job['task_identity'], 'attempt_id': job['attempt_identity'],
+                  'installation': {'root': c.installation.root, 'receipt_sha256': digest,
+                                   'recipe_sha256': c.installation.plan().recipe_sha256}}
+        payload = {'task_id': job['task_identity'], 'attempt_id': job['attempt_identity'],
+                   'evidence': {'producer': {'attempt': {'record': {'managed_engine_preparation': report}}}}}
+        path = root + '/out/manifest.json'
+        c.pod.files[path] = json.dumps({'managed_generation_result': payload}).encode()
+        manifest_path = root + '/out/' + rm.MANIFEST_NAME
+        manifest = json.loads(c.pod.files[manifest_path])
+        manifest['files']['manifest.json'] = {'sha256': hashlib.sha256(c.pod.files[path]).hexdigest(),
+                                            'size': len(c.pod.files[path])}
+        c.pod.files[manifest_path] = json.dumps(manifest).encode()
+        return output.split(rm.MANIFEST_MARK)[0] + rm.MANIFEST_MARK + hashlib.sha256(c.pod.files[manifest_path]).hexdigest() + '\n'
+
+    def start(command, *, job_id):
+        result = original_start(command, job_id=job_id)
+        if ' generate ' in command and '--placement local' in command:
+            failed_jobs.add(job_id)
+        return result
+
+    def poll(job_id):
+        result = original_poll(job_id)
+        return {**result, 'exit_code': 1} if job_id in failed_jobs else result
+
+    monkeypatch.setattr(c.pod, '_generate', generate)
+    monkeypatch.setattr(c.pod, 'job_start', start)
+    monkeypatch.setattr(c.pod, 'job_poll', poll)
+    job = c.job()
+    # The fake install context's wall-clock deadline is unrelated to the paid
+    # lease; discovery after fixture setup can otherwise exhaust it prematurely.
+    c.context.deadline = time.monotonic() + 120
+    with pytest.raises(rm.MachineError):
+        run_on_machine(c.machine, job, destination=job.scratch / 'outputs', cancelled=lambda: False,
+                       sleep=lambda _: None)
+    record = c.read()
+    assert record['state'] == 'claimed'
+    assert record['lease']['state'] == 'idle'
+    assert record['lease']['last_job']['outcome'] == 'failed'
+    assert c.creates == 1 and c.deletes == []
