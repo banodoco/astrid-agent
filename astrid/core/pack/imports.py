@@ -139,7 +139,7 @@ def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, ver
 
             personal = resolve_personal_packs_root()
             if personal is None or original != personal / "personal":
-                raise ValueError("selected personal pack must use the canonical personal root")
+                raise ValueError("the personal pack id is reserved for the canonical personal root")
         if builtin.is_dir() and builtin.resolve() != original:
             raise ValueError("external selected pack collides with an in-tree pack")
         if not re.fullmatch(r"[0-9a-f]{64}", entry["source_digest"]):
