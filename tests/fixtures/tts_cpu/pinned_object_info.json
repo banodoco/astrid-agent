@@ -1,0 +1,203 @@
+{
+  "AILab_Qwen3TTSCustomVoice": {
+    "category": "\ud83e\uddeaAILab/\ud83c\udf99\ufe0fQwenTTS",
+    "description": "",
+    "display_name": "Custom Voice (QwenTTS)",
+    "function": "AILab_Qwen3TTSCustomVoice",
+    "input_order": {
+      "optional": [
+        "instruct",
+        "unload_models",
+        "seed"
+      ],
+      "required": [
+        "text",
+        "speaker",
+        "model_size",
+        "language"
+      ]
+    },
+    "input_order_all": [
+      "text",
+      "speaker",
+      "model_size",
+      "language",
+      "instruct",
+      "unload_models",
+      "seed"
+    ],
+    "inputs": {
+      "optional": {
+        "instruct": [
+          "STRING",
+          {
+            "default": "",
+            "multiline": true,
+            "tooltip": "Style instruction"
+          }
+        ],
+        "seed": [
+          "INT",
+          {
+            "default": -1,
+            "max": 18446744073709551615,
+            "min": -1
+          }
+        ],
+        "unload_models": [
+          "BOOLEAN",
+          {
+            "default": true,
+            "tooltip": "Unload cached models after generation"
+          }
+        ]
+      },
+      "required": {
+        "language": [
+          [
+            "Auto",
+            "Chinese",
+            "English",
+            "Japanese",
+            "Korean",
+            "French",
+            "German",
+            "Spanish",
+            "Portuguese",
+            "Russian",
+            "Italian"
+          ],
+          {
+            "default": "Auto"
+          }
+        ],
+        "model_size": [
+          [
+            "0.6B",
+            "1.7B"
+          ],
+          {
+            "default": "1.7B"
+          }
+        ],
+        "speaker": [
+          [
+            "Aiden",
+            "Dylan",
+            "Eric",
+            "Ono_Anna",
+            "Ryan",
+            "Serena",
+            "Sohee",
+            "Uncle_Fu",
+            "Vivian"
+          ],
+          {
+            "default": "Ryan"
+          }
+        ],
+        "text": [
+          "STRING",
+          {
+            "default": "Hello from Qwen3-TTS.",
+            "multiline": true,
+            "tooltip": "Text to synthesize"
+          }
+        ]
+      }
+    },
+    "name": "AILab_Qwen3TTSCustomVoice",
+    "object_info_widget_order": [
+      "text",
+      "speaker",
+      "model_size",
+      "language",
+      "instruct",
+      "unload_models",
+      "seed"
+    ],
+    "outputs": [
+      {
+        "is_list": false,
+        "name": "audio",
+        "type": "AUDIO"
+      }
+    ],
+    "pack": "AILab_QwenTTS",
+    "pack_version": "runpod-snapshot",
+    "python_module": "AILab_QwenTTS"
+  },
+  "SaveAudioMP3": {
+    "category": "audio",
+    "class_schema_sha256": "8471738e92e7ed7857f7b184782ce55f39a26927007c2735be69551766e044ca",
+    "description": "",
+    "display_name": "Save Audio (MP3)",
+    "evidence_identity": "object_info_comfyui_0.24.0.1",
+    "function": "SaveAudioMP3",
+    "git_commit": null,
+    "input_order": {
+      "hidden": [
+        "prompt",
+        "extra_pnginfo"
+      ],
+      "required": [
+        "audio",
+        "filename_prefix",
+        "quality"
+      ]
+    },
+    "input_order_all": [
+      "audio",
+      "filename_prefix",
+      "quality"
+    ],
+    "inputs": {
+      "hidden": {
+        "extra_pnginfo": [
+          "EXTRA_PNGINFO"
+        ],
+        "prompt": [
+          "PROMPT"
+        ]
+      },
+      "required": {
+        "audio": [
+          "AUDIO",
+          {}
+        ],
+        "filename_prefix": [
+          "STRING",
+          {
+            "default": "audio/ComfyUI",
+            "multiline": false
+          }
+        ],
+        "quality": [
+          "COMBO",
+          {
+            "default": "V0",
+            "multiselect": false,
+            "options": [
+              "V0",
+              "128k",
+              "320k"
+            ]
+          }
+        ]
+      }
+    },
+    "name": "SaveAudioMP3",
+    "object_info_widget_order": [
+      null,
+      "filename_prefix",
+      "quality"
+    ],
+    "outputs": [],
+    "pack": "comfy_core",
+    "pack_slug": "comfy_core",
+    "pack_version": "object_info_comfyui_0.24.0.1",
+    "python_module": ".",
+    "schema_hash": "8471738e92e7ed7857f7b184782ce55f39a26927007c2735be69551766e044ca",
+    "source_kind": "object_info"
+  }
+}

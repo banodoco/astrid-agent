@@ -1,0 +1,12 @@
+{
+  "meaning": "Pinned historical cache snapshots, not observed live target schema.",
+  "projection": {
+    "AILab_Qwen3TTSCustomVoice": "AILab_QwenTTS@runpod-snapshot.json",
+    "SaveAudioMP3": "comfy_core@object_info_comfyui_0.24.0.1.json"
+  },
+  "source_sha256": {
+    "AILab_QwenTTS@runpod-snapshot.json": "59a3334df54e1639a485c0465105d1303afffc18431180a5c8ae5d64fc8b8c8a",
+    "comfy_core@object_info_comfyui_0.24.0.1.json": "bda0a9f7ebed602e58a78429fc20744ae6cc44be5644ce9f4894df14db67e387"
+  },
+  "vibe_commit": "8d065a8fef3dd602d5462e27d8eca088cf4e8262"
+}

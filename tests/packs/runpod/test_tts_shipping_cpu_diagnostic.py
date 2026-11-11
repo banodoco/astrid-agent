@@ -84,6 +84,46 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
     assert json.loads(shipped['workflow_inputs']) == json.loads(direct['workflow_inputs'])
     assert schemas == [job.align]  # prepared non-hook path intentionally does not repeat target_schema
 
+    # Exercise the later engine preflight separately with a fake target: the
+    # fixture is a projection of the pinned Vibe cache, not a live observation.
+    # Reload each sealed bundle independently so target schema metadata captured
+    # for one pass cannot mask a mismatch in the other.
+    from copy import deepcopy
+    from types import SimpleNamespace
+    import pytest
+    from astrid.packs.vibecomfy import local_server_engine, production_engine
+
+    fixture = Path(__file__).parents[2] / 'fixtures/tts_cpu/pinned_object_info.json'
+    cached = json.loads(fixture.read_text())
+    info = {}
+    for kind, row in cached.items():
+        info[kind] = {'input': row['inputs'],
+                      'output': [item['type'] for item in row['outputs']],
+                      'output_node': kind == 'SaveAudioMP3'}
+    assert set(info) == {'AILab_Qwen3TTSCustomVoice', 'SaveAudioMP3'}
+    observed = {'schema': info}
+    client = SimpleNamespace(object_info=lambda: deepcopy(observed['schema']))
+
+    def preflight(path, target_schema):
+        observed['schema'] = target_schema
+        loaded = production_engine.load_workflow_path(path, tmp_path / 'inspect')
+        bundle = production_engine._canonical_bundle_value(loaded.resolved)
+        return local_server_engine._live_preflight(
+            bundle, plan['bindings'], 'http://127.0.0.1:1', tmp_path, client=client,
+            target_custody=())
+
+    preflight(root / 'workflow.py', info)
+    preflight(landing / 'workflow.py', info)
+    changed = deepcopy(info)
+    # Remove the retained voice from the target's allowed enum without exposing
+    # inputs in logs; this is synthetic drift, not a claim about the real pod.
+    choices = changed['AILab_Qwen3TTSCustomVoice']['input']['required']['speaker'][0]
+    choices[:] = [choice for choice in choices if choice != 'Ryan']
+    with pytest.raises(local_server_engine.ProductionEngineError):
+        preflight(root / 'workflow.py', changed)
+    with pytest.raises(local_server_engine.ProductionEngineError):
+        preflight(landing / 'workflow.py', changed)
+
 
 def test_error_frame_keeps_only_allowlisted_structural_facts():
     from astrid.packs.runpod.failure_diagnostics import MARK, parse_frame, summarize
