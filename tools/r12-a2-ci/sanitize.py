@@ -1,5 +1,6 @@
 """Construct an allowlisted receipt. Never copy arbitrary subprocess output."""
 import collections, hashlib, json, os, pathlib, re, tempfile
+from stages import validate_events
 
 STATUSES = ('PASSED', 'FAILED', 'ERROR', 'SKIPPED', 'XFAIL', 'XPASS')
 SUMMARY_KEYS = ('passed', 'failed', 'error', 'errors', 'skipped', 'xfailed', 'xpassed', 'warnings', 'warning', 'deselected')
@@ -7,7 +8,7 @@ OUTCOME = re.compile(r'^(tests/.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:
 HEADINGS = {'test session starts', 'FAILURES', 'ERRORS', 'PASSES', 'XFAILURES', 'XPASSES', 'SKIPPED', 'warnings summary', 'short test summary info'}
 SUMMARY = re.compile(r'^=+ ((?:\d+ (?:passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected)(?:, )?)+) in \d+(?:\.\d+)?s(?: \([0-9:]+\))? =+$')
 
-def sanitized_result(raw, expected, absent, metadata, exit_code, preflight):
+def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stage_events=None):
     """Only fixed keys, verified metadata and frozen IDs enter the result."""
     expected_set = set(expected)
     if len(expected_set) != len(expected): raise ValueError('duplicate frozen IDs')
@@ -43,7 +44,7 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight):
     bad = status_counts.get('FAILED',0) + status_counts.get('ERROR',0)
     valid_exit = (exit_code == 0 and bad == 0) or (exit_code == 1 and bad > 0)
     complete = bool(preflight and raw is not None and valid_exit and not missing and not duplicates and unknown_count == 0 and malformed_outcome_count == 0 and malformed_summary_count == 0 and counts_match)
-    return {'schema':1, 'classification':'COMPLETE' if complete else 'INCOMPLETE', 'metadata':metadata,
+    return {'schema':1, 'stage_events':validate_events(stage_events if stage_events is not None else []), 'classification':'COMPLETE' if complete else 'INCOMPLETE', 'metadata':metadata,
             'expected_count':len(expected), 'missing_ids':missing, 'duplicate_ids':duplicates,
             'unexpected_result_count':unknown_count, 'malformed_outcome_count':malformed_outcome_count, 'malformed_summary_count':malformed_summary_count, 'absent_ids':sorted(absent),
             'outcomes':outcomes, 'outcome_counts':status_counts, 'summary_counts':summary,
