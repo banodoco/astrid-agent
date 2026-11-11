@@ -96,7 +96,7 @@ def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
     source.mkdir()
     shutil.copy2(ROOT / "pyproject.toml", source / "pyproject.toml")
     files = ("__init__.py", "version.py", "services.py", "chat/__init__.py", *CHAT_RESOURCES,
-             "installer/__init__.py", "installer/tools.py", *OMP_RESOURCES, *INSTALLER_IMPORT_RESOURCES,
+             "installer/__init__.py", "installer/tools.py", "installer/_pack_cleanup.py", *OMP_RESOURCES, *INSTALLER_IMPORT_RESOURCES,
              *GENERATION_GUIDE_RESOURCES, *_engine_resources()[0], "core/generation/vibecomfy_dependency.py",
              "chat/service.ts", "chat/service.test.ts")
     for name in files:
