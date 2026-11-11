@@ -423,6 +423,8 @@ class MachineLease:
     run_dir: str | None = None
     job_dir: str | None = None
     node_ids: frozenset[str] = frozenset()
+    #: Node class / input names the submitted graph itself uses (never values).
+    node_names: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -670,8 +672,8 @@ class RunPodMachine:
                 "inputs": public_inputs, "bindings": bindings, "execution": shipped}
         local_job = staging / JOB_NAME
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-        from .failure_diagnostics import graph_node_ids
-        lease.node_ids = graph_node_ids(job.inputs.get("source"))
+        from .failure_diagnostics import graph_facts
+        lease.node_ids, lease.node_names = graph_facts(job.inputs.get("source"))
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
         # The active pack selection and the user entry ship with the job; the
         # pod-side run resolves its entry from them only.
@@ -772,7 +774,8 @@ class RunPodMachine:
                     raise MachineError("remote failure diagnostic unavailable") from None
                 raise
         if failed:
-            diagnostic = parse_frame(stdout, node_ids=getattr(run.lease, "node_ids", frozenset()))
+            diagnostic = parse_frame(stdout, node_ids=getattr(run.lease, "node_ids", frozenset()),
+                                     node_names=getattr(run.lease, "node_names", frozenset()))
             run.lease.failure_diagnostic = diagnostic
             exit_code = record.get("exit_code")
             safe_exit = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else "unknown"
@@ -977,18 +980,21 @@ class RunPodMachine:
         from .failure_diagnostics import host_summary
         from astrid.core.execution.machine_run import MachineRunCancelled
         summary = host_summary(failure, getattr(lease, "failure_diagnostic", None),
-                               stage=stage, node_ids=lease.node_ids) if failure else None
+                               stage=stage, node_ids=lease.node_ids,
+                               node_names=lease.node_names) if failure else None
         outcome = ("cancelled" if isinstance(failure, MachineRunCancelled) else
                    "failed" if failure else "success")
         if not warm and summary is not None:
             try:
-                owner.note_failed_job(lease.lease, summary, outcome=outcome, node_ids=lease.node_ids)
+                owner.note_failed_job(lease.lease, summary, outcome=outcome, node_ids=lease.node_ids,
+                                      node_names=lease.node_names)
             except Exception:
                 pass  # Unsafe release still has priority over a diagnostic read/write.
         self._finish(lease.lease)
         if warm:
             try:
-                owner.settle(lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids)
+                owner.settle(lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids,
+                             node_names=lease.node_names)
             except Exception:
                 if observer_key is not None:
                     owner.end_failure_observation(observer_key)
@@ -1164,14 +1170,15 @@ def lease_rows(owner: Any) -> list[dict[str, Any]]:
 
 
 def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
-    from .failure_diagnostics import safe_stored_summary, stored_node_ids
+    from .failure_diagnostics import safe_stored_summary, stored_names, stored_node_ids
     lease = record.get("lease") or {}
     last = lease.get("last_job")
     last = last if isinstance(last, Mapping) else {}
     outcome = last.get("outcome") if last.get("outcome") in {"success", "failed", "cancelled"} else None
     safe_last = ({"outcome": outcome, "generation": last.get("generation") if type(last.get("generation")) is int else None,
                   "failure": safe_stored_summary(last.get("failure"),
-                                                 node_ids=stored_node_ids(last.get("structural_node_ids")))
+                                                 node_ids=stored_node_ids(last.get("structural_node_ids")),
+                                                 node_names=stored_names(last.get("structural_names")))
                   if outcome != "success" else None}
                  if outcome else None)
     # Live means custody still needs release, not that the pod is ready for reuse.
