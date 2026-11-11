@@ -195,6 +195,19 @@ def broker_selection(preferences, config, *, account_ref, data_root, compatibili
     return owner
 
 
+_STOCK_WAIT_MESSAGE = (
+    "No machine is in stock right now for the requested GPU; this is normal, and "
+    "`astrid generate <image|video|audio> ... --placement runpod --max-hourly-usd <ceiling> ...` waits for one by itself.")
+
+
+def _availability_message(reason):
+    """Human sentence for an availability reason; status/reason tokens stay machine-readable."""
+    if reason == "stock_unavailable":
+        return _STOCK_WAIT_MESSAGE
+    from .target_selection import _OFFER_FAILURES
+    return _OFFER_FAILURES.get(reason, _OFFER_FAILURES["observation_failed"])
+
+
 class RunPodAdapter:
     """Composition facade, with no timer, publication or teardown authority."""
 
@@ -211,7 +224,8 @@ class RunPodAdapter:
         except OfferObservationError as exc:
             if exc.reason != "stock_unavailable":
                 raise
-            return {"availability": {"status": "unavailable", "reason": exc.reason},
+            return {"availability": {"status": "unavailable", "reason": exc.reason,
+                                     "message": _availability_message(exc.reason)},
                     "preferences": self.lease_owner.selection.preferences.as_mapping()}
         return {"offer": asdict(offer),
                 "offer_digest": offer.digest(self.lease_owner.selection.preferences)}

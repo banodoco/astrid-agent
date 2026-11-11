@@ -813,6 +813,21 @@ def test_stockless_description_keeps_policy_disclosure_and_exact_quote_unchanged
     assert described["waiting_policy"]["policy_digest"] == selection.policy_consent_digest(case.prefs, 1.5)
 
 
+def test_stockless_availability_adds_waiting_message_and_keeps_tokens(case):
+    from astrid.packs.runpod.adapter import RunPodAdapter
+
+    adapter = RunPodAdapter(lease_owner=SimpleNamespace(selection=case.owner), placement=None,
+                            installation=None, validate=None)
+    case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError("stock_unavailable"))
+    availability = adapter.quote()["availability"]
+    assert set(availability) == {"status", "reason", "message"}
+    assert availability["status"] == "unavailable" and availability["reason"] == "stock_unavailable"
+    message = availability["message"]
+    assert "no machine is in stock right now" in message.lower() and "this is normal" in message
+    assert "astrid generate" in message and "--placement runpod" in message and "--max-hourly-usd <ceiling>" in message
+    assert "waits for one by itself" in message
+
+
 def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
     case.offer = RunPodOffer("account-a", "preferred-gpu", 1.5, "offer-2")
     observed = case.offer.digest(case.prefs)
