@@ -1907,6 +1907,7 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
 
     No success manifest or failed-job attestation authorizes the refresh.
     """
+    import hashlib
     import os
     import time
     from astrid.core.generation import engine_runner
@@ -1919,6 +1920,7 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
 
     c = machine_case
     stage('RETENTION_TEST_BEGIN')
+    original_generate = c.pod._generate
     original_start, original_poll = c.pod.job_start, c.pod.job_poll
     failed_jobs = set()
     limits = {}
@@ -1929,6 +1931,7 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
         key = c.installation.root + '/.astrid-engine/install.json'
         raw = c.context.files[key]
         before = c.pod.files[key]
+        limits['before_hash'] = hashlib.sha256(before).hexdigest()
         runner = engine_runner._Runner(c.installation.plan(), c.context, c.context.adapter,
                                       c.context.deadline)
         with c.context.acquire_install_lock(c.installation.root, deadline=c.context.deadline):
@@ -1938,6 +1941,7 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
                 runner, raw, start_action=start_action, start_facts=start_facts,
                 health_action=health_action, health_facts=health_facts, check=lambda: None)
         c.pod.files[key] = engine_runner._json(c.context.files[key]).encode()
+        limits['refreshed_hash'] = hashlib.sha256(c.pod.files[key]).hexdigest()
         assert c.pod.files[key] != before
         stage('RECEIPT_REFRESH_CHANGED')
         return 'astrid-generation-failure:{"code":"input_rejected","category":"input"}\n'
@@ -1980,6 +1984,18 @@ def test_failed_job_with_legitimate_receipt_refresh_keeps_verified_pod(machine_c
     assert record['lease']['idle_seconds'] == limits['idle_seconds']
     assert record['lease']['idle_expires_at'] <= limits['paid_expires_at']
     assert c.pod.resets[-1]['ok']
+    assert limits['before_hash'] != limits['refreshed_hash']
+    assert record['lease']['preparation']['installed']['receipt_sha256'] == 'sha256:' + limits['refreshed_hash']
+    monkeypatch.setattr(c.pod, '_generate', original_generate)
+    monkeypatch.setattr(c.pod, 'job_start', original_start)
+    monkeypatch.setattr(c.pod, 'job_poll', original_poll)
+    c.context.deadline = time.monotonic() + 120
+    second = c.job(2)
+    run_on_machine(c.machine, second, destination=second.scratch / 'outputs', cancelled=lambda: False,
+                   sleep=lambda _: None)
+    assert c.creates == 1 and c.deletes == []
+    assert c.read()['lease']['state'] == 'idle'
+    assert c.read()['lease']['preparation']['installed']['receipt_sha256'] == 'sha256:' + limits['refreshed_hash']
 
 
 def test_refresh_projection_preserves_unknown_and_legacy_fields():
@@ -2035,3 +2051,108 @@ def test_failed_refresh_without_matching_baseline_releases(machine_case, monkeyp
     assert c.read()['state'] == 'cleanup_complete'
     assert c.read()['lease']['ended'] == 'unsafe_job_state'
     assert c.deletes == ['pod-1']
+
+
+@pytest.mark.parametrize('race', ['expiry', 'explicit_release', 'shutdown'])
+def test_refreshed_candidate_cannot_promote_after_lease_fence(machine_case, monkeypatch, race):
+    import threading
+    import time
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    c.machine._checkpoint(lease, {'id': 'a' * 32, 'state': 'exited'})
+    assert lease.state.receipt_baseline is not None
+    previous = dict(lease.state.installed)
+    candidate = {**previous, 'receipt_sha256': 'sha256:' + 'f' * 64}
+    entered, resume = threading.Event(), threading.Event()
+    errors = []
+
+    def blocked(state, **_kwargs):
+        state.receipt_candidate = {'installed': candidate, 'projection': state.receipt_baseline}
+        entered.set()
+        assert resume.wait(10)
+        return True
+
+    monkeypatch.setattr(c.placement, '_canonical_installed', blocked)
+    def settle():
+        try:
+            c.machine.release(lease, False, failure=rm.MachineError('synthetic failure'))
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+
+    verifier = threading.Thread(target=settle)
+    verifier.start()
+    assert entered.wait(10)
+    releaser = None
+    try:
+        if race == 'expiry':
+            c.clock.now = c.read()['lease']['paid_expires_at']
+        elif race == 'shutdown':
+            c.host.close()
+        else:
+            releaser = threading.Thread(target=lambda: c.host.release(
+                reason='explicit', _expected_operation=lease.lease.operation_id,
+                expected_machine_id=lease.claim.pod_id))
+            releaser.start()
+            for _ in range(100):
+                if c.read()['lease']['state'] == 'releasing':
+                    break
+                time.sleep(0.01)
+            assert c.read()['lease']['state'] == 'releasing'
+    finally:
+        resume.set()
+        verifier.join(10)
+        if releaser is not None:
+            releaser.join(10)
+    assert not verifier.is_alive() and (releaser is None or not releaser.is_alive())
+    assert not errors
+    record = c.read()
+    assert record['lease']['state'] != 'idle'
+    assert record['lease']['preparation']['installed']['receipt_sha256'] == previous['receipt_sha256']
+    assert c.creates == 1
+
+
+@pytest.mark.parametrize('tamper', ['legacy_step', 'unknown_fact', 'started_at', 'source_pin', 'root', 'extra_key', 'owner'])
+def test_refresh_projection_rejects_parsed_receipt_tampering(machine_case, tamper):
+    from copy import deepcopy
+    import time
+    from astrid.core.generation import engine_runner
+    from astrid.core.generation.engine_contracts import IntegrityError
+    from astrid.packs.runpod.remote_placement import _refresh_projection
+
+    c = machine_case
+    c.context.deadline = time.monotonic() + 120
+    lease = c.machine.claim(c.job())
+    key = c.installation.root + '/.astrid-engine/install.json'
+    raw = deepcopy(c.context.files[key])
+    raw['steps'].append({'id': 'model:legacy', 'kind': 'model', 'action': 'executed',
+                         'validation': 'passed', 'facts': {'legacy': 'original'}})
+    plan = lease.state.installation.plan()
+    original = engine_runner._parse_receipt(raw, plan)
+    baseline = _refresh_projection(raw, original, original)
+    changed = deepcopy(raw)
+    if tamper == 'legacy_step':
+        changed['steps'][-1]['facts']['legacy'] = 'changed'
+    elif tamper == 'unknown_fact':
+        next(row for row in changed['steps'] if row['kind'] == 'start')['facts']['injected'] = 'value'
+    elif tamper == 'started_at':
+        changed['started_at'] = '2025-01-01T00:00:00+00:00'
+    elif tamper == 'source_pin':
+        changed['source_commits'][next(iter(changed['source_commits']))] = '0' * 40
+    elif tamper == 'root':
+        changed['root'] = '/synthetic/other'
+    elif tamper == 'extra_key':
+        changed['unexpected'] = 'value'
+    else:
+        next(row for row in changed['steps'] if row['kind'] == 'start')['facts']['owner_id'] = 'other-owner'
+    if tamper in {'source_pin', 'root', 'extra_key'}:
+        with pytest.raises(IntegrityError):
+            engine_runner._parse_receipt(changed, plan)
+    else:
+        parsed = engine_runner._parse_receipt(changed, plan)
+        if tamper == 'owner':
+            with pytest.raises(rm.RemotePlacementError):
+                _refresh_projection(changed, original, parsed)
+        else:
+            assert _refresh_projection(changed, parsed, parsed) != baseline
+    c.machine.release(lease, False)
