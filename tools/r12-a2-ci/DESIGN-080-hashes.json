@@ -1,0 +1,1247 @@
+{
+  "status": "design-only",
+  "source_repository": "banodoco/astrid-dev",
+  "source_commit": "26041afe13b30e4b5d6b9520a9977def490f6c80",
+  "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+  "parser_handoff_sha": "b4ddfb7dd9766d19526286e53cbc8768170178a6",
+  "prior_receipts": [
+    {
+      "side": "base",
+      "group": "019",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/interrupted-full/base-019.json",
+      "sha256": "783769392cc4c3e943895aef7e815cdf25c7b6632d0f23c29c47fbfded02394d",
+      "source_workflow_sha": "fdf95fa5abfe894bb9954c93631367726e391bf1",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 107,
+      "outcome_counts": {
+        "PASSED": 107
+      }
+    },
+    {
+      "side": "base",
+      "group": "020",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/base-020.json",
+      "sha256": "29d67f81154bf8a7b8fb06777bf09fd337c02b8845e7e34fd24472c3199b24a8",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 91,
+      "outcome_counts": {
+        "PASSED": 91
+      }
+    },
+    {
+      "side": "base",
+      "group": "021",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/base-021.json",
+      "sha256": "00a85ae2164712cdee458bd5c372ded35ab671a27213493119493dbef24beba1",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 45,
+      "outcome_counts": {
+        "PASSED": 45
+      }
+    },
+    {
+      "side": "base",
+      "group": "022",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/base-022.json",
+      "sha256": "f5f0bcb11aeb96672e28e5ad7f6fedbe74ea2ef1cd2601bb5673bda124c90ad5",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 100,
+      "outcome_counts": {
+        "PASSED": 100
+      }
+    },
+    {
+      "side": "base",
+      "group": "023",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/base-023.json",
+      "sha256": "e7498f12963b55c696b42e27f7013efedb370e46f0e9b43bb6cef1d9e86e675c",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 68,
+      "outcome_counts": {
+        "FAILED": 12,
+        "PASSED": 56
+      }
+    },
+    {
+      "side": "base",
+      "group": "024",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/base-024.json",
+      "sha256": "a1dcf67b291fc86ad60616792474b5cac4ed00d5ce231149e8e05cacbc264790",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 144,
+      "outcome_counts": {
+        "FAILED": 2,
+        "PASSED": 142
+      }
+    },
+    {
+      "side": "base",
+      "group": "025",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/base-025.json",
+      "sha256": "38baf7d0b2ca8fba5f7c1e58d9355aa2ceb9f9d25d93f900b898a7b9e7330844",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 91,
+      "outcome_counts": {
+        "PASSED": 91
+      }
+    },
+    {
+      "side": "base",
+      "group": "026",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/base-026.json",
+      "sha256": "5dc849e98fe1f90f75e86fcef29d77d4cf4544c60cc20c7c8966f95e5bc27c2e",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 62,
+      "outcome_counts": {
+        "FAILED": 1,
+        "PASSED": 61
+      }
+    },
+    {
+      "side": "base",
+      "group": "027",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/base-027.json",
+      "sha256": "eba58d3f381a4d0a721bcabc4095cce21ee202a0f456de2d036083d800823b5d",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 305,
+      "outcome_counts": {
+        "FAILED": 6,
+        "PASSED": 299
+      }
+    },
+    {
+      "side": "candidate",
+      "group": "019",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/interrupted-full/candidate-019.json",
+      "sha256": "d0253725bc612dd83aeb1a7a470abe1c911306b6f5d3384c7723d29442a9558e",
+      "source_workflow_sha": "fdf95fa5abfe894bb9954c93631367726e391bf1",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 107,
+      "outcome_counts": {
+        "PASSED": 107
+      }
+    },
+    {
+      "side": "candidate",
+      "group": "020",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/candidate-020.json",
+      "sha256": "46e8c1b07994134e0df8c3790ef8ae909b2734d6d1ed22bf14e8f946a0803f50",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 91,
+      "outcome_counts": {
+        "PASSED": 91
+      }
+    },
+    {
+      "side": "candidate",
+      "group": "021",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/candidate-021.json",
+      "sha256": "204b2c7bb5f92c0b1fbaa31cc451e7b49671d01e019eb5f2e0cf16954b32e7a6",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 45,
+      "outcome_counts": {
+        "PASSED": 45
+      }
+    },
+    {
+      "side": "candidate",
+      "group": "022",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/candidate-022.json",
+      "sha256": "7d655c8caa5f04a934a509d1b6dfdd6a1a899de396ef2dc5246012c2ad42d46e",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 100,
+      "outcome_counts": {
+        "PASSED": 100
+      }
+    },
+    {
+      "side": "candidate",
+      "group": "023",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/candidate-023.json",
+      "sha256": "e5eeed3c7bfbef822f3d99250902b4b286737cd000ce289c8a412ba74cd517c3",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 68,
+      "outcome_counts": {
+        "FAILED": 12,
+        "PASSED": 56
+      }
+    },
+    {
+      "side": "candidate",
+      "group": "024",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/candidate-024.json",
+      "sha256": "ea3d744f4252f8219c1bf3ecd5131bc5f3936a6ac902a33f7485417a56b47768",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 145,
+      "outcome_counts": {
+        "FAILED": 2,
+        "PASSED": 143
+      }
+    },
+    {
+      "side": "candidate",
+      "group": "025",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/candidate-025.json",
+      "sha256": "489af0b1711e100db6881f2db6940421c40e6f3652da0f82125240923b72fd61",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 100,
+      "outcome_counts": {
+        "PASSED": 100
+      }
+    },
+    {
+      "side": "candidate",
+      "group": "026",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/candidate-026.json",
+      "sha256": "0519e932cc718e347b5628cf4ea1c63bc7fb1120ed4628750661776f77c01f26",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 78,
+      "outcome_counts": {
+        "FAILED": 1,
+        "PASSED": 77
+      }
+    },
+    {
+      "side": "candidate",
+      "group": "027",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/candidate-027.json",
+      "sha256": "ebc49505f2d22bd8b597787750fa839ee5a98c68f017837a28619a4340699425",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 307,
+      "outcome_counts": {
+        "FAILED": 6,
+        "PASSED": 301
+      }
+    },
+    {
+      "side": "r10",
+      "group": "019",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/interrupted-full/r10-019.json",
+      "sha256": "0d0aa5ec4497608117ee1efda6d880ace1022282d6e0fef35b354c185d1c3444",
+      "source_workflow_sha": "fdf95fa5abfe894bb9954c93631367726e391bf1",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 107,
+      "outcome_counts": {
+        "PASSED": 107
+      }
+    },
+    {
+      "side": "r10",
+      "group": "020",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/interrupted-full/r10-020.json",
+      "sha256": "82b28a74b88297e56e0cb0b547a43bcea04cfdd75215594f17ab2f55bdfe7d21",
+      "source_workflow_sha": "fdf95fa5abfe894bb9954c93631367726e391bf1",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 53,
+      "outcome_counts": {
+        "PASSED": 53
+      }
+    },
+    {
+      "side": "r10",
+      "group": "021",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/r10-021.json",
+      "sha256": "7a2e17d701d0503106ee32bbe3be56fc7833db74feffa16c1ed36a7d4ae210e8",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "NO_RESULTS",
+      "exit_code": 0,
+      "expected_count": 0,
+      "outcome_counts": {}
+    },
+    {
+      "side": "r10",
+      "group": "022",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/r10-022.json",
+      "sha256": "4eb3c10747d88e413b0798fe50d9b42fe695bc5ac315f2a051cd5adcae61168a",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "NO_RESULTS",
+      "exit_code": 0,
+      "expected_count": 0,
+      "outcome_counts": {}
+    },
+    {
+      "side": "r10",
+      "group": "023",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/r10-023.json",
+      "sha256": "a8f656b7438f2244363ba2a0091a1e17905ef570b7d7a436203e029ff4556dac",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 31,
+      "outcome_counts": {
+        "PASSED": 31
+      }
+    },
+    {
+      "side": "r10",
+      "group": "024",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/r10-024.json",
+      "sha256": "bbe0af1a990fdf36c682fb5e110b48db9f188e1f3b989a0ab9a4018dbc11a155",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "NO_RESULTS",
+      "exit_code": 0,
+      "expected_count": 0,
+      "outcome_counts": {}
+    },
+    {
+      "side": "r10",
+      "group": "025",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/r10-025.json",
+      "sha256": "c4a143a006d81b159743ed8c1a1a89654195fef89c2c8cb7484f512c393656b1",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "NO_RESULTS",
+      "exit_code": 0,
+      "expected_count": 0,
+      "outcome_counts": {}
+    },
+    {
+      "side": "r10",
+      "group": "026",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/r10-026.json",
+      "sha256": "2089d7f346ea0af199c5a7ac69ccf7a19120270bb840c0aa6fc03e13ec1aba2e",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 5,
+      "outcome_counts": {
+        "PASSED": 5
+      }
+    },
+    {
+      "side": "r10",
+      "group": "027",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/r10-027.json",
+      "sha256": "a5c2bfe1a696bd427daf8ddced73ddbc403afa993e6a9bd189601630f76d1f80",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 268,
+      "outcome_counts": {
+        "FAILED": 5,
+        "PASSED": 263
+      }
+    },
+    {
+      "side": "r10",
+      "group": "028",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-028.json",
+      "sha256": "69da740321c2c0f4edbc8931afe9ec88e5e8276c4860cb3a4c37c40e15a0e5af",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 81,
+      "outcome_counts": {
+        "FAILED": 12,
+        "PASSED": 69
+      }
+    },
+    {
+      "side": "r10",
+      "group": "029",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-029.json",
+      "sha256": "7b9b4a31bcf7e801305d0c9088b8341838b2925da4656788d86f8091a2bc92d6",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 111,
+      "outcome_counts": {
+        "FAILED": 8,
+        "PASSED": 103
+      }
+    },
+    {
+      "side": "r10",
+      "group": "030",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-030.json",
+      "sha256": "caf990bcd2b2708ff9b15b0ac1c3f5229c67444bf189a56b269f395329828033",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 95,
+      "outcome_counts": {
+        "FAILED": 4,
+        "PASSED": 91
+      }
+    },
+    {
+      "side": "r10",
+      "group": "031",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-031.json",
+      "sha256": "3ac894ec53adf610628b3a5e5490ddd06e43f027af4b14eed2e9dd9bc8b395d4",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 12,
+      "outcome_counts": {
+        "FAILED": 7,
+        "PASSED": 5
+      }
+    },
+    {
+      "side": "r10",
+      "group": "032",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-032.json",
+      "sha256": "bc37a13f1cc4a39248c1fbb0358600ce6404352545a305a0efb500429d6f6932",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 144,
+      "outcome_counts": {
+        "FAILED": 59,
+        "PASSED": 85
+      }
+    },
+    {
+      "side": "r10",
+      "group": "033",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-033.json",
+      "sha256": "6ddd21bef78b7ca3e1a1ccd2fe46dbbc53df8c67ec09f45c2923bb648888e789",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 74,
+      "outcome_counts": {
+        "PASSED": 74
+      }
+    },
+    {
+      "side": "r10",
+      "group": "034",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-034.json",
+      "sha256": "35f611409f11151807a1a304b215390cc3ee282c2e92ca2ec6e7f1d79cde0f4d",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 80,
+      "outcome_counts": {
+        "PASSED": 80
+      }
+    },
+    {
+      "side": "r10",
+      "group": "035",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-035.json",
+      "sha256": "ecb1c1a2b9aa5efa6b38b67570092cba10046365f9dadd5ba6867c4c7243d4b8",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 84,
+      "outcome_counts": {
+        "FAILED": 11,
+        "PASSED": 73
+      }
+    },
+    {
+      "side": "r10",
+      "group": "036",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-036.json",
+      "sha256": "ceaaba21c33f4ede7bfb7e41e7a726c5f84960f87b33ef12be81392f19a35034",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 139,
+      "outcome_counts": {
+        "FAILED": 3,
+        "PASSED": 136
+      }
+    },
+    {
+      "side": "r10",
+      "group": "037",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-037.json",
+      "sha256": "73f68f013b50a1108db9a9a47d434f1b3bfe2e3d48c7b59b5e846dce1622a8e9",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 31,
+      "outcome_counts": {
+        "FAILED": 1,
+        "PASSED": 30
+      }
+    },
+    {
+      "side": "r10",
+      "group": "038",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-038.json",
+      "sha256": "c84048650254f14a1f76f5e3b46b38ca04bd948c55d7c2decaa82f8c85a670b7",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 65,
+      "outcome_counts": {
+        "PASSED": 65
+      }
+    },
+    {
+      "side": "r10",
+      "group": "039",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-039.json",
+      "sha256": "1d5d961c0fe5122f2b0f997eac6c04957fd1a32b4a61513daeb0c18a7f4818d8",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 94,
+      "outcome_counts": {
+        "FAILED": 4,
+        "PASSED": 90
+      }
+    },
+    {
+      "side": "r10",
+      "group": "040",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r10-040.json",
+      "sha256": "67a7404157ae1b008cc70a3cb0291d825f1598e8d74dfc98195d1308509a7267",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 97,
+      "outcome_counts": {
+        "PASSED": 96,
+        "SKIPPED": 1
+      }
+    },
+    {
+      "side": "r11",
+      "group": "019",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/interrupted-full/r11-019.json",
+      "sha256": "bedf88c1f4305b9dd940d878340853c03019166fcb91c961f0550d124f631bc7",
+      "source_workflow_sha": "fdf95fa5abfe894bb9954c93631367726e391bf1",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 107,
+      "outcome_counts": {
+        "PASSED": 107
+      }
+    },
+    {
+      "side": "r11",
+      "group": "020",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/r11-020.json",
+      "sha256": "c4f95e45cdea881a10ef0c3104ee8f1629f6de9b2acdbe951bff032d9c35ac6c",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 85,
+      "outcome_counts": {
+        "PASSED": 85
+      }
+    },
+    {
+      "side": "r11",
+      "group": "021",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation/r11-021.json",
+      "sha256": "210cf2304189e91294465965275959999abb09946c9733c03f023ea182d0ebd7",
+      "source_workflow_sha": "366c5acb08fe143a520d9eb8228d0218e17f67d2",
+      "schema": 1,
+      "has_incomplete_reasons": false,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 17,
+      "outcome_counts": {
+        "PASSED": 17
+      }
+    },
+    {
+      "side": "r11",
+      "group": "022",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-022.json",
+      "sha256": "5117c0fe59320740a984ac5fcae69afaa1c0ba5f99cf9ab96279ad08afa7a61e",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 94,
+      "outcome_counts": {
+        "PASSED": 94
+      }
+    },
+    {
+      "side": "r11",
+      "group": "023",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-023.json",
+      "sha256": "3a5756e3266cfef4d71654fbb825c4ec6987ea2881df5d1acf8a7fe399a5f568",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 68,
+      "outcome_counts": {
+        "FAILED": 12,
+        "PASSED": 56
+      }
+    },
+    {
+      "side": "r11",
+      "group": "024",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-024.json",
+      "sha256": "76832ddf29ff355fb89aa0cd566ee657dca1fd3390196d2467a40795bdec67b8",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 144,
+      "outcome_counts": {
+        "FAILED": 2,
+        "PASSED": 142
+      }
+    },
+    {
+      "side": "r11",
+      "group": "025",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-025.json",
+      "sha256": "630284acb9d0665241fb7c29a79839dd188d450edff99ff97cd8cc77dd3a5c1f",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 49,
+      "outcome_counts": {
+        "PASSED": 49
+      }
+    },
+    {
+      "side": "r11",
+      "group": "026",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-026.json",
+      "sha256": "be5c0f82bb9c83ff628fdecb02fae969705c9e87e8b1d3b26d036e8843a7e096",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 5,
+      "outcome_counts": {
+        "FAILED": 1,
+        "PASSED": 4
+      }
+    },
+    {
+      "side": "r11",
+      "group": "027",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-027.json",
+      "sha256": "86cc8ba424f3ad2672768cf8ba05d7007592a2c640ce10b68d4aebb044c566c6",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 275,
+      "outcome_counts": {
+        "FAILED": 7,
+        "PASSED": 268
+      }
+    },
+    {
+      "side": "r11",
+      "group": "028",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-028.json",
+      "sha256": "f98fa1cfb4c9598b3065e91ba7d1d5976c1bedb3534d5bb0a67177709af25c4f",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 81,
+      "outcome_counts": {
+        "FAILED": 12,
+        "PASSED": 69
+      }
+    },
+    {
+      "side": "r11",
+      "group": "029",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-029.json",
+      "sha256": "2830a26e1cbd4a51c49d88a37d6240347ca600692f2a20e5699dc63bb4018add",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 111,
+      "outcome_counts": {
+        "FAILED": 8,
+        "PASSED": 103
+      }
+    },
+    {
+      "side": "r11",
+      "group": "030",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-030.json",
+      "sha256": "115f8447b665b1ef2cbfb45da0fe5989877bac6c0cac3e155e6fe141df2a4f43",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 95,
+      "outcome_counts": {
+        "FAILED": 4,
+        "PASSED": 91
+      }
+    },
+    {
+      "side": "r11",
+      "group": "031",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-031.json",
+      "sha256": "8d740923b3a528593d30171f19782b33fea099375d3c3b6d7b72ba98af95ec00",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 7,
+      "outcome_counts": {
+        "FAILED": 1,
+        "PASSED": 6
+      }
+    },
+    {
+      "side": "r11",
+      "group": "032",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-032.json",
+      "sha256": "be5bbf453336f745ae6f4e9b04368fd35ef9ab39da78d7547facafceb54a4e5c",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 1,
+      "expected_count": 144,
+      "outcome_counts": {
+        "FAILED": 59,
+        "PASSED": 85
+      }
+    },
+    {
+      "side": "r11",
+      "group": "033",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-033.json",
+      "sha256": "ef5ff7db670f3de53b6e8600750b41a5eca7071b74eb1945325ac982b26fd1f6",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 74,
+      "outcome_counts": {
+        "PASSED": 74
+      }
+    },
+    {
+      "side": "r11",
+      "group": "034",
+      "source_path": "plans/29-update-and-release/evidence/r12/a2-ci/continuation-118/r11-034.json",
+      "sha256": "f4470d77a5e3a67346715b35fe48e1a1ba163856dd850e13b1eb59c52842d10f",
+      "source_workflow_sha": "a417dae48cdd4b288406d7b16cc2d5dddcbb2afb",
+      "schema": 1,
+      "has_incomplete_reasons": true,
+      "has_additional_error_ids": false,
+      "classification": "COMPLETE",
+      "exit_code": 0,
+      "expected_count": 80,
+      "outcome_counts": {
+        "PASSED": 80
+      }
+    }
+  ],
+  "remaining_pairs": [
+    {
+      "side": "r10",
+      "group": "041"
+    },
+    {
+      "side": "r10",
+      "group": "042"
+    },
+    {
+      "side": "r10",
+      "group": "043"
+    },
+    {
+      "side": "r10",
+      "group": "044"
+    },
+    {
+      "side": "r10",
+      "group": "045"
+    },
+    {
+      "side": "r10",
+      "group": "046"
+    },
+    {
+      "side": "r10",
+      "group": "047"
+    },
+    {
+      "side": "r10",
+      "group": "048"
+    },
+    {
+      "side": "r10",
+      "group": "049"
+    },
+    {
+      "side": "r10",
+      "group": "050"
+    },
+    {
+      "side": "r10",
+      "group": "051"
+    },
+    {
+      "side": "r10",
+      "group": "052"
+    },
+    {
+      "side": "r11",
+      "group": "035"
+    },
+    {
+      "side": "r11",
+      "group": "036"
+    },
+    {
+      "side": "r11",
+      "group": "037"
+    },
+    {
+      "side": "r11",
+      "group": "038"
+    },
+    {
+      "side": "r11",
+      "group": "039"
+    },
+    {
+      "side": "r11",
+      "group": "040"
+    },
+    {
+      "side": "r11",
+      "group": "041"
+    },
+    {
+      "side": "r11",
+      "group": "042"
+    },
+    {
+      "side": "r11",
+      "group": "043"
+    },
+    {
+      "side": "r11",
+      "group": "044"
+    },
+    {
+      "side": "r11",
+      "group": "045"
+    },
+    {
+      "side": "r11",
+      "group": "046"
+    },
+    {
+      "side": "r11",
+      "group": "047"
+    },
+    {
+      "side": "r11",
+      "group": "048"
+    },
+    {
+      "side": "r11",
+      "group": "049"
+    },
+    {
+      "side": "r11",
+      "group": "050"
+    },
+    {
+      "side": "r11",
+      "group": "051"
+    },
+    {
+      "side": "r11",
+      "group": "052"
+    },
+    {
+      "side": "base",
+      "group": "028"
+    },
+    {
+      "side": "base",
+      "group": "029"
+    },
+    {
+      "side": "base",
+      "group": "030"
+    },
+    {
+      "side": "base",
+      "group": "031"
+    },
+    {
+      "side": "base",
+      "group": "032"
+    },
+    {
+      "side": "base",
+      "group": "033"
+    },
+    {
+      "side": "base",
+      "group": "034"
+    },
+    {
+      "side": "base",
+      "group": "035"
+    },
+    {
+      "side": "base",
+      "group": "036"
+    },
+    {
+      "side": "base",
+      "group": "037"
+    },
+    {
+      "side": "base",
+      "group": "038"
+    },
+    {
+      "side": "base",
+      "group": "039"
+    },
+    {
+      "side": "base",
+      "group": "040"
+    },
+    {
+      "side": "base",
+      "group": "041"
+    },
+    {
+      "side": "base",
+      "group": "042"
+    },
+    {
+      "side": "base",
+      "group": "043"
+    },
+    {
+      "side": "base",
+      "group": "044"
+    },
+    {
+      "side": "base",
+      "group": "045"
+    },
+    {
+      "side": "base",
+      "group": "046"
+    },
+    {
+      "side": "base",
+      "group": "047"
+    },
+    {
+      "side": "base",
+      "group": "048"
+    },
+    {
+      "side": "base",
+      "group": "049"
+    },
+    {
+      "side": "base",
+      "group": "050"
+    },
+    {
+      "side": "base",
+      "group": "051"
+    },
+    {
+      "side": "base",
+      "group": "052"
+    },
+    {
+      "side": "candidate",
+      "group": "028"
+    },
+    {
+      "side": "candidate",
+      "group": "029"
+    },
+    {
+      "side": "candidate",
+      "group": "030"
+    },
+    {
+      "side": "candidate",
+      "group": "031"
+    },
+    {
+      "side": "candidate",
+      "group": "032"
+    },
+    {
+      "side": "candidate",
+      "group": "033"
+    },
+    {
+      "side": "candidate",
+      "group": "034"
+    },
+    {
+      "side": "candidate",
+      "group": "035"
+    },
+    {
+      "side": "candidate",
+      "group": "036"
+    },
+    {
+      "side": "candidate",
+      "group": "037"
+    },
+    {
+      "side": "candidate",
+      "group": "038"
+    },
+    {
+      "side": "candidate",
+      "group": "039"
+    },
+    {
+      "side": "candidate",
+      "group": "040"
+    },
+    {
+      "side": "candidate",
+      "group": "041"
+    },
+    {
+      "side": "candidate",
+      "group": "042"
+    },
+    {
+      "side": "candidate",
+      "group": "043"
+    },
+    {
+      "side": "candidate",
+      "group": "044"
+    },
+    {
+      "side": "candidate",
+      "group": "045"
+    },
+    {
+      "side": "candidate",
+      "group": "046"
+    },
+    {
+      "side": "candidate",
+      "group": "047"
+    },
+    {
+      "side": "candidate",
+      "group": "048"
+    },
+    {
+      "side": "candidate",
+      "group": "049"
+    },
+    {
+      "side": "candidate",
+      "group": "050"
+    },
+    {
+      "side": "candidate",
+      "group": "051"
+    },
+    {
+      "side": "candidate",
+      "group": "052"
+    }
+  ]
+}
