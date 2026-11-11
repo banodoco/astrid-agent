@@ -63,7 +63,7 @@ DEFAULT_RUNPOD_WORKER_IMAGE = (
 
 
 _OFFER_FAILURES = {
-    "stock_unavailable": "no requested GPU has confirmed stock and price in the selected datacenter",
+    "stock_unavailable": "no machine is in stock right now for the requested GPU and datacenter; this is normal, and generate with --max-hourly-usd waits for one by itself",
     "provider_transport_or_response_unavailable": "provider transport or response is unavailable; retry offer observation",
     "provider_authentication_failed": "provider authentication was rejected; check the configured credential",
     "provider_rate_limited": "provider rate limit was reached; retry offer observation later",
@@ -537,7 +537,9 @@ class RunPodSelectionOwner:
             if self.progress is not None:
                 self.progress(row)
             else:
-                print(f"RunPod capacity attempt {number}: GPU {row['gpu']}, datacenter {row['datacenter'] or 'eligible'}: {result}",
+                shown = (f"no stock yet ({result}); still waiting, this is normal"
+                         if result == "stock_unavailable" and consent.wait_for_capacity else result)
+                print(f"RunPod capacity attempt {number}: GPU {row['gpu']}, datacenter {row['datacenter'] or 'eligible'}: {shown}",
                       file=sys.stderr, flush=True)
 
         async def observe() -> RunPodOffer:

@@ -813,6 +813,21 @@ def test_stockless_description_keeps_policy_disclosure_and_exact_quote_unchanged
     assert described["waiting_policy"]["policy_digest"] == selection.policy_consent_digest(case.prefs, 1.5)
 
 
+def test_stockless_availability_adds_waiting_message_and_keeps_tokens(case):
+    from astrid.packs.runpod.adapter import RunPodAdapter
+
+    adapter = RunPodAdapter(lease_owner=SimpleNamespace(selection=case.owner), placement=None,
+                            installation=None, validate=None)
+    case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError("stock_unavailable"))
+    availability = adapter.quote()["availability"]
+    assert set(availability) == {"status", "reason", "message"}
+    assert availability["status"] == "unavailable" and availability["reason"] == "stock_unavailable"
+    message = availability["message"]
+    assert "no machine is in stock right now" in message.lower() and "this is normal" in message
+    assert "astrid generate" in message and "--placement runpod" in message and "--max-hourly-usd <ceiling>" in message
+    assert "waits for one by itself" in message
+
+
 def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
     case.offer = RunPodOffer("account-a", "preferred-gpu", 1.5, "offer-2")
     observed = case.offer.digest(case.prefs)
@@ -1096,3 +1111,21 @@ def test_pricing_conflicting_failures_use_first_specific_reason(case, monkeypatc
     with pytest.raises(PaidSelectionError) as raised:
         asyncio.run(observe_priced_offer(prefs, config))
     assert raised.value.reason == 'provider_authentication_failed'
+
+
+def test_capacity_attempt_line_reads_as_waiting_and_keeps_reason_token(case, monkeypatch, capsys):
+    fake_capacity_clock(case, monkeypatch)
+    case.owner.progress = None
+
+    def absent():
+        raise selection.OfferObservationError("stock_unavailable")
+
+    case.owner.observe_offer = absent
+    with pytest.raises(selection.CapacityWaitTimeout):
+        asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=6)))
+    first = capsys.readouterr().err.splitlines()[0]
+    assert "RunPod capacity attempt 1:" in first
+    assert first.endswith("no stock yet (stock_unavailable); still waiting, this is normal")
+    with pytest.raises(selection.OfferObservationError):
+        asyncio.run(case.owner.select(waiting_grant(case, wait_for_capacity=False)))
+    assert "still waiting" not in capsys.readouterr().err
