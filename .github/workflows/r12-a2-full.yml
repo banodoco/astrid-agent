@@ -1,23 +1,23 @@
-name: R12 A2 groups 019-052 (one bounded push)
+name: R12 A2 continuation 020-052 (one bounded push)
 on:
   push:
-    branches: ['scratch/r12-a2-full-019-052-20261111']
+    branches: ['scratch/r12-a2-resume-020-052-20261111']
 permissions:
   contents: read
 concurrency:
-  group: r12-a2-full-019-052-20261111
+  group: r12-a2-resume-020-052-20261111
   cancel-in-progress: false
 jobs:
   r10_range1:
-    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: r10
-      group_range: '019-030'
+      group_range: '020-030'
       prior_failure: 'false'
   r10_range2:
     needs: r10_range1
-    if: ${{ always() && !cancelled() && needs.r10_range1.result != 'cancelled' && needs.r10_range1.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
+    if: ${{ always() && !cancelled() && needs.r10_range1.result != 'cancelled' && needs.r10_range1.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: r10
@@ -25,22 +25,22 @@ jobs:
       prior_failure: ${{ needs.r10_range1.outputs.has_failure }}
   r10_range3:
     needs: r10_range2
-    if: ${{ always() && !cancelled() && needs.r10_range2.result != 'cancelled' && needs.r10_range2.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
+    if: ${{ always() && !cancelled() && needs.r10_range2.result != 'cancelled' && needs.r10_range2.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: r10
       group_range: '042-052'
       prior_failure: ${{ needs.r10_range2.outputs.has_failure }}
   r11_range1:
-    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: r11
-      group_range: '019-030'
+      group_range: '020-030'
       prior_failure: 'false'
   r11_range2:
     needs: r11_range1
-    if: ${{ always() && !cancelled() && needs.r11_range1.result != 'cancelled' && needs.r11_range1.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
+    if: ${{ always() && !cancelled() && needs.r11_range1.result != 'cancelled' && needs.r11_range1.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: r11
@@ -48,22 +48,22 @@ jobs:
       prior_failure: ${{ needs.r11_range1.outputs.has_failure }}
   r11_range3:
     needs: r11_range2
-    if: ${{ always() && !cancelled() && needs.r11_range2.result != 'cancelled' && needs.r11_range2.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
+    if: ${{ always() && !cancelled() && needs.r11_range2.result != 'cancelled' && needs.r11_range2.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: r11
       group_range: '042-052'
       prior_failure: ${{ needs.r11_range2.outputs.has_failure }}
   base_range1:
-    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: base
-      group_range: '019-030'
+      group_range: '020-030'
       prior_failure: 'false'
   base_range2:
     needs: base_range1
-    if: ${{ always() && !cancelled() && needs.base_range1.result != 'cancelled' && needs.base_range1.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
+    if: ${{ always() && !cancelled() && needs.base_range1.result != 'cancelled' && needs.base_range1.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: base
@@ -71,22 +71,22 @@ jobs:
       prior_failure: ${{ needs.base_range1.outputs.has_failure }}
   base_range3:
     needs: base_range2
-    if: ${{ always() && !cancelled() && needs.base_range2.result != 'cancelled' && needs.base_range2.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
+    if: ${{ always() && !cancelled() && needs.base_range2.result != 'cancelled' && needs.base_range2.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: base
       group_range: '042-052'
       prior_failure: ${{ needs.base_range2.outputs.has_failure }}
   candidate_range1:
-    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    if: github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: candidate
-      group_range: '019-030'
+      group_range: '020-030'
       prior_failure: 'false'
   candidate_range2:
     needs: candidate_range1
-    if: ${{ always() && !cancelled() && needs.candidate_range1.result != 'cancelled' && needs.candidate_range1.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
+    if: ${{ always() && !cancelled() && needs.candidate_range1.result != 'cancelled' && needs.candidate_range1.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: candidate
@@ -94,7 +94,7 @@ jobs:
       prior_failure: ${{ needs.candidate_range1.outputs.has_failure }}
   candidate_range3:
     needs: candidate_range2
-    if: ${{ always() && !cancelled() && needs.candidate_range2.result != 'cancelled' && needs.candidate_range2.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
+    if: ${{ always() && !cancelled() && needs.candidate_range2.result != 'cancelled' && needs.candidate_range2.outputs.safe_to_continue == 'true' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced }}
     uses: ./.github/workflows/r12-a2-full-range.yml
     with:
       side: candidate

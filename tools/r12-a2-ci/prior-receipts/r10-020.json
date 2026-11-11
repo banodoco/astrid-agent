@@ -1,0 +1,383 @@
+{
+  "absent_ids": [
+    "tests/core/execution/test_warm_hold.py::test_reused_holder_updates_its_own_expiry_callback_and_refuses_foreign_lock",
+    "tests/core/pack/test_agent_index_selected.py::test_index_uses_selected_admitted_roots_and_never_fetches",
+    "tests/core/pack/test_cli_manage.py::test_explicit_flag_then_environment_precede_managed",
+    "tests/core/pack/test_cli_manage.py::test_implicit_descriptor_refuses_writable_and_aliases",
+    "tests/core/pack/test_cli_manage.py::test_managed_descriptor_keeps_binary_and_api_hash_checks",
+    "tests/core/pack/test_cli_manage.py::test_packs_add_with_a_pending_host_refresh_prints_the_one_availability_line",
+    "tests/core/pack/test_cli_manage.py::test_selected_managed_descriptor_requires_exact_installed_context",
+    "tests/core/pack/test_cli_symlink_collection.py::test_plain_personal_collection_is_selected",
+    "tests/core/pack/test_cli_symlink_collection.py::test_refusal_text_is_the_runtime_text",
+    "tests/core/pack/test_cli_symlink_collection.py::test_symlinked_parent_of_the_collection_is_refused",
+    "tests/core/pack/test_cli_symlink_collection.py::test_symlinked_personal_collection_is_refused_with_the_runtime_text",
+    "tests/core/pack/test_defaults.py::test_default_pin_conflict_does_not_take_over_user_pack",
+    "tests/core/pack/test_defaults.py::test_defaults_leave_user_pack_untouched",
+    "tests/core/pack/test_defaults.py::test_failed_default_update_restores_previous_group_and_default_list",
+    "tests/core/pack/test_defaults.py::test_invalid_release_default_declarations_fail_closed[<lambda>0]",
+    "tests/core/pack/test_defaults.py::test_invalid_release_default_declarations_fail_closed[<lambda>1]",
+    "tests/core/pack/test_defaults.py::test_invalid_release_default_declarations_fail_closed[<lambda>2]",
+    "tests/core/pack/test_defaults.py::test_release_defaults_install_as_one_group_and_record_default_provenance",
+    "tests/core/pack/test_defaults.py::test_release_manifest_uses_shared_json_yaml_parser",
+    "tests/core/pack/test_defaults.py::test_user_removal_tombstone_survives_default_reconciliation",
+    "tests/core/pack/test_definitions_record.py::test_a_tampered_definitions_record_is_refused_on_the_next_group_change",
+    "tests/core/pack/test_definitions_record.py::test_definition_digests_equal_the_hosts_select_digest",
+    "tests/core/pack/test_definitions_record.py::test_every_installed_pack_gets_definitions_bound_in_the_group_state",
+    "tests/core/pack/test_definitions_record.py::test_install_round_trip_updates_and_reverifies_the_record",
+    "tests/core/pack/test_definitions_record.py::test_local_folder_install_records_null_provenance",
+    "tests/core/pack/test_deleted_dependency_discovery.py::test_check_preserves_sibling_dependency_context",
+    "tests/core/pack/test_deleted_dependency_discovery.py::test_managed_damage_still_refuses_discovery[ancestor_symlink]",
+    "tests/core/pack/test_deleted_dependency_discovery.py::test_managed_damage_still_refuses_discovery[missing_and_tamper]",
+    "tests/core/pack/test_deleted_dependency_discovery.py::test_managed_damage_still_refuses_discovery[symlink]",
+    "tests/core/pack/test_deleted_dependency_discovery.py::test_managed_damage_still_refuses_discovery[tamper]",
+    "tests/core/pack/test_deleted_dependency_discovery.py::test_raw_deleted_dependency_is_quarantined_across_discovery_list_and_check[collection]",
+    "tests/core/pack/test_deleted_dependency_discovery.py::test_raw_deleted_dependency_is_quarantined_across_discovery_list_and_check[managed]",
+    "tests/core/pack/test_filelock.py::test_directory_sync_is_skipped_without_o_directory",
+    "tests/core/pack/test_filelock.py::test_directory_sync_still_fsyncs_where_supported",
+    "tests/core/pack/test_filelock.py::test_install_and_group_locks_work_without_fcntl",
+    "tests/core/pack/test_filelock.py::test_lock_helper_uses_msvcrt_when_fcntl_absent",
+    "tests/core/pack/test_filelock.py::test_locks_work_without_fcntl_o_directory_or_o_nofollow",
+    "tests/core/pack/test_filelock.py::test_unsupported_platform_is_refused_cleanly"
+  ],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 53,
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "020",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "72462b04fa036736eb7fc9cb654def5f4ea2158c",
+      "52ec0578963847693a0df758d9bc1d55325f518f",
+      "e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "96360a27a53c4608f780f7b370f747a2aa3c7ca8"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "r10",
+    "workflow_sha": "fdf95fa5abfe894bb9954c93631367726e391bf1"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "PASSED": 53
+  },
+  "outcomes": [
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_hold_expires_after_the_last_release_by_running_the_holders_stop",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_a_new_task_cancels_the_pending_expiry",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_concurrent_leases_arm_one_deadline_after_the_last_release",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_a_task_that_leaves_nothing_warm_forgets_the_hold",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_expiry_waiting_for_the_holder_lock_yields_to_a_task_that_arrives_first",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_a_lease_waits_for_an_expiry_whose_stop_is_already_running",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_close_cancels_pending_expiries_and_later_leases_are_inert",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_request_wins_then_the_one_knob_then_each_holders_default",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_idle_expiry_ends_the_warm_wan_child_through_its_session_release",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_windows_wan_idle_release_uses_retained_job_evidence[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_windows_wan_idle_release_uses_retained_job_evidence[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_failed_idle_release_is_recorded_and_keeps_the_slot_occupied",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_warm_hold.py::test_host_status_names_each_warm_hold_and_when_it_expires",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_windows_comfy_refusal.py::test_windows_managed_comfy_refuses_before_profile_preparation_or_custody",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_windows_comfy_refusal.py::test_windows_host_only_preparation_keeps_its_existing_route",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_windows_diagnostic_sinks.py::test_bridge_regular_file_diagnostic_is_redacted_without_fcntl[sdk]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_windows_diagnostic_sinks.py::test_bridge_regular_file_diagnostic_is_redacted_without_fcntl[host]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_windows_diagnostic_sinks.py::test_bridge_unavailable_windows_pipe_flags_cannot_mask_cleanup_error",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_windows_diagnostic_sinks.py::test_windows_startup_diagnostic_requires_private_handle_and_fixed_fields[False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_windows_diagnostic_sinks.py::test_windows_startup_diagnostic_requires_private_handle_and_fixed_fields[True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_qualified_receipt_returns_exact_runpod_target",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_qualified_receipt_preserves_nested_storage_and_legacy_volume_fields",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_malformed_or_empty_nested_storage_volume_fails[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_malformed_or_empty_nested_storage_volume_fails[storage1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_malformed_or_empty_nested_storage_volume_fails[volume-1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_malformed_or_empty_nested_storage_volume_fails[storage3]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_malformed_or_empty_nested_storage_volume_fails[storage4]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_contradictory_direct_and_nested_volume_ids_fail",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_all_direct_and_nested_volume_id_aliases_must_agree[backup_volume_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_all_direct_and_nested_volume_id_aliases_must_agree[network_volume_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_all_direct_and_nested_volume_id_aliases_must_agree[volume_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_empty_direct_volume_ids_fail[backup_volume_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_empty_direct_volume_ids_fail[network_volume_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_empty_direct_volume_ids_fail[volume_id]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_incomplete_receipts_fail_closed[status-ready]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_incomplete_receipts_fail_closed[worker_ready-False]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_incomplete_receipts_fail_closed[runtime_epoch-0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_incomplete_receipts_fail_closed[capability_digest-wrong]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_incomplete_receipts_fail_closed[model_root_digest-wrong]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_target_mismatch_fails_before_admission",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_nested_storage_mismatch_fails_before_admission",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_expected_target_must_match_direct_volume_ids_exactly",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_qualification.py::test_load_rejects_non_object_and_accepts_regular_file",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_startup_identity.py::test_startup_attestation_normalizes_and_records_exact_target",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_startup_identity.py::test_source_closure_digest_changes_when_sdk_or_launcher_changes",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_startup_identity.py::test_source_digest_preserves_posix_revision_and_windows_component_order",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_startup_identity.py::test_sanitized_child_import_proves_current_host_sdk_version_and_vendored_client",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_startup_identity.py::test_sanitized_imported_version_module_changes_measured_closure",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_startup_identity.py::test_startup_fails_before_readiness_on_source_mismatch",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_startup_identity.py::test_startup_fails_before_readiness_when_required_target_is_missing",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_worker_startup_identity.py::test_startup_rejects_malformed_target_before_claims",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_cli_basic_starter.py::test_packs_new_emits_authored_v3_fields_and_validates",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/pack/test_cli_basic_starter.py::test_ui_rendering_and_support_only_starters_do_not_force_action_entrypoints",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "0e0e6fe27f9fae6aa4f9b9cbc1555b059adacd80bdd80ea5173bc02c12c45c25",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "passed",
+      "exit_code": 0,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "passed": 53
+  },
+  "unexpected_result_count": 0
+}

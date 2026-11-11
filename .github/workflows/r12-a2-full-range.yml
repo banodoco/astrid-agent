@@ -1,4 +1,4 @@
-name: R12 A2 bounded range (called workflow)
+name: R12 A2 continuation range (called workflow)
 on:
   workflow_call:
     inputs:
@@ -20,7 +20,7 @@ permissions:
   contents: read
 jobs:
   compare:
-    if: github.event_name == 'push' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    if: github.event_name == 'push' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-resume-020-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:
@@ -325,6 +325,7 @@ jobs:
           retention-days: 90
       - name: Execute bounded group slot 11
         id: slot11
+        if: inputs.side != 'r10' || inputs.group_range != '020-030'
         env:
           A2_SIDE: ${{ inputs.side }}
           A2_RANGE: ${{ inputs.group_range }}
@@ -350,36 +351,6 @@ jobs:
         with:
           name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-11-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/r12-a2-final-slot-11/receipt.json
-          if-no-files-found: error
-          retention-days: 90
-      - name: Execute bounded group slot 12
-        id: slot12
-        if: inputs.group_range == '019-030'
-        env:
-          A2_SIDE: ${{ inputs.side }}
-          A2_RANGE: ${{ inputs.group_range }}
-          A2_SLOT: '12'
-          A2_BEFORE: ${{ github.event.before }}
-          A2_REF: ${{ github.ref }}
-          A2_SHA: ${{ github.sha }}
-          A2_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          exec env -i PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" A2_SIDE="$A2_SIDE" A2_RANGE="$A2_RANGE" A2_SLOT="$A2_SLOT" A2_BEFORE="$A2_BEFORE" A2_REF="$A2_REF" A2_SHA="$A2_SHA" A2_ATTEMPT="$A2_ATTEMPT" PYTHONDONTWRITEBYTECODE=1 python tools/r12-a2-ci/full_driver.py
-      - name: Seal sanitized receipt 12
-        id: seal12
-        if: always() && steps.slot12.outcome == 'success'
-        env:
-          A2_SIDE: ${{ inputs.side }}
-          A2_RANGE: ${{ inputs.group_range }}
-          A2_SLOT: '12'
-          A2_SHA: ${{ github.sha }}
-        run: python tools/r12-a2-ci/seal_full_receipt.py
-      - name: Persist group receipt 12
-        if: always() && steps.seal12.outputs.receipt_ready == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: r12-a2-${{ inputs.side }}-${{ inputs.group_range }}-slot-12-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/r12-a2-final-slot-12/receipt.json
           if-no-files-found: error
           retention-days: 90
       - name: Checkpoint completed range

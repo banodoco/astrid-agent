@@ -3,7 +3,7 @@
 import hashlib, json, os, pathlib, re, subprocess, sys, time, traceback
 from sanitize import sanitized_result, write_receipt
 from stages import StageTracker
-from full_plan import FULL_REF, RANGES, SIDES
+from full_plan import FULL_REF, RANGES, SIDES, group_for
 
 HERE = pathlib.Path(__file__).resolve().parent
 MANIFEST_SHA = '885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771'
@@ -41,9 +41,9 @@ def verify_run_control(group, event):
         allowed = event.get('A2_REF') == 'refs/heads/scratch/r12-a2-final-019-20261111' and group == '019'
     elif mode == 'full':
         control = json.loads((HERE/'full-control.json').read_text())
-        allowed = (control == {'purpose':'r12-a2-full-019-052-20261111','before':BEFORE,'manifest_sha256':MANIFEST_SHA,'ranges':list(RANGES),'sides':list(SIDES)}
+        allowed = (control == {'purpose':'r12-a2-resume-020-052-20261111','before':BEFORE,'manifest_sha256':MANIFEST_SHA,'ranges':list(RANGES),'sides':list(SIDES)}
                    and event.get('A2_REF') == FULL_REF and event.get('A2_RANGE') in RANGES
-                   and group in RANGES[event['A2_RANGE']])
+                   and group in (group_for(event.get('A2_SIDE'),event['A2_RANGE'],slot) for slot in range(1,12)))
     else: allowed = False
     if not allowed or event.get('A2_BEFORE') != BEFORE or event.get('A2_ATTEMPT') != '1': raise ValueError('run control mismatch')
 
@@ -52,6 +52,9 @@ def run_main(tracker):
     side, group = os.environ['A2_SIDE'], os.environ['A2_GROUP']
     b, expected = validate(side, group)
     verify_run_control(group, os.environ)
+    if os.environ.get('A2_MODE') == 'full':
+        from verify_prior import verify_prior_receipts
+        verify_prior_receipts()
     root = pathlib.Path(os.environ['RUNNER_TEMP']).resolve(); receipt = root/'r12-a2-receipt'; out = root/'r12-a2-private'; out.mkdir(exist_ok=False)
     preflight = False; rc = None
     envdir = root/'r12-a2-isolated'; envdir.mkdir(exist_ok=False)

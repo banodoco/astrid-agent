@@ -1,0 +1,561 @@
+{
+  "absent_ids": [],
+  "classification": "COMPLETE",
+  "duplicate_ids": [],
+  "exit_code": 0,
+  "expected_count": 107,
+  "malformed_outcome_count": 0,
+  "malformed_summary_count": 0,
+  "metadata": {
+    "esbuild_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+    "group": "019",
+    "manifest_sha256": "885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771",
+    "node_sha256": "1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31",
+    "pins": [
+      "ec48555d8298d155390ffbb37d1950c3e80b43a4",
+      "42ae24aff8d2cb854f874ce134161077a3ba3641",
+      "8d065a8fef3dd602d5462e27d8eca088cf4e8262",
+      "f2948817eeb94af8dee76be21f6d673724f1606e"
+    ],
+    "python_sha256": "d601e62487858384d3000725c3b2e16e86ff11a6ad0b0810b76281e45426ea62",
+    "side": "candidate",
+    "workflow_sha": "fdf95fa5abfe894bb9954c93631367726e391bf1"
+  },
+  "missing_ids": [],
+  "outcome_counts": {
+    "PASSED": 107
+  },
+  "outcomes": [
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_proxy_keeps_observations_and_routes_each_signal_to_host",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_same_launch_cannot_spawn_twice_and_preserves_inherited_options",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_unselected_launch_never_spawns[argv]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_unselected_launch_never_spawns[cwd]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_unselected_launch_never_spawns[session]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_unselected_launch_never_spawns[extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_registration_failure_retains_process_obligation_and_initiating_error",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_missing_selected_source_fails_before_mutating_global_asyncio",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_first_read_accepts_ready_token_then_uses_only_ack_reference",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_first_use_pin_mismatch_fences_without_sending[version-other]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_first_use_pin_mismatch_fences_without_sending[scope_root-/other]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_first_use_pin_mismatch_fences_without_sending[role-engine]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_first_use_pin_mismatch_fences_without_sending[generation-2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_first_use_pin_mismatch_fences_without_sending[target.pid-322]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_first_use_pin_mismatch_fences_without_sending[target.uid-502]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_first_use_pin_mismatch_fences_without_sending[target.birth_id-different]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[version-runtime.local-execution-engine-control/v1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[status-exit_recorded]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[operation_id-foreign]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[channel_id-foreign]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[owner_epoch-foreign]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[role-engine]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[generation-1.0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[signal-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[target.pid-321.0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.version-other]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.scope_root-/foreign]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.role-engine]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.generation-2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.generation-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.target.pid-322]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.target.pid-321.0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.target.uid-502]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.target.uid-501.0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.target.birth_id-new-birth]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.target.audit_token_sha256-sha256:bad]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.target.audit_token_pidversion-True]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.target.audit_token_pidversion-0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_malformed_ack_fences_and_retains_first_error[current_reference.target.audit_token_pidversion-11]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_ack_exact_shapes_are_required[v1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_ack_exact_shapes_are_required[extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_ack_exact_shapes_are_required[missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_ack_exact_shapes_are_required[reference-extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_ack_exact_shapes_are_required[target-missing]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_transport_failure_never_retries_or_reads_late_ack[failure0]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_transport_failure_never_retries_or_reads_late_ack[failure1]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_transport_failure_never_retries_or_reads_late_ack[failure2]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_transport_failure_never_retries_or_reads_late_ack[failure3]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_transport_failure_never_retries_or_reads_late_ack[send]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_transport_failure_never_retries_or_reads_late_ack[reader]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_exit_remains_v1_with_current_ref_and_ends_signal_admission",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_exit_as_first_use_reads_ready_reference_once",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_bad_exit_ack_permanently_fences_without_recording_exit",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_identical_successful_signals_are_two_deliberate_deliveries",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_callbacks_share_one_exchange_lock",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_non_normalized_scope_fails_before_engine_launch[relative]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_non_normalized_scope_fails_before_engine_launch[/private/../custody]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_non_normalized_scope_fails_before_engine_launch[/private/custody/]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_non_normalized_scope_fails_before_engine_launch[None]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_control_scope_uses_exact_abspath_without_reinterpreting_posix_double_slash",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_observer_executes_original_facts_at_each_call_with_owned_pinned_helpers",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_observer_rejects_wrong_origin_bytes_or_pin_shapes_before_helpers[root]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_observer_rejects_wrong_origin_bytes_or_pin_shapes_before_helpers[source]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_observer_rejects_wrong_origin_bytes_or_pin_shapes_before_helpers[commands]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_observer_rejects_wrong_origin_bytes_or_pin_shapes_before_helpers[utility]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_observer_rejects_wrong_origin_bytes_or_pin_shapes_before_helpers[function]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_observer_rejects_wrong_origin_bytes_or_pin_shapes_before_helpers[helper]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_observer_rejects_wrong_origin_bytes_or_pin_shapes_before_helpers[extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_observer_rejects_wrong_origin_bytes_or_pin_shapes_before_helpers[resolver]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_engine_observation_aliases_preserve_selected_calls_and_block_other_helpers",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_channel_needs_no_listener_ready_reference_and_stays_small",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_malformed_or_uncertain_response_fences_channel_without_retry[binder]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_malformed_or_uncertain_response_fences_channel_without_retry[digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_malformed_or_uncertain_response_fences_channel_without_retry[fact]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_malformed_or_uncertain_response_fences_channel_without_retry[pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_malformed_or_uncertain_response_fences_channel_without_retry[extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_malformed_or_uncertain_response_fences_channel_without_retry[value]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_malformed_or_uncertain_response_fences_channel_without_retry[type]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_malformed_or_uncertain_response_fences_channel_without_retry[send]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_source_fact_malformed_or_uncertain_response_fences_channel_without_retry[receive]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_fake_exit_v2_requires_exact_ack_and_updates_only_from_that_ack",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_fake_exit_v2_rejects_wrong_current_custody_or_proof[generation]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_fake_exit_v2_rejects_wrong_current_custody_or_proof[birth]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_fake_exit_v2_rejects_wrong_current_custody_or_proof[pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_fake_exit_v2_rejects_wrong_current_custody_or_proof[revision]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_fake_exit_v2_rejects_wrong_current_custody_or_proof[digest]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_fake_exit_v2_rejects_wrong_current_custody_or_proof[extra]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_birth_fact_darwin_is_native_and_does_not_launch_helper[live]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_birth_fact_darwin_is_native_and_does_not_launch_helper[zombie]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_selected_birth_fact_darwin_is_native_and_does_not_launch_helper[absent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_birth_observation_rejects_drift_and_unknown_without_helper[uid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_birth_observation_rejects_drift_and_unknown_without_helper[parent_pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_birth_observation_rejects_drift_and_unknown_without_helper[pgid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_birth_observation_rejects_drift_and_unknown_without_helper[start_sec]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_birth_observation_rejects_drift_and_unknown_without_helper[start_usec]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_birth_observation_rejects_drift_and_unknown_without_helper[disappeared]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_birth_observation_rejects_drift_and_unknown_without_helper[unavailable]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_birth_observation_rejects_drift_and_unknown_without_helper[malformed]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_birth_completed_process_preserves_capture_and_absence_semantics",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_parent_fact_is_precisely_bracketed_and_has_no_subprocess_authority[valid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_parent_fact_is_precisely_bracketed_and_has_no_subprocess_authority[absent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_parent_fact_is_precisely_bracketed_and_has_no_subprocess_authority[uid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_parent_fact_is_precisely_bracketed_and_has_no_subprocess_authority[parent]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_parent_fact_is_precisely_bracketed_and_has_no_subprocess_authority[birth]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_parent_fact_is_precisely_bracketed_and_has_no_subprocess_authority[pid]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_parent_fact_is_precisely_bracketed_and_has_no_subprocess_authority[unavailable]",
+      "status": "PASSED"
+    },
+    {
+      "id": "tests/core/execution/test_vibecomfy_engine_adapter.py::test_native_parent_fact_is_precisely_bracketed_and_has_no_subprocess_authority[malformed]",
+      "status": "PASSED"
+    }
+  ],
+  "preflight_complete": true,
+  "process_census": {
+    "status": "clear"
+  },
+  "raw_pytest_sha256": "29eebc92d88ea6290f75004e2be121d87142100f7dc68a2a6036352fae3c06b6",
+  "schema": 1,
+  "stage_events": [
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "input_validation"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "checkout_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "source_fetch"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "pin_verification"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "dependency_setup"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "runtime_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "toolchain_preflight"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "passed",
+      "exit_code": null,
+      "stage": "selection"
+    },
+    {
+      "event": "entered",
+      "exit_code": null,
+      "stage": "pytest"
+    },
+    {
+      "event": "passed",
+      "exit_code": 0,
+      "stage": "pytest"
+    }
+  ],
+  "summary_counts": {
+    "deselected": 1,
+    "passed": 107
+  },
+  "unexpected_result_count": 0
+}

@@ -4,6 +4,7 @@ from full_plan import group_for
 from runner import MANIFEST_SHA
 from receipt_guard import rebuild
 from sanitize import write_receipt
+from verify_prior import verify_prior_receipts
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -34,6 +35,7 @@ def main():
     side, group_range, slot = os.environ['A2_SIDE'], os.environ['A2_RANGE'], int(os.environ['A2_SLOT'])
     group = group_for(side,group_range,slot)
     if group is None: return 0
+    verify_prior_receipts()
     root = pathlib.Path(os.environ['RUNNER_TEMP']).resolve() / ('r12-a2-full-'+side+'-'+group)
     root.mkdir(exist_ok=False)
     try:
