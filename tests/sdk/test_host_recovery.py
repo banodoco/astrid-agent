@@ -210,6 +210,40 @@ def test_launcher_attaches_to_healthy_host_from_another_checkout(harness, monkey
     assert h.launches == []
 
 
+def test_attach_does_not_require_worker_to_observe_executor(harness, monkeypatch, tmp_path):
+    """The worker can handshake but the Runtime reserves executor reads for owner."""
+    from astrid_runtime_client.generated import ApiError
+
+    h = harness
+    second = tmp_path / "second-source"
+    (second / "astrid" / "packs").mkdir(parents=True)
+    _materialize_source_closure(second)
+    h.value["source_checkout"] = str(second)
+    client_type = generic_host.RuntimeProtocolClient
+
+    class ScopedClient(client_type):
+        def __init__(self, endpoint, credential):
+            super().__init__(endpoint, credential)
+            self.credential = credential
+
+        @property
+        def generated(self):
+            def denied(_executor_id):
+                raise ApiError(403, "forbidden", "owner required")
+            return SimpleNamespace(get_executor=denied)
+
+    monkeypatch.setattr(generic_host, "RuntimeProtocolClient", ScopedClient)
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked",
+                        lambda *_args, **_kwargs: pytest.fail("healthy resident must not be retired"))
+
+    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+
+    assert result["host_status"] == "ready"
+    assert result["host_pid"] == FAKE_PID
+    assert h.launches == []
+
+
 @pytest.mark.parametrize("fault", [
     "unready-registration", "changed-registration-generation", "changed-resident-source",
 ])
