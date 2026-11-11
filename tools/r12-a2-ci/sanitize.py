@@ -19,6 +19,7 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
         for line in raw.decode('utf-8', errors='replace').splitlines():
             title = line.strip('= ').strip() if line.startswith('==') else None
             if title in ('warnings summary', 'warnings summary (final)'):
+                if in_warning_section: malformed_summary_count += 1
                 in_warning_section = True
             elif line == '-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html':
                 in_warning_section = False
@@ -57,6 +58,7 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
                 else: malformed_summary_count += 1
             elif line.lstrip().startswith('==') and line.strip('= ').strip() not in HEADINGS:
                 malformed_summary_count += 1
+    if in_warning_section: malformed_summary_count += 1
     by_id = collections.Counter(node for node, _ in found)
     statuses_by_id = collections.defaultdict(list)
     for node,status in found: statuses_by_id[node].append(status)

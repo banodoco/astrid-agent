@@ -78,12 +78,14 @@ class Sanitization(unittest.TestCase):
         for forged in (raw.replace('local R0 evidence is not present',SECRET), raw.replace(known,A),raw.replace(') [ 50%]',f') {SECRET} [ 50%]')):
             r=make(forged,expected=(known,B),exit_code=0); self.assertEqual(r['classification'],'INCOMPLETE'); self.assertNotIn(SECRET,json.dumps(r))
     def test_exact_pytest_final_warning_heading_only(self):
-        raw=f'{A} FAILED [100%]\n=== warnings summary ===\nwarning {SECRET}\n=== warnings summary (final) ===\nlate warning {SECRET}\n=== 1 failed, 2 warnings in 1.0s ===\n'
+        raw=f'{A} FAILED [100%]\n=== warnings summary ===\nwarning {SECRET}\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=== warnings summary (final) ===\nlate warning {SECRET}\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=== 1 failed, 2 warnings in 1.0s ===\n'
         result=make(raw,expected=(A,),exit_code=1)
         self.assertEqual(result['classification'],'COMPLETE'); self.assertNotIn(SECRET,json.dumps(result))
         forged=raw.replace('=== warnings summary (final) ===',f'=== warnings summary (final) {SECRET} ===')
         result=make(forged,expected=(A,),exit_code=1)
         self.assertEqual(result['classification'],'INCOMPLETE'); self.assertIn('MALFORMED_SUMMARY',result['incomplete_reasons']); self.assertNotIn(SECRET,json.dumps(result))
+        missing_footer=raw.replace('-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n','')
+        self.assertIn('MALFORMED_SUMMARY',make(missing_footer,expected=(A,),exit_code=1)['incomplete_reasons'])
     def test_warning_location_is_not_an_outcome(self):
         raw=f'{A} FAILED [100%]\n=== warnings summary ===\n{A}\n  warning {SECRET}\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=== 1 failed, 1 warning in 1.0s ===\n'
         result=make(raw,expected=(A,),exit_code=1)
