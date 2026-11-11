@@ -371,6 +371,44 @@ def _runtime_json(output: str) -> dict:
     return json.loads(output[start:])
 
 
+_PIN_REMEDY = ("Install a release manifest whose pins match this Agent, or change "
+               "astrid/packs/runpod/pins.json in the Agent checkout to the pin you want to test.")
+
+
+def _public_pin(value: object) -> str:
+    """A pin field for a message: repository URLs and SHAs only, never URL userinfo."""
+    if value is None:
+        return "(none)"
+    text = str(value)
+    if "@" in text.split("://", 1)[-1].split("/", 1)[0]:
+        return "<redacted: contains credentials>"
+    return text if len(text) <= 200 else text[:200] + "..."
+
+
+def _check_lifecycle_pin(manifest: dict, agent: Path) -> None:
+    """Refuse at install a lifecycle pin the staged Agent would refuse at every RunPod run.
+
+    Stdlib only: the installer's import closure is a fixed file list.
+    """
+    pin = manifest.get("lifecycle")
+    if pin is None:
+        return  # older release manifests carry no lifecycle source
+    path = agent / "astrid" / "packs" / "runpod" / "pins.json"
+    try:
+        canonical = json.loads(path.read_text(encoding="utf-8"))["sources"]["lifecycle"]
+        expected = (canonical["repository"], canonical["revision"], canonical["version"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError("The staged Agent has no readable lifecycle pin in astrid/packs/runpod/pins.json.") from exc
+    given = (pin.get("repo"), pin.get("sha"), pin.get("version"))
+    if given != expected:
+        raise ValueError(
+            "The manifest's lifecycle pin differs from the staged Agent's canonical pin. "
+            f"Manifest: repository {_public_pin(given[0])} revision {_public_pin(given[1])} "
+            f"version {_public_pin(given[2])}. "
+            f"Agent (astrid/packs/runpod/pins.json): repository {_public_pin(expected[0])} "
+            f"revision {_public_pin(expected[1])} version {_public_pin(expected[2])}. {_PIN_REMEDY}")
+
+
 class Backend:
     def __init__(self, root: Path, log: Path, uv: Path, *, say=print,
                  process_control: str | None = None, managed_by: str | None = None):
@@ -1239,6 +1277,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         write_json(folder / "manifest.json", manifest)
         agent = source("agent", manifest["agent"]["sha"], folder / "a",
                        **({"repo": manifest["agent"]["repo"]} if "repo" in manifest["agent"] else {}))
+        _check_lifecycle_pin(manifest, agent)
         runtime = source("runtime", manifest["runtime"]["sha"], folder / "r",
                          **({"repo": manifest["runtime"]["repo"]} if "repo" in manifest["runtime"] else {}))
         vibecomfy = source("vibecomfy", manifest["vibecomfy"]["sha"], folder / "v",

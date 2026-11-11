@@ -678,3 +678,64 @@ def test_manifest_lifecycle_version_satisfies_pack_declaration():
         assert requirement.name == name
         assert requirement.specifier.contains(tools.LIFECYCLE_VERSION, prereleases=True)
     assert LIFECYCLE_PIN["version"] == tools.LIFECYCLE_VERSION
+
+
+def _stage_with_lifecycle(tmp_path, monkeypatch, lifecycle):
+    """Run the real stage() up to the staged-Agent pin check; the staged Agent is the real pins.json."""
+    root = Path(__file__).resolve().parents[1]
+    value = manifest()
+    if lifecycle is not None:
+        value["lifecycle"] = lifecycle
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    backend.uv.touch()
+    reached = []
+
+    def materialize(name, sha, destination, *, repo=None):
+        if name == "agent":
+            target = destination / "astrid/packs/runpod/pins.json"
+            target.parent.mkdir(parents=True)
+            target.write_bytes((root / "astrid/packs/runpod/pins.json").read_bytes())
+        else:
+            reached.append(name)
+            raise RuntimeError("past the lifecycle check")
+        return destination
+
+    monkeypatch.setattr("astrid.installer.backend.source", materialize)
+    monkeypatch.setattr(backend, "run", lambda *_a, **_k: "uv 1.2.3")
+    return backend, value, reached
+
+
+def _canonical_lifecycle():
+    root = Path(__file__).resolve().parents[1]
+    pin = json.loads((root / "astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
+    return {"repo": pin["repository"], "sha": pin["revision"], "version": pin["version"]}
+
+
+def test_stage_accepts_a_lifecycle_pin_that_matches_the_staged_agent(tmp_path, monkeypatch):
+    backend, value, reached = _stage_with_lifecycle(tmp_path, monkeypatch, _canonical_lifecycle())
+    with pytest.raises(RuntimeError, match="past the lifecycle check"):
+        backend.stage(value, tmp_path / "program", tmp_path / "data")
+    assert reached == ["runtime"]
+
+
+@pytest.mark.parametrize("field,changed", [("sha", "d" * 40), ("version", "9.9.9"),
+                                           ("repo", "https://github.com/example/other.git")])
+def test_stage_refuses_a_lifecycle_pin_that_differs_from_the_staged_agent(tmp_path, monkeypatch, field, changed):
+    pin = _canonical_lifecycle()
+    canonical = dict(pin)
+    pin[field] = changed
+    backend, value, reached = _stage_with_lifecycle(tmp_path, monkeypatch, pin)
+    with pytest.raises(ValueError, match="lifecycle pin differs") as caught:
+        backend.stage(value, tmp_path / "program", tmp_path / "data")
+    text = str(caught.value)
+    assert changed in text and canonical[field] in text
+    assert "release manifest whose pins match this Agent" in text and "astrid/packs/runpod/pins.json" in text
+    assert reached == []
+
+
+def test_stage_lifecycle_refusal_never_prints_url_credentials(tmp_path, monkeypatch):
+    pin = {**_canonical_lifecycle(), "repo": "https://user:s3cret@example.invalid/l.git"}
+    backend, value, _ = _stage_with_lifecycle(tmp_path, monkeypatch, pin)
+    with pytest.raises(ValueError, match="lifecycle pin differs") as caught:
+        backend.stage(value, tmp_path / "program", tmp_path / "data")
+    assert "s3cret" not in str(caught.value)

@@ -57,10 +57,15 @@ def _installed_layout(tmp_path: Path, monkeypatch, *, manifest: dict | None) -> 
 
 
 def _manifest(runtime_sha: str) -> dict:
+    """What a real install writes: the lifecycle and VibeComfy pins are the Agent's canonical ones."""
+    from astrid.core.generation.canonical_pins import canonical_pin
+
+    lifecycle, vibecomfy = canonical_pin("lifecycle"), canonical_pin("vibecomfy")
     return {
         "agent": {"sha": "a" * 40},
         "runtime": {"sha": runtime_sha},
-        "lifecycle": {"repo": "https://example.invalid/lifecycle.git", "sha": "b" * 40, "version": "0.1.0"},
+        "lifecycle": {"repo": lifecycle["repository"], "sha": lifecycle["revision"], "version": lifecycle["version"]},
+        "vibecomfy": {"sha": vibecomfy["revision"]},
     }
 
 
@@ -84,6 +89,10 @@ def test_pins_resolve_without_a_checkout(tmp_path, monkeypatch):
     assert pins["src/astrid-runtime"][1] == "c" * 40
     assert pins["src/astrid-agent"][1] == "a" * 40
     assert set(pins) == set(remote_placement.SOURCE_DIRS)
+    from astrid.core.generation.canonical_pins import canonical_pin
+
+    assert pins["src/VibeComfy"][1] == canonical_pin("vibecomfy")["revision"]
+    assert pins["src/runpod-lifecycle"][1] == canonical_pin("lifecycle")["revision"]
 
 
 def test_pins_report_a_missing_installed_manifest(tmp_path, monkeypatch):
@@ -144,3 +153,51 @@ def test_pod_bootstrap_extracts_the_lock_pin(tmp_path):
     assert captured.count("--hash=sha256:") == LOCK.read_text().count(
         "--hash=sha256:", LOCK.read_text().index("runpod=="), LOCK.read_text().index("s3transfer=="))
     assert "s3transfer" not in captured
+
+
+def _refusal(tmp_path, monkeypatch, mutate) -> str:
+    from astrid.core.rendering import _local_schema
+
+    product = tmp_path / "site-packages"
+    product.mkdir()
+    (product / "runtime.lock.json").write_text(json.dumps({"source_commit": "c" * 40}))
+    monkeypatch.setattr(managed_sources, "AGENT_ROOT", product)
+    monkeypatch.setattr(_local_schema, "runtime_lock_path", lambda root: product / "runtime.lock.json")
+    manifest = _manifest("c" * 40)
+    mutate(manifest)
+    _installed_layout(tmp_path, monkeypatch, manifest=manifest)
+    with pytest.raises(managed_sources.ManagedSourcesError) as caught:
+        managed_sources._pins()
+    return str(caught.value)
+
+
+def test_a_lifecycle_mismatch_shows_both_pins_and_the_remedy(tmp_path, monkeypatch):
+    from astrid.core.generation.canonical_pins import canonical_pin
+
+    text = _refusal(tmp_path, monkeypatch, lambda m: m["lifecycle"].update(sha="d" * 40))
+    assert "d" * 40 in text and canonical_pin("lifecycle")["revision"] in text
+    assert "release manifest whose pins match this Agent" in text and "astrid/packs/runpod/pins.json" in text
+
+
+def test_a_vibecomfy_mismatch_shows_both_pins_and_the_remedy(tmp_path, monkeypatch):
+    from astrid.core.generation.canonical_pins import canonical_pin
+
+    text = _refusal(tmp_path, monkeypatch, lambda m: m["vibecomfy"].update(sha="e" * 40))
+    assert "e" * 40 in text and canonical_pin("vibecomfy")["revision"] in text
+    assert "astrid/packs/runpod/pins.json" in text
+
+
+def test_refusals_never_print_url_credentials(tmp_path, monkeypatch):
+    text = _refusal(tmp_path, monkeypatch,
+                    lambda m: m["lifecycle"].update(repo="https://user:s3cret@example.invalid/l.git"))
+    assert "s3cret" not in text and "user:" not in text and "redacted" in text
+
+
+def test_a_non_object_vibecomfy_pin_is_refused_cleanly(tmp_path, monkeypatch):
+    text = _refusal(tmp_path, monkeypatch, lambda m: m.update(vibecomfy="8d065a8"))
+    assert "vibecomfy pin is not an object" in text
+
+
+def test_a_missing_lifecycle_pin_has_its_own_refusal(tmp_path, monkeypatch):
+    text = _refusal(tmp_path, monkeypatch, lambda m: m.pop("lifecycle"))
+    assert "has no lifecycle pin" in text and "needs the installed release manifest" not in text

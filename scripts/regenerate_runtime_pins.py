@@ -12,6 +12,7 @@ import argparse
 import difflib
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -153,12 +154,20 @@ def preview(outputs: dict[Path, bytes]) -> None:
 
 def apply(outputs: dict[Path, bytes]) -> None:
     # All Git objects, manifests, mappings, and hashes are checked before this
-    # function is reached. Keep individual writes simple and preserve modes.
+    # function is reached. Each file is written to a temp file beside it and moved
+    # into place with os.replace, so a failure never leaves a half-written lock.
     for path, value in sorted(outputs.items(), key=lambda item: str(item[0])):
         if path.is_file() and path.read_bytes() == value:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(value)
+        temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            temp.write_bytes(value)
+            if path.is_file():
+                os.chmod(temp, path.stat().st_mode & 0o7777)
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
         print(f"updated {path}")
 
 

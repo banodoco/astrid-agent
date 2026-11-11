@@ -28,8 +28,9 @@ MANIFEST_SOURCE_REPOSITORIES = {
     "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
 }
 # The lifecycle identity (repository, revision, version) has one source: packs/runpod/pins.json.
-# Read with the stdlib: the installer's import closure is a fixed file list (see
-# tests/test_installer_wheel.py), so it must not import canonical_pins/engine_recipe.
+# Read with the stdlib (json + this file's location): the installer's import closure is a
+# fixed file list (see tests/test_installer_wheel.py), and canonical_pins pulls in
+# engine_recipe, which is not in it, so the installer cannot use canonical_pin().
 LIFECYCLE_VERSION = json.loads(
     (Path(__file__).resolve().parents[1] / "packs" / "runpod" / "pins.json").read_text(encoding="utf-8")
 )["sources"]["lifecycle"]["version"]
