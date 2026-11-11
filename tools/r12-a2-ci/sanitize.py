@@ -6,7 +6,7 @@ STATUSES = ('PASSED', 'FAILED', 'ERROR', 'SKIPPED', 'XFAIL', 'XPASS')
 SUMMARY_KEYS = ('passed', 'failed', 'error', 'errors', 'skipped', 'xfailed', 'xpassed', 'warnings', 'warning', 'deselected')
 OUTCOME = re.compile(r'^(tests/.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?: +\[ *\d{1,3}%\])?$')
 KNOWN_SKIP = {'tests/test_installer_r0_entry.py::test_captures_match_real_r0_evidence': 'local R0 evidence is not present'}
-HEADINGS = {'test session starts', 'FAILURES', 'ERRORS', 'PASSES', 'XFAILURES', 'XPASSES', 'SKIPPED', 'warnings summary', 'short test summary info'}
+HEADINGS = {'test session starts', 'FAILURES', 'ERRORS', 'PASSES', 'XFAILURES', 'XPASSES', 'SKIPPED', 'warnings summary', 'warnings summary (final)', 'short test summary info'}
 SUMMARY = re.compile(r'^=+ ((?:\d+ (?:passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected)(?:, )?)+) in \d+(?:\.\d+)?s(?: \([0-9:]+\))? =+$')
 
 def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stage_events=None):

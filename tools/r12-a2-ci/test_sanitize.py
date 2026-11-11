@@ -77,6 +77,13 @@ class Sanitization(unittest.TestCase):
         self.assertNotIn('local R0 evidence is not present',json.dumps(result))
         for forged in (raw.replace('local R0 evidence is not present',SECRET), raw.replace(known,A),raw.replace(') [ 50%]',f') {SECRET} [ 50%]')):
             r=make(forged,expected=(known,B),exit_code=0); self.assertEqual(r['classification'],'INCOMPLETE'); self.assertNotIn(SECRET,json.dumps(r))
+    def test_exact_pytest_final_warning_heading_only(self):
+        raw=f'{A} FAILED [100%]\n=== warnings summary ===\nwarning {SECRET}\n=== warnings summary (final) ===\nlate warning {SECRET}\n=== 1 failed, 2 warnings in 1.0s ===\n'
+        result=make(raw,expected=(A,),exit_code=1)
+        self.assertEqual(result['classification'],'COMPLETE'); self.assertNotIn(SECRET,json.dumps(result))
+        forged=raw.replace('=== warnings summary (final) ===',f'=== warnings summary (final) {SECRET} ===')
+        result=make(forged,expected=(A,),exit_code=1)
+        self.assertEqual(result['classification'],'INCOMPLETE'); self.assertIn('MALFORMED_SUMMARY',result['incomplete_reasons']); self.assertNotIn(SECRET,json.dumps(result))
     def test_only_structured_file_is_uploaded(self):
         root=pathlib.Path(__file__).resolve().parents[2]; workflow=(root/'.github/workflows/r12-a2-once.yml').read_text()
         self.assertIn('path: ${{ runner.temp }}/r12-a2-receipt/receipt.json',workflow)
