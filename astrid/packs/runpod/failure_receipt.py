@@ -154,8 +154,8 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
         "machine": {"after": after, "release_reason": getattr(lease, "release_reason", None),
                     "release_at": stamps.get("released_at"), "cost_usd": cost},
         # No pod folder, redactor or log fetch exists yet: nothing was collected.
-        "collection": {"state": "local_only" if stage == "no_machine" else "withheld_by_policy",
-                       "reason": "bundle_not_collected", "bundle_manifest_sha256": None, "bytes": 0,
+        "collection": {"state": "local_only" if stage == "no_machine" else "not_collected",
+                       "reason": "local_only" if stage == "no_machine" else "collector_not_built", "bundle_manifest_sha256": None, "bytes": 0,
                        "cap_bytes": CAP_BYTES},
         "files": [],
         "redaction": {"policy": "astrid.failure-redaction.v1", "applied": False, "reason": "no bundle collected"},
@@ -240,7 +240,8 @@ def render(receipt: Mapping[str, Any]) -> str:
              f"Task: {ident.get('task_id')}  attempt: {ident.get('attempt_id')}",
              f"Machine: {ident.get('machine_id') or 'none'}  after: {machine.get('after')}"
              + (f"  release: {machine['release_reason']}" if machine.get("release_reason") else ""),
-             f"Bundle: {collection.get('state')} ({collection.get('reason', 'n/a')})"]
+             "Bundle: " + (f"{str(collection.get('state')).replace('_', ' ')} "
+                           f"({str(collection.get('reason', 'n/a')).replace('_', ' ')})")]
     seconds = [f"{name}={row['seconds']}s" for name, row in timing.items()
                if isinstance(row, Mapping) and row.get("seconds") is not None]
     if seconds:

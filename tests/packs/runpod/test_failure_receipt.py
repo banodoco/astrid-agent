@@ -97,7 +97,7 @@ def test_execution_failure_names_execution_and_carries_timing(machine_case, rece
     assert receipt["identity"]["task_id"] == "task" and receipt["identity"]["machine_id"] == "pod-1"
     assert receipt["identity"]["run_id"] and receipt["identity"]["remote_job_id"]
     assert receipt["machine"]["after"] == "kept" and receipt["machine"]["release_at"] is not None
-    assert receipt["collection"] == {"state": "withheld_by_policy", "reason": "bundle_not_collected",
+    assert receipt["collection"] == {"state": "not_collected", "reason": "collector_not_built",
                                      "bundle_manifest_sha256": None, "bytes": 0, "cap_bytes": 262144}
     assert receipt["files"] == []
     assert receipt["timing"]["stamps"]["job_ended_at"] and receipt["timing"]["phases"]["execution"]["seconds"] is not None
@@ -322,6 +322,33 @@ def test_generate_failure_prints_the_newest_or_named_receipt(machine_case, tmp_p
     assert generate(["failure", "task"]) == 0
     human = capsys.readouterr().out
     assert human.startswith("Failure: execution (controller_step)\n") and "Task: task  attempt: attempt-1" in human
-    assert "Bundle: withheld_by_policy (bundle_not_collected)" in human
+    assert "Bundle: not collected (collector not built)" in human
     assert generate(["failure", "no-such-task"]) == 1
     assert "no failure receipt for task no-such-task" in capsys.readouterr().err
+
+
+def test_a_non_runpod_machine_failure_writes_no_runpod_receipt_and_no_timing(tmp_path, monkeypatch):
+    from astrid.core.execution import generic_host, machine_run
+
+    seen = {}
+
+    class Other:
+        def claim(self, job, cancelled=None):
+            seen["timing"] = job.timing
+            raise RuntimeError("no capacity on the other provider")
+
+        def release(self, lease, success):  # pragma: no cover - claim fails first
+            raise AssertionError("nothing was claimed")
+
+    monkeypatch.setattr(machine_run, "resolve_machine", lambda kind: SimpleNamespace(for_host=lambda *a, **k: Other()))
+    monkeypatch.setattr(failure_receipt, "failures_root", lambda: tmp_path / "failures")
+    monkeypatch.setattr(generic_host, "_task_generation_intent", lambda task: {"metadata": {"model": "cpu-image"}})
+    context = SimpleNamespace(get=lambda **k: None, begin=lambda *a: None, done=lambda *a: None)
+    terminal = {}
+    with pytest.raises(RuntimeError, match="no capacity"):
+        generic_host.GenericPackHost._run_machine_job(
+            None, SimpleNamespace(id="vibecomfy.run"), {}, {"kind": "other"}, context, {},
+            root=tmp_path, output_root=tmp_path / "out", cancelled=lambda: False, cancel_signal=None,
+            task_id="task", attempt_id="a1", fence=1, terminal=terminal)
+    assert seen["timing"] is None and terminal == {}
+    assert not (tmp_path / "failures").exists()

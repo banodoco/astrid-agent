@@ -7026,7 +7026,9 @@ class GenericPackHost:
         machine = resolve_machine(policy["kind"]).for_host(
             provider, begin=lambda lease: target_context.begin(lease, cancel_signal),
             done=target_context.done)
-        timing = phase_timing.PhaseTiming()
+        # Timing and the local failure receipt are RunPod's; other machine kinds behave as before.
+        is_runpod = policy.get("kind") == "runpod"
+        timing = phase_timing.PhaseTiming() if is_runpod else None
         job = MachineJob(
             entry=entry, mode=metadata.get("mode"), policy=policy,
             inputs={name: value for name, value in inputs.items() if value is not None},
@@ -7039,8 +7041,10 @@ class GenericPackHost:
             terminal["machine"] = dict(machine.describe(lease))
 
         # One local failure receipt per failed machine job, written after release.
-        from astrid.packs.runpod.failure_receipt import recorder
-        failed = recorder(job, lambda: terminal.get("machine"), timing)
+        failed = None
+        if is_runpod:
+            from astrid.packs.runpod.failure_receipt import recorder
+            failed = recorder(job, lambda: terminal.get("machine"), timing)
 
         try:
             fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
