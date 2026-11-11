@@ -968,7 +968,7 @@ def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:
 
 
 class LifecyclePodProvider:
-    """Claims through ``scripts/claim_runpod_5090_backup.py`` and releases the exact pod."""
+    """Claims through ``astrid.packs.runpod.claim_capacity`` and releases the exact pod."""
 
     def __init__(self, handle_dir: Path, *, provider_account_ref: str | None = None) -> None:
         self.handle_dir = Path(handle_dir)
@@ -976,14 +976,9 @@ class LifecyclePodProvider:
 
     @staticmethod
     def _claim_module():
-        import importlib.util
+        from astrid.packs.runpod import claim_capacity
 
-        path = Path(__file__).resolve().parents[3] / "scripts" / "claim_runpod_5090_backup.py"
-        spec = importlib.util.spec_from_file_location("astrid_claim_runpod_5090_backup", path)
-        module = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(module)
-        return module
+        return claim_capacity
 
     def claim(self, spec: ClaimSpec) -> Claim:
         import asyncio

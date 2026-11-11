@@ -18,7 +18,7 @@ from runpod_lifecycle.pod_agent import AgentServer
 from astrid.packs.runpod import h3_release as builder
 from astrid.packs.runpod.worker_staging import RunPodPreparationTransport
 from astrid.packs.runpod.worker_process import RunPodWorkerProcessTransport
-from scripts import claim_runpod_5090_backup as claim
+from astrid.packs.runpod import claim_capacity as claim
 
 TOKEN = "local-test-only-" + "x" * 40
 
