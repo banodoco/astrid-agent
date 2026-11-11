@@ -70,8 +70,7 @@ def run_main(tracker):
         py=envdir/'venv/bin/python'; run([sys.executable,'-m','uv','pip','install','--python',py,'-e',str(co)+'[dev]'])
         run([sys.executable,'-m','uv','pip','install','--python',py,'--no-deps',runtime,runtime/'packages/python']); run([sys.executable,'-m','uv','pip','install','--python',py,'--no-deps','-e',runtime])
         tracker.enter('runtime_preflight')
-        probe="import importlib,pathlib,sys; from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION as v; assert v==sys.argv[2]; import runtime_protocol,tests; p=pathlib.Path(sys.argv[1]).resolve(); assert pathlib.Path(runtime_protocol.__file__).resolve().parent.parent==p; tests.__path__.append(str(p/'tests')); [(lambda m,n: (_ for _ in ()).throw(AssertionError(n)) if pathlib.Path(m.__file__).resolve()!=p/'tests'/(n+'.py') else None)(importlib.import_module('tests.'+n),n) for n in ('test_verified_host_launch','test_remote_worker_activation')]; print('runtime fixtures and VibeComfy pin verified',v)"
-        run([py,'-c',probe,runtime,vc],cwd=co)
+        run([py, HERE/'runtime_preflight.py', co, runtime, vc],cwd=co)
         tracker.enter('toolchain_preflight')
         nodearchive=envdir/'node.tar.xz'; esarchive=envdir/'esbuild.tgz'
         for url,path,sha in [('https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.xz',nodearchive,'9aa8e9d2298ab68c600bd6fb86a6c13bce11a4eca1ba9b39d79fa021755d7c37'),('https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.27.7.tgz',esarchive,'2c3eb61a67f174520d3c586ef026430480fa92cfb5f285c82a9040fff41355de')]:
