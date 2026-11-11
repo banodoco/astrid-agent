@@ -370,6 +370,25 @@ def test_bad_worker_never_invokes_observer(harness, monkeypatch, tmp_path):
     assert h.launches == []
 
 
+def test_unmanaged_changed_resident_source_can_be_replaced(harness, monkeypatch, tmp_path):
+    h = harness
+    resident_source = h.source
+    second = tmp_path / "second-source"
+    (second / "astrid" / "packs").mkdir(parents=True)
+    _materialize_source_closure(second)
+    h.value["source_checkout"] = str(second)
+    h.source = second
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
+    monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
+    retired = []
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked",
+                        lambda state, support, **_kwargs: retired.append(dict(state)))
+    (resident_source / "astrid" / "packs" / "changed.marker").write_text("changed")
+    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+    assert result["host_status"] == "ready"
+    assert len(retired) == len(h.launches) == 1
+
+
 def _defunct(pid: int) -> bool:
     """True for a terminated process whose parent has not reaped it yet."""
     try:

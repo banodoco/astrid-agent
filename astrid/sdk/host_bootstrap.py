@@ -1919,6 +1919,7 @@ def _attach_resident_host(
     expected: Mapping[str, Any], worker_path: Path, runtime_epoch: Any,
     runtime_instance_id: str, runtime_session_id: str, inventory_identity: str,
     rejections: list[str] | None = None,
+    local_recovery: list[bool] | None = None,
 ) -> Mapping[str, Any] | None:
     """Return a receipt for a live Runtime-registered host from another checkout.
 
@@ -1939,10 +1940,14 @@ def _attach_resident_host(
 
         observed_digest = source_checkout_digest(checkout)
         if observed_digest != current["source_checkout_digest"]:
+            if local_recovery is not None:
+                local_recovery.append(True)
             return _reject_attach(current, [_attach_mismatch(
                 "live.source_checkout_digest", current["source_checkout_digest"], observed_digest)], rejections)
         observed_closure = source_checkout_closure_digest(checkout)
         if observed_closure != current["source_closure_digest"]:
+            if local_recovery is not None:
+                local_recovery.append(True)
             return _reject_attach(current, [_attach_mismatch(
                 "live.source_closure_digest", current["source_closure_digest"], observed_closure)], rejections)
         from astrid.core._shared.boot_manifest import load_boot_manifest_hash
@@ -2248,9 +2253,11 @@ def ensure_pack_host(
             _check_locked_host_registration(current, runtime_support)
         status = _registered_host_status(current) if current else None
         attach_rejections: list[str] = []
+        local_recovery: list[bool] = []
         if not _foreground and attach_healthy and current and ready and status == "ours":
             receipt = _attach_resident_host(
                 rejections=attach_rejections,
+                local_recovery=local_recovery,
                 current=current, ready=ready,
                 expected={
                     "endpoint": endpoint,
@@ -2270,9 +2277,11 @@ def ensure_pack_host(
             )
             if receipt is not None:
                 return receipt
-            raise PackHostBootstrapError(
-                f"generic Astrid pack host attachment was refused; {reconfigure_action}"
-            )
+            supervised = runtime_supervised or current.get("runtime_service_launch_id") is not None
+            if supervised or not local_recovery:
+                raise PackHostBootstrapError(
+                    f"generic Astrid pack host attachment was refused; {reconfigure_action}"
+                )
         from astrid.core.gateway.dispatch import compose_profile_handoff
         try:
             boot_handoff = compose_profile_handoff(
