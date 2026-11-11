@@ -1,0 +1,22 @@
+# Scratch-only: runs two named test groups (selectors fixed below) on a clean hosted runner. Not for merge.
+name: T3b scratch selectors
+on:
+  push:
+    branches: ["scratch/r12-t3b-*"]
+  workflow_dispatch:
+jobs:
+  groups:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg && python3 --version && (command -v uv || python3 -m pip install uv)
+      - name: Setup
+        run: bash scripts/worker-env/agent-setup.sh
+      - name: Group 015 (test_process_group.py)
+        if: always()
+        run: PYTEST_ADDOPTS="-rA --durations=0" bash scripts/worker-env/agent-pytest.sh -q tests/core/execution/test_process_group.py
+      - name: Group 017 native render scope
+        if: always()
+        run: PYTEST_ADDOPTS="-rA --durations=0" bash scripts/worker-env/agent-pytest.sh -q "tests/core/execution/test_render_scope_launch.py::test_native_render_scope_collects_completed_child" tests/core/execution/test_render_scope_launch.py::test_native_render_scope_cancels_detached_renderer_tree
