@@ -57,7 +57,8 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
 
     monkeypatch.setattr(entries, 'describe_entry', cached_describe)
     monkeypatch.setattr(entries, 'find_entry', cached_find)
-    description, values = entries.resolve_entry_inputs(entry, {'text': 'synthetic fixture'}, mode=mode)
+    description, values = entries.resolve_entry_inputs(
+        entry, {'text': 'synthetic fixture', 'seed': 123}, mode=mode)
     assert not entries.entry_hooks(described).get('build'), 'diagnostic must be extended for build hooks'
     workflow = entries._load_entry_workflow(described)
     workflow, plan, assets = entries.apply_workflow_inputs(
@@ -100,6 +101,17 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
         payload['execution'][name] = str(local)
     job_file = landing / rm.JOB_NAME
     job_file.write_text(json.dumps(payload))
+
+    # Compare effective values from the controller-sealed and rehydrated graph,
+    # not merely the separately transported binding maps.
+    from astrid.packs.vibecomfy import production_engine
+    def effective_bindings(path, scratch):
+        bundle = production_engine.load_workflow_path(path, scratch).resolved
+        return {name: bundle.workflow.inputs[name].value for name in plan['bindings']}
+    retained = effective_bindings(root / 'workflow.py', tmp_path / 'inspect-controller')
+    rehydrated = effective_bindings(landing / 'workflow.py', tmp_path / 'inspect-rehydrated')
+    assert retained == plan['bindings']
+    assert rehydrated == retained
 
     calls, schemas = [], []
     monkeypatch.setattr('astrid.core.generation.preflight.require_generation_target_readiness', lambda *a: None)
