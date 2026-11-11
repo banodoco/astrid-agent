@@ -95,7 +95,7 @@ def test_verified_relocation_rejects_changed_snapshot(bundled_snapshot, verify_d
 def test_verified_relocation_must_match_exact_selection(bundled_snapshot, tmp_path, field):
     _snapshot, selected, relocations = bundled_snapshot
     if field == "pack_id":
-        relocations["comfy_wrap"] = relocations.pop("rendering")
+        relocations["other_pack"] = relocations.pop("rendering")
     elif field == "original_root":
         shadow = tmp_path / "shadow" / "rendering"
         shadow.mkdir(parents=True)
