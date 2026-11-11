@@ -52,7 +52,7 @@ async def setup_datacenters(api_key: str) -> list[str]:
     """Return datacenter IDs observed in RunPod's complete GPU inventory."""
     from runpod_lifecycle import probe
 
-    observed = await probe.probe(api_key=api_key, min_memory_gb=0)
+    observed = await probe(api_key=api_key, min_memory_gb=0)
     return list(dict.fromkeys(
         datacenter
         for item in observed or ()
@@ -67,7 +67,7 @@ async def setup_gpu_types(api_key: str, *, datacenter_id: str | None,
     """Return GPU type names currently offered in the selected datacenter."""
     from runpod_lifecycle import probe
 
-    observed = await probe.probe(
+    observed = await probe(
         api_key=api_key,
         datacenter_ids=[datacenter_id] if datacenter_id else None,
         min_memory_gb=0,

@@ -22,6 +22,10 @@ class JobFileError(ValueError):
     """The job file is unreadable or not an astrid.machine-job.v1 document."""
 
 
+class JobInputError(JobFileError):
+    """An explicitly rejected public generation input."""
+
+
 def read_job(path: str | Path) -> dict[str, Any]:
     try:
         body = json.loads(Path(path).read_text(encoding="utf-8"))

@@ -506,3 +506,46 @@ def test_real_job_cli_keeps_structured_failure_code(monkeypatch, tmp_path, capsy
     stdout = emit(tmp_path, json.dumps(envelope).encode())
     assert fd.parse_frame(stdout) == {'code': 'download_failed', 'category': 'model'}
     assert SENTINEL not in stdout
+
+@pytest.mark.parametrize('failure,expected', [
+    (ValueError(SENTINEL), ('generation_failed', 'execution')),
+    ('input', ('input_rejected', 'input')),
+    ('download', ('download_failed', 'model')),
+    ('unknown_code', ('generation_failed', 'execution')),
+])
+def test_job_failure_crosses_cli_frame_and_journal_without_private_text(
+        monkeypatch, tmp_path, capsys, failure, expected):
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation import cli, local_job
+    from astrid.core.generation.engine_contracts import DownloadError
+    from astrid.core.generation.target_inventory import POD_ALIGN
+
+    if failure == 'input':
+        failure = local_job.JobInputError(SENTINEL)
+    elif failure == 'download':
+        failure = DownloadError(SENTINEL)
+    elif failure == 'unknown_code':
+        failure = AstridError(SENTINEL, code='producer_failed')
+
+    job = tmp_path / 'job.json'
+    job.write_text(json.dumps({'schema': local_job.SCHEMA, 'align': 'trust', 'inputs': {}}))
+    previous_align = POD_ALIGN.get()
+    def fail(*args, **kwargs):
+        assert POD_ALIGN.get() == 'trust'
+        raise failure
+    monkeypatch.setattr(local_job, '_run_job', fail)
+    assert cli.main(['cpu-image', '--placement', 'local', '--job', str(job),
+                     '--out', str(tmp_path / 'out'), '--json']) == 2
+    assert POD_ALIGN.get() == previous_align
+    envelope = json.loads(capsys.readouterr().out)
+    frame = emit(tmp_path, json.dumps(envelope).encode())
+    diagnostic = fd.parse_frame(frame)
+    assert (diagnostic['code'], diagnostic['category']) == expected
+    journal = fd.host_summary(RuntimeError(SENTINEL), diagnostic, stage='fetch')
+    row = rm.lease_row({'pod_id': 'pod-1', 'state': 'claimed',
+                        'lease': {'state': 'idle', 'paid_expires_at': 1000, 'idle_expires_at': 900,
+                                  'hourly_usd': 1, 'accounted_at': 100,
+                                  'last_job': {'outcome': 'failed', 'generation': 1,
+                                               'failure': journal}}})
+    assert row['last_job']['failure'] == journal
+    assert SENTINEL not in frame and SENTINEL not in json.dumps(row)

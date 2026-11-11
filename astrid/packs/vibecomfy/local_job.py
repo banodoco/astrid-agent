@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from astrid.core.generation.local_job import JobFileError
+from astrid.core.generation.local_job import JobFileError, JobInputError
 
 
 def run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
@@ -149,7 +149,7 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
         try:
             description, inputs = entries.resolve_entry_inputs(entry, inputs, mode=mode)
         except (ValueError, KeyError, TypeError) as exc:
-            raise JobFileError(f"job inputs are not valid for entry {entry!r}: {exc}") from exc
+            raise JobInputError(f"job inputs are not valid for entry {entry!r}: {exc}") from exc
         mode = description.get("mode") or mode
         described = entries.find_entry(entry)
         named = entry
@@ -201,7 +201,7 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
     try:
         description, inputs = entries.resolve_entry_inputs(named, inputs, mode=mode)
     except (ValueError, KeyError, TypeError) as exc:
-        raise JobFileError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
+        raise JobInputError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
     mode = description.get("mode") or mode
     # (c) readiness and target schema, on the machine that runs the job. The pod has no attached
     # target client, which is the controller's managed-placement case (client None).
@@ -252,9 +252,9 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
                     loaded, mode=mode, values=inputs, binds=described.get("binds"),
                     defaults=described.get("defaults"))
             except (ValueError, KeyError) as exc:
-                raise JobFileError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
+                raise JobInputError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
             if plan["unbound"]:
-                raise JobFileError("workflow has no binding for requested controls: " + ", ".join(plan["unbound"]))
+                raise JobInputError("workflow has no binding for requested controls: " + ", ".join(plan["unbound"]))
             entries.target_schema(described, loaded, None, align=align)
             workflow, workflow_inputs = entries.bundle_path(described), dict(plan["bindings"])
             if assets:

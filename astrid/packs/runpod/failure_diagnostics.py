@@ -127,6 +127,11 @@ def summarize(value, *, node_ids=frozenset()):
     for code, facts in candidates:
         if isinstance(code, str) and code in CODES:
             return {'code': code, 'category': CODES[code], **facts}
+    # A structured producer error with an unrecognized identifier is still a
+    # generation failure, but neither its identifier nor its text is safe.
+    if any(isinstance(code, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.-]{0,127}', code)
+           for code, _ in candidates):
+        return {'code': 'generation_failed', 'category': 'execution'}
     return fallback()
 
 

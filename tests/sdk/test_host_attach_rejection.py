@@ -1,6 +1,9 @@
 """A rejected resident-host attach names the mismatching key on stderr and in its reason."""
 
 import json
+import os
+
+import pytest
 
 from astrid.sdk import host_bootstrap
 
@@ -73,3 +76,71 @@ def test_refusal_text_carries_the_attach_reason(monkeypatch):
     assert message.startswith("registered Windows host has no retained Job custody; retirement blocked")
     assert "(registration status ours; " in message
     assert message.endswith(f"; {reason})")
+
+
+@pytest.mark.integration
+def test_serialized_runtime_registration_attaches_and_tampering_refuses(tmp_path, monkeypatch, real_runtime):
+    """Use the real typed Runtime receipt and the same serializer as a resident host."""
+    from astrid.core.execution import generic_host
+    from astrid.core._shared import boot_manifest
+    from tests.test_generic_host import _write_manifest
+
+    daemon = real_runtime()
+    pack = tmp_path / "pack"
+    _write_manifest(pack)
+    client = generic_host.RuntimeProtocolClient(daemon.endpoint, daemon.worker_token)
+    host = generic_host.GenericPackHost(pack_roots=[tmp_path], client=client)
+    host.discover()
+    result = host.register()
+    envelope = generic_host._ready_registration_envelope(result)
+    current, ready, expected, worker = _attach_inputs(tmp_path)
+    worker.write_text(daemon.worker_token, encoding="utf-8")
+    os.chmod(worker, 0o600)
+    epoch = host.runtime_state["runtime_epoch"]
+    for obj in (current, ready, expected):
+        obj.update(endpoint=daemon.endpoint, runtime_epoch=epoch)
+    ready.update(python_executable=current["python_executable"],
+                 source_epoch=host.source_epoch, registration=envelope)
+    ready_file = tmp_path / "ready.json"
+    generic_host._write_ready_marker(ready_file, ready)
+    ready = json.loads(ready_file.read_text())
+    assert host_bootstrap._attach_static_mismatches(current, ready, expected, "") == []
+    assert isinstance(ready["registration"]["registration"], str)
+    assert ready["registration"]["source_epoch"] == ready["source_epoch"]
+    monkeypatch.setattr(generic_host, "source_checkout_digest", lambda _: "digest-1")
+    monkeypatch.setattr(generic_host, "source_checkout_closure_digest", lambda _: "closure-1")
+    monkeypatch.setattr(boot_manifest, "load_boot_manifest_hash", lambda *a, **k: "hash-1")
+
+    def attach(payload):
+        return host_bootstrap._attach_resident_host(
+            current, payload, expected=expected, worker_path=worker, runtime_epoch=epoch,
+            runtime_instance_id=current["runtime_instance_id"], inventory_identity="",
+        )
+
+    try:
+        assert attach(ready) is not None
+        for key in ("source_epoch", "source_digest", "dependency_digest"):
+            changed = json.loads(json.dumps(ready))
+            changed["registration"][key] = "0" * 64
+            assert attach(changed) is None
+        legacy = json.loads(json.dumps(ready))
+        for key in ("source_epoch", "source_digest", "dependency_digest"):
+            legacy["registration"].pop(key)
+        assert attach(legacy) is None
+    finally:
+        host.shutdown()
+
+
+@pytest.mark.parametrize("field", ["source_epoch", "source_digest", "dependency_digest"])
+def test_registration_response_must_match_submitted_identity(field):
+    from types import SimpleNamespace
+    from astrid.core.execution.generic_host import HostError, _executor_registration_identity
+
+    expected = {key: "a" * 64 for key in ("source_epoch", "source_digest", "dependency_digest")}
+    accepted = dict(expected)
+    accepted[field] = "b" * 64
+    with pytest.raises(HostError, match=field):
+        _executor_registration_identity(SimpleNamespace(**accepted), expected)
+    accepted[field] = None
+    with pytest.raises(HostError, match=field):
+        _executor_registration_identity(SimpleNamespace(**accepted), expected)

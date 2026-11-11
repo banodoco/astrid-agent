@@ -494,3 +494,37 @@ def test_source_and_effective_settings_with_identical_bytes_share_one_artifact(t
     assert len({row["content_hash"] for row in manifest["outputs"]}) == 3
     inputs = manifest["managed_generation_result"]["inputs"]
     assert inputs["source"]["object_id"] == inputs["effective_settings"]["object_id"]
+
+
+def test_failed_producer_receipt_survives_executor_to_safe_remote_frame(tmp_path, monkeypatch, capsys):
+    from astrid.core.generation import cli, local_job
+    from astrid.packs.runpod import failure_diagnostics as fd
+
+    private = 'private prompt https://private.example/secret'
+    producer_root = tmp_path / 'producer'
+    producer_root.mkdir()
+    payload = _managed_payload(producer_root, execution_status='failed')
+    payload['inputs']['source'] = _evidence_reference(
+        producer_root, 'evidence/source.bin', 'submitted.bin', b'{}')
+    payload['outcomes']['execution']['code'] = 'download_failed'
+    payload['outcomes']['execution']['message'] = private
+    production = _write_production(producer_root, payload)
+    monkeypatch.setattr('astrid.packs.vibecomfy.workflow_route.WorkflowRunner',
+                        lambda **kwargs: SimpleNamespace(workflow=lambda *a, **k: production))
+    workflow = tmp_path / 'workflow.json'
+    workflow.write_text('{}')
+    job = tmp_path / 'job.json'
+    job.write_text(json.dumps({'schema': local_job.SCHEMA, 'align': 'trust', 'inputs': {}}))
+    action = importlib.import_module('astrid.packs.vibecomfy.actions.run.run')
+    def execute(entry, job_data, out, **kwargs):
+        return action._run_and_settle(workflow, Path(out), task_identity='task-1', attempt_identity='attempt-1')
+    monkeypatch.setattr(local_job, '_run_job', execute)
+    with local_engine_patch():
+        assert cli.main(['workflow', '--placement', 'local', '--job', str(job),
+                         '--out', str(tmp_path / 'spool'), '--json']) == 2
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope['issues'][0]['code'] == 'download_failed'
+    diagnostic = fd.summarize(envelope)
+    frame = fd.MARK + json.dumps(diagnostic)
+    assert fd.parse_frame(frame) == {'code': 'download_failed', 'category': 'model'}
+    assert private not in frame

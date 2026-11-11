@@ -1592,7 +1592,7 @@ def test_runtime_protocol_client_uses_worker_token_contract_without_user_handsha
 
         def register_executor(self, executor, *, idempotency_key):
             self.registration_payloads.append(executor)
-            return {"executor_id": executor["executor_id"], "idempotency_key": idempotency_key}
+            return {**executor, "idempotency_key": idempotency_key}
 
     monkeypatch.setattr("astrid_runtime_client.WorkspaceClient", WorkerGenerated)
     client = RuntimeProtocolClient(
@@ -1603,9 +1603,9 @@ def test_runtime_protocol_client_uses_worker_token_contract_without_user_handsha
         capabilities=[],
         max_concurrency=1,
         resource_keys=[],
-        source_digest="sha256:" + "a" * 64,
-        dependency_digest="sha256:" + "b" * 64,
-        source_epoch="source-epoch-1",
+        source_digest="a" * 64,
+        dependency_digest="b" * 64,
+        source_epoch="c" * 64,
     )
 
     assert client.WORKER_SCOPES == (
@@ -1621,9 +1621,9 @@ def test_runtime_protocol_client_uses_worker_token_contract_without_user_handsha
     assert client.generated.handshake_called is False
     assert client.generated.timeout == 4.25
     wire = client.generated.registration_payloads[0]
-    assert wire["source_digest"] == "sha256:" + "a" * 64
-    assert wire["dependency_digest"] == "sha256:" + "b" * 64
-    assert wire["source_epoch"] == "source-epoch-1"
+    assert wire["source_digest"] == "a" * 64
+    assert wire["dependency_digest"] == "b" * 64
+    assert wire["source_epoch"] == "c" * 64
     assert "schema_digest" not in wire
 
 
@@ -1636,16 +1636,16 @@ def test_runtime_protocol_client_registration_retries_are_session_idempotent(
 
         def register_executor(self, executor, *, idempotency_key):
             self.keys.append(idempotency_key)
-            return {"executor_id": executor["executor_id"], "idempotency_key": idempotency_key}
+            return {**executor, "idempotency_key": idempotency_key}
 
     monkeypatch.setattr("astrid_runtime_client.WorkspaceClient", WorkerGenerated)
     kwargs = {
         "capabilities": [],
         "max_concurrency": 1,
         "resource_keys": [],
-        "source_digest": "sha256:" + "a" * 64,
-        "dependency_digest": "sha256:" + "b" * 64,
-        "source_epoch": "source-epoch-1",
+        "source_digest": "a" * 64,
+        "dependency_digest": "b" * 64,
+        "source_epoch": "c" * 64,
     }
     first = RuntimeProtocolClient("http://127.0.0.1:8765", "worker-token")
     first.register_executor("worker-1", **kwargs)

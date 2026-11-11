@@ -53,7 +53,7 @@ class GenerationInputError(CapabilityValidationError):
         from astrid.core.generation.entries import public_description
         if entry is not None and 'inputs' in entry:
             entry = public_description(entry)
-        error = generation_error(ValueError(message), entry=entry,
+        error = generation_error(ValueError(message), entry=entry, code='input_rejected',
                                  details={'constraint': message})
         self.readiness = error.readiness
         self.code = 'input_rejected'
