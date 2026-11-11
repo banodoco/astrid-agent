@@ -47,7 +47,9 @@ def test_tts_shipped_job_rehydrates_same_public_contract_as_direct(machine_case,
             return deepcopy(_cached(*args, **kwargs))
         monkeypatch.setattr(entries, name, snapshot)
     # Synthetic content only: never substitute a real prompt or live job artifacts.
-    description, values = entries.resolve_entry_inputs(entry, {'text': 'synthetic fixture'}, mode=mode)
+    # Both preparations must use the same explicit seed; absent seeds are
+    # intentionally generated independently for each execution.
+    description, values = entries.resolve_entry_inputs(entry, {'text': 'synthetic fixture', 'seed': 123}, mode=mode)
     described = entries.find_entry(entry)
     assert described is not None
     assert not entries.entry_hooks(described).get('build'), 'diagnostic must be extended for build hooks'
