@@ -9,11 +9,10 @@ from __future__ import annotations
 import base64
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import sys
-
+from pathlib import Path
 
 DIAGNOSTIC_SCHEMA = "astrid.pod-storage-diagnostic.v1"
 DIAGNOSTIC_PREFIX = "ASTRID_STORAGE_DIAGNOSTIC "

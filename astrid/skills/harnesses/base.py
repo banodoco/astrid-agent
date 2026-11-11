@@ -15,6 +15,7 @@ from astrid.core.contracts.errors import AstridError
 
 from ..discovery import SkillDescriptor
 
+
 def sync_target_name(descriptor: SkillDescriptor) -> str:
     """Return the shared harness directory name for a skill."""
     if descriptor.pack_id == "_core":

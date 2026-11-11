@@ -41,6 +41,7 @@ def trust_declared_loader_choices(observed: dict[str, Any], workflow: Any) -> di
     can extend an existing model menu, never create a missing node or socket.
     """
     from copy import deepcopy
+
     from vibecomfy.model_assets import _referenced_model_values
 
     trusted = deepcopy(observed)

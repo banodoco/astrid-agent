@@ -13,13 +13,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .compile import CompilationError, compile_preparation
-from .prepare import prepare_request, write_preparation
-from .static_regions import resolve_static_region
-
 from .engine_facts import facts
 from .generation import generation_timing
+from .prepare import prepare_request, write_preparation
 from .request import H3Request, H3RequestError, normalize_request
 from .spec import H3Spec, canonical_spec, sampling_request_document
+from .static_regions import resolve_static_region
 from .timing import plan_continuation
 
 

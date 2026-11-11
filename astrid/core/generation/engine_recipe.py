@@ -374,8 +374,10 @@ def _index_rows() -> list[dict[str, Any]]:
     rows, seen = [], set()
     for item in sorted(_declared_rows(), key=lambda r: (r["engine"], r["platform"])):
         engine, platform = _string(item["engine"], "index.engine"), _string(item["platform"], "index.platform")
-        if not _ENGINE.fullmatch(engine) or platform not in _PLATFORMS: raise RecipeValidationError("invalid index engine/platform")
-        if platform in {p for _, p in seen}: raise RecipeValidationError("more than one engine row for a platform")
+        if not _ENGINE.fullmatch(engine) or platform not in _PLATFORMS:
+            raise RecipeValidationError("invalid index engine/platform")
+        if platform in {p for _, p in seen}:
+            raise RecipeValidationError("more than one engine row for a platform")
         seen.add((engine, platform))
         rows.append(item)
     return rows
@@ -409,50 +411,64 @@ def load_recipe(engine: str, platform: str, *, registry: BundledCatalog | None =
     recipe and its explicit pin imports are opened. A supplied catalog cannot
     fall back to a same-ID recipe in an unselected pack.
     """
-    if not isinstance(engine, str) or not _ENGINE.fullmatch(engine): raise UnknownEngine(engine)
+    if not isinstance(engine, str) or not _ENGINE.fullmatch(engine):
+        raise UnknownEngine(engine)
     allowed = _selected_resources(registry)
     matches = [item for item in _index_rows() if item["engine"] == engine and _selected_row(item, allowed)]
     if not matches:
         raise UnknownEngine(f"engine is not registered in the selected catalog: {engine}")
-    if platform not in _PLATFORMS or not any(item["platform"] == platform for item in matches): raise UnsupportedPlatform(f"{engine} does not support {platform}")
+    if platform not in _PLATFORMS or not any(item["platform"] == platform for item in matches):
+        raise UnsupportedPlatform(f"{engine} does not support {platform}")
     entry = next(item for item in matches if item["platform"] == platform)
     return _load_recipe(_resolve_ref(entry["recipe"], "index.recipe"), engine, platform, allowed=allowed)
 
 
 def _load_model_lock_ref(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] | None = None) -> ModelLock:
     _, payload = _read_ref(ref, allowed=allowed)
-    try: raw = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc: raise ModelLockValidationError(f"model lock is invalid JSON: {ref.path}") from exc
+    try:
+        raw = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ModelLockValidationError(f"model lock is invalid JSON: {ref.path}") from exc
     top = _object(raw, {"schema", "models"}, where="model lock")
-    if top["schema"] != "astrid.models-lock.v1": raise ModelLockValidationError("unknown model lock schema")
+    if top["schema"] != "astrid.models-lock.v1":
+        raise ModelLockValidationError("unknown model lock schema")
     models, names, destinations = [], set(), set()
     for i, row_raw in enumerate(_array(top["models"], "model lock.models")):
         row = _object(row_raw, {"name", "repository", "revision", "path", "url", "destination", "bytes", "sha256"}, where=f"models[{i}]")
         name = _string(row["name"], "model.name")
-        if name in names: raise ModelLockValidationError("duplicate model name")
+        if name in names:
+            raise ModelLockValidationError("duplicate model name")
         names.add(name)
         repo, revision, source_path, url = row["repository"], row["revision"], row["path"], row["url"]
         hf = all(value is not None for value in (repo, revision, source_path)) and url is None
         web = repo is None and revision is None and source_path is None and url is not None
-        if not (hf ^ web): raise ModelLockValidationError("model must have exactly one valid source form")
+        if not (hf ^ web):
+            raise ModelLockValidationError("model must have exactly one valid source form")
         if hf:
             _string(repo, "model.repository")
-            if not _REVISION.fullmatch(_string(revision, "model.revision")): raise ModelLockValidationError("model.revision must be an immutable lowercase commit")
+            if not _REVISION.fullmatch(_string(revision, "model.revision")):
+                raise ModelLockValidationError("model.revision must be an immutable lowercase commit")
             source_path = _relative(source_path, "model.path")
-        else: url = _https(url, "model.url")
+        else:
+            url = _https(url, "model.url")
         destination = _relative(row["destination"], "model.destination")
-        if destination in destinations: raise ModelLockValidationError("duplicate model destination")
+        if destination in destinations:
+            raise ModelLockValidationError("duplicate model destination")
         destinations.add(destination)
         size = row["bytes"]
-        if type(size) is not int or size <= 0: raise ModelLockValidationError("model.bytes must be a positive integer")
-        try: digest = _digest(row["sha256"], "model.sha256")
-        except RecipeValidationError as exc: raise ModelLockValidationError(str(exc)) from exc
+        if type(size) is not int or size <= 0:
+            raise ModelLockValidationError("model.bytes must be a positive integer")
+        try:
+            digest = _digest(row["sha256"], "model.sha256")
+        except RecipeValidationError as exc:
+            raise ModelLockValidationError(str(exc)) from exc
         models.append(ModelSpec(name, repo, revision, source_path, url, destination, size, digest))
     return ModelLock(top["schema"], tuple(models))
 
 
 def load_model_lock(ref: DataRef, *, registry: BundledCatalog | None = None) -> ModelLock:
-    if not isinstance(ref, DataRef): raise ModelLockValidationError("load_model_lock requires a DataRef")
+    if not isinstance(ref, DataRef):
+        raise ModelLockValidationError("load_model_lock requires a DataRef")
     try:
         return _load_model_lock_ref(ref, allowed=_selected_resources(registry))
     except (ModelLockValidationError, UnsafePathError):

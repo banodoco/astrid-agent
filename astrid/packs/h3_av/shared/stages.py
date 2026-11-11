@@ -12,7 +12,6 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
-from .engine_facts import facts
 from .errors import PreparationError
 from .request import H3Request, _asset_ids, normalize_request
 from .request_v2 import branch_for

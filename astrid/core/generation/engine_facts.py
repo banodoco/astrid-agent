@@ -38,7 +38,10 @@ def comfyui_facts() -> EngineFacts:
         return {model.destination: model for model in load_recipe_model_lock("comfyui", PLATFORM).models}
 
     def bind_model_root(model_root: Mapping[str, Any]) -> Any:
-        from astrid.core.generation.model_root import ModelRootBindingError, validate_model_root_binding
+        from astrid.core.generation.model_root import (
+            ModelRootBindingError,
+            validate_model_root_binding,
+        )
         try:
             return validate_model_root_binding(model_root, verify_files=True)
         except ModelRootBindingError as exc:
@@ -57,7 +60,9 @@ def comfyui_facts() -> EngineFacts:
         write(path, value)
 
     def assert_no_unresolved_placeholders(bindings: Any) -> None:
-        from astrid.packs.vibecomfy.invocation_preflight import _assert_no_unresolved_placeholders as check
+        from astrid.packs.vibecomfy.invocation_preflight import (
+            _assert_no_unresolved_placeholders as check,
+        )
         check(bindings)
 
     def measure_source_av(path: Any) -> Mapping[str, Any]:

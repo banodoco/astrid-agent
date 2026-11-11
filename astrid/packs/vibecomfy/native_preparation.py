@@ -12,13 +12,16 @@ def prepare_native_workflow(workflow_path, runtime_root, python_executable, uv_e
     """
     import ast
     import hashlib
-    import json
     import subprocess
     import sys
     from pathlib import Path
+
     from vibecomfy.commands.runpod_setup import ensure_runtime_layout
     from vibecomfy.runtime.dependencies import (
-        compare_runtime, inspect_runtime_target, runtime_requirements_from_workflow, sync_runtime,
+        compare_runtime,
+        inspect_runtime_target,
+        runtime_requirements_from_workflow,
+        sync_runtime,
     )
     from vibecomfy.runtime.prepared import prepare_workflow
     from vibecomfy.security.provenance import Provenance
@@ -55,14 +58,17 @@ def prepare_native_workflow(workflow_path, runtime_root, python_executable, uv_e
             for statement in ast.parse(version_file.read_text()).body:
                 if isinstance(statement, ast.Assign) and any(isinstance(target, ast.Name) and target.id == '__version__' for target in statement.targets):
                     value = ast.literal_eval(statement.value)
-                    if isinstance(value, str): actual['comfy_version'] = value
+                    if isinstance(value, str):
+                        actual['comfy_version'] = value
         return actual
     def install(packages, offline_install):
         argv = [uv_executable, '--no-config', 'pip', 'install', '--python', python_executable, '--no-deps']
-        if offline_install: argv.append('--offline')
+        if offline_install:
+            argv.append('--offline')
         if requirements and requirements.package_indexes:
             argv += ['--index-url', requirements.package_indexes[0]]
-            for index in requirements.package_indexes[1:]: argv += ['--extra-index-url', index]
+            for index in requirements.package_indexes[1:]:
+                argv += ['--extra-index-url', index]
         subprocess.run([*argv, *packages], check=True, capture_output=True, text=True)
     report = sync_runtime(requirements, runtime_root=root, installer=install, verify=observe,
                           launch_flags=list(launch_flags), sync_packages=sync_packages, offline=offline)
@@ -84,6 +90,7 @@ def prepare_native_workflow(workflow_path, runtime_root, python_executable, uv_e
 
 def ensure_native_pip(python_executable):
     """Bootstrap only the verified interpreter's bundled pip, offline and without upgrade."""
+    import ensurepip
     import hashlib
     import importlib.metadata
     import importlib.util
@@ -92,7 +99,6 @@ def ensure_native_pip(python_executable):
     import sys
     import sysconfig
     from pathlib import Path
-    import ensurepip
     if Path(sys.executable).resolve() != Path(python_executable).resolve():
         raise ValueError("pip bootstrap requires the verified managed interpreter")
     configured = sysconfig.get_config_var('WHEEL_PKG_DIR')
@@ -118,8 +124,10 @@ def ensure_native_pip(python_executable):
         wheel_path = str(wheel)
         bundled_version = ensurepip.version()
         spec = importlib.util.find_spec('pip')
-        try: installed = importlib.metadata.version('pip')
-        except importlib.metadata.PackageNotFoundError: installed = None
+        try:
+            installed = importlib.metadata.version('pip')
+        except importlib.metadata.PackageNotFoundError:
+            installed = None
         if (spec is None) != (installed is None):
             raise ValueError("managed pip installation is partial")
         existed = spec is not None
@@ -161,6 +169,7 @@ def run_native_doctor(argv, endpoint, expected_schema_sha256, request_timeout, *
     """Run the original doctor against one fresh, owner-bound target schema."""
     import json
     from urllib.parse import urlsplit
+
     import httpx
     import vibecomfy.commands.doctor as doctor
     from vibecomfy.cli import main
@@ -200,8 +209,15 @@ def run_native_doctor(argv, endpoint, expected_schema_sha256, request_timeout, *
 def native_doctor_program():
     """Ship the existing Agent schema adapter and digest without installing Agent in the engine."""
     import inspect
+
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
-    from astrid.core.generation.engine_runner import _plain, _json, _sha, _object_info_sha256, _DYNAMIC_FILE_CHOICES
+    from astrid.core.generation.engine_runner import (
+        _DYNAMIC_FILE_CHOICES,
+        _json,
+        _object_info_sha256,
+        _plain,
+        _sha,
+    )
 
     header = ("import copy,re,json,hashlib\nfrom dataclasses import fields,is_dataclass\n"
               "from collections.abc import Mapping\n"

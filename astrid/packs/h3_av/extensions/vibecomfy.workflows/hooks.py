@@ -93,8 +93,8 @@ def build(inputs, files, out, *, engine=None):
 
 def _load_graph(trio: Path):
     """The trio's workflow graph, through VibeComfy's own bundle loader."""
-    from vibecomfy.security.provenance import Provenance
     from vibecomfy.schema import get_authoring_schema_provider
+    from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import load_bundle
     return load_bundle(trio / "workflow.py", trust=Provenance.USER_CONFIRMED,
                        schema_provider=get_authoring_schema_provider(on_demand_schemas=False)).workflow

@@ -739,8 +739,8 @@ def _failure_command(parsed) -> int:
 def _kept_failure(before: set[tuple[str, int]]) -> None:
     """Read only the bounded owner result after a failed RunPod command."""
     try:
-        from astrid.packs.runpod.machine import journal_leases
         from astrid.core.machines_cli import _when
+        from astrid.packs.runpod.machine import journal_leases
         for row in journal_leases():
             last = row.get('last_job') or {}
             identity = (row.get('lease'), last.get('generation'))

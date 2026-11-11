@@ -39,8 +39,18 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .remote_placement import (
-    MANIFEST_MARK, MANIFEST_NAME, POD_VENV, RESULT_MARK, RUNS_ROOT, Claim, DigestMismatch,
-    RemotePlacement, RemotePlacementError, RemoteRun, manifest_command, sha256_file,
+    MANIFEST_MARK,
+    MANIFEST_NAME,
+    POD_VENV,
+    RESULT_MARK,
+    RUNS_ROOT,
+    Claim,
+    DigestMismatch,
+    RemotePlacement,
+    RemotePlacementError,
+    RemoteRun,
+    manifest_command,
+    sha256_file,
 )
 
 KIND = "runpod"
@@ -511,10 +521,10 @@ class RunPodMachine:
         """Rent or reuse one pod for ``job``; retain only verified preparation."""
         from astrid.core.generation.interfaces import RunPodPreparationRequest
         from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
-        from .generation import prepare_retained_generation
-        from .target_selection import PaidRunConsent, PaidSelectionError
 
         from .adapter import prevalidate_task
+        from .generation import prepare_retained_generation
+        from .target_selection import PaidRunConsent, PaidSelectionError
 
         adapter = self._require()
         policy, inputs = job.policy, job.inputs
@@ -1038,8 +1048,9 @@ class RunPodMachine:
         if unreaped is not None:
             owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)
             raise AcquisitionUnresolvedError("bounded pod observer remains alive; exact custody is pending")
-        from .failure_diagnostics import host_summary
         from astrid.core.execution.machine_run import MachineRunCancelled
+
+        from .failure_diagnostics import host_summary
         summary = host_summary(failure, getattr(lease, "failure_diagnostic", None),
                                stage=stage, node_ids=lease.node_ids,
                                node_names=lease.node_names) if failure else None
@@ -1281,7 +1292,6 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
 def journal_leases(account: str | None = None) -> list[dict[str, Any]]:
     """Read-only listing from the account's lease journal (no lock, no provider call)."""
     from .target_selection import canonical_claim_path, read_runpod_preferences
-
     from .worker_owner import ended_leases_path
 
     try:
@@ -1302,6 +1312,7 @@ def observe_mounts_with(api_key: str) -> Callable[[str, str], Mapping[str, Any]]
     """The typed provider mapping, from runpod-lifecycle's exact-pod observation."""
     def observe(pod_id: str, nonce: str) -> Mapping[str, Any]:
         from runpod_lifecycle.discovery import observe_pod_mounts
+
         from .worker_owner import _run_sync
 
         return _run_sync(observe_pod_mounts(pod_id, api_key, nonce))

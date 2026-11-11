@@ -42,6 +42,7 @@ def _load_workflows(entry: Any) -> list[Any]:
     if not entry.get("action"):
         return [entries._load_entry_workflow(entry)]
     import yaml
+
     from astrid.core.pack.loader import packs_root
     pack = packs_root() / entry["action"].split(".")[0]
     return [entries._load_entry_workflow({"bundle": str(pack / yaml.safe_load(

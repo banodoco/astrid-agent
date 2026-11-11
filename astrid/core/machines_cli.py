@@ -206,6 +206,7 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
            describe: Callable[..., Any] | None, input_fn: Callable[[str], str]) -> int:
     """Disclose one saved-storage policy, then submit fresh per-claim authority."""
     import sys
+
     from astrid.core.generation.cli import _gpu_placement
     from astrid.packs.runpod.target_selection import PaidRunConsent, RunPodPreferences, _number
     from astrid.sdk.generation import GenerationFacade
@@ -325,7 +326,9 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
     """Save RunPod setup through runpod.setup; inventory is read-only."""
     from astrid.core.generation import settings
     from astrid.packs.runpod.target_selection import (
-        DEFAULT_RUNPOD_WORKER_IMAGE, RunPodPreferences, RunPodSetupRequiredError,
+        DEFAULT_RUNPOD_WORKER_IMAGE,
+        RunPodPreferences,
+        RunPodSetupRequiredError,
     )
 
     saved = settings.machine_policy("runpod") or {}
@@ -341,8 +344,8 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
     if (volumes is None or offered_gpus is None or
             (not as_json and volume is None and datacenter is None and datacenters is None)):
         from astrid.core.util.credentials_scope import CredentialsScope
-        from astrid.packs.runpod.worker_owner import _run_sync
         from astrid.packs.runpod import adapter
+        from astrid.packs.runpod.worker_owner import _run_sync
 
         credential_name = credential_ref.removeprefix("env:")
         try:
@@ -438,8 +441,9 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         validated = RunPodPreferences.from_mapping(policy).as_mapping()
         try:
             if setup is None:
-                from astrid.sdk import AstridClient
                 import json as _json
+
+                from astrid.sdk import AstridClient
 
                 with AstridClient.open_from_launcher() as client:
                     result = client.invoke_result("runpod.setup", kind="action", project=None,

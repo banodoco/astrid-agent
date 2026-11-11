@@ -1,16 +1,16 @@
 """Trusted host preparation of an installation before a sandboxed HTTP worker."""
 from __future__ import annotations
 
-from concurrent.futures import CancelledError
-from contextlib import contextmanager
-from contextvars import ContextVar
 import copy
 import hashlib
 import json
 import os
 import re
-from pathlib import Path
 import time
+from concurrent.futures import CancelledError
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -93,7 +93,7 @@ def configured_models_root(engine: str = "comfyui", *, root: str | None = None) 
     Existing malformed/unsafe receipts fail closed, including on a cold install.
     """
     from ._engine_target_files import _TargetFiles
-    from .engine_contracts import effective_models_root, IntegrityError
+    from .engine_contracts import IntegrityError, effective_models_root
     from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
     from .engine_recipe import load_recipe
     from .engine_runner import _parse_receipt, plan_install
@@ -133,8 +133,8 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
             or body["health"].get("healthy") is not True
             or execution_identity is not None and body["execution_identity"] != execution_identity):
         raise ValueError("managed engine preparation differs from this attempt")
-    from .engine_local_endpoint import _valid_root
     from . import target_inventory
+    from .engine_local_endpoint import _valid_root
     pod_alignment = getattr(target_inventory, "POD_ALIGN", None)
     expected_mode = (pod_alignment.get() if pod_alignment is not None else None) or os.environ.get("ASTRID_ALIGN", "check")
     installation = body["installation"]
@@ -278,10 +278,11 @@ class ManagedEnginePreparation:
         self._preparing_engine = False
 
     def _prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
-        from .engine_contracts import IntegrityError, effective_models_root
-        from .engine_recipe import recipe_digest
-        from .engine_runner import _Runner, _parse_receipt, plan_install, refresh_installed_launch
         from astrid.packs.vibecomfy.actions.run import run as run_action
+
+        from .engine_contracts import IntegrityError
+        from .engine_recipe import recipe_digest
+        from .engine_runner import _parse_receipt, _Runner, plan_install, refresh_installed_launch
 
         self.check()
         staged_members = [workflow]
@@ -312,8 +313,8 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed installation evidence differs from its receipt")
         self._runtime_requirements = None
         self._guard_runtime(canonical_workflow, runner, post=False)
-        from vibecomfy.workflow_bundle import emit_bundle_with_candidate, load_bundle
         from vibecomfy.security.provenance import Provenance
+        from vibecomfy.workflow_bundle import emit_bundle_with_candidate, load_bundle
         canonical_path = self.scratch / "canonical" / "workflow.py"
         canonical_path.parent.mkdir(parents=True, exist_ok=True)
         from vibecomfy.workflow_bundle import WorkflowBundleError
@@ -425,9 +426,10 @@ class ManagedEnginePreparation:
 
     def _guard_runtime(self, workflow, runner, *, post):
         """Refuse changes to the receipt-owned base before native synchronization."""
-        from .engine_contracts import IntegrityError
-        from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
         from packaging.requirements import Requirement
+        from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
+
+        from .engine_contracts import IntegrityError
         requirements = runtime_requirements_from_workflow(workflow)
         self._runtime_requirements = requirements
         self._runtime_launch_flags = list(runner.launch_spec()["argv"])
@@ -542,8 +544,9 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             self._native(program, *argv, step=step)
 
     def _doctor(self, argv):
-        from .engine_contracts import IntegrityError
         from astrid.packs.vibecomfy.native_preparation import native_doctor_program
+
+        from .engine_contracts import IntegrityError
         runner = self._alignment_runner
         # align has already run nodes/fetch/prepare. Re-attest their results
         # before the first launch can execute the installed ComfyUI or venv.
