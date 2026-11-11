@@ -1697,6 +1697,24 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _executor_registration_identity(registration: Any, expected: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """Extract the Runtime-accepted source identity, refusing incomplete receipts."""
+    identity = {}
+    for name in ("source_epoch", "source_digest", "dependency_digest"):
+        value = registration.get(name) if isinstance(registration, Mapping) else getattr(registration, name, None)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise HostError(f"Runtime executor registration lacks a valid {name}")
+        if expected is not None and value != expected.get(name):
+            raise HostError(f"Runtime executor registration changed {name}")
+        identity[name] = value
+    return identity
+
+
+def _ready_registration_envelope(registration: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose accepted identity alongside the existing registration envelope."""
+    return {**registration, **_executor_registration_identity(registration.get("registration"))}
+
+
 def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
     """Terminate the complete child session and reap the direct child.
 
@@ -5212,6 +5230,7 @@ class RuntimeProtocolClient:
                 f"{self._registration_session}"
             ),
         )
+        _executor_registration_identity(registration, payload)
         self.executor_id = executor_id
         return registration
 
@@ -17176,6 +17195,11 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         stdin_shutdown.wait_for_shutdown_cleanup()
         return 1
     if ready_path is not None:
+        if args.register:
+            # Keep the existing registration envelope while publishing the
+            # accepted identity as JSON fields for resident attach checks.
+            # The generated Executor is otherwise serialized as a repr.
+            registration = _ready_registration_envelope(registration)
         ready_payload = {
             "status": "ready",
             "remotion_validation": {
