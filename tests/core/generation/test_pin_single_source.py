@@ -103,3 +103,8 @@ def test_a_manifest_override_that_misses_the_canonical_pin_is_refused(tmp_path, 
     _manifest(tmp_path, monkeypatch, **override)
     with pytest.raises(managed_sources.ManagedSourcesError, match="canonical pin"):
         managed_sources._pins()
+
+
+def test_packaged_runtime_lock_is_byte_identical_to_the_root_lock():
+    """runtime.lock.json (root) is the single source; the wheel copy may never drift."""
+    assert (ROOT / "astrid/resources/runtime.lock.json").read_bytes() == (ROOT / "runtime.lock.json").read_bytes()
