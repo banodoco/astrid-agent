@@ -610,11 +610,12 @@ class RunPodMachine:
                 ))
             except BaseException as exc:
                 if acquired:
+                    exc.claim_context = {"acquired": True, "preparation_job": False}
                     try:
                         # Read by the failure receipt: a bootstrap/install job was started if it was checkpointed.
                         journal = owner.selection._read() or {}
-                        exc.claim_context = {"acquired": True, "preparation_job": bool(
-                            ((journal.get("lease") or {}).get("preparation") or {}).get("job"))}
+                        exc.claim_context["preparation_job"] = bool(
+                            ((journal.get("lease") or {}).get("preparation") or {}).get("job"))
                     except Exception:
                         pass
                     # Only a fully attested preparation can be reused. Failure

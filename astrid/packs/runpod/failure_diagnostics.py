@@ -63,6 +63,8 @@ EXCEPTIONS = frozenset({
     'CustodyChanged', 'TimeoutError', 'ValueError', 'RuntimeError', 'OSError',
     'ConnectionError', 'PermissionError', 'FileNotFoundError', 'IntegrityError',
     'DeadlineExceeded', 'UnknownError',
+    'PaidSelectionError', 'RunPodSetupRequiredError', 'OfferObservationError',
+    'CapacityExhaustedError', 'CapacityWaitTimeout',
 })
 
 

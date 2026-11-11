@@ -273,6 +273,54 @@ def test_stage_decision_rules(kwargs, stage, basis):
     assert stage in failure_receipt.STAGES
 
 
+@pytest.mark.parametrize(("marker", "error_type"), [
+    ("credential", "PaidSelectionError"), ("volume", "AcquisitionUnresolvedError"),
+    ("machine", "AcquisitionUnresolvedError"),
+])
+def test_claim_cause_marker_is_projected_without_a_gate(marker, error_type):
+    from astrid.packs.runpod.failure_diagnostics import EXCEPTIONS
+    from astrid.packs.runpod.target_selection import PaidSelectionError
+    from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError, observation_failure_gate
+
+    error = (PaidSelectionError("private") if error_type == "PaidSelectionError"
+             else AcquisitionUnresolvedError("private"))
+    error.cause = marker
+    receipt = failure_receipt.build_receipt({"failure": error, "stage": "claim"},
+        job=SimpleNamespace(task_id="t"), machine=None, timing=None)
+    assert receipt["cause"]["cause"] == marker and receipt["stage"] == "no_machine"
+    assert error.gate is None and observation_failure_gate(error) == "provider"
+    assert receipt["cause"]["exception"] == error_type and error_type in EXCEPTIONS
+    assert "private" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("name", ["PaidSelectionError", "RunPodSetupRequiredError", "OfferObservationError",
+                                  "CapacityExhaustedError", "CapacityWaitTimeout"])
+def test_claim_exception_names_are_allowlisted(name):
+    from astrid.packs.runpod import target_selection
+    from astrid.packs.runpod.worker_preparation import CapacityExhaustedError
+
+    types = {"PaidSelectionError": target_selection.PaidSelectionError,
+             "RunPodSetupRequiredError": target_selection.RunPodSetupRequiredError,
+             "OfferObservationError": target_selection.OfferObservationError,
+             "CapacityExhaustedError": CapacityExhaustedError,
+             "CapacityWaitTimeout": target_selection.CapacityWaitTimeout}
+    error = types[name]("secret")
+    receipt = failure_receipt.build_receipt({"failure": error, "stage": "claim"},
+        job=SimpleNamespace(task_id="t"), machine=None, timing=None)
+    assert receipt["cause"]["exception"] == name
+
+
+def test_failure_callback_exception_is_logged_by_class_and_never_its_text(capsys):
+    from astrid.core.execution.machine_run import _report_failure
+
+    def broken(_facts):
+        raise RuntimeError("private secret https://private.example")
+
+    _report_failure(broken, ValueError("job error"), "claim", None, None)
+    stderr = capsys.readouterr().err
+    assert stderr == "failure receipt not written (RuntimeError)\n"
+
+
 def test_host_job_function_puts_timing_on_terminal_machine_and_writes_the_receipt(machine_case, receipts,
                                                                                   monkeypatch):
     """The real host method, with the real machine: success and failure both carry ``terminal['machine']['timing']``."""

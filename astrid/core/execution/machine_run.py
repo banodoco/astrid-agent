@@ -145,8 +145,9 @@ def _report_failure(on_failure: Callable[[Mapping[str, Any]], None] | None, fail
     try:
         on_failure({"failure": failure, "stage": stage, "lease": lease, "run": run,
                     "release_failed": release_failed})
-    except Exception:
-        pass  # A receipt problem never masks the job's own error.
+    except Exception as exc:
+        import sys
+        print(f"failure receipt not written ({type(exc).__name__})", file=sys.stderr)
 
 
 __all__ = ["WORKFLOW_FILE_ENTRY", "BUILT_IN", "FILE_INPUTS", "MachineJob", "MachineRunCancelled", "MachineRunError",

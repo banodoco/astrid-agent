@@ -26,6 +26,7 @@ EXIT_NOT_READY, EXIT_VALIDATION = 75, 3
 _CATEGORY_STAGE = {"input": "workflow_validation", "model": "model_download",
                    "installation": "install", "health": "install", "dependency": "install"}
 _PROGRESS_STAGE = {"align": "model_download", "start_engine": "install"}
+CAUSE_MARKERS = frozenset({"credential", "volume", "machine"})
 
 _MESSAGES = {
     "no_machine": "No machine was available for this generation.",
@@ -118,6 +119,9 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     cause: dict[str, Any] = {key: summary[key] for key in
                              ("code", "category", "exception", "node_id", "node_class", "field", "constraint")
                              if key in summary}
+    marker = getattr(failure, "cause", None)
+    if marker in CAUSE_MARKERS:
+        cause["cause"] = marker
     if exit_code is not None:
         cause["exit_code"] = exit_code
     reason = getattr(failure, "reason", None)
