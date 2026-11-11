@@ -19,10 +19,6 @@ jobs:
         side: [r10, r11, base, candidate]
         group: ['019']
     steps:
-      - name: Initialize incomplete receipt
-        run: |
-          mkdir -p "$RUNNER_TEMP/r12-a2-receipt"
-          printf '%s\n' 'INCOMPLETE: no verified result yet' > "$RUNNER_TEMP/r12-a2-receipt/status.txt"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
@@ -30,6 +26,7 @@ jobs:
         with:
           python-version: '3.11.17'
       - name: Validate and execute isolated group
+        id: a2
         env:
           A2_SIDE: ${{ matrix.side }}
           A2_GROUP: ${{ matrix.group }}
@@ -39,10 +36,10 @@ jobs:
           A2_ATTEMPT: ${{ github.run_attempt }}
         run: python tools/r12-a2-ci/runner.py
       - name: Upload receipt even after failure or cancellation
-        if: always()
+        if: always() && steps.a2.outputs.receipt_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: r12-a2-${{ matrix.group }}-${{ matrix.side }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/r12-a2-receipt/
+          path: ${{ runner.temp }}/r12-a2-receipt/receipt.json
           if-no-files-found: warn
           retention-days: 90

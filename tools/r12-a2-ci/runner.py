@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """R12 A2 one-shot CI runner; no arbitrary ref or selector inputs."""
-import hashlib, json, os, pathlib, re, shutil, subprocess, sys, time, traceback
+import hashlib, json, os, pathlib, re, subprocess, sys, time, traceback
+from sanitize import sanitized_result, write_receipt
 
 HERE = pathlib.Path(__file__).resolve().parent
 MANIFEST_SHA = '885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771'
@@ -36,7 +37,8 @@ def main():
     side, group = os.environ['A2_SIDE'], os.environ['A2_GROUP']
     b, expected = validate(side, group)
     if os.environ.get('A2_REF') != 'refs/heads/scratch/r12-a2-shakedown-019-20261111' or group != '019' or os.environ.get('A2_BEFORE') != BEFORE or os.environ.get('A2_ATTEMPT') != '1': raise ValueError('run control mismatch')
-    root = pathlib.Path(os.environ['RUNNER_TEMP']).resolve(); out = root/'r12-a2-receipt'; out.mkdir(exist_ok=True)
+    root = pathlib.Path(os.environ['RUNNER_TEMP']).resolve(); receipt = root/'r12-a2-receipt'; out = root/'r12-a2-private'; out.mkdir(exist_ok=False)
+    preflight = False; rc = None
     envdir = root/'r12-a2-isolated'; envdir.mkdir(exist_ok=False)
     for d in ('home','tmp','cache','basetemp'): (envdir/d).mkdir()
     env = {'PATH':os.environ['PATH'], 'HOME':str(envdir/'home'), 'TMPDIR':str(envdir/'tmp'), 'XDG_CACHE_HOME':str(envdir/'cache'), 'LANG':'C.UTF-8', 'PYTHONNOUSERSITE':'1', 'PYTHONDONTWRITEBYTECODE':'1', 'PYTHONSAFEPATH':'1', 'GIT_CONFIG_NOSYSTEM':'1', 'GIT_TERMINAL_PROMPT':'0'}
@@ -46,12 +48,12 @@ def main():
             return subprocess.run(list(map(str,cmd)), cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT, check=check).returncode
     def fetch(url, path, sha):
         run(['git','init','-q',path]); run(['git','-C',path,'fetch','-q','--depth=1',url,sha]); run(['git','-C',path,'checkout','-q','--detach','FETCH_HEAD'])
-        got = subprocess.check_output(['git','-C',path,'rev-parse','HEAD'],env=env,text=True).strip()
+        got = subprocess.check_output(['git','-C',path,'rev-parse','HEAD'],env=env,text=True,stderr=subprocess.DEVNULL).strip()
         if got != sha: raise ValueError('checkout SHA mismatch')
     try:
         (out/'identity.json').write_text(json.dumps({'side':side,'group':group,'pins':PINS[side], 'manifest_sha256':MANIFEST_SHA,'workflow_sha':os.environ['A2_SHA'],'before':BEFORE},indent=2)+'\n')
         checkout = HERE.parent.parent
-        if subprocess.check_output(['git','-C',checkout,'rev-parse','HEAD'],env=env,text=True).strip() != os.environ['A2_SHA']: raise ValueError('workflow checkout mismatch')
+        if subprocess.check_output(['git','-C',checkout,'rev-parse','HEAD'],env=env,text=True,stderr=subprocess.DEVNULL).strip() != os.environ['A2_SHA']: raise ValueError('workflow checkout mismatch')
         if sys.version.split()[0] != '3.11.17': raise ValueError('Python version mismatch')
         (out/'python.txt').write_text(sys.version+'\n'+str(pathlib.Path(sys.executable).resolve())+' sha256='+digest(pathlib.Path(sys.executable).resolve())+'\n')
         agent, rt, vc, lc = PINS[side]; co=envdir/'agent'; runtime=envdir/'runtime'; vibe=envdir/'vibecomfy'; lifecycle=envdir/'lifecycle'
@@ -70,8 +72,9 @@ def main():
         (envdir/'node').mkdir(); (envdir/'esbuild').mkdir(); run(['tar','-xf',nodearchive,'--strip-components=1','-C',envdir/'node']); run(['tar','-xf',esarchive,'--strip-components=1','-C',envdir/'esbuild'])
         node=envdir/'node/bin/node'; esbuild=envdir/'esbuild/bin/esbuild'
         for binary,sha,version in [(node,'1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31','v22.22.0'),(esbuild,'c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b','0.27.7')]:
-            if digest(binary)!=sha or subprocess.check_output([binary,'--version'],env=env,text=True).strip()!=version: raise ValueError('tool verification failed')
+            if digest(binary)!=sha or subprocess.check_output([binary,'--version'],env=env,text=True,stderr=subprocess.DEVNULL).strip()!=version: raise ValueError('tool verification failed')
         (out/'toolchain.txt').write_text(f'{node} {digest(node)} v22.22.0\n{esbuild} {digest(esbuild)} 0.27.7\n')
+        preflight = True
         (out/'expected-ids.txt').write_text(''.join(x+'\n' for x in expected))
         absent=(HERE/f'inventory/{side}-absent-ids.txt').read_text().splitlines(); (out/'absent-ids.txt').write_text(''.join(x+'\n' for x in absent if x.split('::',1)[0] in b['modules']))
         paths=[str(co/x) for x in b['modules'] if (co/x).is_file()]; (out/'modules.json').write_text(json.dumps({'selected':b['modules'],'present':paths},indent=2)+'\n')
@@ -82,17 +85,22 @@ def main():
         cmd=[py,'-m','pytest','-vv','--tb=line','-p','no:cacheprovider','--basetemp='+str(envdir/'basetemp'/('shard-'+group)),'--ignore=tests/core/pack/test_build_hook_contract.py','-k','not browser']+[x for x in b['modules'] if (co/x).is_file()]
         (out/'command.json').write_text(json.dumps(list(map(str,cmd)),indent=2)+'\n'); (out/'start.txt').write_text(time.strftime('%FT%TZ',time.gmtime())+'\n')
         rc=run(cmd,cwd=co,log='pytest.log',check=False); (out/'exit.txt').write_text(str(rc)+'\n'); (out/'end.txt').write_text(time.strftime('%FT%TZ',time.gmtime())+'\n')
-        lines=(out/'pytest.log').read_text(errors='replace').splitlines(); actual=[m.group(1) for line in lines if (m:=re.match(r'^(tests/.*?) (?:PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:\s|$)',line))]
-        missing=sorted(set(expected)-set(actual)); extra=sorted(set(actual)-set(expected)); summary=[l for l in lines if re.match(r'^=+ .* in [\d.]+s(?: .*?)? =+$',l)]
-        (out/'coverage.json').write_text(json.dumps({'missing':missing,'extra':extra,'observed_count':len(actual),'expected_count':len(expected),'terminal_summary':summary[-1:]},indent=2)+'\n')
-        if missing or extra or not summary: raise ValueError('incomplete result coverage')
-        (out/'status.txt').write_text('COMPLETE: all frozen IDs accounted; inspect exit and log\n')
-        return rc
+        # Sanitizer validates coverage in finally; avoid treating partial output as a pass.
+        result = sanitized_result((out/'pytest.log').read_bytes(), expected, [], {}, rc, preflight)
+        return rc if result['classification'] == 'COMPLETE' else 3
     except Exception:
         (out/'incomplete.txt').write_text(traceback.format_exc()); return 3
     finally:
-        sums=[]
-        for p in sorted(out.iterdir()):
-            if p.is_file() and p.name!='SHA256SUMS': sums.append(digest(p)+'  '+p.name+'\n')
-        (out/'SHA256SUMS').write_text(''.join(sums))
+        absent = [x for x in (HERE/f'inventory/{side}-absent-ids.txt').read_text().splitlines() if x.split('::',1)[0] in b['modules']]
+        raw = (out/'pytest.log').read_bytes() if (out/'pytest.log').is_file() else None
+        # Values below come from the validated fixed inputs, not from process output.
+        metadata = {'side':side, 'group':group, 'pins':list(PINS[side]), 'manifest_sha256':MANIFEST_SHA,
+                    'workflow_sha':os.environ['A2_SHA'] if re.fullmatch(r'[0-9a-f]{40}',os.environ.get('A2_SHA','')) else None,
+                    'python_sha256':digest(pathlib.Path(sys.executable).resolve()),
+                    'node_sha256':'1bec56ef7cfa9a76f3e0b7c0a87f220eb73f23102b9c0b4c7529a3f7c3ce7c31' if preflight else None,
+                    'esbuild_sha256':'c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b' if preflight else None}
+        result = sanitized_result(raw, expected, absent, metadata, rc, preflight)
+        receipt.mkdir(exist_ok=True)
+        write_receipt(receipt, result)
+        with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output: output.write('receipt_ready=true\n')
 if __name__=='__main__': sys.exit(main())
