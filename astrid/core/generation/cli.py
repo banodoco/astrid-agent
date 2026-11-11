@@ -19,6 +19,12 @@ _KIND_SPEC: dict[str, dict[str, Any]] = {
 }
 
 
+_RUNPOD_TARGET_NEEDS_CONSENT = (
+    "choose how to rent this RunPod machine: add --max-hourly-usd <ceiling> to wait for stock until a machine is claimed "
+    "(recommended); or, to rent one exact offer, first run describe with the same ordered --gpu and --datacenter values, "
+    "then pass its --offer-digest with --deadline")
+
+
 def _generate_facade() -> Any:
     """Load the SDK facade directly, avoiding astrid package lazy exports."""
     from astrid.sdk.generation import generate
@@ -590,7 +596,7 @@ def _main(argv: list[str]) -> int:
             parser.error("capacity waiting controls require --placement runpod")
         _validate_datacenter(parsed.placement, parsed.datacenter, parser)
         if (parsed.gpu or parsed.datacenter) and is_runpod_placement(parsed.placement) and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
-            parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu and --datacenter values")
+            parser.error(_RUNPOD_TARGET_NEEDS_CONSENT)
         parsed.placement = _gpu_placement(parsed.placement, parsed.gpu, parser)
         return _workflow_command(parsed)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
@@ -600,7 +606,7 @@ def _main(argv: list[str]) -> int:
         parser.error('capacity waiting controls require --placement runpod')
     _validate_datacenter(parsed.placement, parsed.datacenter, parser)
     if (parsed.gpu or parsed.datacenter) and is_runpod_placement(parsed.placement) and not parsed.offer_digest and parsed.max_hourly_usd is None and not parsed.dry_run:
-        parser.error("--offer-digest is required; first describe the RunPod target with the same ordered --gpu and --datacenter values")
+        parser.error(_RUNPOD_TARGET_NEEDS_CONSENT)
     if parsed.prompt is not None and not parsed.prompt.strip():
         parser.error("prompt must not be empty")
     if (parsed.width is None) != (parsed.height is None):

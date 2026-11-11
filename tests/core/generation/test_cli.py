@@ -616,3 +616,14 @@ def test_workflow_runpod_job_choices_reach_facade_and_validate(monkeypatch, caps
         with pytest.raises(SystemExit):
             cli.main(invalid)
     assert len(calls) == 1
+
+
+def test_runpod_target_without_consent_suggests_waiting_before_exact_offer(capsys):
+    for args in (['workflow', 'workflow.json', '--placement', 'runpod', '--gpu', 'A40'],
+                 ['image', 'a dog', '--placement', 'runpod', '--gpu', 'A40']):
+        with pytest.raises(SystemExit) as stopped:
+            cli.main(args)
+        assert stopped.value.code == 2
+        err = capsys.readouterr().err
+        assert err.index('--max-hourly-usd <ceiling>') < err.index('--offer-digest')
+        assert 'wait for stock' in err and '--deadline' in err

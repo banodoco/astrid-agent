@@ -1096,3 +1096,21 @@ def test_pricing_conflicting_failures_use_first_specific_reason(case, monkeypatc
     with pytest.raises(PaidSelectionError) as raised:
         asyncio.run(observe_priced_offer(prefs, config))
     assert raised.value.reason == 'provider_authentication_failed'
+
+
+def test_capacity_attempt_line_reads_as_waiting_and_keeps_reason_token(case, monkeypatch, capsys):
+    fake_capacity_clock(case, monkeypatch)
+    case.owner.progress = None
+
+    def absent():
+        raise selection.OfferObservationError("stock_unavailable")
+
+    case.owner.observe_offer = absent
+    with pytest.raises(selection.CapacityWaitTimeout):
+        asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=6)))
+    first = capsys.readouterr().err.splitlines()[0]
+    assert "RunPod capacity attempt 1:" in first
+    assert first.endswith("no stock yet (stock_unavailable); still waiting, this is normal")
+    with pytest.raises(selection.OfferObservationError):
+        asyncio.run(case.owner.select(waiting_grant(case, wait_for_capacity=False)))
+    assert "still waiting" not in capsys.readouterr().err
