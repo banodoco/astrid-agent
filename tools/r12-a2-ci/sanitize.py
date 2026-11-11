@@ -44,7 +44,9 @@ def sanitized_result(raw, expected, absent, metadata, exit_code, preflight, stag
     bad = status_counts.get('FAILED',0) + status_counts.get('ERROR',0)
     valid_exit = (exit_code == 0 and bad == 0) or (exit_code == 1 and bad > 0)
     complete = bool(preflight and raw is not None and valid_exit and not missing and not duplicates and unknown_count == 0 and malformed_outcome_count == 0 and malformed_summary_count == 0 and counts_match)
-    return {'schema':1, 'stage_events':validate_events(stage_events if stage_events is not None else []), 'classification':'COMPLETE' if complete else 'INCOMPLETE', 'metadata':metadata,
+    no_results = bool(preflight and not expected and absent and raw is None and exit_code == 0)
+    classification = 'COMPLETE' if complete else ('NO_RESULTS' if no_results else 'INCOMPLETE')
+    return {'schema':1, 'stage_events':validate_events(stage_events if stage_events is not None else []), 'classification':classification, 'metadata':metadata,
             'expected_count':len(expected), 'missing_ids':missing, 'duplicate_ids':duplicates,
             'unexpected_result_count':unknown_count, 'malformed_outcome_count':malformed_outcome_count, 'malformed_summary_count':malformed_summary_count, 'absent_ids':sorted(absent),
             'outcomes':outcomes, 'outcome_counts':status_counts, 'summary_counts':summary,

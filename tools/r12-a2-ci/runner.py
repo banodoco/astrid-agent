@@ -3,6 +3,7 @@
 import hashlib, json, os, pathlib, re, subprocess, sys, time, traceback
 from sanitize import sanitized_result, write_receipt
 from stages import StageTracker
+from full_plan import FULL_REF, RANGES, SIDES
 
 HERE = pathlib.Path(__file__).resolve().parent
 MANIFEST_SHA = '885b264862a0e6e90698ed8a76a6b5b30e2dbeb1f3846ea96b356913b1a9e771'
@@ -34,11 +35,23 @@ def validate(side, group):
     if absent != set().union(*map(set,by_side.values())) - set(expected): raise ValueError('absence inventory mismatch')
     return b, expected
 
+def verify_run_control(group, event):
+    mode = event.get('A2_MODE', 'shakedown')
+    if mode == 'shakedown':
+        allowed = event.get('A2_REF') == 'refs/heads/scratch/r12-a2-final-019-20261111' and group == '019'
+    elif mode == 'full':
+        control = json.loads((HERE/'full-control.json').read_text())
+        allowed = (control == {'purpose':'r12-a2-full-019-052-20261111','before':BEFORE,'manifest_sha256':MANIFEST_SHA,'ranges':list(RANGES),'sides':list(SIDES)}
+                   and event.get('A2_REF') == FULL_REF and event.get('A2_RANGE') in RANGES
+                   and group in RANGES[event['A2_RANGE']])
+    else: allowed = False
+    if not allowed or event.get('A2_BEFORE') != BEFORE or event.get('A2_ATTEMPT') != '1': raise ValueError('run control mismatch')
+
 def run_main(tracker):
     tracker.enter('input_validation')
     side, group = os.environ['A2_SIDE'], os.environ['A2_GROUP']
     b, expected = validate(side, group)
-    if os.environ.get('A2_REF') != 'refs/heads/scratch/r12-a2-final-019-20261111' or group != '019' or os.environ.get('A2_BEFORE') != BEFORE or os.environ.get('A2_ATTEMPT') != '1': raise ValueError('run control mismatch')
+    verify_run_control(group, os.environ)
     root = pathlib.Path(os.environ['RUNNER_TEMP']).resolve(); receipt = root/'r12-a2-receipt'; out = root/'r12-a2-private'; out.mkdir(exist_ok=False)
     preflight = False; rc = None
     envdir = root/'r12-a2-isolated'; envdir.mkdir(exist_ok=False)
@@ -88,6 +101,7 @@ def run_main(tracker):
         paths=[str(co/x) for x in b['modules'] if (co/x).is_file()]; (out/'modules.json').write_text(json.dumps({'selected':b['modules'],'present':paths},indent=2)+'\n')
         if not expected:
             tracker.finish(True)
+            rc = 0
             (out/'result.txt').write_text('NO RESULTS: frozen inventory contains zero IDs; explicit absence only\n'); (out/'status.txt').write_text('NO RESULTS: explicit absence\n'); return 0
         if not paths: raise ValueError('expected IDs but no modules present')
         env.update({'PATH':str(node.parent)+':'+str(py.parent)+':'+env['PATH'],'PYTEST_ADDOPTS':'-rA','PYTHONPATH':str(vibe),'VIBECOMFY_SOURCE':str(vibe),'ASTRID_RUNTIME_CHECKOUT':str(runtime),'ASTRID_VIBECOMFY_CHECKOUT':str(vibe),'ASTRID_TEST_LIFECYCLE_CHECKOUT':str(lifecycle),'ASTRID_BUILD_TEST_NODE':str(node),'ASTRID_BUILD_TEST_NODE_VERSION':'22.22.0','ASTRID_BUILD_TEST_ESBUILD':str(esbuild)})

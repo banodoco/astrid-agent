@@ -1,0 +1,280 @@
+name: R12 A2 bounded range (called workflow)
+on:
+  workflow_call:
+    inputs:
+      side:
+        required: true
+        type: string
+      group_range:
+        required: true
+        type: string
+      prior_failure:
+        required: true
+        type: string
+    outputs:
+      safe_to_continue:
+        value: ${{ jobs.compare.outputs.safe_to_continue }}
+      has_failure:
+        value: ${{ jobs.compare.outputs.has_failure }}
+permissions:
+  contents: read
+jobs:
+  compare:
+    if: github.event_name == 'push' && github.repository == 'banodoco/astrid-agent' && github.ref == 'refs/heads/scratch/r12-a2-full-019-052-20261111' && github.event.before == '0000000000000000000000000000000000000000' && github.run_attempt == 1 && !github.event.deleted && !github.event.forced
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    outputs:
+      safe_to_continue: ${{ steps.checkpoint.outputs.safe_to_continue }}
+      has_failure: ${{ steps.checkpoint.outputs.has_failure }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11.17'
+      - name: Execute bounded group slot 1
+        id: slot01
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '1'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 1
+        if: always() && steps.slot01.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot01.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot01.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 2
+        id: slot02
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '2'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 2
+        if: always() && steps.slot02.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot02.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot02.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 3
+        id: slot03
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '3'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 3
+        if: always() && steps.slot03.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot03.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot03.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 4
+        id: slot04
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '4'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 4
+        if: always() && steps.slot04.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot04.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot04.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 5
+        id: slot05
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '5'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 5
+        if: always() && steps.slot05.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot05.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot05.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 6
+        id: slot06
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '6'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 6
+        if: always() && steps.slot06.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot06.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot06.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 7
+        id: slot07
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '7'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 7
+        if: always() && steps.slot07.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot07.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot07.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 8
+        id: slot08
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '8'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 8
+        if: always() && steps.slot08.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot08.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot08.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 9
+        id: slot09
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '9'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 9
+        if: always() && steps.slot09.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot09.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot09.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 10
+        id: slot10
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '10'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 10
+        if: always() && steps.slot10.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot10.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot10.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 11
+        id: slot11
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '11'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 11
+        if: always() && steps.slot11.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot11.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot11.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute bounded group slot 12
+        id: slot12
+        env:
+          A2_SIDE: ${{ inputs.side }}
+          A2_RANGE: ${{ inputs.group_range }}
+          A2_SLOT: '12'
+          A2_BEFORE: ${{ github.event.before }}
+          A2_REF: ${{ github.ref }}
+          A2_SHA: ${{ github.sha }}
+          A2_ATTEMPT: ${{ github.run_attempt }}
+        run: python tools/r12-a2-ci/full_driver.py
+      - name: Persist group receipt 12
+        if: always() && steps.slot12.outputs.receipt_ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r12-a2-${{ steps.slot12.outputs.group }}-${{ inputs.side }}-attempt-${{ github.run_attempt }}
+          path: ${{ steps.slot12.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Checkpoint completed range
+        id: checkpoint
+        env:
+          PRIOR_FAILURE: ${{ inputs.prior_failure }}
+        run: |
+          case "$PRIOR_FAILURE" in true|false) ;; *) exit 1 ;; esac
+          printf '%s\n' 'safe_to_continue=true' >> "$GITHUB_OUTPUT"
+          if [ "$PRIOR_FAILURE" = 'true' ] || [ -f "$RUNNER_TEMP/r12-a2-full-had-failure" ]; then
+            printf '%s\n' 'has_failure=true' >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' 'has_failure=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Report accounted test failures
+        if: always() && !cancelled() && inputs.group_range == '042-052' && steps.checkpoint.outputs.has_failure == 'true'
+        run: |
+          printf '%s\n' 'At least one group had a fully accounted test failure.'
+          exit 1
