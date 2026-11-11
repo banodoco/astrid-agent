@@ -1373,6 +1373,9 @@ def test_provider_attachment_through_real_lifecycle_json_guards_probe_bundle_ins
         if case == "malformed-collection": return {"data":{"pod":[observed]}}
         return {"data":{"pod":None if case == "absent-pod" else observed}}
     monkeypatch.setattr(ctl_commands, "run_graphql_query", graphql)
+    # runpod_lifecycle.graphql._run resolves the query function from runpod.api.graphql at call time.
+    import runpod.api.graphql as sdk_graphql
+    monkeypatch.setattr(sdk_graphql, "run_graphql_query", graphql)
     monkeypatch.setattr(api, "runpod", runpod)
     monkeypatch.setattr(cli, "_resolve_api_key", lambda _: "synthetic")
     original_execute = pod.execute_command
@@ -1780,6 +1783,9 @@ def test_actual_legacy_sdk_mount_path_projection_refuses_before_private_upload(t
         assert query == ctl_commands.pod_queries.QUERY_POD and "volumeMountPath" in query
         return {"data":{"myself":{"pods":[{"id":pod.pod,"name":"fixture","volumeMountPath":path,"runtime":{"ports":[]}}]}}}
     monkeypatch.setattr(ctl_commands,"run_graphql_query",graphql)
+    # runpod_lifecycle.graphql._run resolves the query function from runpod.api.graphql at call time.
+    import runpod.api.graphql as sdk_graphql
+    monkeypatch.setattr(sdk_graphql,"run_graphql_query",graphql)
     monkeypatch.setattr(api,"runpod",runpod)
     monkeypatch.setattr(cli,"_resolve_api_key",lambda _:"synthetic")
     monkeypatch.setattr(api.httpx,"get",lambda *a,**kw:SimpleNamespace(status_code=200,json=lambda:[{"id":pod.pod,"networkVolume":{"id":"vol187"}}]))
