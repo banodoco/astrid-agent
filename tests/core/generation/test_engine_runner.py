@@ -77,7 +77,7 @@ class FakeAdapter:
                               recipe.start.cwd.format_map(values),
                               {k: v.format_map(values) for k, v in recipe.start.env.items()}, deadline)
 
-    def local_install_lock(self, root, *, deadline):
+    def local_install_lock(self, root, *, deadline, **_kwargs):
         pytest.fail("runner must hold the context's target lock")
 
 
@@ -126,7 +126,7 @@ class FakeContext:
             raise self.fail[1]
 
     @contextmanager
-    def acquire_install_lock(self, root, *, deadline):
+    def acquire_install_lock(self, root, *, deadline, kind="job"):
         assert not self.held
         self.record("acquire", root, deadline=deadline)
         self.held = True
@@ -345,6 +345,7 @@ def setup(monkeypatch):
     plan = runner.plan_install(context.recipe, root=ROOT, placement="local")
     module = types.ModuleType("astrid.core.generation.engine_platforms")
     module.platform_adapter = lambda key: adapter
+    module.LinuxPlatformAdapter = lambda key: adapter
     monkeypatch.setitem(sys.modules, module.__name__, module)
     return plan, context, adapter, deadline
 

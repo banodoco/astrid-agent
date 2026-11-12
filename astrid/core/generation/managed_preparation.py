@@ -7,7 +7,6 @@ import json
 import os
 import re
 import time
-from collections.abc import Mapping
 from concurrent.futures import CancelledError
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -21,6 +20,15 @@ PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
 _NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor"})
+# A preparation can outlive its Python call when a POST may still be accepted
+# and cleanup cannot prove that its command drained. Keep the actual lock owner
+# alive for this process lifetime; dropping the wrapper must not close the fd.
+_UNRESOLVED_CUSTODY: dict[int, "ManagedEnginePreparation"] = {}
+
+
+def _retain_unresolved(preparation: "ManagedEnginePreparation") -> None:
+    """Keep the owner of an unresolved lock alive until process exit."""
+    _UNRESOLVED_CUSTODY[id(preparation)] = preparation
 
 
 def _recipe_node_patches(recipe: EngineRecipe) -> dict[str, list[SourcePatch]]:
@@ -250,7 +258,7 @@ class ManagedEnginePreparation:
     the HTTP worker runs. No worker receives this object or its control socket.
     """
     def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any, scratch: Path,
-                 device: int | None = None, logs_root: Path | None = None):
+                 device: int | None = None, logs_root: Path | None = None, on_phase: Any = None):
         from .engine_execution import create_local_backend
         from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
         from .engine_recipe import load_recipe
@@ -261,6 +269,7 @@ class ManagedEnginePreparation:
         self.scratch = scratch
         # The run root whose logs.json a failed step's whole output is declared in.
         self.logs_root = logs_root
+        self.on_phase = on_phase
         self.deadline, self.cancelled = deadline, cancelled
         self.root = default_engine_root("comfyui")
         self.recipe = load_recipe("comfyui", DEFAULT_PLATFORM)
@@ -282,21 +291,26 @@ class ManagedEnginePreparation:
     def close(self, *, execution_root: Path | None = None, worker_drained: bool = True):
         if not worker_drained:
             self.uncertain = True
-        if not self.uncertain:
-            self._stop_preparing_engine()
-        if not self.uncertain and execution_root is not None and self.report is not None:
-            from .backends.vibecomfy_local_server import cleanup_prompts
-            try:
+        try:
+            if not self.uncertain:
+                self._stop_preparing_engine()
+            if not self.uncertain and execution_root is not None and self.report is not None:
+                from .backends.vibecomfy_local_server import cleanup_prompts
                 cleanup_prompts(self.report["endpoint"], execution_root, confirm=True)
-            except BaseException:
-                self.uncertain = True
-                raise
+        except BaseException:
+            # A failed stop or failed prompt cleanup cannot establish that a
+            # request has drained, regardless of which boundary raised it.
+            self.uncertain = True
+            _retain_unresolved(self)
+            raise
         if self.uncertain:
+            _retain_unresolved(self)
             from .engine_contracts import CustodyUnresolved
             raise CustodyUnresolved("managed preparation retains an unconfirmed command; keep installation fenced")
         if self.lock is not None:
             lock, self.lock = self.lock, None
             lock.__exit__(None, None, None)
+        _UNRESOLVED_CUSTODY.pop(id(self), None)
 
     def prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
         from .engine_contracts import CustodyUnresolved
@@ -307,7 +321,12 @@ class ManagedEnginePreparation:
             if isinstance(error, CustodyUnresolved):
                 self.uncertain = True
             if not self.uncertain:
-                self._stop_preparing_engine()
+                try:
+                    self._stop_preparing_engine()
+                except CustodyUnresolved as stop_error:
+                    error.add_note(f"owned engine cleanup remains unconfirmed: {stop_error}")
+            if self.uncertain:
+                _retain_unresolved(self)
             raise
         # Only the completed report hands the live engine to the attempt. A
         # successful doctor still leaves all remaining preparation under custody.
@@ -330,7 +349,8 @@ class ManagedEnginePreparation:
     def _prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
         from astrid.packs.vibecomfy.actions.run import run as run_action
 
-        from .engine_contracts import IntegrityError
+        from .engine_contracts import IntegrityError, RecipeValidationError
+        from .engine_local_endpoint import EngineNotInstalled
         from .engine_recipe import recipe_digest
         from .engine_runner import (
             _parse_receipt,
@@ -347,15 +367,10 @@ class ManagedEnginePreparation:
         staged_digests = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in staged_members}
         receipt_path = str(Path(self.root) / ".astrid-engine/install.json")
 
-        def refuse_while_installing():
-            # Preparation must not queue behind an install and accidentally
-            # launch against a receipt being rewritten. Inspect state only
-            # after a failed lock attempt; other contention still waits for
-            # the current job/preparation to finish.
-            if not self.context.file_fact(receipt_path, hash_bytes=False, deadline=self.deadline).exists:
-                return
-            receipt = self.context.read_json(receipt_path, deadline=self.deadline)
-            if isinstance(receipt, Mapping) and receipt.get("status") == "installing":
+        def refuse_while_installing(holder_kind=None):
+            # Never queue behind an installer; ordinary job/preparation
+            # contention can wait for the current owner to finish.
+            if holder_kind == "install":
                 from .engine_contracts import EngineBusy
                 raise EngineBusy("the local engine is being updated; try again when astrid engines install finishes")
 
@@ -364,12 +379,15 @@ class ManagedEnginePreparation:
         lock.__enter__()
         self.lock = lock
         self.check()
-        raw = self.context.read_json(receipt_path, deadline=self.deadline)
+        try:
+            raw = self.context.read_json(receipt_path, deadline=self.deadline)
+        except RecipeValidationError as error:
+            raise EngineNotInstalled(self.recipe.engine, "install receipt unreadable") from error
         locator = plan_install(self.recipe, root=self.root, placement="local")
         receipt = _parse_receipt(raw, locator)
         plan = plan_from_receipt(self.recipe, receipt, root=self.root, placement="local")
         if receipt.status != "installed":
-            raise IntegrityError("managed preparation requires a completed installation")
+            raise EngineNotInstalled(self.recipe.engine, f"install status {receipt.status}, engine not healthy")
         runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
         runner.step_id = "helper-identity"
         if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
@@ -423,12 +441,17 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed CLI workflow requirements differ from the admitted workflow")
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
+        callback = getattr(self, "on_phase", None)
+        if callback is not None:
+            callback("align")
         alignment = engine.align(manifest, self.mode, workflow=canonical_path)
         if alignment.get("status") == "missing":
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
         self.check()
         self._verify_alignment(*self._alignment_verification)
         runner.step_id = "start"
+        if callback is not None:
+            callback("start_engine")
         start_action, start_facts = runner.start(readonly=False)
         self._preparing_engine = True
         self.check()

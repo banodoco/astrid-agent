@@ -13,9 +13,14 @@ from astrid.core.generation.engine_platforms import platform_adapter
 from astrid.core.generation.managed_preparation import ManagedEnginePreparation
 
 
-def _hold_install_lock(root: str, acquired, release):
+def _hold_install_lock(root: str, acquired, release, kind="job", content=None):
     adapter = platform_adapter("linux-x86_64-cu130")
-    with adapter.local_install_lock(root, deadline=time.monotonic() + 10):
+    with adapter.local_install_lock(root, deadline=time.monotonic() + 10, kind=kind):
+        if content is not None:
+            lock_path = Path(root) / ".astrid-engine" / "install.lock"
+            with lock_path.open("wb") as lock_file:
+                lock_file.write(content)
+                lock_file.flush()
         acquired.set()
         release.wait(10)
 
@@ -53,15 +58,15 @@ def test_managed_prepare_refuses_when_install_lock_is_held_for_install(tmp_path)
     process_context = multiprocessing.get_context("fork")
     acquired = process_context.Event()
     release = process_context.Event()
-    owner = process_context.Process(target=_hold_install_lock, args=(preparation.root, acquired, release))
+    owner = process_context.Process(target=_hold_install_lock,
+                                    args=(preparation.root, acquired, release, "install"))
     owner.start()
     try:
         assert acquired.wait(5), "separate process did not acquire install lock"
         with pytest.raises(EngineBusy, match="the local engine is being updated; try again when astrid engines install finishes"):
             preparation._prepare(workflow, execution_identity="unused", inputs=None,
                                  canonical_workflow=None, input_digests=None)
-        assert len(context.reads) == 1
-        assert context.reads[0][0] == str(root / ".astrid-engine/install.json")
+        assert context.reads == [], "holder classification must not read the receipt"
     finally:
         release.set()
         owner.join(5)
@@ -71,7 +76,98 @@ def test_managed_prepare_refuses_when_install_lock_is_held_for_install(tmp_path)
     assert owner.exitcode == 0
 
 
-def test_job_job_lock_contention_waits_for_managed_preparation(tmp_path):
+def test_install_lock_kind_refuses_prepare_and_queues_second_installer(tmp_path, monkeypatch):
+    import threading
+
+    from astrid.core.generation.engine_execution import create_local_backend
+    from astrid.core.generation.engine_recipe import load_recipe
+    from astrid.core.generation.engine_runner import install_engine, plan_install
+
+    root = tmp_path / "engine"
+    workflow = tmp_path / "workflow.json"
+    workflow.write_text("{}\n")
+    receipt = root / ".astrid-engine" / "install.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text('{"status":"installed"}')
+    deadline = time.monotonic() + 10
+    context, adapter = create_local_backend(engine="comfyui", platform="linux-x86_64-cu130",
+                                             placement="local", root=str(root), deadline=deadline)
+    plan = plan_install(load_recipe("comfyui", "linux-x86_64-cu130"),
+                        root=str(root), placement="local")
+    owner_barrier = threading.Event()
+    release_owner = threading.Event()
+    second_stopped = threading.Event()
+    stop_calls = []
+
+    class StopAtOwnerBarrier(RuntimeError):
+        pass
+
+    def stop_at_barrier(*_args, **_kwargs):
+        stop_calls.append(1)
+        if len(stop_calls) == 1:
+            owner_barrier.set()
+            assert release_owner.wait(5), "test did not release installer owner barrier"
+        else:
+            second_stopped.set()
+        raise StopAtOwnerBarrier
+
+    monkeypatch.setattr("astrid.core.generation.engine_custody.stop_engine_for_converge",
+                        stop_at_barrier)
+    install_errors = []
+
+    def install():
+        try:
+            install_engine(plan, context=context, adapter=adapter, deadline=time.monotonic() + 8)
+        except StopAtOwnerBarrier as exc:
+            install_errors.append(exc)
+
+    first = threading.Thread(target=install, daemon=True)
+    second = threading.Thread(target=install, daemon=True)
+    first.start()
+    try:
+        assert owner_barrier.wait(5), "installer did not reach owner barrier"
+        assert json.loads(receipt.read_text())["status"] == "installed"
+        lock_path = root / ".astrid-engine" / "install.lock"
+        assert lock_path.read_text() == "install"
+
+        read_receipts = []
+        original_read_json = context.read_json
+        def track_read_json(path, *, deadline):
+            if path == str(receipt):
+                read_receipts.append(path)
+            return original_read_json(path, deadline=deadline)
+        monkeypatch.setattr(context, "read_json", track_read_json)
+
+        preparation = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+        preparation.root = str(root)
+        preparation.deadline = time.monotonic() + 5
+        preparation.cancelled = lambda: False
+        preparation.check = lambda: None
+        preparation.adapter = adapter
+        preparation.context = context
+        preparation.recipe = load_recipe("comfyui", "linux-x86_64-cu130")
+        started = time.monotonic()
+        with pytest.raises(EngineBusy, match="the local engine is being updated"):
+            preparation._prepare(workflow, execution_identity="unused", inputs=None,
+                                 canonical_workflow=None, input_digests=None)
+        assert time.monotonic() - started < 0.5
+        assert read_receipts == [], "contention classification must use lock kind, not the receipt"
+
+        second.start()
+        assert not second_stopped.wait(0.2), "second installer passed the held installer lock"
+        assert first.is_alive()
+    finally:
+        release_owner.set()
+        first.join(5)
+        if second.ident is not None:
+            second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert second_stopped.is_set(), "second installer did not acquire after the first released"
+    assert len(install_errors) == 2
+
+
+@pytest.mark.parametrize("holder_content", [b"job", b"", b"\xff"])
+def test_job_job_lock_contention_waits_for_managed_preparation(tmp_path, holder_content):
     import threading
 
     root = str(tmp_path / "engine")
@@ -81,7 +177,7 @@ def test_job_job_lock_contention_waits_for_managed_preparation(tmp_path):
     acquired = process_context.Event()
     release = process_context.Event()
     owner = process_context.Process(target=_hold_install_lock,
-                                    args=(root, acquired, release))
+                                    args=(root, acquired, release, "job", holder_content))
     owner.start()
     assert acquired.wait(5), "first job did not acquire the real install lock"
 
@@ -127,6 +223,61 @@ def test_job_job_lock_contention_waits_for_managed_preparation(tmp_path):
             preparation.lock.__exit__(None, None, None)
         if waiter.is_alive():
             waiter.join(5)
+    assert owner.exitcode == 0
+
+
+@pytest.mark.parametrize("holder_content", [b"", b"\xff"])
+def test_installer_waits_through_empty_or_unreadable_held_kind(tmp_path, holder_content):
+    import threading
+
+    from astrid.core.generation.engine_execution import create_local_backend
+
+    root = str(tmp_path / "engine")
+    deadline = time.monotonic() + 8
+    context, _adapter = create_local_backend(engine="comfyui", platform="linux-x86_64-cu130",
+                                              placement="local", root=root, deadline=deadline)
+    process_context = multiprocessing.get_context("fork")
+    owner_acquired = process_context.Event()
+    release_owner = process_context.Event()
+    owner = process_context.Process(target=_hold_install_lock,
+                                    args=(root, owner_acquired, release_owner,
+                                          "install", holder_content))
+    owner.start()
+    waiter_entered = threading.Event()
+    waiter_acquired = threading.Event()
+    release_waiter = threading.Event()
+    errors = []
+
+    def wait_to_install():
+        waiter_entered.set()
+        try:
+            with context.acquire_install_lock(root, deadline=time.monotonic() + 6,
+                                              kind="install"):
+                waiter_acquired.set()
+                release_waiter.wait(5)
+        except BaseException as exc:
+            errors.append(exc)
+
+    waiter = threading.Thread(target=wait_to_install, daemon=True)
+    try:
+        assert owner_acquired.wait(5), "separate installer did not acquire the lock"
+        waiter.start()
+        assert waiter_entered.wait(2), "second installer did not start lock acquisition"
+        assert not waiter_acquired.wait(0.2), "second installer passed the held lock"
+        assert owner.is_alive(), "first installer ended before releasing its lock"
+    finally:
+        release_owner.set()
+        owner.join(5)
+    try:
+        assert waiter_acquired.wait(5), "second installer did not wait through the kind transition"
+        assert errors == []
+    finally:
+        release_waiter.set()
+        waiter.join(5)
+        if owner.is_alive():
+            owner.terminate()
+            owner.join()
+    assert not waiter.is_alive()
     assert owner.exitcode == 0
 
 

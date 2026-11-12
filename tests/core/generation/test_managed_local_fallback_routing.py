@@ -68,6 +68,44 @@ def test_direct_local_run_routes_through_owned_preparation(tmp_path, monkeypatch
     }
 
 
+def test_preparation_failure_with_attempt_identity_settles_once(tmp_path, monkeypatch):
+    import json
+    import pytest
+
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    workflow_route = importlib.import_module("astrid.packs.vibecomfy.workflow_route")
+    local_job = importlib.import_module("astrid.packs.vibecomfy.local_job")
+    managed_preparation = importlib.import_module("astrid.core.generation.managed_preparation")
+    local_endpoint = importlib.import_module("astrid.core.generation.engine_local_endpoint")
+
+    workflow = tmp_path / "workflow.json"
+    workflow.write_text("{}")
+    output = tmp_path / "attempt"
+    monkeypatch.setattr(action, "_evidence_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(workflow_route, "WorkflowRunner", lambda: object())
+    monkeypatch.setattr(managed_preparation, "read_preparation", lambda **_kwargs: None)
+    monkeypatch.setattr(action, "_t9_child_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(local_endpoint, "default_engine_root", lambda _engine: str(tmp_path / "engine"))
+    monkeypatch.setattr(action, "_materialize_managed_generation_result",
+                        lambda *_args, **_kwargs: settlements.append("settled"))
+    settlements = []
+    original = RuntimeError("alignment failed")
+
+    def fail_preparation(*_args, **_kwargs):
+        raise original
+
+    monkeypatch.setattr(local_job, "run_owned_action", fail_preparation)
+    with pytest.raises(RuntimeError, match="alignment failed") as error:
+        action._run_and_settle(workflow, output, task_identity="task-1", attempt_identity="attempt-1")
+
+    receipt = json.loads((output / "managed-generation-result.json").read_text())
+    assert receipt["task_id"] == "task-1"
+    assert receipt["attempt_id"] == "attempt-1"
+    assert receipt["outcomes"]["execution"] == {"status": "failed", "code": "RuntimeError"}
+    assert settlements == ["settled"]
+    assert error.value is original
+
+
 def test_owned_local_run_refuses_a_different_admitted_execution_identity(tmp_path, monkeypatch):
     import pytest
 

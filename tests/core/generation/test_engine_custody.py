@@ -1461,8 +1461,8 @@ def _install_after_owner_stop(client, recipe, root, monkeypatch, *, timeout):
     identity_reached = threading.Event()
     class Context:
         placement = "local"
-        def acquire_install_lock(self, lock_root, *, deadline):
-            return adapter.local_install_lock(lock_root, deadline=deadline)
+        def acquire_install_lock(self, lock_root, *, deadline, kind="job"):
+            return adapter.local_install_lock(lock_root, deadline=deadline, kind=kind)
     class HelperReached(RuntimeError):
         pass
     class Runner:
@@ -2048,3 +2048,148 @@ def test_local_response_deadline_is_uncertain_cleanup(tmp_path, monkeypatch):
             client.run(_request(tmp_path, 'pass'))
     finally:
         remote.close()
+
+
+def test_local_wrapper_retains_lock_after_delayed_post_unknown_acceptance(tmp_path, monkeypatch):
+    """A timed out POST remains fenced after local_job unwinds and collects its wrapper."""
+    import gc
+    import multiprocessing
+    import weakref
+    from contextlib import nullcontext
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from astrid.core.generation import engine_execution, engine_platforms, managed_preparation
+    from astrid.packs.vibecomfy import local_job, production_engine
+    from astrid.packs.vibecomfy.actions.run import run as run_action
+    from astrid.core.generation.backends import comfy_target
+
+    root = tmp_path / "managed-root"
+    root.mkdir()
+    workflow = tmp_path / "workflow.py"
+    workflow.write_text("pass")
+    workflow.with_suffix(".vibe.json").write_text("{}")
+    workflow.with_name("source.json").write_text("{}")
+    mp = multiprocessing.get_context("fork")
+    entered = mp.Event()
+    accepted = mp.Event()
+    allow_acceptance = mp.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            entered.set()
+            assert allow_acceptance.wait(5)
+            accepted.set()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+            except OSError:
+                pass  # The client has already timed out on its unknown-acceptance request.
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    adapter = engine_platforms.platform_adapter(PLATFORM)
+    client = SimpleNamespace(cancelled=None)
+    context = SimpleNamespace(service_client=client)
+    monkeypatch.setattr(engine_execution, "create_local_backend", lambda **kwargs: (context, adapter))
+    from astrid.core.generation import engine_local_endpoint
+    monkeypatch.setattr(engine_local_endpoint, "default_engine_root", lambda _engine: str(root))
+    monkeypatch.setattr(production_engine, "load_workflow_path", lambda *args: SimpleNamespace(resolved=object()))
+    monkeypatch.setattr(production_engine, "_canonical_bundle_value", lambda *_: SimpleNamespace(workflow=object()))
+    monkeypatch.setattr(production_engine, "loaded_workflow_execution_identity", lambda *_: "identity")
+    monkeypatch.setattr("astrid.pack_api.canonical_runtime_entrypoint", lambda *_: nullcontext())
+    monkeypatch.setattr(comfy_target, "HTTP_TRANSFER_SECONDS", 0.05)
+
+    refs = []
+    original_init = managed_preparation.ManagedEnginePreparation.__init__
+    def capture_init(self, **kwargs):
+        original_init(self, **kwargs)
+        refs.append(weakref.ref(self))
+    monkeypatch.setattr(managed_preparation.ManagedEnginePreparation, "__init__", capture_init)
+
+    def prepared(self, *args, **kwargs):
+        lock = self.adapter.local_install_lock(self.root, deadline=time.monotonic() + 3,
+                                                cancelled=self.cancelled, kind="job")
+        lock.__enter__()
+        self.lock = lock
+        self.report = {"endpoint": f"http://127.0.0.1:{server.server_port}"}
+        return self.report
+    monkeypatch.setattr(managed_preparation.ManagedEnginePreparation, "_prepare", prepared)
+
+    def execute(_workflow, out, **kwargs):
+        client = comfy_target.ComfyTargetClient(comfy_target.ComfyTarget(
+            f"http://127.0.0.1:{server.server_port}", "attached"))
+        runs = out / ".vibecomfy-runtime" / "out" / "runs" / "run-1"
+        runs.mkdir(parents=True)
+        try:
+            client.submit_prompt({"prompt": {"1": {"class_type": "Fixture", "inputs": {}}}})
+        except comfy_target.TransportError:
+            (runs / "attempt.json").write_text(json.dumps({"queue_acceptance": {"status": "unknown"}}))
+            raise
+    monkeypatch.setattr(run_action, "_run_and_settle", execute)
+
+    unwound = mp.Event()
+    release_child = mp.Event()
+
+    def run_wrapper_in_child():
+        try:
+            local_job.run_owned_action(workflow, tmp_path / "outputs", task_identity="custody-task",
+                                       attempt_identity="custody-attempt", align="check")
+        except comfy_target.TransportError as error:
+            if "acceptance unknown" not in str(error):
+                raise
+        else:
+            raise AssertionError("unknown prompt acceptance unexpectedly succeeded")
+        gc.collect()
+        if not refs or refs[0]() is None:
+            raise AssertionError("unresolved preparation was collected after wrapper unwind")
+        unwound.set()
+        if not release_child.wait(8):
+            raise AssertionError("test did not release child custody holder")
+
+    child = mp.Process(target=run_wrapper_in_child)
+
+    try:
+        child.start()
+        assert entered.wait(8), "server did not receive the prompt POST"
+        assert unwound.wait(8), "wrapper did not unwind in child process"
+        assert child.is_alive()
+        contender = r'''
+import sys,time
+from astrid.core.generation.engine_platforms import platform_adapter
+from astrid.core.generation.engine_contracts import DeadlineExceeded
+root=sys.argv[1]
+try:
+ with platform_adapter(sys.argv[2]).local_install_lock(root,deadline=time.monotonic()+0.35,kind='job'):
+  raise SystemExit('unexpectedly acquired installation lock')
+except DeadlineExceeded:
+ print('excluded')
+'''
+        result = subprocess.run([sys.executable, "-c", contender, str(root), PLATFORM], cwd=os.getcwd(),
+                                env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+                                capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and result.stdout.strip() == "excluded", result.stderr
+        allow_acceptance.set()
+        assert accepted.wait(3), "delayed server did not accept the already sent POST"
+        second = subprocess.run([sys.executable, "-c", contender, str(root), PLATFORM], cwd=os.getcwd(),
+                                env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+                                capture_output=True, text=True, timeout=5)
+        assert second.returncode == 0 and second.stdout.strip() == "excluded", second.stderr
+        release_child.set()
+        child.join(timeout=8)
+        assert child.exitcode == 0
+        with adapter.local_install_lock(str(root), deadline=time.monotonic() + 2, kind="job"):
+            pass
+    finally:
+        release_child.set()
+        allow_acceptance.set()
+        if child.pid is not None and child.is_alive():
+            child.terminate()
+            child.join(timeout=3)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)

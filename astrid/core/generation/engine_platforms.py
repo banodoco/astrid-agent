@@ -113,11 +113,13 @@ class LinuxPlatformAdapter:
                               _bootstrap.engine_process_env(launch_env, root), deadline)
 
     @contextmanager
-    def local_install_lock(self, root, *, deadline, cancelled=None, on_contention=None):
+    def local_install_lock(self, root, *, deadline, cancelled=None, on_contention=None, kind="job"):
         # Import only at the target; no operational Runtime daemon is involved.
         from runtime_protocol import platform
 
         self.validate_root(root)
+        if kind not in {"install", "job"}:
+            raise ValueError("invalid install lock holder kind")
         _deadline(deadline)
         dirs = []
         fd = None
@@ -154,10 +156,27 @@ class LinuxPlatformAdapter:
                 try:
                     platform.lock_file(fd, exclusive=True, blocking=False)
                     locked = True
+                    # Publish immediately after ownership, before any target
+                    # validation or other work can delay contenders.
+                    os.ftruncate(fd, 0)
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    os.write(fd, kind.encode("ascii"))
+                    os.fsync(fd)
                     break
                 except BlockingIOError:
                     if on_contention is not None:
-                        on_contention()
+                        # Read the classification from the same inode whose
+                        # exclusive lock is currently held by the other owner.
+                        try:
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            holder = os.read(fd, 32).decode("ascii").strip()
+                        except (OSError, UnicodeError):
+                            holder = None
+                        # An owner may be publishing or clearing its kind.
+                        # Keep waiting through that interval; only an explicit
+                        # kind can authorize either contention refusal.
+                        if holder in {"install", "job"}:
+                            on_contention(holder)
                     time.sleep(min(0.05, _deadline(deadline)))
             _deadline(deadline)
             # Refuse replaced directory entries or lock inode before admission.
@@ -178,6 +197,13 @@ class LinuxPlatformAdapter:
         finally:
             try:
                 if locked:
+                    # Clear while still exclusive so a waiter never mistakes a
+                    # released installer record for a live installer.
+                    try:
+                        os.ftruncate(fd, 0)
+                        os.fsync(fd)
+                    except OSError:
+                        pass
                     platform.unlock_file(fd)
             finally:
                 if fd is not None:

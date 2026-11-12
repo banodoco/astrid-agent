@@ -55,6 +55,11 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
     cancelled = threading.Event()
     state = {"phase": "prepare", "signum": None}
 
+    from astrid.core.generation.progress import write_progress
+
+    def on_phase(phase: str) -> None:
+        write_progress(phase)
+
     def stop(signum, _frame):
         if state["signum"] is not None:
             return
@@ -122,7 +127,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
             raise JobInputError("workflow execution identity differs from the admitted request")
         preparation = ManagedEnginePreparation(task=task_identity, attempt=attempt_identity, mode=align,
             deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine",
-            logs_root=out)
+            logs_root=out, on_phase=on_phase)
         from astrid.core.generation.engine_custody import declare_engine_log
 
         declare_engine_log(out, preparation.root, preparation.recipe.engine)
@@ -132,6 +137,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
                for name, path in members.items()):
             raise JobFileError("pod workflow member changed during preparation")
         state["phase"] = "execute"
+        on_phase("run")
         if state["signum"] is not None:
             state["phase"] = "drain"
             raise SystemExit(128 + state["signum"])
@@ -139,12 +145,26 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
             return run_action._run_and_settle(workflow, out, task_identity=task_identity,
                 attempt_identity=attempt_identity, execution_identity=identity,
                 align=align, comfy_url=report["endpoint"], **kwargs)
+    except BaseException as original_error:
+        state["failure"] = original_error
+        raise
     finally:
         state["phase"] = "drain"
         try:
             if preparation is not None:
-                preparation.close(execution_root=out, worker_drained=True)
-            closed = True
+                try:
+                    preparation.close(execution_root=out, worker_drained=True)
+                except BaseException as close_error:
+                    original_error = state.get("failure")
+                    if original_error is None:
+                        raise
+                    original_error.add_note(
+                        f"managed preparation close failed: {type(close_error).__name__}"
+                    )
+                else:
+                    closed = True
+            else:
+                closed = True
         finally:
             POD_STOP.reset(stop_token)
             for sig, handler in previous.items():

@@ -94,7 +94,8 @@ def test_job_file_rejects_a_foreign_document(tmp_path):
 
 
 def test_local_run_writes_astrid_progress_path(comfy, tmp_path, monkeypatch, capsys):  # noqa: F811
-    _endpoint(comfy, monkeypatch)
+    from tests.core.generation.test_local_run_site import _install_owned_preparation_fixture
+    _install_owned_preparation_fixture(monkeypatch, tmp_path, comfy)
     progress = tmp_path / "progress.json"
     monkeypatch.setenv("ASTRID_PROGRESS_PATH", str(progress))
     phases = []
@@ -115,6 +116,7 @@ def test_local_run_writes_astrid_progress_path(comfy, tmp_path, monkeypatch, cap
             pass
     job = tmp_path / "job.json"
     job.write_text(json.dumps({"schema": "astrid.machine-job.v1", "entry": None, "mode": None, "align": "check",
+                               "task_identity": "task-progress", "attempt_identity": "attempt-progress",
                                "inputs": {"source": str(comfy.workflow)}}))
     assert cli._main(["workflow", "--placement", "local", "--job", str(job),
                       "--out", str(tmp_path / "attempt" / "out"), "--json"]) == 0

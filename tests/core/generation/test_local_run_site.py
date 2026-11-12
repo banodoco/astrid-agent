@@ -46,6 +46,7 @@ def _install_owned_preparation_fixture(monkeypatch, tmp_path, target, *, root=No
             self.root = str(root)
             self.recipe = load_recipe("comfyui", "linux-x86_64-cu130")
             self.lock = None
+            self.on_phase = _kwargs.get("on_phase")
 
         def prepare(self, workflow, *, execution_identity, inputs, canonical_workflow, input_digests):
             self.lock = adapter.local_install_lock(self.root, deadline=self.deadline)
@@ -64,6 +65,8 @@ def _install_owned_preparation_fixture(monkeypatch, tmp_path, target, *, root=No
             observations["events"].append("workflow_requirements")
             observations["engine_calls"].append("align")
             observations["lock_states"].append(lock_held())
+            if self.on_phase is not None:
+                self.on_phase("align")
             alignment = engine.align(manifest, self.mode, workflow=workflow)
             observations["events"].append("align")
             if alignment.get("status") == "missing":
@@ -71,9 +74,15 @@ def _install_owned_preparation_fixture(monkeypatch, tmp_path, target, *, root=No
                                      + ", ".join(alignment["missing"]))
             from astrid.core.generation.managed_preparation import SCHEMA, digest
 
+            # This fixture models the managed preparation's owned start
+            # boundary after successful alignment.
+            if self.on_phase is not None:
+                self.on_phase("start_engine")
+
             observations["report"].update({
                 "schema": SCHEMA, "task_id": self.task, "attempt_id": self.attempt,
-                "execution_identity": execution_identity, "inputs": dict(input_digests),
+                "execution_identity": execution_identity,
+                "inputs": dict(input_digests),
                 "manifest": manifest, "manifest_sha256": digest(manifest),
                 "installation": {"root": self.root, "receipt_sha256": "0" * 64,
                     "recipe_sha256": recipe_digest(self.recipe), "helper_sha256": "0" * 64},
@@ -128,6 +137,57 @@ def test_local_run_uses_owned_preparation_and_submits_under_lock(comfy, tmp_path
     assert (out / manifest["managed_generation_result_path"]).is_file()
 
 
+def test_owned_local_run_reports_preparation_execution_and_finalization_progress(comfy, tmp_path, monkeypatch):  # noqa: F811
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    _install_owned_preparation_fixture(monkeypatch, tmp_path, comfy)
+    progress = tmp_path / "progress.json"
+    monkeypatch.setenv("ASTRID_PROGRESS_PATH", str(progress))
+    from astrid.core.generation import progress as progress_module
+
+    writes = []
+    real_write = progress_module.write_progress
+
+    def observe(phase, *args, **kwargs):
+        result = real_write(phase, *args, **kwargs)
+        writes.append((phase, json.loads(progress.read_text())))
+        return result
+
+    import json
+    monkeypatch.setattr(progress_module, "write_progress", observe)
+    action._run_and_settle(comfy.workflow, tmp_path / "attempt" / "outputs",
+                           task_identity="task-progress", attempt_identity="attempt-progress")
+
+    assert [phase for phase, _row in writes] == ["align", "start_engine", "run", "finalize"]
+    assert [row["percent"] for _phase, row in writes] == [15, 30, 50, 90]
+
+
+def test_recursive_execution_failure_is_materialized_once(comfy, tmp_path, monkeypatch):  # noqa: F811
+    import pytest
+
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    _install_owned_preparation_fixture(monkeypatch, tmp_path, comfy)
+    original = RuntimeError("owned execution failed")
+
+    def fail_execution(*_args, **_kwargs):
+        raise original
+
+    monkeypatch.setattr(production_engine, "run_workflow_result_path", fail_execution)
+    real_materialize = action._materialize_managed_generation_result
+    materialized = []
+
+    def count_materialization(*args, **kwargs):
+        materialized.append(1)
+        return real_materialize(*args, **kwargs)
+
+    monkeypatch.setattr(action, "_materialize_managed_generation_result", count_materialization)
+    with pytest.raises(RuntimeError, match="owned execution failed") as error:
+        action._run_and_settle(comfy.workflow, tmp_path / "attempt" / "outputs",
+                               task_identity="task-recursive", attempt_identity="attempt-recursive")
+
+    assert error.value is original
+    assert len(materialized) == 1
+
+
 def test_local_run_checks_the_workflows_declared_models_before_queueing(comfy, tmp_path, monkeypatch):  # noqa: F811
     """The owned preparation aligns real workflow requirements and refuses an absent model before /prompt."""
     import pytest
@@ -143,8 +203,13 @@ def test_local_run_checks_the_workflows_declared_models_before_queueing(comfy, t
         }]
 
     preparation["workflow_callback"] = declare_missing_model
-    with pytest.raises(IntegrityError, match="managed engine is missing declared models"):
-        action._run_and_settle(comfy.workflow, tmp_path / "out", task_identity="t", attempt_identity="a")
+    output = tmp_path / "out"
+    with pytest.raises(IntegrityError, match="managed engine is missing declared models") as error:
+        action._run_and_settle(comfy.workflow, output, task_identity="t", attempt_identity="a")
+    receipt = __import__("json").loads((output / "managed-generation-result.json").read_text())
+    assert receipt["task_id"] == "t" and receipt["attempt_id"] == "a"
+    assert receipt["outcomes"]["execution"] == {"status": "failed", "code": "IntegrityError"}
+    assert "managed engine is missing declared models" in str(error.value)
     assert comfy.prompts == []
 
 

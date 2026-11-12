@@ -779,7 +779,7 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
     """
     sanity_cmd = sanity_cmd if sanity_cmd is not None else os.environ.get(SANITY_CMD_ENV, "")
     runner = _Runner(plan, context, adapter, deadline)
-    with context.acquire_install_lock(plan.root, deadline=deadline):
+    with context.acquire_install_lock(plan.root, deadline=deadline, kind="install"):
         from .engine_custody import stop_engine_for_converge
         stop_engine_for_converge(plan, context=context, deadline=deadline)
         # Also bind installed target code/data before any source/environment action.

@@ -743,6 +743,44 @@ def _entry_manifest(entry: str | None, inputs: dict[str, Any], *, workflow_path:
     return entries.requirements(described, inputs)
 
 
+def _settle_failed_attempt(output_root: Path, workflow_path: Path, source_snapshot: Any,
+                           task_identity: str, attempt_identity: str, producer_run_id: str,
+                           workflow_input_bindings: dict[str, Any], producer_context: dict[str, Any],
+                           error: BaseException) -> None:
+    """Write and materialize one failure receipt while retaining the cause."""
+    try:
+        from astrid.core.generation.progress import write_progress
+        write_progress("finalize")
+        envelope = getattr(error, "managed_generation_result_path", None)
+        envelope = Path(envelope) if envelope else output_root / "managed-generation-result.json"
+        if not envelope.exists():
+            cancelled = (isinstance(error, KeyboardInterrupt)
+                         or isinstance(error, SystemExit) and error.code in (130, 143)
+                         or type(error).__name__ == "HostCancelled")
+            status = "cancelled" if cancelled else "failed"
+            receipt = {
+                "schema_version": 1, "kind": "managed-generation-result.v1",
+                "task_id": task_identity, "attempt_id": attempt_identity,
+                "producer_run_id": producer_run_id, "created": datetime.now(timezone.utc).isoformat(),
+                "inputs": {"values": workflow_input_bindings}, "outputs": [], "warnings": [],
+                "outcomes": {"execution": {"status": status, "code": type(error).__name__},
+                             **{phase: {"status": "not_started"} for phase in ("retrieval", "verification", "publication")}},
+                "evidence": {"producer": {}, "transport": {
+                    "failure": None if cancelled else {"code": type(error).__name__, "native": None},
+                    "cancel": {"requested": True, "stop_observed": None, "native": None} if cancelled else None,
+                }},
+            }
+            envelope.write_text(json.dumps(receipt), encoding="utf-8")
+        _materialize_managed_generation_result(
+            output_root, SimpleNamespace(managed_generation_result_path=envelope),
+            task_identity=task_identity, attempt_identity=attempt_identity,
+            workflow_path=workflow_path, source_snapshot=source_snapshot,
+            producer_context=producer_context,
+        )
+    except BaseException as evidence_error:
+        error.add_note(f"producer evidence could not be materialized: {type(evidence_error).__name__}")
+
+
 def _run_and_settle(
     workflow_path: Path,
     output_root: Path,
@@ -878,24 +916,20 @@ def _run_and_settle(
             expected_source_field=source_video_widget,
             phase="worker-staged",
         )
-    if synthetic is None and engine_local_run:
-        # Stage public media exactly once, then let the owned preparation wrapper
-        # retain the install lock through the recursive endpoint-bound submit.
-        from astrid.packs.vibecomfy.local_job import run_owned_action
+    from astrid.core.generation.engine_readiness import ComfyProvenance
 
-        return run_owned_action(
-            workflow_path,
-            output_root,
-            task_identity=task_identity,
-            attempt_identity=uuid4().hex if attempt_identity == "-" else attempt_identity,
-            expected_execution_identity=None if execution_identity == "-" else execution_identity,
-            align=align or "check",
-            workflow_inputs=json.dumps(workflow_input_bindings, sort_keys=True),
-            execution_request=execution_request,
-            manifest=manifest,
-            entry=entry,
-            after_outputs_job=after_outputs_job,
-        )
+    provenance = ComfyProvenance()
+    provenance.source(workflow_path)
+    producer_run_id = f"astrid-{uuid4().hex}"
+    producer_context = {
+        "comfy_provenance": provenance,
+        "values": dict(workflow_input_bindings),
+        "target": (execution_request.get("target") if isinstance(execution_request, dict) else None)
+                  or {"kind": "managed" if prepared else "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
+        "execution_binding": execution_request.get("execution_binding") if isinstance(execution_request, dict) else None,
+        "requirements": admitted_requirements,
+    }
+    settlement_attempt = attempt_identity
 
     production_kwargs: dict[str, Any] = {
         "task_identity": task_identity,
@@ -913,20 +947,26 @@ def _run_and_settle(
         production_kwargs["comfy_output_dir"] = comfy_output_dir
     if attempt_identity != "-":
         production_kwargs["attempt_identity"] = attempt_identity
-    from astrid.core.generation.engine_readiness import ComfyProvenance
-
-    provenance = ComfyProvenance()
-    provenance.source(workflow_path)
-    producer_context = {
-        "comfy_provenance": provenance,
-        "values": dict(workflow_input_bindings),
-        "target": (execution_request.get("target") if isinstance(execution_request, dict) else None)
-                  or {"kind": "managed" if prepared else "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
-        "execution_binding": execution_request.get("execution_binding") if isinstance(execution_request, dict) else None,
-        "requirements": admitted_requirements,
-    }
-    producer_run_id = f"astrid-{uuid4().hex}"
     try:
+        if synthetic is None and engine_local_run:
+            # Keep preparation and endpoint-bound execution under the same
+            # failure boundary so setup failures retain their attempt receipt.
+            from astrid.packs.vibecomfy.local_job import run_owned_action
+
+            settlement_attempt = uuid4().hex if attempt_identity == "-" else attempt_identity
+            return run_owned_action(
+                workflow_path,
+                output_root,
+                task_identity=task_identity,
+                attempt_identity=settlement_attempt,
+                expected_execution_identity=None if execution_identity == "-" else execution_identity,
+                align=align or "check",
+                workflow_inputs=json.dumps(workflow_input_bindings, sort_keys=True),
+                execution_request=execution_request,
+                manifest=manifest,
+                entry=entry,
+                after_outputs_job=after_outputs_job,
+            )
         with provenance.capture():
             if synthetic is None and prepared is not None:
                 # Trusted host already aligned this exact attempt and verified
@@ -959,43 +999,16 @@ def _run_and_settle(
                         else:
                             os.environ[key] = value
     except BaseException as error:
-        if attempt_identity != "-":
-            # Prefer the producer's explicit receipt, including its verified
-            # partial inventory. Never infer media identities from loose files.
-            envelope = getattr(error, "managed_generation_result_path", None)
-            envelope = Path(envelope) if envelope else output_root / "managed-generation-result.json"
-            if not envelope.exists():
-                cancelled = (isinstance(error, KeyboardInterrupt)
-                             or isinstance(error, SystemExit) and error.code in (130, 143)
-                             or type(error).__name__ == "HostCancelled")
-                status = "cancelled" if cancelled else "failed"
-                receipt = {
-                    "schema_version": 1, "kind": "managed-generation-result.v1",
-                    "task_id": task_identity, "attempt_id": attempt_identity,
-                    "producer_run_id": producer_run_id, "created": datetime.now(timezone.utc).isoformat(),
-                    "inputs": {"values": workflow_input_bindings}, "outputs": [], "warnings": [],
-                    "outcomes": {"execution": {"status": status, "code": type(error).__name__},
-                                 **{phase: {"status": "not_started"} for phase in ("retrieval", "verification", "publication")}},
-                    "evidence": {"producer": {}, "transport": {
-                        "failure": None if cancelled else {"code": type(error).__name__, "native": None},
-                        "cancel": {"requested": True, "stop_observed": None, "native": None} if cancelled else None,
-                    }},
-                }
-                envelope.write_text(json.dumps(receipt), encoding="utf-8")
-            try:
-                _materialize_managed_generation_result(
-                    output_root, SimpleNamespace(managed_generation_result_path=envelope),
-                    task_identity=task_identity, attempt_identity=attempt_identity,
-                    workflow_path=workflow_path, source_snapshot=source_snapshot,
-                    producer_context=producer_context,
-                )
-            except Exception as evidence_error:
-                # Preserve the original execution failure for the host. The
-                # rejected producer receipt remains in the attempt for recovery.
-                error.add_note(f"producer evidence could not be materialized: {type(evidence_error).__name__}")
+        if settlement_attempt != "-" and not getattr(error, "_astrid_settlement_done", False):
+            error._astrid_settlement_done = True
+            _settle_failed_attempt(output_root, workflow_path, source_snapshot,
+                                   task_identity, settlement_attempt, producer_run_id,
+                                   workflow_input_bindings, producer_context, error)
         raise
 
     if production_result.managed_generation_result_path is not None:
+        from astrid.core.generation.progress import write_progress
+        write_progress("finalize")
         manifest = _materialize_managed_generation_result(
             output_root,
             production_result,
@@ -1008,10 +1021,12 @@ def _run_and_settle(
         )
         execution = manifest["managed_generation_result"]["outcomes"]["execution"]
         if execution["status"] != "succeeded":
-            raise AstridError(
+            error = AstridError(
                 execution.get("message") or f"producer execution {execution['status']}",
                 code=execution.get("code") or f"producer_{execution['status']}",
             )
+            error._astrid_settlement_done = True
+            raise error
         return manifest
 
     _refuse_unsealed_hook(after_outputs_job)
