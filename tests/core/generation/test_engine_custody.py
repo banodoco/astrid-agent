@@ -57,7 +57,7 @@ class Handler(BaseHTTPRequestHandler):
   if setting=='redirect':
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
   value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'UNETLoader':{},'VAELoader':{},'VHS_VideoCombine':{}}
-  if self.path=='/queue': value={'queue_running':[[1]] if setting=='busy' else [],'queue_pending':[]}
+  if self.path=='/queue': value={'queue_running':[[1,'running-work']] if setting=='busy' else [],'queue_pending':[[2,'pending-work']] if setting=='pending' else []}
   if self.path=='/system_stats': value={'system':{'comfyui_version':'0.36.0'},'devices':[{'vram_total':24000,'vram_free':20000}]}
   if self.path.startswith('/history/'):
    prompt_id=self.path.rsplit('/',1)[1]
@@ -259,7 +259,8 @@ def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_pa
                                    is_alive=lambda: False),
             stream=SimpleNamespace(close=fail if stage == name + "_close" else lambda: None)))
     with custody._directory(supervisor.control) as fd:
-        custody._write(fd, "session.json", b"retained marker")
+        marker = _json({"identity": supervisor.identity, "owner_id": "0" * 32}).encode()
+        custody._write(fd, "session.json", marker)
     with custody._directory(supervisor.registry) as fd:
         custody._write(fd, "launch.json", b"retained registry")
     supervisor.registry_names = ["launch.json"]
@@ -298,7 +299,7 @@ def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_pa
         assert json.loads(record.read_bytes()) == cause
         assert supervisor.unresolved and supervisor.engine is owned and supervisor.commands == [owned]
         assert owned.process is process and not supervisor.finished.is_set()
-        assert Path(supervisor.control, "session.json").read_bytes() == b"retained marker"
+        assert Path(supervisor.control, "session.json").read_bytes() == marker
         assert Path(supervisor.registry, "launch.json").read_bytes() == b"retained registry"
     finally:
         for thread in threads:
@@ -1399,19 +1400,177 @@ def test_stale_session_marker_cannot_signal_a_live_unrelated_pid(tmp_path):
         outside.wait(timeout=5)
 
 
-def test_different_helper_is_refused_as_ownership_mismatch(session, monkeypatch):
+def test_different_helper_stop_addresses_old_owner_but_probe_still_refuses(session, monkeypatch):
     owner, payload, _, _, _, _ = session
     _call(owner, payload, "probe")
     other = _client({**owner.identity, "helper_sha256": "0" * 64})
     marker = Path(owner.control, "session.json").read_bytes()
     with monkeypatch.context() as scoped:
-        scoped.setattr(custody, "_send", lambda *args: pytest.fail("cross-identity request sent"))
+        real_send = custody._send
+        sent = []
+        def observe_send(channel, message, deadline):
+            sent.append(message)
+            return real_send(channel, message, deadline)
+        scoped.setattr(custody, "_send", observe_send)
         with pytest.raises(EndpointOwnershipError):
             other.call("probe", payload, deadline=time.monotonic() + 5)
-        with pytest.raises(EndpointOwnershipError):
-            other.stop_owned(deadline=time.monotonic() + 5)
-    assert Path(owner.control, "session.json").read_bytes() == marker
-    assert _call(owner, payload, "probe")["state"] == "absent"
+        assert Path(owner.control, "session.json").read_bytes() == marker
+        other.stop_owned(deadline=time.monotonic() + 8)
+    assert any(row.get("operation") == "stop" and row.get("identity") == owner.identity for row in sent)
+    assert not Path(owner.control, "session.json").exists()
+    owner._spawned.wait(timeout=5)
+    assert not _alive(owner._spawned.pid)
+
+
+@pytest.mark.parametrize("setting", ["busy", "pending"])
+def test_converge_refuses_busy_or_pending_queue_before_stop(session, monkeypatch, setting):
+    from types import SimpleNamespace
+
+    from astrid.core.generation.engine_contracts import EngineBusy
+
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    mode.write_text(setting)
+    monkeypatch.setattr(custody.recipes, "load_recipe", lambda *_args: recipe)
+    plan = SimpleNamespace(root=str(root), engine=recipe.engine, platform=recipe.platform,
+                           recipe_sha256=client.identity["recipe_sha256"])
+    context = SimpleNamespace(placement="local")
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+    adapter = LinuxPlatformAdapter(recipe.platform)
+    marker = Path(client.control, "session.json").read_bytes()
+    with adapter.local_install_lock(str(root), deadline=time.monotonic() + 5):
+        with pytest.raises(EngineBusy) as error:
+            custody.stop_engine_for_converge(plan, context=context, deadline=time.monotonic() + 5)
+    assert error.value.code == "engine_busy"
+    assert ("running-work" if setting == "busy" else "pending-work") in str(error.value)
+    assert Path(client.control, "session.json").read_bytes() == marker
+    assert _alive(client._spawned.pid)
+    assert _alive(int(started.read_text().splitlines()[-1]))
+
+
+def _install_after_owner_stop(client, recipe, root, monkeypatch, *, timeout):
+    from types import SimpleNamespace
+
+    old_identity = client.identity
+    monkeypatch.setattr(custody.recipes, "load_recipe", lambda *_args: recipe)
+    plan = SimpleNamespace(root=str(root), engine=recipe.engine, platform=recipe.platform,
+                           recipe_sha256=old_identity["recipe_sha256"])
+    from astrid.core.generation import engine_runner
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+    adapter = LinuxPlatformAdapter(recipe.platform)
+    identity_reached = threading.Event()
+    class Context:
+        placement = "local"
+        def acquire_install_lock(self, lock_root, *, deadline):
+            return adapter.local_install_lock(lock_root, deadline=deadline)
+    class HelperReached(RuntimeError):
+        pass
+    class Runner:
+        def __init__(self, *_args):
+            pass
+        def helper(self, operation):
+            assert operation == "identity"
+            assert not Path(client.control, "session.json").exists()
+            identity_reached.set()
+            raise HelperReached
+    monkeypatch.setattr(engine_runner, "_Runner", Runner)
+
+    def install():
+        try:
+            engine_runner.install_engine(plan, context=Context(), adapter=adapter,
+                                         deadline=time.monotonic() + timeout)
+        except BaseException as exc:
+            return exc
+        return None
+
+    return install, HelperReached, identity_reached
+
+
+def _hold_inherited_owner_lock(client, monkeypatch, tmp_path):
+    """Fork a real process that keeps the supervisor's locked open description alive."""
+    ready = tmp_path / "owner-lock-holder-ready"
+    release = tmp_path / "owner-lock-holder-release"
+    program = client._fixture_program.replace(
+        "_serve(json.loads(sys.argv[1]),recipe,int(sys.argv[2]),sys.argv[4])",
+        f"import os,time\nfrom pathlib import Path\nready=Path({str(ready)!r}); release=Path({str(release)!r})\npid=os.fork()\nif pid == 0:\n ready.write_text(str(os.getpid()))\n while not release.exists(): time.sleep(.01)\n os._exit(0)\n_serve(json.loads(sys.argv[1]),recipe,int(sys.argv[2]),sys.argv[4])",
+    )
+    monkeypatch.setattr(custody, "_supervisor_argv", lambda identity, lock_fd, token:
+                        [sys.executable, "-c", program, _json(identity), str(lock_fd), "--launch-token", token])
+    return ready, release
+
+
+def test_converge_waits_for_inherited_owner_lock_before_helper_identity(session, monkeypatch):
+    client, payload, recipe, root, _, _ = session
+    ready, release = _hold_inherited_owner_lock(client, monkeypatch, Path(root).parent)
+    _call(client, payload)
+    try:
+        install, reached, identity_reached = _install_after_owner_stop(client, recipe, root, monkeypatch,
+                                                                        timeout=8)
+        result = []
+        worker = threading.Thread(target=lambda: result.append(install()))
+        worker.start()
+        _wait(lambda: ready.exists())
+        _wait(lambda: not Path(client.control, "session.json").exists() or not worker.is_alive())
+        assert not Path(client.control, "session.json").exists(), f"install stopped before owner retirement: {result!r}"
+        time.sleep(0.15)
+        assert worker.is_alive(), "install passed owner.lock while its inherited holder remained alive"
+        assert not identity_reached.is_set(), "install reached helper identity while owner.lock was held"
+        release.write_text("release")
+        worker.join(timeout=8)
+        assert not worker.is_alive()
+        assert isinstance(result[0], reached)
+        client._spawned.wait(timeout=5)
+        assert not _alive(client._spawned.pid)
+    finally:
+        release.write_text("release")
+        _wait(lambda: not _alive(int(ready.read_text())))
+
+
+def test_converge_owner_lock_timeout_refuses_helper_identity(session, monkeypatch):
+    client, payload, recipe, root, _, _ = session
+    ready, release = _hold_inherited_owner_lock(client, monkeypatch, Path(root).parent)
+    _call(client, payload)
+    try:
+        install, _reached, identity_reached = _install_after_owner_stop(client, recipe, root, monkeypatch,
+                                                                          timeout=3)
+        result = []
+        worker = threading.Thread(target=lambda: result.append(install()))
+        worker.start()
+        _wait(lambda: ready.exists())
+        _wait(lambda: not Path(client.control, "session.json").exists() or not worker.is_alive())
+        assert not Path(client.control, "session.json").exists(), f"install stopped before owner retirement: {result!r}"
+        assert not identity_reached.is_set(), "install reached helper identity while owner.lock was held"
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert isinstance(result[0], CustodyUnresolved)
+        assert "owner" in str(result[0]).lower() or "supervisor" in str(result[0]).lower()
+        assert not Path(client.control, "session.json").exists()
+    finally:
+        release.write_text("release")
+        _wait(lambda: not _alive(int(ready.read_text())))
+
+
+def test_converge_unreachable_old_owner_preserves_marker_and_live_pid(session, monkeypatch):
+    client, payload, recipe, root, _, _ = session
+    _call(client, payload, "probe")
+    owner_pid = client._spawned.pid
+    marker_path = Path(client.control, "session.json")
+    marker = marker_path.read_bytes()
+    client._spawned.kill()
+    client._spawned.wait(timeout=5)
+    client.stop_owned = lambda **_kwargs: None
+    from types import SimpleNamespace
+    monkeypatch.setattr(custody.recipes, "load_recipe", lambda *_args: recipe)
+    plan = SimpleNamespace(root=str(root), engine=recipe.engine, platform=recipe.platform,
+                           recipe_sha256=client.identity["recipe_sha256"])
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+    adapter = LinuxPlatformAdapter(recipe.platform)
+    with adapter.local_install_lock(str(root), deadline=time.monotonic() + 5):
+        with pytest.raises(CustodyUnresolved, match="restore.*control connection|leave the marker"):
+            custody.stop_engine_for_converge(plan, context=SimpleNamespace(placement="local"),
+                                             deadline=time.monotonic() + 5)
+    assert marker_path.read_bytes() == marker
+    assert not _alive(owner_pid)
 
 
 def test_original_native_owner_loss_refuses_replacement(tmp_path):

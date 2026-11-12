@@ -223,36 +223,66 @@ class LinuxEngineServiceClient:
                    recipe_sha256=recipes.recipe_digest(recipe),
                    helper_sha256=_sha(helper_manifest(recipe)))
 
+    @classmethod
+    def for_stop(cls, *, root, engine, platform):
+        """Build a stop-only client from the complete live identity in its marker."""
+        checked_root = LinuxPlatformAdapter(platform).validate_root(root)
+        if not isinstance(engine, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", engine):
+            raise RecipeValidationError("invalid installation engine")
+        control = checked_root + "/.astrid-engine/session"
+        try:
+            with _directory(control, create=False) as fd:
+                identity = cls._marker_identity(fd)
+        except FileNotFoundError:
+            return None
+        if identity is None:
+            return None
+        if (set(identity) != {"root", "engine", "platform", "recipe_sha256", "helper_sha256"}
+                or identity.get("root") != checked_root or identity.get("engine") != engine
+                or identity.get("platform") != platform):
+            raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
+        try:
+            return cls(**identity)
+        except RecipeValidationError as exc:
+            raise CustodyUnresolved("invalid supervisor marker; explicit recovery required") from exc
+
+    @staticmethod
+    def _marker_identity(fd):
+        marker_info = _exists(fd, "session.json")
+        if marker_info is not None:
+            _private(marker_info, stat.S_ISREG)
+            marker_fd = os.open("session.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=fd)
+            try:
+                info = os.fstat(marker_fd)
+                _private(info, stat.S_ISREG)
+                if info.st_nlink != 1 or info.st_size > 16384:
+                    raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
+                data = os.read(marker_fd, 16385)
+                if len(data) != info.st_size or (info.st_dev, info.st_ino) != (marker_info.st_dev, marker_info.st_ino):
+                    raise CustodyUnresolved("supervisor marker changed; explicit recovery required")
+                try:
+                    marker = _decode(data)
+                except (ValueError, UnicodeError):
+                    raise CustodyUnresolved("invalid supervisor marker; explicit recovery required") from None
+            finally:
+                os.close(marker_fd)
+            if (not isinstance(marker, dict) or set(marker) != {"identity", "owner_id"}
+                    or not isinstance(marker["identity"], dict)
+                    or not isinstance(marker["owner_id"], str)
+                    or re.fullmatch(r"[0-9a-f]{32}", marker["owner_id"]) is None):
+                raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
+            identity = marker["identity"]
+            return identity
+        return None
+
     def _connect(self, fd, deadline, *, start, cancelled=None):
         while True:
             _remaining(deadline)
             if cancelled is not None and cancelled():
                 raise CancelledError("engine operation cancelled before connection")
-            # The marker is a refusal fence only, never authority to adopt or
-            # stop an owner. In particular, do not send a current-identity
-            # request to a supervisor published under different helper bytes.
-            marker_info = _exists(fd, "session.json")
-            if marker_info is not None:
-                _private(marker_info, stat.S_ISREG)
-                marker_fd = os.open("session.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                    dir_fd=fd)
-                try:
-                    info = os.fstat(marker_fd)
-                    _private(info, stat.S_ISREG)
-                    if info.st_nlink != 1 or info.st_size > 16384:
-                        raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
-                    data = os.read(marker_fd, 16385)
-                    if len(data) != info.st_size or (info.st_dev, info.st_ino) != (marker_info.st_dev, marker_info.st_ino):
-                        raise CustodyUnresolved("supervisor marker changed; explicit recovery required")
-                    try:
-                        marker = _decode(data)
-                    except (ValueError, UnicodeError):
-                        raise CustodyUnresolved("invalid supervisor marker; explicit recovery required") from None
-                finally:
-                    os.close(marker_fd)
-                if not isinstance(marker, dict) or set(marker) != {"identity", "owner_id"} or not isinstance(marker["identity"], dict):
-                    raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
-                identity = marker["identity"]
+            identity = self._marker_identity(fd)
+            if identity is not None:
                 if identity != self.identity:
                     raise EndpointOwnershipError("supervisor installation identity differs")
             info = _exists(fd, "control.sock")
@@ -394,13 +424,121 @@ class LinuxEngineServiceClient:
     def release_owned(self, *, deadline):
         return self._request("release", {}, deadline, start=False)
 
+    def _live_owner(self):
+        owner = type(self).for_stop(**{key: self.identity[key] for key in ("root", "engine", "platform")})
+        return self if owner is None or owner.identity == self.identity else owner
+
     def stop_owned(self, *, deadline):
-        self._request("stop", {}, deadline, start=False)
-        # Successful explicit stop includes retirement of the ephemeral marker.
-        while Path(self.control, "session.json").exists():
-            time.sleep(min(0.02, _remaining(deadline)))
+        owner = self._live_owner()
+        try:
+            owner._request("stop", {}, deadline, start=False)
+            # Marker retirement precedes release of the inherited native lock.
+            while Path(self.control, "session.json").exists():
+                time.sleep(min(0.02, _remaining(deadline)))
+            _wait_owner_lock(self.control, deadline)
+        except (CustodyUnresolved, DeadlineExceeded) as exc:
+            error = CustodyUnresolved(f"Cannot stop the original supervisor at {self.control}/session.json; "
+                                     "restore its owner's control connection and retry installation; "
+                                     f"leave the marker in place: {exc}")
+            error.cleanup_failure = getattr(exc, "cleanup_failure", None)
+            raise error from exc
         if self._spawned is not None:
             self._spawned.wait(timeout=_remaining(deadline))
+
+
+def _wait_owner_lock(control, deadline):
+    """Wait for the inherited owner handle, even after marker retirement."""
+    try:
+        with _directory(control, create=False) as fd:
+            lock = os.open("owner.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            try:
+                info = os.fstat(lock)
+                _private(info, stat.S_ISREG)
+                if info.st_nlink != 1:
+                    raise UnsafePathError("unsafe engine owner lock")
+                while True:
+                    try:
+                        native.lock_file(lock, blocking=False)
+                        break
+                    except BlockingIOError:
+                        time.sleep(min(0.02, _remaining(deadline)))
+            finally:
+                os.close(lock)
+    except FileNotFoundError:
+        pass
+
+
+def _engine_queue(root, engine, platform, deadline):
+    """Read the configured loopback queue directly, without proxies or redirects."""
+    from ._engine_target_files import _TargetFiles
+
+    path = str(Path(root, "runtime/out/sessions", engine, "config.json"))
+    queue_deadline = min(deadline, time.monotonic() + 2)
+    try:
+        files = _TargetFiles(root)
+        if files.file_fact(path, hash_bytes=False, deadline=queue_deadline).exists:
+            config = files.read_json(path, deadline=queue_deadline)
+            port = config["port"]
+        else:
+            port = recipes.load_recipe(engine, platform).start.port
+        if type(port) is not int or not 0 < port < 65536:
+            raise ValueError("invalid engine queue port")
+        queue = _get_json(port, "/queue", _OUTPUT_LIMIT, queue_deadline,
+                          lambda: _remaining(queue_deadline))
+        running, pending = queue["queue_running"], queue["queue_pending"]
+        if not isinstance(running, list) or not isinstance(pending, list):
+            raise ValueError("invalid engine queue")
+        return running, pending
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, EngineError) as exc:
+        raise CustodyUnresolved("Cannot inspect the local engine queue; leave its supervisor running "
+                               "and restore its control connection before retrying installation") from exc
+
+
+def _busy_message(running, pending):
+    def names(items):
+        return ", ".join(str(item[1] if isinstance(item, list) and len(item) > 1 else item)
+                         for item in items)[:600]
+    work = []
+    if running:
+        work.append("running: " + names(running))
+    if pending:
+        work.append("pending: " + names(pending))
+    return "Engine has running or pending work (" + "; ".join(work) + ")"
+
+
+def refuse_busy_engine(*, root, engine, platform, deadline):
+    """A job owns the install lock; an empty queue does not end its custody."""
+    from .engine_contracts import EngineBusy
+
+    try:
+        running, pending = _engine_queue(root, engine, platform, deadline)
+    except CustodyUnresolved:
+        if Path(root, ".astrid-engine/session/session.json").exists():
+            raise
+        running, pending = [], []
+    message = (_busy_message(running, pending) if running or pending else
+               "The local engine is held by a running or preparing job; retry installation when it finishes")
+    raise EngineBusy(message)
+
+
+def stop_engine_for_converge(plan, *, context, deadline):
+    """Under the exclusive install lock, refuse queued work before stopping."""
+    if context.placement != "local":
+        return
+    client = LinuxEngineServiceClient.for_stop(root=plan.root, engine=plan.engine, platform=plan.platform)
+    if client is None:
+        control = str(Path(plan.root, ".astrid-engine/session"))
+        try:
+            _wait_owner_lock(control, deadline)
+        except DeadlineExceeded as exc:
+            raise CustodyUnresolved("Cannot retire the original supervisor owner lock; "
+                                   "leave its control state in place and retry installation") from exc
+        return
+    running, pending = _engine_queue(plan.root, plan.engine, plan.platform, deadline)
+    if running or pending:
+        from .engine_contracts import EngineBusy
+        raise EngineBusy(_busy_message(running, pending))
+    client.stop_owned(deadline=deadline)
 
 
 def engine_log_path(root: str, engine: str) -> str:

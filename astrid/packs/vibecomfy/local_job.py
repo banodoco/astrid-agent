@@ -9,17 +9,25 @@ from astrid.core.generation.local_job import JobFileError, JobInputError
 
 
 def run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
-                     align: str, **kwargs: Any) -> dict[str, Any]:
-    """Run the pod's admitted job under this action's exact runner authority."""
+                     align: str, expected_execution_identity: str | None = None,
+                     **kwargs: Any) -> dict[str, Any]:
+    """Run a direct local managed job under this action's owned preparation custody."""
+    from astrid.core.generation.target_inventory import POD_ALIGN
     from astrid.pack_api import canonical_runtime_entrypoint
 
-    with canonical_runtime_entrypoint("vibecomfy.run"):
-        return _run_owned_action(workflow, out, task_identity=task_identity,
-                                 attempt_identity=attempt_identity, align=align, **kwargs)
+    align_token = POD_ALIGN.set(align)
+    try:
+        with canonical_runtime_entrypoint("vibecomfy.run"):
+            return _run_owned_action(workflow, out, task_identity=task_identity,
+                                     attempt_identity=attempt_identity, align=align,
+                                     expected_execution_identity=expected_execution_identity, **kwargs)
+    finally:
+        POD_ALIGN.reset(align_token)
 
 
 def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
-                      align: str, **kwargs: Any) -> dict[str, Any]:
+                      align: str, expected_execution_identity: str | None = None,
+                      **kwargs: Any) -> dict[str, Any]:
     """Prepare under owned custody, then execute once against its HTTP endpoint."""
     import hashlib
     import shutil
@@ -110,6 +118,8 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
             loaded = load_workflow_path(workflow, scratch / "capsule-load")
             canonical = _canonical_bundle_value(loaded.resolved).workflow
         identity = loaded_workflow_execution_identity(loaded)
+        if expected_execution_identity is not None and identity != expected_execution_identity:
+            raise JobInputError("workflow execution identity differs from the admitted request")
         preparation = ManagedEnginePreparation(task=task_identity, attempt=attempt_identity, mode=align,
             deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine",
             logs_root=out)

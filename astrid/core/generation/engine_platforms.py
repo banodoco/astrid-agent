@@ -113,7 +113,7 @@ class LinuxPlatformAdapter:
                               _bootstrap.engine_process_env(launch_env, root), deadline)
 
     @contextmanager
-    def local_install_lock(self, root, *, deadline, cancelled=None):
+    def local_install_lock(self, root, *, deadline, cancelled=None, on_contention=None):
         # Import only at the target; no operational Runtime daemon is involved.
         from runtime_protocol import platform
 
@@ -156,6 +156,8 @@ class LinuxPlatformAdapter:
                     locked = True
                     break
                 except BlockingIOError:
+                    if on_contention is not None:
+                        on_contention()
                     time.sleep(min(0.05, _deadline(deadline)))
             _deadline(deadline)
             # Refuse replaced directory entries or lock inode before admission.

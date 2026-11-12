@@ -7,6 +7,7 @@ import json
 import os
 import re
 import time
+from collections.abc import Mapping
 from concurrent.futures import CancelledError
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -344,11 +345,25 @@ class ManagedEnginePreparation:
         if workflow.suffix == ".py":
             staged_members += [workflow.with_suffix(".vibe.json"), workflow.with_name("source.json")]
         staged_digests = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in staged_members}
-        lock = self.adapter.local_install_lock(self.root, deadline=self.deadline, cancelled=self.cancelled)
+        receipt_path = str(Path(self.root) / ".astrid-engine/install.json")
+
+        def refuse_while_installing():
+            # Preparation must not queue behind an install and accidentally
+            # launch against a receipt being rewritten. Inspect state only
+            # after a failed lock attempt; other contention still waits for
+            # the current job/preparation to finish.
+            if not self.context.file_fact(receipt_path, hash_bytes=False, deadline=self.deadline).exists:
+                return
+            receipt = self.context.read_json(receipt_path, deadline=self.deadline)
+            if isinstance(receipt, Mapping) and receipt.get("status") == "installing":
+                from .engine_contracts import EngineBusy
+                raise EngineBusy("the local engine is being updated; try again when astrid engines install finishes")
+
+        lock = self.adapter.local_install_lock(self.root, deadline=self.deadline, cancelled=self.cancelled,
+                                               on_contention=refuse_while_installing)
         lock.__enter__()
         self.lock = lock
         self.check()
-        receipt_path = str(Path(self.root) / ".astrid-engine/install.json")
         raw = self.context.read_json(receipt_path, deadline=self.deadline)
         locator = plan_install(self.recipe, root=self.root, placement="local")
         receipt = _parse_receipt(raw, locator)

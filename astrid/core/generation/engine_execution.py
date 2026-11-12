@@ -82,7 +82,16 @@ class LocalLinuxExecutionContext:
     def acquire_install_lock(self, root, *, deadline):
         if root != self.root:
             raise UnsafePathError("install lock root differs")
-        return self.adapter.local_install_lock(root, deadline=deadline)
+
+        def on_contention():
+            receipt_path = str(Path(root) / ".astrid-engine/install.json")
+            receipt = (self.read_json(receipt_path, deadline=deadline)
+                       if self.file_fact(receipt_path, hash_bytes=False, deadline=deadline).exists else {})
+            if receipt.get("status") != "installing":
+                from .engine_custody import refuse_busy_engine
+                refuse_busy_engine(root=root, engine=self.engine, platform=self.platform, deadline=deadline)
+
+        return self.adapter.local_install_lock(root, deadline=deadline, on_contention=on_contention)
 
 
 def create_local_backend(*, engine, platform, placement, root, deadline):

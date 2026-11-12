@@ -4,7 +4,7 @@ from __future__ import annotations
 import posixpath
 import random
 from dataclasses import dataclass
-from typing import Any, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
+from typing import Any, Callable, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
 
 EngineId: TypeAlias = str
 PlatformKey: TypeAlias = Literal["linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130", "windows-x86_64-cu128", "windows-x86_64-cu130"]
@@ -29,6 +29,15 @@ class EngineError(RuntimeError):
         self.step_id = step_id
         self.retryable = retryable
         self.recovery_handle = recovery_handle
+
+
+class EngineBusy(EngineError):
+    """The local engine has work that excludes this operation."""
+
+    code = "engine_busy"
+
+    def __init__(self, message: str = "managed engine is busy"):
+        super().__init__(message, retryable=True)
 
 
 class PlacementRefused(EngineError):
@@ -321,8 +330,9 @@ class ExecutionContext(Protocol):
 class PlatformAdapter(Protocol):
     key: PlatformKey
 
-    def local_install_lock(self, root: TargetPath, *,
-                           deadline: Deadline) -> ContextManager[None]: ...
+    def local_install_lock(self, root: TargetPath, *, deadline: Deadline,
+                           cancelled: Callable[[], bool] | None = None,
+                           on_contention: Callable[[], None] | None = None) -> ContextManager[None]: ...
     def join(self, root: TargetPath, *relative: str) -> TargetPath: ...
     def validate_root(self, root: TargetPath) -> TargetPath: ...
     def venv_python(self, venv_root: TargetPath) -> TargetPath: ...
