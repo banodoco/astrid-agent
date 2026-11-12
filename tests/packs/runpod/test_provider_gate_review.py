@@ -275,3 +275,60 @@ def test_started_create_late_result_retains_exact_custody(tmp_path, monkeypatch,
         assert state["safe_to_retry"] is False
     finally:
         resume.set()
+
+
+@pytest.mark.parametrize("route", ["attach", "reconcile"])
+def test_attach_and_reconcile_preserve_initial_429_without_fallback(tmp_path, monkeypatch, route):
+    from runpod_lifecycle import api, graphql
+
+    config, path, kwargs = _fresh_acquisition(tmp_path)
+    gate = provider.ProviderGate(tmp_path / "gate.json", minimum_interval=0)
+    monkeypatch.setattr(provider, "account_gate", lambda _: gate)
+    calls = []
+
+    class Limited(Exception):
+        status_code = 429
+        retry_after = "120"
+
+    def limited(*_):
+        calls.append("graphql-429")
+        raise Limited()
+
+    def fallback(*_, **__):
+        calls.append("rest-success")
+        return SimpleNamespace(status_code=200, json=lambda: {"id": "pod", "desiredStatus": "RUNNING"})
+
+    observed = preparation.RunPodTargetObservation(
+        "pod", "review-pod", "RUNNING", "RUNNING", "gpu", "fake-image", None, None, 0, None, "now")
+
+    async def observe(*_, **__):
+        return observed
+
+    async def ready(*_):
+        return {"desired_status": "RUNNING"}
+
+    monkeypatch.setattr(api, "_get_runpod", lambda: SimpleNamespace())
+    monkeypatch.setattr(graphql, "get_pod", limited)
+    monkeypatch.setattr(api.httpx, "get", fallback)
+    monkeypatch.setattr(preparation, "observe_exact_target", observe)
+    monkeypatch.setattr(preparation, "observe_and_confirm_acquired_target", observe)
+    monkeypatch.setattr(preparation, "_wait_provider_ready", ready)
+    attempt = {**kwargs["attempt"], "state": "attachment_pending" if route == "attach" else "allocation_unknown",
+               "create_attempts": 0 if route == "attach" else 1,
+               "reconciliation_required": True, "safe_to_retry": False}
+    if route == "reconcile":
+        attempt["pod_id"] = "pod"
+    preparation.write_target_record(path, attempt)
+    if route == "attach":
+        operation = preparation.acquire_target(config, **{**kwargs, "attempt": attempt, "pod_id": "pod"})
+    else:
+        operation = preparation.reconcile_target(
+            config, handle_path=path, attempt=attempt, volume={"size": 0}, ready_timeout_seconds=1)
+    with pytest.raises(Limited):
+        asyncio.run(operation)
+    assert calls == ["graphql-429"]
+    with pytest.raises(provider.ProviderRefused):
+        provider.ProviderGate(gate.path).before_call(gate.clock() + 1)
+    unresolved = __import__("json").loads(path.read_text())
+    assert unresolved["reconciliation_required"] is True
+    assert unresolved.get("pod_id", unresolved.get("requested_pod_id")) == "pod"

@@ -661,6 +661,16 @@ def _target_contract(
     )
 
 
+async def _get_provider_pod(pod_id: str, config: Any, *, name: str) -> Any:
+    """Attach a handle after one observation; never hide 429s in fallbacks."""
+    from runpod_lifecycle import LaunchFailure, Pod, graphql
+
+    record = await async_provider_call(config.api_key, graphql.get_pod, pod_id, config.api_key)
+    if not isinstance(record, dict) or record.get("id") != pod_id:
+        raise LaunchFailure("exact pod observation did not confirm the requested identity")
+    return Pod(pod_id=pod_id, name=name, config=config)
+
+
 async def _wait_provider_ready(config: Any, pod: Any, timeout: int) -> Any:
     """Keep lifecycle's worker readiness checks, gating each control-plane poll."""
     status = getattr(pod, "status", None)
@@ -1305,7 +1315,7 @@ async def acquire_target(
     never converts missing evidence into a replacement allocation. A persisted
     in-flight attempt must go through :func:`reconcile_target` first.
     """
-    from runpod_lifecycle import AllocationUnknown, LaunchFailure, get_pod, launch_when_available
+    from runpod_lifecycle import AllocationUnknown, LaunchFailure, launch_when_available
     from runpod_lifecycle.errors import ProviderCapacityUnavailable
 
     operation_id = str(attempt["operation_id"])
@@ -1335,7 +1345,7 @@ async def acquire_target(
                     defer_machine=True,
                 ),
             )
-            pod = await async_provider_operation(config.api_key, get_pod, requested_pod_id, config, name=initial.pod_name)
+            pod = await _get_provider_pod(requested_pod_id, config, name=initial.pod_name)
             if str(getattr(pod, "id", "")) != requested_pod_id or str(
                 getattr(pod, "name", "")
             ) != initial.pod_name:
@@ -1650,7 +1660,6 @@ async def reconcile_target(
     ready_timeout_seconds: int,
 ) -> AcquiredRunPodTarget:
     """Resume one persisted target without opening a replacement allocation."""
-    from runpod_lifecycle import get_pod
     from runpod_lifecycle.api import list_pods
 
     operation_id = str(attempt["operation_id"])
@@ -1779,7 +1788,7 @@ async def reconcile_target(
             expected_name = initial_observation.pod_name
             bound["name"] = expected_name
             replace_target_record(handle_path, bound, operation_id=operation_id)
-        pod = await async_provider_operation(config.api_key, get_pod, pod_id, config, name=expected_name)
+        pod = await _get_provider_pod(pod_id, config, name=expected_name)
         if str(getattr(pod, "id", "")) != pod_id or (
             expected_name is not None
             and str(getattr(pod, "name", "")) != expected_name
