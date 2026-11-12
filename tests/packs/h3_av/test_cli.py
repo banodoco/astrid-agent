@@ -155,3 +155,12 @@ def test_available_capability_delegates_to_the_generate_path(tmp_path, monkeypat
     monkeypatch.setattr(generation_cli, "main", generate)
     assert cli.main([command, "--prompt", "A quiet cafe.", "--duration", "5", "--reference", "look.png", "--out", str(tmp_path / "out")]) == 7
     assert calls[0][:4] == ["video", "--entry", "h3", "--inputs-json"]
+
+
+def test_edit_reports_output_io_error(tmp_path, capsys):
+    output = tmp_path / "existing-directory"
+    output.mkdir()
+    result = cli.main(["edit", "--prompt", "A quiet cafe.", "--duration", "5",
+                       "--reference", "look.png", "--out", str(output)])
+    assert result != 0
+    assert "Is a directory" in capsys.readouterr().err

@@ -120,4 +120,4 @@ def main(argv: list[str] | None = None) -> int:
     except (AstridError, H3RequestError) as exc:
         return render_astrid_error(coerce_astrid_error(exc))
     except OSError as exc:
-        return render_astrid_error(H3RequestError(str(exc)))
+        return render_astrid_error(coerce_astrid_error(H3RequestError(str(exc))))
