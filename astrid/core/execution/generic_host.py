@@ -12553,6 +12553,9 @@ class GenericPackHost:
                     assert_managed_input_identity()
                     from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value
                     canonical = _canonical_bundle_value(loaded.resolved)
+                    from astrid.core.generation.engine_custody import declare_engine_log
+
+                    declare_engine_log(root, engine_preparation.root, engine_preparation.recipe.engine)
                     report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs,
                                                         canonical_workflow=canonical.workflow, input_digests=original_input_digests)
                     assert_managed_input_identity()

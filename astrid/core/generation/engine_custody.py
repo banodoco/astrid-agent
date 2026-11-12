@@ -410,7 +410,30 @@ class LinuxEngineServiceClient:
 
 
 def engine_log_path(root: str, engine: str) -> str:
+    """The engine's complete stdout and stderr, appended from every launch at this root."""
     return root + "/runtime/out/sessions/" + engine + "-logs/engine.log"
+
+
+def declare_engine_log(out, root: str, engine: str) -> None:
+    """Declare the slice of the engine log that belongs to the run writing ``out``.
+
+    Called before the run prepares the engine: the slice starts at the log's size
+    now, so a freshly started engine's startup output belongs to this run and a
+    reused engine's earlier output does not. Never raises: declaring logs can
+    never fail or alter a job.
+    """
+    try:
+        from astrid.core._shared import run_logs
+
+        log = engine_log_path(str(root), engine)
+        try:
+            info = os.stat(log)
+            start = info.st_size if stat.S_ISREG(info.st_mode) else 0
+        except OSError:
+            start = 0
+        run_logs.declare(out, run_logs.LogDecl("engine", "engine", log, start=start))
+    except Exception:  # noqa: BLE001 - log declaration must not affect the job
+        pass
 
 
 class _Output:
