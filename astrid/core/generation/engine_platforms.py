@@ -11,7 +11,7 @@ import time
 
 from . import _engine_python_bootstrap as _bootstrap
 from .engine_contracts import (CommandRequest, DeadlineExceeded, RecipeValidationError,
-                               UnsafePathError, UnsupportedPlatform)
+                               UnsafePathError, UnsupportedPlatform, effective_models_root)
 from .engine_runner import _root
 
 _LINUX = frozenset({"linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130"})
@@ -102,7 +102,7 @@ class LinuxPlatformAdapter:
             raise RecipeValidationError("missing primary environment or comfyui source") from exc
         comfy_root = self.join(root, comfy.relative_path)
         values = {"install_root": root, "python": self.venv_python(self.join(root, primary.relative_path)),
-                  "comfy_root": comfy_root, "models_root": self.join(comfy_root, "models") if models_root is None else models_root,
+                  "comfy_root": comfy_root, "models_root": effective_models_root(root, models_root),
                   "host": recipe.start.bind_host, "port": str(recipe.start.port)}
         # The ComfyUI launch is an engine process. The recipe's env is the base and
         # engine_process_env sets PYTHONPYCACHEPREFIX last, so the engine's prefix

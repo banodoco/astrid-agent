@@ -53,6 +53,7 @@ from .engine_contracts import (
     UnsafePathError,
     UnsupportedPlacement,
     UnsupportedPlatform,
+    effective_models_root,
 )
 
 _HELPER_SCHEMA = "astrid.engine-runner-helper.v1"
@@ -512,7 +513,7 @@ class _Runner:
         return {"install_root": self.plan.root,
                 "python": self.adapter.venv_python(self.path(environment.relative_path)),
                 "comfy_root": comfy_root,
-                "models_root": self.adapter.join(comfy_root, "models") if self.plan.models_root is None else self.plan.models_root,
+                "models_root": effective_models_root(self.plan.root, self.plan.models_root),
                 "host": self.recipe.start.bind_host, "port": str(self.recipe.start.port)}
 
     def source(self, source, *, readonly=False):
@@ -732,8 +733,7 @@ class _Runner:
                                "cuda_visible_devices": self.visibility}
         if readonly:
             raise EndpointHealthError("owned engine server is absent", step_id=self.step_id)
-        models_root = self.plan.models_root or self.adapter.join(
-            self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui")), "models")
+        models_root = effective_models_root(self.plan.root, self.plan.models_root)
         self.context.ensure_dir(models_root, deadline=self.deadline)
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
@@ -931,14 +931,15 @@ def _parse_receipt(raw, plan):
             raise ValueError
         if not isinstance(value["models"], (list, tuple)) or not isinstance(value["steps"], (list, tuple)):
             raise ValueError
-        # Plan 32 T5h: a new install writes no model rows; a legacy receipt's verified rows are kept
-        # as the receipt's rows, under <root>/models, exactly as the installer wrote them.
-        models_root = (value["models_root"] if value["models_root"] is not None else plan.root + "/models") + "/"
+        # Preserve old receipt paths as historical evidence alongside the current binding.
+        model_roots = (effective_models_root(plan.root, value["models_root"]) + "/",)
+        if value["models_root"] is None:
+            model_roots += (plan.root + "/models/",)
         models = []
         for model_raw in value["models"]:
             row = obj(model_raw, DownloadResult)
             if (not isinstance(row["model"], str) or not isinstance(row["path"], str)
-                    or not row["path"].startswith(models_root) or row["verified"] is not True
+                    or not row["path"].startswith(model_roots) or row["verified"] is not True
                     or row["action"] not in {"downloaded", "resumed", "skipped"}
                     or type(row["bytes"]) is not int or row["bytes"] < 0
                     or not isinstance(row["sha256"], str) or not _DIGEST.fullmatch(row["sha256"])

@@ -2173,8 +2173,8 @@ def test_model_free_install_receipt_binds_the_model_root_unpatched(setup):
     assert list(bound.inventory) == []
 
 
-def test_legacy_receipt_with_model_rows_parses_and_binds(setup):
-    """Plan 32 T5h: a legacy receipt's verified model rows parse as the receipt's rows and bind."""
+def test_legacy_receipt_with_model_rows_parses_and_current_rows_bind(setup):
+    """Legacy rows remain parseable; only rows under the current root bind as current evidence."""
     from astrid.core.generation import engine_local_endpoint as endpoint
 
     plan = runner.plan_install(setup[1].recipe, root=ROOT, placement="local")
@@ -2183,7 +2183,14 @@ def test_legacy_receipt_with_model_rows_parses_and_binds(setup):
     legacy = replace(install(setup), models=(row,))
     parsed = runner._parse_receipt(json.loads(json.dumps(runner._plain(legacy))), plan)
     assert parsed.models == (row,)
-    binding = endpoint.model_root_binding_from_receipt(parsed, ROOT, engine="comfyui")
+    with pytest.raises(endpoint.EngineNotInstalled, match="outside the engine model root"):
+        endpoint.model_root_binding_from_receipt(parsed, ROOT, engine="comfyui")
+
+    current_row = replace(row, path=ROOT + "/runtime/ComfyUI/models/loras/synthetic-test-b.safetensors")
+    current = runner._parse_receipt(
+        json.loads(json.dumps(runner._plain(replace(parsed, models=(current_row,))))), plan
+    )
+    binding = endpoint.model_root_binding_from_receipt(current, ROOT, engine="comfyui")
     assert [(r["name"], r["subdir"]) for r in binding.inventory] == [("synthetic-test-b.safetensors", "loras")]
 
 
@@ -2213,6 +2220,7 @@ def test_status_rechecks_with_the_model_directory_the_install_bound(setup):
     healthy engine as integrity_failed at step "start".
     """
     plan, context, adapter, deadline = setup
+    context.models_root = "/MODEL_CACHE/models"
     cached = runner.plan_install(context.recipe, root=ROOT, placement="local", models_root="/MODEL_CACHE/models")
     installed = runner.install_engine(cached, context=context, adapter=adapter, deadline=deadline)
     assert installed.status == "installed" and installed.models_root == "/MODEL_CACHE/models"
