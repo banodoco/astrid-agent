@@ -74,7 +74,7 @@ def primary_output_name(task: Mapping[str, Any]) -> str | None:
     outputs = result.get("outputs") if isinstance(result, Mapping) else None
     if not isinstance(outputs, list):
         return None
-    outputs = [o for o in outputs if isinstance(o, Mapping)]
+    outputs = [o for o in outputs if isinstance(o, Mapping) and o.get("role") != "log"]
     chosen = next((o for o in outputs if o.get("is_primary")), outputs[0] if outputs else None)
     if chosen is None:
         return None
