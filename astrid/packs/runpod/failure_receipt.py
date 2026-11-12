@@ -16,6 +16,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence, TypeVar
 
+from .failure_reason import Reason, attach_reason, installation_reason
+
 SCHEMA = "astrid.generation.failure-receipt.v1"
 STAGES = ("no_machine", "boot", "install", "model_download", "workflow_validation",
           "execution", "output_collection", "release")
@@ -70,7 +72,14 @@ def checkpoint_message(reason: str) -> str:
 
 
 def checkpoint_refusal(error: _CheckpointError, reason: str) -> _CheckpointError:
-    """Attach a fixed reason without changing the exception's custody meaning."""
+    """Refuse through the shared reason boundary, keeping the exact custody exception type.
+
+    A reason the error already carries (an earlier transport refusal) is kept;
+    otherwise the checkpoint label becomes its validated ``Reason``. The label
+    itself stays as ``install_unverified``: the detail the message renders.
+    """
+    existing = getattr(error, "reason", None)
+    attach_reason(error, existing if isinstance(existing, Reason) else installation_reason(reason))
     setattr(error, "install_unverified", reason)
     line = checkpoint_message(reason)
     error.args = (line,)
@@ -177,9 +186,6 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     cause: dict[str, Any] = {key: summary[key] for key in
                              ("code", "category", "exception", "node_id", "node_class", "field", "constraint")
                              if key in summary}
-    install_unverified = getattr(failure, "install_unverified", None)
-    if isinstance(install_unverified, str) and re.fullmatch(r"[A-Za-z0-9_.:;=-]{1,256}", install_unverified):
-        cause["install_unverified"] = install_unverified
     marker = getattr(failure, "cause", None)
     if marker in CAUSE_MARKERS:
         cause["cause"] = marker
@@ -189,10 +195,12 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     # Receipts keep the RunPod gate names users already see (GPU, volume,
     # datacenter, ...); PlacementRefused carries them as runpod_gate.
     gate = getattr(failure, "runpod_gate", None) or getattr(failure, "gate", None)
-    from .failure_reason import Reason
     if isinstance(reason, Reason):
         stage, basis = reason.stage, "reason"
         cause["reason"] = reason.as_dict()
+        install_unverified = getattr(failure, "install_unverified", None)
+        if isinstance(install_unverified, str) and re.fullmatch(r"[A-Za-z0-9_.:;=-]{1,256}", install_unverified):
+            cause["install_unverified"] = install_unverified
         cause["code"] = reason.code
         cause["category"] = CODES.get(reason.code, "installation" if reason.stage == "install" else "execution")
     if stage == "no_machine":

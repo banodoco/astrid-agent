@@ -1280,6 +1280,8 @@ class RunPodMachine:
                             rejection = "engine_unreachable"
                         else:
                             stale = True
+                    elif lease.state.installed is None:
+                        rejection = "installation_unverified"
                     elif {**lease.state.installed, "receipt_sha256": expected_install.get("receipt_sha256")} != expected_install:
                         rejection = "installation_unverified"
                     else:
