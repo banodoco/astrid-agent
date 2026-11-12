@@ -2327,3 +2327,20 @@ def test_install_plan_bound_fields_are_recorded_or_recipe_derived():
     recorded = {"root", "placement", "models_root"}
     recipe_derived = {"schema", "engine", "platform", "recipe_sha256", "models_lock_sha256", "steps"}
     assert {field.name for field in fields(runner.InstallPlan)} == recorded | recipe_derived
+
+
+def test_source_accepts_only_verified_model_link_entries(setup, monkeypatch):
+    plan, context, adapter, deadline = setup
+    instance = runner._Runner(plan, context, adapter, deadline)
+    source = next(s for s in instance.recipe.sources if s.name == "comfyui")
+    context.sources[ROOT + "/runtime/ComfyUI"] = {
+        "origin": source.pin.repository, "head": source.pin.revision, "dirty": "?? models/hunyuan_foley"}
+    context.directories.update({ROOT + "/runtime/ComfyUI", ROOT + "/runtime/ComfyUI/.git"})
+    monkeypatch.setattr(instance, "helper", lambda operation, **kwargs: {"valid": operation == "models-source-check"})
+    assert instance.source(source, readonly=True)[0] == "skipped"
+    monkeypatch.setattr(instance, "helper", lambda operation, **kwargs: {"valid": False})
+    with pytest.raises(IntegrityError, match="source contains uncommitted content"):
+        instance.source(source, readonly=True)
+    context.sources[ROOT + "/runtime/ComfyUI"]["dirty"] = "?? stray"
+    with pytest.raises(IntegrityError, match="source contains uncommitted content"):
+        instance.source(source, readonly=True)
