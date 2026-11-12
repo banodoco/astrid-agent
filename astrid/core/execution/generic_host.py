@@ -12527,7 +12527,7 @@ class GenericPackHost:
                 admitted_mode = _align_admission(task_data).get("align", "check")
                 engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
-                    scratch=root / "engine-preparation", device=local_device)
+                    scratch=root / "engine-preparation", device=local_device, logs_root=root)
                 _terminal["machine"] = {**_local_machine({}), "placement": "managed",
                                          "id": engine_preparation.root,
                                          "device": engine_preparation.visibility if engine_preparation.visibility is not None else "auto"}
