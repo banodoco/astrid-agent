@@ -100,7 +100,7 @@ def test_alignment_failure_keeps_native_stderr_out_of_public_error(tmp_path, cap
 def test_configured_models_root_is_read_only_and_refuses_unsafe_receipt(tmp_path):
     from astrid.core.generation.managed_preparation import configured_models_root
     root = tmp_path / 'absent'
-    assert configured_models_root(root=str(root)) == str(root / 'models')
+    assert configured_models_root(root=str(root)) == str(root / 'runtime/ComfyUI/models')
     assert not root.exists()
     receipt = root / '.astrid-engine/install.json'
     receipt.parent.mkdir(parents=True)

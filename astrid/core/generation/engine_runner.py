@@ -426,10 +426,6 @@ class _Runner:
                 "root": self.plan.root, "recipe_sha256": self.plan.recipe_sha256,
                 "helper_sha256": self.helper_sha256, **extra}
 
-    def models_config_helper(self, operation):
-        """The extra-model-paths helper names this install's model directory, volume cache or <root>/models."""
-        return self.helper(operation, models_root=self.plan.models_root)
-
     def helper(self, operation, **extra):
         result = self.run(("python3", "-I", "-m", "astrid.core.generation.engine_runner_target",
                            operation, _json(self.payload(**extra))))
@@ -508,15 +504,17 @@ class _Runner:
     def placeholder_values(self, environment=None):
         if environment is None:
             environment = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
+        comfy_root = self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui"))
         return {"install_root": self.plan.root,
                 "python": self.adapter.venv_python(self.path(environment.relative_path)),
-                "comfy_root": self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui")),
-                "models_root": self.path("models") if self.plan.models_root is None else self.plan.models_root,
-                "models_config": self.path("runtime/extra_model_paths.yaml"),
+                "comfy_root": comfy_root,
+                "models_root": self.adapter.join(comfy_root, "models") if self.plan.models_root is None else self.plan.models_root,
                 "host": self.recipe.start.bind_host, "port": str(self.recipe.start.port)}
 
     def source(self, source, *, readonly=False):
         path = self.path(source.relative_path)
+        if source.name == "comfyui" and not readonly:
+            self.helper("cleanup-legacy-model-links", models_root=self.plan.models_root)
         fact, git = self.fact(path), self.fact(self.adapter.join(path, ".git"))
         if fact.symlink or git.symlink or git.exists and git.regular:
             raise UnsafePathError("source or Git directory is unsafe", step_id=self.step_id)
@@ -541,8 +539,8 @@ class _Runner:
         dirty = self.run(("git", "-C", path, "status", "--porcelain", "--untracked-files=all"))
         entries = dirty.stdout.splitlines()
         allowed = (not dirty.stdout_truncated and entries
-                   and self.helper("models-source-check", source=source.name,
-                                   models_root=self.plan.models_root, entries=entries) == {"valid": True})
+                   and self.helper("declared-source-modifications", source=source.name,
+                                   entries=entries) == {"valid": True})
         if (dirty.stdout.strip() and not allowed) or dirty.stdout_truncated:
             patch = next((patch for patch in self.recipe.source_patches
                           if patch.source == source.name and any(line[3:] == patch.path for line in entries)), None)
@@ -754,14 +752,13 @@ class _Runner:
         launch = self.launch_spec()
         probe = self.service("probe", launch=launch)
         if probe["state"] == "owned":
-            if self.models_config_helper("models-config-check") != {"valid": True}:
-                raise IntegrityError("owned engine models configuration differs", step_id=self.step_id)
             return "skipped", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
                                "cuda_visible_devices": self.visibility}
         if readonly:
             raise EndpointHealthError("owned engine server is absent", step_id=self.step_id)
-        if self.models_config_helper("models-config") != {"written": True}:
-            raise IntegrityError("engine models configuration was not written", step_id=self.step_id)
+        models_root = self.plan.models_root or self.adapter.join(
+            self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui")), "models")
+        self.context.ensure_dir(models_root, deadline=self.deadline)
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
             raise EndpointOwnershipError("server start did not establish ownership", step_id=self.step_id)
@@ -769,8 +766,6 @@ class _Runner:
                             "cuda_visible_devices": self.visibility}
 
     def check_health(self):
-        if self.models_config_helper("models-config-check") != {"valid": True}:
-            raise IntegrityError("engine models configuration differs", step_id=self.step_id)
         limit = min(self.deadline, time.monotonic() + self.recipe.health.timeout_seconds)
         value = self.service("health", launch=self.launch_spec(), deadline=limit)
         if value["state"] != "owned":
