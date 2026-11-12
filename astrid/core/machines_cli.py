@@ -220,7 +220,6 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float | Non
     """Disclose one saved-storage policy, then submit fresh per-claim authority."""
     import sys
 
-    from astrid.core.generation import settings
     from astrid.core.generation.cli import _gpu_placement
     from astrid.packs.runpod.target_selection import (
         DEFAULT_RUNPOD_WORKER_IMAGE,
@@ -241,18 +240,14 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float | Non
                               wait_for_capacity=wait_for_capacity, as_json=as_json, claim=claim,
                               describe=describe, input_fn=input_fn, setup=setup, volumes=volumes,
                               datacenters=datacenters, offered_gpus=offered_gpus, _client=client)
-        saved = settings.machine_policy("runpod", client=_client) or {}
+        saved = _saved_machine_policy(_client) or {}
         if not saved and sys.stdin.isatty():
             captured = []
             def save(policy):
                 if setup is not None:
                     result = setup(policy)
                 else:
-                    import json as _json
-
-                    result = _client.invoke_result("runpod.setup", kind="action", project=None,
-                        inputs={"placement_policy": _json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": policy}, sort_keys=True)},
-                        wait=True, read_managed_outputs=False)
+                    result = _save_setup(policy, client=_client)
                 if getattr(result, "ok", True):
                     captured.append(policy)
                 return result
@@ -414,14 +409,13 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
            client: Any = None,
            input_fn: Callable[[str], str] = input) -> int:
     """Save RunPod setup through runpod.setup; inventory is read-only."""
-    from astrid.core.generation import settings
     from astrid.packs.runpod.target_selection import (
         DEFAULT_RUNPOD_WORKER_IMAGE,
         RunPodPreferences,
         RunPodSetupRequiredError,
     )
 
-    saved = settings.machine_policy("runpod", client=client) or {}
+    saved = _saved_machine_policy(client) or {}
     if not isinstance(saved, dict):
         saved = {}
     credential_ref = saved.get("credential_ref") or "env:RUNPOD_API_KEY"
@@ -536,16 +530,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         validated = RunPodPreferences.from_mapping(policy).as_mapping()
         try:
             if setup is None:
-                import json as _json
-                from contextlib import nullcontext
-
-                from astrid.sdk import AstridClient
-                with (nullcontext(client) if client is not None else AstridClient.open_from_launcher()) as active:
-                    result = active.invoke_result("runpod.setup", kind="action", project=None,
-                                                  inputs={"placement_policy": _json.dumps(
-                                                      {"kind": "runpod", "engine": "comfyui",
-                                                       "preferences": validated}, sort_keys=True)},
-                                                  wait=True, read_managed_outputs=False)
+                result = _save_setup(validated, client=client)
             else:
                 result = setup(validated)
         except Exception:  # noqa: BLE001 - report setup failures without exposing provider details
@@ -578,6 +563,26 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         message = "RunPod setup could not confirm account inventory or save preferences; check credentials and retry `astrid machines setup`"
         print(json.dumps({"ok": False, "error": message}) if as_json else message)
         return 1
+
+
+def _saved_machine_policy(client: Any) -> dict[str, Any] | None:
+    from astrid.core.generation import settings
+
+    return settings.machine_policy("runpod", client=client)
+
+
+def _save_setup(policy: dict[str, Any], *, client: Any = None) -> Any:
+    """Save setup through the ordinary Runtime action invocation."""
+    from contextlib import nullcontext
+
+    from astrid.sdk import AstridClient
+
+    with (nullcontext(client) if client is not None else AstridClient.open_from_launcher()) as active:
+        return active.invoke_result("runpod.setup", kind="action", project=None,
+                                    inputs={"placement_policy": json.dumps(
+                                        {"kind": "runpod", "engine": "comfyui",
+                                         "preferences": policy}, sort_keys=True)},
+                                    wait=True, read_managed_outputs=False)
 
 
 _SETUP_DETAIL_KEYS = ("field", "reason", "error_code", "capability_id", "status", "phase")

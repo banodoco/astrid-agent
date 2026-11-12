@@ -1,6 +1,7 @@
 """W39 review regressions, with fake provider I/O only."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -151,7 +152,10 @@ def test_policy_readiness_can_finish_after_thirty_seconds(case, tmp_path, monkey
 
 
 def _fresh_acquisition(tmp_path):
-    attempt = {"schema_version": "astrid.runpod.allocation-attempt.v1",
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    attempt = {"paid_limits": {"hourly_usd": 1.0, "max_usd": 1.0,
+                               "deadline": expires_at, "expires_at": expires_at},
+               "schema_version": "astrid.runpod.allocation-attempt.v1",
                "operation_id": "review-operation", "request_name": "review-pod",
                "state": "allocation_ready", "create_attempts": 0}
     path = tmp_path / "attempt.json"

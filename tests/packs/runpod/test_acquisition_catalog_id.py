@@ -2,6 +2,7 @@
 import asyncio
 import json
 import socket
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -30,7 +31,10 @@ def test_catalog_id_survives_display_label_in_acquisition_and_reconciliation(tmp
     config = SimpleNamespace(api_key="fake", gpu_type_candidates=("A40",), gpu_type_id="NVIDIA A40",
                              worker_image="image-exact")
     volume = {"id": None, "name": None, "size": 0, "dataCenterId": "CA-MTL-1"}
-    attempt = {"operation_id": "operation-exact", "request_name": "astrid-product-operation-exact",
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    attempt = {"paid_limits": {"hourly_usd": 1.0, "max_usd": 1.0,
+                               "deadline": expires_at, "expires_at": expires_at},
+               "operation_id": "operation-exact", "request_name": "astrid-product-operation-exact",
                "state": "allocated_unverified" if resume else "allocation_ready",
                "acquisition_mode": "allocate", "gpu_type": "A40", "accepted_gpu_type_id": "NVIDIA A40",
                "schema_version": "astrid.runpod.allocation-attempt.v1", "provider_account_ref": "account-exact",
