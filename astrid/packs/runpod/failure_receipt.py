@@ -19,6 +19,7 @@ SCHEMA = "astrid.generation.failure-receipt.v1"
 STAGES = ("no_machine", "boot", "install", "model_download", "workflow_validation",
           "execution", "output_collection", "release")
 KEEP_RECEIPTS = 20
+ISSUE_MESSAGE_LIMIT = 1024
 RECEIPT_NAME = "failure-receipt.json"
 #: Pod exit codes the job command itself uses (``machine.generation_command``).
 EXIT_NOT_READY, EXIT_VALIDATION = 75, 3
@@ -108,6 +109,22 @@ def log_order(row: Mapping[str, Any]) -> tuple[int, str]:
             str(row.get("name", "")))
 
 
+def _issue_message(logs: list[Mapping[str, Any]]) -> str | None:
+    """Read the first issue from the collected job output, if available."""
+    try:
+        row = next((row for row in logs if row.get("name") == "generation.stdout"), None)
+        if not row or row.get("missing") or not row.get("path"):
+            return None
+        with Path(row["path"]).open(encoding="utf-8") as stream:
+            payload = json.load(stream)
+        issues = payload.get("issues") if isinstance(payload, dict) else None
+        first = issues[0] if isinstance(issues, list) and issues else None
+        message = first.get("message") if isinstance(first, dict) else None
+        return message[:ISSUE_MESSAGE_LIMIT] if isinstance(message, str) and message else None
+    except Exception:  # noqa: BLE001 - optional evidence must not mask the job failure
+        return None
+
+
 def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, Any] | None,
                   timing: Any) -> dict[str, Any] | None:
     """The receipt body for one failed generation, or ``None`` when none is written (cancelled)."""
@@ -194,6 +211,9 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
         row.setdefault("missing", False)
         row.setdefault("path", None if row["missing"] else row.get("path"))
         logs.append(row)
+    issue_message = _issue_message(logs)
+    if issue_message:
+        cause["issue_message"] = issue_message
     unavailable = (collected or {}).get("unavailable") if isinstance(collected, Mapping) else None
     return {
         "logs": logs, **({"logs_unavailable": unavailable} if unavailable else {}),

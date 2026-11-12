@@ -72,7 +72,7 @@ def stamp(timing: Any, name: str, **kw: Any) -> None:
         return
     try:
         timing.stamp(name, **kw)
-    except Exception:
+    except Exception:  # noqa: BLE001 - timing must not fail a job
         pass
 
 
@@ -82,7 +82,7 @@ def attach(machine: dict[str, Any] | None, timing: Any) -> None:
         return
     try:
         machine["timing"] = timing.block()
-    except Exception:
+    except Exception:  # noqa: BLE001 - timing reporting must not fail a job
         pass
 
 

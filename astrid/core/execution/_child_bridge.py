@@ -1109,7 +1109,7 @@ class HostChildBridge:
                        and expected.get("size") == size and expected.get("media_type") == row.get("media_type")
                        and expected.get("output_port", expected.get("name", "output")) == row.get("output_port")
                        and all(k not in expected or expected[k] == row.get(k)
-                               for k in ("filename", "ordinal", "group_key", "variant_key"))
+                               for k in ("filename", "ordinal", "group_key", "variant_key", "role"))
                        and (not self.policy or not self.policy.get("stages")
                             # Runtime fills only an omitted capability from the
                             # authenticated child; every declared field stays exact.
@@ -1124,6 +1124,8 @@ class HostChildBridge:
                 raise ChildBridgeError("child output bytes failed verification")
             if resource(self.client.child_output(association)) != row:
                 raise ChildBridgeError("child output association changed during readback")
+            if row.get("role") == "log":
+                continue
             # Return managed CAS descriptors, never private lineage or lease.
             projected = {k: row[k] for k in (
                 "association_id", "run_id", "task_id", "attempt_id", "object_id", "digest",

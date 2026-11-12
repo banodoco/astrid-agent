@@ -260,6 +260,12 @@ class _ThreadGuard:
         _ThreadGuard._active_session = None
 
 
+
+def _bounded_id(nodeid: str, limit: int = 300) -> str:
+    """A node id short enough for a log line; an oversized parametrize id must not stall the CI log stream."""
+    return nodeid if len(nodeid) <= limit else f"{nodeid[:limit]}…(+{len(nodeid) - limit} chars)"
+
+
 def current_job() -> str:
     return os.environ.get("ASTRID_CI_JOB", "")
 
@@ -373,12 +379,12 @@ class _SkipGuard:
         if self.declared:
             terminalreporter.write_sep("-", f"declared skips ({len(self.declared)})")
             for nodeid, name, reason in sorted(self.declared):
-                terminalreporter.write_line(f"SKIPPED [{name}] {nodeid}: {reason}")
+                terminalreporter.write_line(f"SKIPPED [{name}] {_bounded_id(nodeid)}: {reason}")
             no_ci = sorted((nodeid, name) for nodeid, name, _ in self.declared if LANES[name].no_ci)
             if no_ci:
                 terminalreporter.write_sep("-", f"NOT RUN BY ANY CI JOB ({len(no_ci)})")
                 for nodeid, name in no_ci:
-                    terminalreporter.write_line(f"  NO CI {nodeid}: [{name}] {LANES[name].no_ci}")
+                    terminalreporter.write_line(f"  NO CI {_bounded_id(nodeid)}: [{name}] {LANES[name].no_ci}")
         self._report_left_out(terminalreporter)
 
     def _report_left_out(self, terminalreporter) -> None:
@@ -398,7 +404,7 @@ class _SkipGuard:
             tests, modules = by_lane[lane]
             terminalreporter.write_line(f"[{lane}] {lane_runner(lane)}")
             for nodeid in sorted(tests):
-                terminalreporter.write_line(f"  DESELECTED {nodeid}")
+                terminalreporter.write_line(f"  DESELECTED {_bounded_id(nodeid)}")
             for path in sorted(modules):
                 terminalreporter.write_line(f"  NOT IMPORTED {path} (tests not listed; the whole module is in this lane)")
         if self.unmarked:

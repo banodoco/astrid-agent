@@ -74,3 +74,15 @@ def test_failure_command_prints_logs_and_selects_one(tmp_path, monkeypatch, caps
     parsed = cli._parser().parse_args(["failure", "--logs", "--name", "nope"])
     assert cli._failure_command(parsed) == 1
     assert "nope" in capsys.readouterr().err
+
+
+def test_issue_message_is_bounded_and_unreadable_output_is_ignored(tmp_path):
+    log = tmp_path / "generation.stdout.json"
+    row = {"name": "generation.stdout", "path": str(log)}
+    log.write_text(json.dumps({"issues": [{"message": "x" * 2000}, {"message": "later"}]}))
+    assert failure_receipt._issue_message([row]) == "x" * failure_receipt.ISSUE_MESSAGE_LIMIT
+    for content in ("{", json.dumps({"issues": [None]}), json.dumps({"issues": [{"message": 3}]})):
+        log.write_text(content)
+        assert failure_receipt._issue_message([row]) is None
+    log.unlink()
+    assert failure_receipt._issue_message([row]) is None

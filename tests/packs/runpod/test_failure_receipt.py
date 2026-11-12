@@ -116,6 +116,33 @@ def test_execution_failure_names_execution_and_carries_timing(machine_case, rece
     assert "boom" not in json.dumps(receipt), "pod stderr must never reach the receipt"
 
 
+def test_collected_issue_reaches_receipt_and_failure_line(machine_case, receipts, tmp_path, monkeypatch, capsys):
+    from astrid.core.generation import cli
+
+    c = machine_case
+    c.pod.fail_jobs = {" generate cpu-image "}
+    log = tmp_path / "generation.stdout.json"
+    reason = "Cannot find the requested asset: private/path"
+    log.write_text(json.dumps({"issues": [{"message": reason}]}))
+    monkeypatch.setattr(c.machine, "_fetch_failure_logs", lambda *args: {"files": [
+        {"name": "generation.stdout", "path": str(log), "bytes": log.stat().st_size}]})
+    error, _, _ = _run(c, receipts)
+    assert isinstance(error, rm.MachineError)
+    receipt = _only(receipts)
+    assert receipt["cause"]["issue_message"] == reason
+    identity = receipt["identity"]
+    monkeypatch.setattr(failure_receipt, "failures_root", lambda: receipts)
+    monkeypatch.setattr(rm, "journal_leases", lambda: [{
+        "id": identity["machine_id"], "lease": identity["lease"], "state": "idle", "live": True,
+        "release_at": 1800000600.0, "cost_usd": 0.25,
+        "last_job": {"generation": identity["generation"], "outcome": "failed", "failure": {}},
+    }])
+    cli._kept_failure(set())
+    output = capsys.readouterr().err
+    assert f"Reason: {reason}" in output
+    assert f"logs: {receipts / 'task' / 'logs'}" in output
+
+
 def test_pod_validation_exit_names_workflow_validation(machine_case, receipts):
     c = machine_case
     c.pod.listed = []  # the job's entry check exits 3
