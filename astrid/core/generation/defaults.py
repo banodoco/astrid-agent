@@ -142,7 +142,7 @@ def ordered_ids(kind: str, mode: str, snapshot: settings.Snapshot | None = None,
     candidates = pack_candidates(registry)
     resolved = resolve(kind, mode, pins=pins, candidates=candidates)
     ids: list[str] = []
-    if resolved.source == "user pin":
+    if resolved.source == "user pin" and resolved.entry is not None:
         ids.append(resolved.entry)
     ids += [c.entry for c in sorted((c for c in candidates if (c.kind, c.mode) == (kind, mode)),
                                     key=lambda c: (-c.priority, c.pack, c.entry)) if c.entry not in ids]

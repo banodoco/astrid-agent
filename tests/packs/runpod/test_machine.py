@@ -20,6 +20,7 @@ from tests.packs.runpod.test_target_selection import case as case  # noqa: F401 
 from tests.packs.runpod.test_warm_session import (  # noqa: F401  (fixtures)
     lease_selection_case as lease_selection_case, small_lease as small_lease,
 )
+from dataclasses import replace
 
 BASE = dict(account="acct", gpu_type="NVIDIA RTX 5090", image="img@sha256:" + "1" * 64,
             volume={"id": "vol", "mount_path": "/workspace", "cache_device": 64768, "mount_id": 7},
@@ -130,8 +131,18 @@ def machine_case(retained, tmp_path, monkeypatch):
     return c
 
 
+def _claim_machine(c):
+    """Establish paid machine authority before submitting a generation job."""
+    if c.owner.path.exists():
+        return
+    c.host.start_fresh_claim()
+    c.host.claim(replace(c.grant, invocation_id="manual-claim", preparation_seconds=0,
+                         execution_seconds=0), requested_idle_seconds=c.grant.idle_seconds)
+
+
 def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     c = machine_case
+    _claim_machine(c)
     job = c.job()
     fetched = run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                              sleep=lambda s: None)
@@ -176,6 +187,7 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
 def test_claim_caps_idle_and_reports_the_acquired_timeout(machine_case, requested, bound, expected):
     from dataclasses import replace
     c = machine_case
+    _claim_machine(c)
     original = c.job()
     job = replace(original, policy={**original.policy, 'placement_idle_seconds': requested, 'idle_seconds': bound})
     lease = c.machine.claim(job)
@@ -188,6 +200,7 @@ def test_claim_caps_idle_and_reports_the_acquired_timeout(machine_case, requeste
 
 def test_a_failing_runtime_check_keeps_the_verified_machine_for_retry(machine_case):
     c = machine_case
+    _claim_machine(c)
     c.pod.listed = []  # the pod's runtime does not list the entry from the shipped selection
     job = c.job()
     with pytest.raises(rm.MachineError, match="category=unknown; code=unknown"):
@@ -208,6 +221,7 @@ def test_a_failing_runtime_check_keeps_the_verified_machine_for_retry(machine_ca
 
 def test_diagnostic_read_failure_still_settles_and_never_records_secret(machine_case, monkeypatch):
     c = machine_case
+    _claim_machine(c)
     c.pod.listed = []
     secret = "SENTINEL_TOKEN https://private.example/secret"
     original = c.pod.exec
@@ -229,6 +243,7 @@ def test_diagnostic_read_failure_still_settles_and_never_records_secret(machine_
 def test_a_failed_reset_releases_the_pod_instead_of_settling_it(machine_case):
     """T5f: the outputs were fetched, but a reset that fails never leaves a dirty warm pod."""
     c = machine_case
+    _claim_machine(c)
     c.pod.fail_jobs = {"--run-dir"}  # only the release-time reset carries the job's run directory
     job = c.job()
     fetched = run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
@@ -242,6 +257,7 @@ def test_a_failed_reset_releases_the_pod_instead_of_settling_it(machine_case):
 
 def test_recoverable_claim_preparation_failure_keeps_attested_pod(machine_case, monkeypatch):
     c = machine_case
+    _claim_machine(c)
     first = c.machine.claim(c.job())
     c.host.settle(first.lease)
     original = c.placement.begin_execution
@@ -260,6 +276,7 @@ def test_recoverable_claim_preparation_failure_keeps_attested_pod(machine_case, 
 @pytest.mark.parametrize("unsafe", ["probe_unavailable", "changed_mount"])
 def test_unverified_current_storage_probe_releases_previous_warm_pod(machine_case, monkeypatch, unsafe):
     c = machine_case
+    _claim_machine(c)
     first = c.machine.claim(c.job())
     c.host.settle(first.lease)
     if unsafe == "probe_unavailable":
@@ -277,6 +294,7 @@ def test_unverified_current_storage_probe_releases_previous_warm_pod(machine_cas
 
 def test_unverified_installation_failure_keeps_exact_pod(machine_case, monkeypatch):
     c = machine_case
+    _claim_machine(c)
     with monkeypatch.context() as patch:
         patch.setattr(c.placement, "prepare_claimed", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad install")))
         with pytest.raises(RuntimeError, match="bad install"):
@@ -289,6 +307,7 @@ def test_unverified_installation_failure_keeps_exact_pod(machine_case, monkeypat
 @pytest.mark.parametrize("unsafe", ["paid_expired", "changed_receipt"])
 def test_unsafe_failed_job_verification_releases_exact_pod(machine_case, monkeypatch, unsafe):
     c = machine_case
+    _claim_machine(c)
     job = c.job()
     lease = c.machine.claim(job)
     if unsafe == "changed_receipt":
@@ -322,6 +341,7 @@ def test_unsafe_failed_job_verification_releases_exact_pod(machine_case, monkeyp
 
 def test_unreadable_invocation_lease_releases_known_exact_pod(machine_case, monkeypatch):
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     monkeypatch.setattr(c.host, "preparation_claim", lambda invocation: (_ for _ in ()).throw(RuntimeError("lost lease")))
     c.machine.release(lease, False, failure=rm.MachineError("job failed"))
@@ -334,6 +354,7 @@ def test_blocked_failure_verifier_does_not_hold_owner_lock_or_revive_lease(machi
     import time
 
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     c.machine._checkpoint(lease, {"id": "a" * 32, "state": "exited"})
     entered, resume = threading.Event(), threading.Event()
@@ -378,6 +399,7 @@ def test_paid_timer_drains_real_https_slow_drip_without_late_warm_settlement(mac
     from astrid.packs.runpod.remote_placement import _HttpsOps
 
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     c.machine._checkpoint(lease, {"id": "d" * 32, "state": "exited"})
     with c.host.lock:
@@ -453,6 +475,7 @@ def test_exact_cleanup_has_its_own_finite_budget_and_keeps_pending_custody(machi
     from astrid.packs.runpod import remote_placement, worker_owner
 
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     c.machine._checkpoint(lease, {"id": "e" * 32, "state": "running"})
     operation = lease.lease.operation_id
@@ -505,6 +528,7 @@ def test_unreaped_observer_fences_custody_until_it_is_gone(machine_case, monkeyp
     from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
 
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     c.machine._checkpoint(lease, {"id": "d" * 32, "state": "exited"})
 
@@ -539,6 +563,7 @@ def test_stale_release_identity_cannot_abort_another_observer(machine_case):
     from threading import Event
 
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     stale = c.read()
     old_key, old_event = c.host.begin_failure_observation(lease.lease, lease.claim.pod_id)
@@ -564,6 +589,7 @@ def test_exact_cleanup_cancel_does_not_hold_owner_lock(machine_case, monkeypatch
     from threading import Event, Thread
 
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     c.machine._checkpoint(lease, {"id": "e" * 32, "state": "running"})
     entered, resume = Event(), Event()
@@ -601,6 +627,7 @@ def test_exact_cleanup_cancel_does_not_hold_owner_lock(machine_case, monkeypatch
 
 def test_exact_cleanup_shares_one_deadline_across_both_job_cancels(machine_case):
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     with c.host.lock:
         record = c.host._read()
@@ -620,6 +647,7 @@ def test_exact_cleanup_shares_one_deadline_across_both_job_cancels(machine_case)
 
 def test_paid_expiry_during_failure_reset_stdout_read_prevents_settlement(machine_case, monkeypatch):
     c = machine_case
+    _claim_machine(c)
     c.pod.listed = []
     original = c.pod.exec
 
@@ -639,6 +667,7 @@ def test_paid_expiry_during_failure_reset_stdout_read_prevents_settlement(machin
 
 def test_lost_reset_start_ack_keeps_exact_job_for_release_reconciliation(machine_case, monkeypatch):
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     c.machine._checkpoint(lease, {"id": "e" * 32, "state": "exited"})
     original = c.pod.job_start
@@ -659,6 +688,7 @@ def test_lost_reset_start_ack_keeps_exact_job_for_release_reconciliation(machine
 
 def test_wrong_reset_poll_identity_cannot_mark_the_journaled_job_exited(machine_case, monkeypatch):
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     c.machine._checkpoint(lease, {"id": "e" * 32, "state": "exited"})
     original = c.pod.job_poll
@@ -678,6 +708,7 @@ def test_wrong_reset_poll_identity_cannot_mark_the_journaled_job_exited(machine_
 
 def test_structural_node_fact_survives_owner_journal_and_machine_listing(machine_case):
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     lease.node_ids = frozenset({"17"})
     lease.failure_diagnostic = {"code": "generation_failed", "category": "execution",
@@ -693,6 +724,7 @@ def test_structural_node_fact_survives_owner_journal_and_machine_listing(machine
 
 def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
     c = machine_case
+    _claim_machine(c)
     job = c.job()
     run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                    sleep=lambda s: None)
@@ -714,6 +746,7 @@ def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
 
 def test_cancel_stops_the_job_checkpoints_it_then_keeps_verified_machine(machine_case):
     c = machine_case
+    _claim_machine(c)
     job = c.job()
     original = c.pod.job_poll
     generation_job = [None]
@@ -745,6 +778,7 @@ def test_cancel_stops_the_job_checkpoints_it_then_keeps_verified_machine(machine
                                          {"state": "cancelled"}])
 def test_unverified_cancel_ack_never_settles_warm(machine_case, monkeypatch, bad_ack):
     c = machine_case
+    _claim_machine(c)
     job = c.job()
     lease = c.machine.claim(job)
     run = c.machine.start(lease, job)
@@ -787,13 +821,22 @@ def test_generation_policy_waits_for_stock_through_the_real_machine_claim(machin
     c.owner.observe_offers = lambda: (observe(),)
     c.owner.monotonic = c.clock
     monkeypatch.setattr(target_selection.random, "uniform", lambda *args: 0)
-    run_on_machine(c.machine, replace(job, policy=policy), destination=job.scratch / "outputs",
-                   cancelled=lambda: False, sleep=lambda seconds: None)
+    c.host.start_fresh_claim()
+    c.host.claim(replace(c.grant, invocation_id="manual-claim", offer_digest=None, deadline=None,
+                         policy_digest=target_selection.policy_consent_digest(c.owner.preferences, 1.5),
+                         max_hourly_usd=1.5, capacity_timeout_seconds=30, wait_for_capacity=True,
+                         preparation_seconds=0, execution_seconds=0),
+                 requested_idle_seconds=c.grant.idle_seconds)
+    run_on_machine(c.machine, replace(job, policy={"kind": policy["kind"], "engine": policy["engine"],
+                                                    "preferences": policy["preferences"]}),
+                   destination=job.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda seconds: None)
     assert len(calls) == 3 and c.creates == 1 and c.read()["lease"]["state"] == "idle"
 
 
 def test_a_crash_after_job_start_is_cancelled_by_recover_before_delete(machine_case):
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     run = c.machine.start(lease, c.job())
     assert c.read()["lease"]["job"] == {"id": run.job_id, "state": "running"}
@@ -811,6 +854,7 @@ def test_uncertain_job_stop_fences_reuse_until_exact_cancel_and_delete(machine_c
     """A lost pod worker may have an unconfirmed preparation or prompt."""
     from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     run = c.machine.start(lease, c.job())
     c.host.close()
@@ -839,6 +883,7 @@ def test_uncertain_job_stop_fences_reuse_until_exact_cancel_and_delete(machine_c
 
 def test_a_tampered_output_is_refused_and_the_pod_released(machine_case):
     c = machine_case
+    _claim_machine(c)
     c.pod.corrupt_get = "cpu.png"
     job = c.job()
     with pytest.raises(rm.DigestMismatch):
@@ -850,6 +895,7 @@ def test_a_tampered_output_is_refused_and_the_pod_released(machine_case):
 
 def test_an_unsafe_manifest_path_is_refused(machine_case, tmp_path):
     c = machine_case
+    _claim_machine(c)
     lease = c.machine.claim(c.job())
     run = c.machine.start(lease, c.job())
     out = run.remote_root + "/out"
@@ -867,6 +913,7 @@ def test_an_unsafe_manifest_path_is_refused(machine_case, tmp_path):
 def test_liveness_ends_a_dead_idle_lease_with_provider_terminated(machine_case):
     """T5d: a host poll that finds the pod gone ends the lease; it stops being charged and leaves reuse."""
     c = machine_case
+    _claim_machine(c)
     job = c.job()
     run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                    sleep=lambda s: None)
@@ -885,6 +932,7 @@ def test_a_job_pinned_to_an_ended_machine_is_refused_with_the_reason(machine_cas
     from astrid.packs.runpod.target_selection import PaidSelectionError
 
     c = machine_case
+    _claim_machine(c)
     job = c.job()
     run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                    sleep=lambda s: None)
@@ -1003,6 +1051,7 @@ def test_claim_sizes_the_volume_by_the_job_manifest_rows(machine_case, monkeypat
     from astrid.packs.runpod import generation as runpod_generation
 
     c = machine_case
+    _claim_machine(c)
     rows = ({"name": "need.safetensors", "subdir": "vae", "size": 10 ** 12},)
     monkeypatch.setattr(catalog, "find_entry", lambda entry_id: {"id": entry_id})
     monkeypatch.setattr(catalog, "requirements", lambda entry, inputs=None: {"models": list(rows)})
@@ -1654,10 +1703,11 @@ def test_warm_gpu_id_uses_confirmed_display_and_refuses_mismatch(machine_case, m
     def confirm(api_key, contract, *, timeout_seconds):
         assert contract.gpu_type == "NVIDIA GeForce RTX 5090"
         confirmations.append(contract)
-        if mismatch and len(confirmations) == 3:
+        if mismatch and len(confirmations) == 4:
             raise worker_preparation.TargetObservationError("GPU mismatch", gate="GPU")
         return "RTX 5090", contract.datacenter_id
     monkeypatch.setattr(worker_preparation, "confirm_acquired_machine", confirm)
+    _claim_machine(c)
     first = c.job()
     first = replace(first, policy={**first.policy, "preferences": c.prefs.as_mapping(), "offer_digest": c.grant.offer_digest})
     run_on_machine(c.machine, first, destination=first.scratch / "outputs", cancelled=lambda: False,
@@ -1681,6 +1731,7 @@ def test_warm_gpu_id_uses_confirmed_display_and_refuses_mismatch(machine_case, m
 @pytest.mark.parametrize("paid_remaining", [None, 20])
 def test_execution_gets_its_own_deadline_after_preparation(machine_case, monkeypatch, paid_remaining):
     c = machine_case
+    _claim_machine(c)
     ticks = [0.0]
     c.placement._clock = lambda: ticks[0]
     original = c.placement.prepare_claimed
@@ -1711,6 +1762,7 @@ def test_execution_gets_its_own_deadline_after_preparation(machine_case, monkeyp
 
 def test_execution_timeout_stops_job_and_keeps_verified_machine(machine_case, monkeypatch):
     c = machine_case
+    _claim_machine(c)
     ticks = [0.0]
     c.placement._clock = lambda: ticks[0]
     original = c.machine.poll
@@ -1815,6 +1867,7 @@ def test_claim_reads_workflow_bundle_before_preparing(machine_case, monkeypatch)
     from dataclasses import replace
     from astrid.packs.runpod import generation as runpod_generation
 
+    _claim_machine(machine_case)
     job = replace(machine_case.job(), entry=None)
     captured = {}
 
@@ -1923,6 +1976,7 @@ def test_two_jobs_retain_verified_managed_launch_refresh(machine_case, monkeypat
     import hashlib
     from astrid.core.generation import engine_runner
     c = machine_case
+    _claim_machine(c)
     original = c.pod._generate
     refreshed = []
 

@@ -551,13 +551,13 @@ class RunPodMachine:
     # -- claim ---------------------------------------------------------------
 
     def claim(self, job: Any, *, cancelled: Callable[[], bool] | None = None) -> MachineLease:
-        """Rent or reuse one pod for ``job``; retain only verified preparation."""
+        """Attach ``job`` to a claimed pod; retain only verified preparation."""
         from astrid.core.generation.interfaces import RunPodPreparationRequest
         from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
 
         from .adapter import prevalidate_task
         from .generation import prepare_retained_generation
-        from .target_selection import PaidRunConsent, PaidSelectionError
+        from .target_selection import PaidSelectionError
 
         adapter = self._require()
         policy, inputs = job.policy, job.inputs
@@ -567,39 +567,32 @@ class RunPodMachine:
             raise MachineError(reason)
         prevalidate_task(dict(policy), dict(inputs), scratch=job.scratch)
         owner = adapter.lease_owner
-        if (policy.get("kind") != KIND or policy.get("engine") != adapter.installation.engine
-                or policy.get("preferences") != owner.selection.preferences.as_mapping()):
+        if policy.get("kind") != KIND or policy.get("engine") != adapter.installation.engine:
             raise PaidSelectionError("target policy differs from the retained owner")
-        consent = PaidRunConsent(
-            invocation_id=job.invocation_id, offer_digest=policy["offer_digest"], max_usd=policy["max_usd"],
-            deadline=policy["deadline"], consent=tuple(policy["consent"]),
-            preparation_seconds=policy["preparation_seconds"], execution_seconds=policy["execution_seconds"],
-            idle_seconds=policy["idle_seconds"],
-            policy_digest=policy.get("policy_digest"), max_hourly_usd=policy.get("max_hourly_usd"),
-            capacity_timeout_seconds=policy.get("capacity_timeout_seconds"),
-            wait_for_capacity=policy.get("wait_for_capacity", True),
-        )
-        # Validate authority without market stock; _select first checks retained
-        # custody, then owns observation/retry under the existing owner lock.
-        consent.validate_authority(owner.selection.preferences, owner.selection.clock())
-        prior = owner.selection._read()
-        if consent.policy_digest is None and (prior is None or prior.get("state") == "cleanup_complete"):
-            # Exact quoted offers retain their early refusal before source staging.
-            # A retained machine is checked through its own recorded offer instead.
-            owner.selection.consented_offer(consent, owner.selection.clock())
-        # A warm machine is reused only while the provider still runs it.
-        owner.observe_liveness(observe=getattr(adapter, "observe_pod", None))
         pinned = policy.get("machine")
-        if pinned is not None:
+
+        def check_pin():
+            if pinned is None:
+                return
             record = owner.selection._read()
+            lease = record.get("lease", {}) if record else {}
             live = ([record["pod_id"]] if record and record.get("state") == "claimed"
-                    and record.get("lease", {}).get("state") in {"active", "idle"}
+                    and lease.get("state") in {"active", "idle"}
+                    and owner.clock() < lease.get("paid_expires_at", 0)
+                    and (lease["state"] != "idle" or owner.clock() < lease.get("idle_expires_at", 0))
                     and record.get("pod_id") else [])
             if pinned not in live:
                 ended = next((row for row in lease_rows(owner) if row["id"] == pinned), None)
                 reason = f" (ended: {ended['ended']})" if ended and ended.get("ended") else ""
                 raise PaidSelectionError(f"no live runpod lease for machine {pinned!r}{reason}; "
                                          f"live leases: {', '.join(live) or 'none'}")
+
+        check_pin()
+        consent = owner.job_limits(job.invocation_id, policy)
+        # Observe only after local admission: absent or expired claims never
+        # reach the provider. Preserve the detailed pin diagnostic if it ended.
+        owner.observe_liveness(observe=getattr(adapter, "observe_pod", None))
+        check_pin()
         values = json.loads(inputs.get("workflow_inputs") or "{}")
         # The volume is sized by this job's manifest rows (the list align fetches on the pod), not the lock.
         manifest_rows = _job_manifest_rows(job.entry, values, mode=job.mode, execution=inputs)
@@ -640,8 +633,7 @@ class RunPodMachine:
                 prepared = prepare_retained_generation(
                     request, consent=consent, lease_owner=owner, placement=adapter.placement,
                     installation=adapter.installation, validate=adapter.validate,
-                    requested_idle_seconds=min(policy.get("placement_idle_seconds", policy["idle_seconds"]),
-                                               policy["idle_seconds"]), on_acquired=on_acquired,
+                    requested_idle_seconds=consent.idle_seconds, on_acquired=on_acquired,
                     entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
                     manifest_rows=manifest_rows,
                     **({"cancelled": cancelled} if cancelled is not None else {}),
@@ -651,10 +643,10 @@ class RunPodMachine:
                     timing.paid_started_at = float(prepared.lease.claim["lease"]["started_at"])
                 except Exception:
                     pass
-                # Preparation and execution have separate disclosed budgets. Arm once
-                # at handoff, clipped to this lease's original paid expiry.
+                # Legacy execution estimates remain timeouts. Without one, use
+                # the claim's remaining lifetime; jobs never extend that expiry.
                 adapter.placement.begin_execution(deadline_seconds=min(
-                    consent.execution_seconds,
+                    consent.execution_seconds or float("inf"),
                     prepared.lease.claim["lease"]["paid_expires_at"] - owner.clock(),
                 ))
             except BaseException as exc:

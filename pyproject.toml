@@ -262,8 +262,7 @@ fail_under = 0
 [tool.mypy]
 python_version = "3.11"
 # The Darwin custody modules raise on every other platform, so mypy would skip their bodies as
-# unreachable and the exact-count gate (scripts/reshape/baselines/mypy_astrid.json) would differ
-# between macOS and Linux CI. Pin one platform so the count is the same everywhere.
+# unreachable on Linux. Pin one platform so diagnostics are consistent everywhere.
 platform = "darwin"
 # Evidence: 7d343bc created this config with files = ["scripts/reshape"] alongside the first advisory CI gate.
 # Inference: core astrid typing was intentionally excluded at that point rather than accidentally omitted.

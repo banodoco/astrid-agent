@@ -2876,9 +2876,26 @@ def _candidate_reconciliation_deadline(parent_deadline: float | None = None) -> 
     return deadline
 
 
-def _check_reconciliation_deadline(deadline: float) -> None:
-    if time.monotonic() >= deadline:
-        raise CustodyError("candidate reconciliation did not stabilize before its deadline")
+def _check_reconciliation_deadline(deadline: float, started: float) -> None:
+    now = time.monotonic()
+    if now >= deadline:
+        raise CustodyError(
+            f"candidate reconciliation budget ran out after {now - started:.6f}s "
+            "(did not stabilize before its deadline)")
+
+
+class _ObservationTransaction:
+    """One thread's locked observation, with one absolute reconciliation budget."""
+
+    def __init__(self, custody, deadline: float, started: float):
+        self.custody = custody
+        self.deadline = deadline
+        self.started = started
+        self.thread_id = threading.get_ident()
+        self.active = True
+
+    def check_deadline(self) -> None:
+        _check_reconciliation_deadline(self.deadline, self.started)
 
 
 
@@ -3365,29 +3382,52 @@ class ProcessCustody:
                 raise
 
     @contextmanager
-    def _observation_guard(self, deadline: float):
-        remaining = deadline - time.monotonic()
+    def _observation_guard(self, deadline: float, *, transaction=None):
+        if transaction is not None:
+            # Continue this exact guarded observation; neither reacquire nor
+            # classify elapsed work as a failure to acquire our own lock.
+            try:
+                if (not isinstance(transaction, _ObservationTransaction)
+                        or transaction.custody is not self or not transaction.active
+                        or transaction.thread_id != threading.get_ident()
+                        or transaction.deadline != deadline):
+                    raise CustodyError("invalid custody observation transaction")
+                transaction.check_deadline()
+                yield transaction
+                transaction.check_deadline()
+            except BaseException as error:
+                self._uncertain = self._uncertain or error
+                raise
+            return
+        started = time.monotonic()
+        remaining = deadline - started
         if remaining <= 0 or not self._lock.acquire(timeout=remaining):
             message = "candidate reconciliation deadline expired acquiring custody lock"
-            # Re-entered under our own lock past the deadline: that overrun is real work.
+            # A caller without a transaction that holds the lock still fails closed.
+            # It has no transaction start to inherit, so only this entry is timed.
             if getattr(self._lock, "_is_owned", lambda: False)():
+                _check_reconciliation_deadline(deadline, started)
                 raise CustodyError(message)
             # Nothing was observed or mutated, so this must not poison custody.
             raise CustodyLockBusy(message)
         try:
-            _check_reconciliation_deadline(deadline)
-            yield
-            _check_reconciliation_deadline(deadline)
+            transaction = _ObservationTransaction(self, deadline, started)
+            transaction.check_deadline()
+            yield transaction
+            transaction.check_deadline()
         except BaseException as error:
             self._uncertain = self._uncertain or error
             raise
         finally:
+            if transaction is not None:
+                transaction.active = False
             self._lock.release()
 
     def observe_census(self, members: Mapping[int, str], *,
                        census: Mapping[int, Mapping[str, Any]],
                        fresh_census: Callable[[], Mapping[int, Mapping[str, Any]]],
-                       deadline: float | None = None) -> dict[int, str]:
+                       deadline: float | None = None,
+                       _transaction: _ObservationTransaction | None = None) -> dict[int, str]:
         """Reconcile new ordinary Darwin candidates without claiming their exit.
 
         Direct register/observe remain strict. Only a command's retained owner
@@ -3400,14 +3440,15 @@ class ProcessCustody:
             if sys.platform == "darwin" and deadline is not None:
                 # Other roles keep their existing behavior and receive no local
                 # candidate cap; an explicit caller deadline still applies.
-                with self._observation_guard(deadline):
+                with self._observation_guard(deadline, transaction=_transaction):
                     self.observe(members)
             else:
                 self.observe(members)
             return dict(members)
-        deadline = _candidate_reconciliation_deadline(deadline)
+        if _transaction is None:
+            deadline = _candidate_reconciliation_deadline(deadline)
         original_fresh_census = fresh_census
-        with self._observation_guard(deadline):
+        with self._observation_guard(deadline, transaction=_transaction) as transaction:
             if self._uncertain is not None:
                 raise CustodyError("custody registration or observation is unresolved") from self._uncertain
             try:
@@ -3452,9 +3493,9 @@ class ProcessCustody:
                         pending.append(entry)
                 def fresh_census():
                     nonlocal sample_number
-                    _check_reconciliation_deadline(deadline)
+                    transaction.check_deadline()
                     fresh = original_fresh_census()
-                    _check_reconciliation_deadline(deadline)
+                    transaction.check_deadline()
                     self._check_unadmitted_census(fresh)
                     for pid, entry in first_seen.items():
                         row = fresh.get(pid)
@@ -3475,16 +3516,16 @@ class ProcessCustody:
                                 raise CustodyError('unverified child of missing or zombie pending candidate')
                     sample_number += 1
                     enqueue(self._owned_census_members(fresh), fresh)
-                    _check_reconciliation_deadline(deadline)
+                    transaction.check_deadline()
                     return fresh
                 enqueue(members, census)
                 reconciliation_round = 0
                 while True:
-                    _check_reconciliation_deadline(deadline)
+                    transaction.check_deadline()
                     new_absences = []
                     retry_admissions = []
                     while next_pending < len(pending):
-                        _check_reconciliation_deadline(deadline)
+                        transaction.check_deadline()
                         entry = pending[next_pending]
                         pid, birth = entry['pid'], entry['birth']
                         next_pending += 1
@@ -3505,13 +3546,13 @@ class ProcessCustody:
                                                                             or sample_number > entry['sample'] else None))
                         entry['handled'] = True
                         active_pid = None
-                    _check_reconciliation_deadline(deadline)
+                    transaction.check_deadline()
                     if not new_absences and not retry_admissions:
                         return {pid: birth for pid, birth in members.items()
                                 if pid not in self._unadmitted_absent}
                     fresh = fresh_census()
                     self._revalidate_post_absence(fresh, new_absences, actor, root_pid, root_handle)
-                    _check_reconciliation_deadline(deadline)
+                    transaction.check_deadline()
                     members = self._owned_census_members(fresh)
                     for pid in new_absences:
                         record = self._unadmitted_absent[pid]

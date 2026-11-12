@@ -18,7 +18,7 @@ from astrid.core.execution.phase_timing import PhaseTiming
 from astrid.packs.runpod import failure_receipt
 from astrid.packs.runpod import machine as rm
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401  (fixture)
-from tests.packs.runpod.test_machine import machine_case as machine_case  # noqa: F401  (fixture)
+from tests.packs.runpod.test_machine import _claim_machine as _claim_machine, machine_case as machine_case  # noqa: F401
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401  (fixture)
 from tests.packs.runpod.test_target_selection import case as case  # noqa: F401  (fixture)
 from tests.packs.runpod.test_warm_session import (  # noqa: F401  (fixtures)
@@ -33,11 +33,16 @@ def receipts(tmp_path):
     return tmp_path / "failures"
 
 
-def _run(c, receipts, *, job=None, timing=None):
+def _run(c, receipts, *, job=None, timing=None, claim_first=True):
     """Run one job the way the host does: timing in the job, the recorder as on_failure."""
     job = job or c.job()
     timing = timing or PhaseTiming()
     job = replace(job, timing=timing)
+    # A generation job only uses a machine the owner has already claimed.
+    if claim_first and not c.owner.path.exists():
+        c.host.start_fresh_claim()
+        c.host.claim(replace(c.grant, invocation_id="manual-claim", preparation_seconds=0,
+                             execution_seconds=0), requested_idle_seconds=c.grant.idle_seconds)
     machine = {}
     failed = failure_receipt.recorder(job, lambda: machine or None, timing, root=receipts)
     try:
@@ -65,13 +70,15 @@ def test_success_carries_the_timing_block_and_writes_no_receipt(machine_case, re
     block = machine["timing"]
     assert block["schema"] == "astrid.generation.phase-timing.v1"
     stamps = block["stamps"]
-    assert (stamps["capacity_wait_started_at"] <= stamps["claimed_at"] <= stamps["preparation_ended_at"]
+    assert stamps.get("capacity_wait_started_at") is None
+    assert (stamps["claimed_at"] <= stamps["preparation_ended_at"]
             <= stamps["job_started_at"] <= stamps["job_ended_at"] <= stamps["collection_ended_at"]
             <= stamps["released_at"])
     assert stamps["collection_started_at"] >= stamps["job_ended_at"] and stamps["release_started_at"] <= stamps["released_at"]
     phases = block["phases"]
+    assert phases["capacity_wait"] is None
     assert all(phases[name]["seconds"] is not None for name in
-               ("capacity_wait", "preparation", "execution", "collection", "release", "paid_clock"))
+               ("preparation", "execution", "collection", "release", "paid_clock"))
     assert phases["idle"] is None
     assert block["pod_phases"] and all(isinstance(row["at"], float) for row in block["pod_phases"])
     json.dumps(block)
@@ -79,6 +86,9 @@ def test_success_carries_the_timing_block_and_writes_no_receipt(machine_case, re
 
 def test_remote_steps_carry_their_own_time(machine_case, receipts):
     c = machine_case
+    c.host.start_fresh_claim()
+    c.host.claim(replace(c.grant, invocation_id="manual-claim", preparation_seconds=0,
+                         execution_seconds=0), requested_idle_seconds=c.grant.idle_seconds)
     lease = c.machine.claim(c.job())
     try:
         assert lease.state.steps and all(isinstance(step["at"], float) for step in lease.state.steps)
@@ -154,7 +164,7 @@ def test_pinned_missing_machine_names_no_machine(machine_case, receipts):
     c = machine_case
     job = c.job()
     job = replace(job, policy={**job.policy, "machine": "pod-missing"})
-    error, timing, machine = _run(c, receipts, job=job)
+    error, timing, machine = _run(c, receipts, job=job, claim_first=False)
     assert error is not None and not machine
     receipt = _only(receipts)
     assert receipt["stage"] == "no_machine" and receipt["phase"] == "claim"
@@ -164,25 +174,22 @@ def test_pinned_missing_machine_names_no_machine(machine_case, receipts):
     assert c.creates == 0
 
 
-def test_offer_refusal_names_no_machine_with_only_the_fixed_reason(machine_case, receipts):
-    from astrid.packs.runpod import target_selection
+def test_no_machine_refusal_names_the_fixed_reason(machine_case, receipts, monkeypatch):
+    from astrid.packs.runpod.target_selection import PaidSelectionError
 
     c = machine_case
-    job = c.job()
-    job = replace(job, policy={**job.policy, "wait_for_capacity": False, "offer_digest": None, "deadline": None,
-                               "max_hourly_usd": 1.5,
-                               "policy_digest": target_selection.policy_consent_digest(c.owner.preferences, 1.5)})
-
-    def refuse():
-        raise target_selection.OfferObservationError("stock_unavailable")
-
-    c.owner.observe_offer, c.owner.observe_offers = refuse, (lambda: (refuse(),))
-    error, _timing, _machine = _run(c, receipts, job=job)
-    assert isinstance(error, target_selection.OfferObservationError)
+    def forbidden(*args, **kwargs):
+        pytest.fail("no-machine job observed offer or capacity")
+    c.owner.observe_offer = forbidden
+    c.owner.observe_offers = forbidden
+    error, _timing, _machine = _run(c, receipts, claim_first=False)
+    assert isinstance(error, PaidSelectionError)
+    assert str(error) == "no machine: run `astrid machines claim`"
     receipt = _only(receipts)
     assert receipt["stage"] == "no_machine"
-    assert receipt["cause"]["reason"] == "stock_unavailable" and receipt["cause"]["gate"] == "offer"
-    assert receipt["timing"]["stamps"].get("capacity_wait_started_at") is not None
+    assert receipt["machine"]["after"] == "none"
+    assert c.creates == c.configs == 0
+    assert receipt["timing"]["stamps"].get("capacity_wait_started_at") is None
 
 
 def test_preparation_install_failure_names_install(machine_case, receipts):
@@ -225,6 +232,7 @@ def test_cancelled_runs_write_no_receipt(machine_case, receipts):
     from astrid.core.execution.machine_run import MachineRunCancelled
 
     c = machine_case
+    _claim_machine(c)
     job = replace(c.job(), timing=PhaseTiming())
     failed = failure_receipt.recorder(job, lambda: None, job.timing, root=receipts)
     claimed = []
@@ -330,6 +338,7 @@ def test_host_job_function_puts_timing_on_terminal_machine_and_writes_the_receip
     from astrid.core.execution import generic_host, machine_run
 
     c = machine_case
+    _claim_machine(c)
     monkeypatch.setattr(machine_run, "resolve_machine", lambda kind: SimpleNamespace(for_host=lambda *a, **k: c.machine))
     monkeypatch.setattr(failure_receipt, "failures_root", lambda: receipts)
     context = SimpleNamespace(get=lambda **k: c.adapter, begin=lambda *a: None, done=lambda *a: None)

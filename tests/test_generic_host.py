@@ -2224,7 +2224,10 @@ def test_structure_pack_members_survive_harvest_cleanup_and_reopen(tmp_path):
         and item["filename"] == "manifest.json"
         for item in outputs
     )
-    assert len({item["digest"] for item in outputs}) == len(outputs)
+    non_log_outputs = [item for item in outputs if item.get("role") != "log"]
+    log_outputs = [item for item in outputs if item.get("role") == "log"]
+    assert len({item["digest"] for item in non_log_outputs}) == len(non_log_outputs)
+    assert len({item["name"] for item in log_outputs}) == len(log_outputs)
     assert not list(tmp_path.glob("astrid-attempt-*"))
 
     # Reopen the returned managed product from its runtime-owned bytes. This

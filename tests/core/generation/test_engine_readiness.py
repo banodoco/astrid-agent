@@ -629,7 +629,8 @@ def test_retained_release_launcher_dispatches_readiness_and_fails_closed(install
     assert mismatch.returncode == 1 and "readiness release argument differs" in mismatch.stderr
     canonical_recipe = _launcher(release, *base, "--release", str(release))
     assert canonical_recipe.returncode == 1 and "readiness_refused" in canonical_recipe.stderr
-    assert "installed session evidence could not be verified" in canonical_recipe.stderr
+    # The fixture's recipe is stale under the canonical launcher, before registry admission.
+    assert "is installed but stale; run `astrid engines install comfyui`" in canonical_recipe.stderr
     absent = _launcher(release, "readiness", "--root", str(installation["tmp"] / "absent"), "--profile", profile,
                        "--release", str(release))
     assert absent.returncode == 1 and "readiness_refused" in absent.stderr

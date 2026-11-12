@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -763,6 +763,7 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         raise ValueError(f'entry {entry_id!r} does not support {kind}')
     if description['mode'] is None:
         supported = description['modes']
+        candidates: Sequence[str]
         if inputs.get('image_ref') and inputs.get('image_end_ref'):
             candidates = ['flf']
         elif inputs.get('video_ref'):
@@ -1045,6 +1046,21 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         # Re-verify local bytes before projecting its inventory; no host registry
         # or graph picker can supply a missing target asset.
         binding = validate_model_root_binding(client.target.facts["model_root"], verify_files=True)
+        inventory = {(row['name'], row['subdir']): row for row in binding.inventory}
+        for asset in workflow.metadata.get('model_assets', []):
+            if not isinstance(asset, Mapping):
+                continue
+            digest, size = asset.get('sha256'), asset.get('size_bytes')
+            if not isinstance(digest, str) and type(size) is not int:
+                continue
+            name = asset.get('name', asset.get('filename'))
+            subdir = asset.get('subdir', asset.get('directory', '')) or ''
+            row = inventory.get((name, '' if subdir == '.' else subdir))
+            if (row is None
+                    or (isinstance(digest, str) and row['sha256'].removeprefix('sha256:')
+                        != digest.removeprefix('sha256:'))
+                    or (type(size) is int and row['size'] != size)):
+                raise ValueError(f"model-root declaration mismatch: {asset.get('name')}")
         workflow.metadata["models_root"] = str(binding.path)
         custody = {"auxiliary_model_custody": "target", "target_model_assets": binding.inventory}
     if align == 'trust':
