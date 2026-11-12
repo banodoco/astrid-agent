@@ -1182,20 +1182,19 @@ models:
   # Local Hunyuan-Foley video-to-audio (SFX). Licence: Tencent Hunyuan
   # Community; it excludes the EU, UK and South Korea. This disclosure is
   # recorded here for onboarding; no region detection is implemented.
-  # Template pin: VibeComfy lane/M-GPU/p1-foley-vibecomfy @ a05864c6 (not yet
-  # on VibeComfy main). Model role names are unverified until the live run.
+  # Uses the live-proven Hunyuan Video Foley template.
   - id: hunyuan-foley-local
     modality: audio
     licence: "Tencent Hunyuan Community; excludes EU, UK, South Korea"
     modes:
       sfx:
-        supports: [video_ref, prompt]
+        supports: [video_ref, prompt, seed]
         requires: [video_ref]
         backends:
           local:
-            template: audio/hunyuan_foley_v2a
-            template_hash: "sha256:ebc8ad89c71f2082c69e7acb892a60b11d61ebf6f6f499f0834cdee10ba247e5"
-            param_map: {video_ref: video, prompt: prompt}
+            template: audio/hunyuan_video_foley
+            template_hash: "sha256:d31fc21886192c3c23565d6a54b2d8444e16e7d63948f5c906fdf35db6e7749e"
+            param_map: {video_ref: video_ref, prompt: prompt, seed: seed}
             model_roles:
               foley: {node_class: HunyuanFoleyModelLoader, input: foley_checkpoint_name, binding: diffusion_model, names: ['hunyuanvideo_foley_xl.pth']}
               vae: {node_class: LoadDACHunyuanVAE, input: vae_name, binding: vae, names: ['hunyuan_foley/vae_128d_48k.pth']}

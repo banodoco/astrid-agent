@@ -15,7 +15,7 @@ def test_accepted_foley_catalog_and_template_are_present():
     model = ModelRegistry.load_default().get('hunyuan-foley-local')
     backend = model.modes['sfx'].backends['local']
     assert model.modality == 'audio'
-    assert backend.template == 'audio/hunyuan_foley_v2a'
+    assert backend.template == 'audio/hunyuan_video_foley'
     workflow = workflow_from_ready(backend.template)
     assert backend.template_hash == 'sha256:' + hashlib.sha256(Path(workflow.source.path).read_bytes()).hexdigest()
     assert set(model.modes['sfx'].requires) == {'video_ref'}
