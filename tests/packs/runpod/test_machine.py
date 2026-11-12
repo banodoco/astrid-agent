@@ -2040,3 +2040,31 @@ def test_two_jobs_retain_verified_managed_launch_refresh(machine_case, monkeypat
         assert record['lease']['preparation']['installed']['receipt_sha256'] == 'sha256:' + refreshed[-1]
     assert len(refreshed) == 2 and c.creates == 1 and not c.deletes
     c.host.release()
+
+
+def test_machines_setup_failure_names_safe_action_details_never_its_message(monkeypatch, capsys):
+    import json as _json
+    from types import MappingProxyType
+
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "credential_ref": "env:RUNPOD_API_KEY",
+    })
+    refused = type("Result", (), {"ok": False, "error": MappingProxyType({
+        "code": "conflict",
+        "message": "provider-secret-body",
+        "details": {"error_code": "binding_conflict", "field": "capability",
+                    "reason": "free text with provider-secret-body", "secret": {"nested": "x"}},
+    })})()
+    assert machines_cli.main(
+        ["setup", "--gpu", "RTX A", "--budget-usd", "7", "--json"],
+        volumes=lambda: [], offered_gpus=lambda *_: ["RTX A"], setup=lambda policy: refused,
+    ) == 1
+    out = capsys.readouterr().out
+    error = _json.loads(out)["error"]
+    assert error["code"] == "conflict"
+    assert error["details"] == {"error_code": "binding_conflict", "field": "capability"}
+    assert "error_code=binding_conflict" in error["message"]
+    assert "provider-secret-body" not in out and "nested" not in out
