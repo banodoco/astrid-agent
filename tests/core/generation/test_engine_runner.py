@@ -213,6 +213,10 @@ class FakeContext:
             assert payload["root"] == self.root
             if operation == "identity":
                 facts = {"helper_sha256": "0" * 64 if self.wrong_identity else payload["helper_sha256"]}
+            elif operation in {"apply-source-patches", "verify-source-patches"}:
+                facts = {"changed": False}
+            elif operation == "models-source-check":
+                facts = {"valid": False}
             elif operation == "node-lock":
                 facts = {"valid": True}
             elif operation == "empty-source":

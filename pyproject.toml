@@ -178,6 +178,7 @@ astrid = [
     "packs/**/requirements.txt",
     "packs/**/requirements.windows-nvidia.txt",
     "packs/**/requirements.*.lock",
+    "packs/**/patches/*.txt",
     "packs/**/rendering/**/*.md",
     "packs/**/AGENTS.md",
     "packs/**/README.md",

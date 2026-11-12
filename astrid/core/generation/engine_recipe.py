@@ -28,6 +28,7 @@ from .engine_contracts import (
     SourceFileRef,
     SourceInstall,
     SourcePath,
+    SourcePatch,
     SourcePin,
     SourceSpec,
     StartSpec,
@@ -232,7 +233,7 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
         raw = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RecipeValidationError(f"recipe is invalid JSON: {ref.path}") from exc
-    top = _object(raw, {"schema", "engine", "platform", "pins", "source_bindings", "environments", "primary_environment", "models_lock", "start", "health"}, where="recipe")
+    top = _object(raw, {"schema", "engine", "platform", "pins", "source_bindings", "environments", "primary_environment", "models_lock", "start", "health"}, {"source_patches"}, where="recipe")
     if top["schema"] != "astrid.engine-recipe.v1": raise RecipeValidationError("unknown recipe schema")
     engine = _string(top["engine"], "recipe.engine")
     platform = _string(top["platform"], "recipe.platform")
@@ -254,7 +255,23 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
         names.add(name)
         source_paths.add(relative_path)
         sources.append(SourceSpec(name, pins[key], relative_path))
-    if not sources: raise RecipeValidationError("recipe must bind at least one source")
+    if not sources:
+        raise RecipeValidationError("recipe must bind at least one source")
+    patches, patch_keys = [], set()
+    for item in _array(top.get("source_patches", []), "recipe.source_patches"):
+        row = _object(item, {"source", "path", "sha256_before", "sha256_after", "replacement"}, where="source patch")
+        source = _string(row["source"], "patch.source")
+        path = _relative(row["path"], "patch.path")
+        if source not in names or (source, path) in patch_keys:
+            raise RecipeValidationError("unknown source or duplicate source patch")
+        patch_keys.add((source, path))
+        before = _digest(row["sha256_before"], "patch.sha256_before")
+        after = _digest(row["sha256_after"], "patch.sha256_after")
+        replacement = _relative(row["replacement"], "patch.replacement")
+        if not replacement.startswith("packs/"):
+            raise RecipeValidationError("patch replacement must be packaged data")
+        _read_ref(DataRef(replacement, after), allowed=allowed)
+        patches.append(SourcePatch(source, path, before, after, replacement))
     environments = []
     env_names = set()
     for i, env_raw in enumerate(_array(top["environments"], "recipe.environments")):
@@ -340,7 +357,7 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
             timeout <= 0 or interval <= 0 or interval > timeout):
         raise RecipeValidationError("health timeouts must be positive and poll interval cannot exceed timeout")
     health = HealthSpec(health_raw["path"], health_raw["object_info_path"], nodes, float(timeout), float(interval))
-    return EngineRecipe(top["schema"], engine, platform, pins_ref, tuple(sources), tuple(environments), primary, models_ref, StartSpec(argv, cwd, MappingProxyType(dict(start_env)), "127.0.0.1", port), health)
+    return EngineRecipe(top["schema"], engine, platform, pins_ref, tuple(sources), tuple(environments), primary, models_ref, StartSpec(argv, cwd, MappingProxyType(dict(start_env)), "127.0.0.1", port), health, tuple(patches))
 
 
 def declaration_paths() -> list[str]:

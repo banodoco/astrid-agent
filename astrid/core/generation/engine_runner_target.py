@@ -17,11 +17,17 @@ import tomllib
 from pathlib import Path
 
 from . import engine_recipe as recipes
-from .engine_contracts import EngineError, EngineReinstallRequired, IntegrityError, RecipeValidationError, UnsafePathError
+from .engine_contracts import (
+    EngineError,
+    EngineReinstallRequired,
+    IntegrityError,
+    RecipeValidationError,
+    UnsafePathError,
+)
 from .engine_runner import _HELPER_SCHEMA, _json, _object_info_sha256, _root, _sha, helper_manifest
 
 _OPERATIONS = {"identity", "empty-source", "node-lock", "lock-inputs", "commit-lock",
-               "install-locks", "environment-spec", "models-config", "models-config-check", "models-source-check"}
+               "install-locks", "environment-spec", "models-config", "models-config-check", "models-source-check", "declared-source-modifications", "apply-source-patches", "verify-source-patches"}
 _MODEL_OPERATIONS = {"models-config", "models-config-check", "models-source-check"}
 _ENV_OPERATIONS = {"node-lock", "lock-inputs", "commit-lock", "install-locks", "environment-spec"}
 
@@ -278,12 +284,14 @@ def dispatch(operation, payload):
     keys = {"schema", "engine", "platform", "root", "recipe_sha256", "helper_sha256"}
     if operation in _ENV_OPERATIONS:
         keys.add("environment")
-    if operation == "empty-source":
+    if operation in {"empty-source", "declared-source-modifications", "apply-source-patches", "verify-source-patches"}:
         keys.add("source")
-    if operation == "models-source-check":
+    if operation in {"models-source-check", "declared-source-modifications"}:
         keys.add("entries")
-    if operation in _MODEL_OPERATIONS:
+    if operation in _MODEL_OPERATIONS or operation == "declared-source-modifications":
         keys.add("models_root")
+    if operation == "models-source-check" and isinstance(payload, dict) and "source" in payload:
+        keys.add("source")
     if not isinstance(payload, dict) or set(payload) != keys or payload["schema"] != _HELPER_SCHEMA:
         raise RecipeValidationError("invalid engine helper request")
     recipe = recipes.load_recipe(payload["engine"], payload["platform"])
@@ -308,6 +316,48 @@ def dispatch(operation, payload):
         if any(_safe(root, source.relative_path).iterdir()):
             raise IntegrityError("refusing to initialize a nonempty unowned source directory")
         facts = {"empty": True}
+    elif operation in {"declared-source-modifications", "apply-source-patches", "verify-source-patches"} or (operation == "models-source-check" and "source" in payload):
+        source = next((s for s in recipe.sources if s.name == payload["source"]), None)
+        if source is None:
+            raise RecipeValidationError("unknown source")
+        patches = [p for p in recipe.source_patches if p.source == source.name]
+        if operation in {"apply-source-patches", "verify-source-patches"}:
+            changed = False
+            for patch in patches:
+                path = _safe(root, source.relative_path, patch.path)
+                try:
+                    current = _hash(path)
+                    if current == patch.sha256_after:
+                        continue
+                    if operation == "verify-source-patches" or current != patch.sha256_before:
+                        raise IntegrityError(f"source patch digest mismatch: {source.name} {patch.path}")
+                    _, replacement = recipes._read_ref(recipes.DataRef(patch.replacement, patch.sha256_after))
+                    _atomic(path, replacement)
+                    if _hash(path) != patch.sha256_after:
+                        raise IntegrityError(f"source patch digest mismatch: {source.name} {patch.path}")
+                    changed = True
+                except OSError as exc:
+                    raise IntegrityError(f"source patch unavailable: {source.name} {patch.path}") from exc
+            facts = {"changed": changed}
+        else:
+            allowed = set()
+            for patch in patches:
+                path = _safe(root, source.relative_path, patch.path)
+                try:
+                    if _hash(path) == patch.sha256_after:
+                        allowed.add(" M " + patch.path)
+                except OSError:
+                    pass
+            entries = payload["entries"]
+            model_entries = [entry for entry in entries if entry not in allowed] if isinstance(entries, list) else []
+            models_valid = False
+            if source.name == "comfyui" and model_entries:
+                model_payload = dict(payload)
+                model_payload.pop("source")
+                model_payload["entries"] = model_entries
+                models_valid = dispatch("models-source-check", model_payload)["facts"]["valid"]
+            facts = {"valid": isinstance(entries, list) and bool(entries)
+                     and (not model_entries or models_valid)}
     elif operation == "node-lock":
         ref = environment.node_lock
         if ref is None:
