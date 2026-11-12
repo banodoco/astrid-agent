@@ -1,5 +1,6 @@
 """CPU proof of the fixed failure protocol; no provider or pod is contacted."""
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -651,15 +652,12 @@ def test_graph_names_survive_the_journal_round_trip_and_are_revalidated():
     assert fd.stored_names(['ok', SENTINEL]) == frozenset() and fd.stored_names('speaker') == frozenset()
 
 
-QWEN_EDIT = Path('/home/user/wt/vibecomfy-8d065a8/ready_templates/sources/official/edit/qwen_image_2_1_turbo_edit.json')
-
-
-@pytest.mark.skipif(not QWEN_EDIT.is_file(), reason='vibecomfy checkout not present')
 def test_large_real_edit_template_yields_names_and_ids():
+    qwen_edit = Path(os.environ['VIBECOMFY_SOURCE']).resolve() / 'ready_templates/sources/official/edit/qwen_image_2_1_turbo_edit.json'
     # 100 KB release-cell source (editor format, nodes inside a subgraph definition): above the
     # 64 KiB result-frame cap, which the graph no longer shares.
-    assert QWEN_EDIT.stat().st_size > fd.MAX_RESULT_BYTES
-    ids, names = fd.graph_facts(QWEN_EDIT)
+    assert qwen_edit.stat().st_size > fd.MAX_RESULT_BYTES
+    ids, names = fd.graph_facts(qwen_edit)
     assert {'451', '459', '461', '470'} <= ids
     assert {'SaveImageAdvanced', 'LoadImage', 'KSamplerSelect', 'CFGGuider', 'TextEncodeQwenImage21', 'prompt'} <= names
     assert fd.parse_frame(fd.MARK + json.dumps({'code': 'input_rejected', 'category': 'input', 'node_id': '470',
