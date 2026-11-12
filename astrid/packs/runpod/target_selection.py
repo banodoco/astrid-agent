@@ -77,7 +77,7 @@ DEFAULT_RUNPOD_WORKER_IMAGE = (
 
 
 _OFFER_FAILURES = {
-    "stock_unavailable": ("no machine is in stock right now for the requested GPU and datacenter; this is normal, and generate with --max-hourly-usd waits for one by itself", "capacity", True),
+    "stock_unavailable": ("no machine is in stock right now for the requested GPU and datacenter; this is normal, and `astrid machines claim` waits for one by default", "capacity", True),
     "provider_transport_or_response_unavailable": ("provider transport or response is unavailable; retry offer observation", "inventory", True),
     "provider_authentication_failed": ("provider authentication was rejected; check the configured credential", "identity", False),
     "provider_rate_limited": ("provider rate limit was reached; retry offer observation later", "rate", True),
@@ -91,12 +91,15 @@ class OfferObservationError(PaidSelectionError):
     """Fixed offer diagnostics, independent of provider response/error text."""
 
     def __init__(self, reason: str, *, retry_after: float | None = None):
-        self.reason = reason if isinstance(reason, str) and reason in _OFFER_FAILURES else "observation_failed"
+        reason = reason if isinstance(reason, str) and reason in _OFFER_FAILURES else "observation_failed"
         retry_after = (float(retry_after) if type(retry_after) in (int, float)
                        and math.isfinite(retry_after) and retry_after >= 0 else None)
-        message, gate, retryable = _OFFER_FAILURES[self.reason]
-        super().__init__(f"RunPod offer unavailable (reason={self.reason}): {message}",
+        message, gate, retryable = _OFFER_FAILURES[reason]
+        super().__init__(f"RunPod offer unavailable (reason={reason}): {message}",
                          gate=gate, retryable=retryable, retry_after=retry_after, custody="none")
+        # Set after the base constructor, which derives a generic engine reason
+        # from the message and would otherwise drop this validated offer token.
+        self.reason = reason
         # Receipts name every offer refusal with the user-facing gate "offer".
         self.runpod_gate = "offer"
 
