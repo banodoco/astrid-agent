@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,25 +75,19 @@ def test_select_cells_maps_defaults_and_deduplicates_catalog_templates(monkeypat
         def __init__(self, kind, mode, entry, priority):
             self.kind, self.mode, self.entry, self.priority = kind, mode, entry, priority
 
-    candidates = [Candidate("image", "t2i", "flux", 4), Candidate("image", "t2i", "other", 1)]
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    candidates = [Candidate("image", "t2i", "image/flux", 4), Candidate("image", "t2i", "other", 1)]
     monkeypatch.setattr("astrid.core.generation.defaults.pack_candidates", lambda: candidates)
     spec = SimpleNamespace(backends={"local": SimpleNamespace(template="image/flux")})
     extra = SimpleNamespace(backends={"local": SimpleNamespace(template="image/extra")})
     entries = [SimpleNamespace(id="flux-entry", modes={"t2i": spec}),
                SimpleNamespace(id="extra-entry", modes={"t2i": extra})]
 
-    class Registry:
-        def list_all(self, include_closed=True):
-            return entries
-
-        def get_by_mode(self, identifier, mode):
-            if identifier == "flux":
-                return entries[0], spec
-            raise KeyError(identifier)
-
-    selected = preflight.select_cells(Registry())
+    registry = ModelRegistry(entries)
+    selected = preflight.select_cells(registry)
     assert [(item.entry, item.mode, item.template) for item in selected] == [("flux-entry", "t2i", "image/flux")]
-    all_cells = preflight.select_cells(Registry(), all_catalog=True)
+    all_cells = preflight.select_cells(registry, all_catalog=True)
     assert len(all_cells) == 2
     assert {item.template for item in all_cells} == {"image/flux", "image/extra"}
 
@@ -171,6 +167,9 @@ def test_catalog_probe_reports_pass_fail_unverified_shape(stdout, rc, want, tmp_
 
 
 def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, capsys):
+    checkout = tmp_path / "pinned-vibecomfy"
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setenv("ASTRID_VIBECOMFY_CHECKOUT", str(checkout))
     fake_registry = SimpleNamespace(load_default=lambda: None)
     monkeypatch.setitem(__import__("sys").modules, "astrid.core.model_catalog.registry",
                         SimpleNamespace(ModelRegistry=fake_registry))
@@ -182,13 +181,21 @@ def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, caps
     sources = {name: SimpleNamespace(pin=SimpleNamespace(revision=f"{name}-revision"))
                for name in preflight.SOURCE_SLUGS}
     monkeypatch.setattr(preflight, "recipe_facts", lambda: (recipe, sources, {"comfy_core": "core-rev"}, lock, "vibe-rev"))
-    monkeypatch.setattr(preflight, "check_catalog", lambda cells, registry, runner: [
-        c.checks.update(catalog=preflight.outcome("PASS", commands=[runner.save(["catalog", "--dry-run"], "/fake", 0, "{}")]))
-        for c in cells])
-    monkeypatch.setattr(preflight, "check_vibe", lambda cells, *args: [
-        c.checks.update(schema=preflight.outcome("UNVERIFIED", "no declared schema test"),
-                        rebuild=preflight.outcome("PASS", commands=[FakeCommand(["pytest", "rebuild"])]))
-        for c in cells])
+    def fake_catalog(cells, registry, runner):
+        assert sys.path[0] == str(checkout)
+        assert os.environ["ASTRID_VIBECOMFY_CHECKOUT"] == str(checkout)
+        for c in cells:
+            c.checks["catalog"] = preflight.outcome("PASS", commands=[runner.save(["catalog", "--dry-run"], "/fake", 0, "{}")])
+
+    def fake_vibe(cells, runner, selected_checkout, *args):
+        assert selected_checkout == checkout
+        for c in cells:
+            c.checks.update(schema=preflight.outcome("UNVERIFIED", "no declared schema test"),
+                            rebuild=preflight.outcome("PASS", commands=[FakeCommand(["pytest", "rebuild"])]))
+        return True
+
+    monkeypatch.setattr(preflight, "check_catalog", fake_catalog)
+    monkeypatch.setattr(preflight, "check_vibe", fake_vibe)
     def fake_constructors(cells, *args):
         for c in cells:
             c.checks["constructor"] = preflight.outcome("PASS", commands=[FakeCommand(["pytest", "engine_deps"])])
@@ -196,7 +203,8 @@ def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, caps
 
     monkeypatch.setattr(preflight, "check_constructors", fake_constructors)
     output = tmp_path / "report.json"
-    assert preflight.main(["--json", str(output), "--cache-dir", str(tmp_path / "cache")]) == 0
+    assert preflight.main(["--json", str(output), "--cache-dir", str(tmp_path / "cache"),
+                           "--vibecomfy-checkout", str(checkout)]) == 0
     payload = json.loads(output.read_text())
     assert payload["schema"] == "astrid.cpu-preflight.v1"
     assert payload["candidate"]["vibecomfy_revision"] == "vibe-rev"
@@ -209,7 +217,7 @@ def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, caps
         "catalog": "PASS", "schema": "UNVERIFIED", "rebuild": "PASS", "constructor": "PASS"}
     assert row["checks"]["catalog"]["commands"][0]["command"] == ["catalog", "--dry-run"]
     assert row["checks"]["rebuild"]["commands"][0]["command"] == ["pytest", "rebuild"]
-    assert len(payload["commands"]) == 3  # candidate HEAD, catalog probe, constructor fixture
+    assert len(payload["commands"]) == 3  # candidate HEAD, worktree status, catalog probe
     assert payload["commands"][0]["command"] == ["git", "rev-parse", "HEAD"]
     assert all(command["exit_status"] == 0 for command in payload["commands"])
 

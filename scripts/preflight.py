@@ -263,7 +263,7 @@ def check_vibe(cells, runner, checkout, python, identities, revision):
         for cell in cells:
             for kind in ("schema", "rebuild"):
                 cell.checks[kind] = outcome("FAIL", f"refusing VibeComfy checkout: requires clean HEAD {revision}; observed {head.output.strip()}", [head, clean])
-        return
+        return False
     if python is None:
         candidates = [checkout / ".venv/bin/python", Path(str(checkout) + ".env/venv/bin/python")]
         python = next((path for path in candidates if path.is_file()), candidates[0])
@@ -281,7 +281,7 @@ def check_vibe(cells, runner, checkout, python, identities, revision):
         for cell in cells:
             for kind in ("schema", "rebuild"):
                 cell.checks[kind] = outcome("UNVERIFIED", "no preflight checks declared for the catalog template", [collection])
-        return
+        return True
     report = runner.logs / "vibecomfy.xml"
     command = runner([*base, "-q", "-rA", "--junitxml=" + str(report), *selected], cwd=checkout)
     if not report.is_file() or command.exit_status not in (0, 1):
@@ -307,6 +307,7 @@ def check_vibe(cells, runner, checkout, python, identities, revision):
     for cell in cells:
         cell.sources = [source for source, slug in SOURCE_SLUGS.items()
                         if slug in by_template.get(cell.template, [])]
+    return True
 
 
 def locked_versions(lock):
@@ -340,7 +341,10 @@ def engine_python(runner, venv, cache, lock, recipe):
                                 *(f"{name}=={versions[name]}" for name in CPU_WHEELS)]))
         require_success(runner(["uv", "pip", "install", "--python", python,
                                 *(f"{name}=={versions[name]}" for name in ENGINE_PACKAGES),
-                                "pytest", "jsonschema", "referencing", "sox", "onnxruntime"]))
+                                "pytest", "jsonschema", "referencing", "sox", "onnxruntime", "pip"]))
+        # Agent's conftest imports Runtime protocol support. Reuse its existing
+        # installer, which reads runtime.lock.json; don't maintain another pin.
+        require_success(runner([python, ROOT / "scripts/ci_install_runtime.py"]))
     python = venv / "bin/python"
     probe = require_success(runner([python, "-c",
         "import json,importlib.metadata as m; print(json.dumps({d.metadata['Name']:d.version for d in m.distributions()}))"]))
@@ -419,8 +423,28 @@ def run_gate(cells, registry, runner, args):
         recipe, sources, identities, lock, revision = recipe_facts()
         report["candidate"].update(vibecomfy_revision=revision, pack_identity_commits=identities,
                                     engine_lock=str(lock), engine_lock_sha256=hashlib.sha256(lock.read_bytes()).hexdigest())
+        verified_checkout = check_vibe(cells, runner, args.vibecomfy_checkout, args.vibecomfy_python, identities, revision)
+        if verified_checkout is False:
+            for cell in cells:
+                for kind in ("catalog", "constructor"):
+                    cell.checks[kind] = outcome("UNVERIFIED", "VibeComfy checkout refused; dependent checks were not run")
+            report["cells"] = [asdict(cell) for cell in cells]
+            report["commands"] = [command.record() for command in runner.commands]
+            report["ok"] = False
+            return report
+        if verified_checkout:
+            checkout = args.vibecomfy_checkout.resolve()
+            # Bind the public CLI to the source whose HEAD was just checked,
+            # even when the caller's Agent environment has another PYTHONPATH.
+            for name, module in list(sys.modules.items()):
+                if name == "vibecomfy" or name.startswith("vibecomfy."):
+                    origin = getattr(module, "__file__", None)
+                    if origin and not Path(origin).resolve().is_relative_to(checkout):
+                        raise RuntimeError("Agent process already imported VibeComfy outside the pinned checkout")
+            sys.path.insert(0, str(checkout))
+            os.environ["ASTRID_VIBECOMFY_CHECKOUT"] = str(checkout)
+            report["candidate"]["vibecomfy_checkout"] = str(checkout)
         check_catalog(cells, registry, runner)
-        check_vibe(cells, runner, args.vibecomfy_checkout, args.vibecomfy_python, identities, revision)
         report["engine_versions"] = check_constructors(cells, runner, args.engine_venv, args.cache_dir, lock, recipe, sources)
     except Exception as exc:  # noqa: BLE001 - a harness crash must fail every cell
         reason = f"preflight harness crashed: {type(exc).__name__}: {exc}"
