@@ -74,10 +74,21 @@ def test_unqualified_label_survives_other_readiness_failures(tmp_path, monkeypat
     assert "astrid_missing_gpu_dependency" in row["unavailable_reason"]
 
 
+def _write_attached_comfy_manifest(root):
+    path = _write_manifest(root, capability_id="vibecomfy.run")
+    manifest = json.loads(path.read_text())
+    manifest["metadata"]["network_policy"] = {
+        "allowed_protocols": ["dns", "tcp"],
+        "allowed_destinations": ["127.0.0.1:8188"],
+        "allow_redirects": False,
+    }
+    path.write_text(json.dumps(manifest))
+
+
 @pytest.mark.parametrize("opted_in", [False, True])
 def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypatch, windows_gpu, opted_in):
     packs = tmp_path / "packs"
-    _write_manifest(packs / "comfy", capability_id="vibecomfy.run")
+    _write_attached_comfy_manifest(packs / "comfy")
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[packs], client=runtime, attempt_base=tmp_path / "attempts")
     host.discover()
@@ -121,7 +132,7 @@ def test_vibecomfy_remains_ready_when_nvidia_detection_is_lost(tmp_path, monkeyp
 
 
 def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, windows_gpu):
-    _write_manifest(tmp_path / "comfy", capability_id="vibecomfy.run")
+    _write_attached_comfy_manifest(tmp_path / "comfy")
     monkeypatch.setenv(gpu.ALLOW_UNQUALIFIED_ENV, "1")
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
