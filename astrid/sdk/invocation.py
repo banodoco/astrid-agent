@@ -3369,7 +3369,7 @@ def _wait_for_kernel_task(
                 result = cancel(task_id, idempotency_key=f"runpod-interrupt-{uuid.uuid4().hex}")
                 if getattr(result, "ok", True) is False:
                     interrupt.add_note("RunPod task cancellation was not confirmed; inspect this task before retrying.")
-            except Exception:
+            except Exception:  # noqa: BLE001 - preserve the interrupt when cancellation fails
                 interrupt.add_note("RunPod task cancellation was not confirmed; inspect this task before retrying.")
         raise
 
