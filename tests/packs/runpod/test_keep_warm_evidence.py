@@ -40,7 +40,7 @@ def test_recovery_preserves_release_cause():
 from astrid.packs.runpod import machine as rm  # noqa: E402
 from tests.packs.runpod.test_failed_job_keeps_warm import _failed  # noqa: E402
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: E402,F401
-from tests.packs.runpod.test_machine import machine_case as machine_case  # noqa: E402,F401
+from tests.packs.runpod.test_machine import _claim_machine, machine_case as machine_case  # noqa: E402,F401
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: E402,F401
 from tests.packs.runpod.test_target_selection import case as case  # noqa: E402,F401
 from tests.packs.runpod.test_warm_session import lease_selection_case as lease_selection_case, small_lease as small_lease  # noqa: E402,F401
@@ -70,6 +70,7 @@ def test_changed_source_digest_reprepares_on_same_pod(machine_case, monkeypatch)
 
     c = machine_case
     c.context.deadline = time.monotonic() + 300
+    _claim_machine(c)
     first = c.machine.claim(c.job())
     c.host.settle(first.lease)
     old = c.read()["lease"]["preparation"]["bootstrap_digest"]
