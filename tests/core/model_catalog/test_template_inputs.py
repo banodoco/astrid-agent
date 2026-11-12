@@ -62,11 +62,15 @@ def test_catalog_required_inputs_match_pinned_template_public_inputs():
                 continue
             workflow = _load_pinned_catalog_workflow(backend)
             translation = backend.param_map or VibeComfyBackend.DEFAULT_PARAM_MAP.get(mode, {})
+            identities = {name: (str(port.node_id), port.field) for name, port in workflow.inputs.items()}
             public_names = {
-                spelling: name
+                spelling: identities[name]
                 for name, port in workflow.inputs.items()
                 for spelling in (name, *port.aliases)
             }
+            labels = {}
+            for name, identity in identities.items():
+                labels.setdefault(identity, name)
             declared = set()
             for required in spec.requires:
                 target = translation.get(required, required)
@@ -74,7 +78,7 @@ def test_catalog_required_inputs_match_pinned_template_public_inputs():
                     disagreements.append(f"{entry.id}/{mode}: required {required!r} maps to absent public input {target!r}")
                 else:
                     declared.add(public_names[target])
-            template_required = {name for name, port in workflow.inputs.items() if port.required}
-            for name in sorted(template_required - declared):
-                disagreements.append(f"{entry.id}/{mode}: template requires undeclared public input {name!r}")
+            template_required = {identities[name] for name, port in workflow.inputs.items() if port.required}
+            for identity in sorted(template_required - declared):
+                disagreements.append(f"{entry.id}/{mode}: template requires undeclared public input {labels[identity]!r}")
     assert not disagreements, "\n".join(disagreements)
