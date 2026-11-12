@@ -635,6 +635,8 @@ class RunPodSelectionOwner:
                     # This is the acquisition budget, including readiness.
                     # Each individual provider call keeps its own 30s limit.
                     remaining = max(0., (paid_expiry - self.clock()).total_seconds())
+                    if remaining <= 0:
+                        raise PaidSelectionError("existing claim lifetime cannot be extended by reuse", gate="lifetime")
                     if consent.capacity_timeout_seconds is not None:
                         remaining = min(remaining, max(0., consent.capacity_timeout_seconds -
                                                        (self.monotonic() - started)))
