@@ -164,7 +164,7 @@ def configured_models_root(engine: str = "comfyui", *, root: str | None = None) 
     recipe = load_recipe(engine, DEFAULT_PLATFORM)
     locator = plan_install(recipe, root=root, placement="local")
     receipt = _parse_receipt(raw, locator)
-    plan = plan_from_receipt(recipe, receipt, root=root, placement="local")
+    plan_from_receipt(recipe, receipt, root=root, placement="local")
     return effective_models_root(root, receipt.models_root)
 
 
@@ -342,6 +342,11 @@ class ManagedEnginePreparation:
             # handles and confirms all command/process/output drain before return.
             self.context.service_client.stop_owned(deadline=time.monotonic() + 5)
         except BaseException:
+            import logging
+            logging.getLogger(__name__).exception(
+                "managed preparation owned-engine stop failed task=%s attempt=%s",
+                self.task, self.attempt,
+            )
             self.uncertain = True
             raise CustodyUnresolved("managed preparation failed; exact owned engine stop remains unconfirmed") from None
         self._preparing_engine = False
@@ -465,7 +470,7 @@ class ManagedEnginePreparation:
         self.check()
         health = {"healthy": True, "object_info_sha256": runner.health.object_info_sha256,
                   "required_nodes_present": runner.health.required_nodes_present}
-        self.report = {"schema": SCHEMA, "task_id": self.task, "attempt_id": self.attempt,
+        report: dict[str, Any] = {"schema": SCHEMA, "task_id": self.task, "attempt_id": self.attempt,
             "execution_identity": execution_identity, "inputs": dict(input_digests),
             "manifest": manifest, "manifest_sha256": digest(manifest),
             "installation": {"root": self.root, "receipt_sha256": receipt_sha256,
@@ -473,12 +478,13 @@ class ManagedEnginePreparation:
             "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
             "output_dir": str(Path(self.root) / next(s.relative_path for s in self.recipe.sources if s.name == "comfyui") / "output"),
             "placement": "managed", "mode": self.mode, "alignment": alignment, "health": health}
-        native_preparation = getattr(self, "native_preparation", None)
+        self.report = report
+        native_preparation: dict[str, Any] | None = getattr(self, "native_preparation", None)
         if native_preparation is not None:
-            self.report["native_preparation"] = native_preparation
+            report["native_preparation"] = native_preparation
             if getattr(self, "pip_bootstrap", None) is not None:
                 native_preparation["pip_bootstrap"] = self.pip_bootstrap
-        return self.report
+        return report
 
     def _verify_alignment(self, workflow, runner, staged_digests, manifest, receipt):
         """Attest mutation results before executing the engine, and again after doctor."""

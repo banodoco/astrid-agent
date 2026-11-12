@@ -4,7 +4,7 @@
   "platform": "linux-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "5ca7c9dc22ee8e129f355811ef57f871742e011fc882ea108e60ce504594383c"
+    "sha256": "6caa7eb95e662e47b58f875285e033b0600136a7451ea79e660f2d0aecaab750"
   },
   "source_bindings": [
     {
@@ -48,7 +48,7 @@
         "mode": "packaged",
         "packaged_lock": {
           "path": "packs/runpod/requirements.linux-cu130.lock",
-          "sha256": "f9b4cb36acce81a3a1e68b6fb476685a06271252fbc6cbc48f28130d40d02585"
+          "sha256": "e6e9f858e082845ba799172149c6db40a18ab0e648ac704960ea4322d422ab7e"
         },
         "input_paths": [],
         "constraints": [],
@@ -140,9 +140,16 @@
   "source_patches": [
     {
       "source": "comfyui-qwentts",
+      "path": "qwen_tts/core/models/modeling_qwen3_tts.py",
+      "sha256_before": "9c5b54d9435604c6cbfda0fbbaeb77d4c959b0f95592b00f40c507f5364ede38",
+      "sha256_after": "843101a8dc83a00430a2dfc644b149dbbf523396be30d2fe71ac7c8680da47b1",
+      "replacement": "packs/runpod/patches/modeling_qwen3_tts.txt"
+    },
+    {
+      "source": "comfyui-qwentts",
       "path": "qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py",
       "sha256_before": "659105c9d9e9c754c7ddc828991140580e91fae035d7f106b6956275473ab3bf",
-      "sha256_after": "d6be74daff8ad86644bebed0d530ee82188302394478356b7fe91faa794a2c2c",
+      "sha256_after": "2e19371f13fbf1317a7e112357e9ba30c29ff9f5eb6843f485bb98b25ff23706",
       "replacement": "packs/runpod/patches/modeling_qwen3_tts_tokenizer_v2.txt"
     },
     {

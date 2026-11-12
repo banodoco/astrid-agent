@@ -145,9 +145,10 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
             raise JobFileError("pod workflow member changed during preparation")
         state["phase"] = "execute"
         on_phase("run")
-        if state["signum"] is not None:
+        signum = state["signum"]
+        if signum is not None:
             state["phase"] = "drain"
-            raise SystemExit(128 + state["signum"])
+            raise SystemExit(128 + signum)
         with preparation_scope(report):
             return run_action._run_and_settle(workflow, out, task_identity=task_identity,
                 attempt_identity=attempt_identity, execution_identity=identity,

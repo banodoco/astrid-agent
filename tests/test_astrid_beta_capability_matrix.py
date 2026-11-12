@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 
 from astrid.core.execution.generic_host import GenericPackHost
+from astrid.core.generation import entries
+from astrid.core.generation.preflight import GenerationReadinessError, require_generation_target_readiness
 
 
 def test_beta_matrix_covers_every_discovered_capability_and_declaration():
     import yaml
-
-    from astrid.core.execution.executor.actions import action_is_local_orchestrator
 
     host = GenericPackHost(pack_roots=[Path("astrid/packs")])
     records = host.discover()
@@ -21,34 +23,31 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
         for capability_id, row in host.matrix.items()
         if row.get("external_pack")
     }
-    h3_pack = yaml.safe_load(Path("astrid/packs/h3_av/pack.yaml").read_text(encoding="utf-8"))
-    local_orchestrators = {
-        f"h3_av.{local_id}"
-        for local_id, declaration in h3_pack["actions"].items()
-        if action_is_local_orchestrator(declaration)
-    }
-    # The composed registry routes H3 through the tracked host parent.
-    assert "h3_av.transform" not in local_orchestrators
+    declaration = yaml.safe_load(
+        Path("astrid/packs/h3_av/extensions/vibecomfy.workflows/h3.yaml").read_text(encoding="utf-8")
+    )["entries"][0]
+    h3 = entries.find_entry("h3")
+    assert h3 is not None
+    assert h3["contribution"] == "h3_av.h3"
+    assert h3["id"] == declaration["id"] == "h3"
+    assert h3["kind"] == declaration["kind"] == "video"
+    assert h3["modes"] == declaration["modes"] == ["i2v", "v2v", "video-edit"]
+    assert h3["inputs"] == declaration["inputs"]
+    assert [(port["name"], port["type"], port["required"]) for port in h3["inputs"]] == [
+        ("request", "file", True), ("asset_map", "file_map", True),
+    ]
     # Every discovered capability must have a row in
     # config/astrid-beta-capabilities.json; no discovered id is exempted.
     assert {record.id for record in records} == (
-        set(host.matrix) - external_pack_rows - local_orchestrators
+        set(host.matrix) - external_pack_rows
     )
     assert host.stale_matrix_entries == ()
-    assert not (set(host.stale_matrix_entries) & local_orchestrators)
-    assert "h3_av.transform" not in host.stale_matrix_entries
     assert {record.matrix["disposition"] for record in records} <= {"required", "optional", "unsupported", "retired"}
     for record in records:
         assert record.matrix["evidence_reason"]
         assert record.matrix["adapter_family"] == record.adapter.family
         assert isinstance(record.resource_keys, tuple)
-        if record.id == "h3_av.transform":
-            assert record.definition.metadata["tracked_h3_parent"] is True
-            assert record.adapter.family == "orchestration"
-            assert record.resource_keys == ()
-            assert not record.adapter.requires_network
-        else:
-            assert record.resource_keys
+        assert record.resource_keys
         assert record.capability_digest and record.source_digest
         assert isinstance(record.manifest()["inputs"], list)
         assert isinstance(record.manifest()["outputs"], list)
@@ -67,9 +66,22 @@ def test_beta_reference_family_preflight_is_truthful_on_this_machine():
     host.discover()
     host.preflight()
 
-    cpu = host.capabilities["h3_av.compile"]
+    cpu = host.capabilities["rendering.timeline_export_plan"]
     assert cpu.adapter.family == "cpu"
     assert cpu.ready
+
+    h3 = entries.find_entry("h3")
+    assert h3 is not None
+    mode = h3["default_mode"]
+    prerequisite = SimpleNamespace(id=h3["id"], modes={mode: SimpleNamespace(
+        backends={"local": SimpleNamespace(template=str(h3["bundle"]))},
+    )})
+    with pytest.raises(GenerationReadinessError) as caught:
+        require_generation_target_readiness(prerequisite, mode, None)
+    assert caught.value.readiness["entry"] == {"id": "h3", "engine": "comfyui", "mode": mode}
+    assert caught.value.readiness["status"] == "blocked"
+    assert caught.value.readiness["issues"][0]["code"] == "engine_not_found"
+    assert "no managed engine is installed or registered" in caught.value.readiness["issues"][0]["message"]
 
     provider = host.capabilities["generation.generate_image_openai"]
     assert provider.adapter.family == "provider"

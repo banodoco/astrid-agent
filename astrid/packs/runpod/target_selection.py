@@ -36,7 +36,7 @@ from .worker_preparation import (
     _validate_completed_release, write_target_record,
 )
 from . import worker_preparation
-from .provider import parse_rest_pod
+from .provider import account_gate, parse_rest_pod, provider_budget
 
 
 def _exact_volume_id(record):
@@ -380,6 +380,31 @@ class PaidRunConsent:
         return min(deadline, expiry) if deadline is not None else expiry
 
 
+@dataclass(frozen=True)
+class ClaimedJob(PaidRunConsent):
+    """Execution bounds on an existing claim, never authority to rent or renew."""
+
+    operation_id: str = ""
+
+    def validate_authority(self, preferences, now):
+        return _utc(self.deadline)
+
+    def validate(self, offer, preferences, now, *, allow_policy=False):
+        expires = _utc(self.deadline)
+        required = self.preparation_seconds + self.execution_seconds
+        if expires <= now or (expires - now).total_seconds() < required:
+            raise PaidSelectionError(
+                "job exceeds remaining paid lifetime; to extend it, run "
+                "`astrid machines keep <machine> --for DURATION`"
+            )
+        if required * offer.hourly_usd / 3600 > self.max_usd:
+            raise PaidSelectionError(
+                "job exceeds remaining budget; to extend it, run "
+                "`astrid machines keep <machine> --for DURATION`"
+            )
+        return expires
+
+
 def policy_consent_digest(preferences: RunPodPreferences, max_hourly_usd: float) -> str:
     """The explicit waiting policy, independent of any current market offer."""
     return _digest({"schema": "astrid.runpod.wait-policy.v1", "preferences": preferences.as_mapping(),
@@ -510,14 +535,17 @@ class RunPodSelectionOwner:
         except (OSError, ValueError):
             pass
 
-    async def select(self, consent: PaidRunConsent, *, dry_run: bool = False,
-                     cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
-        return await self._select(consent, dry_run=dry_run, cancelled=cancelled)
-
     async def _select(self, consent: PaidRunConsent, *, dry_run: bool = False,
                       lease: Mapping[str, Any] | None = None, lock_held: bool = False,
                       cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
         """One offer/one journaled POST per iteration; ambiguity never re-enters the loop."""
+        if isinstance(consent, ClaimedJob):
+            record = self._read()
+            if (record is None or record.get("state") != "claimed"
+                    or record.get("operation_id") != consent.operation_id):
+                raise PaidSelectionError("no machine: run `astrid machines claim`")
+            return await self._select_once(consent, lease=lease, lock_held=lock_held,
+                                           offer=self._recorded_offer(record), cancelled=cancelled)
         consent.validate_authority(self.preferences, self.clock())
         if dry_run:
             return await self._select_once(consent, dry_run=True, lease=lease, lock_held=lock_held)
@@ -627,9 +655,22 @@ class RunPodSelectionOwner:
                     else:
                         offer = await interruptible(observe(), provider_timeout=30.0)
                     rate_limit_failures = 0
-                    offer, _ = self.consented_offer(consent, self.clock(), offer=offer)
-                    result = await interruptible(self._select_once(
-                        consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
+                    offer, paid_expiry = self.consented_offer(consent, self.clock(), offer=offer)
+                    if (record is not None and record.get("state") not in
+                            {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}
+                            and record.get("paid_limits", {}).get("expires_at")):
+                        paid_expiry = min(paid_expiry, _utc(record["paid_limits"]["expires_at"]))
+                    # This is the acquisition budget, including readiness.
+                    # Each individual provider call keeps its own 30s limit.
+                    remaining = max(0., (paid_expiry - self.clock()).total_seconds())
+                    if remaining <= 0:
+                        raise PaidSelectionError("existing claim lifetime cannot be extended by reuse", gate="lifetime")
+                    if consent.capacity_timeout_seconds is not None:
+                        remaining = min(remaining, max(0., consent.capacity_timeout_seconds -
+                                                       (self.monotonic() - started)))
+                    with provider_budget(remaining, cancelled=check):
+                        result = await interruptible(self._select_once(
+                            consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
                     progress(number, offer, "claimed")
                     return result
                 except OfferObservationError as exc:
@@ -696,7 +737,12 @@ class RunPodSelectionOwner:
         p, now = self.preferences, self.clock()
         if not dry_run and lease is None and (self.compatibility is not None or p.volume_id is None):
             raise PaidSelectionError("this target requires admission through the retained lease owner")
-        offer, expires = self.consented_offer(consent, now, offer=offer)
+        if isinstance(consent, ClaimedJob):
+            if offer is None or lease is None:
+                raise PaidSelectionError("jobs require a live claimed machine")
+            expires = consent.validate(offer, p, now)
+        else:
+            offer, expires = self.consented_offer(consent, now, offer=offer)
         preview = {"offer": asdict(offer), "max_usd": consent.max_usd, "deadline": consent.deadline,
                    "expires_at": expires.isoformat(), "claim_handle_path": str(self.path)}
         if dry_run:
@@ -715,6 +761,13 @@ class RunPodSelectionOwner:
                 or getattr(config, "gpu_type_id", None) != offer.gpu_type_id
                 or getattr(config, "storage_name", None) or getattr(config, "storage_volumes", ())):
             raise PaidSelectionError("provider configuration differs from the consented exact placement")
+        # _select already owns the journal lock and calls __wrapped__ below.
+        # Bind here, before even volume discovery, rather than relying on the
+        # acquisition decorator that this path intentionally bypasses.
+        await worker_preparation.async_provider_call(
+            config.api_key, account_gate, config.api_key,
+            account_ref=p.provider_account_ref, already_gated=True,
+        )
         # Restrict lifecycle's launch matrix to the consented target so each
         # journaled attempt can issue at most one create POST.
         config = copy.copy(config)
@@ -723,6 +776,10 @@ class RunPodSelectionOwner:
         self._read()  # Reject legacy/symlink custody before creating a lock file.
         with nullcontext() if lock_held else target_owner(self.path):
             record = self._read()
+            if isinstance(consent, ClaimedJob) and (
+                    record is None or record.get("state") != "claimed"
+                    or record.get("operation_id") != consent.operation_id):
+                raise PaidSelectionError("no machine: run `astrid machines claim`")
             completed_operation = None
             if record is not None and record.get("state") == "cleanup_complete" and lease is not None:
                 _validate_completed_release(record)
@@ -777,10 +834,12 @@ class RunPodSelectionOwner:
                 previous = record.get("paid_limits", {})
                 if previous.get("expires_at") and not safe_capacity:
                     expires = min(expires, _utc(previous["expires_at"]))
-                    required = consent.preparation_seconds + consent.execution_seconds + consent.idle_seconds
+                    required = consent.preparation_seconds + consent.execution_seconds
+                    if not isinstance(consent, ClaimedJob):
+                        required += consent.idle_seconds
                     if (expires - now).total_seconds() < required:
                         raise PaidSelectionError("existing claim lifetime cannot be extended by reuse")
-                if (record.get("state") == "claimed"
+                if (not isinstance(consent, ClaimedJob) and record.get("state") == "claimed"
                         and previous.get("invocation_id") == consent.invocation_id):
                     raise PaidSelectionError("an invocation's paid consent cannot authorize another claim or reuse")
             else:
@@ -788,7 +847,8 @@ class RunPodSelectionOwner:
                 record = {
                     "schema_version": "astrid.runpod.allocation-attempt.v1", "state": "allocation_ready",
                     "operation_id": operation, "request_name": f"astrid-product-{operation}",
-                    "provider_account_ref": p.provider_account_ref, "acquisition_mode": "allocate",
+                    "provider_account_ref": p.provider_account_ref, "claim_preferences": p.as_mapping(),
+                    "acquisition_mode": "allocate",
                     "release_authorized": True, "worker_activation": "not_started", "create_attempts": 0,
                     "gpu_type": offer.gpu_type, "worker_image": p.image,
                     "accepted_gpu_type_id": offer.gpu_type_id,
@@ -823,6 +883,8 @@ class RunPodSelectionOwner:
                       "idle_seconds": consent.idle_seconds,
                       **({"policy_digest": consent.policy_digest, "max_hourly_usd": consent.max_hourly_usd}
                          if consent.policy_digest is not None else {})}
+            if isinstance(consent, ClaimedJob):
+                limits = dict(record["paid_limits"])
             if record["state"] == "claimed":
                 try:
                     observation = await observe_exact_target(config.api_key, RunPodTargetContract(

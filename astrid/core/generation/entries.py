@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # The one set of generation kinds, shared by every entry source.
 _KINDS = frozenset({'image', 'video', 'audio'})
@@ -44,6 +47,8 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
         from astrid.core.extensions.scopes import contribution_roots
         roots = contribution_roots()
     except Exception:
+        # Contributions are optional; preserve the prior empty projection if discovery fails.
+        logger.exception('Could not discover workflow contribution roots')
         return []
     rows, seen = [], set(exclude)
     for root in roots:
@@ -64,6 +69,8 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
                     ready = (manifest.parent / str(data["ready_root"])).resolve()
                     listed = data.get("entries") or []
                 except Exception:
+                    # A malformed or unavailable third-party manifest is skipped independently.
+                    logger.exception('Could not read workflow contribution manifest %s', manifest)
                     continue
                 if not ready.is_relative_to(pack.resolve()):
                     continue
@@ -147,6 +154,8 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
         except ShippedResourceMissingError:
             raise
         except Exception:
+            # Workflow metadata is best-effort; preserve declared entry visibility on load errors.
+            logger.exception('Could not load ready workflow metadata for %s', item['id'])
             needs, binds = [], {}
             model_assets = []
             ambiguity = 'ready workflow metadata could not be loaded'
@@ -293,7 +302,7 @@ def _catalog_inputs(kind: str, spec: Any, mode: str | None = None) -> list[dict[
             workflow = _load_pinned_catalog_workflow(backend)
         except (ImportError, OSError, ValueError, KeyError):
             return result  # retained declared inputs remain useful offline
-        fields = _workflow_inputs({'binds': {}, 'defaults': {}}, mode or 'workflow', workflow=workflow)
+        fields = _workflow_inputs({'binds': _entry_bindings(workflow, None, mode or 'workflow', backend.param_map), 'defaults': {}}, mode or 'workflow', workflow=workflow)
         for row in fields:
             if {row['name'], *row.get('aliases', ())} & set(spec.requires):
                 row['required'] = True
@@ -763,6 +772,7 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         raise ValueError(f'entry {entry_id!r} does not support {kind}')
     if description['mode'] is None:
         supported = description['modes']
+        candidates: Sequence[str]
         if inputs.get('image_ref') and inputs.get('image_end_ref'):
             candidates = ['flf']
         elif inputs.get('video_ref'):
@@ -1045,6 +1055,21 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         # Re-verify local bytes before projecting its inventory; no host registry
         # or graph picker can supply a missing target asset.
         binding = validate_model_root_binding(client.target.facts["model_root"], verify_files=True)
+        inventory = {(row['name'], row['subdir']): row for row in binding.inventory}
+        for asset in workflow.metadata.get('model_assets', []):
+            if not isinstance(asset, Mapping):
+                continue
+            digest, size = asset.get('sha256'), asset.get('size_bytes')
+            if not isinstance(digest, str) and type(size) is not int:
+                continue
+            name = asset.get('name', asset.get('filename'))
+            subdir = asset.get('subdir', asset.get('directory', '')) or ''
+            row = inventory.get((name, '' if subdir == '.' else subdir))
+            if (row is None
+                    or (isinstance(digest, str) and row['sha256'].removeprefix('sha256:')
+                        != digest.removeprefix('sha256:'))
+                    or (type(size) is int and row['size'] != size)):
+                raise ValueError(f"model-root declaration mismatch: {asset.get('name')}")
         workflow.metadata["models_root"] = str(binding.path)
         custody = {"auxiliary_model_custody": "target", "target_model_assets": binding.inventory}
     if align == 'trust':

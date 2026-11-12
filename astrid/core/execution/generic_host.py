@@ -253,6 +253,35 @@ class TerminalPublicationRejected(HostError):
     """A Runtime validation/conflict response with verified nonterminal custody."""
 
 
+def _terminal_publication_rejection(
+    error: BaseException, task_id: str, owner: tuple[str, int] | None,
+    observe: Callable[[str], Any],
+) -> TerminalPublicationRejected | None:
+    """Classify a mutation error, never a failed observation, as rejection.
+
+    A status alone cannot establish custody. Only validation/conflict plus an
+    exact running-owner readback permits replacing the original publication.
+    Transport uncertainty and unreadable custody always require exact replay.
+    """
+    if isinstance(error, TerminalPublicationRejected):
+        return error
+    if owner is None or getattr(error, "status", None) not in {400, 409, 422}:
+        return None
+    try:
+        task = observe(task_id)
+        task = task.get("task", task) if isinstance(task, Mapping) else task
+        def field(name, default=None):
+            return task.get(name, default) if isinstance(task, Mapping) else getattr(task, name, default)
+        if (str(field("id", field("task_id"))) == task_id
+                and field("state", field("status")) == "running"
+                and field("attempt_id") == owner[0]
+                and field("fence", field("lease_fence")) == owner[1]):
+            return TerminalPublicationRejected(str(error))
+    except Exception:  # noqa: BLE001 - failed observations cannot prove rejection
+        pass
+    return None
+
+
 def _persist_terminal_request(path: Path, request: Mapping[str, Any]) -> None:
     """Keep the exact fenced wire request before sending any terminal mutation."""
     temporary = path.with_suffix(".tmp")
@@ -2452,9 +2481,11 @@ _TASK_OUTPUT_DIAGNOSTIC_NAMES = frozenset(
 )
 
 
-def _attempt_tree_bytes(root: Path) -> int:
+def _attempt_tree_bytes(root: Path, *, excluded_roots: tuple[Path, ...] = ()) -> int:
     """Count owned attempt bytes without following symlink escapes."""
     total = 0
+    resolved_root = root.resolve()
+    excluded = tuple(path.resolve() for path in excluded_roots)
     try:
         for path in root.rglob("*"):
             # Renderers may remove completed frame files or workspaces while
@@ -2463,6 +2494,8 @@ def _attempt_tree_bytes(root: Path) -> int:
             # race, not a renderer failure.
             try:
                 if path.is_symlink() or not path.is_file():
+                    continue
+                if any((resolved_root / path.relative_to(root)).is_relative_to(item) for item in excluded):
                     continue
                 if path.parent == root and path.name in _TASK_OUTPUT_DIAGNOSTIC_NAMES:
                     continue
@@ -2476,11 +2509,13 @@ def _attempt_tree_bytes(root: Path) -> int:
     return total
 
 
-def _storage_tree_bytes(root: Path) -> int:
+def _storage_tree_bytes(root: Path, *, excluded_roots: tuple[Path, ...] = ()) -> int:
     """Count regular files in a bounded subtree without following symlinks."""
     if not root.is_dir():
         return 0
     total = 0
+    resolved_root = root.resolve()
+    excluded = tuple(path.resolve() for path in excluded_roots)
     try:
         for path in root.rglob("*"):
             # Atomic writers use sibling ``*.tmp`` files.  Those bytes are
@@ -2491,6 +2526,8 @@ def _storage_tree_bytes(root: Path) -> int:
             # absent from this point-in-time accounting sample.
             try:
                 if path.is_symlink() or not path.is_file() or path.name.endswith(".tmp"):
+                    continue
+                if any((resolved_root / path.relative_to(root)).is_relative_to(item) for item in excluded):
                     continue
                 total += int(path.stat().st_size)
             except FileNotFoundError:
@@ -4330,16 +4367,36 @@ def _task_storage_limits(task_data: Mapping[str, Any]) -> dict[str, int] | None:
 
 
 def _render_media_roots(root: Path) -> tuple[Path, ...]:
-    """Keep render media out of the diagnostic evidence budget.
-
-    These files are protected by actual volume space. Logs and other evidence
-    retain the existing per-attempt and concurrent retained-root caps.
-    """
+    """Keep render media out of the diagnostic evidence budget."""
     return tuple(
         path for path in root.iterdir()
         if path.name in {"inputs", "managed-objects", "outputs", "render-inputs"}
         or any(marker in path.name for marker in _RENDERER_WORKSPACE_MARKERS)
     )
+
+
+def _collected_log_roots(output_root: Path) -> tuple[Path, ...]:
+    """Logs have their own collection bound and do not consume task evidence/output budgets."""
+    excluded = {
+        (output_root / "logs").resolve(),
+        (output_root / "logs.json").resolve(),
+        (output_root / ".host-logs" / "logs.json").resolve(),
+        (output_root / "job.stdout").resolve(),
+        (output_root / "job.stderr").resolve(),
+    }
+    try:
+        from astrid.core._shared import run_logs
+
+        boundary = output_root.resolve()
+        for declaration_root in (output_root, output_root / ".host-logs"):
+            for _declaration, source in run_logs.read_declared(declaration_root):
+                resolved = source.resolve()
+                if (resolved.is_relative_to(boundary) and source.is_file()
+                        and not source.is_symlink()):
+                    excluded.add(resolved)
+    except Exception:  # noqa: BLE001 - malformed optional logs remain best effort
+        pass
+    return tuple(sorted(excluded, key=str))
 
 
 def _assert_live_storage_envelope(
@@ -4367,8 +4424,9 @@ def _assert_live_storage_envelope(
             )
     if estimate is None:
         return
-    total_bytes = _attempt_tree_bytes(root)
-    output_bytes = _storage_tree_bytes(output_root)
+    log_roots = _collected_log_roots(output_root)
+    output_bytes = _storage_tree_bytes(output_root, excluded_roots=log_roots)
+    total_bytes = _attempt_tree_bytes(root, excluded_roots=log_roots)
     scratch_bytes = max(0, total_bytes - output_bytes)
     if output_bytes > int(estimate["output_bytes"]):
         diagnostic = {
@@ -4432,14 +4490,19 @@ def _task_storage_envelope(
     # published result manifest and any undeclared stable file, while treating
     # atomic writer temporaries as scratch.  The latter prevents the estimate
     # from changing meaning between polling and final settlement.
+    excluded_logs = tuple(path.resolve() for path in _collected_log_roots(output_root))
     stable_output_paths = {
         path.resolve()
         for path in output_root.rglob("*")
         if not path.is_symlink() and path.is_file() and not path.name.endswith(".tmp")
+        and not any(path.resolve().is_relative_to(log_root) for log_root in excluded_logs)
     }
-    output_paths = stable_output_paths | published_paths
+    output_paths = stable_output_paths | {
+        path for path in published_paths
+        if not any(path.is_relative_to(log_root) for log_root in excluded_logs)
+    }
     output_bytes = sum(int(path.stat().st_size) for path in output_paths)
-    total_bytes = _attempt_tree_bytes(root)
+    total_bytes = _attempt_tree_bytes(root, excluded_roots=_collected_log_roots(output_root))
     scratch_bytes = max(0, total_bytes - output_bytes)
     limits = _task_storage_limits(task_data)
     if limits is not None and output_bytes > output_limit:
@@ -5800,21 +5863,9 @@ class RuntimeProtocolClient:
                 # A transport failure (including a lost ACK) says nothing
                 # about commit. Only a validation/conflict response AND a
                 # read of this same nonterminal owner permit a fenced failure.
-                if rejected_owner is not None and getattr(exc, "status", None) in {400, 409, 422}:
-                    try:
-                        task = self.task(task_id)
-                        task = task.get("task", task) if isinstance(task, Mapping) else task
-                        def field(name, default=None):
-                            return task.get(name, default) if isinstance(task, Mapping) else getattr(task, name, default)
-                        if (str(field("id", field("task_id"))) == task_id
-                                and field("state", field("status")) == "running"
-                                and field("attempt_id") == rejected_owner[0]
-                                and field("fence", field("lease_fence")) == rejected_owner[1]):
-                            raise TerminalPublicationRejected(str(exc)) from exc
-                    except TerminalPublicationRejected:
-                        raise
-                    except Exception:  # noqa: BLE001 - unreadable custody remains ambiguous
-                        pass
+                rejection = _terminal_publication_rejection(exc, task_id, rejected_owner, self.task)
+                if rejection is not None:
+                    raise rejection from exc
                 if attempt == 0:
                     continue
                 raise
@@ -7185,13 +7236,15 @@ class GenericPackHost:
         if entry == WORKFLOW_FILE_ENTRY:
             # A workflow-file job (describe_workflow's id): no named entry, its bundle ships in the job.
             entry = None
+        # Timing, the local failure receipt and claimed-job attachment are RunPod's; other
+        # machine kinds behave as before.
+        is_runpod = policy.get("kind") == "runpod"
         provider = target_context.get(kind=policy.get("kind"), engine=policy.get("engine"),
-                                      preferences=policy.get("preferences"))
+                                      preferences=policy.get("preferences"), **(
+                                          {"job": True} if is_runpod else {}))
         machine = resolve_machine(policy["kind"]).for_host(
             provider, begin=lambda lease: target_context.begin(lease, cancel_signal),
             done=target_context.done)
-        # Timing and the local failure receipt are RunPod's; other machine kinds behave as before.
-        is_runpod = policy.get("kind") == "runpod"
         timing = phase_timing.PhaseTiming() if is_runpod else None
         job = MachineJob(
             entry=entry, mode=metadata.get("mode"), policy=policy,
@@ -9565,7 +9618,9 @@ class GenericPackHost:
             # creative publication into an output-budget failure just because
             # its enhancement would exceed the already-admitted envelope.
             if storage_estimate is not None:
-                output_bytes = _storage_tree_bytes(output_root)
+                output_bytes = _storage_tree_bytes(
+                    output_root, excluded_roots=_collected_log_roots(output_root)
+                )
                 if output_bytes > int(storage_estimate["output_bytes"]):
                     destination.unlink(missing_ok=True)
                     continue
@@ -11224,10 +11279,21 @@ class GenericPackHost:
             try:
                 result = self._handoff_settlement_call(operation, *args, **kwargs)
             except Exception as exc:
-                if operation == self.client.fail and (isinstance(exc, TerminalPublicationRejected)
-                        or 400 <= (getattr(exc, "status", 0) or 0) < 500
-                        or "lease" in str(getattr(exc, "code", "")).lower()):
-                    terminal["publication_rejection"] = str(exc)
+                # The protocol adapter classifies mutation errors itself. Its
+                # raw errors may come from readback, which cannot prove rejection.
+                rejected_owner = (None if isinstance(self.client, RuntimeProtocolClient)
+                                  else (exact_attempt, exact_fence))
+                rejection = (_terminal_publication_rejection(
+                    exc, str(data["id"]), rejected_owner, self.client.task)
+                    if operation in (self.client.settle, self.client.fail) else None)
+                if operation == self.client.fail:
+                    # Keep the frozen failure request with the existing replay
+                    # owner, rather than retrying via the outer failure guard.
+                    terminal.update(evidence_pending=True, publication_pending=True, pending_status="failed")
+                    if rejection is not None:
+                        terminal["publication_rejection"] = str(rejection)
+                if rejection is not None and rejection is not exc:
+                    raise rejection from exc
                 raise
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
@@ -11661,13 +11727,15 @@ class GenericPackHost:
                         try:
                             response = self._handoff_settlement_call(operation, *args, **kwargs)
                         except Exception as exc:
-                            if (isinstance(exc, TerminalPublicationRejected)
-                                    or 400 <= (getattr(exc, "status", 0) or 0) < 500
-                                    or "lease" in str(getattr(exc, "code", "")).lower()):
+                            rejected_owner = (None if isinstance(self.client, RuntimeProtocolClient)
+                                              else (exact_attempt, exact_fence))
+                            rejection = _terminal_publication_rejection(
+                                exc, str(data["id"]), rejected_owner, self.client.task)
+                            if rejection is not None:
                                 if operation == self.client.fail:
-                                    terminal["publication_rejection"] = str(exc)
+                                    terminal["publication_rejection"] = str(rejection)
                                 else:
-                                    reject_publication(exc)
+                                    reject_publication(rejection)
                             else:
                                 raise
                         else:
@@ -12244,7 +12312,7 @@ class GenericPackHost:
                         evidence_root,
                         immutable_inputs=immutable_input_baseline,
                         cap_bytes=attempt_evidence_cap,
-                        excluded_roots=output_capture_paths + (
+                        excluded_roots=output_capture_paths + _collected_log_roots(root / "outputs") + (
                             _render_media_roots(root) if capability_id == "rendering.render" else ()
                         ),
                     )
@@ -12985,7 +13053,7 @@ class GenericPackHost:
                     root,
                     immutable_inputs=immutable_input_baseline,
                     cap_bytes=attempt_evidence_cap,
-                    excluded_roots=output_capture_paths + (
+                    excluded_roots=output_capture_paths + _collected_log_roots(root / "outputs") + (
                         _render_media_roots(root) if capability_id == "rendering.render" else ()
                     ),
                 )
@@ -13905,19 +13973,24 @@ class GenericPackHost:
                             if not isinstance(self.client, RuntimeProtocolClient):
                                 raise HostError("terminal request replay requires a Runtime protocol client")
                             wire = {**body, "idempotency_key": request["idempotency_key"]}
-                            self._handoff_settlement_call(
-                                self.client._terminal_evidence_request, self.client._lifecycle_client(),
-                                operation, request["identifier"], wire)
+                            try:
+                                self._handoff_settlement_call(
+                                    self.client._terminal_evidence_request, self.client._lifecycle_client(),
+                                    operation, request["identifier"], wire)
+                            except Exception as exc:
+                                # Only this mutation's error may authorize a
+                                # cede. A failed task read cannot reject evidence.
+                                rejection = _terminal_publication_rejection(
+                                    exc, str(task_id), (str(attempt_id), body["fence"]), self.client.task)
+                                if rejection is not None:
+                                    rejected = rejection
+                                    print(f"generic host terminal publication rejected for {task_id}: {rejection}",
+                                          file=sys.stderr, flush=True)
+                                    continue
+                                raise
                         print(f"generic host terminal publication recorded for {task_id}", file=sys.stderr, flush=True)
                         break
-                    except Exception as exc:  # noqa: BLE001 - retain custody during Runtime outages
-                        status = getattr(exc, "status", None)
-                        if not rejected and (isinstance(exc, TerminalPublicationRejected)
-                                             or isinstance(status, int) and 400 <= status < 500
-                                             or "lease" in type(exc).__name__.lower()):
-                            rejected = exc
-                            print(f"generic host terminal publication rejected for {task_id}: {exc}", file=sys.stderr, flush=True)
-                            continue
+                    except Exception:  # noqa: BLE001 - retain custody during Runtime outages
                         self._shutdown.wait(delay)
                         delay = min(5.0, max(_TERMINAL_RECONCILE_POLL_SECONDS, delay * 2))
 

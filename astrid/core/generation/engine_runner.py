@@ -216,17 +216,15 @@ def _models_root(root: str, models_root: str | None) -> str | None:
 
 def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement,
                  models_root: str | None = None) -> InstallPlan:
-    from astrid.core.generation.placement import is_runpod_placement
-
     if not isinstance(recipe, EngineRecipe):
         raise RecipeValidationError("plan_install requires an EngineRecipe")
     if placement != "local":
-        from astrid.core.generation.placement import registered_machine_kinds
+        from astrid.core.generation.placement import is_runpod_placement, registered_machine_kinds
 
         if placement not in registered_machine_kinds():
             raise UnsupportedPlacement("unknown engine placement")
-    if is_runpod_placement(placement) and not recipe.platform.startswith("linux-"):
-        raise UnsupportedPlatform("RunPod requires a Linux target")
+        if is_runpod_placement(placement) and not recipe.platform.startswith("linux-"):
+            raise UnsupportedPlatform("RunPod requires a Linux target")
     verified = recipes.load_recipe(recipe.engine, recipe.platform)
     if recipes.recipe_digest(recipe) != recipes.recipe_digest(verified):
         raise IntegrityError("recipe differs from the verified packaged recipe")

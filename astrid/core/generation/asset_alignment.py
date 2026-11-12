@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -226,7 +227,10 @@ def _fetch_model(model: ModelSpec, models_root: Path, *, deadline: float, client
     error = None
     try:
         fetch.download(entry, root=models_root, client=resuming, quiet=True)
-    except Exception as exc:  # fetch raises after publishing when size/SHA differ
+    except Exception as exc:
+        # Keep failures for the no-published-file error below; a published file is still
+        # force-verified against the lock before it can be accepted.
+        logging.getLogger(__name__).exception('fetch failed for locked model %s', model.destination)
         error = exc
     if path.exists():
         try:

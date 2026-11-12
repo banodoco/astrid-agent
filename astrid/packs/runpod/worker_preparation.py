@@ -15,7 +15,7 @@ import re
 import stat
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from dataclasses import replace as _dc_replace
 from datetime import datetime, timezone
@@ -29,7 +29,8 @@ from astrid.core.generation.engine_contracts import Gate, PlacementRefused
 from astrid.core.util.time import utc_now_iso
 
 from .pod_fields import InvalidPodField, pod_field
-from .provider import account_gate, async_provider_call, provider_call
+from .provider import (ProviderNotStarted, ProviderRefused, account_gate, async_provider_call, async_provider_operation,
+                       provider_budget, provider_call)
 
 _SHARED_GATES = {
     "GPU": "hardware", "volume": "storage", "datacenter": "region",
@@ -45,7 +46,8 @@ class TargetObservationError(PlacementRefused):
                  retry_after: float | None = None,
                  custody: Literal["none", "exact", "unknown"] = "unknown") -> None:
         self.runpod_gate = gate
-        super().__init__(message, gate=cast(Gate, _SHARED_GATES.get(gate, gate)),
+        super().__init__(message, gate=cast(Gate, _SHARED_GATES.get(gate, gate)
+                                         if isinstance(gate, str) else "inventory"),
                          retryable=retryable, retry_after=retry_after, custody=custody)
 
 
@@ -180,7 +182,7 @@ def replace_target_record(path: Path, value: dict[str, Any], *, operation_id: st
 
 
 @contextmanager
-def target_owner(handle_path: Path):
+def target_owner(handle_path: Path, *, blocking: bool = False):
     """Own the existing claim lock, including first creation of its journal.
 
     Product selection and worker preparation use the same lock pathname.
@@ -197,7 +199,7 @@ def target_owner(handle_path: Path):
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise AcquisitionUnresolvedError("RunPod account lock must be a regular file", gate="identity", retryable=False, custody="unknown")
         try:
-            platform.lock_file(fd, blocking=False)
+            platform.lock_file(fd, blocking=blocking)
         except BlockingIOError as exc:
             raise AcquisitionUnresolvedError(
                 f"another process currently owns RunPod target journal {path}; retry after it exits",
@@ -223,7 +225,8 @@ def _exclusive_target_owner(function: Any) -> Any:
         **kwargs: Any,
     ) -> Any:
         path = handle_path.expanduser()
-        with target_owner(path):
+        cleanup = function.__name__ == "_release_exact_target_after_quiescence"
+        with (provider_budget(30., cleanup=True) if cleanup else nullcontext()), target_owner(path):
             try:
                 current = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
@@ -240,7 +243,10 @@ def _exclusive_target_owner(function: Any) -> Any:
                     gate="identity", retryable=False, custody="unknown",
                 )
             if current.get("provider_account_ref") and isinstance(getattr(config, "api_key", None), str):
-                account_gate(config.api_key, account_ref=current["provider_account_ref"])
+                await async_provider_call(
+                    config.api_key, account_gate, config.api_key,
+                    account_ref=current["provider_account_ref"], already_gated=True,
+                )
             try:
                 return await function(
                     config,
@@ -528,15 +534,32 @@ def confirm_acquired_machine(
     """
     from runpod_lifecycle import graphql as lifecycle_graphql
 
-    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    deadline = None
+
+    def read_machine():
+        nonlocal deadline
+        if deadline is None:
+            # Admission has its own inherited acquisition deadline. Begin the
+            # readiness observation window when the first query can start,
+            # so inventory pacing does not consume the whole polling window.
+            deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        return lifecycle_graphql.get_pod(contract.pod_id, api_key)
+
     machine: Mapping[str, Any] = {}
     while True:
         try:
-            record = lifecycle_graphql.get_pod(contract.pod_id, api_key)
+            record = provider_call(api_key, read_machine)
             candidate = record.get("machine") if isinstance(record, dict) else None
             machine = candidate if isinstance(candidate, dict) else {}
+        except ProviderRefused as exc:
+            raise TargetObservationError(
+                "pod machine observation could not enter the provider account gate",
+                gate="machine", retryable=True, custody="unknown",
+            ) from exc
         except Exception:
             machine = {}
+        if deadline is None:
+            deadline = time.monotonic() + max(0.0, float(timeout_seconds))
         if machine.get("gpuDisplayName") and machine.get("dataCenterId"):
             break
         if time.monotonic() >= deadline:
@@ -544,7 +567,7 @@ def confirm_acquired_machine(
                 f"pod {contract.pod_id!r} machine was not reported by GraphQL before the readiness timeout",
                 gate="machine",
              retryable=True, custody="unknown")
-        time.sleep(_MACHINE_POLL_SECONDS)
+        time.sleep(min(_MACHINE_POLL_SECONDS, max(0., deadline - time.monotonic())))
 
     observed_gpu = machine["gpuDisplayName"]
     observed_dc = machine["dataCenterId"]
@@ -576,7 +599,7 @@ def read_acquired_gpu_count(api_key: str, pod_id: str) -> int:
     from runpod_lifecycle import graphql as lifecycle_graphql
 
     try:
-        record = lifecycle_graphql.get_pod(pod_id, api_key)
+        record = provider_call(api_key, lifecycle_graphql.get_pod, pod_id, api_key)
     except Exception:
         record = None
     count = record.get("gpuCount") if isinstance(record, dict) else None
@@ -639,6 +662,40 @@ def _target_contract(
     )
 
 
+async def _get_provider_pod(pod_id: str, config: Any, *, name: str) -> Any:
+    """Attach a handle after one observation; never hide 429s in fallbacks."""
+    from runpod_lifecycle import LaunchFailure, Pod, graphql
+
+    record = await async_provider_call(config.api_key, graphql.get_pod, pod_id, config.api_key)
+    if not isinstance(record, dict) or record.get("id") != pod_id:
+        raise LaunchFailure("exact pod observation did not confirm the requested identity")
+    return Pod(pod_id=pod_id, name=name, config=config)
+
+
+async def _wait_provider_ready(config: Any, pod: Any, timeout: int) -> Any:
+    """Keep lifecycle's worker readiness checks, gating each control-plane poll."""
+    status = getattr(pod, "status", None)
+    if status is None:
+        # Test/transport facades without provider status polling.
+        return await pod.wait_ready(timeout=timeout)
+
+    async def gated_status():
+        from runpod_lifecycle import api, graphql
+
+        # Lifecycle's status() hides errors and tries several transports. Use
+        # one exact observation so a 429 cannot trigger ungated fallbacks or
+        # be reported to the gate as a successful None response.
+        record = await async_provider_call(config.api_key, graphql.get_pod, pod.id, config.api_key)
+        return api._normalize_pod_status(pod.id, record) if isinstance(record, dict) else None
+
+    pod.status = gated_status
+    try:
+        with provider_budget(timeout):
+            return await pod.wait_ready(timeout=timeout)
+    finally:
+        pod.status = status
+
+
 async def _wait_and_observe_target(
     config: Any,
     pod: Any,
@@ -647,7 +704,7 @@ async def _wait_and_observe_target(
     volume: Mapping[str, Any],
     ready_timeout_seconds: int,
 ) -> RunPodTargetObservation:
-    await pod.wait_ready(timeout=ready_timeout_seconds)
+    await _wait_provider_ready(config, pod, ready_timeout_seconds)
     return await observe_and_confirm_acquired_target(
         config.api_key,
         _target_contract(
@@ -1259,7 +1316,7 @@ async def acquire_target(
     never converts missing evidence into a replacement allocation. A persisted
     in-flight attempt must go through :func:`reconcile_target` first.
     """
-    from runpod_lifecycle import AllocationUnknown, LaunchFailure, get_pod, launch_when_available
+    from runpod_lifecycle import AllocationUnknown, LaunchFailure, launch_when_available
     from runpod_lifecycle.errors import ProviderCapacityUnavailable
 
     operation_id = str(attempt["operation_id"])
@@ -1289,7 +1346,7 @@ async def acquire_target(
                     defer_machine=True,
                 ),
             )
-            pod = await get_pod(requested_pod_id, config, name=initial.pod_name)
+            pod = await _get_provider_pod(requested_pod_id, config, name=initial.pod_name)
             if str(getattr(pod, "id", "")) != requested_pod_id or str(
                 getattr(pod, "name", "")
             ) != initial.pod_name:
@@ -1351,20 +1408,23 @@ async def acquire_target(
                 "allocation journal does not prove the prior capacity response was safe to retry",
                 gate="identity", retryable=False, custody=_record_custody(attempt),
             )
-        if max_create_attempts is not None:
-            # One lifecycle launch can otherwise walk a GPU x RAM x storage
-            # matrix, issuing multiple POSTs without returning to this journal.
-            # The lifecycle launch matrix has exactly one storage target when
-            # the config names an exact network volume, one named storage, or
-            # no volume at all; more than one named storage would walk it.
-            storages = {name for name in [getattr(config, "storage_name", None),
-                                          *getattr(config, "storage_volumes", ())] if name}
-            exact_volume = getattr(config, "network_volume_id", None) is not None
-            if (max_create_attempts < 1 or capacity_window_seconds < 60
-                    or retry_interval_seconds < 15 or len(config.gpu_type_candidates) != 1
-                    or config.ram_tiers_enabled
-                    or len(storages) > 1 or (exact_volume and storages)):
-                raise ValueError("bounded capacity retries require one GPU, RAM tier and storage")
+        # Every lifecycle operation must contain one concrete POST, including
+        # callers without an attempt cap. The journal owns every retry.
+        if not hasattr(config, "ram_tiers_enabled"):
+            # Minimal provider configurations must also produce a single RAM
+            # tier. Set it explicitly rather than let lifecycle infer a matrix.
+            import copy
+
+            config = copy.copy(config)
+            config.ram_tiers_enabled = False
+        storages = {name for name in [getattr(config, "storage_name", None),
+                                      *getattr(config, "storage_volumes", ())] if name}
+        exact_volume = getattr(config, "network_volume_id", None) is not None
+        if (len(config.gpu_type_candidates) != 1 or config.ram_tiers_enabled
+                or len(storages) > 1 or (exact_volume and storages)
+                or (max_create_attempts is not None and (max_create_attempts < 1
+                    or capacity_window_seconds < 60 or retry_interval_seconds < 15))):
+            raise ValueError("bounded capacity retries require one GPU, RAM tier and storage")
         expected_name = str(attempt.get("request_name") or "").strip()
         if not expected_name:
             raise ValueError("allocation attempt must have an exact request_name")
@@ -1401,6 +1461,7 @@ async def acquire_target(
             else:
                 window = capacity_window_seconds
 
+            pre_create = dict(attempt)
             pending = {
                 **attempt,
                 "state": "allocation_pending",
@@ -1413,15 +1474,44 @@ async def acquire_target(
                 pending = before_post(pending)
             replace_target_record(handle_path, pending, operation_id=operation_id)
             attempt = pending
+
+            def retain_late_pod(pod):
+                # The cancelled caller releases ownership before this worker
+                # can update custody. Re-read rather than restoring its stale
+                # snapshot over a concurrent reconciliation or cleanup.
+                with target_owner(handle_path, blocking=True):
+                    current = json.loads(handle_path.read_text(encoding="utf-8"))
+                    if (current.get("operation_id") != operation_id
+                            or current.get("request_name") != expected_name
+                            or current.get("pod_id") not in (None, str(pod.id))):
+                        raise AcquisitionUnresolvedError("late create result has conflicting journal custody")
+                    state = current.get("state")
+                    if state in {"allocation_pending", "allocation_unknown"}:
+                        state = "allocated_unverified"
+                    replace_target_record(handle_path, {
+                        **current, "state": state, "pod_id": str(pod.id), "name": str(pod.name),
+                        "allocated_at": utc_now_iso(), "safe_to_retry": False,
+                        "reconciliation_required": state != "cleanup_complete",
+                    }, operation_id=operation_id)
+
             try:
-                pod = await launch_when_available(
-                    config,
-                    name=expected_name,
-                    # Zero asks lifecycle for one launch; the bounded loop
-                    # owns timing and persists each POST before it starts.
-                    max_wait_sec=0 if max_create_attempts is not None else window,
-                    retry_interval_sec=retry_interval_seconds,
-                )
+                with provider_budget(max(0., deadline - time.monotonic()) if deadline is not None else window):
+                    pod = await async_provider_operation(
+                        config.api_key, launch_when_available, config,
+                        on_late_result=retain_late_pod,
+                        name=expected_name,
+                        # Zero asks lifecycle for one launch; the bounded loop
+                        # owns timing and persists each POST before it starts.
+                        max_wait_sec=0,
+                        retry_interval_sec=retry_interval_seconds,
+                    )
+            except ProviderNotStarted:
+                # Only admission can produce this type. No provider operation
+                # began, so restore the exact pre-create custody and counter.
+                replace_target_record(handle_path, {
+                    **pre_create, "safe_to_retry": True, "reconciliation_required": False,
+                }, operation_id=operation_id)
+                raise
             except AllocationUnknown as exc:
                 unknown = {
                     **attempt,
@@ -1437,8 +1527,7 @@ async def acquire_target(
                 raise
             except LaunchFailure as exc:
                 if (not getattr(exc, "retryable", True) or
-                        (max_create_attempts is not None and
-                         not isinstance(exc.__cause__, ProviderCapacityUnavailable))):
+                        not isinstance(exc.__cause__, ProviderCapacityUnavailable)):
                     known_pod_id = getattr(exc, "pod_id", None)
                     failed = {
                         **attempt,
@@ -1467,7 +1556,7 @@ async def acquire_target(
                 attempt = retry_ready
                 if single_attempt:
                     raise CapacityExhaustedError("capacity_unavailable: one definite capacity rejection", gate="capacity", retryable=True, custody="none") from exc
-                if max_create_attempts is not None and attempt["create_attempts"] < max_create_attempts:
+                if max_create_attempts is None or attempt["create_attempts"] < max_create_attempts:
                     delay = min(60.0, retry_interval_seconds * 1.5 ** (attempt["create_attempts"] - 1))
                     if deadline is not None:
                         delay = min(delay, max(0.0, deadline - time.monotonic()))
@@ -1512,7 +1601,7 @@ async def acquire_target(
                 f"expected exact request name {expected_name!r}",
                 gate="identity", retryable=False, custody="exact",
             )
-        await pod.wait_ready(timeout=ready_timeout_seconds)
+        await _wait_provider_ready(config, pod, ready_timeout_seconds)
     except BaseException as exc:
         if isinstance(exc, TargetObservationError):
             exc.custody = _record_custody(allocated)
@@ -1579,7 +1668,6 @@ async def reconcile_target(
     ready_timeout_seconds: int,
 ) -> AcquiredRunPodTarget:
     """Resume one persisted target without opening a replacement allocation."""
-    from runpod_lifecycle import get_pod
     from runpod_lifecycle.api import list_pods
 
     operation_id = str(attempt["operation_id"])
@@ -1708,7 +1796,7 @@ async def reconcile_target(
             expected_name = initial_observation.pod_name
             bound["name"] = expected_name
             replace_target_record(handle_path, bound, operation_id=operation_id)
-        pod = await get_pod(pod_id, config, name=expected_name)
+        pod = await _get_provider_pod(pod_id, config, name=expected_name)
         if str(getattr(pod, "id", "")) != pod_id or (
             expected_name is not None
             and str(getattr(pod, "name", "")) != expected_name
@@ -1769,7 +1857,7 @@ def _gpu_type_from_graphql(gpu_id: str, api_key: str) -> dict:
     from runpod.api.graphql import run_graphql_query
 
     query = "query { gpuTypes(input: {id: %s}) { id displayName } }" % json.dumps(gpu_id)
-    response = run_graphql_query(query, api_key=api_key)
+    response = provider_call(api_key, lambda: run_graphql_query(query, api_key=api_key))
     rows = ((response or {}).get("data") or {}).get("gpuTypes") or []
     for row in rows:
         if isinstance(row, dict) and row.get("id") == gpu_id:

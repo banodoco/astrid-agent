@@ -27,6 +27,7 @@ import tempfile
 import threading
 import time
 import uuid
+from typing import Callable
 
 from runtime_protocol import platform as native
 
@@ -112,7 +113,7 @@ def _send(channel, value, deadline):
     channel.sendall(struct.pack("!I", len(data)) + data)
 
 
-def _receive(channel, deadline, cancelled=None):
+def _receive(channel, deadline, cancelled: Callable[[], bool] | None = None):
     def read(size):
         data = bytearray()
         while len(data) < size:
@@ -220,7 +221,7 @@ class LinuxEngineServiceClient:
             raise RecipeValidationError("invalid installation identity")
         self.control = root + "/.astrid-engine/session"
         self._spawned = None
-        self.cancelled = None
+        self.cancelled: Callable[[], bool] | None = None
 
     @classmethod
     def for_recipe(cls, *, root, recipe, platform):

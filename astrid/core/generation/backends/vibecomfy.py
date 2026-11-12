@@ -20,7 +20,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, overload
 from urllib import request as urllib_request
 
 from runtime_protocol import platform
@@ -48,6 +48,17 @@ logger = logging.getLogger(__name__)
 
 COMFYUI_VERSION = "0.26.0"
 VIBECOMFY_WARMTH_HINT_ENV = "ASTRID_VIBECOMFY_WARMTH_HINT"
+
+
+class _WorkflowResultPathKwargs(TypedDict):
+    task_identity: str
+    profile_id: str
+    hc03_profile: Mapping[str, Any] | None
+    expected_execution_identity: str | None
+    attempt_identity: NotRequired[str]
+    workflow_input_bindings: NotRequired[Mapping[str, Any]]
+    comfy_url: NotRequired[str]
+    comfy_output_dir: NotRequired[str]
 
 
 def _session_registry_binding(session_dir: Path) -> dict[str, Any]:
@@ -341,11 +352,12 @@ class VibeComfyBackend(BackendAdapter):
         """Run authored workflows through the existing production path."""
         from astrid.packs.vibecomfy.production_engine import run_workflow_result_path
 
-        kwargs = dict(
-            task_identity=task_identity, profile_id=profile_id,
-            hc03_profile=hc03_profile,
-            expected_execution_identity=expected_execution_identity,
-        )
+        kwargs: _WorkflowResultPathKwargs = {
+            "task_identity": task_identity,
+            "profile_id": profile_id,
+            "hc03_profile": hc03_profile,
+            "expected_execution_identity": expected_execution_identity,
+        }
         if attempt_identity is not None:
             kwargs["attempt_identity"] = attempt_identity
         if workflow_input_bindings is not None:
@@ -390,8 +402,7 @@ class VibeComfyBackend(BackendAdapter):
                 raise RuntimeError("VibeComfy canonical workflow bundle support is unavailable")
             bundle = load_bundle(workflow)
             bundle.require_canonical_authority("runtime execution")
-            kwargs = {"schema_provider": schema_provider} if schema_provider is not None else {}
-            return run_sync(bundle.compile(**kwargs), bundle)
+            return run_sync(bundle.compile(), bundle)
         return run_sync(workflow)
 
     def _collect_outputs(self, result: Any, out_dir: Path) -> list[Path]:
@@ -561,6 +572,9 @@ class VibeComfyBackend(BackendAdapter):
             _bind_target_model_roles(wf, backend_spec, plan["roles"])
         if target_schema is not None:
             if align == "trust":
+                # A target schema is only produced in the branch above after
+                # selecting a client; keep that invariant explicit for typing.
+                assert client is not None
                 from astrid.core.generation.target_inventory import (
                     declared_rows,
                     trust_declared_loader_choices,
@@ -602,6 +616,28 @@ class VibeComfyBackend(BackendAdapter):
 
         return wf, plan, target_schema
 
+    @overload
+    def generate(
+        self,
+        entry: ModelEntry,
+        mode: str,
+        params: dict[str, Any],
+        out_dir: Path,
+        *,
+        dry_run: Literal[True],
+    ) -> dict[str, Any]: ...
+
+    @overload
+    def generate(
+        self,
+        entry: ModelEntry,
+        mode: str,
+        params: dict[str, Any],
+        out_dir: Path,
+        *,
+        dry_run: Literal[False] = False,
+    ) -> GenerationResult: ...
+
     def generate(
         self,
         entry: ModelEntry,
@@ -620,6 +656,8 @@ class VibeComfyBackend(BackendAdapter):
         if dry_run:
             from vibecomfy.workflow_bundle import load_bundle
 
+            if plan is None:
+                raise RuntimeError("catalog dry-run did not produce a resolution plan")
             bundle = load_bundle(wf)
             bundle.require_canonical_authority("catalog target resolution dry-run")
             approved = bundle.compile(schema_provider=target_schema)

@@ -173,6 +173,8 @@ def _time_slice(payload: bytes, decl: LogDecl) -> bytes:
         return payload
     lower = _parse_time(decl.since, "iso8601") if decl.since else float("-inf")
     upper = _parse_time(decl.until, "iso8601") if decl.until else float("inf")
+    if lower is None or upper is None:
+        raise TypeError("invalid log time boundary")
     lines = payload.splitlines(keepends=True)
     kept: list[bytes] = []
     current: float | None = None
@@ -307,6 +309,8 @@ def main(argv: list[str]) -> int:
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
+        if exc.code is None:
+            raise TypeError("SystemExit code must be convertible to int")
         return int(exc.code)
     if args.command == "declare":
         try:

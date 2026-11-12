@@ -381,13 +381,18 @@ def _receipt_attested_managed_workflow(tmp_path, monkeypatch):
     """Use the real ready declarations with receipt-owned CPU fixture bytes.
 
     Mirror _selected_managed_target's status boundary and _target_capture;
-    retain the original incomplete Z-image declarations without enrichment.
+    retain the template asset identities with declarations for the fixture bytes.
     """
     monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(tmp_path / 'user-entries'))
     workflow = workflow_from_ready('image/z_image_turbo')
     original_assets = copy.deepcopy(workflow.metadata['model_assets'])
     assert len(original_assets) == 3
-    assert all('sha256' not in asset and 'size_bytes' not in asset for asset in original_assets)
+    for asset in original_assets:
+        data = ('receipt fixture for ' + asset['name']).encode()
+        asset['sha256'] = hashlib.sha256(data).hexdigest()
+        asset['size_bytes'] = len(data)
+    workflow.metadata['model_assets'] = copy.deepcopy(original_assets)
+    workflow.requirements.models = copy.deepcopy(original_assets)
     ready = entries._ready_entries_for('image/z_image_turbo')
     monkeypatch.setattr(entries, 'ready_entries', lambda: ready)
     root = tmp_path / 'installed-target'
@@ -402,6 +407,9 @@ def _receipt_attested_managed_workflow(tmp_path, monkeypatch):
         data = ('receipt fixture for ' + asset['name']).encode()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+        if 'sha256' in asset:
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == asset['sha256']
+            assert path.stat().st_size == asset['size_bytes']
         models.append(DownloadResult(path.name, str(path), 'skipped', len(data),
                                      hashlib.sha256(data).hexdigest(), True, 0))
     auxiliary = models[-1]
@@ -442,7 +450,7 @@ def _assert_auxiliary_verification_sidecar(fixture, before_sidecars):
 def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkeypatch, change):
     fixture = _receipt_attested_managed_workflow(tmp_path, monkeypatch)
     if change == 'unattested':
-        # Present bytes plus the original incomplete declaration grant nothing.
+        # Present bytes and a complete declaration do not replace a receipt.
         fixture.receipt.models = fixture.receipt.models[1:]
     client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
     inventory = client.target.facts['model_root']['inventory']
@@ -473,6 +481,20 @@ def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkey
     if change != 'match':
         assert set(fixture.models_root.rglob('*.json')) == before_sidecars
     assert set(fixture.requests) == {'/object_info'}
+
+
+@pytest.mark.parametrize('field', ['sha256', 'size_bytes'])
+@pytest.mark.parametrize('index', [0, -1], ids=['loader', 'auxiliary'])
+def test_declared_identity_mismatch_refuses_managed_approval(tmp_path, monkeypatch, field, index):
+    fixture = _receipt_attested_managed_workflow(tmp_path, monkeypatch)
+    client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
+    asset = fixture.workflow.metadata['model_assets'][index]
+    asset[field] = '0' * 64 if field == 'sha256' else asset[field] + 1
+    fixture.workflow.requirements.models = copy.deepcopy(fixture.workflow.metadata['model_assets'])
+    with pytest.raises((ValueError, WorkflowBundleError), match='mismatch'):
+        provider = entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
+        bundle = emit_bundle(fixture.workflow, tmp_path / 'approved/workflow.py', {'operation': 'authored'})
+        bundle.compile(schema_provider=provider)
 
 
 @pytest.mark.parametrize('saved', [True, False], ids=['saved', 'unsaved'])
@@ -565,6 +587,8 @@ def test_runpod_bound_model_absent_locally_passes_as_declared_unverified(tmp_pat
     record = local_server_engine._approve_live(bundle, {}, provider)
     assert record.api_digest
     declaration = next(row for row in provider._approval_diagnostics if row['code'] == 'target_model_asset')
+    # These rows are explicitly trusted declarations, not observed target bytes.
+    # Approval remains valid without turning that trust into provisioning proof.
     assert declaration['status'] == 'declared_unverified'
     assert declaration['model_bytes_status'] == 'declared_unverified'
 
