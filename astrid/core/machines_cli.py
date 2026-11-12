@@ -201,6 +201,15 @@ def _keep(machine_id: str, *, for_duration: str | None, until_release: bool,
     return 0
 
 
+def _duration_text(seconds: float) -> str:
+    seconds = int(round(seconds))
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
 def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_hourly_usd: float | None,
            for_duration: str | None, capacity_timeout: str | None, wait_for_capacity: bool,
            consent_scopes: list[str], as_json: bool, claim: Callable[..., Any] | None,
@@ -241,6 +250,9 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
             seconds = 1800.0
         if cap < seconds * ceiling / 3600:
             seconds = cap / ceiling * 3600
+        if wait_for_capacity and timeout is None:
+            # A claim never waits for stock longer than it would keep the machine.
+            timeout = seconds
         from astrid.packs.runpod.target_selection import policy_consent_digest
         consent = PaidRunConsent(
             invocation_id=f"astrid-machines-claim-{uuid.uuid4().hex}", offer_digest=None,
@@ -280,6 +292,13 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
         print(json.dumps({"ok": False, "error": str(exc)}) if as_json else str(exc))
         return 2
     except Exception as exc:  # noqa: BLE001 - report uncertain paid claim outcomes
+        if "capacity timeout passed" in str(exc):
+            # A definite outcome: the wait ended with no pod created.
+            waited = _duration_text(timeout) if timeout else "the capacity timeout"
+            message = (f"no machine came into stock within {waited}; nothing was rented. Retry later, "
+                       "choose another GPU with --gpu, or wait longer with --capacity-timeout <duration>")
+            print(json.dumps({"ok": False, "error": message, "unknown": False}) if as_json else message)
+            return 1
         unknown = isinstance(exc, TimeoutError) or "timeout" in str(exc).lower() or "timed out" in str(exc).lower()
         message = (f"claim result is unknown; check `astrid machines` before retrying ({exc})" if unknown else
                    f"claim failed: {exc}; check `astrid machines` before retrying")
@@ -558,7 +577,7 @@ def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None
     acquire.add_argument("--max-hourly-usd", type=float, help="Hourly ceiling for waiting; defaults to the current quoted rate.")
     acquire.add_argument("--for", dest="claim_for", metavar="DURATION", help="Initial idle retention, capped by the spend limit; defaults to saved idle retention or 30m.")
     capacity = acquire.add_mutually_exclusive_group()
-    capacity.add_argument("--capacity-timeout", metavar="DURATION", help="Stop waiting after this duration; default waits until claimed or cancelled.")
+    capacity.add_argument("--capacity-timeout", metavar="DURATION", help="Stop waiting for stock after this duration; default: the claim's --for retention.")
     capacity.add_argument("--no-wait-for-capacity", action="store_true", help="Make one capacity observation and at most one create attempt.")
     acquire.add_argument("--consent", action="append", choices=("paid",), default=[], help="Approve the displayed paid claim policy without prompting.")
     acquire.add_argument("--json", action="store_true", dest="claim_json")

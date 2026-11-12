@@ -2068,3 +2068,23 @@ def test_machines_setup_failure_names_safe_action_details_never_its_message(monk
     assert error["details"] == {"error_code": "binding_conflict", "field": "capability"}
     assert "error_code=binding_conflict" in error["message"]
     assert "provider-secret-body" not in out and "nested" not in out
+
+
+def test_machine_claim_waits_for_stock_no_longer_than_its_retention(monkeypatch, capsys):
+    cli, saved, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
+    assert cli.main(["claim", "--max-usd", "2", "--max-hourly-usd", "2", "--for", "20m",
+                     "--consent", "paid", "--json"], claim=claim, describe=describe) == 0
+    grant = calls[-1][1]["consent"]
+    assert grant.wait_for_capacity is True and grant.capacity_timeout_seconds == grant.idle_seconds == 1200
+    capsys.readouterr()
+
+    def timed_out(**kwargs):
+        calls.append(("claim", kwargs))
+        raise RuntimeError("target status task failed: RunPod capacity timeout passed; no further create will be attempted")
+
+    assert cli.main(["claim", "--max-usd", "2", "--max-hourly-usd", "2", "--for", "20m",
+                     "--consent", "paid", "--json"], claim=timed_out, describe=describe) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["unknown"] is False
+    assert payload["error"].startswith("no machine came into stock within 20m; nothing was rented.")
+    assert "--capacity-timeout" in payload["error"]
