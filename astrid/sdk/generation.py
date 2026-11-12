@@ -126,7 +126,7 @@ def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str,
     importer = getattr(getattr(client, 'media', None), 'import_file', None)
     if not callable(importer):
         raise CapabilityPreconditionError(
-            'generate with target requires a connected Runtime client with '
+            'generate with placement requires a connected Runtime client with '
             'media.import_file; use astrid generate or pass client= explicitly')
     invoke_out, invoke_project = _resolve_invoke_destination(
         client=client, out=controls.get('out'), project=controls.get('project'),
@@ -887,7 +887,7 @@ def _no_target_mode_check(**_: Any) -> None:
 
 def _audio_target_mode_check(*, mode: Any, **_: Any) -> None:
     if mode is None:
-        raise CapabilityValidationError('mode is required for audio target generation')
+        raise CapabilityValidationError('mode is required for audio generation with placement')
 
 
 def _no_explicit_target_check(**_: Any) -> None:
@@ -896,7 +896,7 @@ def _no_explicit_target_check(**_: Any) -> None:
 
 def _audio_explicit_target_check(*, recovery_path: Any, resume: bool, wait: bool, **_: Any) -> None:
     if recovery_path is not None or resume or not wait:
-        raise CapabilityValidationError('audio recovery and no-wait require an explicit target')
+        raise CapabilityValidationError('audio recovery and no-wait require an explicit placement')
 
 
 def _no_recipe_check(**_: Any) -> None:
@@ -1133,7 +1133,7 @@ class GenerationFacade:
                 placements.request_from_selector(placement), client=client))
             from astrid.core.generation.placement import is_runpod_placement
             if not is_runpod_placement(resolved) or entry is not None or workflow is not None:
-                raise GenerationInputError('target describe requires only target=runpod')
+                raise GenerationInputError('target describe requires only placement=runpod')
             preferences = _runpod_job_preferences(_runpod_preferences(client), datacenter)
             if resolved.policy.gpu_types:
                 preferences['gpu_types'] = list(resolved.policy.gpu_types)
@@ -1458,7 +1458,7 @@ class GenerationFacade:
 
         if execution not in {None, "local"}:
             raise CapabilityValidationError(
-                "target selects a local ComfyUI workflow; use execution='local'"
+                "placement selects a local ComfyUI workflow; use execution='local'"
             )
         # This route submits one canonical workflow. Count belongs to the
         # executor loop on the older typed action and must not be ignored here.

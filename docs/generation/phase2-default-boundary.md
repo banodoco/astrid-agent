@@ -37,7 +37,7 @@ node locks, and any required staged-offload policy belong to the RunPod owner.
 Keep that ownership chain intact before default promotion.
 
 Completion requires the existing shared target path and output publication
-path for both local and RunPod execution. Audio must default to target `auto`;
+path for both local and RunPod execution. Audio must default to placement `auto`;
 a missing local GPU must report `needs a local GPU or --placement runpod`, with
 Edge TTS named only as an explicitly selected hosted voice option. No hosted
 provider may become an automatic fallback. The current explicit RunPod Foley

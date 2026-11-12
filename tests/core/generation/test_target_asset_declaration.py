@@ -557,7 +557,7 @@ def _runpod_like_target(tmp_path, monkeypatch):
     return pod, workflow, bundle
 
 
-def test_runpod_bound_model_absent_locally_passes_as_available_on_target(tmp_path, monkeypatch):
+def test_runpod_bound_model_absent_locally_passes_as_declared_unverified(tmp_path, monkeypatch):
     pod, workflow, bundle = _runpod_like_target(tmp_path, monkeypatch)
     provider = local_server_engine._live_preflight(
         bundle, {}, pod.http_origin, tmp_path, client=pod, target_custody=_rows_for(workflow))
@@ -565,7 +565,10 @@ def test_runpod_bound_model_absent_locally_passes_as_available_on_target(tmp_pat
     record = local_server_engine._approve_live(bundle, {}, provider)
     assert record.api_digest
     declaration = next(row for row in provider._approval_diagnostics if row['code'] == 'target_model_asset')
-    assert declaration['status'] == 'available_on_target'
+    # These rows are explicitly trusted declarations, not observed target bytes.
+    # Approval remains valid without turning that trust into provisioning proof.
+    assert declaration['status'] == 'declared_unverified'
+    assert declaration['model_bytes_status'] == 'declared_unverified'
 
 
 def test_runpod_bound_model_missing_from_inventory_fails_approval(tmp_path, monkeypatch):

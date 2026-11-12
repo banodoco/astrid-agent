@@ -85,7 +85,8 @@ def test_the_linux_base_engine_is_one_package_owned_row_with_the_merged_locks():
         assert any(line.startswith(pin + " ") for line in lock_text.splitlines())
     assert recipe.models_lock.path == "packs/runpod/models.lock.json"
     assert recipe.sources[0].name == "comfyui"
-    assert any("--models-directory" in arg and "{models_root}" in arg for arg in recipe.start.argv)
+    argv = list(recipe.start.argv)
+    assert argv[argv.index("--models-directory") + 1] == "{models_root}"
     destinations = {model.destination for model in lock.models}
     assert {"diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
             "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
