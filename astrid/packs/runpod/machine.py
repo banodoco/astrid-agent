@@ -871,7 +871,7 @@ class RunPodMachine:
             exit_code = record.get("exit_code")
             safe_exit = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else "unknown"
             run.lease.failure_exit_code = safe_exit if type(safe_exit) is int else None
-            run.lease.failure_logs = self._fetch_failure_logs(ops, run, stdout, destination)
+            run.lease.failure_logs = self._fetch_logs(ops, run, destination)
             _stamp(timing, "collection_ended_at")
             raise MachineError(f"remote generation failed (exit {safe_exit}; "
                                f"category={diagnostic['category']}; code={diagnostic['code']})")
@@ -920,6 +920,27 @@ class RunPodMachine:
         return {"files": [{"name": name, "path": path, "bytes": Path(path).stat().st_size,
                            "truncated": name in truncated}
                           for name, path in sorted(files.items()) if name != "truncated"]}
+
+    def _fetch_logs(self, ops: Any, run: MachineRun, destination: Path) -> dict[str, Any]:
+        """Bring the failed job's declared output logs back without masking its error."""
+        try:
+            command = f"grep -a '^LOGS_MANIFEST_SHA256=' {shlex.quote(run.directory)}/stdout | tail -n 1"
+            _code, output, _error = ops.exec(command, 120)
+            line = next((item for item in output.splitlines()
+                         if item.startswith("LOGS_MANIFEST_SHA256=")), None)
+            if line is None:
+                return {"unavailable": "not_reported"}
+            digest = line[len("LOGS_MANIFEST_SHA256="):].strip()
+            self._fetch_verified(ops, f"{run.remote_root}/out/logs", Path(destination) / "logs",
+                                 run.scratch, digest)
+            from astrid.core._shared import run_logs
+
+            rows = run_logs.read_index(Path(destination))
+            return {"files": [{**row, "path": (str(Path(destination) / "logs" / row["file"])
+                                               if not row.get("missing") else None)}
+                              for row in rows]}
+        except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
+            return {"unavailable": type(exc).__name__}
 
     @staticmethod
     def _fetch_verified(ops: Any, remote_dir: str, destination: Path, scratch: Path,
