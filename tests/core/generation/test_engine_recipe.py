@@ -9,6 +9,7 @@ import pytest
 
 from astrid.core.generation import engine_recipe as recipes
 from astrid.core.generation.engine_contracts import DataRef, ModelLockValidationError, RecipeValidationError, UnknownEngine, UnsupportedPlatform, UnsafePathError
+from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 
 
 def _model_ref(tmp_path, value):
@@ -103,7 +104,7 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
         assert bindings[0].relative_path == "runtime/vibecomfy"
         assert bindings[0].pin == pins["vibecomfy"]
         assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
-        assert bindings[0].pin.revision == "e4118ccfba62cf80e26a90637b4b02f37ead5b67"
+        assert bindings[0].pin.revision == VIBECOMFY_ENGINE_REVISION
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
             "6bfaacc67c2103481e5f0c84d75257cd0581d86a")
     declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
@@ -120,7 +121,7 @@ def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
     assert bindings[0].pin == pins["vibecomfy"]
     expected_sources = {
         "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "6bfaacc67c2103481e5f0c84d75257cd0581d86a"),
-        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "e4118ccfba62cf80e26a90637b4b02f37ead5b67"),
+        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", VIBECOMFY_ENGINE_REVISION),
         "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
         "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
         "comfyui-hunyuanvideo-foley": ("https://github.com/BobRandomNumber/ComfyUI-HunyuanVideo_Foley.git", "b94f7aca877ff2be5bc264b057abee3dac682c1b"),

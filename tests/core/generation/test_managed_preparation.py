@@ -364,14 +364,17 @@ def test_managed_node_lock_declares_real_recipe_patches(tmp_path):
     from vibecomfy.node_packs import read_lockfile
 
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
-    patch = next(p for p in recipe.source_patches if p.source == 'comfyui-qwentts')
-    source = next(s for s in recipe.sources if s.name == patch.source)
+    patches = [p for p in recipe.source_patches if p.source == 'comfyui-qwentts']
+    assert patches
+    source = next(s for s in recipe.sources if s.name == patches[0].source)
     nodes = [{'repo': source.pin.repository, 'commit': source.pin.revision}]
     lock = tmp_path / 'custom_nodes.lock'
     _write_managed_nodes_lock(lock, nodes, recipe)
     entry = read_lockfile(lock)[0]
     assert entry.name == 'ComfyUI-QwenTTS'
-    assert [(p.path, p.sha256) for p in entry.patches] == [(patch.path, patch.sha256_after)]
+    assert [(p.path, p.sha256) for p in entry.patches] == [
+        (p.path, p.sha256_after) for p in patches
+    ]
 
 
 def test_managed_node_lock_without_patches_preserves_original_bytes(tmp_path):

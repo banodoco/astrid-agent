@@ -15,8 +15,100 @@ from astrid.core.execution.generic_host import GenericPackHost
 from astrid.core.generation import cli
 from astrid.core.generation.engine_custody import engine_log_path
 from astrid.packs.runpod import failure_receipt, machine
+from astrid.packs.runpod.remote_placement import MANIFEST_MARK, RESULT_MARK, manifest_command
 from astrid.sdk.contracts import DomainResult
 from tests.test_generic_host import FakeRuntime, _write_manifest
+
+
+@pytest.mark.parametrize('exit_code', [0, 2], ids=['success', 'failure'])
+def test_remote_logs_are_collectable_by_host_after_machine_is_gone(tmp_path, exit_code):
+    """Both fetch paths leave the same host-readable collected log tree."""
+    pod = tmp_path / 'pod'
+    run_root = pod / 'runs/r1'
+    out = run_root / 'out'
+    job_dir = pod / 'jobs/j1'
+    out.mkdir(parents=True)
+    job_dir.mkdir(parents=True)
+    (job_dir / 'stdout').write_text('remote stdout\n')
+    (job_dir / 'stderr').write_text('remote stderr\n')
+    (run_root / 'result.json').write_text('{}\n')
+    (out / 'engine.log').write_text('engine output\n')
+    from astrid.core._shared import run_logs
+    run_logs.declare(out, run_logs.LogDecl('engine', 'engine', 'engine.log'))
+
+    command = job_dir / 'command.sh'
+    command.write_text('#!/bin/bash\n' + machine.finish_command(str(run_root), python=sys.executable) + '\n')
+    with (job_dir / 'stdout').open('a') as stdout, (job_dir / 'stderr').open('a') as stderr:
+        subprocess.run(['bash', str(command)], stdout=stdout, stderr=stderr,
+                       check=True, timeout=60)
+    manifest = subprocess.run(
+        ['bash', '-c', manifest_command(str(out), sys.executable)],
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    manifest_digest = next(line.split('=', 1)[1] for line in manifest.stdout.splitlines()
+                           if line.startswith(MANIFEST_MARK))
+    with (job_dir / 'stdout').open('a') as stdout:
+        stdout.write(f'{RESULT_MARK}{{}}\n{MANIFEST_MARK}{manifest_digest}\n')
+
+    class Ops:
+        def exec(self, command, timeout):
+            result = subprocess.run(['bash', '-c', command], capture_output=True,
+                                    text=True, timeout=timeout, check=False)
+            return result.returncode, result.stdout, result.stderr
+
+        @staticmethod
+        def get(remote, local):
+            shutil.copyfile(remote, local)
+
+        @staticmethod
+        def job_poll(job_id):
+            assert job_id == 'j1'
+            return {'state': 'exited', 'exit_code': exit_code}
+
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    lease = machine.MachineLease(None, SimpleNamespace(ops=Ops()),
+                                 SimpleNamespace(note=lambda *_args, **_kwargs: None), {}, False)
+    run = machine.MachineRun(lease, 'j1', str(job_dir), str(run_root), scratch / 'progress', scratch)
+    owner = object.__new__(machine.RunPodMachine)
+    owner._require = lambda: SimpleNamespace(placement=SimpleNamespace(_check_deadline=lambda _stage: None))
+    owner._checkpoint = lambda *args: None
+    owner._checkpoint_installed = lambda *_args: None
+    destination = tmp_path / 'download'
+    if exit_code:
+        with pytest.raises(machine.MachineError, match='remote generation failed'):
+            owner.fetch(run, destination)
+    else:
+        owner.fetch(run, destination)
+
+    # Model the controller's own bounded stream capture. These declarations
+    # live beside the fetched pod logs and must be collected with them.
+    from astrid.core._shared import run_logs
+    controller_logs = destination / '.host-logs'
+    (controller_logs / 'job.stdout').parent.mkdir(parents=True, exist_ok=True)
+    (controller_logs / 'job.stdout').write_text('controller stdout\n')
+    (controller_logs / 'job.stderr').write_text('controller stderr\n')
+    run_logs.declare(controller_logs, run_logs.LogDecl('controller.stdout', 'stdout', 'job.stdout'))
+    run_logs.declare(controller_logs, run_logs.LogDecl('controller.stderr', 'stderr', 'job.stderr'))
+
+    # Fetch and host collection happen on different machines in production.
+    # The controller must finish collecting the declared pod logs before the
+    # pod disappears; host-readable descriptors must then need only local files.
+    moved_pod = tmp_path / 'pod-collected'
+    pod.rename(moved_pod)
+    shutil.rmtree(moved_pod)
+    assert not pod.exists() and not moved_pod.exists()
+    host = object.__new__(GenericPackHost)
+    descriptors = host._log_outputs(destination)
+    logs = {row['name']: Path(row['path']).read_text() for row in descriptors}
+    assert logs == {
+        'engine': 'engine output\n',
+        'job.stdout': 'remote stdout\n',
+        'job.stderr': 'remote stderr\n',
+        'generation.stdout': '{}\n',
+        'controller.stdout': 'controller stdout\n',
+        'controller.stderr': 'controller stderr\n',
+    }
 
 
 def test_failed_generation_logs_survive_fetch_and_reset(tmp_path, monkeypatch, capsys):

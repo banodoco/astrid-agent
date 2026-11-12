@@ -51,7 +51,7 @@ def test_workflow_cli_calls_public_sdk_once_without_private_probe(monkeypatch, c
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime'))
     assert cli.main(['workflow', 'submitted.json', '--placement', 'http://localhost:8192',
         '--input', 'texture=0.7', '--input', 'node:12.strength=0.8', '--no-wait', '--json']) == 0
-    assert calls == [{'workflow': Path('submitted.json'), 'target': 'http://localhost:8192',
+    assert calls == [{'workflow': Path('submitted.json'), 'placement': 'http://localhost:8192',
                      'mode': None, 'inputs': {'texture': 0.7, 'node:12.strength': 0.8},
                      'dry_run': False, 'client': 'runtime', 'project': None, 'out': None,
                      'wait': False}]

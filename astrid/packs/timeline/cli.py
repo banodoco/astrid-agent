@@ -1492,7 +1492,7 @@ def _cmd_recover(parsed: argparse.Namespace) -> int:
 
 def _cmd_history(parsed: argparse.Namespace) -> int:
     if not parsed.project:
-        from astrid.packs.timeline.cli_parser import resolve_current_project
+        from astrid.core.cli.current_project import resolve_current_project
         parsed.project = resolve_current_project(parsed)
         if not parsed.project:
             print("history: no project selected; run `astrid projects select <project>`")
