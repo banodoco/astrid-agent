@@ -68,3 +68,42 @@ def test_video_ref_is_rejected_for_image():
 
     with pytest.raises(SystemExit):
         cli._parser().parse_args(["image", "test prompt", "--video-ref", "reference.mp4"])
+
+
+@pytest.mark.parametrize("mode,required", [
+    ("t2v", ("prompt",)),
+    ("flf", ("prompt", "image_ref", "image_end_ref")),
+])
+def test_ltx_required_inputs_dry_run(mode, required, paid_controls, tmp_path, capsys, monkeypatch):
+    from astrid.core.generation import preflight
+
+    monkeypatch.setattr(preflight, "require_generation_target_readiness", lambda *a, **k: None)
+    monkeypatch.delenv(runpod_guard.LIVE_OPT_IN_ENV, raising=False)
+    entry = ModelRegistry.load_default().get("ltx-2.3")
+    assert set(entry.modes[mode].requires) == set(required)
+    inputs = {"prompt": "A clear test scene"}
+    for name in required:
+        if name != "prompt":
+            path = tmp_path / f"{name}.png"
+            path.write_bytes(b"test image")
+            inputs[name] = str(path)
+    args = build_generate_argv(entry, mode, inputs, "runpod", paid_controls, dry_run=True)
+    before = len(runpod_guard.blocked_attempts)
+    rc = console.main(args)
+    output = json.loads(capsys.readouterr().out)
+    assert rc == 0 and output.get("ok", True), output
+    assert runpod_guard.blocked_attempts[before:] == []
+
+
+@pytest.mark.parametrize("entry_id", ["lava-sr", "deepfilternet3"])
+def test_audio_enhancement_required_input_type(entry_id):
+    from astrid.core.generation import entries
+
+    spec = ModelRegistry.load_default().get(entry_id).modes["sfx"]
+    assert set(spec.backends) == {"cloud"}
+    assert set(spec.requires) == {"audio_ref"}
+    description = {"inputs": entries._catalog_inputs("audio", spec, "sfx")}
+    fields = {row["name"]: row for row in description["inputs"]}
+    assert fields["audio_ref"]["type"] == "string"
+    assert fields["audio_ref"]["required"]
+    assert entries.validate_inputs(description, {"audio_ref": "reference.wav"}) == {"audio_ref": "reference.wav"}
