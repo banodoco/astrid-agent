@@ -46,7 +46,8 @@ class TargetObservationError(PlacementRefused):
                  retry_after: float | None = None,
                  custody: Literal["none", "exact", "unknown"] = "unknown") -> None:
         self.runpod_gate = gate
-        super().__init__(message, gate=cast(Gate, _SHARED_GATES.get(gate, gate)),
+        super().__init__(message, gate=cast(Gate, _SHARED_GATES.get(gate, gate)
+                                         if isinstance(gate, str) else "inventory"),
                          retryable=retryable, retry_after=retry_after, custody=custody)
 
 
