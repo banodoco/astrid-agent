@@ -1086,11 +1086,12 @@ def test_schema_ownership_diagnostic_preserves_primary_and_close(tmp_path, monke
     def emit(row):
         events.append("emit")
         if failure == "output": harness._emit_schema_session_ownership_failure(row)
-    monkeypatch.setattr(harness.os, "fstat", lambda fd: (_ for _ in ()).throw(OSError("controlled output failure")))
     code = "try:\n" + textwrap.indent(textwrap.dedent(guarded), "    ") + "except BaseException:\n    try:\n        close()\n    finally:\n        emit(getattr(self, '_ownership_failure_row', None))\n    raise\n"
-    with pytest.raises(ValueError) as caught:
-        exec(code, {"self": obj, "_verify_owned_vibe_session": reject, "_schema_session_ownership_failure_row": observe,
-                    "close": lambda: events.append("close"), "emit": emit})
+    with monkeypatch.context() as scoped:
+        scoped.setattr(harness.os, "fstat", lambda fd: (_ for _ in ()).throw(OSError("controlled output failure")))
+        with pytest.raises(ValueError) as caught:
+            exec(code, {"self": obj, "_verify_owned_vibe_session": reject, "_schema_session_ownership_failure_row": observe,
+                        "close": lambda: events.append("close"), "emit": emit})
     assert caught.value is primary and events == ["verify", "observe", "close", "emit"]
 
 

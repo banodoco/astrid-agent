@@ -38,11 +38,26 @@ def gpu_pack(capability_id: str) -> str | None:
     if capability_id == "wan2gp.generate_video":
         return "wan2gp"
     pack, _, action = capability_id.partition(".")
-    if pack == "comfy_wrap" and action == "run":
-        return "vibecomfy"
     if pack == "vibecomfy" and action and action not in _OFFLINE_COMFY_ACTIONS:
         return "vibecomfy"
+    if capability_id in _vibecomfy_gpu_aliases():
+        return "vibecomfy"
     return None
+
+
+def _vibecomfy_gpu_aliases() -> frozenset[str]:
+    """Capability IDs the VibeComfy pack declares as GPU routes (its gpu-capabilities.json).
+
+    A missing, unreadable or malformed declaration means no aliases: it must never abort
+    preflight for unrelated capabilities.
+    """
+    try:
+        aliases = json.loads((_PACKS / "vibecomfy" / "gpu-capabilities.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    if not isinstance(aliases, list) or not all(isinstance(item, str) and item for item in aliases):
+        return frozenset()
+    return frozenset(aliases)
 
 
 def detect_nvidia() -> dict[str, Any]:

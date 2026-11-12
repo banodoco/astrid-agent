@@ -51,7 +51,7 @@ __all__ = [
 
 AUDIO_KINDS = {"audio", "voice", "voiceover", "vo", "music", "sound"}
 PICTURE_BED_TRACKS = ("plate",)
-TEXT_PARAM_KEYS = ("text", "title")
+TEXT_PARAM_KEYS = ("text", "content", "title")
 _EPS = 1e-6
 
 

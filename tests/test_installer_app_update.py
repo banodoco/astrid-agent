@@ -508,6 +508,7 @@ def test_real_journal_and_installer_log_reach_doctor(installed, monkeypatch, cap
     selection.parent.mkdir(parents=True, exist_ok=True)
     selection.write_text(json.dumps({"owner": LABEL, "program_root": str(env.root), "data_root": str(env.data)}))
     env.backend.log = env.tmp_path / "actual-installer.log"
+    env.backend.diagnostic = Backend.diagnostic.__get__(env.backend, type(env.backend))
     secret_lines = ["Authorization: Bearer bearer-secret", "Cookie: session=cookie-secret",
                     '"api_key": "api-secret"', "token=token-secret", str(paths.home / "private")]
     Backend.run(env.backend, [sys.executable, "-c", "print(" + repr("\n".join(secret_lines)) + ")"])

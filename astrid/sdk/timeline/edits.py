@@ -37,7 +37,11 @@ class _EditMixin:
     _parent_clips: Callable[[], list[dict[str, Any]]]  # defined on _LookupMixin; declared so this mixin's readers are typed
 
     def add_text(self, text: str, *, at: float, hold: float, track: str = "titles", id: str | None = None) -> Clip:
-        """Add a literal parent text clip using the existing admitted clip birth."""
+        """Add bundled ``text-card`` text with a ``content`` parameter, in timeline seconds.
+
+        Motion styling is explicit: add an ``am-type`` element through the clip-add
+        API with its ``text`` parameter and the optional ``astrid_motion`` pack installed.
+        """
         if not isinstance(text, str) or not text.strip():
             raise TimelineEditError("text must be a nonempty string")
         start, duration = float(at), float(hold)
@@ -47,13 +51,13 @@ class _EditMixin:
             raise TimelineEditError("hold must be finite and positive")
         if not isinstance(track, str) or not track:
             raise TimelineEditError("track must be a nonempty parent track ID")
-        clip_id = id or self._new_id("am-type")
+        clip_id = id or self._new_id("text-card")
         if any(clip.id == clip_id for clip in self.clips()):
             raise TimelineEditError(f"clip ID {clip_id!r} already exists")
         if self._parent_clip_list() is None:
             raise TimelineEditError("parent text requires a parent clip collection")
-        row = {"id": clip_id, "clipType": "am-type", "track": track,
-               "at": self.quantize(start), "hold": self.quantize(duration), "params": {"text": text}}
+        row = {"id": clip_id, "clipType": "text-card", "track": track,
+               "at": self.quantize(start), "hold": self.quantize(duration), "params": {"content": text}}
         self.track(track, kind="visual")
         command = getattr(self, "command", None)
         if callable(command):
