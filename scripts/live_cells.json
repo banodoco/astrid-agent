@@ -1,0 +1,7 @@
+{"cells": [
+  {"cell": "tts",   "kind": "audio", "entry": "audio/qwen3_tts_custom_voice",   "mode": "tts"},
+  {"cell": "sfx", "kind": "audio", "entry": "hunyuan-foley-local", "mode": "sfx"},
+  {"cell": "t2i",   "kind": "image", "entry": "qwen-image-2.1-turbo",           "mode": "t2i"},
+  {"cell": "edit",  "kind": "image", "entry": "edit/qwen_image_2_1_turbo_edit", "mode": "edit"},
+  {"cell": "music", "kind": "audio", "entry": "audio/ace_step_1_5_t2a_song",    "mode": "music"}
+]}
