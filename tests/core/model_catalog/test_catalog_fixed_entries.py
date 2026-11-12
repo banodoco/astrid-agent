@@ -46,7 +46,9 @@ def test_fixed_entry_dry_run(entry_id, mode, paid_controls, tmp_path, capsys, mo
 
 def test_unqualified_wan_i2v_is_not_offered():
     entry = next(e for e in ModelRegistry.load_default().list_all() if e.id == "wan-2.2")
-    assert "i2v" not in entry.modes
+    assert "i2v" in entry.modes
+    assert set(entry.modes["i2v"].backends) == {"cloud"}
+    assert entry.modes["i2v"].backends["cloud"].endpoint == "fal-ai/wan/v2.2-a14b/image-to-video/turbo"
 
 
 # scail-2's full dry run waits for banodoco/astrid-dev#607.

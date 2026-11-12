@@ -646,7 +646,7 @@ models:
   # =========================================================================
   # wan-2.2 — Wan 2.2 A14B (text-to-video + image-to-video + first-last-frame)
   #
-  # The unqualified i2v mode is omitted until it can be validated live.
+  # The unqualified local i2v route is omitted until it can be validated live; the cloud route stays.
   # No local t2v template exists; wan2.1 substitution is forbidden (SD-001).
   #
   # Cloud endpoints (fal):
@@ -680,6 +680,27 @@ models:
         backends:
           cloud:
             endpoint: fal-ai/wan/v2.2-a14b/text-to-video/turbo
+      i2v:
+        supports:
+          - prompt
+          - negative_prompt
+          - seed
+          - image_ref
+          - resolution
+          - frames
+          - guidance_scale
+          - steps
+          - shift
+          - loras
+          - enable_safety_checker
+          - enable_prompt_expansion
+          - acceleration
+        requires:
+          - prompt
+          - image_ref
+        backends:
+          cloud:
+            endpoint: fal-ai/wan/v2.2-a14b/image-to-video/turbo
       flf:
         supports:
           - prompt
