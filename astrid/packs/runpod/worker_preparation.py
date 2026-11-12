@@ -1409,6 +1409,13 @@ async def acquire_target(
             )
         # Every lifecycle operation must contain one concrete POST, including
         # callers without an attempt cap. The journal owns every retry.
+        if not hasattr(config, "ram_tiers_enabled"):
+            # Minimal provider configurations must also produce a single RAM
+            # tier. Set it explicitly rather than let lifecycle infer a matrix.
+            import copy
+
+            config = copy.copy(config)
+            config.ram_tiers_enabled = False
         storages = {name for name in [getattr(config, "storage_name", None),
                                       *getattr(config, "storage_volumes", ())] if name}
         exact_volume = getattr(config, "network_volume_id", None) is not None
