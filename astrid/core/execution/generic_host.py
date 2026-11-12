@@ -7219,14 +7219,15 @@ class GenericPackHost:
         if entry == WORKFLOW_FILE_ENTRY:
             # A workflow-file job (describe_workflow's id): no named entry, its bundle ships in the job.
             entry = None
+        # Timing, the local failure receipt and claimed-job attachment are RunPod's; other
+        # machine kinds behave as before.
+        is_runpod = policy.get("kind") == "runpod"
         provider = target_context.get(kind=policy.get("kind"), engine=policy.get("engine"),
                                       preferences=policy.get("preferences"), **(
-                                          {"job": True} if policy.get("kind") == "runpod" else {}))
+                                          {"job": True} if is_runpod else {}))
         machine = resolve_machine(policy["kind"]).for_host(
             provider, begin=lambda lease: target_context.begin(lease, cancel_signal),
             done=target_context.done)
-        # Timing and the local failure receipt are RunPod's; other machine kinds behave as before.
-        is_runpod = policy.get("kind") == "runpod"
         timing = phase_timing.PhaseTiming() if is_runpod else None
         job = MachineJob(
             entry=entry, mode=metadata.get("mode"), policy=policy,
