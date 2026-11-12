@@ -23,6 +23,37 @@ def manifest():
     return value
 
 
+REPOSITORY_BAD_INPUTS = (
+    "https://user%3AFAKE_SECRET%40example.invalid/l.git",
+    "https://[::1]/l.git", "https://127.0.0.1/l.git", "https://git\nhub.com/l.git",
+    "https://github.com/l.git//", " https://github.com/l.git", "https://github.com/l.git ",
+    "HTTPS://github.com/l.git", "https://github.com/l.git?", "https://github.com/l.git#",
+    "https://github.com:/l.git", "https://github.com/a\\b", "https://github.com/" + "a" * 10000,
+)
+
+
+@pytest.mark.parametrize("value", REPOSITORY_BAD_INPUTS)
+def test_repository_identity_rejects_malformed_public_urls(value):
+    from astrid.packs.runpod import managed_sources
+
+    assert tools.repository_identity(value) is None, repr(value)
+    assert managed_sources._repository_identity(value) is None, repr(value)
+    with pytest.raises(ValueError, match="repository") as caught:
+        tools.validate_manifest({"schema_version": 1, "lifecycle": {
+            "repo": value, "sha": "a" * 40, "version": "0.3.1.dev0"}})
+    assert "FAKE_SECRET" not in str(caught.value)
+
+
+def test_repository_identity_copies_are_identical():
+    from astrid.packs.runpod import managed_sources
+
+    assert [tools.repository_identity(value) for value in REPOSITORY_BAD_INPUTS] == [
+        managed_sources._repository_identity(value) for value in REPOSITORY_BAD_INPUTS]
+    assert tools.repository_identity("https://GITHUB.com/a/b.git/") == ("github.com", "/a/b.git")
+    assert tools.repository_identity("https://github.com/a/b.git") != tools.repository_identity(
+        "https://github.com/a/b")
+
+
 def test_download_sends_astrid_user_agent(tmp_path, monkeypatch):
     import io
 

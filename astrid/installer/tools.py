@@ -13,6 +13,8 @@ import tarfile
 import urllib.parse
 import urllib.request
 import zipfile
+import unicodedata
+from urllib.parse import urlsplit
 from pathlib import Path, PurePosixPath
 
 from runtime_protocol import platform
@@ -29,8 +31,8 @@ MANIFEST_SOURCE_REPOSITORIES = {
     "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
 }
 # The lifecycle identity (repository, revision, version) has one source: packs/runpod/pins.json.
-# Read with the stdlib: the installer's import closure is a fixed file list (see
-# tests/test_installer_wheel.py), so it must not import canonical_pins/engine_recipe.
+# The lifecycle check reads the staged Agent's pins.json with stdlib JSON. It
+# deliberately does not import canonical_pins into the installer closure.
 LIFECYCLE_VERSION = json.loads(
     (Path(__file__).resolve().parents[1] / "packs" / "runpod" / "pins.json").read_text(encoding="utf-8")
 )["sources"]["lifecycle"]["version"]
@@ -83,8 +85,7 @@ def validate_manifest(value: dict) -> dict:
                 or not isinstance(pin["version"], str)
                 or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", pin["version"])):
             raise ValueError("The lifecycle source must include a full git SHA and exact version.")
-        repository = source_repo(pin["repo"])
-        if isinstance(repository, str) and repository != MANIFEST_SOURCE_REPOSITORIES["lifecycle"]:
+        if repository_identity(pin["repo"]) != repository_identity(MANIFEST_SOURCE_REPOSITORIES["lifecycle"]):
             raise ValueError("The lifecycle source repository does not match its reviewed identity.")
     for name in sources:
         pin = value[name]
@@ -257,6 +258,37 @@ def _source_git() -> str:
     if git is None:
         raise ValueError("Source staging operations require Git on PATH or a valid recorded Git executable.")
     return git
+
+
+def repository_identity(value: str) -> tuple[str, str] | None:
+    """Return a strict public HTTPS repository identity, or None for any malformed input."""
+    if not isinstance(value, str):
+        return None
+    if (len(value) > 200 or not value.startswith("https://")
+            or any(char.isspace() or unicodedata.category(char) == "Cc" for char in value)):
+        return None
+    try:
+        url = urlsplit(value)
+        if (url.scheme != "https" or not url.netloc or "@" in url.netloc or ":" in url.netloc
+                or "[" in url.netloc or "]" in url.netloc or "?" in value or "#" in value
+                or not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*", url.netloc, re.IGNORECASE)
+                or not url.path.startswith("/") or not url.path):
+            return None
+        labels = url.netloc.lower().split(".")
+        if ((len(labels) == 4 and all(label.isdigit() for label in labels))
+                or any(len(label) > 63 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+               for label in labels)):
+            return None
+        segments = url.path[1:].split("/")
+        if segments and segments[-1] == "":
+            segments.pop()
+        if (not segments or any(not segment or segment in {".", ".."} or "%" in segment
+                                or not re.fullmatch(r"[A-Za-z0-9._-]+", segment) for segment in segments)):
+            return None
+    except ValueError:
+        return None
+    path = "/" + "/".join(segments)
+    return url.netloc.lower(), path
 
 
 def local_source(repo: str, sha: str, archive: Path) -> None:

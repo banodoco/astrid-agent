@@ -13,7 +13,10 @@ import os
 import shutil
 import subprocess
 import sys
+import re
+import unicodedata
 from pathlib import Path
+from urllib.parse import urlsplit
 
 LOGGER = logging.getLogger(__name__)
 AGENT_ROOT = Path(__file__).resolve().parents[3]
@@ -40,6 +43,63 @@ def _installed_manifest_path() -> Path:
     return Path(sys.prefix).absolute().parent / "manifest.json"
 
 
+_REMEDY = ("Install a release manifest whose pins match this Agent, or change "
+           "astrid/packs/runpod/pins.json in this checkout to the pin you want to test.")
+
+
+def _show_repository(value: object) -> str:
+    identity = _repository_identity(value)
+    return f"https://{identity[0]}{identity[1]}" if identity is not None else "<invalid>"
+
+
+def _show_sha(value: object) -> str:
+    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) else "<invalid>"
+
+
+def _show_version(value: object) -> str:
+    return value if isinstance(value, str) and re.fullmatch(
+        r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", value) else "<invalid>"
+
+
+def _repository_identity(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, str):
+        return None
+    if (len(value) > 200 or not value.startswith("https://")
+            or any(char.isspace() or unicodedata.category(char) == "Cc" for char in value)):
+        return None
+    try:
+        url = urlsplit(value)
+        if (url.scheme != "https" or not url.netloc or "@" in url.netloc or ":" in url.netloc
+                or "[" in url.netloc or "]" in url.netloc or "?" in value or "#" in value
+                or not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*", url.netloc, re.IGNORECASE)
+                or not url.path.startswith("/") or not url.path):
+            return None
+        labels = url.netloc.lower().split(".")
+        if ((len(labels) == 4 and all(label.isdigit() for label in labels))
+                or any(len(label) > 63 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+               for label in labels)):
+            return None
+        segments = url.path[1:].split("/")
+        if segments and segments[-1] == "":
+            segments.pop()
+        if (not segments or any(not segment or segment in {".", ".."} or "%" in segment
+                                or not re.fullmatch(r"[A-Za-z0-9._-]+", segment) for segment in segments)):
+            return None
+    except ValueError:
+        return None
+    path = "/" + "/".join(segments)
+    return url.netloc.lower(), path
+
+
+def pin_mismatch_message(name: str, manifest_pin: dict, canonical: dict) -> str:
+    version = (f" version {_show_version(manifest_pin.get('version'))}." if "version" in manifest_pin else "")
+    canonical_version = (f" version {_show_version(canonical.get('version'))}." if "version" in canonical else "")
+    return (f"installed manifest {name} pin differs from the Agent's canonical pin. "
+            f"Manifest: repository {_show_repository(manifest_pin.get('repository'))} revision {_show_sha(manifest_pin.get('revision'))}.{version} "
+            f"Agent (astrid/packs/runpod/pins.json): repository {_show_repository(canonical.get('repository'))} "
+            f"revision {_show_sha(canonical.get('revision'))}.{canonical_version} {_REMEDY}")
+
+
 def _pins() -> dict[str, tuple[str, str]]:
     """Map each remote_placement.SOURCE_DIRS name to (repository, commit)."""
     from astrid.core.generation import engine_recipe
@@ -52,19 +112,44 @@ def _pins() -> dict[str, tuple[str, str]]:
     manifest_path = _installed_manifest_path()
     try:
         manifest = json.loads(manifest_path.read_bytes())
-        agent, runtime, lifecycle = manifest["agent"], manifest["runtime"], manifest["lifecycle"]
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError) as exc:
         raise ManagedSourcesError(
             f"RunPod needs the installed release manifest at {manifest_path} to pin its bootstrap sources") from exc
-    if runtime["sha"] != runtime_commit:
+    if not isinstance(manifest, dict):
+        raise ManagedSourcesError(f"the installed release manifest at {manifest_path} is not a JSON object")
+    try:
+        agent, runtime = manifest["agent"], manifest["runtime"]
+        runtime_sha = runtime["sha"]
+    except (KeyError, TypeError) as exc:
+        raise ManagedSourcesError(
+            f"RunPod needs the installed release manifest at {manifest_path} to name the agent and runtime pins") from exc
+    lifecycle = manifest.get("lifecycle")
+    if lifecycle is None:
+        raise ManagedSourcesError(
+            f"the installed release manifest at {manifest_path} has no lifecycle pin; RunPod needs one that matches "
+            f"this Agent. {_REMEDY}")
+    if not isinstance(lifecycle, dict):
+        raise ManagedSourcesError(
+            f"the installed release manifest's lifecycle pin is not an object. {_REMEDY}")
+    if runtime_sha != runtime_commit:
         raise ManagedSourcesError("installed manifest runtime pin differs from runtime.lock.json")
     # The lifecycle and VibeComfy pods run are the Agent's canonical pins; a manifest that names
     # a different lifecycle or VibeComfy would split what is installed locally from what ships.
     canonical = canonical_pin("lifecycle")
-    if (lifecycle["sha"], lifecycle["repo"]) != (canonical["revision"], canonical["repository"]):
-        raise ManagedSourcesError("installed manifest lifecycle pin differs from the Agent's canonical pin")
-    if manifest.get("vibecomfy", {}).get("sha", vibe.revision) != vibe.revision:
-        raise ManagedSourcesError("installed manifest VibeComfy pin differs from the Agent's canonical pin")
+    if (_repository_identity(lifecycle.get("repo")) != _repository_identity(canonical["repository"])
+            or lifecycle.get("sha") != canonical["revision"]
+            or lifecycle.get("version") != canonical.get("version")):
+        raise ManagedSourcesError(pin_mismatch_message(
+            "lifecycle", {"repository": lifecycle.get("repo"), "revision": lifecycle.get("sha"),
+                          "version": lifecycle.get("version")}, canonical))
+    manifest_vibe = manifest.get("vibecomfy", {})
+    if not isinstance(manifest_vibe, dict):
+        raise ManagedSourcesError(
+            f"the installed release manifest's vibecomfy pin is not an object. {_REMEDY}")
+    if manifest_vibe.get("sha", vibe.revision) != vibe.revision:
+        raise ManagedSourcesError(pin_mismatch_message(
+            "VibeComfy", {"repository": manifest_vibe.get("repo"), "revision": manifest_vibe.get("sha")},
+            {"repository": vibe.repository, "revision": vibe.revision}))
     return {
         "src/astrid-agent": (agent.get("repo", "https://github.com/banodoco/astrid-agent"), agent["sha"]),
         "src/astrid-runtime": (runtime.get("repo", "https://github.com/banodoco/astrid-runtime"), runtime_commit),
