@@ -129,6 +129,10 @@ def provider_failure(exc):
     return status, retry_after
 
 
+class ProviderNotStarted(ProviderRefused):
+    """Admission failed before the provider operation was invoked."""
+
+
 class ProviderGate:
     """Cross-process account pacing; timestamps are shared wall-clock seconds."""
 
@@ -331,7 +335,10 @@ class ProviderGate:
         cleanup = _provider_cleanup.get()
         deadline = self.clock() + 30. if deadline is None else deadline
         if not cleanup:
-            self.before_call(deadline)
+            try:
+                self.before_call(deadline)
+            except ProviderRefused as exc:
+                raise ProviderNotStarted(exc.retry_after) from exc
         _check_provider_cancelled()
         try:
             result = operation(*args, **kwargs)
@@ -463,7 +470,10 @@ async def async_provider_call(api_key, operation, *args, already_gated=False, **
         check()
         if already_gated:
             return operation(*args, **kwargs)
-        gate = account_gate(api_key)
+        try:
+            gate = account_gate(api_key)
+        except ProviderRefused as exc:
+            raise ProviderNotStarted(exc.retry_after) from exc
         return gate.call(operation, *args, deadline=_provider_deadline.get(), **kwargs)
 
     def run():

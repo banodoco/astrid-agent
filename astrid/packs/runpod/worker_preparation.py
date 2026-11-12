@@ -29,7 +29,7 @@ from astrid.core.generation.engine_contracts import Gate, PlacementRefused
 from astrid.core.util.time import utc_now_iso
 
 from .pod_fields import InvalidPodField, pod_field
-from .provider import (ProviderRefused, account_gate, async_provider_call, async_provider_operation,
+from .provider import (ProviderNotStarted, ProviderRefused, account_gate, async_provider_call, async_provider_operation,
                        provider_budget, provider_call)
 
 _SHARED_GATES = {
@@ -1444,6 +1444,7 @@ async def acquire_target(
             else:
                 window = capacity_window_seconds
 
+            pre_create = dict(attempt)
             pending = {
                 **attempt,
                 "state": "allocation_pending",
@@ -1466,6 +1467,13 @@ async def acquire_target(
                         max_wait_sec=0 if max_create_attempts is not None else window,
                         retry_interval_sec=retry_interval_seconds,
                     )
+            except ProviderNotStarted:
+                # Only admission can produce this type. No provider operation
+                # began, so restore the exact pre-create custody and counter.
+                replace_target_record(handle_path, {
+                    **pre_create, "safe_to_retry": True, "reconciliation_required": False,
+                }, operation_id=operation_id)
+                raise
             except AllocationUnknown as exc:
                 unknown = {
                     **attempt,
