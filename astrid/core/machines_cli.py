@@ -454,16 +454,27 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
             else:
                 result = setup(validated)
         except Exception:
-            raise RuntimeError("RunPod setup action failed") from None
+            # Invocation exceptions can contain credential/provider details. Keep
+            # the user-facing failure fixed and sanitized; action result codes
+            # below are safe to report when the Runtime returns one.
+            result = type("SetupFailure", (), {
+                "ok": False,
+                "error": {"code": "runpod_setup_invocation_failed"},
+            })()
         ok = bool(getattr(result, "ok", True))
         payload = {"ok": ok, "preferences": validated}
         if not ok:
-            payload["error"] = "could not save preferences; retry `astrid machines setup`"
+            error = getattr(result, "error", None)
+            code = error.get("code") if isinstance(error, dict) else None
+            if not isinstance(code, str) or not code.strip():
+                code = "runpod_setup_failed"
+            payload["error"] = {"code": code, "message":
+                                "RunPod preferences were not saved; check the error code and retry `astrid machines setup`."}
         print(json.dumps(payload, sort_keys=True, default=str) if as_json else
               (f"Saved RunPod machine policy: GPUs {', '.join(chosen)}; datacenter {datacenter or 'any'}; "
                f"budget ${float(budget):.2f}/run; volume {selected_volume.get('name') if selected_volume else 'ephemeral disk'}. "
                "No machine was claimed; each paid run still needs consent."
-               if ok else f"RunPod setup failed; retry `astrid machines setup` ({payload['error']})."))
+               if ok else f"RunPod setup failed ({payload['error']['code']}): {payload['error']['message']}"))
         return 0 if ok else 1
     except (ValueError, RunPodSetupRequiredError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}) if as_json else str(exc))

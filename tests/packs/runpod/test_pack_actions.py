@@ -172,7 +172,7 @@ def test_manifest_routes_setup_and_ls_to_the_existing_host_owner():
 
     manifest = Path(__file__).parents[3] / "astrid" / "packs" / "runpod" / "pack.yaml"
     text = manifest.read_text()
-    assert "metadata: {host_target_operation: setup}" in text
+    assert "metadata: {host_target_operation: setup, project_scope: optional}" in text
     assert "metadata: {host_target_operation: ls}" in text
     assert "host_target_operation: status" in text
     assert "host_target_operation: release" in text

@@ -1379,6 +1379,24 @@ def test_machines_setup_failed_action_keeps_saved_policy(monkeypatch, capsys):
     assert saved == before
 
 
+def test_machines_setup_reports_sanitized_action_error_code(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: {
+        "provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+        "gpu_types": ["RTX A"], "budget_cap_usd": 5,
+    })
+    assert machines_cli.main(["setup", "--datacenter", "any", "--json"],
+        volumes=lambda: [], offered_gpus=lambda *_: ["RTX A"],
+        setup=lambda _: SimpleNamespace(ok=False, error={"code": "settings_write_refused",
+                                                          "message": "provider-secret-body"})) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["code"] == "settings_write_refused"
+    assert "provider-secret-body" not in str(payload)
+
+
 def test_machines_setup_interactive_datacenter_keeps_gpu_order(monkeypatch, capsys):
     from astrid.core import machines_cli
     from astrid.core.generation import settings
