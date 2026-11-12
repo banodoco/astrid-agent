@@ -101,6 +101,11 @@ EXCEPTIONS = frozenset({
     'DeadlineExceeded', 'UnknownError',
     'PaidSelectionError', 'RunPodSetupRequiredError', 'OfferObservationError',
     'CapacityExhaustedError', 'CapacityWaitTimeout',
+    'ManagedSourcesError', 'WorkerPreparationError', 'PreparationJournalError',
+    'CapacityWaitCancelled',
+    'AllocationRejected', 'AttachmentPending', 'BuildError', 'CapacityUnavailable',
+    'InvalidPodField', 'ManagedSessionError', 'ResetError', 'StagingEvidenceStaleError',
+    'WorkerOwnerConflict', 'WorkerProcessError', 'BoundedObserverUnreaped', 'MachineCancelled',
 })
 
 
