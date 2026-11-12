@@ -112,8 +112,9 @@ def _require_clean_base_render(client: Any, run_id: str, draft: Any) -> dict[str
             or task.get("run_id") != run_id or task.get("state") != "succeeded"
             or task.get("capability_id") != "rendering.render"):
         raise FastLaneError("verification BASE needs its successful original render task")
-    envelope = task.get("spec")
-    spec = envelope.get("spec") if isinstance(envelope, Mapping) else None
+    from astrid.sdk.task_spec import task_executable_spec
+
+    spec = task_executable_spec(task)
     inputs = spec.get("inputs") if isinstance(spec, Mapping) else None
     if not isinstance(inputs, Mapping):
         raise FastLaneError("verification BASE render input envelope is unavailable")

@@ -333,7 +333,7 @@ def test_claim_wait_policy_is_recognized_and_ctrl_c_cancels_known_task(monkeypat
     from astrid.sdk import invocation
     policy = claim_policy()
     policy["paid_consent"].update(capacity_timeout_seconds=600, wait_for_capacity=True)
-    task = {"spec": {"capability_id": "runpod.claim", "inputs": {"placement_policy": json.dumps(policy)}}}
+    task = {"spec": {"spec": {"capability_id": "runpod.claim", "inputs": {"placement_policy": json.dumps(policy)}}}}
     assert invocation._runpod_generation_policy(task) == json.loads(json.dumps(policy["paid_consent"]))
     cancelled = []
     client = SimpleNamespace(tasks=SimpleNamespace(cancel=lambda *args, **kwargs: cancelled.append((args, kwargs))))
@@ -381,7 +381,7 @@ def test_claim_follow_uses_capacity_timeout_and_heartbeats_without_one_hour_ceil
     def show(task_id):
         state = "succeeded" if complete and now[0] >= 3700 else "running"
         return SimpleNamespace(ok=True, data={"state": state, "result": {"outputs": []},
-            "spec": {"capability_id": "runpod.claim", "inputs": {"placement_policy": json.dumps(policy)}}})
+            "spec": {"spec": {"capability_id": "runpod.claim", "inputs": {"placement_policy": json.dumps(policy)}}}})
 
     monkeypatch.setattr(invocation.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(invocation.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))

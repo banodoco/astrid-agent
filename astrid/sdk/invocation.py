@@ -49,6 +49,7 @@ from .execution_request import (
     reject_caller_execution_binding,
 )
 from .results import DiscoveryResult, InvocationResult, _json_safe, _json_safe_mapping
+from .task_spec import task_executable_spec
 
 _MAX_GENERATION_METADATA_BYTES = 16 * 1024
 _MAX_GENERATION_METADATA_DEPTH = 8
@@ -3402,7 +3403,7 @@ def _capability_declares_outputs(capability: Any) -> bool:
 
 
 def _runpod_generation_policy(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    spec = task.get("spec")
+    spec = task_executable_spec(task)
     inputs = spec.get("inputs") if isinstance(spec, Mapping) else None
     policy = inputs.get("placement_policy") if isinstance(inputs, Mapping) else None
     try:
@@ -3482,6 +3483,7 @@ def _wait_for_kernel_task_loop(
     started = last_heartbeat = time.monotonic()
     effective_timeout = float(timeout_seconds)
     deadline = started + effective_timeout
+    previous = None
     while True:
         try:
             observed = show(task_id)
@@ -3527,10 +3529,38 @@ def _wait_for_kernel_task_loop(
                   and capacity_timeout > 0):
                 effective_timeout = float(timeout_seconds) + capacity_timeout
                 deadline = started + effective_timeout
-            if time.monotonic() - last_heartbeat >= 60:
-                print(f"Still following RunPod task {task_id}; press Ctrl-C to cancel.", file=sys.stderr, flush=True)
-                last_heartbeat = time.monotonic()
         state = str(task.get("state") or task.get("status") or "").lower()
+        now = time.monotonic()
+        reason = task.get("waiting_reason") or task.get("blocked_reason")
+        signature = (state, reason)
+        if signature != previous or now - last_heartbeat >= 60:
+            from astrid.core.cli.task_progress import render_observation_line, task_observation
+
+            observation = task_observation(task, kind="progress", followed_for_seconds=now - started,
+                                           now=datetime.now(timezone.utc))
+            # The wait duration is more useful here than the task's creation age.
+            observation["elapsed_seconds"] = max(0, int(now - started))
+            line = render_observation_line(observation)
+            line += f"  waiting={reason or '-'}"
+            if reason == "insufficient_storage":
+                root = task.get("realm_root")
+                location = f" under {root}" if isinstance(root, str) and root else " in the Runtime realm"
+                line += f"; free disk space{location}; the Runtime needs at least 1 GiB free"
+            if reason in {"waiting_for_worker", "waiting_for_gpu"}:
+                holders = {key: value for key, value in task.items() if "holder" in key and value}
+                details = task.get("waiting_details") or task.get("waiting_reason_details")
+                if isinstance(details, Mapping):
+                    holders.update({key: value for key, value in details.items() if "holder" in key and value})
+                if holders:
+                    line += "; " + ", ".join(f"{key}={value}" for key, value in holders.items())
+                else:
+                    line += "; inspect running tasks for the resource holder"
+            if now - last_heartbeat >= 60:
+                placement = "RunPod task" if runpod_policy is not None else "task"
+                line = f"Still following {placement} {task_id}: " + line
+                last_heartbeat = now
+            print(line, file=sys.stderr, flush=True)
+        previous = signature
         attempt_id = str(task.get("attempt_id") or "")
         if state in {"succeeded", "completed"}:
             settled = task.get("result")
@@ -3626,7 +3656,7 @@ def _wait_for_kernel_task_loop(
                 },
             }, False, attempt_id
 
-        remaining = deadline - time.monotonic() if deadline is not None else float(poll_seconds)
+        remaining = deadline - now if deadline is not None else float(poll_seconds)
         if deadline is not None and remaining <= 0:
             return {
                 "ok": False,
@@ -3645,7 +3675,7 @@ def _wait_for_kernel_task_loop(
                     },
                 },
             }, False, attempt_id
-        time.sleep(min(float(poll_seconds), remaining, 60.0 if runpod_policy is not None else float(poll_seconds)))
+        time.sleep(min(float(poll_seconds), remaining, max(0.001, 60.0 - (now - last_heartbeat))))
 
 
 def _observe_task_invocation(

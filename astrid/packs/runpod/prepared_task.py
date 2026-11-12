@@ -548,8 +548,9 @@ def prepared_selection_digest(selection: PreparedWorkerSelection) -> str:
 
 
 def _task_inputs(task: Mapping[str, Any]) -> Mapping[str, Any]:
-    spec = task.get("spec", {})
-    executable = spec.get("spec") if isinstance(spec, Mapping) else None
+    from astrid.sdk.task_spec import task_executable_spec
+
+    executable = task_executable_spec(task)
     inputs = executable.get("inputs") if isinstance(executable, Mapping) else None
     if not isinstance(inputs, Mapping):
         raise PreparedWorkerError("prepared task executable inputs are invalid")
