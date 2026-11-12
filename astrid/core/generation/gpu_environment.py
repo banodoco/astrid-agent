@@ -38,10 +38,13 @@ def gpu_pack(capability_id: str) -> str | None:
     if capability_id == "wan2gp.generate_video":
         return "wan2gp"
     pack, _, action = capability_id.partition(".")
-    if pack == "comfy_wrap" and action == "run":
-        return "vibecomfy"
     if pack == "vibecomfy" and action and action not in _OFFLINE_COMFY_ACTIONS:
         return "vibecomfy"
+    aliases_path = _PACKS / "vibecomfy" / "gpu-capabilities.json"
+    if aliases_path.is_file():
+        aliases = json.loads(aliases_path.read_text(encoding="utf-8"))
+        if capability_id in aliases:
+            return "vibecomfy"
     return None
 
 

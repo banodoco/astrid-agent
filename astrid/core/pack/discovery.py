@@ -48,11 +48,11 @@ from astrid.core.pack.loader import discover_packs as _default_discover_packs
 DiscoverPacksFn = Callable[..., "tuple[PackDefinition, ...]"]
 
 # Source-kind labels in discovery (and therefore priority) order.
-SOURCE_KINDS: tuple[str, ...] = ("source", "local", "managed", "extra", "env")
+SOURCE_KINDS: tuple[str, ...] = ("source", ExternalPackSource.LOCAL.value, "managed", "extra", "env")
 # The project ``local`` pack id. Only ``<project_root>/astrid/packs/local`` is
 # admitted under it, as the ``local`` layer; a folder or pack with this id in any
 # other root is never loaded. Editable user effects live in ``personal``.
-LOCAL_PACK_ID = "local"
+LOCAL_PACK_ID = ExternalPackSource.LOCAL.value
 MANAGED_SOURCE_KIND = "managed"
 ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
 
@@ -725,7 +725,7 @@ def discover_pack_metadata(
         for pack in local_packs:
             if pack.id == LOCAL_PACK_ID and Path(pack.root).resolve() == local_pack_root.resolve():
                 _register_pack_name(Path(pack.root), pack.id)
-                _add(pack, "local")
+                _add(pack, ExternalPackSource.LOCAL.value)
 
     if managed_inventory is not None:
         for source in managed_inventory.sources:
