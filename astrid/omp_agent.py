@@ -700,6 +700,13 @@ def main(argv: list[str] | None = None) -> int:
 
         return action_main(rest[1:])
 
+    # The installer's `astrid` command reaches this entry point directly (run-astrid), not
+    # astrid.console, so it needs the same `packs` route for `astrid packs add …` to work.
+    if rest and rest[0] == "packs":
+        from .core.pack.cli import main as packs_main
+
+        return packs_main(rest[1:])
+
     if rest and rest[0] == "install":
         return _dispatch_toolkit(rest)
 

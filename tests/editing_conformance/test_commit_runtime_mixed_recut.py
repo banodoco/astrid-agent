@@ -90,7 +90,7 @@ def test_mixed_function_receipt_and_authenticated_exact_undo(
     title = next(row for row in parent["clips"] if row["id"] == "old-title")
     assert (title["track"], title["hold"], title["at"]) == ("titles", 2.5, 5)
     assert timeline_intent.for_s(title) == 2.5
-    assert next(row for row in parent["clips"] if row["id"] == "chapter-one")["params"]["text"] == "Chapter one"
+    assert next(row for row in parent["clips"] if row["id"] == "chapter-one")["params"]["content"] == "Chapter one"
 
     if overlap:
         editor("peer").commit(lambda t: t.clip("old-title").on(6))

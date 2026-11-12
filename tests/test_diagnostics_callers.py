@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -35,6 +35,11 @@ def doctor_cli():
     return subprocess.run([sys.executable, '-m', 'astrid_runtime', 'doctor'],
                           capture_output=True, text=True, timeout=30)
 
+def backend_double(log):
+    backend = SimpleNamespace(log=log)
+    backend.diagnostic = MethodType(Backend.diagnostic, backend)
+    return backend
+
 @pytest.mark.parametrize('rollback', [False, True])
 def test_transaction_producers_to_cli_and_download(tmp_path, monkeypatch, rollback):
     home = tmp_path / 'home'
@@ -45,6 +50,7 @@ def test_transaction_producers_to_cli_and_download(tmp_path, monkeypatch, rollba
     write_json(_install_record_path(home), {'owner': 'haus.astrid.runtime',
                'program_root': str(env.root), 'data_root': str(env.data)})
     env.backend.log = tmp_path / 'actual-installer.log'
+    env.backend.diagnostic = Backend.diagnostic.__get__(env.backend, type(env.backend))
     lines = ['installer producer marker', 'Authorization: Bearer auth-secret',
              'Cookie: sid=cookie-secret', '"cookie": "sid=json-cookie-secret"',
              'OPENROUTER_API_KEY=sk-or-v1-openroutersecret', 'token=token-secret',
@@ -111,7 +117,7 @@ def test_new_failed_job_is_not_hidden_by_prior_direct_journal(tmp_path, monkeypa
     monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'home/.local/state'))
     prior_log = platform.log_dir() / 'install.log'
     prior_log.parent.mkdir(parents=True, exist_ok=True)
-    Backend.run(SimpleNamespace(log=prior_log), [sys.executable, '-c', "print('previous direct install output')"])
+    Backend.run(backend_double(prior_log), [sys.executable, '-c', "print('previous direct install output')"])
     produce_direct(root, data, old, prior_log, monkeypatch, prior_step)
     prior = read_json(root / 'update-transaction.json')
     assert prior['step'] == prior_step
@@ -153,7 +159,7 @@ def test_new_failed_job_is_not_hidden_by_prior_direct_journal(tmp_path, monkeypa
 
 
 def produce_direct(root, data, old, log, monkeypatch, step):
-    backend = SimpleNamespace(log=log)
+    backend = backend_double(log)
     installer = core.Installer(root, data, backend)
     monkeypatch.setattr(core, 'install_runtime', lambda *_: None)
     monkeypatch.setattr(core, 'install_launcher', lambda *_: None)
@@ -183,7 +189,7 @@ def test_later_direct_transaction_supersedes_failed_job(tmp_path, monkeypatch):
     assert update_job.run_job(root, job['operation_id'])['state'] == 'failed'
     log = platform.log_dir() / 'install.log'
     log.parent.mkdir(parents=True, exist_ok=True)
-    Backend.run(SimpleNamespace(log=log), [sys.executable, '-c', "print('later direct output')"])
+    Backend.run(backend_double(log), [sys.executable, '-c', "print('later direct output')"])
     produce_direct(root, data, old, log, monkeypatch, 'complete')
     cli = doctor_cli()
     world = door.start_door_world(tmp_path / 'door')

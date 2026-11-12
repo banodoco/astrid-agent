@@ -321,3 +321,19 @@ def test_solver_version_must_match_before_environment_creation(tmp_path, monkeyp
     with pytest.raises(gpu.GPUEnvironmentError, match="requires uv"):
         gpu.provision_environment(plan)
     assert not Path(plan["root"]).exists()
+
+
+@pytest.mark.parametrize("content", [None, "{not json", "null", "{}", '["comfy_wrap.run", 3]'])
+def test_a_missing_or_malformed_vibecomfy_gpu_declaration_means_no_aliases_and_never_raises(content, tmp_path, monkeypatch):
+    packs = tmp_path / "packs"
+    (packs / "vibecomfy").mkdir(parents=True)
+    if content is not None:
+        (packs / "vibecomfy" / "gpu-capabilities.json").write_text(content, encoding="utf-8")
+    monkeypatch.setattr(gpu, "_PACKS", packs)
+    assert gpu.gpu_pack("comfy_wrap.run") is None
+    assert gpu.gpu_pack("unrelated.action") is None
+    assert gpu.gpu_pack("vibecomfy.run") == "vibecomfy"
+
+
+def test_the_shipped_vibecomfy_gpu_declaration_routes_comfy_wrap_run():
+    assert gpu.gpu_pack("comfy_wrap.run") == "vibecomfy"

@@ -158,11 +158,11 @@ def test_windows_uninstall_deletes_default_workspace_while_lock_is_held(tmp_path
         deletions.append(path)
         return remove_tree(path, *args, **kwargs)
 
-    monkeypatch.setattr(shutil, "rmtree", windows_remove)
-
-    assert cli.main(["--uninstall", "--delete-data"]) == 0
-    assert data in deletions
-    assert not data.exists()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(shutil, "rmtree", windows_remove)
+        assert cli.main(["--uninstall", "--delete-data"]) == 0
+        assert data in deletions
+        assert not data.exists()
     assert not root.exists()
     assert lock_path.is_file()
     assert not held

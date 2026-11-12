@@ -5,7 +5,7 @@ Load `timeline` for the normal edit path and this reference for helper details.
 | Call | Use |
 |---|---|
 | `t.add(path, at=, hold=, track=, id=)` | Imports a local image, video, or audio file and places it. With `hold`, a still lasts that long and video or audio plays source seconds 0 through the hold; without it, the whole file plays. |
-| `t.add_text(text, at=, hold=, track="titles", id=)` | Adds plain text at timeline seconds. It creates a missing picture track or uses the named track. Give it an id, then read it back. |
+| `t.add_text(text, at=, hold=, track="titles", id=)` | Adds bundled `text-card` text in `params.content` at timeline seconds. It creates a missing picture track or uses the named track. Give it an id, then read it back. |
 | `t.track(name, above=, kind=)` | Creates or selects a track; `above` sets its order when new. |
 | `clip.on(seconds)` | Moves the clip start in timeline seconds and keeps its length. Use a moment string to follow a word. |
 | `clip.trim(in_s, out_s)` | Sets the source window in file seconds; the timeline start stays fixed. |

@@ -1,7 +1,7 @@
-"""add_text on the default canvas: the default type colour must read on the default background.
+"""Explicit optional motion text on the default canvas: the default type colour must read on the default background.
 
-add_text writes a bare ``am-type`` clip with only its text. The colour and the background are therefore the
-element's declared default and the canvas background, both read here from the sources the renderer uses:
+An explicit ``am-type`` clip stores its caption in ``text``; the default add_text helper uses text-card.
+The colour and the background are therefore the element's declared default and the canvas background, both read here from the sources the renderer uses:
 the element.yaml defaults (stored style), the am-type component fallback, and the canvas background of the
 Remotion composition and the builtin default theme. Explicit colours must still win over the default.
 """
@@ -18,7 +18,7 @@ from astrid.core.timeline.cuts import occurrences_from_snapshot
 from astrid.packs.rendering.actions.timeline_visualize.motion import model
 
 ROOT = Path(__file__).resolve().parents[3]
-AM_TYPE = ROOT / "astrid" / "packs" / "astrid_motion" / "rendering" / "elements" / "effects" / "am-type"
+AM_TYPE = ROOT / "tests" / "fixtures" / "packs" / "astrid_motion" / "rendering" / "elements" / "effects" / "am-type"
 COMPOSITION = ROOT / "remotion" / "src" / "ThreeTimelineComposition.tsx"
 FPS = 30
 AA_NORMAL_TEXT = 4.5
@@ -42,7 +42,7 @@ def contrast(foreground: str, background: str) -> float:
 
 
 def _canvas_backgrounds() -> dict[str, str]:
-    """The backgrounds an add_text clip can sit on by default (builtin theme, composition fallback)."""
+    """The backgrounds an explicit motion text clip can sit on by default (builtin theme, composition fallback)."""
     source = COMPOSITION.read_text(encoding="utf-8")
     fallback = re.search(r"const DEFAULT_BACKGROUND = '(#[0-9A-Fa-f]{6})';", source)
     assert fallback, "the composition must declare DEFAULT_BACKGROUND as a six-digit hex colour"
@@ -57,7 +57,7 @@ def _am_type_definition():
 
 
 def _add_text_snapshot(params: dict) -> dict:
-    """A visualize snapshot holding one clip exactly as ``Timeline.add_text`` writes it."""
+    """A visualize snapshot holding one clip exactly as an explicit motion clip stores it."""
     clip = {
         "id": "chapter-one", "clipType": "am-type", "kind": "visual", "track": "titles",
         "at": 1.0, "hold": 3.0, "duration": 3.0, "params": params,
@@ -76,10 +76,10 @@ def _add_text_snapshot(params: dict) -> dict:
 
 
 def _visualized_element(params: dict):
-    """The am-type element the visualize path builds from an add_text clip."""
+    """The am-type element the visualize path builds from an explicit motion text clip."""
     elements = model.elements_from_occurrences(occurrences_from_snapshot(_add_text_snapshot(params)), {})
     found = [element for element in elements if element.id == "chapter-one"]
-    assert len(found) == 1, "the visualize path must carry the add_text clip as one element"
+    assert len(found) == 1, "the visualize path must carry the explicit motion clip as one element"
     return found[0]
 
 
@@ -89,7 +89,7 @@ def _effective_colour(element) -> str:
 
 
 def test_default_text_is_not_stored_with_a_colour_of_its_own():
-    # add_text sends no colour, so the default is what the element paints; no backing box is added.
+    # An explicit bare motion clip sends no colour, so the default is what the element paints; no backing box is added.
     element = _visualized_element({"text": "Chapter one"})
     assert "color" not in element.params
     assert "background" not in element.params

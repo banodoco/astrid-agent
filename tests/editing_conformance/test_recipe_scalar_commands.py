@@ -100,8 +100,35 @@ def schema_options(documents, reference, project='project-1'):
 @pytest.mark.parametrize('field', ['elementRef', 'element_ref'])
 @pytest.mark.parametrize('change', ['revision', 'attach', 'remove'])
 def test_original_param_basis_refuses_new_admitted_schema(
-        admitted_param_revisions, configured_project_pack, field, change):
+        admitted_param_revisions, configured_project_pack, field, change, tmp_path, monkeypatch):
     from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
+
+    if change == 'attach':
+        # A separate installed seed provider gives the unreferenced original its
+        # own permissive schema; the admitted project revision stays explicit.
+        pack_id = 'test_reveal_seed'
+        collection = tmp_path / 'seed-inventory'
+        pack = collection / pack_id
+        element = pack / 'rendering' / 'reveal'
+        element.mkdir(parents=True)
+        (element / 'component.tsx').write_text('export default function Reveal() { return null; }\n')
+        (element / 'element.yaml').write_text(json.dumps({
+            'id': 'reveal', 'kind': 'effect', 'runtime': {'adapter': 'remotion'},
+            'schema': {'type': 'object', 'properties': {'seed': {'type': 'number'}}},
+            'defaults': {'seed': 15},
+        }))
+        (pack / 'pack.yaml').write_text(json.dumps({
+            'schema_version': 3, 'pack_api': '2.0', 'id': pack_id, 'name': pack_id,
+            'version': '1.0.0', 'status': 'active',
+            'documentation': {'kind': 'none', 'reason': 'Test fixture.'},
+            'rendering': {'effects/reveal': {'type': 'element', 'path': 'rendering/reveal/element.yaml',
+                'resources': [{'path': 'rendering/reveal/component.tsx', 'kind': 'implementation'}]}},
+        }))
+        monkeypatch.setenv('ASTRID_PACKS_PATH', os.pathsep.join([os.environ['ASTRID_PACKS_PATH'], str(collection)]))
+        from astrid.core.element.registry import clear_default_registry_cache, load_default_registry
+        clear_default_registry_cache()
+        assert load_default_registry().get('effects', 'reveal')
+
 
     original = bundle()
     ref = 'parent/clip:direct'

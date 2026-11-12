@@ -167,9 +167,6 @@ def test_admission_with_large_retained_attempt_roots_stays_in_milliseconds(
     def no_walk(*_args, **_kwargs):
         raise AssertionError("admission must not walk attempt roots")
 
-    monkeypatch.setattr(Path, "rglob", no_walk)
-    monkeypatch.setattr("os.scandir", no_walk)
-    monkeypatch.setattr("os.walk", no_walk)
     assert_budget_available = policy.assert_budget_available
     checks = 0
 
@@ -179,9 +176,15 @@ def test_admission_with_large_retained_attempt_roots_stays_in_milliseconds(
         return assert_budget_available()
 
     monkeypatch.setattr(ExecutionGuardPolicy, "assert_budget_available", count_budget_check)
-    for _ in range(100):
-        policy.assert_budget_available()
-    assert checks == 100
+    # Keep the walk guard active for the admission calls only. Pytest's
+    # tmp_path teardown scans the directory tree after the test returns.
+    with monkeypatch.context() as admission_patch:
+        admission_patch.setattr(Path, "rglob", no_walk)
+        admission_patch.setattr("os.scandir", no_walk)
+        admission_patch.setattr("os.walk", no_walk)
+        for _ in range(100):
+            policy.assert_budget_available()
+        assert checks == 100
 
 
 def test_live_evidence_sample_hashes_unchanged_inputs_once(tmp_path, monkeypatch) -> None:

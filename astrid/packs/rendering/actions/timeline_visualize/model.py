@@ -293,6 +293,11 @@ def _authored_text(clip: Mapping[str, Any]) -> str | None:
         content = raw.get("content")
         if isinstance(content, str):
             return content
+    params = clip.get("params")
+    if isinstance(params, Mapping):
+        for key in ("text", "content"):
+            if isinstance(params.get(key), str):
+                return params[key]
     return None
 
 
@@ -579,7 +584,7 @@ def build_model(
                 source=_source_bounds(raw_clip),
                 kind=kind,
                 asset_keys=_asset_keys(raw_clip),
-                authored_text=_authored_text(raw_clip) if kind == "text" else None,
+                authored_text=_authored_text(raw_clip) if kind in ("text", "text-card") else None,
                 pixel_text_state="not_inspected",
             )
         )

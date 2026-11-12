@@ -55,12 +55,26 @@ def _editing_motion_pack(request, monkeypatch):
     Keep the collection out of pack-discovery tests, which own their inventories.
     """
     relative = request.path.relative_to(Path(__file__).parent)
-    if relative.parts[0] not in {"sdk", "editing_conformance"}:
+    timeline_files = {"test_cli_add_layer.py", "test_cli_edit_flags.py",
+                      "test_cli_native_sheet.py", "test_verbs_working_copy.py"}
+    selected = (relative.parts[0] in {"sdk", "editing_conformance"}
+                or (relative.parts[:2] == ("packs", "timeline") and relative.name in timeline_files)
+                or (relative.as_posix() == "v10/test_domain_cli_projects_timelines.py"
+                    and request.node.name.startswith("test_timeline_editing_guidance_consumes_its_json")))
+    if not selected:
         yield
         return
     collection = str(Path(__file__).parent / "fixtures" / "packs")
+    from astrid.core.element.registry import clear_default_registry_cache, load_default_registry
+
     monkeypatch.setenv("ASTRID_PACKS_PATH", collection)
-    yield
+    clear_default_registry_cache()
+    try:
+        registry = load_default_registry()
+        assert {"am-sprite", "am-type", "am-snap-plate"} <= {item.id for item in registry.list("effects")}
+        yield
+    finally:
+        clear_default_registry_cache()
 
 
 @pytest.fixture(autouse=True)

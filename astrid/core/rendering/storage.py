@@ -226,15 +226,9 @@ def used_effect_asset_sizes(
 
         element_registry = load_default_registry(project_root=REPO_ROOT)
     effects = {element.id: element for element in element_registry.list(kind="effects")}
-    aliases: dict[str, str] = {}
-    for effect_id, element in effects.items():
-        raw_aliases = element.metadata.get("clipTypeAliases")
-        if isinstance(raw_aliases, list):
-            for alias in raw_aliases:
-                if isinstance(alias, str) and alias:
-                    aliases[alias] = effect_id
-    if "text-card" in effects:
-        aliases.setdefault("text", "text-card")
+    from astrid.core.element.clip_types import clip_type_aliases
+
+    aliases = clip_type_aliases({key: element.metadata for key, element in effects.items()})
 
     used = {}
     for clip in timeline.get("clips", []):

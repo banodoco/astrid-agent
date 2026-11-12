@@ -97,7 +97,7 @@ class Element:
 
 
 def _text(params: Mapping[str, Any]) -> str:
-    for key in ("text", "title", "label"):
+    for key in ("text", "content", "title", "label"):
         value = params.get(key)
         if isinstance(value, str) and value.strip():
             return " ".join(value.split())
