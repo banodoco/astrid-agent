@@ -5,8 +5,12 @@ The pin authority is the packaged VibeComfy engine recipe. The dependency
 adapter, CI and this command all read its digest-verified source pin.
 
     python scripts/vibecomfy_pin.py            # print the pinned revision
+    python scripts/vibecomfy_pin.py --source comfyui [revision]
 
-A bump rewrites the ``vibecomfy`` revision in every
+Pass --source comfyui to read or bump the ComfyUI source through the same
+authority chain. Omitting --source preserves the VibeComfy interface.
+
+A bump rewrites the selected source revision in every
 package-owned pin manifest, then the dependent ``{"path", "sha256"}`` pin
 digests and the recipe digests in the generation.engine contributions, and finally prints the revision
 read back through the digest-verified recipe authority. It does not update the
@@ -46,18 +50,18 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def read() -> str:
-    return engine_source_revision("comfyui", "windows-x86_64-cu130", "vibecomfy")
+def read(source: str = "vibecomfy") -> str:
+    return engine_source_revision("comfyui", "windows-x86_64-cu130", source)
 
 
-def bump(revision: str) -> None:
+def bump(revision: str, source_name: str = "vibecomfy") -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise SystemExit("expected a full 40-character lowercase commit sha")
     for path in (ROOT / "packs").glob("*/pins.json"):
         data = _load(path)
         changed = False
         for name, source in data.get("sources", {}).items():
-            if name == "vibecomfy":
+            if name == source_name:
                 source["revision"] = revision
                 changed = True
         if changed:
@@ -77,11 +81,16 @@ def bump(revision: str) -> None:
 
 
 def main(argv: list[str]) -> int:
+    source = "vibecomfy"
+    if argv[:1] == ["--source"]:
+        if len(argv) < 2 or argv[1] not in {"vibecomfy", "comfyui"}:
+            raise SystemExit("expected --source vibecomfy or --source comfyui")
+        source, argv = argv[1], argv[2:]
     if len(argv) > 1:
         raise SystemExit(__doc__)
     if argv:
-        bump(argv[0])
-    print(read())
+        bump(argv[0], source)
+    print(read(source))
     return 0
 
 

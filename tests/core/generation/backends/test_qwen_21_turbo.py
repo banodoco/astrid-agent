@@ -193,8 +193,8 @@ def test_generate_and_h3_share_vibecomfy_pin():
     h3 = load_recipe('comfyui', 'linux-x86_64-cu130')
     generate_sources = {s.name: (s.pin.repository, s.pin.revision) for s in generate.sources}
     h3_sources = {s.name: (s.pin.repository, s.pin.revision) for s in h3.sources}
-    assert generate_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'  # v0.36.0
-    assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
+    assert generate_sources['comfyui'][1] == '6bfaacc67c2103481e5f0c84d75257cd0581d86a'  # v0.36.0
+    assert h3_sources['comfyui'][1] == '6bfaacc67c2103481e5f0c84d75257cd0581d86a'
     assert generate_sources['vibecomfy'] == (
         'https://github.com/banodoco/VibeComfy.git', VIBECOMFY_ENGINE_REVISION)
     assert h3_sources['vibecomfy'] == (
@@ -209,6 +209,6 @@ def test_generate_and_h3_share_vibecomfy_pin():
     assert (legacy_pin['repository'], legacy_pin['revision']) == generate_sources['vibecomfy']
     requirements = (root / 'requirements.windows-nvidia.txt').read_text().splitlines()
     constraints = generate.environments[0].requirements.constraints
-    for requirement in ('comfy-kitchen==0.2.40', 'comfy-aimdo==0.6.0'):
+    for requirement in ('comfy-kitchen==0.2.35', 'comfy-aimdo==0.5.5'):
         assert requirement in requirements and requirement in constraints
     assert env['exclude_newer'] == generate.environments[0].requirements.exclude_newer == '2026-10-31T00:00:00Z'

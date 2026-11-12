@@ -25,9 +25,9 @@ def test_h3_managed_guard_enforces_release_runtime(case):
     prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
     prep.recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     prep.root = '/synthetic'
-    observed = {'comfy_commit': 'ee71d5c4993f29086b27fde1629a945ae48425bf',
+    observed = {'comfy_commit': '6bfaacc67c2103481e5f0c84d75257cd0581d86a',
                 'comfy_version': '0.43.2' if case == 'wrong_version' else '0.36.0',
-                'packages': {'torch': '2.10.0+cu130', 'comfy-kitchen': '0.2.40', 'comfy-aimdo': '0.6.0'},
+                'packages': {'torch': '2.10.0+cu130', 'comfy-kitchen': '0.2.35', 'comfy-aimdo': '0.5.5'},
                 'launch_flags': flags, 'managed': True}
     prep._native = lambda program, requirements, *args: SimpleNamespace(stdout=json.dumps(
         compare_runtime(json.loads(requirements), target=observed)))

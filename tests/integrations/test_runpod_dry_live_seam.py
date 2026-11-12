@@ -52,7 +52,7 @@ def pinned_managed_install(session, monkeypatch, request, tmp_path, pinned_comfy
     source = pinned_comfy_source
     profile = SimpleNamespace(comfy_source=source,
         extra_launch_flags=('--use-ck-attention', '--disable-comfy-compiler'),
-        standin_distributions={'torch': '2.10.0+cu130', 'comfy-kitchen': '0.2.40', 'comfy-aimdo': '0.6.0'})
+        standin_distributions={'torch': '2.10.0+cu130', 'comfy-kitchen': '0.2.35', 'comfy-aimdo': '0.5.5'})
     generator = managed_install.__wrapped__(session, monkeypatch, profile, tmp_path)
     fixture = next(generator)
     try:

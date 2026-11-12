@@ -137,3 +137,18 @@ def test_no_other_tracked_file_copies_the_pin() -> None:
         "tests/upgrade/releases.json",
     }
     assert set(tracked) <= allowed, f"derive these from vibecomfy_dependency.py instead: {sorted(set(tracked) - allowed)}"
+
+
+def test_pin_script_bumps_comfyui_without_changing_vibecomfy(packs_copy, capsys) -> None:
+    revision = "c" * 40
+    vibecomfy_revision = vibecomfy_pin.read()
+    assert vibecomfy_pin.main(["--source", "comfyui", revision]) == 0
+    assert capsys.readouterr().out == revision + "\n"
+    assert vibecomfy_pin.read("comfyui") == revision
+    assert vibecomfy_pin.read() == vibecomfy_revision
+    for entry in engine_recipe._index_rows():
+        engine_recipe.load_recipe(entry["engine"], entry["platform"])
+    for path in (packs_copy / "packs").glob("*/pins.json"):
+        source = json.loads(path.read_text(encoding="utf-8"))["sources"].get("comfyui")
+        if source is not None:
+            assert source["revision"] == revision

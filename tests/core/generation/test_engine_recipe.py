@@ -77,8 +77,8 @@ def test_the_linux_base_engine_is_one_package_owned_row_with_the_merged_locks():
     assert hashlib.sha256((recipes._ROOT / requirements.path).read_bytes()).hexdigest() == requirements.sha256
     lock_text = (recipes._ROOT / requirements.path).read_text(encoding="utf-8")
     for pin in (  # ComfyUI at VibeComfy's pin brings its own requirements
-        "comfyui-frontend-package==1.57.4", "comfyui-workflow-templates==0.11.100",
-        "comfyui-embedded-docs==0.5.15", "comfy-aimdo==0.6.0", "comfy-kitchen==0.2.40",
+        "comfyui-frontend-package==1.53.6", "comfyui-workflow-templates==0.11.62",
+        "comfyui-embedded-docs==0.5.11", "comfy-aimdo==0.5.5", "comfy-kitchen==0.2.35",
         "opencv-python-headless==5.0.0.93",
     ):
         assert any(line.startswith(pin + " ") for line in lock_text.splitlines())
@@ -104,7 +104,7 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
         assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
         assert bindings[0].pin.revision == "88cff6d5f19795f54f8fcf87bb47e93fc0534cbc"
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
-            "ee71d5c4993f29086b27fde1629a945ae48425bf")
+            "6bfaacc67c2103481e5f0c84d75257cd0581d86a")
     declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
                        for path in (recipes._ROOT / "packs").rglob("*.json"))
     assert declarations == 2  # the Windows and Linux recipes' shared pin manifests
@@ -118,7 +118,7 @@ def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
     assert bindings[0].relative_path == "runtime/vibecomfy"
     assert bindings[0].pin == pins["vibecomfy"]
     expected_sources = {
-        "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "ee71d5c4993f29086b27fde1629a945ae48425bf"),
+        "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "6bfaacc67c2103481e5f0c84d75257cd0581d86a"),
         "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "88cff6d5f19795f54f8fcf87bb47e93fc0534cbc"),
         "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
         "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),

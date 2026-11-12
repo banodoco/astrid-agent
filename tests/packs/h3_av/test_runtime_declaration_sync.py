@@ -24,7 +24,7 @@ def _recipe_runtime() -> dict[str, str]:
     recipe = load_recipe("comfyui", "linux-x86_64-cu130")
     source = next(row for row in recipe.sources if row.name == "comfyui")
     # Version read from comfyui_version.py at the immutable source commit.
-    assert source.pin.revision == "ee71d5c4993f29086b27fde1629a945ae48425bf"
+    assert source.pin.revision == "6bfaacc67c2103481e5f0c84d75257cd0581d86a"
     observed_version = "0.36.0"
     environment = next(row for row in recipe.environments if row.name == recipe.primary_environment)
     lock_ref = environment.requirements.packaged_lock

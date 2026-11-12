@@ -266,7 +266,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             "runtime": {
                 "comfy_commit": facts().comfy_commit(),
                 "comfy_version": "==0.36.0",
-                "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.40", "comfy-aimdo": "==0.6.0"},
+                "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.35", "comfy-aimdo": "==0.5.5"},
                 "launch_flags": ["--use-ck-attention", "--disable-comfy-compiler"],
             },
             "custom_node_refs": [
