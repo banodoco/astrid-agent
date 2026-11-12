@@ -387,8 +387,10 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
     active = json.dumps({**dict(active_job or {"run_id": remote_root.rsplit("/", 1)[-1]}), "run_dir": remote_root},
                         sort_keys=True)
     check_entry = "" if entry in (None, WORKFLOW_FILE_ENTRY) else entry
+    finish = finish_command(remote_root)
     return (
         "set -u\n"
+        f"finish_logs() {{ {finish}; }}\n"
         f"exec 9>>{p['lock']}\n"
         "flock -s 9 || exit 75\n"
         f"if [ ! -f {p['ready']} ] || [ ! -f {p['prepared']} ] || [ -e {p['active']} ]; then "
@@ -401,13 +403,12 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         f"ASTRID_RUNTIME_SOURCE_MANIFEST={p['source_manifest']} ASTRID_RUNTIME_DOOR_PORT=0\n"
         f"export ASTRID_PROGRESS_PATH={shlex.quote(f'{remote_root}/{PROGRESS_NAME}')}\n"
         f"export {selection_env(remote_root)}\n"
-        f"{extract_selection_command(remote_root)} || exit 3\n"
-        f"{POD_VENV}/bin/astrid generate list --json > {listing} || exit 3\n"
-        f"{POD_VENV}/bin/python -c {shlex.quote(_ENTRY_CHECK)} {listing} {shlex.quote(check_entry)} {shlex.quote(mode or '')} || exit 3\n"
+        f"{extract_selection_command(remote_root)} || {{ finish_logs; exit 3; }}\n"
+        f"{POD_VENV}/bin/astrid generate list --json > {listing} || {{ finish_logs; exit 3; }}\n"
+        f"{POD_VENV}/bin/python -c {shlex.quote(_ENTRY_CHECK)} {listing} {shlex.quote(check_entry)} {shlex.quote(mode or '')} || {{ finish_logs; exit 3; }}\n"
         f"{line} > {result}\n"
         "rc=$?\n"
-        # A failed job's own logs are kept as files before anything else runs.
-        f"[ $rc -eq 0 ] || {failure_logs_command(remote_root, p['data_root'], p['root'])}\n"
+        "finish_logs\n"
         f"if [ $rc -ne 0 ]; then {POD_VENV}/bin/python -c "
         f"{shlex.quote(Path(__file__).with_name('failure_diagnostics.py').read_text(encoding='utf-8'))} "
         f"{result} {shlex.quote(f'{remote_root}/{JOB_NAME}')}; exit $rc; fi\n"
@@ -416,9 +417,28 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
     )
 
 
+def finish_command(remote_root: str, *, python: str = f"{POD_VENV}/bin/python") -> str:
+    """Best-effort declaration, collection and transfer manifest for pod job logs."""
+    from astrid.core._shared import run_logs
+
+    source = shlex.quote(Path(run_logs.__file__).read_text(encoding="utf-8"))
+    interpreter = shlex.quote(python)
+    out = f"{remote_root}/out"
+    jobdir = '"$(dirname "$0")"'
+    commands = [
+        f"{interpreter} -c {source} declare {shlex.quote(out)} --name job.stdout --role stdout --path {jobdir}/stdout",
+        f"{interpreter} -c {source} declare {shlex.quote(out)} --name job.stderr --role stderr --path {jobdir}/stderr",
+        f"{interpreter} -c {source} declare {shlex.quote(out)} --name generation.stdout --role stdout --path {shlex.quote(f'{remote_root}/result.json')}",
+        f"{interpreter} -c {source} collect {shlex.quote(out)}",
+        f"{manifest_command(f'{out}/logs', interpreter)} | sed 's/^{MANIFEST_MARK}/LOGS_MANIFEST_SHA256=/'",
+    ]
+    return "( " + "; ".join(commands) + " ) 2>/dev/null || true"
+
+
 FAILURE_DIR = "failure"
 FAILURE_MANIFEST_MARK = "FAILURE_MANIFEST_SHA256="
 FAILURE_LOG_CAP_BYTES = 2 * 1024 * 1024
+LOGS_MANIFEST_MARK = "LOGS_MANIFEST_SHA256="
 
 
 def failure_logs_command(remote_root: str, data_root: str, pod_root: str, *,
@@ -903,6 +923,18 @@ class RunPodMachine:
         Never masks the job's failure: any problem is recorded as
         ``{"unavailable": <exception type>}`` and the original error is raised.
         """
+        line = next((item for item in stdout.splitlines() if item.startswith(LOGS_MANIFEST_MARK)), None)
+        if line is not None:
+            local = Path(destination) / "logs"
+            try:
+                files = self._fetch_verified(ops, f"{run.remote_root}/out/logs", local, run.scratch,
+                                             line[len(LOGS_MANIFEST_MARK):].strip())
+                rows = json.loads(Path(files["index.json"]).read_text(encoding="utf-8")).get("logs", [])
+                return {"files": [{**row, "path": str(local / row["file"])
+                                    if not row.get("missing") and row.get("file") in files else None}
+                                   for row in rows if isinstance(row, Mapping)]}
+            except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
+                return {"unavailable": type(exc).__name__}
         line = next((item for item in stdout.splitlines() if item.startswith(FAILURE_MANIFEST_MARK)), None)
         if line is None:
             return {"unavailable": "not_reported"}
