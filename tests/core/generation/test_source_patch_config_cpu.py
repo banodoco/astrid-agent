@@ -251,3 +251,19 @@ def test_tiny_random_model_forward_on_cpu(node, component):
             assert torch.isfinite(step.logits).all()
             assert step.past_key_values.get_seq_length() == 3
         assert all(parameter.device.type == "cpu" for parameter in model.parameters())
+
+
+@pytest.mark.parametrize("component", ["talker", "code_predictor"])
+def test_flash_attention_dispatch_support_on_cpu(node, component, monkeypatch):
+    configs, models, _, _ = node
+    config = tiny_talker_config(configs)
+    cls = (models.Qwen3TTSTalkerForConditionalGeneration if component == "talker"
+           else models.Qwen3TTSTalkerCodePredictorModelForConditionalGeneration)
+    # Exercise Transformers' real dispatch support check without requiring the
+    # optional GPU kernel or executing attention.
+    monkeypatch.setattr(cls, "_flash_attn_import_error", lambda *args, **kwargs: None)
+    selected = config if component == "talker" else config.code_predictor_config
+    selected._attn_implementation = "flash_attention_2"
+    with torch.device("meta"):
+        model = cls(selected) if component == "talker" else cls(selected, config)
+    assert model.config._attn_implementation == "flash_attention_2"
