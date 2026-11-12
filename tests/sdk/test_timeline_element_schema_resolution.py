@@ -30,7 +30,7 @@ from tests.sdk.test_timeline_sync import connected as connected
 TINY = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing" / "tiny.json"
 ELEMENT = "zz-installed-probe"
 PACK = "zz_probe_pack"
-INSTALL = "astrid packs add https://github.com/banodoco/poms_packs --pack-id astrid_motion --subpath astrid_motion"
+INSTALL = "astrid packs add https://github.com/banodoco/poms_packs --revision main --pack-id astrid_motion --subpath astrid_motion"
 
 
 @pytest.fixture(autouse=True)
@@ -435,8 +435,10 @@ def test_default_add_text_uses_bundled_content_without_motion(monkeypatch):
     assert tl.clip("Edited").id == clip.id
 
 
-def test_moved_element_recovery_command_uses_real_pack_parser(monkeypatch):
+def test_moved_element_recovery_command_reaches_git_transaction(monkeypatch, tmp_path):
     import shlex
+    from types import SimpleNamespace
+    from astrid.core.pack import cli_manage
     from astrid.core.pack.cli_parser import build_parser
 
     _uses(monkeypatch, None)
@@ -445,10 +447,31 @@ def test_moved_element_recovery_command_uses_real_pack_parser(monkeypatch):
     command = caught.value.cause["details"]["install"]
     assert f"`{command}`" in str(caught.value)
     words = shlex.split(command)
+    # The shipped `astrid` command (astrid.console:main) routes `packs` to the pack CLI.
     assert words[:2] == ["astrid", "packs"]
-    args = build_parser().parse_args(words[2:])
-    assert args.source == "https://github.com/banodoco/poms_packs"
-    assert args.pack_id == "astrid_motion"
-    assert args.subpath == "astrid_motion"
-    # No revision is pinned: the add command resolves and shows the revision before asking for consent.
-    assert args.revision is None
+    args = build_parser().parse_args(words[2:] + ["--packs-root", str(tmp_path), "--yes"])
+    monkeypatch.setattr(cli_manage, "_build_inputs", lambda *a, **k: ({}, None))
+    monkeypatch.setattr(cli_manage, "_validation_snapshot", lambda: ({}, {}))
+    monkeypatch.setattr(cli_manage, "_composition_roots", lambda *a, **k: ())
+    seen = {}
+    def install(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(paths={"astrid_motion": tmp_path}, transaction_id="tx", refresh_pending=False)
+    monkeypatch.setattr(cli_manage, "install_group", install)
+    assert args.handler(args) == 0
+    assert seen["source"] == "https://github.com/banodoco/poms_packs"
+    assert seen["packs"] == {"astrid_motion": "astrid_motion"}
+    assert seen["revision"] == "main"
+    assert seen["origin"] == "user"
+
+
+def test_exact_non_effect_id_precedes_effect_alias(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    effect = SimpleNamespace(id="text-card", kind="effects", metadata={}, schema={"properties": {"content": {}}},
+                             defaults={}, root=tmp_path, source="builtin")
+    other = SimpleNamespace(id="text", kind="transitions", metadata={}, schema={"properties": {"other": {}}},
+                            defaults={}, root=tmp_path, source="builtin")
+    registry = SimpleNamespace(list=lambda kind=None: [effect] if kind == "effects" else [effect, other])
+    monkeypatch.setattr(element_registry, "load_default_registry", lambda: registry)
+    assert list(element_schema("text")["properties"]) == ["other"]
+    assert list(element_schema("text-card")["properties"]) == ["content"]

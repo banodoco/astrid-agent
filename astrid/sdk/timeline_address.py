@@ -499,11 +499,13 @@ def element_schema(element: str) -> dict[str, Any]:
         from astrid.core.element.clip_types import clip_type_aliases
 
         effects = {item.id: item for item in registry.list(kind="effects")}
-        # Rendering prefers exact effect IDs, then aliases in the effective inventory.
-        aliases = clip_type_aliases({key: value.metadata for key, value in effects.items()})
-        resolved = element if element in effects else aliases.get(element, element)
-        candidates = ([effects[resolved]] if resolved in effects else
-                      [item for item in registry.list() if item.id == resolved])
+        # Exact IDs of every kind precede aliases from the installed effect inventory.
+        candidates = ([effects[element]] if element in effects else
+                      [item for item in registry.list() if item.id == element])
+        if not candidates:
+            aliases = clip_type_aliases({key: value.metadata for key, value in effects.items()})
+            resolved = aliases.get(element)
+            candidates = [effects[resolved]] if resolved in effects else []
     except Exception as exc:  # noqa: BLE001 - an unreadable corpus refuses; it never means "schema-less"
         moved = moved_element_pack(element)
         fix = "Run `astrid doctor` to find the pack that breaks the registry."

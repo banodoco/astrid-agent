@@ -317,16 +317,9 @@ def _import_scope_for_element(element: ElementDefinition) -> str:
 
 
 def _clip_type_aliases(effects: dict[str, EffectRecord]) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    if "text-card" in effects:
-        aliases["text"] = "text-card"
-    for effect_id, effect in effects.items():
-        raw_aliases = effect.meta.get("clipTypeAliases")
-        if isinstance(raw_aliases, list):
-            for alias in raw_aliases:
-                if isinstance(alias, str) and alias:
-                    aliases[alias] = effect_id
-    return dict(sorted(aliases.items()))
+    from astrid.core.element.clip_types import clip_type_aliases
+
+    return dict(sorted(clip_type_aliases({key: effect.meta for key, effect in effects.items()}).items()))
 
 
 def _ts_string(value: str) -> str:
