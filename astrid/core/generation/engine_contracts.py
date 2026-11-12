@@ -579,9 +579,9 @@ class PlacementDescriptor:
 
 
 def effective_models_root(root: str, models_root: str | None) -> str:
-    """The model directory an install binds: its explicit volume cache, else <root>/models."""
+    """The model directory an install binds: its explicit cache, else ComfyUI/models."""
 
-    return models_root if models_root is not None else posixpath.join(root, "models")
+    return models_root if models_root is not None else posixpath.join(root, "runtime", "ComfyUI", "models")
 
 
 

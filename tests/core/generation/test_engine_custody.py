@@ -656,7 +656,7 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     assert vibe._session_composite_ownership_verified(registry, marker["pid"]) is True
     assert vibe._session_ready(registry) is True
     config = json.loads((registry / "config.json").read_text())
-    assert config["models_root"] == str(root / "models")
+    assert config["models_root"] == str(root / "runtime/ComfyUI/models")
     assert config["output_directory"] == str(root / "runtime/ComfyUI/output")
     assert (registry / "source_revision").read_text() == next(s.pin.revision for s in recipe.sources if s.name == "vibecomfy")
     expected = hashlib.sha256(b"tiny.py\0" + hashlib.sha256(b"# immutable fixture source\n").digest()).hexdigest()
@@ -892,9 +892,6 @@ LocalLinuxExecutionContext.run=run
                      "requirements_lock_sha256": lock_digest}
     (state / "lock.json").write_text(_json(lock_identity))
     (state / "receipt.json").write_text(_json({k: v for k, v in lock_identity.items() if k != "schema"}))
-    from astrid.core.generation.engine_runner_target import dispatch
-    helper = {**client.identity, "schema": "astrid.engine-runner-helper.v1", "models_root": None}
-    assert dispatch("models-config", helper)["facts"] == {"written": True}
     try:
         # Installation's finite caller exits before either H3 consumer runs.
         facts = json.loads(_finite_client(client.identity, payload, "start", bootstrap=supervisor).stdout)

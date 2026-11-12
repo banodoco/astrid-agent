@@ -4,7 +4,7 @@
   "platform": "linux-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "e3158246affdc857c90a4ad622bf1a83787fa0c9655abe674ace767f4363ffda"
+    "sha256": "fd50463c1eb7cc33c4f153d59e38a446c3f01864db29edda1d6ac8abe7a70e81"
   },
   "source_bindings": [
     {
@@ -113,10 +113,10 @@
       "127.0.0.1",
       "--port",
       "{port}",
-      "--extra-model-paths-config",
-      "{models_config}",
       "--use-ck-attention",
-      "--disable-comfy-compiler"
+      "--disable-comfy-compiler",
+      "--models-directory",
+      "{models_root}"
     ],
     "cwd": "{comfy_root}",
     "env": {

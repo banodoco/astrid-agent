@@ -261,7 +261,7 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
                 output = (source.pin.repository if argv[3:] == ('remote', 'get-url', 'origin') else
                           source.pin.revision if argv[3:] == ('rev-parse', 'HEAD') else '')
             elif len(argv) >= 2 and argv[-1].startswith('{') and argv[-2] in {
-                    'identity', 'node-lock', 'environment-spec', 'models-config-check'}:
+                    'identity', 'node-lock', 'environment-spec'}:
                 operation, payload = argv[-2], json.loads(argv[-1])
                 facts = ({'helper_sha256': payload['helper_sha256']} if operation == 'identity' else
                          {'expected': {}, 'requirements_lock_sha256': environment_digests[payload['environment']]}

@@ -206,6 +206,17 @@ def test_apply_reprobes_same_target_and_is_idempotent(fake):
     assert fake.calls == ['probe', 'probe']
 
 
+def test_apply_fetches_subdir_name_into_models_root_with_comfyui_path_set(fake, monkeypatch, tmp_path):
+    """The explicit models root remains authoritative when a ComfyUI checkout is configured."""
+    monkeypatch.setenv('COMFYUI_PATH', str(tmp_path / 'separate-comfyui'))
+    monkeypatch.delenv('VIBECOMFY_MODELS_ROOT', raising=False)
+    report = apply(fake, client=request_bytes([]))
+    expected = fake.target.models_root / fake.model.destination
+    assert report['status'] == 'ready'
+    assert expected.read_bytes() == DATA
+    assert not (tmp_path / 'separate-comfyui' / fake.target.models_root.name / fake.model.destination).exists()
+
+
 def test_hash_mismatch_refuses_publication(fake):
     calls = []
     with pytest.raises(alignment.AlignmentError, match='fake.safetensors.*SHA-256 mismatch'):

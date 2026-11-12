@@ -27,8 +27,8 @@ from .engine_contracts import (
 from .engine_runner import _HELPER_SCHEMA, _json, _object_info_sha256, _root, _sha, helper_manifest
 
 _OPERATIONS = {"identity", "empty-source", "node-lock", "lock-inputs", "commit-lock",
-               "install-locks", "environment-spec", "models-config", "models-config-check", "models-source-check", "declared-source-modifications", "apply-source-patches", "verify-source-patches"}
-_MODEL_OPERATIONS = {"models-config", "models-config-check", "models-source-check"}
+               "install-locks", "environment-spec", "cleanup-legacy-model-links",
+               "declared-source-modifications", "apply-source-patches", "verify-source-patches"}
 _ENV_OPERATIONS = {"node-lock", "lock-inputs", "commit-lock", "install-locks", "environment-spec"}
 
 
@@ -47,16 +47,6 @@ def _model_link_matches(link, destination):
             and os.path.abspath(link.parent / os.readlink(link)) == str(destination)
             and not destination.is_symlink()
             and (not destination.exists() or destination.is_dir()))
-
-
-def _tracked_model_folders(comfy):
-    if not (comfy / ".git").exists():
-        return set()
-    result = subprocess.run(("git", "-C", str(comfy), "ls-tree", "--name-only", "HEAD", "models/"),
-                            capture_output=True, text=True, check=False)
-    if result.returncode:
-        raise IntegrityError("cannot inspect tracked model folders")
-    return {line.removeprefix("models/").split("/", 1)[0] for line in result.stdout.splitlines()}
 
 
 def _safe(root, *relative):
@@ -291,12 +281,10 @@ def dispatch(operation, payload):
         keys.add("environment")
     if operation in {"empty-source", "declared-source-modifications", "apply-source-patches", "verify-source-patches"}:
         keys.add("source")
-    if operation in {"models-source-check", "declared-source-modifications"}:
+    if operation == "declared-source-modifications":
         keys.add("entries")
-    if operation in _MODEL_OPERATIONS or operation == "declared-source-modifications":
+    if operation == "cleanup-legacy-model-links":
         keys.add("models_root")
-    if operation == "models-source-check" and isinstance(payload, dict) and "source" in payload:
-        keys.add("source")
     if not isinstance(payload, dict) or set(payload) != keys or payload["schema"] != _HELPER_SCHEMA:
         raise RecipeValidationError("invalid engine helper request")
     recipe = recipes.load_recipe(payload["engine"], payload["platform"])
@@ -321,7 +309,7 @@ def dispatch(operation, payload):
         if any(_safe(root, source.relative_path).iterdir()):
             raise IntegrityError("refusing to initialize a nonempty unowned source directory")
         facts = {"empty": True}
-    elif operation in {"declared-source-modifications", "apply-source-patches", "verify-source-patches"} or (operation == "models-source-check" and "source" in payload):
+    elif operation in {"declared-source-modifications", "apply-source-patches", "verify-source-patches"}:
         source = next((s for s in recipe.sources if s.name == payload["source"]), None)
         if source is None:
             raise RecipeValidationError("unknown source")
@@ -354,15 +342,22 @@ def dispatch(operation, payload):
                 except OSError:
                     pass
             entries = payload["entries"]
-            model_entries = [entry for entry in entries if entry not in allowed] if isinstance(entries, list) else []
-            models_valid = False
-            if source.name == "comfyui" and model_entries:
-                model_payload = dict(payload)
-                model_payload.pop("source")
-                model_payload["entries"] = model_entries
-                models_valid = dispatch("models-source-check", model_payload)["facts"]["valid"]
             facts = {"valid": isinstance(entries, list) and bool(entries)
-                     and (not model_entries or models_valid)}
+                     and all(isinstance(entry, str) and entry in allowed for entry in entries)}
+    elif operation == "cleanup-legacy-model-links":
+        comfy = next(source for source in recipe.sources if source.name == "comfyui")
+        models_dir = _safe(root, comfy.relative_path, "models")
+        base = Path(_models_base(root, payload["models_root"]))
+        folders = sorted({model.destination.split("/", 1)[0]
+                          for model in recipes.load_model_lock(recipe.models_lock).models})
+        removed = []
+        for name in folders:
+            link = models_dir / name
+            destination = base / name
+            if _model_link_matches(link, destination):
+                link.unlink()
+                removed.append(name)
+        facts = {"removed": removed}
     elif operation == "node-lock":
         ref = environment.node_lock
         if ref is None:
@@ -447,43 +442,8 @@ def dispatch(operation, payload):
         facts = {"requirements_lock_sha256": _hash(lock)}
     elif operation == "environment-spec":
         facts = _environment_spec(recipe, environment, root, digest)
-    else:  # JSON is also valid YAML, avoids unsafe YAML interpolation.
-        base = Path(_models_base(root, payload["models_root"]))
-        folders = sorted({model.destination.split("/", 1)[0]
-                          for model in recipes.load_model_lock(recipe.models_lock).models})
-        comfy = next(source for source in recipe.sources if source.name == "comfyui")
-        models_dir = _safe(root, comfy.relative_path, "models")
-        configuration = {"astrid_engine": {"base_path": str(base), **{name: name for name in folders}}}
-        configuration_path = _safe(root, "runtime/extra_model_paths.yaml")
-        configuration_bytes = _json(configuration).encode()
-        tracked = _tracked_model_folders(models_dir.parent)
-        links = [(models_dir / name, base / name) for name in folders if name not in tracked] if base != models_dir else []
-        if operation == "models-source-check":
-            allowed = {"?? models/" + link.name for link, destination in links
-                       if _model_link_matches(link, destination)}
-            entries = payload["entries"]
-            facts = {"valid": isinstance(entries, list) and bool(entries)
-                     and all(isinstance(entry, str) and entry in allowed for entry in entries)}
-        elif operation == "models-config":
-            for link, destination in links:
-                if link.is_symlink():
-                    if not _model_link_matches(link, destination):
-                        raise IntegrityError(f"model folder {link.name} is a different link")
-                elif link.exists() and (not link.is_dir() or any(link.iterdir())):
-                    raise IntegrityError(f"model folder {link.name} is not empty")
-            if links:
-                models_dir.mkdir(parents=True, exist_ok=True)
-            for link, destination in links:
-                if not link.is_symlink():
-                    if link.exists():
-                        link.rmdir()
-                    link.symlink_to(destination, target_is_directory=True)
-            _atomic(configuration_path, configuration_bytes)
-            facts = {"written": True}
-        else:
-            facts = {"valid": configuration_path.is_file()
-                     and configuration_path.read_bytes() == configuration_bytes
-                     and all(_model_link_matches(link, destination) for link, destination in links)}
+    else:
+        raise RecipeValidationError("unknown engine helper operation")
     return {"schema": _HELPER_SCHEMA, "operation": operation, "facts": facts}
 
 

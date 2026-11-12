@@ -68,8 +68,7 @@ class FakeAdapter:
     def start_request(self, recipe, root, *, deadline, models_root=None):
         primary = next(e for e in recipe.environments if e.name == recipe.primary_environment)
         values = {"install_root": root, "python": self.venv_python(self.join(root, primary.relative_path)),
-                  "comfy_root": self.join(root, "runtime/ComfyUI"), "models_root": self.join(root, "models"),
-                  "models_config": self.join(root, "runtime/extra_model_paths.yaml"),
+                  "comfy_root": self.join(root, "runtime/ComfyUI"), "models_root": models_root or self.join(root, "runtime/ComfyUI/models"),
                   "host": recipe.start.bind_host, "port": str(recipe.start.port)}
         return CommandRequest(tuple(a.format_map(values) for a in recipe.start.argv),
                               recipe.start.cwd.format_map(values),
@@ -103,8 +102,6 @@ class FakeContext:
         self.health_owner = None
         self.health_healthy = True
         self.bootstrap_count = 0
-        self.models_config_valid = False
-        self.models_config_root = object()
         for environment in self.recipe.environments:
             ref = environment.node_lock
             source = next(s for s in self.recipe.sources if s.name == ref.source)
@@ -215,19 +212,14 @@ class FakeContext:
                 facts = {"helper_sha256": "0" * 64 if self.wrong_identity else payload["helper_sha256"]}
             elif operation in {"apply-source-patches", "verify-source-patches"}:
                 facts = {"changed": False}
-            elif operation == "models-source-check":
+            elif operation == "declared-source-modifications":
                 facts = {"valid": False}
             elif operation == "node-lock":
                 facts = {"valid": True}
             elif operation == "empty-source":
                 facts = {"empty": True}
-            elif operation == "models-config":
-                assert self.held
-                self.models_config_valid = True
-                self.models_config_root = payload.get("models_root")
-                facts = {"written": True}
-            elif operation == "models-config-check":
-                facts = {"valid": self.models_config_valid and payload.get("models_root") == self.models_config_root}
+            elif operation == "cleanup-legacy-model-links":
+                facts = {"removed": []}
             else:
                 name = payload["environment"]
                 directory = self.adapter.join(self.root, ".astrid-engine/environments", name)
@@ -1714,18 +1706,11 @@ def test_target_helper_rejects_unknown_fields_wrong_code_and_symlink_escape(tmp_
     outside.mkdir()
     (tmp_path / "runtime").symlink_to(outside, target_is_directory=True)
     with pytest.raises(UnsafePathError):
-        target.dispatch("models-config", {**payload, "models_root": None})
+        target.dispatch("cleanup-legacy-model-links", {**payload, "models_root": None})
     assert list(outside.iterdir()) == []
 
 
-def test_target_models_config_is_deterministic_and_loopback_launch_is_recipe_bound(tmp_path, setup):
-    payload = _helper_payload(tmp_path)
-    assert target.dispatch("models-config", {**payload, "models_root": None})["facts"] == {"written": True}
-    path = tmp_path / "runtime/extra_model_paths.yaml"
-    before = path.read_bytes()
-    target.dispatch("models-config", {**payload, "models_root": None})
-    assert path.read_bytes() == before
-    assert json.loads(before)["astrid_engine"]["base_path"] == str(tmp_path / "models")
+def test_loopback_launch_is_recipe_bound(setup):
     launch = setup[2].start_request(setup[1].recipe, ROOT, deadline=setup[3])
     assert "127.0.0.1" in launch.argv and "0.0.0.0" not in launch.argv
     assert "CUDA_VISIBLE_DEVICES" not in launch.env
@@ -2117,23 +2102,6 @@ def test_health_timeout_is_bounded_by_recipe_and_caller_deadline(setup):
         assert payload["poll_interval_seconds"] == context.recipe.health.poll_interval_seconds
 
 
-def test_changed_models_config_refuses_installed_status_without_repair(setup):
-    install(setup)
-    setup[1].models_config_valid = False
-    setup[1].events.clear()
-    assert status(setup).status == "failed"
-    assert not any(event[0] in {"write", "mkdir", "download", "service:start"} for event in setup[1].events)
-
-
-def test_target_models_config_check_reads_exact_bytes(tmp_path):
-    payload = _helper_payload(tmp_path)
-    assert target.dispatch("models-config-check", {**payload, "models_root": None})["facts"] == {"valid": False}
-    target.dispatch("models-config", {**payload, "models_root": None})
-    assert target.dispatch("models-config-check", {**payload, "models_root": None})["facts"] == {"valid": True}
-    (tmp_path / "runtime/extra_model_paths.yaml").write_text('{"unbound":"elsewhere"}')
-    assert target.dispatch("models-config-check", {**payload, "models_root": None})["facts"] == {"valid": False}
-
-
 def test_context_lock_failure_never_runs_or_writes(setup):
     error = CustodyUnresolved("live lease has not been fenced", recovery_handle="/holder/exact-incarnation")
     @contextmanager
@@ -2289,25 +2257,10 @@ def test_status_rechecks_with_the_model_directory_the_install_bound(setup):
     """A paid pod install bound a volume model cache; `engines status` names none.
 
     Status must take the receipt's models_root, or the read-only start check
-    compares the live models configuration against <root>/models and reports a
+    compares the live launch against the default models directory and reports a
     healthy engine as integrity_failed at step "start".
     """
     plan, context, adapter, deadline = setup
-    bound = {}
-    original_run = context.run
-
-    def run(request):
-        argv = request.argv
-        if "engine_runner_target" in " ".join(argv):
-            operation, payload = argv[-2], json.loads(argv[-1])
-            if operation == "models-config":
-                bound["models_root"] = payload.get("models_root")
-            elif operation == "models-config-check":
-                context.models_config_valid = (
-                    "models_root" in bound and payload.get("models_root") == bound["models_root"])
-        return original_run(request)
-
-    context.run = run
     cached = runner.plan_install(context.recipe, root=ROOT, placement="local", models_root="/MODEL_CACHE/models")
     installed = runner.install_engine(cached, context=context, adapter=adapter, deadline=deadline)
     assert installed.status == "installed" and installed.models_root == "/MODEL_CACHE/models"
@@ -2333,19 +2286,20 @@ def test_install_plan_bound_fields_are_recorded_or_recipe_derived():
     assert {field.name for field in fields(runner.InstallPlan)} == recorded | recipe_derived
 
 
-def test_source_accepts_only_verified_model_link_entries(setup, monkeypatch):
+def test_source_refuses_dirty_model_link_entries(setup, tmp_path):
     plan, context, adapter, deadline = setup
+    root = str(tmp_path / "engine")
+    plan = replace(plan, root=root)
+    context.root = root
     instance = runner._Runner(plan, context, adapter, deadline)
     source = next(s for s in instance.recipe.sources if s.name == "comfyui")
-    context.sources[ROOT + "/runtime/ComfyUI"] = {
-        "origin": source.pin.repository, "head": source.pin.revision, "dirty": "?? models/hunyuan_foley"}
-    context.directories.update({ROOT + "/runtime/ComfyUI", ROOT + "/runtime/ComfyUI/.git"})
-    monkeypatch.setattr(instance, "helper", lambda operation, **kwargs: {"valid": operation == "models-source-check"})
-    assert instance.source(source, readonly=True)[0] == "skipped"
-    monkeypatch.setattr(instance, "helper", lambda operation, **kwargs: {"valid": False})
-    with pytest.raises(IntegrityError, match="source contains uncommitted content"):
-        instance.source(source, readonly=True)
-    context.sources[ROOT + "/runtime/ComfyUI"]["dirty"] = "?? stray"
+    comfy = root + "/runtime/ComfyUI"
+    models = Path(comfy) / "models"
+    models.mkdir(parents=True)
+    (models / "fixture").symlink_to(tmp_path / "volume/fixture", target_is_directory=True)
+    context.sources[comfy] = {
+        "origin": source.pin.repository, "head": source.pin.revision, "dirty": "?? models/fixture"}
+    context.directories.update({comfy, comfy + "/.git"})
     with pytest.raises(IntegrityError, match="source contains uncommitted content"):
         instance.source(source, readonly=True)
 

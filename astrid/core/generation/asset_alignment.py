@@ -107,8 +107,6 @@ class ManagedAssetTarget:
                 runner.source(source, readonly=True)
         for environment in recipe.environments:
             runner.environment(environment, readonly=True)
-        if runner.helper('models-config-check', models_root=plan.models_root) != {'valid': True}:
-            raise IntegrityError('managed target models configuration differs; repair the engine installation')
 
     def install_lock(self, *, deadline: float):
         from .engine_platforms import platform_adapter
@@ -216,8 +214,8 @@ def _fetch_model(model: ModelSpec, models_root: Path, *, deadline: float, client
         import httpx
         client = httpx
     resuming = _ResumingClient(client, part, deadline)
-    entry = {'name': path.name, 'url': url, 'sha256': model.sha256, 'size_bytes': model.bytes,
-             'target_path': f'{models_root.name}/{relative}'}
+    entry = {'name': path.name, 'subdir': relative.parent.as_posix(), 'url': url,
+             'sha256': model.sha256, 'size_bytes': model.bytes}
     error = None
     try:
         fetch.download(entry, root=models_root, client=resuming, quiet=True)

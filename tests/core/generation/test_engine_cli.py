@@ -46,7 +46,7 @@ def test_packaged_vibecomfy_checkout_supports_generate_list_json(tmp_path):
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     source = next(s for s in recipe.sources if s.name == 'vibecomfy')
     assert source.pin.repository == 'https://github.com/banodoco/VibeComfy.git'
-    assert source.pin.revision == 'c7a47e36d6fe27518c438ddaf911ae261dbc5693'
+    assert source.pin.revision == 'e4118ccfba62cf80e26a90637b4b02f37ead5b67'
     source_checkout = Path(os.environ['ASTRID_VIBECOMFY_CHECKOUT'])
     packaged = tmp_path / 'packaged-vibecomfy'
     for argv in (
@@ -164,7 +164,7 @@ def test_comfyui_linux_dry_run_resolves_packaged_recipe_and_model_lock(capsys):
     }
     assert data['recipe']['models_lock']['path'] == 'packs/runpod/models.lock.json'
     assert data['plan']['models_lock_sha256'] == data['recipe']['models_lock']['sha256']
-    assert '{models_config}' in data['recipe']['start']['argv']
+    assert data['recipe']['start']['argv'][-2:] == ['--models-directory', '{models_root}']
 
 
 @pytest.mark.parametrize('placement', ['local', 'runpod'])

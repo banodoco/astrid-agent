@@ -15,7 +15,7 @@ from .engine_contracts import (CommandRequest, DeadlineExceeded, RecipeValidatio
 from .engine_runner import _root
 
 _LINUX = frozenset({"linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130"})
-_FIELDS = frozenset({"install_root", "python", "comfy_root", "models_root", "models_config", "host", "port"})
+_FIELDS = frozenset({"install_root", "python", "comfy_root", "models_root", "host", "port"})
 
 
 def _deadline(deadline):
@@ -100,9 +100,9 @@ class LinuxPlatformAdapter:
             comfy = next(s for s in recipe.sources if s.name == "comfyui")
         except StopIteration as exc:
             raise RecipeValidationError("missing primary environment or comfyui source") from exc
+        comfy_root = self.join(root, comfy.relative_path)
         values = {"install_root": root, "python": self.venv_python(self.join(root, primary.relative_path)),
-                  "comfy_root": self.join(root, comfy.relative_path), "models_root": self.join(root, "models") if models_root is None else models_root,
-                  "models_config": self.join(root, "runtime/extra_model_paths.yaml"),
+                  "comfy_root": comfy_root, "models_root": self.join(comfy_root, "models") if models_root is None else models_root,
                   "host": recipe.start.bind_host, "port": str(recipe.start.port)}
         # The ComfyUI launch is an engine process. The recipe's env is the base and
         # engine_process_env sets PYTHONPYCACHEPREFIX last, so the engine's prefix
