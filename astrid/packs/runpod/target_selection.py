@@ -825,7 +825,8 @@ class RunPodSelectionOwner:
                 record = {
                     "schema_version": "astrid.runpod.allocation-attempt.v1", "state": "allocation_ready",
                     "operation_id": operation, "request_name": f"astrid-product-{operation}",
-                    "provider_account_ref": p.provider_account_ref, "acquisition_mode": "allocate",
+                    "provider_account_ref": p.provider_account_ref, "claim_preferences": p.as_mapping(),
+                    "acquisition_mode": "allocate",
                     "release_authorized": True, "worker_activation": "not_started", "create_attempts": 0,
                     "gpu_type": offer.gpu_type, "worker_image": p.image,
                     "accepted_gpu_type_id": offer.gpu_type_id,

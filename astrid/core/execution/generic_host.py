@@ -7186,7 +7186,8 @@ class GenericPackHost:
             # A workflow-file job (describe_workflow's id): no named entry, its bundle ships in the job.
             entry = None
         provider = target_context.get(kind=policy.get("kind"), engine=policy.get("engine"),
-                                      preferences=policy.get("preferences"))
+                                      preferences=policy.get("preferences"), **(
+                                          {"job": True} if policy.get("kind") == "runpod" else {}))
         machine = resolve_machine(policy["kind"]).for_host(
             provider, begin=lambda lease: target_context.begin(lease, cancel_signal),
             done=target_context.done)

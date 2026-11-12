@@ -285,6 +285,23 @@ class RunPodLeaseOwner:
         self.release(reason="restart", _expected_operation=record["operation_id"],
                      expected_machine_id=expected_machine_id)
 
+    def recover_job(self) -> None:
+        """Adopt a verified idle claim; reconcile all other interrupted custody."""
+        with self.lock:
+            record = self._read()
+            lease = record.get("lease", {}) if record else {}
+            now = self.clock()
+            if (record is not None and record.get("state") == "claimed"
+                    and lease.get("state") == "idle"
+                    and now < lease["idle_expires_at"] and now < lease["paid_expires_at"]):
+                self.selection._owned(record, self.selection._recorded_offer(record))
+                record = self._save(record, {**lease, "owner_epoch": self.epoch})
+                self._machine_identity = (record["operation_id"], record["pod_id"])
+                self.started = True
+                self._arm(record)
+                return
+        self.recover()
+
     def _discard_stale_capacity_intent(self, raw: Mapping[str, Any] | None) -> bool:
         if (raw is not None and raw.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
                 and raw.get("safe_to_retry") is True and raw.get("pod_id") is None

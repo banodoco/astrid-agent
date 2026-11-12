@@ -1,4 +1,5 @@
 """Jobs use the claim's authority and cannot allocate a replacement machine."""
+import json
 from dataclasses import replace
 
 import pytest
@@ -103,3 +104,86 @@ def test_three_queued_jobs_share_claim_without_renewal(machine_case, monkeypatch
         assert c.read()["pod_id"] == "pod-1" and c.read()["lease"]["state"] == "idle"
         assert c.read()["paid_limits"] == paid
     assert c.creates == 1
+
+
+def test_jobs_ignore_changed_preferences(machine_case, monkeypatch):
+    from astrid.core.generation import settings
+
+    c = machine_case
+    claim(c)
+    forbid_allocation(c, monkeypatch)
+    saved = {**c.prefs.as_mapping(), "gpu_types": ["changed-saved-gpu"]}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    for n in (1, 2):
+        request = job(c, n, preferences={**saved, "gpu_types": [f"job-gpu-{n}"]})
+        run(c, request)
+        assert c.read()["pod_id"] == "pod-1"
+    assert c.creates == 1
+
+
+def test_host_cache_jobs_ignore_changed_preferences(machine_case, monkeypatch):
+    from astrid.core.generation import settings
+    from astrid.packs.runpod.adapter import TargetProviderBindings
+
+    c = machine_case
+    claim(c)
+    forbid_allocation(c, monkeypatch)
+    bindings = TargetProviderBindings(pack_roots=(), holds=None, credentials=None, environ={})
+    bindings.provider = c.machine.adapter
+    bindings.signature = json.dumps(["runpod", "comfyui", c.prefs.as_mapping()], sort_keys=True, separators=(",", ":"))
+    saved = {**c.prefs.as_mapping(), "gpu_types": ["changed-saved-gpu"]}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    for n in (1, 2):
+        request = job(c, n, preferences={**saved, "gpu_types": [f"job-gpu-{n}"]})
+        provider = bindings.get(kind="runpod", engine="comfyui", preferences=request.policy["preferences"], job=True)
+        assert provider is c.machine.adapter
+        run(c, request)
+    assert c.creates == 1 and c.read()["pod_id"] == "pod-1"
+
+
+def test_restart_recovers_claim_from_journal(machine_case, monkeypatch):
+    from astrid.core.generation import settings
+    from astrid.packs.runpod import adapter, target_selection
+
+    c = machine_case
+    claim(c)
+    original = c.prefs.as_mapping()
+    saved = {**original, "gpu_types": ["changed-saved-gpu"], "image": "changed@sha256:" + "2" * 64}
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
+    monkeypatch.setattr(target_selection, "canonical_claim_path", lambda *args, **kwargs: c.owner.path)
+    assert adapter._claimed_preferences() == original
+
+    # Older journals did not persist the full preference mapping. Verify that
+    # the adapter reconstructs all custody-relevant fields from the claim, then
+    # restore the complete record before exercising restart recovery below.
+    from astrid.packs.runpod.worker_preparation import write_target_record
+
+    record = c.read()
+    legacy = dict(record)
+    legacy.pop("claim_preferences", None)
+    expected = {
+        "provider_account_ref": record["provider_account_ref"],
+        "gpu_types": [record["gpu_type"]],
+        "image": record["worker_image"],
+        "datacenter_id": record.get("network_volume_datacenter_id"),
+        "volume": {
+            "id": record["network_volume_id"],
+            "name": record.get("network_volume_name"),
+            "size_gb": record.get("network_volume_size_gb"),
+            "mount_path": record.get("volume_mount_path"),
+        },
+    }
+    try:
+        write_target_record(c.owner.path, legacy)
+        assert adapter._claimed_preferences() == expected
+    finally:
+        write_target_record(c.owner.path, record)
+
+    c.host.close()
+    replacement = c.fresh()
+    replacement.recover_job()
+    c.machine.adapter.lease_owner = replacement
+    forbid_allocation(c, monkeypatch)
+    run(c, job(c, preferences=saved))
+    assert c.creates == 1 and c.read()["pod_id"] == "pod-1"
+    replacement.close()

@@ -567,8 +567,7 @@ class RunPodMachine:
             raise MachineError(reason)
         prevalidate_task(dict(policy), dict(inputs), scratch=job.scratch)
         owner = adapter.lease_owner
-        if (policy.get("kind") != KIND or policy.get("engine") != adapter.installation.engine
-                or policy.get("preferences") != owner.selection.preferences.as_mapping()):
+        if policy.get("kind") != KIND or policy.get("engine") != adapter.installation.engine:
             raise PaidSelectionError("target policy differs from the retained owner")
         pinned = policy.get("machine")
 
