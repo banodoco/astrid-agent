@@ -48,7 +48,7 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _ENGINE = re.compile(r"^[a-z][a-z0-9-]*$")
 _PLATFORMS = {"linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130", "windows-x86_64-cu128", "windows-x86_64-cu130"}
-_PLACEHOLDERS = {"install_root", "python", "comfy_root", "models_root", "models_config", "host", "port"}
+_PLACEHOLDERS = {"install_root", "python", "comfy_root", "models_root", "host", "port"}
 
 
 def _object(value: Any, required: set[str], optional: set[str] | None = None, where: str = "object") -> dict[str, Any]:

@@ -223,7 +223,8 @@ def installation(tmp_path_factory, request):
     mode.write_text("healthy")
     models = []
     # Plan 32 T5h: a model-free install fetches no model bytes; the models root is empty.
-    (root / "models").mkdir(parents=True, exist_ok=True)
+    models_root = comfy / "models"
+    models_root.mkdir(parents=True, exist_ok=True)
     for name, destination, data in (
             ("synthetic-test-diffusion", "diffusion_models/synthetic-test-a.safetensors", b"SYNTHETIC TEST MODEL A\n"),
             ("synthetic-test-lora", "loras/synthetic-test-b.safetensors", b"SYNTHETIC TEST MODEL B (lora)\n")):
@@ -379,8 +380,9 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     # The recipe is the source of truth for every pinned source, including the custom nodes.
     assert dict(receipt.source_commits) == {s.name: s.pin.revision for s in recipe.sources}
     # Model-free install: the receipt carries no model rows, so the binding inventory is empty.
+    models_root = root / "runtime/ComfyUI/models"
     inventory = sorted(({"name": Path(m.path).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
-                         "subdir": str(Path(m.path).parent.relative_to(root / "models"))} for m in receipt.models),
+                         "subdir": str(Path(m.path).parent.relative_to(models_root))} for m in receipt.models),
                        key=lambda e: (e["subdir"], e["name"]))
     custom = {s.name: s.pin.revision for s in recipe.sources if "/custom_nodes/" in s.relative_path}
     node_lock = recipe.environments[0].node_lock
@@ -424,7 +426,7 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
         _registration_verified_facts()
     # Existing strict model-root binding re-hashes the declared files.
     binding = model_root_binding_from_profile(profile, verify_files=True)
-    assert binding.inventory_digest == expected_exact["model_digest"] and binding.path == root / "models"
+    assert binding.inventory_digest == expected_exact["model_digest"] and binding.path == models_root
     _assert_engine_retained(installation, before)
 
 
@@ -439,10 +441,10 @@ _REFUSALS = {
     "release_tamper": "retained release verification failed",
     "release_incomplete": "incomplete or for another interpreter",
     "release_python": "incomplete or for another interpreter",
-    "receipt_recipe": "installed session evidence could not be verified",
+    "receipt_recipe": "is installed but stale; run `astrid engines install",
     "receipt_engine": "installed session evidence could not be verified",
-    "receipt_comfyui": "installed session evidence could not be verified",
-    "receipt_vibecomfy": "installed session evidence could not be verified",
+    "receipt_comfyui": "is installed but stale; run `astrid engines install",
+    "receipt_vibecomfy": "is installed but stale; run `astrid engines install",
     "receipt_owner": "installed session evidence could not be verified",
     "registry_source": "installed session evidence could not be verified",
     "source_drift": "installed session evidence could not be verified",

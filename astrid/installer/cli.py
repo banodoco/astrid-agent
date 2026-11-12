@@ -36,6 +36,8 @@ from .core import (
 )
 from .installation import Installation, State
 from .outcome import RECORD, Request, clear_record, journal_before_stop, receipt_warnings, settle, write_record
+from .progress import HINT as PROGRESS_HINT
+from .progress import Progress
 from .service import (
     LABEL,
     default_program_root,
@@ -474,6 +476,14 @@ class _Run:
         return outcome.exit_code
 
 
+def _speaking(backend, say):
+    """Route the backend's printed lines through ``say``, so none lands inside an animated phase line."""
+    for speaker in (backend, getattr(backend, "service", None)):
+        if getattr(speaker, "say", None) is print:
+            speaker.say = say
+    return backend
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="astrid install", description="Install or update Astrid.")
     mode = result.add_mutually_exclusive_group()
@@ -552,6 +562,9 @@ def main(argv: list[str] | None = None) -> int:
         parser().error("--update-job is invalid.")
     from runtime_protocol import platform
     log = None  # Unresolved selection and unsafe/unavailable logs use the console.
+    # Installer lines; the current phase line stays alive on an interactive terminal.
+    say = Progress()
+    os.environ.pop(PROGRESS_HINT, None)  # the bootstrap's hint is for this process alone
     if settled:
         # A run that fails before it can write its own receipt must not leave
         # the previous run's receipt standing as if it were this run's.
@@ -564,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
         log_path = platform.log_dir() / "install.log"
         uv = args.uv or default_uv()
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
-        backend = Backend(root, log_path, uv, process_control=process_control)
+        backend = _speaking(Backend(root, log_path, uv, process_control=process_control), say)
         backend.console_diagnostics = True
         if mode != "doctor":
             # Before any selection read, including the Pinokio update path.
@@ -689,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
                     release_stale_selection = mode != "doctor"
                 if mode == "doctor" and not args.root and recorded.get("managed_by") == "pinokio":
                     root = absolute(recorded["program_root"])
-                    backend = Backend(root, log_path, uv, process_control=process_control)
+                    backend = _speaking(Backend(root, log_path, uv, process_control=process_control), say)
                     backend.console_diagnostics = True
                 prior = read_json(root / "install.json")
                 managed_by = args.managed_by or (prior.get("managed_by") if args.root or mode == "doctor" else None)
@@ -725,12 +738,14 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError(f"The login service already belongs to {recorded_root}.")
                     root = recorded_root
                     run.root = root
-                    backend = Backend(root, log_path, uv, process_control=process_control)
+                    backend = _speaking(Backend(root, log_path, uv, process_control=process_control), say)
                     backend.console_diagnostics = True
                     prior = read_json(root / "install.json")
                 if not recorded and prior.get("owner") == LABEL and prior.get("data_root"):
                     recorded = {"data_root": prior["data_root"]}
                 backend.managed_by = managed_by
+                if managed_by == "pinokio":
+                    say.tracks = None  # Pinokio keeps its own record of this terminal: plain lines
                 if mode in {"install", "update"} and managed_by != "pinokio" and normalise_completed(backend):
                     # The first run after a finished storage move makes R1 the selected
                     # data root once; from here this is an ordinary direct install.
@@ -931,7 +946,7 @@ def main(argv: list[str] | None = None) -> int:
                 if mode == "doctor":
                     bundle = default_doctor_bundle() if args.doctor == "__default__" else Path(args.doctor)
                 options = {"managed_by": managed_by} if managed_by else {}
-                installer = Installer(root, data, backend, **options)
+                installer = Installer(root, data, backend, say=say, **options)
                 run.installer = installer
                 if args.update_job:
                     if update_job_record is None:

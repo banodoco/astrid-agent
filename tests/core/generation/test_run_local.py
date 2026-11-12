@@ -271,7 +271,7 @@ def test_build_entry_delegates_optional_hooks_to_engine(monkeypatch, tmp_path):
 
 def test_vibecomfy_argv_parses_with_the_real_cli():
     """The argv is not assumed: each step must parse with VibeComfy's own parser."""
-    cli = pytest.importorskip("vibecomfy.cli")
+    from vibecomfy import cli
     parser = cli.build_parser()
     commands = mod.VibeComfyCommands("wf.json", "custom_nodes.lock")
     parsed = {step: parser.parse_args(commands.argv(step)) for step in ("doctor", "prepare", "nodes_restore", "fetch")}

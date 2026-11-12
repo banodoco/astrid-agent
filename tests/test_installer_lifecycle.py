@@ -1047,7 +1047,175 @@ def test_successful_update_prints_retained_backup_location(tmp_path):
     assert backup.is_dir()
     assert f"A backup of your workspace is kept at {backup}." in lines
     assert lines.index(f"A backup of your workspace is kept at {backup}.") < lines.index("Open https://astrid.haus")
-    assert "Installing Astrid." in lines
+    # A manifest without a release names the new version plainly.
+    assert lines == [
+        "Downloading Astrid", "Checking it", "Stopping Release 1", "Backing up your workspace",
+        "Updating your workspace", "Starting Astrid", "Checking Astrid started",
+        f"A backup of your workspace is kept at {backup}.", "Open https://astrid.haus",
+    ]
+
+
+def _release_one(tmp_path):
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    folder = root / "versions" / "installed"
+    old = Version(folder, folder / "py/bin/python", folder / "profile.json", {}, release=1)
+    old.python.parent.mkdir(parents=True)
+    old.python.write_text("python")
+    write_json(folder / "version.json", old.document())
+    switch(root, old)
+    return root, data, old
+
+
+def test_update_names_each_phase_a_person_waits_for(tmp_path):
+    root, data, _old = _release_one(tmp_path)
+
+    class SameSchemaBackend(LifecycleBackend):
+        def run(self, argv, **_kwargs):
+            return json.dumps({"identity": {"version": 33}, "target": 33})
+
+    lines = []
+    Installer(root, data, SameSchemaBackend(root, data), say=lines.append).run("install", {"release": 12})
+
+    assert lines == [
+        "Downloading Release 12", "Checking it", "Stopping Release 1", "Starting Release 12",
+        "Checking Release 12 started", "Open https://astrid.haus",
+    ]
+
+
+def test_failed_update_names_the_rollback_phases(tmp_path):
+    root, data, old = _release_one(tmp_path)
+
+    class FailingStartBackend(LifecycleBackend):
+        def run(self, argv, **_kwargs):
+            return json.dumps({"identity": {"version": 33}, "target": 33})
+
+        def start(self, version, data):
+            super().start(version, data)
+            if version != old:
+                raise RuntimeError("the new release did not start")
+
+    lines = []
+    with pytest.raises(RuntimeError, match="did not start"):
+        Installer(root, data, FailingStartBackend(root, data), say=lines.append).run("update", {"release": 12})
+
+    assert lines == [
+        "Downloading Release 12", "Checking it", "Stopping Release 1", "Starting Release 12",
+        "Stopping Release 12", "Starting Release 1", "Checking Release 1 started",
+    ]
+    assert current(root) == old
+
+
+def test_update_on_a_terminal_leaves_one_checked_line_per_phase(tmp_path):
+    import io
+
+    from astrid.installer.progress import Progress
+
+    class Terminal(io.StringIO):
+        encoding = "utf-8"
+
+        def isatty(self):
+            return True
+
+    root, data, _old = _release_one(tmp_path)
+
+    class SameSchemaBackend(LifecycleBackend):
+        def run(self, argv, **_kwargs):
+            return json.dumps({"identity": {"version": 33}, "target": 33})
+
+    terminal = Terminal()
+    Installer(root, data, SameSchemaBackend(root, data),
+              say=Progress(terminal, interval=0.001, columns=lambda: 80)).run("install", {"release": 12})
+
+    shown = []
+    for line in terminal.getvalue().split("\n"):
+        cells = []
+        cursor = 0
+        for char in line:
+            if char == "\b":
+                cursor -= 1
+            elif char == "\r":
+                cursor = 0
+            else:
+                cells[cursor:cursor + 1] = [char]
+                cursor += 1
+        shown.append("".join(cells).rstrip())
+    assert shown == [
+        "Downloading Release 12 ✓", "Checking it ✓", "Stopping Release 1 ✓", "Starting Release 12 ✓",
+        "Checking Release 12 started ✓", "Open https://astrid.haus", "",
+    ]
+
+
+def _flaky_terminal(survives):
+    import io
+
+    class Terminal(io.StringIO):
+        encoding = "utf-8"
+
+        def isatty(self):
+            return True
+
+        def write(self, text):
+            nonlocal survives
+            if survives <= 0:
+                raise OSError(5, "Input/output error")
+            survives -= 1
+            return super().write(text)
+
+    return Terminal()
+
+
+def _update_with(tmp_path, say, *, fail_start: bool):
+    from astrid.installer.progress import Progress
+
+    root, data, old = _release_one(tmp_path)
+
+    class Backend(LifecycleBackend):
+        def run(self, argv, **_kwargs):
+            return json.dumps({"identity": {"version": 33}, "target": 33})
+
+        def start(self, version, data):
+            super().start(version, data)
+            if fail_start and version != old:
+                raise RuntimeError("the new release did not start")
+
+    backend = Backend(root, data)
+    if not callable(say):
+        say = Progress(say, interval=0.001, columns=lambda: 80)
+    failure = None
+    try:
+        Installer(root, data, backend, say=say).run("update", {"release": 12})
+    except RuntimeError as exc:
+        failure = exc
+    calls = [(call[0], *(getattr(arg, "release", arg) for arg in call[1:2])) for call in backend.calls]
+    return calls, failure, current(root).release, read_json(root / "update-transaction.json")["step"]
+
+
+@pytest.mark.parametrize("fail_start", [False, True])
+def test_a_terminal_that_goes_away_never_changes_the_update_or_its_rollback(tmp_path, fail_start):
+    expected_calls, expected_failure, expected_release, expected_step = _update_with(
+        tmp_path / "plain", [].append, fail_start=fail_start)
+    assert (expected_release, expected_step) == ((1, "rolled_back") if fail_start else (12, "complete"))
+    if fail_start:
+        assert ("stop", 12) in expected_calls and expected_calls[-2:] == [("start", 1), ("verify", 1)]
+    # Break the terminal at every write of the run: opening, drawing and closing each phase line.
+    for survives in range(16):
+        calls, failure, release, step = _update_with(
+            tmp_path / f"broken-{survives}", _flaky_terminal(survives), fail_start=fail_start)
+        assert calls == expected_calls, survives
+        assert (release, step) == (expected_release, expected_step), survives
+        assert type(failure) is type(expected_failure) and str(failure) == str(expected_failure), survives
+
+
+def test_fresh_install_names_its_own_phases(tmp_path):
+    root, data = tmp_path / "program", tmp_path / "data"
+    lines = []
+
+    Installer(root, data, LifecycleBackend(root, data), say=lines.append).run("install", {"release": 12})
+
+    assert lines == [
+        "Downloading Release 12", "Creating your workspace", "Starting Release 12",
+        "Checking Release 12 started", "Open https://astrid.haus",
+    ]
 
 
 def test_storage_root_uses_install_selection_before_persisted_fallback(monkeypatch, tmp_path):

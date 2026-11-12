@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -51,7 +52,7 @@ def test_job_align_reaches_engine_align(comfy, tmp_path, monkeypatch):  # noqa: 
                                align=mode, manifest=manifest)
     assert [row[0] for row in seen] == ["trust", "check"]
     assert seen[0][1] == {**manifest, "models_root": seen[0][1]["models_root"]}  # the install's models dir is added
-    assert seen[0][1]["models_root"].endswith("/models")
+    assert seen[0][1]["models_root"].endswith("/runtime/ComfyUI/models")
 
 
 @pytest.mark.integration
@@ -267,12 +268,16 @@ def test_the_real_runner_start_probe_reuses_then_restarts_a_cpu_standin_server(i
 
     def factory(**_kwargs):
         runner = _Runner.__new__(_Runner)  # the real start(); no recipe/install needed for the probe logic
-        runner.step_id, runner.service_owner = None, None
+        runner.step_id, runner.service_owner, runner.visibility = None, None, None
         runner.launch_spec = lambda: {"argv": ["server"], "cwd": "/", "env": {}}
 
-        def helper(operation, *args, **kw):
-            state["ops"].append(operation)
-            return {"valid": True} if operation == "models-config-check" else {"written": True}
+        from types import SimpleNamespace
+        runner.plan = SimpleNamespace(
+            root=str(installed_root),
+            models_root=str(Path(installed_root) / "runtime" / "ComfyUI" / "models"),
+        )
+        runner.deadline = None
+        runner.context = SimpleNamespace(ensure_dir=lambda path, **kw: Path(path).mkdir(parents=True, exist_ok=True))
 
         def service(operation, *, launch=None, deadline=None):
             state["ops"].append(operation)
@@ -281,7 +286,7 @@ def test_the_real_runner_start_probe_reuses_then_restarts_a_cpu_standin_server(i
                 state["starts"] += 1
             return {"state": "owned" if alive() else "absent"}
 
-        runner.helper, runner.service = helper, service
+        runner.service = service
         return runner
 
     try:
@@ -303,7 +308,7 @@ def test_a_plain_align_run_fetches_only_the_manifests_missing_rows(comfy, tmp_pa
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     from astrid.core.generation import entries
     engine_root = tmp_path / "engine-root"
-    present = engine_root / "models" / "checkpoints" / "have.safetensors"
+    present = engine_root / "runtime" / "ComfyUI" / "models" / "checkpoints" / "have.safetensors"
     present.parent.mkdir(parents=True)
     present.write_bytes(b"12345")
     have = {"name": "have.safetensors", "subdir": "checkpoints", "url": "u1", "sha256": None, "size": 5}
