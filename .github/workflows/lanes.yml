@@ -193,7 +193,7 @@ jobs:
         working-directory: remotion
 
       - name: Integration tests (shard)
-        run: python -m pytest -q -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+        run: python -m pytest -q -rA -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
 
       - name: Save pip cache on main or int branches (C-08)
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-lanes-2.outputs.cache-hit != 'true' }}
@@ -304,7 +304,7 @@ jobs:
         working-directory: remotion
 
       - name: Opt-in tests
-        run: python -m pytest -q -m opt_in
+        run: python -m pytest -q -rA -m opt_in
 
   # The tests that need Astrid installed as a wheel (not editable, not the checkout): the wheel the release job builds,
   # installed into its own venv, with the Runtime and the Remotion project provisioned. pytest runs from that venv with
@@ -628,7 +628,7 @@ jobs:
               "ASTRID_HOST_EXECUTION_PROFILE=installed "
               "ASTRID_RUNTIME_CHECKOUT=$GITHUB_WORKSPACE/astrid-runtime "
               "ASTRID_REMOTION_PROJECT_DIR=$GITHUB_WORKSPACE/remotion "
-              "$RUNNER_TEMP/installed-venv/bin/pytest -q -m installed --import-mode=importlib "
+              "$RUNNER_TEMP/installed-venv/bin/pytest -q -rA -m installed --import-mode=importlib "
               "--junitxml=$GITHUB_WORKSPACE/installed-wheel-receipt/selector.junit.xml "
               "tests/packs/h3_av/test_character_swap_cpu_boundary.py"
           )
