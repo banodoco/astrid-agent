@@ -410,17 +410,22 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
                     raise ValueError(f"RunPod datacenter {requested_datacenter!r} was not found; retry `astrid machines setup`")
             datacenter = requested_datacenter
         candidates = inventory(offered_gpus, datacenter, selected_volume is not None)
-        if not candidates:
-            raise ValueError("no GPU types are offered in that datacenter; retry `astrid machines setup`")
         chosen = list(gpu_types or saved.get("gpu_types") or ())
+        if not candidates and chosen and datacenter:
+            raise ValueError(f"GPU type {chosen[0]!r} is not offered in datacenter {datacenter!r}")
+        if not candidates:
+            raise ValueError("RunPod GPU offerings could not be confirmed; preferences were not saved")
         if not chosen and not as_json:
             print("GPU types offered there (enter a comma-separated ordered list):")
             print("  " + ", ".join(candidates))
             chosen = [part.strip() for part in input_fn("GPU types: ").split(",") if part.strip()]
         if not chosen:
             raise RunPodSetupRequiredError(("gpu_types",))
-        if any(gpu not in candidates for gpu in chosen):
-            raise ValueError("each GPU choice must be offered in the selected datacenter; retry `astrid machines setup`")
+        invalid_gpu = next((gpu for gpu in chosen if gpu not in candidates), None)
+        if invalid_gpu is not None:
+            if datacenter:
+                raise ValueError(f"GPU type {invalid_gpu!r} is not offered in datacenter {datacenter!r}")
+            raise ValueError(f"GPU type {invalid_gpu!r} was not found in the RunPod GPU catalog")
         budget = budget_usd if budget_usd is not None else saved.get("budget_cap_usd")
         if budget is None and not as_json:
             budget = float(input_fn("Maximum paid-run budget (USD): ").strip())
@@ -473,7 +478,12 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         print(json.dumps(payload, sort_keys=True, default=str) if as_json else
               (f"Saved RunPod machine policy: GPUs {', '.join(chosen)}; datacenter {datacenter or 'any'}; "
                f"budget ${float(budget):.2f}/run; volume {selected_volume.get('name') if selected_volume else 'ephemeral disk'}. "
-               "No machine was claimed; each paid run still needs consent."
+               + (f"{', '.join(gpu for gpu in chosen if gpu in getattr(candidates, 'stock_missing', ()))} "
+                  f"is not in stock in {datacenter} right now; a paid run will wait for capacity. "
+                  if datacenter and any(gpu in getattr(candidates, 'stock_missing', ()) for gpu in chosen) else "")
+               + ("RunPod returned no datacenter GPU availability rows; using the global catalog as a fallback. "
+                  if getattr(candidates, "availability_fallback", False) else "")
+               + "No machine was claimed; each paid run still needs consent."
                if ok else f"RunPod setup failed ({payload['error']['code']}): {payload['error']['message']}"))
         return 0 if ok else 1
     except (ValueError, RunPodSetupRequiredError) as exc:

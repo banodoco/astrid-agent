@@ -1360,6 +1360,56 @@ def test_machines_setup_hides_async_datacenter_error(monkeypatch, capsys, caplog
     assert secret not in captured.out + captured.err + caplog.text
 
 
+def test_setup_saves_gpu_offered_but_out_of_stock_in_volume_datacenter(capsys, monkeypatch):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: {
+        "provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+        "gpu_types": ["RTX 5090"], "budget_cap_usd": 5,
+    })
+
+    class Choices(list):
+        stock_missing = ("RTX 5090",)
+    choices = Choices(["RTX 5090"])
+    saved = {}
+    assert machines_cli.main(["setup", "--volume", "vol", "--gpu", "RTX 5090", "--budget-usd", "5"],
+        volumes=lambda: [{"id": "vol", "name": "data", "dataCenterId": "EUR-NO-1", "size_gb": 50}],
+        offered_gpus=lambda dc, has_volume: choices,
+        setup=lambda policy: saved.update(policy)) == 0
+    output = capsys.readouterr().out
+    assert saved["gpu_types"] == ["RTX 5090"]
+    assert "RTX 5090 is not in stock in EUR-NO-1" in output
+
+
+def test_setup_refuses_gpu_not_offered_in_volume_datacenter(capsys):
+    from astrid.core import machines_cli
+
+    assert machines_cli.main(["setup", "--volume", "vol", "--gpu", "RTX 4090"],
+        volumes=lambda: [{"id": "vol", "name": "data", "dataCenterId": "EUR-NO-1", "size_gb": 50}],
+        offered_gpus=lambda *_: ["RTX 5090"], setup=lambda _: pytest.fail("must refuse")) != 0
+    output = capsys.readouterr().out
+    assert "RTX 4090" in output and "EUR-NO-1" in output
+
+
+def test_setup_warns_when_datacenter_availability_rows_are_missing(capsys, monkeypatch):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *a, **kw: {
+        "provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+        "gpu_types": ["GPU A"], "budget_cap_usd": 5,
+    })
+
+    class Choices(list):
+        availability_fallback = True
+    choices = Choices(["GPU A"])
+    assert machines_cli.main(["setup", "--datacenter", "DC-A", "--gpu", "GPU A", "--budget-usd", "5"], volumes=lambda: [],
+        offered_gpus=lambda *_: choices, setup=lambda _: None,
+        input_fn=lambda _: "") == 0
+    assert "no datacenter GPU availability rows" in capsys.readouterr().out
+
+
 def test_machines_setup_failed_action_keeps_saved_policy(monkeypatch, capsys):
     from types import SimpleNamespace
     from astrid.core import machines_cli
