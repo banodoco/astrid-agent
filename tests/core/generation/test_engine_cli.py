@@ -164,7 +164,7 @@ def test_comfyui_linux_dry_run_resolves_packaged_recipe_and_model_lock(capsys):
     }
     assert data['recipe']['models_lock']['path'] == 'packs/runpod/models.lock.json'
     assert data['plan']['models_lock_sha256'] == data['recipe']['models_lock']['sha256']
-    assert '{models_config}' in data['recipe']['start']['argv']
+    assert data['recipe']['start']['argv'][-2:] == ['--models-directory', '{models_root}']
 
 
 @pytest.mark.parametrize('placement', ['local', 'runpod'])

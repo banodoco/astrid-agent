@@ -270,9 +270,10 @@ def test_the_real_runner_start_probe_reuses_then_restarts_a_cpu_standin_server(i
         runner.step_id, runner.service_owner = None, None
         runner.launch_spec = lambda: {"argv": ["server"], "cwd": "/", "env": {}}
 
-        def helper(operation, *args, **kw):
-            state["ops"].append(operation)
-            return {"valid": True} if operation == "models-config-check" else {"written": True}
+        from types import SimpleNamespace
+        runner.plan = SimpleNamespace(models_root=str(installed_root / "models"))
+        runner.deadline = None
+        runner.context = SimpleNamespace(ensure_dir=lambda path, **kw: Path(path).mkdir(parents=True, exist_ok=True))
 
         def service(operation, *, launch=None, deadline=None):
             state["ops"].append(operation)
@@ -281,7 +282,7 @@ def test_the_real_runner_start_probe_reuses_then_restarts_a_cpu_standin_server(i
                 state["starts"] += 1
             return {"state": "owned" if alive() else "absent"}
 
-        runner.helper, runner.service = helper, service
+        runner.service = service
         return runner
 
     try:

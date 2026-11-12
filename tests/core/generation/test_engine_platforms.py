@@ -64,9 +64,10 @@ def test_pure_target_paths_and_canonical_launch(recipe):
         assert request.deadline == deadline
         runner = engine_runner._Runner.__new__(engine_runner._Runner)
         runner.adapter, runner.recipe, runner.deadline = adapter, recipe, deadline
-        runner.plan = type("Plan", (), {"root": ROOT})()
-        runner.step_id = None
-        assert runner.launch_spec() == {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+        runner.plan = type("Plan", (), {"root": ROOT, "models_root": None})()
+        runner.step_id, runner.visibility = None, None
+        assert runner.launch_spec() == {"argv": list(request.argv), "cwd": request.cwd,
+                                        "env": {**request.env, "CUDA_VISIBLE_DEVICES": None}}
         commands = adapter.environment_commands(recipe, primary, ROOT)
     assert commands == (("python3", "-m", "pip", "--isolated", "install", "--index-url", "https://pypi.org/simple", "--ignore-installed", "--prefix", ROOT + "/runtime/bootstrap", "uv==" + primary.uv_version),
                         (ROOT + "/runtime/bootstrap/bin/uv", "--no-config", "venv", "--allow-existing", "--python", primary.python_version, "--managed-python", ROOT + "/" + primary.relative_path))
@@ -76,6 +77,7 @@ def test_unknown_placeholder_rejected(recipe):
     modified = replace(recipe, start=replace(recipe.start, argv=("{unknown}",)))
     with pytest.raises(RecipeValidationError):
         platform_adapter(KEY).start_request(modified, ROOT, deadline=5)
+    # The removed models-config placeholder is now an unknown placeholder like any other.
     modified = replace(recipe, start=replace(recipe.start, argv=("{models_config}",)))
     with pytest.raises(RecipeValidationError):
         platform_adapter(KEY).start_request(modified, ROOT, deadline=5)

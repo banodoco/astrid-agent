@@ -209,7 +209,7 @@ def test_apply_reprobes_same_target_and_is_idempotent(fake):
 def test_apply_fetches_subdir_name_into_models_root_with_comfyui_path_set(fake, monkeypatch, tmp_path):
     """The explicit models root remains authoritative when a ComfyUI checkout is configured."""
     monkeypatch.setenv('COMFYUI_PATH', str(tmp_path / 'separate-comfyui'))
-    monkeypatch.setenv('VIBECOMFY_MODELS_ROOT', str(fake.target.models_root))
+    monkeypatch.delenv('VIBECOMFY_MODELS_ROOT', raising=False)
     report = apply(fake, client=request_bytes([]))
     expected = fake.target.models_root / fake.model.destination
     assert report['status'] == 'ready'
