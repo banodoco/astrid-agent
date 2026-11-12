@@ -43,6 +43,7 @@ def ensure_local_engine_server(
             plan_from_receipt,
             plan_install,
             refresh_installed_launch,
+            require_current_receipt,
         )
         context, adapter = create_local_backend(
             engine=engine, platform=platform, placement="local", root=root, deadline=deadline)
@@ -54,6 +55,7 @@ def ensure_local_engine_server(
             plan = plan_from_receipt(recipe, receipt, root=root, placement="local")
             if receipt.status != "installed":
                 raise IntegrityError("local engine requires a completed installation")
+            require_current_receipt(receipt, plan, recipe)
             runner = _Runner(plan, context, adapter, deadline)
             runner.step_id = "helper-identity"
             if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:

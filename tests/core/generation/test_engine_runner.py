@@ -715,24 +715,27 @@ def test_stale_recipe_converges_in_place_and_keeps_model_inode(
     model_bytes = b"small locked CPU model fixture\n"
     fixture = tmp_path / "cpu-fixture"
     fixture.mkdir()
-    wheel_path = fixture / "tinyfixture-1.0-py3-none-any.whl"
-    wheel_members = {
-        "tinyfixture/__init__.py": b"VALUE = 'cpu-fixture'\n",
-        "tinyfixture-1.0.dist-info/METADATA": b"Metadata-Version: 2.1\nName: tinyfixture\nVersion: 1.0\n\n",
-        "tinyfixture-1.0.dist-info/WHEEL": b"Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
-    }
-    rows = []
-    for name, payload in wheel_members.items():
-        digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode().rstrip("=")
-        rows.append((name, "sha256=" + digest, str(len(payload))))
-    record_path = "tinyfixture-1.0.dist-info/RECORD"
-    rows.append((record_path, "", ""))
-    record_data = "".join(",".join(row) + "\n" for row in rows).encode()
-    with zipfile.ZipFile(wheel_path, "w") as archive:
-        for name, payload in wheel_members.items():
-            archive.writestr(name, payload)
-        archive.writestr(record_path, record_data)
-    wheel_digest = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
+    def write_tinyfixture_wheel(version, value):
+        wheel_path = fixture / f"tinyfixture-{version}-py3-none-any.whl"
+        dist_info = f"tinyfixture-{version}.dist-info"
+        members = {
+            "tinyfixture/__init__.py": f"VALUE = '{value}'\n".encode(),
+            f"{dist_info}/METADATA": f"Metadata-Version: 2.1\nName: tinyfixture\nVersion: {version}\n\n".encode(),
+            f"{dist_info}/WHEEL": b"Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        }
+        rows = []
+        for name, payload in members.items():
+            digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode().rstrip("=")
+            rows.append((name, "sha256=" + digest, str(len(payload))))
+        record_path = f"{dist_info}/RECORD"
+        rows.append((record_path, "", ""))
+        with zipfile.ZipFile(wheel_path, "w") as archive:
+            for name, payload in members.items():
+                archive.writestr(name, payload)
+            archive.writestr(record_path, "".join(",".join(row) + "\n" for row in rows).encode())
+        return wheel_path, hashlib.sha256(wheel_path.read_bytes()).hexdigest()
+
+    wheel_path, wheel_digest = write_tinyfixture_wheel("1.0", "cpu-fixture")
     packaging_dist = metadata.distribution("packaging")
     packaging_version = packaging_dist.version
     packaging_wheel = fixture / f"packaging-{packaging_version}-py3-none-any.whl"
@@ -972,13 +975,18 @@ def test_stale_recipe_converges_in_place_and_keeps_model_inode(
                                    "target_events": target_events[-12:], "command_failures": command_failures}
         context = contexts[root]
 
-        # Record the model file identity, then emulate a pre-upgrade receipt.
+        # Record the model file identity and installed dependency version,
+        # then emulate a pre-upgrade receipt.
         models_root = Path(root, "runtime/ComfyUI/models")
         model_path = models_root / "diffusion_models/cpu.bin"
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model_path.write_bytes(model_bytes)
         original_inode = model_path.stat().st_ino
         env_dir = Path(root, ".astrid-engine/environments/comfy")
+        venv_dir = Path(root, "runtime/cpu-venv")
+        installed_site = venv_dir / "lib" / f"python{python_version.rsplit('.', 1)[0]}" / "site-packages"
+        installed_tinyfixture = installed_site / "tinyfixture-1.0.dist-info/METADATA"
+        assert "Version: 1.0" in installed_tinyfixture.read_text()
         install_receipt_path = Path(root, ".astrid-engine/install.json")
         for receipt_path in (env_dir / "lock.json", env_dir / "receipt.json", install_receipt_path):
             document = json.loads(receipt_path.read_text())
@@ -992,6 +1000,15 @@ def test_stale_recipe_converges_in_place_and_keeps_model_inode(
         recipe_path = current_code_root / recipe_rel
         recipe_document = json.loads(recipe_path.read_text())
         recipe_document["health"]["timeout_seconds"] += 1
+        # Change an actual dependency input. The new tiny wheel remains local,
+        # hash-pinned and CPU-only, so uv has no index or network work to do.
+        wheel_v2, wheel_v2_digest = write_tinyfixture_wheel("2.0", "cpu-fixture-v2")
+        lock_v2_bytes = (f"tinyfixture @ {wheel_v2.as_uri()} --hash=sha256:{wheel_v2_digest}\n"
+                         f"packaging @ {packaging_wheel.as_uri()} --hash=sha256:{packaging_digest}\n").encode()
+        (fixture / "requirements.lock").write_bytes(lock_v2_bytes)
+        lock_v2_path = current_code_root / "cpu-fixture/requirements.lock"
+        lock_v2_path.write_bytes(lock_v2_bytes)
+        recipe_document["environments"][0]["requirements"]["packaged_lock"]["sha256"] = hashlib.sha256(lock_v2_bytes).hexdigest()
         recipe_bytes = json.dumps(recipe_document, sort_keys=True).encode()
         recipe_path.write_bytes(recipe_bytes)
         declaration.write_text(
@@ -1004,6 +1021,10 @@ def test_stale_recipe_converges_in_place_and_keeps_model_inode(
         assert converged_code == 0, capsys.readouterr().err
         assert contexts[root] is not context
         assert model_path.stat().st_ino == original_inode
+        upgraded_tinyfixture = installed_site / "tinyfixture-2.0.dist-info/METADATA"
+        assert "Version: 2.0" in upgraded_tinyfixture.read_text()
+        assert not installed_tinyfixture.exists()
+        assert (installed_site / "tinyfixture/__init__.py").read_text() == "VALUE = 'cpu-fixture-v2'\n"
         updated_receipt = json.loads(install_receipt_path.read_text())
         assert updated_receipt["models_root"] is None
         assert "helper_sha256" not in updated_receipt
@@ -1160,6 +1181,38 @@ def test_receipt_with_old_step_layout_is_structurally_read_but_marked_stale(setu
     report = status(setup)
     assert (report.status, report.error_code, report.failed_step_id) == (
         "failed", "integrity_failed", "receipt-evidence")
+
+
+@pytest.mark.parametrize("obsolete", ["recipe", "steps"])
+def test_local_server_refuses_stale_install_before_target_operations(setup, monkeypatch, obsolete):
+    from astrid.core.generation import engine_execution, engine_local_server
+
+    install(setup)
+    plan, context, adapter, _ = setup
+    raw = context.files[ROOT + "/" + runner._RECEIPT]
+    if obsolete == "recipe":
+        raw["recipe_sha256"] = "0" * 64
+    else:
+        raw["steps"] = []
+    monkeypatch.setattr(engine_local_server.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(engine_execution, "create_local_backend", lambda **kwargs: (context, adapter))
+    context.events.clear()
+    with pytest.raises(IntegrityError, match="installed but stale.*astrid engines install"):
+        engine_local_server.ensure_local_engine_server(root=plan.root, deadline_seconds=5)
+    assert not [event for event in context.events if event[0] in {"argv", "write", "mkdir", "service:start"}]
+
+
+def test_launch_refresh_refuses_stale_install_without_publishing(setup):
+    install(setup)
+    plan, context, adapter, deadline = setup
+    raw = copy.deepcopy(context.files[ROOT + "/" + runner._RECEIPT])
+    raw["recipe_sha256"] = "0" * 64
+    live = runner._Runner(plan, context, adapter, deadline)
+    context.events.clear()
+    with pytest.raises(IntegrityError, match="installed but stale.*astrid engines install"):
+        runner.refresh_installed_launch(live, raw, start_action="skipped", start_facts={},
+                                        health_action="skipped", health_facts={}, check=lambda: None)
+    assert context.events == []
 
 
 def test_import_and_planning_with_provider_and_ssh_imports_blocked():
@@ -1641,7 +1694,8 @@ def test_dirty_source_failure_records_reason_and_bounded_porcelain(setup):
     assert "file24" not in step["facts"]["porcelain"]
 
 
-def test_custody_receipt_refuses_reexecution_until_exact_recovery(setup):
+@pytest.mark.parametrize("recovery_on_model", [False, True], ids=["retired-source", "legacy-model"])
+def test_custody_receipt_refuses_reexecution_until_exact_recovery(setup, recovery_on_model):
     context = setup[1]
     error = CustodyUnresolved("reconcile job", recovery_handle="/private/recovery/exact-incarnation")
     context.fail = ("git", error)
@@ -1652,10 +1706,23 @@ def test_custody_receipt_refuses_reexecution_until_exact_recovery(setup):
     receipt["recipe_sha256"] = "0" * 64
     receipt["failed_step_id"] = "source:retired-source"
     receipt["steps"][-1]["id"] = "source:retired-source"
+    receipt["steps"].append({"id": "model:legacy", "kind": "model", "action": "executed",
+                             "validation": "failed", "facts": {"recovery_handle": error.recovery_handle}})
+    if recovery_on_model:
+        receipt["steps"][-2]["facts"].pop("recovery_handle", None)
+    else:
+        receipt["steps"][-1]["facts"].pop("recovery_handle")
+    model_step = receipt["steps"][-1]
+    for malformed_facts in ({"recovery_handle": 7}, {"recovery_handle": error.recovery_handle, "bad": []}):
+        model_step["facts"] = malformed_facts
+        with pytest.raises(IntegrityError):
+            runner._parse_receipt(receipt, setup[0])
+    model_step["facts"] = ({"recovery_handle": error.recovery_handle} if recovery_on_model else {})
     context.events.clear()
     with pytest.raises(CustodyUnresolved) as caught:
         install(setup)
     assert caught.value.recovery_handle == error.recovery_handle
+    assert caught.value.step_id == ("model:legacy" if recovery_on_model else "source:retired-source")
     assert not [e for e in context.events if e[0] == "argv" and e[1][0] == "git"]
     assert not [e for e in context.events if e[0] in {"download", "write", "mkdir", "service:start"}]
 

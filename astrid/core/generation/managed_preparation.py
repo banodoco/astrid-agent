@@ -337,6 +337,7 @@ class ManagedEnginePreparation:
             plan_from_receipt,
             plan_install,
             refresh_installed_launch,
+            require_current_receipt,
         )
 
         self.check()
@@ -355,6 +356,7 @@ class ManagedEnginePreparation:
         plan = plan_from_receipt(self.recipe, receipt, root=self.root, placement="local")
         if receipt.status != "installed":
             raise IntegrityError("managed preparation requires a completed installation")
+        require_current_receipt(receipt, plan, self.recipe)
         runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
         runner.step_id = "helper-identity"
         if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
