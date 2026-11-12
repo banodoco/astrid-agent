@@ -3319,8 +3319,16 @@ def _capability_declares_outputs(capability: Any) -> bool:
     return bool(declared)
 
 
-def _runpod_generation_policy(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
+_RUNPOD_CLAIM_CAPABILITY_ID = "runpod.claim"
+
+
+def _runpod_generation_placement(
+    task: Mapping[str, Any], *, allow_direct_spec: bool = False,
+) -> tuple[str, Mapping[str, Any]] | None:
     spec = task_executable_spec(task)
+    if spec is None and allow_direct_spec:
+        # The waiter also accepts admitted tasks carrying the executable spec directly.
+        spec = task.get("spec")
     inputs = spec.get("inputs") if isinstance(spec, Mapping) else None
     policy = inputs.get("placement_policy") if isinstance(inputs, Mapping) else None
     try:
@@ -3329,10 +3337,23 @@ def _runpod_generation_policy(task: Mapping[str, Any]) -> Mapping[str, Any] | No
         return None
     if not isinstance(spec, Mapping) or not isinstance(policy, Mapping) or policy.get("kind") != "runpod":
         return None
-    if spec.get("capability_id") == "runpod.claim":
+    capability_id = spec.get("capability_id")
+    if capability_id not in ("vibecomfy.run", _RUNPOD_CLAIM_CAPABILITY_ID):
+        return None
+    return capability_id, policy
+
+
+def _runpod_generation_policy(
+    task: Mapping[str, Any], *, allow_direct_spec: bool = False,
+) -> Mapping[str, Any] | None:
+    placement = _runpod_generation_placement(task, allow_direct_spec=allow_direct_spec)
+    if placement is None:
+        return None
+    capability_id, policy = placement
+    if capability_id == _RUNPOD_CLAIM_CAPABILITY_ID:
         paid = policy.get("paid_consent")
         return paid if isinstance(paid, Mapping) else None
-    return policy if spec.get("capability_id") == "vibecomfy.run" else None
+    return policy
 
 
 def _wait_for_kernel_task(
@@ -3351,7 +3372,7 @@ def _wait_for_kernel_task(
     latest: dict[str, Any] = dict(initial_task) if isinstance(initial_task, Mapping) else {}
 
     def observed(task):
-        latest.clear()
+        # Keep the admitted spec when a status response contains only mutable fields.
         latest.update(task)
         if owner_tick is not None:
             owner_tick(task)
@@ -3362,9 +3383,9 @@ def _wait_for_kernel_task(
             poll_seconds=poll_seconds, read_managed_outputs=read_managed_outputs,
             expects_outputs=expects_outputs, owner_tick=observed)
     except KeyboardInterrupt as interrupt:
-        policy = _runpod_generation_policy(latest)
+        placement = _runpod_generation_placement(latest, allow_direct_spec=True)
         cancel = getattr(getattr(client, "tasks", None), "cancel", None)
-        if policy is not None and callable(cancel):
+        if placement is not None and callable(cancel):
             try:
                 result = cancel(task_id, idempotency_key=f"runpod-interrupt-{uuid.uuid4().hex}")
                 if getattr(result, "ok", True) is False:
@@ -3437,7 +3458,7 @@ def _wait_for_kernel_task_loop(
         task = dict(data)
         if owner_tick is not None:
             owner_tick(task)
-        runpod_policy = _runpod_generation_policy(task)
+        runpod_policy = _runpod_generation_policy(task, allow_direct_spec=True)
         if runpod_policy is not None and runpod_policy.get("wait_for_capacity", True) is not False:
             capacity_timeout = runpod_policy.get("capacity_timeout_seconds")
             if capacity_timeout is None and float(timeout_seconds) == 3600.0:
