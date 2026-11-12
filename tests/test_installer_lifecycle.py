@@ -1145,6 +1145,67 @@ def test_update_on_a_terminal_leaves_one_checked_line_per_phase(tmp_path):
     ]
 
 
+def _flaky_terminal(survives):
+    import io
+
+    class Terminal(io.StringIO):
+        encoding = "utf-8"
+
+        def isatty(self):
+            return True
+
+        def write(self, text):
+            nonlocal survives
+            if survives <= 0:
+                raise OSError(5, "Input/output error")
+            survives -= 1
+            return super().write(text)
+
+    return Terminal()
+
+
+def _update_with(tmp_path, say, *, fail_start: bool):
+    from astrid.installer.progress import Progress
+
+    root, data, old = _release_one(tmp_path)
+
+    class Backend(LifecycleBackend):
+        def run(self, argv, **_kwargs):
+            return json.dumps({"identity": {"version": 33}, "target": 33})
+
+        def start(self, version, data):
+            super().start(version, data)
+            if fail_start and version != old:
+                raise RuntimeError("the new release did not start")
+
+    backend = Backend(root, data)
+    if not callable(say):
+        say = Progress(say, interval=0.001)
+    failure = None
+    try:
+        Installer(root, data, backend, say=say).run("update", {"release": 12})
+    except RuntimeError as exc:
+        failure = exc
+    calls = [(call[0], *(getattr(arg, "release", arg) for arg in call[1:2])) for call in backend.calls]
+    return calls, failure, current(root).release, read_json(root / "update-transaction.json")["step"]
+
+
+@pytest.mark.parametrize("fail_start", [False, True])
+def test_a_terminal_that_goes_away_never_changes_the_update_or_its_rollback(tmp_path, fail_start):
+    expected_calls, expected_failure, expected_release, expected_step = _update_with(
+        tmp_path / "plain", [].append, fail_start=fail_start)
+    assert (expected_release, expected_step) == ((1, "rolled_back") if fail_start else (12, "complete"))
+    if fail_start:
+        assert ("stop", 12) in expected_calls and expected_calls[-2:] == [("start", 1), ("verify", 1)]
+    # Break the terminal at every write of the run: opening, drawing and closing each phase line.
+    for survives in range(16):
+        calls, failure, release, step = _update_with(
+            tmp_path / f"broken-{survives}", _flaky_terminal(survives), fail_start=fail_start)
+        assert calls == expected_calls, survives
+        assert (release, step) == (expected_release, expected_step), survives
+        assert type(failure) is type(expected_failure) and str(failure) == str(expected_failure), survives
+
+
 def test_fresh_install_names_its_own_phases(tmp_path):
     root, data = tmp_path / "program", tmp_path / "data"
     lines = []

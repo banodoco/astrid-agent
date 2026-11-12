@@ -76,6 +76,10 @@ class Progress:
 
     Call it like ``print`` for an ordinary line. ``phase`` opens a line for one
     slow step; any other line printed meanwhile closes it first.
+
+    Output is best effort: once the stream cannot be written (a closed terminal,
+    a broken pipe), every later line and frame is dropped, so a display error
+    never fails, interrupts or replaces an install step or its rollback.
     """
 
     def __init__(self, stream: TextIO | None = None, *, path: str | None = None,
@@ -91,14 +95,20 @@ class Progress:
         self._open: object | None = None  # the phase whose line is open
         self._drawn = 0  # cells of the zigzag on screen
         self._text = ""  # that line's text
+        self._broken = False  # the stream refused a write; say nothing more
 
     @property
     def stream(self) -> TextIO:
         return sys.stdout if self._stream is None else self._stream
 
     def _write(self, text: str) -> None:
-        self.stream.write(text)
-        self.stream.flush()
+        if self._broken:
+            return
+        try:
+            self.stream.write(text)
+            self.stream.flush()
+        except (OSError, ValueError):
+            self._broken = True
 
     def _close(self, mark: str = "") -> None:
         """End the open phase line: rewrite it whole with ``mark`` instead of the zigzag.
@@ -125,38 +135,38 @@ class Progress:
 
     @contextmanager
     def phase(self, text: str) -> Iterator[None]:
-        if self.path is None:
+        if self.path is None or self._broken:
             self(text)
             yield
             return
         counts = _counts(len(self.path))
         stop, line = threading.Event(), object()
-        with self._lock:
-            self._close()
-            self._write(text + " ")
-            self._open, self._drawn, self._text = line, 0, text
 
         def draw() -> None:
             tick = 1
             while not stop.wait(self.interval):
                 with self._lock:
-                    if self._open is not line:
+                    if self._open is not line or self._broken:
                         return
-                    try:
-                        self._tick(counts[tick % len(counts)])
-                    except (OSError, ValueError):
-                        return  # a closed terminal must not end the install
+                    self._tick(counts[tick % len(counts)])
                 tick += 1
 
         ticker = threading.Thread(target=draw, name="astrid-install-progress", daemon=True)
-        ticker.start()
         finished = False
+        # Cleanup covers opening the line and starting the ticker, so an
+        # interrupt at any point still stops the drawing and ends the line.
         try:
+            with self._lock:
+                self._close()
+                self._open, self._drawn, self._text = line, 0, text
+                self._write(text + " ")
+            ticker.start()
             yield
             finished = True
         finally:
             stop.set()
-            ticker.join()
+            if ticker.ident is not None:  # it started
+                ticker.join()
             with self._lock:
                 if self._open is line:  # a later line may already have closed it
                     self._close(MARKS.get(self.path, "done") if finished else "")

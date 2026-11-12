@@ -220,3 +220,76 @@ def test_repaired_chat_command_note_goes_to_the_log_not_the_terminal(tmp_path):
     assert ("Previous chat command is unavailable or belongs to a versioned install; "
             "using the selected version's default.") in log.read_text(encoding="utf-8")
     assert json.loads(declaration.read_text())["services"][0]["env"]["ASTRID_ACP_COMMAND"] != str(tmp_path / "gone")
+
+
+class Failing(Terminal):
+    """A terminal that goes away (EIO) after ``survives`` writes."""
+
+    def __init__(self, survives: int):
+        super().__init__()
+        self.survives = survives
+
+    def write(self, text):
+        if self.survives <= 0:
+            raise OSError(5, "Input/output error")
+        self.survives -= 1
+        return super().write(text)
+
+
+@pytest.mark.parametrize("survives", range(6))
+def test_a_terminal_that_goes_away_never_fails_a_step(survives):
+    say = Progress(Failing(survives), interval=0.001)
+    ran = []
+    with say.phase("Downloading Release 12"):
+        threading.Event().wait(0.02)
+        ran.append("downloaded")
+    say("Open https://astrid.haus")
+    with say.phase("Checking it"):
+        ran.append("checked")
+    assert ran == ["downloaded", "checked"]
+    assert not any(thread.name == "astrid-install-progress" for thread in threading.enumerate())
+
+
+@pytest.mark.parametrize("survives", range(4))
+def test_a_terminal_that_goes_away_keeps_the_original_exception(survives):
+    say = Progress(Failing(survives), interval=0.001)
+    with pytest.raises(RuntimeError, match="the new release did not start"):
+        with say.phase("Starting Release 12"):
+            threading.Event().wait(0.02)
+            raise RuntimeError("the new release did not start")
+
+
+def test_a_broken_plain_stream_drops_lines_instead_of_raising():
+    class Broken(io.StringIO):
+        def write(self, _text):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    say = Progress(Broken())
+    assert say.path is None
+    say("Using your workspace at /tmp/w.")
+    with say.phase("Downloading Release 12"):
+        pass
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_an_interrupt_while_the_ticker_starts_stops_the_drawing(monkeypatch, started):
+    real = threading.Thread
+
+    class Interrupted(real):
+        def start(self):
+            if started:
+                super().start()
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(progress.threading, "Thread", Interrupted)
+    output = Terminal()
+    say = Progress(output, interval=0.001)
+    with pytest.raises(KeyboardInterrupt):
+        with say.phase("Downloading Release 12"):
+            pytest.fail("the step must not run after the interrupt")
+    monkeypatch.setattr(progress.threading, "Thread", real)
+    settled = output.getvalue()
+    threading.Event().wait(0.03)
+    assert output.getvalue() == settled  # nothing draws after the interrupt
+    assert not any(thread.name == "astrid-install-progress" for thread in threading.enumerate())
+    assert _rendered(settled) == ["Downloading Release 12"]
