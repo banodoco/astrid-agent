@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.core._shared import run_logs
 from astrid.core.execution import phase_timing
 from astrid.core.execution.machine_run import run_on_machine
 from astrid.core.execution.phase_timing import PhaseTiming
@@ -97,8 +98,8 @@ def test_execution_failure_names_execution_and_carries_timing(machine_case, rece
     assert receipt["identity"]["task_id"] == "task" and receipt["identity"]["machine_id"] == "pod-1"
     assert receipt["identity"]["run_id"] and receipt["identity"]["remote_job_id"]
     assert receipt["machine"]["after"] == "kept" and receipt["machine"]["release_at"] is not None
-    assert receipt["collection"] == {"state": "not_collected", "reason": "collector_not_built",
-                                     "bundle_manifest_sha256": None, "bytes": 0, "cap_bytes": 262144}
+    assert receipt["collection"] == {"state": "unavailable", "reason": "not_reported",
+                                     "bytes": 0, "cap_bytes": run_logs.CAP_BYTES}
     assert receipt["files"] == []
     assert receipt["timing"]["stamps"]["job_ended_at"] and receipt["timing"]["phases"]["execution"]["seconds"] is not None
     assert machine["timing"] == receipt["timing"], "the attempt's machine record carries the same block"
@@ -157,7 +158,8 @@ def test_pinned_missing_machine_names_no_machine(machine_case, receipts):
     assert error is not None and not machine
     receipt = _only(receipts)
     assert receipt["stage"] == "no_machine" and receipt["phase"] == "claim"
-    assert receipt["collection"]["state"] == "local_only" and receipt["machine"]["after"] == "none"
+    assert receipt["collection"]["state"] == "local_only" and receipt["collection"]["reason"] is None
+    assert receipt["machine"]["after"] == "none"
     assert receipt["identity"]["machine_id"] is None and receipt["timing"]["phases"]["preparation"] is None
     assert c.creates == 0
 
@@ -370,7 +372,7 @@ def test_generate_failure_prints_the_newest_or_named_receipt(machine_case, tmp_p
     assert generate(["failure", "task"]) == 0
     human = capsys.readouterr().out
     assert human.startswith("Failure: execution (controller_step)\n") and "Task: task  attempt: attempt-1" in human
-    assert "Bundle: not collected (collector not built)" in human
+    assert on_disk["collection"]["state"] == "unavailable" and "Logs: unavailable" in human
     assert generate(["failure", "no-such-task"]) == 1
     assert "no failure receipt for task no-such-task" in capsys.readouterr().err
 

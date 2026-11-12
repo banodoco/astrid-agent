@@ -1,4 +1,4 @@
-"""A failed pod job's own logs come back, unredacted, before the reset."""
+"""Declared logs from a failed pod job come back before the reset."""
 
 import json
 import shutil
@@ -7,8 +7,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
+from astrid.core._shared import run_logs
 from astrid.packs.runpod import failure_receipt, machine
 
 
@@ -18,41 +17,56 @@ ERROR = "Traceback (most recent call last):\nRuntimeError: CUDA out of memory. T
 def _pod(tmp_path, stderr_text=ERROR, stderr_bytes=None):
     job = tmp_path / "pod/jobs/j1"
     run = tmp_path / "pod/runs/r1"
-    engine = tmp_path / "pod/data/out/sessions/s1"
-    for d in (job, run, engine):
-        d.mkdir(parents=True)
+    out = run / "out"
+    engine = tmp_path / "engine.log"
+    job.mkdir(parents=True)
+    out.mkdir(parents=True)
     (job / "command.sh").write_text("#!/bin/sh\n")
     (job / "stderr").write_text(stderr_text if stderr_bytes is None else "x" * stderr_bytes)
     (job / "stdout").write_text("progress line\n")
     (run / "result.json").write_text(json.dumps({"ok": False}))
-    (engine / "comfy.log").write_text("!!! Exception during processing !!! node AILab_Qwen3TTSCustomVoice\n")
-    return job, run, tmp_path / "pod/data", tmp_path / "pod"
+    engine.write_text("!!! Exception during processing !!! node AILab_Qwen3TTSCustomVoice\n")
+    run_logs.declare(out, run_logs.LogDecl("engine", "engine", str(engine)))
+    return job, run
 
 
-def _run_collector(job, run, data_root, pod_root):
-    command = machine.failure_logs_command(str(run), str(data_root), str(pod_root), python=sys.executable)
-    done = subprocess.run(["bash", "-c", command, str(job / "command.sh")], capture_output=True, text=True,
-                          timeout=60)
+def _finish(job, run):
+    command = machine.finish_command(str(run), python=sys.executable)
+    done = subprocess.run(["bash", "-c", command, str(job / "command.sh")], capture_output=True,
+                          text=True, timeout=60)
     assert done.returncode == 0
     return done.stdout
 
 
-def test_pod_collector_keeps_full_unredacted_logs_and_reports_a_manifest(tmp_path):
-    job, run, data_root, pod_root = _pod(tmp_path)
-    stdout = _run_collector(job, run, data_root, pod_root)
-    folder = run / machine.FAILURE_DIR
-    assert (folder / "stderr").read_text() == ERROR
-    assert "AILab_Qwen3TTSCustomVoice" in (folder / "engine-1.log").read_text()
-    assert json.loads((folder / "result.json").read_text()) == {"ok": False}
-    assert any(line.startswith(machine.FAILURE_MANIFEST_MARK) for line in stdout.splitlines())
+def test_finish_collects_job_stdout_stderr_and_declared_engine_log(tmp_path):
+    job, run = _pod(tmp_path)
+    stdout = _finish(job, run)
+    index = json.loads((run / "out/logs/index.json").read_text())
+    by_name = {row["name"]: row for row in index["logs"]}
+    assert Path(run / "out/logs" / by_name["job.stdout"]["file"]).read_text() == "progress line\n"
+    assert Path(run / "out/logs" / by_name["job.stderr"]["file"]).read_text() == ERROR
+    assert "AILab_Qwen3TTSCustomVoice" in Path(run / "out/logs" / by_name["engine"]["file"]).read_text()
+    assert any(line.startswith("LOGS_MANIFEST_SHA256=") for line in stdout.splitlines())
 
 
-def test_pod_collector_caps_large_logs_and_marks_them(tmp_path):
-    job, run, data_root, pod_root = _pod(tmp_path, stderr_bytes=machine.FAILURE_LOG_CAP_BYTES + 4096)
-    _run_collector(job, run, data_root, pod_root)
-    folder = run / machine.FAILURE_DIR
-    assert (folder / "stderr").stat().st_size == machine.FAILURE_LOG_CAP_BYTES
-    assert "stderr" in (folder / "truncated").read_text().split()
+def test_finish_caps_large_logs_and_writes_truncation_marker(tmp_path, monkeypatch):
+    # Exercise the embedded, package-independent collector at a small cap.
+    original_read_text = Path.read_text
+
+    def smaller_embedded_cap(path, *args, **kwargs):
+        text = original_read_text(path, *args, **kwargs)
+        if path == Path(run_logs.__file__):
+            text = text.replace("CAP_BYTES = 256 * 1024 * 1024", "CAP_BYTES = 1024")
+        return text
+
+    monkeypatch.setattr(Path, "read_text", smaller_embedded_cap)
+    job, run = _pod(tmp_path, stderr_bytes=4096)
+    _finish(job, run)
+    index = json.loads((run / "out/logs/index.json").read_text())
+    row = next(row for row in index["logs"] if row["name"] == "job.stderr")
+    content = (run / "out/logs" / row["file"]).read_bytes()
+    assert row["truncated"] is True
+    assert len(content) <= 1024 and b"[run-logs gap]" in content
 
 
 class _Ops:
@@ -68,8 +82,8 @@ class _Ops:
 
 
 def _fetch(tmp_path, ops):
-    job, run, data_root, pod_root = _pod(tmp_path)
-    stdout = _run_collector(job, run, data_root, pod_root)
+    job, run = _pod(tmp_path)
+    stdout = _finish(job, run)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     owner = object.__new__(machine.RunPodMachine)
@@ -77,21 +91,21 @@ def _fetch(tmp_path, ops):
     return owner._fetch_failure_logs(ops, fake_run, stdout, tmp_path / "local")
 
 
-def test_controller_fetches_the_failure_folder_digest_verified(tmp_path):
+def test_controller_fetches_declared_logs_digest_verified(tmp_path):
     logs = _fetch(tmp_path, _Ops())
     by_name = {row["name"]: row for row in logs["files"]}
-    assert Path(by_name["stderr"]["path"]).read_text() == ERROR
-    assert by_name["stderr"]["truncated"] is False
+    assert Path(by_name["job.stderr"]["path"]).read_text() == ERROR
+    assert by_name["job.stderr"]["truncated"] is False
 
 
-def test_a_tampered_log_is_reported_unavailable_and_never_masks_the_job_error(tmp_path):
-    assert _fetch(tmp_path, _Ops(tamper="stderr")) == {"unavailable": "DigestMismatch"}
+def test_digest_mismatch_is_unavailable_and_never_masks_the_job_error(tmp_path):
+    assert _fetch(tmp_path, _Ops(tamper="job.stderr.log")) == {"unavailable": "DigestMismatch"}
 
 
-def test_no_failure_manifest_is_reported_not_reported():
+def test_nothing_reported_is_unavailable():
     owner = object.__new__(machine.RunPodMachine)
     assert owner._fetch_failure_logs(None, SimpleNamespace(remote_root="/r", scratch=Path("/tmp")),
-                                     "no marker here", Path("/tmp")) == {"unavailable": "not_reported"}
+                                    "no marker here", Path("/tmp")) == {"unavailable": "not_reported"}
 
 
 def test_receipt_keeps_its_own_copy_of_the_logs(tmp_path):

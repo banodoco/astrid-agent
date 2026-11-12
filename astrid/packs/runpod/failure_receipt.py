@@ -1,9 +1,9 @@
 """The local failure receipt for a generation that failed on a rented machine.
 
 ``failure-receipt.json`` (``astrid.generation.failure-receipt.v1``) is written under
-``<runtime data root>/generation/failures/<task_id>/`` using only what the controller
-already holds: the validated cause facts, the stage, identities and the phase-timing
-block. No pod folder, log or output is read here; the ``collection`` section says so.
+``<runtime data root>/generation/failures/<task_id>/`` using the validated cause facts,
+stage, identities, phase timing and any declared logs already fetched by the controller.
+The ``collection`` section records the log fetch outcome.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ SCHEMA = "astrid.generation.failure-receipt.v1"
 STAGES = ("no_machine", "boot", "install", "model_download", "workflow_validation",
           "execution", "output_collection", "release")
 KEEP_RECEIPTS = 20
-CAP_BYTES = 262144
 RECEIPT_NAME = "failure-receipt.json"
 #: Pod exit codes the job command itself uses (``machine.generation_command``).
 EXIT_NOT_READY, EXIT_VALIDATION = 75, 3
@@ -194,13 +193,24 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
         "timing": block,
         "machine": {"after": after, "release_reason": getattr(lease, "release_reason", None),
                     "release_at": stamps.get("released_at"), "cost_usd": cost},
-        # No pod folder, redactor or log fetch exists yet: nothing was collected.
-        "collection": {"state": "local_only" if stage == "no_machine" else "not_collected",
-                       "reason": "local_only" if stage == "no_machine" else "collector_not_built", "bundle_manifest_sha256": None, "bytes": 0,
-                       "cap_bytes": CAP_BYTES},
+        "collection": _collection(stage, logs, unavailable),
         "files": [],
-        "redaction": {"policy": "astrid.failure-redaction.v1", "applied": False, "reason": "no bundle collected"},
     }
+
+
+def _collection(stage: str, logs: list[Mapping[str, Any]], unavailable: Any) -> dict[str, Any]:
+    from astrid.core._shared import run_logs
+
+    if stage == "no_machine":
+        state, reason = "local_only", unavailable
+    elif unavailable:
+        state, reason = "unavailable", unavailable
+    elif logs:
+        state, reason = "collected", None
+    else:
+        state, reason = "not_collected", None
+    return {"state": state, "reason": reason, "bytes": sum(row.get("bytes", 0) for row in logs),
+            "cap_bytes": run_logs.CAP_BYTES}
 
 
 def write_receipt(receipt: Mapping[str, Any], *, root: Path | None = None) -> Path:
@@ -309,8 +319,7 @@ def render(receipt: Mapping[str, Any]) -> str:
              f"Task: {ident.get('task_id')}  attempt: {ident.get('attempt_id')}",
              f"Machine: {ident.get('machine_id') or 'none'}  after: {machine.get('after')}"
              + (f"  release: {machine['release_reason']}" if machine.get("release_reason") else ""),
-             "Bundle: " + (f"{str(collection.get('state')).replace('_', ' ')} "
-                           f"({str(collection.get('reason', 'n/a')).replace('_', ' ')})")]
+             f"Logs: {collection.get('state')}"]
     seconds = [f"{name}={row['seconds']}s" for name, row in timing.items()
                if isinstance(row, Mapping) and row.get("seconds") is not None]
     if seconds:
