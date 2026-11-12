@@ -156,20 +156,17 @@ def test_zero_idle_and_duplicate_retirement_never_extend(warm_case, monkeypatch)
     assert len(c.requests) == 1
 
 
-def test_reuse_cancels_stale_idle_only_after_fresh_consent(warm_case, monkeypatch):
+def test_reuse_cancels_stale_idle_under_original_paid_authority(warm_case, monkeypatch):
     c = warm_case
     fake_retirement(c, monkeypatch)
     owner = c.fresh(requested_idle_seconds=10)
     owner.begin(c.case.reference)
     retire(owner, c)
     stale = next(t.callback for t in c.clock.timers if not t.cancelled and t.due == c.clock() + 10)
-    with pytest.raises(RunPodWorkerOwnerError, match="fresh per-run"):
-        owner.begin(c.case.reference)
     assert c.read()["warm_session"]["idle_expires_at"] == c.clock() + 10
-    record = c.read()
-    record["paid_limits"]["invocation_id"] = "run-consent-2"
-    worker_preparation.write_target_record(c.case.path, record)
+    paid = copy.deepcopy(c.read()["paid_limits"])
     owner.begin(c.case.reference)
+    assert c.read()["paid_limits"] == paid
     c.clock.advance(10)
     stale()
     assert not c.requests
@@ -472,6 +469,27 @@ def small_lease(lease_selection_case, monkeypatch):
         owner.close()
 
 
+def prepared_lease_job(owner, grant, *, requested_idle_seconds=None):
+    """Admit a job on a manual claim, with fake preparation through real events."""
+    from astrid.packs.runpod.lease_states import LeaseEvent
+
+    record = owner.selection._read()
+    if record is None or record["state"] == "cleanup_complete":
+        owner.acquire(grant, requested_idle_seconds=requested_idle_seconds)
+    invocation = owner.acquire(owner.job_limits(grant.invocation_id),
+                               requested_idle_seconds=requested_idle_seconds)
+    record = owner.preparation_claim(invocation)
+    preparation = {"schema": "astrid.runpod.lease-preparation.v1",
+                   "operation_id": invocation.operation_id, "pod_id": record["pod_id"],
+                   "compatibility": dict(record["lease_compatibility"]), "bootstrap_digest": "a" * 16,
+                   "installed": {"schema": "astrid.runpod.installed-snapshot.v1",
+                                 "compatibility": dict(record["lease_compatibility"]),
+                                 "receipt_sha256": "sha256:" + "b" * 64}}
+    for event in (LeaseEvent.PREPARATION_STARTED, LeaseEvent.PREPARATION_SUCCEEDED):
+        record = owner._save(record, record["lease"], event=event, preparation=preparation)
+    return invocation
+
+
 def test_small_lease_intent_compatibility_lock_idle_and_exact_release(small_lease):
     c = small_lease
     owner = c.fresh()
@@ -481,7 +499,7 @@ def test_small_lease_intent_compatibility_lock_idle_and_exact_release(small_leas
         assert record["lease"]["state"] == "preparing"
         assert record["paid_limits"]["invocation_id"] == record["lease"]["invocation_id"]
     c.before_create = before_create
-    first = owner.acquire(c.grant)
+    first = prepared_lease_job(owner, c.grant)
     with pytest.raises(AcquisitionUnresolvedError):
         c.fresh()  # account lock stays owned between invocations
     owner.settle(first)
@@ -495,14 +513,14 @@ def test_small_lease_intent_compatibility_lock_idle_and_exact_release(small_leas
     assert c.read()["cleanup"]["backup_volume_preserved"] is True
     assert c.read()["estimated_cost_usd"] == pytest.approx(0.5)
     # A verified terminal receipt permits a fresh identity in the same journal.
-    second = owner.acquire(replace(c.grant, invocation_id="next", deadline=utc(c.clock() + 3600)))
+    second = prepared_lease_job(owner, replace(c.grant, invocation_id="next", deadline=utc(c.clock() + 3600)))
     assert second.operation_id != first.operation_id and c.creates == 2
 
 
 def test_failed_job_settles_under_original_idle_and_paid_limits(small_lease):
     c = small_lease
     owner = c.fresh()
-    first = owner.acquire(c.grant, requested_idle_seconds=10)
+    first = prepared_lease_job(owner, c.grant, requested_idle_seconds=10)
     paid = c.read()["lease"]["paid_expires_at"]
     owner.settle(first, outcome="failed", failure={"exception": "MachineError", "stage": "fetch",
                                                    "code": "generation_failed", "category": "execution"})
@@ -510,7 +528,7 @@ def test_failed_job_settles_under_original_idle_and_paid_limits(small_lease):
     assert lease["state"] == "idle" and lease["idle_expires_at"] == c.clock() + 10
     assert lease["paid_expires_at"] == paid and lease["last_job"]["outcome"] == "failed"
     assert c.creates == 1 and not c.deletes
-    second = owner.acquire(replace(c.grant, invocation_id="retry"), requested_idle_seconds=10)
+    second = prepared_lease_job(owner, replace(c.grant, invocation_id="retry"), requested_idle_seconds=10)
     assert c.creates == 1 and second.operation_id == first.operation_id
     assert c.read()["lease"]["paid_expires_at"] <= paid
     owner.settle(second, outcome="success")
@@ -519,11 +537,11 @@ def test_failed_job_settles_under_original_idle_and_paid_limits(small_lease):
     assert c.deletes == ["pod-1"]
 
 
-def test_failed_job_keep_until_release_still_ends_at_paid_cap(small_lease):
+def test_failed_job_bounded_keep_still_ends_at_paid_cap(small_lease):
     c = small_lease
     owner = c.fresh()
-    invocation = owner.acquire(c.grant, requested_idle_seconds=600)
-    owner.keep("pod-1", keep_grant(c, max_usd=20 / 3600, idle_seconds=20), until_release=True)
+    invocation = prepared_lease_job(owner, c.grant, requested_idle_seconds=600)
+    owner.keep("pod-1", keep_grant(c, max_usd=20 / 3600, idle_seconds=20))
     owner.settle(invocation, outcome="failed", failure={"exception": "MachineError"})
     assert c.read()["lease"]["idle_expires_at"] == c.read()["lease"]["paid_expires_at"]
     c.clock.advance(20)
@@ -570,10 +588,10 @@ def test_failed_acquire_releases_only_its_captured_exact_identity(small_lease, m
 def test_small_lease_reuses_snapshot_and_stale_holder_cannot_expire_next_run(small_lease):
     c = small_lease
     owner = c.fresh()
-    first = owner.acquire(c.grant, requested_idle_seconds=10)
+    first = prepared_lease_job(owner, c.grant, requested_idle_seconds=10)
     owner.settle(first)
     stale = next(timer.callback for timer in c.clock.timers if timer.due == c.clock() + 10)
-    second = owner.acquire(replace(c.grant, invocation_id="next"), requested_idle_seconds=0)
+    second = prepared_lease_job(owner, replace(c.grant, invocation_id="next"), requested_idle_seconds=0)
     stale()
     with pytest.raises(RunPodWorkerOwnerError, match="another holder"):
         owner.settle(first)
@@ -633,7 +651,7 @@ def keep_grant(c, **changes):
 def test_small_lease_keep_extends_paid_limit_accrues_cost_and_rearms(small_lease):
     c = small_lease
     owner = c.fresh()
-    invocation = owner.acquire(c.grant, requested_idle_seconds=10)
+    invocation = prepared_lease_job(owner, c.grant, requested_idle_seconds=10)
     owner.settle(invocation)
     previous_expiry = c.read()["lease"]["paid_expires_at"]
     old_timers = list(c.clock.timers)
@@ -652,14 +670,14 @@ def test_small_lease_keep_extends_paid_limit_accrues_cost_and_rearms(small_lease
 
 
 @pytest.mark.parametrize("state", ["active", "idle"])
-def test_small_lease_keep_until_release_disables_idle_but_releases_at_cap(small_lease, state):
+def test_small_lease_bounded_keep_clips_idle_to_paid_cap(small_lease, state):
     c = small_lease
     owner = c.fresh()
-    invocation = owner.acquire(c.grant, requested_idle_seconds=2)
+    invocation = prepared_lease_job(owner, c.grant, requested_idle_seconds=2)
     if state == "idle":
         owner.settle(invocation)
     grant = keep_grant(c, max_usd=20 / 3600, deadline=utc(c.clock() + 100), idle_seconds=20)
-    owner.keep("pod-1", grant, until_release=True)
+    owner.keep("pod-1", grant)
     if state == "active":
         owner.settle(invocation)
     assert c.read()["lease"]["idle_expires_at"] == c.read()["lease"]["paid_expires_at"] == c.clock() + 20
@@ -669,15 +687,15 @@ def test_small_lease_keep_until_release_disables_idle_but_releases_at_cap(small_
     assert c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
 
 
-def test_small_lease_keep_until_release_survives_a_reused_job(small_lease):
+def test_small_lease_bounded_keep_survives_a_reused_job(small_lease):
     c = small_lease
     owner = c.fresh()
-    first = owner.acquire(c.grant, requested_idle_seconds=2)
+    first = prepared_lease_job(owner, c.grant, requested_idle_seconds=2)
     owner.settle(first)
     owner.keep("pod-1", keep_grant(c, max_usd=20 / 3600,
-                                 deadline=utc(c.clock() + 100), idle_seconds=20), True)
-    second = owner.acquire(replace(c.grant, invocation_id="reused", preparation_seconds=1,
-                                    execution_seconds=1, idle_seconds=2), requested_idle_seconds=2)
+                                 deadline=utc(c.clock() + 100), idle_seconds=20))
+    second = prepared_lease_job(owner, replace(c.grant, invocation_id="reused", preparation_seconds=1,
+                                    execution_seconds=1, idle_seconds=20), requested_idle_seconds=20)
     owner.settle(second)
     assert c.read()["lease"]["idle_expires_at"] == c.clock() + 20
     c.clock.advance(2)
@@ -967,7 +985,7 @@ def test_small_lease_lost_delete_ack_and_failed_get_remain_pending(small_lease):
 def test_small_lease_incompatible_snapshot_refused_without_acquisition(small_lease, field):
     c = small_lease
     owner = c.fresh()
-    owner.settle(owner.acquire(c.grant))
+    owner.settle(prepared_lease_job(owner, c.grant))
     c.owner.compatibility = {**c.owner.compatibility, field: "changed"}
     before = c.owner.path.read_bytes()
     with pytest.raises(AcquisitionUnresolvedError, match="incompatible"):
@@ -988,7 +1006,7 @@ def test_small_lease_cli_exit_leaves_retained_host_timer_running(small_lease):
     with subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, text=True) as client:
         assert client.stdout.readline().strip() == "acquire"
-        invocation = host_owner.acquire(c.grant, requested_idle_seconds=1)
+        invocation = prepared_lease_job(host_owner, c.grant, requested_idle_seconds=1)
         client.stdin.write(invocation.claim["pod_id"] + "\n")
         client.stdin.flush()
         assert client.stdout.readline().strip() == "settle"
@@ -1060,7 +1078,7 @@ def test_small_lease_stale_recovery_callback_cannot_terminate_next_operation(sma
 def test_small_lease_idle_never_extends_paid_deadline(small_lease):
     c = small_lease
     owner = c.fresh()
-    invocation = owner.acquire(c.grant)
+    invocation = prepared_lease_job(owner, c.grant)
     paid = c.read()["lease"]["paid_expires_at"]
     c.clock.advance(3590)
     owner.settle(invocation)
@@ -1073,7 +1091,7 @@ def test_small_lease_idle_never_extends_paid_deadline(small_lease):
 def test_small_lease_expiry_retries_transient_custody_read_failure(small_lease, monkeypatch, phase):
     c = small_lease
     owner = c.fresh()
-    invocation = owner.acquire(c.grant, requested_idle_seconds=10)
+    invocation = prepared_lease_job(owner, c.grant, requested_idle_seconds=10)
     if phase == "idle":
         owner.settle(invocation)
         remaining = 10
@@ -1104,7 +1122,7 @@ def test_small_lease_drain_allows_exact_holder_settlement_without_reopening(smal
     import threading
     c = small_lease
     owner = c.fresh()
-    invocation = owner.acquire(c.grant)
+    invocation = prepared_lease_job(owner, c.grant)
     real_drain = owner.quiesce
     progressed, errors = threading.Event(), []
 
@@ -1253,15 +1271,15 @@ def test_manual_claim_waits_then_settles_idle_and_reuses_without_extending_paid_
     assert claimed["lease"]["idle_expires_at"] == c.clock() + 600
     expiry, started = claimed["lease"]["paid_expires_at"], claimed["lease"]["started_at"]
     assert expiry == started + 1200
-    # A normal generation admission needs fresh consent but no market stock.
+    # A normal generation admission uses claim authority without observing market stock.
     c.owner.observe_offer = lambda: pytest.fail("retained reuse observed market stock")
-    later = owner.acquire(replace(c.grant, invocation_id="later-job", idle_seconds=60,
+    later = prepared_lease_job(owner, replace(c.grant, invocation_id="later-job", idle_seconds=60,
                                   deadline=utc(c.clock() + 7200)), requested_idle_seconds=60)
     assert c.creates == 1 and later.claim["pod_id"] == claimed["pod_id"]
     assert later.claim["lease"]["paid_expires_at"] == expiry
     assert later.claim["lease"]["started_at"] == started
     owner.settle(later)
-    # The original claim authority stays used even after later consent replaced it.
+    # The original claim authority stays used after the later job admission.
     before = c.owner.path.read_bytes()
     with pytest.raises(target_selection.PaidSelectionError, match="already used"):
         owner.acquire(grant, requested_idle_seconds=600)

@@ -14,8 +14,10 @@ import os
 import re
 import stat
 import tempfile
+import threading
 import time
-from contextlib import contextmanager, nullcontext
+import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from dataclasses import replace as _dc_replace
 from datetime import datetime, timezone
@@ -28,9 +30,39 @@ from runtime_protocol import platform
 from astrid.core.generation.engine_contracts import Gate, PlacementRefused
 from astrid.core.util.time import utc_now_iso
 
+from .lease_states import LeaseEvent, apply_lease_event, journal_dispatch_ticket, lease_now
 from .pod_fields import InvalidPodField, pod_field
-from .provider import (ProviderNotStarted, ProviderRefused, account_gate, async_provider_call, async_provider_operation,
-                       provider_budget, provider_call)
+from .provider import (
+    ProviderNotStarted,
+    ProviderRefused,
+    account_gate,
+    async_provider_call,
+    async_provider_operation,
+    bounded_observation,
+    provider_budget,
+    provider_call,
+)
+
+
+def _target_event(
+    record: Mapping[str, Any], event: LeaseEvent, *,
+    changes: Mapping[str, Any] | None = None,
+    evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Encode a journal lifecycle decision through the canonical lease table."""
+    proof = dict(evidence or {})
+    if event in {
+        LeaseEvent.CREATE_SUCCEEDED, LeaseEvent.LATE_CREATE_SUCCEEDED,
+        LeaseEvent.CREATE_FAILED_EXACT, LeaseEvent.CREATE_NOT_SENT,
+        LeaseEvent.CAPACITY_REJECTED,
+    }:
+        control = record.get("lt_control")
+        attempt_id = control.get("create_attempt") if isinstance(control, Mapping) else record.get("create_attempt")
+        if attempt_id and "attempt_id" not in proof:
+            proof["attempt_id"] = attempt_id
+    return cast(dict[str, Any], apply_lease_event(
+        record, event, now=lease_now(), changes=changes, evidence=proof,
+    ))
 
 _SHARED_GATES = {
     "GPU": "hardware", "volume": "storage", "datacenter": "region",
@@ -156,40 +188,77 @@ def create_target_record_exclusive(path: Path, value: dict[str, Any]) -> None:
     path = path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    # A partial or unflushed intent must block admission, rather than
-    # disappear and make an uncertain acquisition look like a first run.
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    platform.fsync_directory(path.parent)
+    with target_owner(path, blocking=True):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        # A partial or unflushed intent must block admission, rather than
+        # disappear and make an uncertain acquisition look like a first run.
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        platform.fsync_directory(path.parent)
 
 
 def replace_target_record(path: Path, value: dict[str, Any], *, operation_id: str) -> None:
     """Transition only the record owned by this acquisition operation."""
-    try:
-        current = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"cannot verify RunPod custody at {path}: {exc}") from exc
-    if current.get("operation_id") != operation_id:
-        raise RuntimeError(
-            f"RunPod custody at {path} belongs to another operation; refusing to overwrite it"
-        )
-    if value.get("operation_id") != operation_id:
-        raise RuntimeError("replacement RunPod custody changed operation identity")
-    write_target_record(path, value)
+    with target_owner(path, blocking=True):
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"cannot verify RunPod custody at {path}: {exc}") from exc
+        if current.get("operation_id") != operation_id:
+            raise RuntimeError(
+                f"RunPod custody at {path} belongs to another operation; refusing to overwrite it"
+            )
+        if value.get("operation_id") != operation_id:
+            raise RuntimeError("replacement RunPod custody changed operation identity")
+        write_target_record(path, value)
+
+
+def apply_target_event(
+    path: Path, operation_id: str, event: LeaseEvent, *,
+    changes: Mapping[str, Any] | None = None,
+    evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Read, decide, and publish one lifecycle event under the short owner lock."""
+    with target_owner(path, blocking=True):
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"cannot read RunPod custody at {path}: {exc}") from exc
+        if not isinstance(current, dict) or current.get("operation_id") != operation_id:
+            raise RuntimeError("RunPod custody belongs to another operation")
+        updated = _target_event(current, event, changes=changes, evidence=evidence)
+        write_target_record(path, updated)
+        return updated
 
 
 @contextmanager
 def target_owner(handle_path: Path, *, blocking: bool = False):
-    """Own the existing claim lock, including first creation of its journal.
+    """Own the existing claim lock for a short transition or journal access.
 
     Product selection and worker preparation use the same lock pathname.
-    Provider calls happen under this lock, never under the TOML config lock.
+    Provider calls must happen after leaving this lock. Same-thread nesting on
+    this exact path reuses the held descriptor; another thread always locks.
     """
     path = handle_path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
+    key = str(path.resolve())
+    held = getattr(_target_owner_local, "held", None)
+    if held is None:
+        held = {}
+        _target_owner_local.held = held
+    if key in held:
+        fd, depth = held[key]
+        held[key] = (fd, depth + 1)
+        try:
+            yield fd
+        finally:
+            current_fd, current_depth = held[key]
+            if current_fd != fd or current_depth < 2:
+                raise RuntimeError("RunPod target lock nesting is inconsistent")
+            held[key] = (fd, current_depth - 1)
+        return
     lock_path = path.with_name(f".{path.name}.owner.lock")
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -205,12 +274,19 @@ def target_owner(handle_path: Path, *, blocking: bool = False):
                 f"another process currently owns RunPod target journal {path}; retry after it exits",
                 gate="identity", retryable=False, custody="unknown",
             ) from exc
-        yield fd
+        held[key] = (fd, 1)
+        try:
+            yield fd
+        finally:
+            held.pop(key, None)
     finally:
         try:
             platform.unlock_file(fd)
         finally:
             os.close(fd)
+
+
+_target_owner_local = threading.local()
 
 
 def _exclusive_target_owner(function: Any) -> Any:
@@ -226,7 +302,7 @@ def _exclusive_target_owner(function: Any) -> Any:
     ) -> Any:
         path = handle_path.expanduser()
         cleanup = function.__name__ == "_release_exact_target_after_quiescence"
-        with (provider_budget(30., cleanup=True) if cleanup else nullcontext()), target_owner(path):
+        with target_owner(path):
             try:
                 current = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
@@ -242,22 +318,38 @@ def _exclusive_target_owner(function: Any) -> Any:
                     f"RunPod target journal {path} changed before this operation acquired ownership",
                     gate="identity", retryable=False, custody="unknown",
                 )
-            if current.get("provider_account_ref") and isinstance(getattr(config, "api_key", None), str):
+        if current.get("provider_account_ref") and isinstance(getattr(config, "api_key", None), str):
+            if cleanup:
+                gate = account_gate
+                await async_provider_call(
+                    config.api_key, gate, config.api_key,
+                    account_ref=current["provider_account_ref"], already_gated=True,
+                )
+            else:
                 await async_provider_call(
                     config.api_key, account_gate, config.api_key,
                     account_ref=current["provider_account_ref"], already_gated=True,
                 )
-            try:
-                return await function(
-                    config,
-                    handle_path=handle_path,
-                    attempt=current,
-                    **kwargs,
-                )
-            except TargetObservationError as exc:
-                # The operation may have journaled a returned pod ID before a
-                # lower-level observer failed. Never infer custody from that
-                # observer's contract alone.
+        try:
+            if cleanup:
+                with provider_budget(30., cleanup=True):
+                    return await function(
+                        config,
+                        handle_path=handle_path,
+                        attempt=current,
+                        **kwargs,
+                    )
+            return await function(
+                config,
+                handle_path=handle_path,
+                attempt=current,
+                **kwargs,
+            )
+        except TargetObservationError as exc:
+            # The operation may have journaled a returned pod ID before a
+            # lower-level observer failed. Never infer custody from that
+            # observer's contract alone.
+            with target_owner(path, blocking=True):
                 try:
                     latest = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
@@ -265,7 +357,7 @@ def _exclusive_target_owner(function: Any) -> Any:
                 else:
                     exc.custody = (_record_custody(latest) if isinstance(latest, dict)
                                    and latest.get("operation_id") == current.get("operation_id") else "unknown")
-                raise
+            raise
     return wrapped
 
 
@@ -754,15 +846,13 @@ def _write_target_failure(
 ) -> None:
     if isinstance(exc, TargetObservationError):
         exc.custody = _record_custody(attempt)
-    failed = {
-        **attempt,
-        "state": "allocated_unverified",
+    failed = _target_event(attempt, LeaseEvent.ACQUISITION_FAILED, changes={
         "failure_phase": phase,
         "failure_type": type(exc).__name__,
         "failure_gate": observation_failure_gate(exc),
         "failed_at": utc_now_iso(),
         "reconciliation_required": True,
-    }
+    })
     replace_target_record(handle_path, failed, operation_id=operation_id)
 
 
@@ -805,7 +895,7 @@ async def _release_inventory(
     from runpod_lifecycle.api import get_network_volumes, list_pods
 
     try:
-        pods = await async_provider_call(config.api_key, list_pods, config.api_key)
+        pods = await bounded_observation(list_pods, config.api_key)
     except Exception as exc:
         raise TargetObservationError(
             "could not observe RunPod account pod inventory for exact release",
@@ -1185,13 +1275,16 @@ async def _release_exact_target_after_quiescence(
         )
 
     contract = _release_contract_from_record(attempt)
-    pending = {
-        **attempt,
-        "state": "release_pending",
-        "release_requested_at": utc_now_iso(),
-        "reconciliation_required": True,
-    }
-    replace_target_record(handle_path, pending, operation_id=operation_id)
+    if state in {"claimed", "allocated_unverified"}:
+        pending = _target_event(attempt, LeaseEvent.RELEASE, changes={
+            "release_requested_at": utc_now_iso(),
+            "reconciliation_required": True,
+        })
+        replace_target_record(handle_path, pending, operation_id=operation_id)
+    else:
+        pending = _target_event(attempt, LeaseEvent.RELEASE, changes={
+            "release_requested_at": utc_now_iso(), "reconciliation_required": True})
+        replace_target_record(handle_path, pending, operation_id=operation_id)
     attempt = pending
 
     saved_quiescence = attempt.get("release_quiescence")
@@ -1202,6 +1295,11 @@ async def _release_exact_target_after_quiescence(
                 gate="identity", retryable=False, custody=_record_custody(attempt),
             )
         quiescence = _validate_release_quiescence(saved_quiescence, attempt)
+        if (attempt.get("lt_control") or {}).get("canonical_state") != "RELEASING":
+            attempt = _target_event(attempt, LeaseEvent.QUIESCED, evidence={
+                "drain_confirmed": True,
+            })
+            replace_target_record(handle_path, attempt, operation_id=operation_id)
     else:
         try:
             result = await quiesce_worker(dict(attempt))
@@ -1209,21 +1307,21 @@ async def _release_exact_target_after_quiescence(
             quiescence = _validate_release_quiescence(result, attempt)
         except BaseException as exc:
             attempt = _read_release_checkpoint(handle_path, attempt)
-            blocked = {
-                **attempt,
+            blocked = _target_event(attempt, LeaseEvent.RELEASE_FAILED, changes={
                 "last_release_gate_failure_type": type(exc).__name__,
                 "last_release_gate_failure_at": utc_now_iso(),
-            }
+            })
             replace_target_record(handle_path, blocked, operation_id=operation_id)
             raise
         # Publication may fail before or after atomic replacement. Preserve
         # either exact disk state for resume instead of overwriting it with a
         # stale pre-publication snapshot in the callback-failure handler.
-        attempt = {
-            **attempt,
+        attempt = _target_event(attempt, LeaseEvent.QUIESCED, evidence={
+            "drain_confirmed": True,
+        }, changes={
             "release_quiescence": quiescence,
             "release_quiescence_recorded_at": utc_now_iso(),
-        }
+        })
         replace_target_record(handle_path, attempt, operation_id=operation_id)
 
     if resume:
@@ -1243,26 +1341,22 @@ async def _release_exact_target_after_quiescence(
             # authorizes an idempotent retry of DELETE /pods/{pod_id}.
             pass
         except Exception as exc:
-            unresolved = {
-                **attempt,
-                "state": "cleanup_pending",
+            unresolved = _target_event(attempt, LeaseEvent.RELEASE_FAILED, changes={
                 "cleanup_failure_type": type(exc).__name__,
                 "cleanup_failure_at": utc_now_iso(),
                 "reconciliation_required": True,
-            }
+            })
             replace_target_record(handle_path, unresolved, operation_id=operation_id)
             raise
 
     try:
         observed, volume = await _release_inventory(config, contract)
     except BaseException as exc:
-        unresolved = {
-            **attempt,
-            "state": "cleanup_pending",
+        unresolved = _target_event(attempt, LeaseEvent.RELEASE_FAILED, changes={
             "cleanup_failure_type": type(exc).__name__,
             "cleanup_failure_at": utc_now_iso(),
             "reconciliation_required": True,
-        }
+        })
         replace_target_record(handle_path, unresolved, operation_id=operation_id)
         raise
 
@@ -1270,7 +1364,6 @@ async def _release_exact_target_after_quiescence(
     if observed is not None:
         releasing = {
             **attempt,
-            "state": "release_pending",
             "release_pod_observation": asdict(observed),
             "release_delete_started_at": utc_now_iso(),
         }
@@ -1281,23 +1374,21 @@ async def _release_exact_target_after_quiescence(
                 config.api_key, terminate_pod, contract.pod_id, config.api_key,
             )
         except BaseException as exc:
-            unresolved = {
-                **attempt,
-                "state": "cleanup_pending",
+            unresolved = _target_event(attempt, LeaseEvent.RELEASE_FAILED, changes={
                 "cleanup_failure_type": type(exc).__name__,
                 "cleanup_failure_at": utc_now_iso(),
                 "reconciliation_required": True,
-            }
+            })
             replace_target_record(handle_path, unresolved, operation_id=operation_id)
             raise
 
     try:
         absence, volume = await _confirm_release_absence(config, contract, attempt)
     except BaseException as exc:
-        replace_target_record(handle_path, {
-            **attempt, "state": "cleanup_pending", "cleanup_failure_type": type(exc).__name__,
+        replace_target_record(handle_path, _target_event(attempt, LeaseEvent.RELEASE_FAILED, changes={
+            "cleanup_failure_type": type(exc).__name__,
             "cleanup_failure_at": utc_now_iso(), "reconciliation_required": True,
-        }, operation_id=operation_id)
+        }), operation_id=operation_id)
         raise
 
     cleanup = {
@@ -1308,13 +1399,13 @@ async def _release_exact_target_after_quiescence(
         "confirmed_at": utc_now_iso(),
         "absence": absence,
     }
-    complete = {
-        **attempt,
-        "state": "cleanup_complete",
+    complete = _target_event(attempt, LeaseEvent.RELEASE_SUCCEEDED, evidence={
+        "absence_proof": True,
+    }, changes={
         "cleanup_status": "complete",
         "cleanup": cleanup,
         "reconciliation_required": False,
-    }
+    })
     replace_target_record(handle_path, complete, operation_id=operation_id)
     return complete
 
@@ -1359,6 +1450,21 @@ async def acquire_target(
         requested_pod_id = str(pod_id).strip()
         if not requested_pod_id:
             raise ValueError("pod_id must be nonempty")
+        attempt = apply_target_event(
+            handle_path, operation_id, LeaseEvent.ACQUISITION_CONTINUE,
+            evidence={"attempt_id": str(uuid.uuid4())},
+        )
+        attachment_ticket = journal_dispatch_ticket(attempt)
+        attempt = apply_target_event(
+            handle_path, operation_id, LeaseEvent.PROVIDER_ENTRY,
+            evidence={"ticket": attachment_ticket},
+        )
+        control = attempt.get("lt_control", {})
+        if control.get("dispatch_admitted") is not True or control.get("canonical_state") != "ATTACHMENT_PENDING":
+            raise AcquisitionUnresolvedError(
+                "attachment observation authority expired or was cancelled",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
+            )
         try:
             initial = await observe_exact_target(
                 config.api_key,
@@ -1384,15 +1490,12 @@ async def acquire_target(
                     gate="identity", retryable=False, custody=_record_custody(attempt),
                 )
         except BaseException as exc:
-            unresolved = {
-                **attempt,
-                "state": "attached_unverified",
-                "requested_pod_id": requested_pod_id,
+            unresolved = _target_event(attempt, LeaseEvent.ACQUISITION_FAILED, changes={
                 "failure_type": type(exc).__name__,
                 "failure_gate": observation_failure_gate(exc),
                 "failed_at": utc_now_iso(),
                 "reconciliation_required": True,
-            }
+            })
             replace_target_record(handle_path, unresolved, operation_id=operation_id)
             raise
         expected_name = initial.pod_name
@@ -1462,20 +1565,18 @@ async def acquire_target(
         )
         while True:
             if max_create_attempts is not None and attempt.get("create_attempts", 0) >= max_create_attempts:
-                exhausted = {**attempt, "state": "capacity_exhausted", "reconciliation_required": False,
-                             "safe_to_retry": True, "completed_at": utc_now_iso()}
+                exhausted = _target_event(attempt, LeaseEvent.CAPACITY_EXHAUSTED, changes={
+                    "reconciliation_required": False, "completed_at": utc_now_iso(),
+                })
                 replace_target_record(handle_path, exhausted, operation_id=operation_id)
                 raise CapacityExhaustedError("capacity_exhausted: create attempt limit reached", gate="capacity", retryable=False, custody="none")
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    exhausted = {
-                        **attempt,
-                        "state": "capacity_exhausted",
+                    exhausted = _target_event(attempt, LeaseEvent.CAPACITY_EXHAUSTED, changes={
                         "reconciliation_required": False,
-                        "safe_to_retry": True,
                         "completed_at": utc_now_iso(),
-                    }
+                    })
                     replace_target_record(
                         handle_path, exhausted, operation_id=operation_id
                     )
@@ -1488,19 +1589,35 @@ async def acquire_target(
             else:
                 window = capacity_window_seconds
 
-            pre_create = dict(attempt)
-            pending = {
-                **attempt,
-                "state": "allocation_pending",
+            if before_post is not None:
+                attempt = before_post(attempt)
+            attempt_id = str(uuid.uuid4())
+            pending = _target_event(attempt, LeaseEvent.CREATE_STARTED, evidence={
+                "attempt_id": attempt_id,
+            }, changes={
                 "create_attempts": int(attempt.get("create_attempts", 0)) + 1,
                 "reconciliation_required": True,
-                "safe_to_retry": False,
                 "last_create_started_at": utc_now_iso(),
-            }
-            if before_post is not None:
-                pending = before_post(pending)
+            })
             replace_target_record(handle_path, pending, operation_id=operation_id)
             attempt = pending
+            ticket = journal_dispatch_ticket(pending)
+
+            def enter_create() -> None:
+                # ProviderGate calls this after rate admission and cancellation
+                # checks, immediately before the billable POST.
+                admitted = apply_target_event(
+                    handle_path, operation_id, LeaseEvent.PROVIDER_ENTRY,
+                    evidence={"ticket": ticket},
+                )
+                control = admitted.get("lt_control")
+                if (not isinstance(control, Mapping)
+                        or control.get("dispatch_admitted") is not True
+                        or control.get("canonical_state") != "CREATE_PENDING"):
+                    raise AcquisitionUnresolvedError(
+                        "create intent expired or was fenced before provider entry",
+                        gate="identity", retryable=False, custody=_record_custody(admitted),
+                    )
 
             def retain_late_pod(pod):
                 # The cancelled caller releases ownership before this worker
@@ -1512,17 +1629,19 @@ async def acquire_target(
                             or current.get("request_name") != expected_name
                             or current.get("pod_id") not in (None, str(pod.id))):
                         raise AcquisitionUnresolvedError("late create result has conflicting journal custody")
-                    state = current.get("state")
-                    if state in {"allocation_pending", "allocation_unknown"}:
-                        state = "allocated_unverified"
-                    replace_target_record(handle_path, {
-                        **current, "state": state, "pod_id": str(pod.id), "name": str(pod.name),
-                        "allocated_at": utc_now_iso(), "safe_to_retry": False,
-                        "reconciliation_required": state != "cleanup_complete",
-                    }, operation_id=operation_id)
+                apply_target_event(handle_path, operation_id, LeaseEvent.LATE_CREATE_SUCCEEDED, evidence={
+                    "pod_id": str(pod.id),
+                }, changes={
+                    "name": str(pod.name),
+                    "allocated_at": utc_now_iso(),
+                    "reconciliation_required": current.get("state") != "cleanup_complete",
+                })
 
             try:
-                with provider_budget(max(0., deadline - time.monotonic()) if deadline is not None else window):
+                with provider_budget(
+                    max(0., deadline - time.monotonic()) if deadline is not None else window,
+                    entry=enter_create,
+                ):
                     pod = await async_provider_operation(
                         config.api_key, launch_when_available, config,
                         on_late_result=retain_late_pod,
@@ -1535,51 +1654,47 @@ async def acquire_target(
             except ProviderNotStarted:
                 # Only admission can produce this type. No provider operation
                 # began, so restore the exact pre-create custody and counter.
-                replace_target_record(handle_path, {
-                    **pre_create, "safe_to_retry": True, "reconciliation_required": False,
-                }, operation_id=operation_id)
+                apply_target_event(handle_path, operation_id, LeaseEvent.CREATE_NOT_SENT,
+                    evidence={"attempt_id": attempt_id, "no_allocation_proof": True},
+                    changes={"reconciliation_required": False})
                 raise
             except AllocationUnknown as exc:
-                unknown = {
-                    **attempt,
-                    "state": "allocation_unknown",
+                apply_target_event(handle_path, operation_id, LeaseEvent.CREATE_UNKNOWN, changes={
                     "reconciliation_required": True,
                     "unresolved_at": utc_now_iso(),
                     "gpu_type_attempted": exc.gpu_type,
                     "ram_tier_attempted": exc.ram_tier,
                     "storage_name_attempted": exc.storage_name,
                     "storage_volume_id_attempted": exc.storage_volume_id,
-                }
-                replace_target_record(handle_path, unknown, operation_id=operation_id)
+                })
                 raise
             except LaunchFailure as exc:
                 if (not getattr(exc, "retryable", True) or
                         not isinstance(exc.__cause__, ProviderCapacityUnavailable)):
                     known_pod_id = getattr(exc, "pod_id", None)
-                    failed = {
-                        **attempt,
-                        "state": "allocated_unverified" if known_pod_id else "allocation_unknown",
+                    if known_pod_id:
+                        failed = apply_target_event(handle_path, operation_id,
+                            LeaseEvent.CREATE_FAILED_EXACT, evidence={"pod_id": str(known_pod_id)}, changes={
+                            "failure_type": type(exc).__name__,
+                            "failure_gate": observation_failure_gate(exc),
+                            "failed_at": utc_now_iso(),
+                            "reconciliation_required": True,
+                        })
+                    else:
+                        failed = apply_target_event(handle_path, operation_id,
+                            LeaseEvent.CREATE_UNKNOWN, changes={
                         "failure_type": type(exc).__name__,
                         "failure_gate": observation_failure_gate(exc),
                         "failed_at": utc_now_iso(),
                         "reconciliation_required": True,
-                    }
-                    if known_pod_id:
-                        failed["pod_id"] = str(known_pod_id)
-                    replace_target_record(handle_path, failed, operation_id=operation_id)
+                        })
                     raise
-                retry_ready = {
-                    **attempt,
-                    "state": "capacity_retry_ready",
+                retry_ready = apply_target_event(handle_path, operation_id,
+                    LeaseEvent.CAPACITY_REJECTED, evidence={"no_allocation_proof": True}, changes={
                     "reconciliation_required": False,
-                    "safe_to_retry": True,
                     "last_capacity_rejection_at": utc_now_iso(),
                     "last_failure_type": type(exc).__name__,
-                    "capacity_rejection": "ProviderCapacityUnavailable",
-                }
-                replace_target_record(
-                    handle_path, retry_ready, operation_id=operation_id
-                )
+                })
                 attempt = retry_ready
                 if single_attempt:
                     raise CapacityExhaustedError("capacity_unavailable: one definite capacity rejection", gate="capacity", retryable=True, custody="none") from exc
@@ -1592,33 +1707,29 @@ async def acquire_target(
             except asyncio.CancelledError as exc:
                 # A cancellation or lost response during the POST cannot prove
                 # that no pod exists. Preserve this exact attempt for recovery.
-                unknown = {**attempt, "state": "allocation_unknown", "reconciliation_required": True,
-                           "safe_to_retry": False, "failure_type": type(exc).__name__,
-                           "unresolved_at": utc_now_iso()}
-                replace_target_record(handle_path, unknown, operation_id=operation_id)
+                apply_target_event(handle_path, operation_id, LeaseEvent.CREATE_UNKNOWN, changes={
+                    "reconciliation_required": True,
+                    "failure_type": type(exc).__name__,
+                    "unresolved_at": utc_now_iso(),
+                })
                 raise
 
-            allocated = {
-                **attempt,
-                "state": "allocated_unverified",
-                "pod_id": str(pod.id),
+            allocated = apply_target_event(handle_path, operation_id, LeaseEvent.CREATE_SUCCEEDED,
+                evidence={"pod_id": str(pod.id)}, changes={
                 "name": str(pod.name),
                 "allocated_at": utc_now_iso(),
                 "reconciliation_required": True,
-                "safe_to_retry": False,
-            }
-            replace_target_record(handle_path, allocated, operation_id=operation_id)
+            })
             break
 
     if mode == "attach":
-        allocated = {
-            **attempt,
-            "state": "attached_unverified",
-            "pod_id": str(pod.id),
+        allocated = _target_event(attempt, LeaseEvent.ATTACHMENT_BOUND, evidence={
+            "pod_id": str(pod.id), "ticket": attachment_ticket,
+        }, changes={
             "name": str(pod.name),
             "allocated_at": utc_now_iso(),
             "reconciliation_required": True,
-        }
+        })
         replace_target_record(handle_path, allocated, operation_id=operation_id)
 
     try:
@@ -1633,15 +1744,13 @@ async def acquire_target(
     except BaseException as exc:
         if isinstance(exc, TargetObservationError):
             exc.custody = _record_custody(allocated)
-        failed = {
-            **allocated,
-            "state": "allocated_unverified",
+        failed = _target_event(allocated, LeaseEvent.ACQUISITION_FAILED, changes={
             "failure_phase": "readiness",
             "failure_type": type(exc).__name__,
             "failure_gate": observation_failure_gate(exc),
             "failed_at": utc_now_iso(),
             "reconciliation_required": True,
-        }
+        })
         replace_target_record(handle_path, failed, operation_id=operation_id)
         raise
 
@@ -1659,15 +1768,13 @@ async def acquire_target(
     except BaseException as exc:
         if isinstance(exc, TargetObservationError):
             exc.custody = _record_custody(allocated)
-        failed = {
-            **allocated,
-            "state": "allocated_unverified",
+        failed = _target_event(allocated, LeaseEvent.ACQUISITION_FAILED, changes={
             "failure_phase": "provider_contract",
             "failure_type": type(exc).__name__,
             "failure_gate": observation_failure_gate(exc),
             "failed_at": utc_now_iso(),
             "reconciliation_required": True,
-        }
+        })
         replace_target_record(handle_path, failed, operation_id=operation_id)
         raise
 
@@ -1725,22 +1832,19 @@ async def reconcile_target(
                 "allocation journal has no exact request name; cannot reconcile",
                 gate="identity", retryable=False, custody=_record_custody(attempt),
             )
-        started = {
-            **attempt,
-            "state": "allocation_unknown",
+        started = _target_event(attempt, LeaseEvent.RECONCILIATION_UNKNOWN, changes={
             "last_reconcile_started_at": utc_now_iso(),
             "reconciliation_required": True,
-        }
+        })
         replace_target_record(handle_path, started, operation_id=operation_id)
         attempt = started
         try:
-            pods = await async_provider_call(config.api_key, list_pods, config.api_key)
+            pods = await bounded_observation(list_pods, config.api_key)
         except Exception as exc:
-            failed_observation = {
-                **attempt,
+            failed_observation = _target_event(attempt, LeaseEvent.RECONCILIATION_UNKNOWN, changes={
                 "last_reconciled_at": utc_now_iso(),
                 "last_reconciliation_failure_type": type(exc).__name__,
-            }
+            })
             replace_target_record(
                 handle_path, failed_observation, operation_id=operation_id
             )
@@ -1761,9 +1865,7 @@ async def reconcile_target(
             if isinstance(record, dict) and _text(record.get("name")) == request_name
         ]
         if len(matches) != 1:
-            unresolved = {
-                **attempt,
-                "state": "allocation_unknown",
+            unresolved = _target_event(attempt, LeaseEvent.RECONCILIATION_UNKNOWN, changes={
                 "last_reconciled_at": utc_now_iso(),
                 "last_reconciliation_match_count": len(matches),
                 "last_reconciliation_candidate_ids": [
@@ -1772,7 +1874,7 @@ async def reconcile_target(
                     if (value := _text(record.get("id"))) is not None
                 ],
                 "reconciliation_required": True,
-            }
+            })
             replace_target_record(handle_path, unresolved, operation_id=operation_id)
             raise AcquisitionUnresolvedError(
                 f"request {request_name!r} has {len(matches)} exact-name matches; "
@@ -1782,13 +1884,11 @@ async def reconcile_target(
 
         pod_id = _text(matches[0].get("id"))
         if pod_id is None:
-            unresolved = {
-                **attempt,
-                "state": "allocation_unknown",
+            unresolved = _target_event(attempt, LeaseEvent.RECONCILIATION_UNKNOWN, changes={
                 "last_reconciled_at": utc_now_iso(),
                 "last_reconciliation_failure_type": "MissingPodId",
                 "reconciliation_required": True,
-            }
+            })
             replace_target_record(handle_path, unresolved, operation_id=operation_id)
             raise AcquisitionUnresolvedError(
                 "the exact-name provider record has no pod ID; the original allocation remains unresolved",
@@ -1799,14 +1899,13 @@ async def reconcile_target(
     if expected_name is None:
         expected_name = _text(attempt.get("request_name"))
 
-    bound = {
-        **attempt,
-        "state": "attached_unverified" if mode == "attach" else "allocated_unverified",
+    bound = _target_event(attempt, LeaseEvent.RECONCILIATION_FOUND, evidence={
         "pod_id": pod_id,
+    }, changes={
         "name": expected_name,
         "reconciled_pod_id_at": utc_now_iso(),
         "reconciliation_required": True,
-    }
+    })
     replace_target_record(handle_path, bound, operation_id=operation_id)
 
     try:
@@ -1823,7 +1922,7 @@ async def reconcile_target(
         )
         if expected_name is None:
             expected_name = initial_observation.pod_name
-            bound["name"] = expected_name
+            bound = _target_event(bound, LeaseEvent.CHECKPOINT, changes={"name": expected_name})
             replace_target_record(handle_path, bound, operation_id=operation_id)
         pod = await _get_provider_pod(pod_id, config, name=expected_name)
         if str(getattr(pod, "id", "")) != pod_id or (
@@ -1864,13 +1963,12 @@ async def reconcile_target(
         )
         raise
 
-    verified = {
-        **bound,
+    verified = _target_event(bound, LeaseEvent.CHECKPOINT, changes={
         "name": observation.pod_name,
         "provider_observation": observation.to_dict(),
         "target_identity_verified": True,
         "last_reconciled_at": utc_now_iso(),
-    }
+    })
     replace_target_record(handle_path, verified, operation_id=operation_id)
     return AcquiredRunPodTarget(
         pod=pod,

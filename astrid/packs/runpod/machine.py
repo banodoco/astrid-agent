@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .lease_states import LeaseEvent
 from .remote_placement import (
     MANIFEST_MARK,
     MANIFEST_NAME,
@@ -1004,7 +1005,8 @@ class RunPodMachine:
         return files
 
     @staticmethod
-    def _save_installation(owner, lease, preparation, installed, *, job=None):
+    def _save_installation(owner, lease, preparation, installed, *, job=None,
+                           event=LeaseEvent.CHECKPOINT):
         """Save an observed installation only while the exact invocation still owns it."""
         with owner.lock:
             observed = owner.preparation_claim(lease.lease)
@@ -1013,8 +1015,11 @@ class RunPodMachine:
                     or (job is not None and observed["lease"].get("job") != job)
                     or owner.closed or owner.clock() >= observed["lease"]["paid_expires_at"]):
                 raise CustodyChanged("retained installation changed during verification")
-            owner._save(observed, {**observed["lease"],
-                                  "preparation": {**preparation, **installed}})
+            preparation_metadata = {key: value for key, value in {**preparation, **installed}.items()
+                                    if key != "state"}
+            lease_metadata = {key: value for key, value in observed["lease"].items()
+                              if key not in {"state", "preparation"}}
+            owner._save(observed, lease_metadata, event=event, preparation=preparation_metadata)
 
     def _checkpoint_installed(self, run: MachineRun, files: Mapping[str, str]) -> None:
         """Retain only the canonical receipt attested by this successful job.
@@ -1169,7 +1174,8 @@ class RunPodMachine:
                     if owner.clock() >= paid_expiry:
                         rejection = "paid_limit_exhausted"
                     else:
-                        self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"}, job=job)
+                        self._save_installation(owner, lease, preparation, {}, job=job,
+                                                event=LeaseEvent.PREPARATION_INVALIDATED)
                         reason = "verification_timeout"
                 else:
                     try:
@@ -1184,7 +1190,8 @@ class RunPodMachine:
                     if owner.clock() >= paid_expiry:
                         rejection = "paid_limit_exhausted"
                     elif time.monotonic() >= verify_deadline:
-                        self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"}, job=job)
+                        self._save_installation(owner, lease, preparation, {}, job=job,
+                                                event=LeaseEvent.PREPARATION_INVALIDATED)
                         reason = "verification_timeout"
                     elif not verified:
                         why = getattr(lease.state, "install_unverified", None) or ""
@@ -1207,7 +1214,8 @@ class RunPodMachine:
                 if owner.clock() >= paid_expiry:
                     rejection = "paid_limit_exhausted"
                 elif time.monotonic() >= verify_deadline:
-                    self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"}, job=job)
+                    self._save_installation(owner, lease, preparation, {}, job=job,
+                                            event=LeaseEvent.PREPARATION_INVALIDATED)
                     reason = "verification_timeout"
                 else:
                     rejection = "engine_unreachable"
@@ -1224,7 +1232,8 @@ class RunPodMachine:
                 lease.state.note("reset", "failed", error=type(exc).__name__)
                 warm, reason = False, "reset_failed"
         if warm and stale:
-            self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"})
+            self._save_installation(owner, lease, preparation, {},
+                                    event=LeaseEvent.PREPARATION_INVALIDATED)
         unreaped = getattr(lease.claim.ops, "unreaped_child", None)
         if unreaped is not None:
             owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)

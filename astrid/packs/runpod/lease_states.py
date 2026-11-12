@@ -1,4 +1,4 @@
-"""Lease policy only: no provider calls and no existing-writer wiring.
+"""Lease transitions and the durable journal's lifecycle encoding.
 
 Values map (record.state, lease.state, preparation.state, warm_session.state).
 None means absent. Cleanup archives preparation evidence in data and clears its
@@ -24,16 +24,38 @@ billing bound. Successful completion chains do not prove outage liveness.
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 
-from astrid.core.execution.transitions import Data, Outcome, Record, Rule
+from astrid.core.execution.transitions import Data, Outcome, Record, Rule, transition
 
 
 class InvalidLeaseTransition(ValueError):
     """Invalid identity or proof; ordinary expiry instead produces cleanup."""
+
+
+_LEASE_CLOCK: ContextVar[Callable[[], float] | None] = ContextVar("lease_transition_clock", default=None)
+
+
+@contextmanager
+def lease_transition_clock(clock: Callable[[], float]):
+    """Use an injected clock for lease events in the current execution context."""
+    token: Token[Callable[[], float] | None] = _LEASE_CLOCK.set(clock)
+    try:
+        yield
+    finally:
+        _LEASE_CLOCK.reset(token)
+
+
+def lease_now() -> float:
+    """Return the active transition clock, or wall time outside an owner scope."""
+    clock = _LEASE_CLOCK.get()
+    return float(clock() if clock is not None else time.time())
 
 
 class LeaseState(Enum):
@@ -185,12 +207,19 @@ def dispatch_ticket(record: Record[LeaseState]) -> DispatchTicket:
                           _number(data, "dispatch_deadline"), str(data["dispatch_kind"]))
 
 
+def journal_dispatch_ticket(record: Mapping[str, object]) -> DispatchTicket:
+    """Read the exact pending provider-entry ticket from a durable journal."""
+    state, flattened = _flatten_record(record, now=0.0)
+    return dispatch_ticket(Record(state, flattened))
+
+
 def _cleanup(data: dict[str, object], source: LeaseState, *, reconcile: bool = False,
              effects: tuple[str, ...] = ()) -> Outcome[LeaseState, BillingAction]:
     if not data.get("stop_requested"):
         data["cancellation_fence"] = int(_number(data, "cancellation_fence")) + 1
-    data.update(stop_requested=True, observations_abandoned=True,
-                cleanup_due_at=_number(data, "paid_expires_at"), safe_to_retry=False)
+    data.update(stop_requested=True, observations_abandoned=True, safe_to_retry=False)
+    data["cleanup_due_at"] = (_number(data, "paid_expires_at")
+                              if "paid_expires_at" in data else _number(data, "now"))
     if source in WARM_STATES:
         data["archived_warm_session"] = source.value[3]
     preparation = source.value[2]
@@ -332,10 +361,38 @@ def _resolve(
             if not changes.get("pod_id") or changes.get("exclusive_release_proof") is not True:
                 raise InvalidLeaseTransition("warm session requires exact pod and exclusive release proof")
             data["release_authorized"] = True
+            if "paid_deadline" in changes:
+                paid = _number(changes, "paid_deadline")
+                if paid > _number(old, "paid_expires_at") or paid <= now:
+                    raise InvalidLeaseTransition("warm binding must fit existing paid authority")
+                data["paid_expires_at"] = paid
+            if "idle_duration" in changes:
+                data["idle_seconds"] = _number(changes, "idle_duration")
 
         if event == LeaseEvent.HOST_DEATH and source in LIVE_STATES:
             # No computation can be relied upon at crash time, even overdue.
             return Outcome(source, BillingAction.KEEP_WITH_DEADLINE, (), old)
+
+        if event == LeaseEvent.CHECKPOINT and source in CLEANUP_STATES | RELEASING_STATES | RELEASED_STATES:
+            return Outcome(source, action, effects, data)
+
+        if "paid_expires_at" not in old and event in {
+            LeaseEvent.RELEASE, LeaseEvent.CANCEL, LeaseEvent.PAID_EXPIRY,
+            LeaseEvent.RESTART, LeaseEvent.ACQUISITION_FAILED,
+            LeaseEvent.WARM_SESSION_EXPIRED, LeaseEvent.RELEASE_FAILED,
+            LeaseEvent.RELEASE_RETRY,
+        }:
+            return _cleanup(data, source, reconcile=event == LeaseEvent.RESTART)
+        if "paid_expires_at" not in old and event in {
+            LeaseEvent.CREATE_SUCCEEDED, LeaseEvent.LATE_CREATE_SUCCEEDED,
+            LeaseEvent.CREATE_FAILED_EXACT, LeaseEvent.RECONCILIATION_FOUND,
+        }:
+            return _cleanup(data, source, reconcile=True)
+        if "paid_expires_at" not in old and event == LeaseEvent.QUIESCED:
+            return Outcome(LeaseState.RELEASING, action, effects, data)
+        if "paid_expires_at" not in old and event == LeaseEvent.RELEASE_SUCCEEDED:
+            data.update(absence_confirmed=True, safe_to_retry=True)
+            return Outcome(LeaseState.RELEASED, action, effects, data)
 
         if event == LeaseEvent.KEEP:
             if changes.get("paid_authority_proof") is not True:
@@ -343,7 +400,7 @@ def _resolve(
         if event in {LeaseEvent.PREPARATION_FAILED_SAFE, LeaseEvent.JOB_FAILED} and action == BillingAction.KEEP_WITH_DEADLINE:
             if changes.get("jobs_stopped") is not True or changes.get("custody_verified") is not True:
                 raise InvalidLeaseTransition("failure retention requires stopped jobs and verified custody")
-        paid = _number(old, "paid_expires_at")
+        paid = _number(data, "paid_expires_at")
         expired = now >= paid or (source in IDLE_STATES | {LeaseState.WARM_IDLE}
                                  and now >= _number(old, "keep_deadline"))
 
@@ -423,7 +480,11 @@ def _resolve(
                 data["paid_expires_at"] = paid
                 data["idle_seconds"] = _number(changes, "idle_duration")
             if destination in IDLE_STATES | {LeaseState.WARM_IDLE}:
-                if source not in IDLE_STATES | {LeaseState.WARM_IDLE} or event == LeaseEvent.KEEP:
+                if event == LeaseEvent.WARM_SESSION_BOUND:
+                    # Binding and admission are persisted together by begin;
+                    # the newly bound session has not started an idle hold.
+                    data["keep_deadline"] = paid
+                elif source not in IDLE_STATES | {LeaseState.WARM_IDLE} or event == LeaseEvent.KEEP:
                     data["keep_deadline"] = min(now + _number(data, "idle_seconds"), paid)
                 if now >= _number(data, "keep_deadline"):
                     return _cleanup(data, source, effects=effects)
@@ -472,6 +533,8 @@ def _build_table() -> Mapping[tuple[LeaseState, LeaseEvent], Rule[LeaseState, Bi
         if state in ACTIVE_STATES | {LeaseState.ACQUIRING, LeaseState.WARM_ACTIVE}:
             add(state, LeaseEvent.IDLE_EXPIRY, state, BillingAction.KEEP_WITH_DEADLINE)
         if state in CLEANUP_STATES | RELEASING_STATES:
+            add(state, LeaseEvent.CHECKPOINT, state, BillingAction.RECONCILE_THEN_RELEASE,
+                "checkpoint_cleanup_metadata")
             stop(state, LeaseEvent.RELEASE_FAILED)
             stop(state, LeaseEvent.RELEASE_RETRY, reconcile=True)
             # A draining holder may settle/account without reopening admission.
@@ -494,6 +557,8 @@ def _build_table() -> Mapping[tuple[LeaseState, LeaseEvent], Rule[LeaseState, Bi
         BillingAction.RELEASE_EXACT_POD, "write_ahead_terminate_exact_pod")
     add(LeaseState.RELEASING, LeaseEvent.RELEASE_SUCCEEDED, LeaseState.RELEASED,
         BillingAction.NO_BILLABLE_RESOURCE, "record_exact_absence")
+    add(LeaseState.RELEASED, LeaseEvent.CHECKPOINT, LeaseState.RELEASED,
+        BillingAction.NO_BILLABLE_RESOURCE, "checkpoint_released_metadata")
     add(LeaseState.RELEASED, LeaseEvent.CLAIM, LeaseState.CAPACITY_WAIT,
         BillingAction.NO_BILLABLE_RESOURCE, "write_ahead_claim", "persist_paid_deadline")
     add(LeaseState.RELEASED, LeaseEvent.ATTACHMENT_REQUESTED, LeaseState.ATTACHMENT_PENDING,
@@ -508,6 +573,8 @@ def _build_table() -> Mapping[tuple[LeaseState, LeaseEvent], Rule[LeaseState, Bi
     add(LeaseState.ATTACHED_UNVERIFIED, LeaseEvent.CLAIM_CONFIRMED, LeaseState.IDLE,
         BillingAction.KEEP_WITH_DEADLINE, "persist_deadlines_before_timer")
     add(LeaseState.ACQUIRING, LeaseEvent.WARM_SESSION_BOUND, LeaseState.WARM_IDLE,
+        BillingAction.KEEP_WITH_DEADLINE, "persist_warm_session_deadlines")
+    add(LeaseState.IDLE, LeaseEvent.WARM_SESSION_BOUND, LeaseState.WARM_IDLE,
         BillingAction.KEEP_WITH_DEADLINE, "persist_warm_session_deadlines")
     for state in WARM_STATES:
         stop(state, LeaseEvent.WARM_SESSION_EXPIRED)
@@ -535,14 +602,22 @@ def _build_table() -> Mapping[tuple[LeaseState, LeaseEvent], Rule[LeaseState, Bi
             BillingAction.NO_BILLABLE_RESOURCE, "record_create_finished_and_absent")
         add(state, LeaseEvent.CREATE_SUCCEEDED, LeaseState.ACQUIRING,
             BillingAction.KEEP_WITH_DEADLINE, "journal_exact_pod")
-    for state in UNKNOWN_CUSTODY | ATTACHMENT_STATES | {LeaseState.ACQUIRING, LeaseState.CLEANUP}:
+    for state in UNKNOWN_CUSTODY | ATTACHMENT_STATES | LIVE_STATES | {LeaseState.CLEANUP}:
         add(state, LeaseEvent.PROVIDER_ENTRY, state, BillingAction.AWAIT_PROVIDER_ENTRY)
-    for state in ATTACHMENT_STATES | {LeaseState.ACQUIRING}:
+    for state in ATTACHMENT_STATES | LIVE_STATES:
         add(state, LeaseEvent.ACQUISITION_CONTINUE, state,
             BillingAction.AWAIT_PROVIDER_ENTRY, "write_ahead_observation_attempt")
+    for state in IDLE_STATES | ACTIVE_STATES:
+        stop(state, LeaseEvent.ACQUISITION_FAILED)
+    for state in CLEANUP_STATES | RELEASING_STATES:
+        stop(state, LeaseEvent.WARM_SESSION_EXPIRED)
     add(LeaseState.ACQUIRING, LeaseEvent.CLAIM_CONFIRMED, LeaseState.IDLE,
         BillingAction.KEEP_WITH_DEADLINE, "persist_deadlines_before_timer")
     stop(LeaseState.ACQUIRING, LeaseEvent.ACQUISITION_FAILED)
+    for state in {LeaseState.ACQUIRING, LeaseState.CLEANUP}:
+        stop(state, LeaseEvent.RECONCILIATION_UNKNOWN, reconcile=True)
+        add(state, LeaseEvent.RECONCILIATION_FOUND, LeaseState.CLEANUP,
+            BillingAction.RECONCILE_THEN_RELEASE, "journal_exact_pod")
     for idle, active in ((LeaseState.IDLE, LeaseState.ACTIVE),
                          (LeaseState.IDLE_READY, LeaseState.ACTIVE_READY),
                          (LeaseState.IDLE_STALE, LeaseState.ACTIVE_STALE)):
@@ -569,3 +644,360 @@ def _build_table() -> Mapping[tuple[LeaseState, LeaseEvent], Rule[LeaseState, Bi
 
 
 LEASE_TRANSITIONS = _build_table()
+
+
+# The on-disk owner journal predates the canonical table and stores lifecycle
+# state in three separate objects. Keep the codec here so callers cannot make
+# those fields independently.
+_ROOT_ALIASES: Mapping[str, LeaseState] = MappingProxyType({
+    "allocation_ready": LeaseState.CAPACITY_WAIT,
+    "capacity_exhausted": LeaseState.CAPACITY_WAIT,
+    "capacity_retry_ready": LeaseState.CAPACITY_WAIT,
+    "allocation_pending": LeaseState.CREATE_PENDING,
+    "allocation_unknown": LeaseState.CREATE_UNKNOWN,
+    "allocated_unverified": LeaseState.ACQUIRING,
+    "attachment_pending": LeaseState.ATTACHMENT_PENDING,
+    "attached_unverified": LeaseState.ATTACHED_UNVERIFIED,
+    "claimed": LeaseState.IDLE,
+    "cleanup_pending": LeaseState.CLEANUP,
+    "release_pending": LeaseState.RELEASING,
+    "cleanup_complete": LeaseState.RELEASED,
+})
+
+
+def _read_preparation(lease: Mapping[str, object]) -> str | None:
+    value = lease.get("preparation")
+    return value.get("state") if isinstance(value, Mapping) else None
+
+
+def _decode_lease_state(record: Mapping[str, object]) -> LeaseState:
+    control = record.get("lt_control")
+    if isinstance(control, Mapping) and isinstance(control.get("canonical_state"), str):
+        try:
+            return LeaseState[control["canonical_state"]]
+        except KeyError as exc:
+            raise InvalidLeaseTransition("unknown canonical state in lt_control") from exc
+    root = record.get("state")
+    lease = record.get("lease")
+    if not isinstance(root, str):
+        raise InvalidLeaseTransition("journal requires a root state")
+    if not isinstance(lease, Mapping):
+        alias = _ROOT_ALIASES.get(root)
+        if alias is not None:
+            return alias
+        raise InvalidLeaseTransition("root-only journal has no supported lease-state alias")
+    lease_state = lease.get("state")
+    prep = _read_preparation(lease)
+    warm = record.get("warm_session")
+    warm_state = warm.get("state") if isinstance(warm, Mapping) else None
+    if root == "claimed" and warm_state in {"idle", "active"} and lease_state is None:
+        return LeaseState.WARM_IDLE if warm_state == "idle" else LeaseState.WARM_ACTIVE
+    for state in LeaseState:
+        if state.value == (root, lease_state, prep, warm_state):
+            return state
+    alias = _ROOT_ALIASES.get(root)
+    if alias is not None and lease_state is None and prep is None and warm_state is None:
+        return alias
+    # Older cleanup records retained an unresolved preparation payload. It is
+    # evidence attached to cleanup, not an alternate cleanup authority state.
+    if root in {"cleanup_pending", "release_pending", "cleanup_complete"} and lease_state == "releasing":
+        return {"cleanup_pending": LeaseState.CLEANUP,
+                "release_pending": LeaseState.RELEASING,
+                "cleanup_complete": LeaseState.RELEASED}[root]
+    raise InvalidLeaseTransition(f"unsupported journal state tuple: {(root, lease_state, prep, warm_state)!r}")
+
+
+def _absolute_deadline(record: Mapping[str, object], control: Mapping[str, object]) -> float | None:
+    for source, key in ((control, "paid_expires_at"), (record, "paid_expires_at")):
+        value = source.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            return float(value)
+    limits = record.get("paid_limits")
+    if isinstance(limits, Mapping):
+        value = limits.get("expires_at")
+        if isinstance(value, str):
+            try:
+                from datetime import datetime
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            except (ValueError, OverflowError):
+                pass
+    for source in (record, control):
+        for key in ("attempt_deadline", "paid_deadline", "expires_at", "deadline"):
+            value = source.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                return float(value)
+    attempt = record.get("attempt")
+    if isinstance(attempt, Mapping):
+        for key in ("attempt_deadline", "paid_deadline", "expires_at", "deadline"):
+            value = attempt.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                return float(value)
+    return None
+
+
+def _flatten_record(record: Mapping[str, object], *, now: float) -> tuple[LeaseState, dict[str, object]]:
+    state = _decode_lease_state(record)
+    raw_control = record.get("lt_control")
+    control = dict(raw_control) if isinstance(raw_control, Mapping) else {}
+    lease = record.get("lease")
+    if not isinstance(lease, Mapping):
+        lease = {}
+    data: dict[str, object] = dict(control)
+    prep = lease.get("preparation")
+    if isinstance(prep, Mapping):
+        for key, value in prep.items():
+            if key != "state":
+                data.setdefault(f"preparation_{key}", value)
+    for key in ("paid_expires_at", "keep_deadline", "idle_expires_at", "owner_epoch", "idle_seconds"):
+        if key in lease:
+            data.setdefault(key, lease[key])
+    warm = record.get("warm_session")
+    if isinstance(warm, Mapping):
+        for key in ("paid_expires_at", "owner_epoch", "idle_seconds"):
+            if key in warm:
+                data.setdefault(key, warm[key])
+        if "idle_expires_at" in warm:
+            data.setdefault("keep_deadline", warm["idle_expires_at"])
+    data.update(now=now, operation_id=record.get("operation_id", control.get("operation_id")),
+                pod_id=lease.get("pod_id", record.get("pod_id")),
+                requested_pod_id=record.get("requested_pod_id"),
+                release_authorized=record.get("release_authorized", control.get("release_authorized", False)))
+    deadline = _absolute_deadline(record, control)
+    if deadline is not None:
+        data.setdefault("paid_expires_at", deadline)
+        data.setdefault("keep_deadline", deadline)
+    for key in CUSTODY_CONTROL_FIELDS:
+        if key not in data and key in record:
+            data[key] = record[key]
+    # Root-only acquisition journals commonly have only a create attempt. That
+    # is identity evidence, not paid authority; leave deadlines absent.
+    if "create_attempt" not in data:
+        data["create_attempt"] = record.get("create_attempt")
+    if "create_inflight" not in data:
+        data["create_inflight"] = record.get("state") in {"allocation_pending", "allocation_unknown"}
+    data.setdefault("stop_requested", state in CLEANUP_STATES | RELEASING_STATES | RELEASED_STATES)
+    data.setdefault("cancellation_fence", 0)
+    data.setdefault("owner_epoch", record.get("owner_epoch"))
+    data.setdefault("idle_seconds", 0)
+    data.setdefault("attempt_ids", ())
+    data.setdefault("absence_confirmed", state in ZERO_CUSTODY | RELEASED_STATES)
+    data.setdefault("safe_to_retry", record.get("safe_to_retry", False))
+    data.setdefault("observations_abandoned", state in CLEANUP_STATES | RELEASING_STATES | RELEASED_STATES)
+    return state, data
+
+
+_EVIDENCE_KEYS = frozenset({
+    "ticket", "attempt_id", "no_allocation_proof", "absence_proof", "drain_confirmed",
+    "exclusive_release_proof", "compatible", "custody_verified", "jobs_stopped",
+    "new_owner_epoch", "paid_authority_proof", "paid_deadline", "idle_duration",
+})
+
+
+def apply_lease_event(
+    record: Mapping[str, object], event: LeaseEvent | str, *, now: float,
+    changes: Mapping[str, object] | None = None,
+    evidence: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Apply one canonical policy event to a legacy shaped lease journal.
+
+    The function is pure. ``lt_control`` is the durable canonical decision
+    payload and revision; the historic root/lease/preparation fields are its
+    encoded compatibility view. A persistence owner can atomically write the
+    returned object from its transition persistence callback.
+    """
+    if type(now) not in (int, float) or not math.isfinite(now):
+        raise InvalidLeaseTransition("finite transition time is required")
+    event = LeaseEvent(event) if isinstance(event, str) else event
+    metadata = dict(changes or {})
+    proof = dict(evidence or {})
+    forbidden = CUSTODY_CONTROL_FIELDS.intersection(metadata)
+    if forbidden:
+        raise InvalidLeaseTransition(f"transition-owned fields: {', '.join(sorted(forbidden))}")
+    lifecycle = {"state", "lease_state", "preparation_state", "warm_session_state"}
+    if lifecycle.intersection(metadata):
+        raise InvalidLeaseTransition("lifecycle fields are owned by the event")
+    lease_change = metadata.get("lease")
+    if isinstance(lease_change, Mapping):
+        if "state" in lease_change:
+            raise InvalidLeaseTransition("lease.state is owned by the event")
+        prep_change = lease_change.get("preparation")
+        if isinstance(prep_change, Mapping) and "state" in prep_change:
+            raise InvalidLeaseTransition("preparation.state is owned by the event")
+    base = dict(record)
+    if "state" not in base:
+        if event != LeaseEvent.CLAIM:
+            raise InvalidLeaseTransition("a new journal may only begin with CLAIM")
+        source = LeaseState.RELEASED
+        raw_control = base.get("lt_control")
+        data = dict(raw_control) if isinstance(raw_control, Mapping) else {}
+        data.update(now=float(now), operation_id=base.get("operation_id", data.get("operation_id")),
+                    pod_id=None, requested_pod_id=None, create_inflight=False,
+                    create_attempt=None, stop_requested=True, cancellation_fence=0,
+                    observations_abandoned=True, absence_confirmed=True,
+                    release_authorized=False, safe_to_retry=True, attempt_ids=())
+    else:
+        source, data = _flatten_record(base, now=float(now))
+    if not data.get("operation_id"):
+        raise InvalidLeaseTransition("exact operation identity is required")
+    for key in ("paid_expires_at", "keep_deadline"):
+        if key not in data and key in proof:
+            # A deadline is accepted only as a CLAIM/ATTACHMENT_REQUESTED/KEEP
+            # event's evidence, never as caller metadata.
+            if event not in {LeaseEvent.CLAIM, LeaseEvent.ATTACHMENT_REQUESTED, LeaseEvent.KEEP}:
+                continue
+    payload = {**metadata, **proof, "now": float(now)}
+    # The core resolver treats a single mapping as event evidence and rejects
+    # control-field changes. Merge durable facts and event proof for that API.
+    class _Capture:
+        value: Record[LeaseState] | None = None
+        effects: tuple[str, ...] = ()
+
+    capture = _Capture()
+    def persist(value: Record[LeaseState], effects: tuple[str, ...]) -> None:
+        capture.value, capture.effects = value, effects
+    def retry(_old: Record[LeaseState], _event: LeaseEvent, _proof: Mapping[str, object]) -> None:
+        return None
+    transition_changes = {key: value for key, value in payload.items()
+                          if key not in {"lease", "warm_session"}}
+    raw_control = base.get("lt_control")
+    revision = raw_control.get("revision", 0) if isinstance(raw_control, Mapping) else 0
+    decision = transition(LEASE_TRANSITIONS, Record(source, data, int(revision)), event,
+        persist=persist, retry=retry, changes=transition_changes)
+    updated = dict(base)
+    for key, value in metadata.items():
+        if key == "lease" and isinstance(value, Mapping):
+            current_lease = updated.get("lease")
+            lease_value = dict(current_lease) if isinstance(current_lease, Mapping) else {}
+            for lease_key, lease_item in value.items():
+                if lease_key == "preparation" and isinstance(lease_item, Mapping):
+                    current_preparation = lease_value.get("preparation")
+                    prep_value = dict(current_preparation) if isinstance(current_preparation, Mapping) else {}
+                    prep_value.update(lease_item)
+                    lease_value[lease_key] = prep_value
+                else:
+                    lease_value[lease_key] = lease_item
+            updated["lease"] = lease_value
+        else:
+            updated[key] = value
+    control = dict(data)
+    control.update({key: value for key, value in decision.record.data.items() if key != "now"})
+    control["revision"] = decision.record.revision
+    control["last_event"] = event.value
+    control["canonical_state"] = decision.record.state.name
+    control["effects"] = list(decision.effects)
+    updated["lt_control"] = control
+    _encode_state(updated, decision.record.state, data, control)
+    return updated
+
+
+def new_claim_record(
+    metadata: Mapping[str, object], *, now: float, paid_deadline: float,
+    idle_duration: float, owner_epoch: object,
+) -> dict[str, object]:
+    """Create a first journal record through the ordinary RELEASED → CLAIM row.
+
+    The caller still owns exclusive creation of the durable file. This helper
+    grants only the table's bounded claim authority; it fabricates no prior
+    cleanup receipt or provider fact.
+    """
+    if "state" in metadata or "lt_control" in metadata:
+        raise InvalidLeaseTransition("new claim metadata cannot supply lifecycle control")
+    return apply_lease_event(
+        metadata, LeaseEvent.CLAIM, now=now,
+        evidence={"paid_deadline": paid_deadline, "idle_duration": idle_duration,
+                  "new_owner_epoch": owner_epoch},
+    )
+
+
+def cleanup_connection_record(record: Mapping[str, object], *, now: float) -> dict[str, object]:
+    """Render exact cleanup custody for the existing preparation transport.
+
+    This is a transient connection view, never a journal or renewed admission.
+    The durable canonical cleanup fence remains attached to the view.
+    """
+    state, _ = _flatten_record(record, now=now)
+    if state not in CLEANUP_STATES | RELEASING_STATES or not record.get("pod_id"):
+        raise InvalidLeaseTransition("cleanup connection requires exact fenced custody")
+    view = apply_lease_event(record, LeaseEvent.CHECKPOINT, now=now)
+    view["state"] = "claimed"
+    return view
+
+
+def _encode_state(
+    record: dict[str, object], state: LeaseState, previous: Mapping[str, object],
+    control: Mapping[str, object],
+) -> None:
+    """Encode canonical state to the historical root/lease tuple."""
+    root, lease_state, preparation, warm_state = state.value
+    # Preserve the historical operational distinctions where they are facts,
+    # without changing the canonical lt_control decision.
+    old_root = record.get("state")
+    last_event = control.get("last_event")
+    if last_event == LeaseEvent.CLAIM.value and state == LeaseState.CAPACITY_WAIT:
+        root = "allocation_ready"
+    elif last_event == LeaseEvent.CAPACITY_EXHAUSTED.value and state == LeaseState.RELEASED:
+        root = "capacity_exhausted"
+    elif last_event == LeaseEvent.RELEASE.value and state == LeaseState.CLEANUP:
+        # Legacy callers use release_pending as their immediate write-ahead
+        # marker. lt_control retains the table's CLEANUP authority until drain.
+        root = ("cleanup_pending" if isinstance(record.get("lease"), Mapping)
+                and record["lease"].get("schema") == "astrid.runpod.lease.v1"
+                and not record.get("release_requested_at") else "release_pending")
+    elif state == LeaseState.CAPACITY_WAIT and old_root == "capacity_exhausted":
+        root = "capacity_exhausted"
+    elif state == LeaseState.CAPACITY_WAIT and old_root == "allocation_ready":
+        root = "allocation_ready"
+    elif state == LeaseState.CLEANUP and old_root in {"allocation_ready", "capacity_retry_ready"}:
+        root = "cleanup_pending"
+    elif state == LeaseState.CLEANUP and last_event in {
+        LeaseEvent.RECONCILIATION_FOUND.value, LeaseEvent.CHECKPOINT.value,
+    } and record.get("reconciled_at"):
+        root = "attached_unverified" if record.get("acquisition_mode") == "attach" else "allocated_unverified"
+    elif state == LeaseState.CLEANUP and last_event == LeaseEvent.CHECKPOINT.value and old_root == "release_pending":
+        root = old_root
+    record["state"] = root
+    if last_event == LeaseEvent.CAPACITY_REJECTED.value:
+        record["capacity_rejection"] = "ProviderCapacityUnavailable"
+    for key in ("safe_to_retry", "release_authorized"):
+        if key in control:
+            record[key] = control[key]
+    if control.get("pod_id"):
+        record["pod_id"] = control["pod_id"]
+    current_lease = record.get("lease")
+    lease = dict(current_lease) if isinstance(current_lease, Mapping) else {}
+    if lease_state is not None:
+        lease["state"] = lease_state
+    for key in ("paid_expires_at", "owner_epoch", "idle_seconds"):
+        if key in control:
+            lease[key] = control[key]
+    if state in IDLE_STATES and "keep_deadline" in control:
+        lease["idle_expires_at"] = control["keep_deadline"]
+    if state in CLEANUP_STATES | RELEASING_STATES | RELEASED_STATES:
+        prior_prep = _read_preparation(lease)
+        archived = control.get("archived_preparation")
+        if prior_prep == "preparing" or archived == "preparing":
+            current_preparation = lease.get("preparation")
+            prep_value = dict(current_preparation) if isinstance(current_preparation, Mapping) else {}
+            prep_value["state"] = "unresolved"
+            lease["preparation"] = prep_value
+        # Cleanup retains the complete historical preparation receipt. Its
+        # canonical authority is CLEANUP, regardless of archived job facts.
+    elif preparation is not None:
+        current_preparation = lease.get("preparation")
+        prep_value = dict(current_preparation) if isinstance(current_preparation, Mapping) else {}
+        prep_value["state"] = preparation
+        lease["preparation"] = prep_value
+    if isinstance(current_lease, Mapping):
+        record["lease"] = lease
+    warm = record.get("warm_session")
+    if warm_state is not None:
+        warm_value = dict(warm) if isinstance(warm, Mapping) else {}
+        warm_value["state"] = warm_state
+        for key in ("paid_expires_at", "idle_seconds"):
+            if key in control:
+                warm_value[key] = control[key]
+        if warm_state == "idle" and "keep_deadline" in control:
+            warm_value["idle_expires_at"] = control["keep_deadline"]
+        record["warm_session"] = warm_value
+    elif isinstance(warm, Mapping) and state in CLEANUP_STATES | RELEASING_STATES | RELEASED_STATES:
+        record["warm_session"] = {**warm, "state": "releasing"}

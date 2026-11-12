@@ -65,6 +65,8 @@ from .worker_staging import (
 )
 
 
+from .lease_states import LeaseEvent, apply_lease_event, cleanup_connection_record, lease_transition_clock
+
 class RunPodWorkerOwnerError(RuntimeError):
     """Exact RunPod preparation or host custody could not be established."""
 
@@ -135,8 +137,8 @@ class RunPodLeaseOwner:
     """Small attached-engine lease owned by the existing long-lived host.
 
     Construct once in that host, never in a per-invocation CLI. The account
-    lock stays held until close; clients receive invocation leases, not lock
-    or stop authority. A replacement host reconciles and terminates saved
+    lock covers durable transitions; clients receive invocation leases, not
+    lock or stop authority. A replacement host reconciles and terminates saved
     custody before admitting work. No extra daemon or provider implementation
     lives here. ``quiesce`` must fence/drain the exact local invocation and
     close its bridge, returning the lease-drain receipt checked by P1.
@@ -165,8 +167,8 @@ class RunPodLeaseOwner:
         self._paid_consent_ids: set[str] = set()
         self._machine_identity: tuple[str, str] | None = None
         selection._read()  # Refuse unsafe paths before opening custody.
-        self.account = target_owner(selection.path)
-        self.account.__enter__()
+        # Custody is durable; a host never owns the journal lock for its lifetime.
+        self._acquiring = False
 
     def _read(self) -> dict[str, Any] | None:
         if self.closed:
@@ -226,9 +228,30 @@ class RunPodLeaseOwner:
             # unreadable; the account gate cannot be addressed without a key.
             return 1.0
 
-    def _save(self, record: Mapping[str, Any], lease: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
-        value = {**record, "lease": dict(lease), **changes}
-        replace_target_record(self.selection.path, value, operation_id=record["operation_id"])
+    def _save(self, record: Mapping[str, Any], lease: Mapping[str, Any], *,
+              event: LeaseEvent = LeaseEvent.CHECKPOINT,
+              evidence: Mapping[str, Any] | None = None, **changes: Any) -> dict[str, Any]:
+        metadata = dict(lease)
+        # Same-valued state is a copied view, never a caller decision.
+        if "state" in metadata:
+            if metadata.pop("state") != record["lease"]["state"]:
+                raise RunPodWorkerOwnerError("lease state requires an explicit event")
+        for field in ("paid_expires_at", "idle_expires_at", "owner_epoch", "idle_seconds"):
+            metadata.pop(field, None)
+        preparation = changes.pop("preparation", metadata.pop("preparation", None))
+        if preparation is not None:
+            preparation = dict(preparation)
+            previous = record["lease"].get("preparation", {})
+            if "state" in preparation and preparation.pop("state") != previous.get("state"):
+                raise RunPodWorkerOwnerError("preparation state requires an explicit event")
+            metadata["preparation"] = preparation
+        with self.lock, target_owner(self.selection.path, blocking=True):
+            current = self._read()
+            if current is None or current["operation_id"] != record["operation_id"]:
+                raise RunPodWorkerOwnerError("lease transition lost exact operation custody")
+            value = apply_lease_event(current, event, now=self.clock(),
+                                      changes={**changes, "lease": metadata}, evidence=evidence)
+            replace_target_record(self.selection.path, value, operation_id=record["operation_id"])
         return value
 
     def _sync_deadline(self, record: Mapping[str, Any]) -> dict[str, Any]:
@@ -347,7 +370,9 @@ class RunPodLeaseOwner:
                     # the same exact recovery as an interrupted invocation.
                     pass
                 else:
-                    record = self._save(record, {**lease, "owner_epoch": self.epoch})
+                    record = self._save(record, lease, event=LeaseEvent.RESTART,
+                                        evidence={"compatible": True, "custody_verified": True,
+                                                  "new_owner_epoch": self.epoch})
                     record = self._sync_deadline(record)
                     self._machine_identity = (record["operation_id"], record["pod_id"])
                     self.started = True
@@ -388,9 +413,10 @@ class RunPodLeaseOwner:
                 return pod.get("name") == raw["request_name"] or any(tag in identities for tag in tags if isinstance(tag, str))
 
             if any(matches(pod) for pod in pods):
-                replace_target_record(self.selection.path, {
-                    **raw, "state": "allocation_unknown", "safe_to_retry": False,
-                    "reconciliation_required": True}, operation_id=raw["operation_id"])
+                value = apply_lease_event(raw, LeaseEvent.RECONCILIATION_UNKNOWN, now=self.clock(),
+                                          changes={"reconciliation_required": True})
+                with target_owner(self.selection.path, blocking=True):
+                    replace_target_record(self.selection.path, value, operation_id=raw["operation_id"])
                 return False
             self.selection.path.unlink()
             print(f"recovered_stale_capacity_intent operation={raw['operation_id']}", file=sys.stderr, flush=True)
@@ -443,7 +469,8 @@ class RunPodLeaseOwner:
                 reason = ((record or {}).get("lease") or {}).get("release_reason") or "recovery"
                 if record is not None and record.get("operation_id") == operation:
                     try:
-                        self._save(record, {**record["lease"], "release_mechanism": "recovery"})
+                        self._save(record, {**record["lease"], "release_mechanism": "recovery"},
+                                   event=LeaseEvent.RELEASE_RETRY)
                     except Exception as exc:  # noqa: BLE001 - optional metadata must not consume the cleanup retry.
                         self.last_error_type = type(exc).__name__
             self.release(reason=reason, _expected_operation=operation)
@@ -493,6 +520,10 @@ class RunPodLeaseOwner:
                 cancelled: Callable[[], bool] | None = None,
                 defer_unsafe_release: bool = False, claim_lifetime_seconds: float | None = None) -> RunPodLease:
         from .worker_preparation import TargetObservationError, observation_failure_gate
+        with self.lock:
+            if self._acquiring:
+                raise AcquisitionUnresolvedError("another lease acquisition is in progress")
+            self._acquiring = True
         try:
             return self._acquire(consent, requested_idle_seconds=requested_idle_seconds, cancelled=cancelled,
                                  claim_lifetime_seconds=claim_lifetime_seconds)
@@ -539,6 +570,9 @@ class RunPodLeaseOwner:
                     raise error from exc
                 raise error from None
             raise
+        finally:
+            with self.lock:
+                self._acquiring = False
 
     def _acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
                  cancelled: Callable[[], bool] | None = None,
@@ -576,7 +610,7 @@ class RunPodLeaseOwner:
                                        service_environ=self.service_environ)
             if idle > consent.idle_seconds:
                 raise RunPodWorkerOwnerError("selected idle exceeds disclosed paid idle")
-            lease = {"schema": "astrid.runpod.lease.v1", "state": "preparing",
+            lease = {"schema": "astrid.runpod.lease.v1",
                      "owner_epoch": self.epoch, "generation": 1 if previous is None else previous["generation"] + 1,
                      "invocation_id": consent.invocation_id, "idle_seconds": idle,
                      "started_at": self.clock() if previous is None else previous["started_at"]}
@@ -587,79 +621,83 @@ class RunPodLeaseOwner:
             if previous is not None and previous.get("keep_until_release"):
                 lease["keep_until_release"] = True
             # Only P1's already-owned account lock is bypassed here, as in R02.
-            acquired = False
-            async def select():
-                try:
+        acquired = False
+        async def select():
+            try:
+                with lease_transition_clock(self.clock):
                     return await self.selection._select(
                         consent, lease=lease, lock_held=True,
                         claim_lifetime_seconds=claim_lifetime_seconds,
                         cancelled=lambda: self._acquisition_cancel.is_set() or (cancelled is not None and cancelled()))
-                except TargetObservationError as exc:
-                    if exc.runpod_gate == "lifetime":
-                        current = self.selection._read()
-                        if current is not None and current.get("create_attempts", 0) > 0:
-                            try:
-                                # Release before asyncio's executor shutdown can
-                                # wait for a cancelled provider readiness read.
-                                self.release(reason="paid_deadline", _expected_operation=current["operation_id"])
-                            except Exception:  # noqa: BLE001 - preserve the lifetime refusal and durable cleanup retry.
-                                pass  # Failed cleanup retains custody and recovery.
-                    raise
-            try:
-                claimed = dict(_run_sync(select()))
-                acquired = True
-                paid_started = (_utc(claimed["paid_limits"]["authorized_at"]).timestamp()
-                                if previous is None else previous["started_at"])
-                cost = ((max(0, self.clock() - paid_started) * claimed["paid_limits"]["hourly_usd"] / 3600)
-                        if previous is None else previous.get("estimated_cost_usd", 0)
-                        + max(0, self.clock() - previous.get("accounted_at", previous["started_at"]))
-                        * previous["hourly_usd"] / 3600)
-                lease.update(state="active", paid_expires_at=min(
-                                 _utc(claimed["paid_limits"]["expires_at"]).timestamp(),
-                                 previous["paid_expires_at"] if previous is not None else float("inf"),
-                                 paid_started + claim_lifetime_seconds if claim_lifetime_seconds is not None else float("inf"),
-                                 _utc(consent.deadline).timestamp() if job else float("inf")),
-                             hourly_usd=claimed["paid_limits"]["hourly_usd"],
-                             started_at=paid_started, estimated_cost_usd=cost, accounted_at=self.clock())
-                claimed = self._save(claimed, lease, estimated_cost_usd=cost)
-                if claimed.get("self_stop", {}).get("deadline") != lease["paid_expires_at"]:
-                    claimed = self._sync_deadline(claimed)
-                if not job:
-                    self._paid_consent_ids.add(consent.invocation_id)
-                self._machine_identity = (claimed["operation_id"], claimed["pod_id"])
-            except BaseException as exc:
-                current = self.selection._read()
-                if isinstance(exc, PodWatchdogError) and current is not None and current.get("pod_id"):
-                    self.release(reason="watchdog_unavailable", _expected_operation=current["operation_id"],
-                                 expected_machine_id=current["pod_id"])
-                    raise
-                if isinstance(exc, TargetObservationError) and current is not None:
-                    operation, pod = current.get("operation_id"), current.get("pod_id")
-                    exact = (isinstance(operation, str) and re.fullmatch(r"[0-9a-f]{32}", operation)
-                             and isinstance(pod, str) and bool(pod)
-                             and current.get("request_name") == "astrid-product-" + operation
-                             and current.get("name") == current.get("request_name")
-                             and current.get("provider_account_ref") == self.selection.preferences.provider_account_ref
-                             and current.get("release_authorized") is True
-                             and (record is None or record.get("operation_id") == operation)
-                             and (self._machine_identity is None or self._machine_identity == (operation, pod)))
-                    setattr(exc, "_astrid_failed_identity", (operation, pod) if exact else None)
-                if (current is not None and current.get("state") == "allocation_ready"
-                        and current.get("create_attempts") == 0 and current.get("pod_id") is None):
-                    # This process still owns the lock and has not written the
-                    # pending-POST stamp. Cancellation here cannot have allocated.
-                    self.selection.path.unlink()
-                    current = None
-                if current is not None and current.get("state") != "cleanup_complete" and (acquired or current.get("state") != "claimed"
-                                           or current.get("lease", {}).get("state") == "preparing"):
-                    self.started = False
-                    self._cancel()
-                    operation = current["operation_id"]
-                    self.deadline_timer = self.timer(self._provider_retry_delay(current), lambda: self._retry_recovery(operation))
+            except TargetObservationError as exc:
+                if exc.runpod_gate == "lifetime":
+                    current = self.selection._read()
+                    if current is not None and current.get("create_attempts", 0) > 0:
+                        try:
+                            # Release before asyncio's executor shutdown can
+                            # wait for a cancelled provider readiness read.
+                            self.release(reason="paid_deadline", _expected_operation=current["operation_id"])
+                        except Exception:  # noqa: BLE001 - preserve the lifetime refusal and durable cleanup retry.
+                            pass  # Failed cleanup retains custody and recovery.
                 raise
-            self._arm(claimed)
-            return RunPodLease(claimed["operation_id"], self.epoch, lease["generation"],
-                               consent.invocation_id, claimed)
+        try:
+            claimed = dict(_run_sync(select()))
+            acquired = True
+            paid_started = (_utc(claimed["paid_limits"]["authorized_at"]).timestamp()
+                            if previous is None else previous["started_at"])
+            cost = ((max(0, self.clock() - paid_started) * claimed["paid_limits"]["hourly_usd"] / 3600)
+                    if previous is None else previous.get("estimated_cost_usd", 0)
+                    + max(0, self.clock() - previous.get("accounted_at", previous["started_at"]))
+                    * previous["hourly_usd"] / 3600)
+            lease.update(paid_expires_at=min(
+                             _utc(claimed["paid_limits"]["expires_at"]).timestamp(),
+                             previous["paid_expires_at"] if previous is not None else float("inf"),
+                             paid_started + claim_lifetime_seconds if claim_lifetime_seconds is not None else float("inf"),
+                             _utc(consent.deadline).timestamp() if job else float("inf")),
+                         hourly_usd=claimed["paid_limits"]["hourly_usd"],
+                         started_at=paid_started, estimated_cost_usd=cost, accounted_at=self.clock())
+            # Selection confirms the manual claim; job admission is distinct.
+            claimed = self._save(claimed, lease,
+                                 event=LeaseEvent.JOB_ADMITTED if job else LeaseEvent.CHECKPOINT,
+                                 estimated_cost_usd=cost)
+            if claimed.get("self_stop", {}).get("deadline") != lease["paid_expires_at"]:
+                claimed = self._sync_deadline(claimed)
+            if not job:
+                self._paid_consent_ids.add(consent.invocation_id)
+            self._machine_identity = (claimed["operation_id"], claimed["pod_id"])
+        except BaseException as exc:
+            current = self.selection._read()
+            if isinstance(exc, PodWatchdogError) and current is not None and current.get("pod_id"):
+                self.release(reason="watchdog_unavailable", _expected_operation=current["operation_id"],
+                             expected_machine_id=current["pod_id"])
+                raise
+            if isinstance(exc, TargetObservationError) and current is not None:
+                operation, pod = current.get("operation_id"), current.get("pod_id")
+                exact = (isinstance(operation, str) and re.fullmatch(r"[0-9a-f]{32}", operation)
+                         and isinstance(pod, str) and bool(pod)
+                         and current.get("request_name") == "astrid-product-" + operation
+                         and current.get("name") == current.get("request_name")
+                         and current.get("provider_account_ref") == self.selection.preferences.provider_account_ref
+                         and current.get("release_authorized") is True
+                         and (record is None or record.get("operation_id") == operation)
+                         and (self._machine_identity is None or self._machine_identity == (operation, pod)))
+                setattr(exc, "_astrid_failed_identity", (operation, pod) if exact else None)
+            if (current is not None and current.get("state") == "allocation_ready"
+                    and current.get("create_attempts") == 0 and current.get("pod_id") is None):
+                # This process still owns the lock and has not written the
+                # pending-POST stamp. Cancellation here cannot have allocated.
+                self.selection.path.unlink()
+                current = None
+            if current is not None and current.get("state") != "cleanup_complete" and (acquired or current.get("state") != "claimed"
+                                       or current.get("lease", {}).get("state") == "preparing"):
+                self.started = False
+                self._cancel()
+                operation = current["operation_id"]
+                self.deadline_timer = self.timer(self._provider_retry_delay(current), lambda: self._retry_recovery(operation))
+            raise
+        self._arm(claimed)
+        return RunPodLease(claimed["operation_id"], self.epoch, lease["generation"],
+                           consent.invocation_id, claimed)
 
     def start_fresh_claim(self) -> None:
         """Admit first manual claim only from empty or verified ended custody."""
@@ -687,7 +725,6 @@ class RunPodLeaseOwner:
         invocation = self.acquire(consent, requested_idle_seconds=requested_idle_seconds,
                                   cancelled=cancelled, claim_lifetime_seconds=consent.idle_seconds)
         with self.lock:
-            self.settle(invocation)
             record = self._read()
             if record is None:
                 raise RunPodWorkerOwnerError("claim disappeared while settling its lease")
@@ -745,7 +782,10 @@ class RunPodLeaseOwner:
                            "hourly_usd": rate, "max_usd": consent.max_usd,
                            "deadline": consent.deadline, "expires_at": expiry.isoformat(),
                            "authorized_at": current.isoformat(), "idle_seconds": consent.idle_seconds}
-            record = self._save(record, lease, paid_limits=paid_limits, estimated_cost_usd=cost)
+            record = self._save(record, lease, event=LeaseEvent.KEEP,
+                                evidence={"paid_authority_proof": True, "paid_deadline": expiry.timestamp(),
+                                          "idle_duration": consent.idle_seconds},
+                                paid_limits=paid_limits, estimated_cost_usd=cost)
             record = self._sync_deadline(record)
             self._paid_consent_ids.add(consent.invocation_id)
             self._arm(record)
@@ -768,8 +808,8 @@ class RunPodLeaseOwner:
                 return  # Release owns the terminal transition; never re-arm it.
             if record["state"] != "claimed" or lease["state"] != "active":
                 raise RunPodWorkerOwnerError("release already fences this invocation")
-            if self.closed or self.clock() >= lease["paid_expires_at"]:
-                raise RunPodWorkerOwnerError("paid lease expired before settlement")
+            if self.closed:
+                raise RunPodWorkerOwnerError("lease owner is closed")
             preparation = lease.get("preparation")
             if preparation is not None and (preparation["state"] != "prepared"
                     and not (preparation["state"] == "stale_after_failure" and outcome in {"failed", "cancelled"})):
@@ -782,9 +822,13 @@ class RunPodLeaseOwner:
                                    if outcome != "success" else None,
                                    "structural_node_ids": sorted(node_ids) if outcome != "success" else [],
                                    "structural_names": sorted(node_names) if outcome != "success" else []},
-                         state="idle", idle_expires_at=(lease["paid_expires_at"] if lease.get("keep_until_release")
-                         else min(self.clock() + lease["idle_seconds"], lease["paid_expires_at"])))
-            record = self._save(record, lease)
+                         idle_expires_at=min(self.clock() + lease["idle_seconds"], lease["paid_expires_at"]))
+            record = self._save(record, lease,
+                                event=LeaseEvent.JOB_SUCCEEDED if outcome == "success" else LeaseEvent.JOB_FAILED,
+                                evidence={"jobs_stopped": True, "custody_verified": True})
+            if record["state"] != "claimed":
+                self.release(reason="paid_deadline", _expected_operation=record["operation_id"])
+                return
             record = self._sync_deadline(record)
             self._arm(record)
 
@@ -885,8 +929,8 @@ class RunPodLeaseOwner:
                     or lease.get("generation") != invocation.generation):
                 raise AcquisitionUnresolvedError("unreaped observer custody changed")
             self._unreaped_children.append(child)
-            self._save(record, {**lease, "state": "releasing", "release_reason": "observer_unreaped"},
-                       state="cleanup_pending", reconciliation_required=True, observer_unreaped=True)
+            self._save(record, {**lease, "release_reason": "observer_unreaped"},
+                       event=LeaseEvent.RELEASE, reconciliation_required=True, observer_unreaped=True)
             self._cancel()
             self.deadline_timer = self.timer(self._provider_retry_delay(record), lambda: self._retry_recovery(invocation.operation_id))
 
@@ -949,7 +993,7 @@ class RunPodLeaseOwner:
 
             if time.monotonic() >= cleanup_deadline:
                 raise AcquisitionUnresolvedError("exact cleanup transport budget expired")
-            claim = connect_claimed_for_preparation({**record, "state": "claimed"})
+            claim = connect_claimed_for_preparation(cleanup_connection_record(record, now=self.clock()))
             bounded = getattr(claim.ops, "bounded", None)
             return bounded(cleanup_deadline) if bounded is not None else claim.ops
 
@@ -982,18 +1026,19 @@ class RunPodLeaseOwner:
                 record = self._read()
             if record is None:
                 raise AcquisitionUnresolvedError("original create remains unresolved; no replacement is permitted")
-            lease = {**record["lease"], "state": "releasing", "release_reason": reason}
-            record = self._save(record, lease, state="cleanup_pending", reconciliation_required=True)
+            lease = {**record["lease"], "release_reason": reason}
+            record = self._save(record, lease, event=LeaseEvent.RELEASE, reconciliation_required=True)
+            lease = record["lease"]
             preparation = lease.get("preparation")
             if preparation is not None:
                 if preparation["state"] == "preparing":
-                    preparation = {**preparation, "state": "unresolved"}
+                    preparation = dict(preparation)
                     lease = {**lease, "preparation": preparation}
                     record = self._save(record, lease)
                 job = preparation.get("job")
                 if job is not None and job["state"] not in {"exited", "cancelled"} and reason in {"provider_terminated", "self_stop"}:
                     # The provider already ended the pod: there is no process left to stop.
-                    preparation = {**preparation, "state": "unresolved", "job": {"id": job["id"], "state": "cancelled"}}
+                    preparation = {**preparation, "job": {"id": job["id"], "state": "cancelled"}}
                     lease = {**lease, "preparation": preparation}
                     record = self._save(record, lease)
             machine_job = lease.get("job")
@@ -1050,7 +1095,7 @@ class RunPodLeaseOwner:
                 if current_job is None or current_job["id"] != job_id or current_job["state"] not in {"starting", "running"}:
                     raise AcquisitionUnresolvedError("exact cleanup job checkpoint changed after cancellation")
                 if kind == "preparation":
-                    lease = {**lease, "preparation": {**preparation, "state": "unresolved",
+                    lease = {**lease, "preparation": {**preparation,
                              "job": {"id": job_id, "state": stopped["state"]}}}
                 else:
                     lease = {**lease, "job": {"id": job_id, "state": stopped["state"]}}
@@ -1149,7 +1194,7 @@ class RunPodLeaseOwner:
             if not self.closed:
                 self._cancel()
                 self.closed = True
-                self.account.__exit__(None, None, None)
+
 
 
 class RunPodWarmSessionOwner:
@@ -1200,19 +1245,32 @@ class RunPodWarmSessionOwner:
         self._check_identity(record)
         return record
 
-    def _save(self, record: Mapping[str, Any], warm: Mapping[str, Any], **changes: Any) -> None:
-        value = {**record, "warm_session": dict(warm), **changes}
+    def _save(self, record: Mapping[str, Any], warm: Mapping[str, Any], *,
+              event: LeaseEvent, evidence: Mapping[str, Any] | None = None,
+              bind: bool = False, **changes: Any) -> None:
+        metadata = {key: value for key, value in warm.items() if key != "state"}
+        value = dict(record)
+        if bind:
+            value = apply_lease_event(value, LeaseEvent.WARM_SESSION_BOUND, now=self.clock(),
+                                      changes={"warm_session": metadata},
+                                      evidence={"pod_id": self.identity["pod_id"],
+                                                "exclusive_release_proof": True,
+                                                "paid_deadline": warm["paid_expires_at"],
+                                                "idle_duration": warm["idle_seconds"]})
+        value = apply_lease_event(value, event, now=self.clock(),
+                                  changes={**changes, "warm_session": metadata}, evidence=evidence)
         replace_target_record(self.preparer.claim_handle_path, value,
                               operation_id=self.identity["operation_id"])
-        if value["state"] == "claimed" and warm["state"] in {"active", "idle"}:
-            deadline = (min(warm["idle_expires_at"], warm["paid_expires_at"])
-                        if warm["state"] == "idle" else warm["paid_expires_at"])
+        saved_warm = self._warm(value)
+        if value["state"] == "claimed" and saved_warm["state"] in {"active", "idle"}:
+            deadline = (min(saved_warm["idle_expires_at"], saved_warm["paid_expires_at"])
+                        if saved_warm["state"] == "idle" else saved_warm["paid_expires_at"])
             try:
                 sync_deadline(value, self.preparer.claim_handle_path, deadline)
             except PodWatchdogError:
-                replace_target_record(self.preparer.claim_handle_path,
-                                      {**value, "warm_session": {**warm, "state": "releasing"},
-                                       "state": "cleanup_pending", "reconciliation_required": True},
+                failed = apply_lease_event(value, LeaseEvent.WARM_SESSION_EXPIRED, now=self.clock(),
+                                           changes={"reconciliation_required": True})
+                replace_target_record(self.preparer.claim_handle_path, failed,
                                       operation_id=self.identity["operation_id"])
                 raise
 
@@ -1289,12 +1347,14 @@ class RunPodWarmSessionOwner:
             warm = {
                 "schema": "astrid.runpod.warm-session.v1", "identity": self.identity,
                 "generation": 1 if previous is None else previous["generation"] + 1,
-                "state": "active", "task_id": reference.task_id, "run_id": reference.run_id,
+                "task_id": reference.task_id, "run_id": reference.run_id,
                 "deployment_digest": reference.digest(), "invocation_id": invocation,
                 "paid_expires_at": expiry, "idle_seconds": selected_idle,
             }
-            self._save(record, warm)
-            self._arm(warm)
+            self._save(record, warm, event=LeaseEvent.JOB_ADMITTED, bind=previous is None,
+                       evidence={"compatible": True, "paid_deadline": expiry,
+                                 "idle_duration": selected_idle})
+            self._arm(self._warm(self._read()))
 
     async def retire(self, reference: Any, *, runtime_owner: Any,
                      qualification: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1308,9 +1368,8 @@ class RunPodWarmSessionOwner:
             if record["state"] != "claimed" or warm["state"] == "releasing":
                 raise RunPodWorkerOwnerError("release already fences this warm session")
             if warm["state"] == "active":
-                warm.update(state="idle", idle_expires_at=min(self.clock() + warm["idle_seconds"],
-                                                            warm["paid_expires_at"]))
-                self._save(record, warm)
+                self._save(record, warm, event=LeaseEvent.JOB_SUCCEEDED)
+                warm = self._warm(self._read())
             self._arm(warm)
         return result
 
@@ -1330,17 +1389,21 @@ class RunPodWarmSessionOwner:
                 if warm["state"] == "idle":
                     warm["idle_expires_at"] = min(warm["idle_expires_at"], warm["paid_expires_at"])
             except RunPodWorkerOwnerError:
-                warm["state"] = "releasing"
                 pending = True
-            self._save(record, warm)
             pending = pending or self.clock() >= warm["paid_expires_at"] or (
                 warm["state"] == "idle" and self.clock() >= warm["idle_expires_at"])
+            self._save(record, warm, event=LeaseEvent.WARM_SESSION_EXPIRED if pending else LeaseEvent.CHECKPOINT)
+            warm = self._warm(self._read())
             if not pending:
                 self._arm(warm)
         if pending:
             self._expire("recovery", warm["generation"])
 
     def _arm(self, warm: Mapping[str, Any]) -> None:
+        if warm["state"] == "releasing":
+            self._expire("paid_deadline" if self.clock() >= warm["paid_expires_at"] else "idle",
+                         warm["generation"])
+            return
         if self.deadline_timer is not None:
             self.deadline_timer.cancel()
         if self.lease is not None:
@@ -1371,8 +1434,9 @@ class RunPodWarmSessionOwner:
                                (warm["state"] == "idle" and self.clock() >= warm["idle_expires_at"]))
                         if not due:
                             return
-                    warm.update(state="releasing", release_reason=reason)
-                    self._save(record, warm, state="cleanup_pending", reconciliation_required=True)
+                    warm["release_reason"] = reason
+                    self._save(record, warm, event=LeaseEvent.WARM_SESSION_EXPIRED,
+                               reconciliation_required=True)
                 if self.deadline_timer is not None:
                     self.deadline_timer.cancel()
                 if self.lease is not None:

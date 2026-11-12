@@ -18,7 +18,6 @@ import re
 import sys
 import time
 import uuid
-from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -36,8 +35,9 @@ from .worker_preparation import (
     _validate_completed_release, write_target_record,
 )
 from . import worker_preparation
-from .provider import account_gate, parse_rest_pod, provider_budget
+from .provider import account_gate, bounded_observation, parse_rest_pod, provider_budget
 from .pod_watchdog import PodWatchdogError
+from .lease_states import LeaseEvent, journal_dispatch_ticket, new_claim_record
 
 
 def _exact_volume_id(record):
@@ -556,7 +556,10 @@ class RunPodSelectionOwner:
             if (record is None or record.get("state") != "claimed"
                     or record.get("operation_id") != consent.operation_id):
                 raise PaidSelectionError("no machine: run `astrid machines claim`")
-        consent.validate_authority(self.preferences, self.clock())
+        if isinstance(consent, ClaimedJob):
+            consent.validate(self.clock())
+        else:
+            consent.validate_authority(self.preferences, self.clock())
         if dry_run:
             return await self._select_once(consent, dry_run=True, lease=lease, lock_held=lock_held)
         self._read()
@@ -571,7 +574,7 @@ class RunPodSelectionOwner:
                     and self.clock() >= _utc(record["paid_limits"]["expires_at"])):
                 raise CapacityWaitTimeout(
                     "machine paid lifetime expired; it cannot be extended by reuse", gate="lifetime")
-            if (consent.capacity_timeout_seconds is not None
+            if (isinstance(consent, PaidRunConsent) and consent.capacity_timeout_seconds is not None
                     and self.monotonic() - started >= consent.capacity_timeout_seconds):
                 raise CapacityWaitTimeout("RunPod capacity timeout passed; no further create will be attempted", gate="capacity")
             if consent.deadline is not None and self.clock() >= _utc(consent.deadline):
@@ -586,6 +589,7 @@ class RunPodSelectionOwner:
                     if provider_timeout is not None and self.monotonic() - began >= provider_timeout:
                         raise OfferObservationError("provider_transport_or_response_unavailable")
                     await asyncio.wait({task}, timeout=0.05)
+                check()
                 result = await task
                 check()
                 return result
@@ -596,9 +600,10 @@ class RunPodSelectionOwner:
 
         if isinstance(consent, ClaimedJob):
             assert record is not None  # Validated before entering the deadline watcher.
-            return await interruptible(self._select_once(
-                consent, lease=lease, lock_held=lock_held,
-                offer=self._recorded_offer(record), cancelled=check))
+            with provider_budget(max(0., (_utc(consent.deadline) - self.clock()).total_seconds()), cancelled=check):
+                return await interruptible(self._select_once(
+                    consent, lease=lease, lock_held=lock_held,
+                    offer=self._recorded_offer(record), cancelled=check))
 
         def progress(number: int, offer: RunPodOffer | None, result: str, note: str | None = None) -> None:
             row = {"attempt": number, "gpu": offer.gpu_type if offer else list(self.preferences.gpu_types),
@@ -614,7 +619,7 @@ class RunPodSelectionOwner:
 
         async def observe() -> RunPodOffer:
             try:
-                return await asyncio.to_thread(self.observe_offer)
+                return await bounded_observation(self.observe_offer)
             except OfferObservationError:
                 raise
             except Exception as exc:
@@ -627,7 +632,7 @@ class RunPodSelectionOwner:
                 observer = self.observe_offers
                 if observer is None:
                     raise OfferObservationError("observation_failed")
-                offers = await asyncio.to_thread(observer)
+                offers = await bounded_observation(observer)
                 ordered = ordered_runpod_offers(self.preferences, offers)
                 if not ordered:
                     raise OfferObservationError("stock_unavailable")
@@ -650,85 +655,88 @@ class RunPodSelectionOwner:
                 # Preserve the exact-offer refusal before taking claim custody.
                 self.consented_offer(consent, self.clock(), offer=prefetched_offer)
 
-        with nullcontext() if lock_held else target_owner(self.path):
-            number = 0
-            rate_limit_failures = 0
-            unclear_failures = 0
-            pending_offers: list[RunPodOffer] = []
-            hook = getattr(self, "wait_hook", None)
-            if hook is not None:
-                try:
-                    hook()
-                except Exception as exc:
-                    logging.getLogger(__name__).exception(
-                        "Could not stamp RunPod capacity wait (%s)", type(exc).__name__, exc_info=False)
-            while True:
-                check()
-                number += 1
-                offer = None
-                record = self._read()
-                try:
-                    # Retained custody and ambiguous prior POSTs are reconciled using
-                    # their recorded offer, never gated on today's market stock.
-                    if (record is not None and record.get("state") not in
-                            {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}):
-                        offer = self._recorded_offer(record)
-                    elif prefetched_failure is not None:
-                        failure, prefetched_failure = prefetched_failure, None
-                        raise failure
-                    elif prefetched_offer is not None:
-                        offer, prefetched_offer = prefetched_offer, None
-                    elif consent.policy_digest is not None and self.observe_offers is not None:
-                        if not pending_offers:
-                            pending_offers.extend(await interruptible(observe_options(), provider_timeout=30.0))
-                        offer = pending_offers.pop(0)
-                    else:
-                        offer = await interruptible(observe(), provider_timeout=30.0)
-                    rate_limit_failures = 0
-                    offer, _ = self.consented_offer(consent, self.clock(), offer=offer)
+        number = 0
+        rate_limit_failures = 0
+        unclear_failures = 0
+        pending_offers: list[RunPodOffer] = []
+        hook = getattr(self, "wait_hook", None)
+        if hook is not None:
+            try:
+                hook()
+            except Exception as exc:
+                logging.getLogger(__name__).exception(
+                    "Could not stamp RunPod capacity wait (%s)", type(exc).__name__, exc_info=False)
+        while True:
+            check()
+            number += 1
+            offer = None
+            record = self._read()
+            try:
+                # Retained custody and ambiguous prior POSTs are reconciled using
+                # their recorded offer, never gated on today's market stock.
+                if (record is not None and record.get("state") not in
+                        {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}):
+                    offer = self._recorded_offer(record)
+                elif prefetched_failure is not None:
+                    failure, prefetched_failure = prefetched_failure, None
+                    raise failure
+                elif prefetched_offer is not None:
+                    offer, prefetched_offer = prefetched_offer, None
+                elif consent.policy_digest is not None and self.observe_offers is not None:
+                    if not pending_offers:
+                        pending_offers.extend(await interruptible(observe_options(), provider_timeout=30.0))
+                    offer = pending_offers.pop(0)
+                else:
+                    offer = await interruptible(observe(), provider_timeout=30.0)
+                rate_limit_failures = 0
+                offer, paid_expiry = self.consented_offer(consent, self.clock(), offer=offer)
+                remaining = max(0., (paid_expiry - self.clock()).total_seconds())
+                if claim_lifetime_seconds is not None:
+                    remaining = min(remaining, claim_lifetime_seconds)
+                with provider_budget(remaining, cancelled=check):
                     result = await interruptible(self._select_once(
                         consent, lease=lease, lock_held=True, offer=offer, cancelled=check,
                         claim_lifetime_seconds=claim_lifetime_seconds))
-                    progress(number, offer, "claimed")
-                    return result
-                except OfferObservationError as exc:
-                    if not consent.wait_for_capacity or not exc.retryable or exc.custody != "none":
+                progress(number, offer, "claimed")
+                return result
+            except OfferObservationError as exc:
+                if not consent.wait_for_capacity or not exc.retryable or exc.custody != "none":
+                    raise
+                # Admission is provider-independent. Shared gates distinguish a
+                # definite stock-out from rate limiting and unclear inventory.
+                retryable_unclear = exc.gate not in {"capacity", "rate"}
+                if retryable_unclear:
+                    unclear_failures += 1
+                    if unclear_failures >= 9:
+                        progress(number, offer, exc.reason)
                         raise
-                    # Admission is provider-independent. Shared gates distinguish a
-                    # definite stock-out from rate limiting and unclear inventory.
-                    retryable_unclear = exc.gate not in {"capacity", "rate"}
-                    if retryable_unclear:
-                        unclear_failures += 1
-                        if unclear_failures >= 9:
-                            progress(number, offer, exc.reason)
-                            raise
-                        rate_limit_failures = 0
-                        attempt = unclear_failures
-                    else:
-                        unclear_failures = 0
-                        rate_limit_failures = rate_limit_failures + 1 if exc.gate == "rate" else 0
-                        attempt = rate_limit_failures or 1
-                    delay = next_delay(attempt, exc.retry_after)
-                    progress(number, offer, exc.reason,
-                             f"provider observation unclear ({exc.reason}); retrying in {delay:.0f} s"
-                             if retryable_unclear else None)
-                except CapacityExhaustedError:
-                    current = self._read()
-                    if (current is None or current.get("pod_id") is not None
-                            or current.get("state") not in {"capacity_retry_ready", "capacity_exhausted"}
-                            or current.get("safe_to_retry") is not True
-                            or current.get("capacity_rejection") != "ProviderCapacityUnavailable"):
-                        raise AcquisitionUnresolvedError("capacity rejection lacks exact no-pod retry proof") from None
-                    progress(number, offer, "capacity_rejected")
-                    if not consent.wait_for_capacity:
-                        raise
-                    delay = 5.0 + random.uniform(0.0, 0.5)
-                check()
-                if consent.capacity_timeout_seconds is not None:
-                    delay = min(delay, max(0.0, consent.capacity_timeout_seconds - (self.monotonic() - started)))
-                if consent.deadline is not None:
-                    delay = min(delay, max(0.0, (_utc(consent.deadline) - self.clock()).total_seconds()))
-                await interruptible((self.sleep or asyncio.sleep)(delay))
+                    rate_limit_failures = 0
+                    attempt = unclear_failures
+                else:
+                    unclear_failures = 0
+                    rate_limit_failures = rate_limit_failures + 1 if exc.gate == "rate" else 0
+                    attempt = rate_limit_failures or 1
+                delay = next_delay(attempt, exc.retry_after)
+                progress(number, offer, exc.reason,
+                         f"provider observation unclear ({exc.reason}); retrying in {delay:.0f} s"
+                         if retryable_unclear else None)
+            except CapacityExhaustedError:
+                current = self._read()
+                if (current is None or current.get("pod_id") is not None
+                        or current.get("state") not in {"capacity_retry_ready", "capacity_exhausted"}
+                        or current.get("safe_to_retry") is not True
+                        or current.get("capacity_rejection") != "ProviderCapacityUnavailable"):
+                    raise AcquisitionUnresolvedError("capacity rejection lacks exact no-pod retry proof") from None
+                progress(number, offer, "capacity_rejected")
+                if not consent.wait_for_capacity:
+                    raise
+                delay = 5.0 + random.uniform(0.0, 0.5)
+            check()
+            if consent.capacity_timeout_seconds is not None:
+                delay = min(delay, max(0.0, consent.capacity_timeout_seconds - (self.monotonic() - started)))
+            if consent.deadline is not None:
+                delay = min(delay, max(0.0, (_utc(consent.deadline) - self.clock()).total_seconds()))
+            await interruptible((self.sleep or asyncio.sleep)(delay))
 
     def _recorded_offer(self, record: Mapping[str, Any]) -> RunPodOffer:
         concrete = record.get("consented_offer")
@@ -796,261 +804,284 @@ class RunPodSelectionOwner:
         config.ram_tiers_enabled = False
         datacenter = offer.datacenter_id or p.datacenter_id
         self._read()  # Reject legacy/symlink custody before creating a lock file.
-        with nullcontext() if lock_held else target_owner(self.path):
-            record = self._read()
-            if isinstance(consent, ClaimedJob) and (
-                    record is None or record.get("state") != "claimed"
-                    or record.get("operation_id") != consent.operation_id):
-                raise PaidSelectionError("no machine: run `astrid machines claim`")
-            completed_operation = None
-            if record is not None and record.get("state") == "cleanup_complete" and lease is not None:
-                _validate_completed_release(record)
-                completed_operation = record["operation_id"]
-                record = None
-            token_reference = {}
-            if self.https_token_file is not None:
-                from runpod_lifecycle.https import read_token_file, write_token_file
-                token_path = self.https_token_file
-                if (not token_path.is_absolute() or token_path.parent != self.path.parent
-                        or token_path.parent.resolve() != token_path.parent):
-                    raise PaidSelectionError("HTTPS token reference must be in the owned account directory")
-                if record is not None and record.get("https_token_file") != str(token_path):
-                    raise AcquisitionUnresolvedError("HTTPS custody reference changed")
-                if config.transport != "https":
-                    raise PaidSelectionError("retained preparation requires HTTPS transport")
-                if not token_path.exists():
-                    if record is not None:
-                        raise AcquisitionUnresolvedError("retained HTTPS token is missing")
-                    write_token_file(token_path, config.https_token)
-                config = config.merge(https_token=read_token_file(token_path))
-                token_reference = {"https_token_file": str(token_path)}
-            try:
-                observed_volume = (await resolve_existing_volume(config.api_key, p.volume_id)
-                                   if p.volume_id is not None else None)
-                inspect_volume_records(RunPodTargetContract(
-                    "unclaimed", offer.gpu_type, p.image, p.volume_id, p.volume_name,
-                    p.volume_size_gb, datacenter_id=datacenter,
-                ), volumes=[observed_volume] if observed_volume is not None else [])
-            except Exception as exc:
-                logging.getLogger(__name__).exception(
-                    "RunPod volume confirmation failed before claim or reuse (%s)", type(exc).__name__, exc_info=False)
-                error = AcquisitionUnresolvedError("existing account volume cannot be confirmed before claim or reuse")
-                error.cause = "volume"
-                raise error from None
-            if record is not None:
-                safe_capacity = (record.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
-                                 and record.get("safe_to_retry") is True and not record.get("pod_id")
-                                 and record.get("capacity_rejection") == "ProviderCapacityUnavailable")
-                if safe_capacity:
-                    self._owned(record, self._recorded_offer(record))
-                    if record.get("paid_limits", {}).get("invocation_id") != consent.invocation_id:
-                        raise AcquisitionUnresolvedError("stale capacity intent requires owner recovery before another invocation")
-                    record = {**record, "gpu_type": offer.gpu_type, "accepted_gpu_type_id": offer.gpu_type_id,
-                              "network_volume_datacenter_id": datacenter, "consented_offer": asdict(offer)}
-                self._owned(record, offer)
-                if "lease" in record and lease is None:
-                    raise AcquisitionUnresolvedError("retained lease requires admission through its owner")
-                if record.get("state") not in {
-                    "claimed", "allocation_ready", "allocation_pending", "allocation_unknown", "allocated_unverified",
-                    "capacity_retry_ready", "capacity_exhausted",
-                }:
-                    raise AcquisitionUnresolvedError("pending cleanup or expired custody prevents admission or renewal")
-                previous = record.get("paid_limits", {})
-                if previous.get("expires_at") and not safe_capacity:
-                    expires = min(expires, _utc(previous["expires_at"]))
-                    if expires <= now or (
-                            isinstance(consent, PaidRunConsent)
-                            and (expires - now).total_seconds()
-                            < consent.preparation_seconds + consent.execution_seconds + consent.idle_seconds):
-                        raise PaidSelectionError("existing claim lifetime cannot be extended by reuse")
-                if (not isinstance(consent, ClaimedJob) and record.get("state") == "claimed"
-                        and previous.get("invocation_id") == consent.invocation_id):
-                    raise PaidSelectionError("an invocation's paid consent cannot authorize another claim or reuse")
-            else:
-                if isinstance(consent, ClaimedJob):
-                    raise PaidSelectionError("no machine: run `astrid machines claim`")
-                operation = uuid.uuid4().hex
-                record = {
-                    "schema_version": "astrid.runpod.allocation-attempt.v1", "state": "allocation_ready",
-                    "operation_id": operation, "request_name": f"astrid-product-{operation}",
-                    "provider_account_ref": p.provider_account_ref, "claim_preferences": p.as_mapping(),
-                    "acquisition_mode": "allocate",
-                    "release_authorized": True, "worker_activation": "not_started", "create_attempts": 0,
-                    "gpu_type": offer.gpu_type, "worker_image": p.image,
-                    "accepted_gpu_type_id": offer.gpu_type_id,
-                    "network_volume_id": p.volume_id, "network_volume_name": p.volume_name,
-                    "network_volume_size_gb": p.volume_size_gb, "volume_mount_path": p.mount_path,
-                    "network_volume_datacenter_id": datacenter,
-                    "handle_path": str(self.path), "transport": "https",
-                    "reconciliation_required": True,
-                    "consented_offer": asdict(offer),
-                    "paid_limits": {"invocation_id": consent.invocation_id, "offer_digest": offer.digest(p),
-                                    "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
-                                    "deadline": consent.deadline, "expires_at": expires.isoformat(),
-                                    "authorized_at": now.isoformat(), "idle_seconds": consent.idle_seconds},
-                    "storage_mode": "network_volume" if p.volume_id is not None else "ephemeral",
-                    **token_reference,
-                    **({"lease_compatibility": self.compatibility} if self.compatibility is not None else {}),
-                    **({"lease": dict(lease)} if lease is not None else {}),
-                }
-                if completed_operation is None:
-                    create_target_record_exclusive(self.path, record)
-                else:
-                    # The enclosing account lock excludes another claimant.
-                    # Publish the next intent in the same journal, after the
-                    # previous exact release receipt has been validated.
-                    write_target_record(self.path, record)
-            volume = {"id": p.volume_id, "name": p.volume_name, "size": p.volume_size_gb,
-                      "dataCenterId": datacenter}
+        record = self._read()
+        if isinstance(consent, ClaimedJob) and (
+                record is None or record.get("state") != "claimed"
+                or record.get("operation_id") != consent.operation_id):
+            raise PaidSelectionError("no machine: run `astrid machines claim`")
+        completed_operation = None
+        if record is not None and record.get("state") == "cleanup_complete" and lease is not None:
+            _validate_completed_release(record)
+            completed_operation = record["operation_id"]
+            record = None
+        token_reference = {}
+        if self.https_token_file is not None:
+            from runpod_lifecycle.https import read_token_file, write_token_file
+            token_path = self.https_token_file
+            if (not token_path.is_absolute() or token_path.parent != self.path.parent
+                    or token_path.parent.resolve() != token_path.parent):
+                raise PaidSelectionError("HTTPS token reference must be in the owned account directory")
+            if record is not None and record.get("https_token_file") != str(token_path):
+                raise AcquisitionUnresolvedError("HTTPS custody reference changed")
+            if config.transport != "https":
+                raise PaidSelectionError("retained preparation requires HTTPS transport")
+            if not token_path.exists():
+                if record is not None:
+                    raise AcquisitionUnresolvedError("retained HTTPS token is missing")
+                token_path.parent.mkdir(parents=True, exist_ok=True)
+                write_token_file(token_path, config.https_token)
+            config = config.merge(https_token=read_token_file(token_path))
+            token_reference = {"https_token_file": str(token_path)}
+        try:
+            observed_volume = (await resolve_existing_volume(config.api_key, p.volume_id)
+                               if p.volume_id is not None else None)
+            inspect_volume_records(RunPodTargetContract(
+                "unclaimed", offer.gpu_type, p.image, p.volume_id, p.volume_name,
+                p.volume_size_gb, datacenter_id=datacenter,
+            ), volumes=[observed_volume] if observed_volume is not None else [])
+        except Exception as exc:
+            logging.getLogger(__name__).exception(
+                "RunPod volume confirmation failed before claim or reuse (%s)", type(exc).__name__, exc_info=False)
+            error = AcquisitionUnresolvedError("existing account volume cannot be confirmed before claim or reuse")
+            error.cause = "volume"
+            raise error from None
+        if record is not None:
+            safe_capacity = (record.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
+                             and record.get("safe_to_retry") is True and not record.get("pod_id")
+                             and record.get("capacity_rejection") == "ProviderCapacityUnavailable")
+            if safe_capacity:
+                self._owned(record, self._recorded_offer(record))
+                if record.get("paid_limits", {}).get("invocation_id") != consent.invocation_id:
+                    raise AcquisitionUnresolvedError("stale capacity intent requires owner recovery before another invocation")
+                record = {**record, "gpu_type": offer.gpu_type, "accepted_gpu_type_id": offer.gpu_type_id,
+                          "network_volume_datacenter_id": datacenter, "consented_offer": asdict(offer)}
+            self._owned(record, offer)
+            if "lease" in record and lease is None:
+                raise AcquisitionUnresolvedError("retained lease requires admission through its owner")
+            if record.get("state") not in {
+                "claimed", "allocation_ready", "allocation_pending", "allocation_unknown", "allocated_unverified",
+                "capacity_retry_ready", "capacity_exhausted",
+            }:
+                raise AcquisitionUnresolvedError("pending cleanup or expired custody prevents admission or renewal")
+            previous = record.get("paid_limits", {})
+            if previous.get("expires_at") and not safe_capacity:
+                expires = min(expires, _utc(previous["expires_at"]))
+                if expires <= now or (
+                        isinstance(consent, PaidRunConsent)
+                        and (expires - now).total_seconds()
+                        < consent.preparation_seconds + consent.execution_seconds + consent.idle_seconds):
+                    raise PaidSelectionError("existing claim lifetime cannot be extended by reuse")
+            if (not isinstance(consent, ClaimedJob) and record.get("state") == "claimed"
+                    and previous.get("invocation_id") == consent.invocation_id):
+                raise PaidSelectionError("an invocation's paid consent cannot authorize another claim or reuse")
+        else:
             if isinstance(consent, ClaimedJob):
-                limits = dict(record["paid_limits"])
-            else:
-                limits = {"invocation_id": consent.invocation_id, "offer_digest": offer.digest(p),
-                          "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
-                          "deadline": consent.deadline, "expires_at": expires.isoformat(),
-                          "authorized_at": record.get("paid_limits", {}).get("authorized_at", now.isoformat()),
-                          "idle_seconds": consent.idle_seconds,
-                          **({"policy_digest": consent.policy_digest, "max_hourly_usd": consent.max_hourly_usd}
-                             if consent.policy_digest is not None else {})}
-            if record["state"] == "claimed":
-                try:
-                    observation = await observe_exact_target(config.api_key, RunPodTargetContract(
-                        str(record["pod_id"]), offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id, p.volume_name,
-                        p.volume_size_gb, record["request_name"], datacenter, defer_machine=True,
-                    ))
-                except Exception as exc:
-                    logging.getLogger(__name__).exception(
-                        "RunPod claimed pod observation failed (%s)", type(exc).__name__, exc_info=False)
-                    error = AcquisitionUnresolvedError("exact journal-owned pod observation is unresolved")
-                    error.cause = "machine"
-                    raise error from None
-                acquired_record = dict(record)
-            else:
-                if isinstance(consent, ClaimedJob):
-                    raise PaidSelectionError("jobs require a live claimed machine")
-                # Paid limits survive a lost create response and process restart.
-                safe_capacity = (record["state"] in {"capacity_retry_ready", "capacity_exhausted"}
-                                 and record.get("safe_to_retry") is True
-                                 and record.get("capacity_rejection") == "ProviderCapacityUnavailable")
-                if not safe_capacity and (record["state"] != "allocation_ready" or record.get("create_attempts", 0)):
-                    limits = dict(record["paid_limits"])
-                    expires = _utc(limits["expires_at"])
-                record = {**record, "paid_limits": limits}
-                replace_target_record(self.path, record, operation_id=record["operation_id"])
-                # These are the existing decorated implementations. This scope
-                # already owns their exact .owner.lock; do not acquire it twice.
-                from runpod_lifecycle import NotReadyTimeout
-                try:
-                    if ((record["state"] == "allocation_ready" and record.get("create_attempts") == 0)
-                            or safe_capacity):
-                        def before_post(pending):
-                            if cancelled is not None:
-                                cancelled()
-                            stamp = self.clock()
-                            paid_expiry = consent.validate(offer, p, stamp, allow_policy=True)
-                            if claim_lifetime_seconds is not None:
-                                paid_expiry = min(paid_expiry, stamp + timedelta(seconds=claim_lifetime_seconds))
-                            paid = {**limits, "authorized_at": stamp.isoformat(), "expires_at": paid_expiry.isoformat()}
-                            return {**pending, "paid_limits": paid, "consented_offer": asdict(offer),
-                                    "last_create_started_at": stamp.isoformat(),
-                                    **({"lease": {**pending["lease"], "started_at": stamp.timestamp()}}
-                                       if "lease" in pending else {})}
-
-                        acquired = await acquire_target.__wrapped__(
-                            config, handle_path=self.path, attempt=record, volume=volume, pod_id=None,
-                            max_wait_seconds=max(1, int((expires - now).total_seconds())),
-                            capacity_window_seconds=60, retry_interval_seconds=15,
-                            max_create_attempts=record.get("create_attempts", 0) + 1,
-                            allow_capacity_retry=safe_capacity,
-                            single_attempt=True, before_post=before_post,
-                            ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS,
-                                int(claim_lifetime_seconds) if claim_lifetime_seconds is not None else _READINESS_TIMEOUT_SECONDS,
-                                int((expires - self.clock()).total_seconds()))),
-                        )
-                    else:
-                        acquired = await reconcile_target.__wrapped__(
-                            config, handle_path=self.path, attempt=record, volume=volume,
-                            ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
-                        )
-                except PodWatchdogError:
-                    raise
-                except CapacityExhaustedError:
-                    raise
-                except NotReadyTimeout:
-                    raise AcquisitionUnresolvedError(
-                        "RunPod worker did not become ready within the startup timeout; "
-                        "the same journal retains exact pod custody for recovery cleanup"
-                    ) from None
-                except Exception as exc:
-                    gate = worker_preparation.observation_failure_gate(exc)
-                    logging.getLogger(__name__).exception(
-                        "RunPod provider acquisition failed; gate=%s (%s)", gate or "unclassified",
-                        type(exc).__name__, exc_info=False)
-                    detail = f"; failed gate: {gate}" if gate is not None else ""
-                    raise AcquisitionUnresolvedError(
-                        "provider acquisition remains unresolved; reconcile the same journal" + detail,
-                        gate=gate or "identity", custody=worker_preparation._record_custody(self._read() or {}),
-                    ) from None
-                acquired_record, observation = dict(acquired.attempt), acquired.observation
-                # The successful (or reconciled) attempt owns the durable clock.
-                # Readiness and later invocations never restart that paid window.
-                limits = dict(acquired_record["paid_limits"])
-                expires = _utc(limits["expires_at"])
-            try:
-                status, exact = await asyncio.to_thread(read_exact_pod, config.api_key, observation.pod_id)
-                if (status != 200 or exact is None
-                        or (p.volume_id is not None and exact.get("volumeMountPath") != p.mount_path)
-                        or _exact_volume_id(exact) != p.volume_id):
-                    raise PaidSelectionError("provider did not confirm the exact volume mount", gate="volume")
-                # GPU and datacenter come from GraphQL pod.machine and the provider gpuTypes
-                # catalog (REST reports machine {} and no gpuTypeId/dataCenterId on a correct
-                # fresh pod). Unreported or unequal fails closed; no REST fallback.
-                gpu_display, observed_datacenter = await asyncio.to_thread(
-                    worker_preparation.confirm_acquired_machine, config.api_key,
-                    RunPodTargetContract(
-                        observation.pod_id, offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id,
-                        p.volume_name, p.volume_size_gb, record["request_name"], datacenter,
-                    ),
-                    timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
-                )
-                observation = replace(observation, gpu_type=gpu_display, datacenter_id=observed_datacenter)
-                try:
-                    gpu_count = await asyncio.to_thread(
-                        worker_preparation.read_acquired_gpu_count, config.api_key, observation.pod_id)
-                    observed_rate = await asyncio.to_thread(self.observed_hourly_usd, observation.pod_id)
-                except TargetObservationError as exc:
-                    if exc.runpod_gate == "lifetime":
-                        raise
-                    raise PaidSelectionError(str(exc), gate="rate") from None
-                except Exception as exc:
-                    logging.getLogger(__name__).exception(
-                        "RunPod claimed pod rate observation failed (%s)", type(exc).__name__, exc_info=False)
-                    raise PaidSelectionError("actual hourly USD rate could not be read", gate="rate") from None
-                if not pod_rate_within_offer(observed_rate, offer.hourly_usd, gpu_count):
-                    raise PaidSelectionError(
-                        "actual pod rate exceeds the offer rate times GPU count; fresh consent is required before work",
-                        gate="rate")
-                if self.clock() >= expires:
-                    raise PaidSelectionError("claim preparation consumed its paid lifetime", gate="lifetime")
-            except Exception as exc:
-                # Every gate names itself; a failure outside any gate is reported as such.
-                gate = getattr(exc, "runpod_gate", None) or "unclassified"
-                logging.getLogger(__name__).exception(
-                    "RunPod provider contract failed; gate=%s (%s)", gate, type(exc).__name__, exc_info=False)
-                pending = {**acquired_record, "state": "cleanup_pending", "reconciliation_required": True,
-                           "failed_gate": gate}
-                replace_target_record(self.path, pending, operation_id=record["operation_id"])
-                # Our own gate messages are fixed, secret-free text; other exceptions are named by type only.
-                detail = (str(exc) if isinstance(exc, TargetObservationError)
-                          else f"unexpected {type(exc).__name__}")
-                raise PaidSelectionError(
-                    f"unconfirmed {gate} gate: {detail}; exact claim requires cleanup", gate=gate, custody="exact") from None
-            claimed = {
-                **acquired_record, "schema_version": "astrid.runpod.claim.v1", "state": "claimed",
-                "pod_id": observation.pod_id, "name": observation.pod_name,
-                "claimed_at": record.get("claimed_at", self.clock().isoformat()),
-                "provider_observation": observation.to_dict(), "target_identity_verified": True,
-                "paid_limits": limits, "reconciliation_required": False,
+                raise PaidSelectionError("no machine: run `astrid machines claim`")
+            operation = uuid.uuid4().hex
+            record = {
+                "schema_version": "astrid.runpod.allocation-attempt.v1",
+                "operation_id": operation, "request_name": f"astrid-product-{operation}",
+                "provider_account_ref": p.provider_account_ref, "claim_preferences": p.as_mapping(),
+                "acquisition_mode": "allocate",
+                "release_authorized": True, "worker_activation": "not_started", "create_attempts": 0,
+                "gpu_type": offer.gpu_type, "worker_image": p.image,
+                "accepted_gpu_type_id": offer.gpu_type_id,
+                "network_volume_id": p.volume_id, "network_volume_name": p.volume_name,
+                "network_volume_size_gb": p.volume_size_gb, "volume_mount_path": p.mount_path,
+                "network_volume_datacenter_id": datacenter,
+                "handle_path": str(self.path), "transport": "https",
+                "reconciliation_required": True,
+                "consented_offer": asdict(offer),
+                "paid_limits": {"invocation_id": consent.invocation_id, "offer_digest": offer.digest(p),
+                                "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
+                                "deadline": consent.deadline, "expires_at": expires.isoformat(),
+                                "authorized_at": now.isoformat(), "idle_seconds": consent.idle_seconds},
+                "storage_mode": "network_volume" if p.volume_id is not None else "ephemeral",
+                **token_reference,
+                **({"lease_compatibility": self.compatibility} if self.compatibility is not None else {}),
+                **({"lease": dict(lease)} if lease is not None else {}),
             }
-            replace_target_record(self.path, claimed, operation_id=record["operation_id"])
-            return claimed
+            record = new_claim_record(record, now=now.timestamp(), paid_deadline=expires.timestamp(),
+                                      idle_duration=lease["idle_seconds"] if lease is not None else consent.idle_seconds,
+                                      owner_epoch=lease["owner_epoch"] if lease is not None else operation)
+            if completed_operation is None:
+                create_target_record_exclusive(self.path, record)
+            else:
+                # The enclosing account lock excludes another claimant.
+                # Publish the next intent in the same journal, after the
+                # previous exact release receipt has been validated.
+                write_target_record(self.path, record)
+        volume = {"id": p.volume_id, "name": p.volume_name, "size": p.volume_size_gb,
+                  "dataCenterId": datacenter}
+        if isinstance(consent, ClaimedJob):
+            limits = dict(record["paid_limits"])
+        else:
+            limits = {"invocation_id": consent.invocation_id, "offer_digest": offer.digest(p),
+                      "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
+                      "deadline": consent.deadline, "expires_at": expires.isoformat(),
+                      "authorized_at": record.get("paid_limits", {}).get("authorized_at", now.isoformat()),
+                      "idle_seconds": consent.idle_seconds,
+                      **({"policy_digest": consent.policy_digest, "max_hourly_usd": consent.max_hourly_usd}
+                         if consent.policy_digest is not None else {})}
+        def admit_observation():
+            if cancelled is not None:
+                cancelled()
+            current = worker_preparation.apply_target_event(
+                self.path, record["operation_id"], LeaseEvent.ACQUISITION_CONTINUE,
+                evidence={"attempt_id": uuid.uuid4().hex})
+            ticket = journal_dispatch_ticket(current)
+            admitted = worker_preparation.apply_target_event(
+                self.path, record["operation_id"], LeaseEvent.PROVIDER_ENTRY,
+                evidence={"ticket": ticket})
+            control = admitted["lt_control"]
+            if control.get("dispatch_admitted") is not True or control.get("stop_requested"):
+                raise PaidSelectionError("claim observation lost its paid authority", gate="lifetime")
+
+        async def observe(operation, *args, **kwargs):
+            admit_observation()
+            with provider_budget(max(0., (expires - self.clock()).total_seconds()), entry=admit_observation):
+                return await bounded_observation(operation, *args, **kwargs)
+
+        if record["state"] == "claimed":
+            try:
+                observation = await observe(observe_exact_target, config.api_key, RunPodTargetContract(
+                    str(record["pod_id"]), offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id, p.volume_name,
+                    p.volume_size_gb, record["request_name"], datacenter, defer_machine=True,
+                ))
+            except Exception as exc:
+                logging.getLogger(__name__).exception(
+                    "RunPod claimed pod observation failed (%s)", type(exc).__name__, exc_info=False)
+                error = AcquisitionUnresolvedError("exact journal-owned pod observation is unresolved")
+                error.cause = "machine"
+                raise error from None
+            acquired_record = dict(record)
+        else:
+            if isinstance(consent, ClaimedJob):
+                raise PaidSelectionError("jobs require a live claimed machine")
+            # Paid limits survive a lost create response and process restart.
+            safe_capacity = (record["state"] in {"capacity_retry_ready", "capacity_exhausted"}
+                             and record.get("safe_to_retry") is True
+                             and record.get("capacity_rejection") == "ProviderCapacityUnavailable")
+            if not safe_capacity and (record["state"] != "allocation_ready" or record.get("create_attempts", 0)):
+                limits = dict(record["paid_limits"])
+                expires = _utc(limits["expires_at"])
+            record = {**record, "paid_limits": limits}
+            replace_target_record(self.path, record, operation_id=record["operation_id"])
+            # These are the existing decorated implementations. This scope
+            # already owns their exact .owner.lock; do not acquire it twice.
+            from runpod_lifecycle import NotReadyTimeout
+            try:
+                if ((record["state"] == "allocation_ready" and record.get("create_attempts") == 0)
+                        or safe_capacity):
+                    def before_post(pending):
+                        if cancelled is not None:
+                            cancelled()
+                        stamp = self.clock()
+                        paid_expiry = consent.validate(offer, p, stamp, allow_policy=True)
+                        if claim_lifetime_seconds is not None:
+                            paid_expiry = min(paid_expiry, stamp + timedelta(seconds=claim_lifetime_seconds))
+                        paid = {**limits, "authorized_at": stamp.isoformat(), "expires_at": paid_expiry.isoformat()}
+                        return {**pending, "paid_limits": paid, "consented_offer": asdict(offer),
+                                "last_create_started_at": stamp.isoformat(),
+                                **({"lease": {**pending["lease"], "started_at": stamp.timestamp()}}
+                                   if "lease" in pending else {})}
+
+                    acquired = await acquire_target.__wrapped__(
+                        config, handle_path=self.path, attempt=record, volume=volume, pod_id=None,
+                        max_wait_seconds=max(1, int((expires - now).total_seconds())),
+                        capacity_window_seconds=60, retry_interval_seconds=15,
+                        max_create_attempts=record.get("create_attempts", 0) + 1,
+                        allow_capacity_retry=safe_capacity,
+                        single_attempt=True, before_post=before_post,
+                        ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS,
+                            int(claim_lifetime_seconds) if claim_lifetime_seconds is not None else _READINESS_TIMEOUT_SECONDS,
+                            int((expires - self.clock()).total_seconds()))),
+                    )
+                else:
+                    acquired = await reconcile_target.__wrapped__(
+                        config, handle_path=self.path, attempt=record, volume=volume,
+                        ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
+                    )
+            except PodWatchdogError:
+                raise
+            except CapacityExhaustedError:
+                raise
+            except NotReadyTimeout:
+                raise AcquisitionUnresolvedError(
+                    "RunPod worker did not become ready within the startup timeout; "
+                    "the same journal retains exact pod custody for recovery cleanup"
+                ) from None
+            except Exception as exc:
+                gate = worker_preparation.observation_failure_gate(exc)
+                logging.getLogger(__name__).exception(
+                    "RunPod provider acquisition failed; gate=%s (%s)", gate or "unclassified",
+                    type(exc).__name__, exc_info=False)
+                detail = f"; failed gate: {gate}" if gate is not None else ""
+                raise AcquisitionUnresolvedError(
+                    "provider acquisition remains unresolved; reconcile the same journal" + detail,
+                    gate=gate or "identity", custody=worker_preparation._record_custody(self._read() or {}),
+                ) from None
+            acquired_record, observation = dict(acquired.attempt), acquired.observation
+            # The successful (or reconciled) attempt owns the durable clock.
+            # Readiness and later invocations never restart that paid window.
+            limits = dict(acquired_record["paid_limits"])
+            expires = _utc(limits["expires_at"])
+        try:
+            status, exact = await observe(read_exact_pod, config.api_key, observation.pod_id)
+            if (status != 200 or exact is None
+                    or (p.volume_id is not None and exact.get("volumeMountPath") != p.mount_path)
+                    or _exact_volume_id(exact) != p.volume_id):
+                raise PaidSelectionError("provider did not confirm the exact volume mount", gate="volume")
+            # GPU and datacenter come from GraphQL pod.machine and the provider gpuTypes
+            # catalog (REST reports machine {} and no gpuTypeId/dataCenterId on a correct
+            # fresh pod). Unreported or unequal fails closed; no REST fallback.
+            gpu_display, observed_datacenter = await observe(
+                worker_preparation.confirm_acquired_machine, config.api_key,
+                RunPodTargetContract(
+                    observation.pod_id, offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id,
+                    p.volume_name, p.volume_size_gb, record["request_name"], datacenter,
+                ),
+                timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
+            )
+            observation = replace(observation, gpu_type=gpu_display, datacenter_id=observed_datacenter)
+            try:
+                gpu_count = await observe(
+                    worker_preparation.read_acquired_gpu_count, config.api_key, observation.pod_id)
+                observed_rate = await observe(self.observed_hourly_usd, observation.pod_id)
+            except TargetObservationError as exc:
+                if exc.runpod_gate == "lifetime":
+                    raise
+                raise PaidSelectionError(str(exc), gate="rate") from None
+            except Exception as exc:
+                logging.getLogger(__name__).exception(
+                    "RunPod claimed pod rate observation failed (%s)", type(exc).__name__, exc_info=False)
+                raise PaidSelectionError("actual hourly USD rate could not be read", gate="rate") from None
+            if not pod_rate_within_offer(observed_rate, offer.hourly_usd, gpu_count):
+                raise PaidSelectionError(
+                    "actual pod rate exceeds the offer rate times GPU count; fresh consent is required before work",
+                    gate="rate")
+            if self.clock() >= expires:
+                raise PaidSelectionError("claim preparation consumed its paid lifetime", gate="lifetime")
+        except Exception as exc:
+            # Every gate names itself; a failure outside any gate is reported as such.
+            gate = getattr(exc, "runpod_gate", None) or "unclassified"
+            logging.getLogger(__name__).exception(
+                "RunPod provider contract failed; gate=%s (%s)", gate, type(exc).__name__, exc_info=False)
+            worker_preparation.apply_target_event(
+                self.path, record["operation_id"], LeaseEvent.ACQUISITION_FAILED,
+                changes={"reconciliation_required": True, "failed_gate": gate})
+            # Our own gate messages are fixed, secret-free text; other exceptions are named by type only.
+            detail = (str(exc) if isinstance(exc, TargetObservationError)
+                      else f"unexpected {type(exc).__name__}")
+            raise PaidSelectionError(
+                f"unconfirmed {gate} gate: {detail}; exact claim requires cleanup", gate=gate, custody="exact") from None
+        claimed = worker_preparation.apply_target_event(
+            self.path, record["operation_id"],
+            LeaseEvent.CHECKPOINT if record["state"] == "claimed" else LeaseEvent.CLAIM_CONFIRMED,
+            evidence={} if record["state"] == "claimed" else {"ticket": journal_dispatch_ticket(self._read())},
+            changes={"schema_version": "astrid.runpod.claim.v1", "name": observation.pod_name,
+            "claimed_at": record.get("claimed_at", self.clock().isoformat()),
+            "provider_observation": observation.to_dict(), "target_identity_verified": True,
+            "paid_limits": limits, "reconciliation_required": False,
+        })
+        return claimed

@@ -16,6 +16,7 @@ from .prepared_task import PreparedWorkerError
 from .remote_placement import Claim, RemotePlacement, RunPodInstallation, connect_claimed_for_preparation, source_digest
 from .target_selection import ClaimedJob
 from .worker_owner import RunPodLease, RunPodLeaseOwner, _off_event_loop
+from .lease_states import LeaseEvent
 
 
 @dataclass(frozen=True)
@@ -108,18 +109,21 @@ def prepare_retained_generation(
         claimed = lease_owner.preparation_claim(invocation)
         previous = claimed["lease"].get("preparation")
         preparation = {
-            "schema": "astrid.runpod.lease-preparation.v1", "state": "preparing",
+            "schema": "astrid.runpod.lease-preparation.v1",
             "operation_id": invocation.operation_id, "pod_id": claimed["pod_id"],
             "compatibility": dict(installation.compatibility), "bootstrap_digest": bootstrap_digest,
         }
 
-        def save(**changes):
+        def save(event=LeaseEvent.CHECKPOINT, *, evidence=None, **changes):
             nonlocal preparation
             current = lease_owner.preparation_claim(invocation)
             preparation = {**preparation, **changes}
-            return lease_owner._save(current, {**current["lease"], "preparation": preparation})
+            lease_metadata = {key: value for key, value in current["lease"].items()
+                              if key not in {"state", "preparation"}}
+            return lease_owner._save(current, lease_metadata, event=event, evidence=evidence,
+                                     preparation=preparation)
 
-        save()
+        save(LeaseEvent.PREPARATION_STARTED)
         try:
             claim = connect_claimed_for_preparation(claimed)
             # The claim bounds the phase; recipe steps keep their own timeouts.
@@ -171,7 +175,7 @@ def prepare_retained_generation(
                     or any(hashlib.sha256(path.read_bytes()).hexdigest() != sources[name]
                            for name, path in (("source", request.source), ("workflow", request.workflow)))):
                 raise PreparedWorkerError("preparation consumed its paid lifetime or source bytes changed")
-            saved = save(state="prepared", installed=dict(state.installed))
+            saved = save(LeaseEvent.PREPARATION_SUCCEEDED, installed=dict(state.installed))
         except BaseException as exc:
             current = lease_owner._read()
             if current is None:
@@ -191,7 +195,8 @@ def prepare_retained_generation(
                 except Exception:  # noqa: BLE001 (unknown transport cannot prove reachability)
                     safe = False
             if safe:
-                save(state="stale_after_failure")
+                save(LeaseEvent.PREPARATION_FAILED_SAFE,
+                     evidence={"jobs_stopped": True, "custody_verified": True})
                 raise
             # A failed current mount/custody observation cannot prove that an
             # old installed snapshot is still safe, even before installation.
@@ -201,8 +206,10 @@ def prepare_retained_generation(
                 raise PreparedWorkerError(
                     "retained lease journal disappeared during preparation failure"
                 ) from exc
-            lease_owner._save(current, {**current["lease"], "preparation": {**preparation, "state": "unresolved"}},
-                              state="cleanup_pending", reconciliation_required=True)
+            lease_metadata = {key: value for key, value in current["lease"].items()
+                              if key not in {"state", "preparation"}}
+            lease_owner._save(current, lease_metadata, event=LeaseEvent.PREPARATION_FAILED,
+                              preparation=preparation, reconciliation_required=True)
             raise
         return PreparedRunPodLease(
             RunPodLease(invocation.operation_id, invocation.owner_epoch, invocation.generation,

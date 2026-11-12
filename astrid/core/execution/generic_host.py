@@ -13947,7 +13947,7 @@ class GenericPackHost:
                         def field(key, default=None):
                             return current.get(key, default) if isinstance(current, Mapping) else getattr(current, key, default)
                         state = field("state", field("status"))
-                        if (state != "running" or field("attempt_id") != attempt_id
+                        if (state not in {"running", "cancel_requested"} or field("attempt_id") != attempt_id
                                 or field("fence", field("lease_fence")) != body["fence"]
                                 or field("executor_id", self.executor_id) not in (None, self.executor_id)):
                             break
