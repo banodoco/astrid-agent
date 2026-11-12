@@ -70,7 +70,7 @@ class RuntimeFixture:
             "capability_id": "rendering.render",
             "state": "completed",
             "attempt_id": "attempt-minkhole",
-            "spec": {"timeline_id": self.timeline_id},
+            "spec": {"spec": {"timeline_id": self.timeline_id}},
             "result": {"outputs": [self.association()]},
         }
 
@@ -130,7 +130,7 @@ def test_explicit_timeline_rejects_conflicting_or_absent_provenance(
 
     def task(task_id):
         value = original(task_id)
-        value["spec"] = task_spec
+        value["spec"] = {"spec": task_spec}
         return value
 
     runtime.get_task = task
@@ -149,7 +149,7 @@ def test_missing_publication_association_is_an_explicit_dependency_failure(monke
         "task_id": task_id,
         "capability_id": "rendering.render",
         "state": "completed",
-        "spec": {"timeline_id": runtime.timeline_id},
+        "spec": {"spec": {"timeline_id": runtime.timeline_id}},
         "result": {"outputs": [{"name": "video", "digest": runtime.digest}]},
     }
     result, opened = _open(monkeypatch, runtime, tmp_path)
@@ -175,7 +175,7 @@ def test_invalid_filename_or_media_type_fails_closed(monkeypatch, tmp_path, fiel
         "task_id": task_id,
         "capability_id": "rendering.render",
         "state": "completed",
-        "spec": {"timeline_id": runtime.timeline_id},
+        "spec": {"spec": {"timeline_id": runtime.timeline_id}},
         "result": {"outputs": [runtime.association(**{field: value})]},
     }
     result, opened = _open(monkeypatch, runtime, tmp_path)
@@ -197,7 +197,7 @@ def test_digest_or_size_mismatch_never_publishes(monkeypatch, tmp_path, data, ex
         "task_id": task_id,
         "capability_id": "rendering.render",
         "state": "completed",
-        "spec": {"timeline_id": runtime.timeline_id},
+        "spec": {"spec": {"timeline_id": runtime.timeline_id}},
         "result": {"outputs": [runtime.association(digest=RuntimeFixture().digest, size=expected_size)]},
     }
     result, opened = _open(monkeypatch, runtime, tmp_path)
@@ -236,7 +236,7 @@ def test_managed_reference_must_not_be_a_local_path(monkeypatch, tmp_path):
         "task_id": task_id,
         "capability_id": "rendering.render",
         "state": "completed",
-        "spec": {"timeline_id": runtime.timeline_id},
+        "spec": {"spec": {"timeline_id": runtime.timeline_id}},
         "result": {"outputs": [runtime.association(managed_object_reference="/tmp/raw-cas") ]},
     }
     result, opened = _open(monkeypatch, runtime, tmp_path)

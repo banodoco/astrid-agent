@@ -23,6 +23,7 @@ from runtime_protocol.platform import durable_replace
 
 from .contracts import DomainResult, ErrorObject
 from .pagination import paged_rows
+from .task_spec import task_executable_spec
 from .workspace_client import WorkspaceClientError
 
 __all__ = ["open_project_render", "open_render"]
@@ -787,7 +788,7 @@ def open_render(
                     for task_id in task_ids:
                         task = client.get_task(task_id)
                         if isinstance(task, Mapping):
-                            task_refs.update(_timeline_provenance(task.get("spec")))
+                            task_refs.update(_timeline_provenance(task_executable_spec(task)))
                     if task_refs and task_refs <= timeline_refs and task_refs & timeline_refs:
                         associated.append(hydrated)
             candidates = associated
@@ -819,7 +820,7 @@ def open_render(
 
         if selected_timeline:
             run_refs = _timeline_provenance(run.get("spec"))
-            task_refs = _timeline_provenance(task.get("spec"))
+            task_refs = _timeline_provenance(task_executable_spec(task))
             all_refs = run_refs | task_refs
             if not all_refs or not all_refs <= timeline_refs or not all_refs & timeline_refs:
                 return _failure("validation_error", "selected render has missing or conflicting authoritative timeline provenance", run_id=selected_run_id, timeline_id=selected_timeline)
