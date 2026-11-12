@@ -1,0 +1,37 @@
+{
+ "consumerUserId": "USER_ID",
+ "containerDiskInGb": 200,
+ "costPerHr": 1.19,
+ "createdAt": "2026-11-12T00:00:00Z",
+ "desiredStatus": "RUNNING",
+ "env": {
+  "ASTRID_POD_AGENT_B64": "<redacted>",
+  "ASTRID_POD_PORT": "<redacted>",
+  "ASTRID_POD_TOKEN": "<redacted>",
+  "PUBLIC_KEY": "<redacted>"
+ },
+ "gpuCount": 1,
+ "id": "POD_ID",
+ "imageName": "runpod/base@sha256:820c605eaaa276de20a0d77993fb0846d54e180efff5de67d46341ed399b5a7f",
+ "lastStartedAt": "2026-11-12T00:00:00Z",
+ "lastStatusChange": "2026-11-12T00:00:00Z",
+ "machine": {},
+ "machineId": "MACHINE_ID",
+ "memoryInGb": 134,
+ "name": "astrid-product-OPERATION",
+ "networkVolume": {
+  "dataCenterId": "EUR-NO-1",
+  "id": "VOLUME_ID",
+  "name": "VOLUME_NAME",
+  "size": 200
+ },
+ "networkVolumeId": "VOLUME_ID",
+ "ports": [
+  "<redacted>"
+ ],
+ "publicIp": "<redacted>",
+ "templateId": "TEMPLATE_ID",
+ "vcpuCount": 17,
+ "volumeInGb": 0,
+ "volumeMountPath": "/workspace"
+}

@@ -562,30 +562,14 @@ def read_exact_pod(api_key: str, pod_id: str) -> tuple[int, dict[str, Any] | Non
     Return only to the owner: provider bodies may contain transport details and
     must not be copied into custody journals or public error messages.
     """
-    import httpx
-    from urllib.parse import quote
-    from runpod_lifecycle.api import PODS_URL
+    from .provider import RunPodMachineProvider
 
     try:
-        response = httpx.get(
-            f"{PODS_URL}/{quote(pod_id, safe='')}",
-            headers={"Authorization": f"Bearer {api_key}"}, timeout=30,
-            # REST omits networkVolume unless asked (OpenAPI default false);
-            # without it a correct volume pod reads as unattached.
-            params={"includeNetworkVolume": "true"},
-        )
-        if response.status_code == 404:
-            return 404, None
-        if response.status_code != 200:
-            raise TargetObservationError("exact pod GET did not succeed", gate="identity")
-        record = response.json()
-        if not isinstance(record, dict) or record.get("id") != pod_id:
-            raise TargetObservationError("exact pod GET returned an unverified identity", gate="identity")
-        return 200, record
-    except TargetObservationError:
-        raise
+        record = RunPodMachineProvider(api_key).read_raw(pod_id)
+        return (404, None) if record is None else (200, record)
     except Exception:
         raise TargetObservationError("exact pod GET could not be confirmed", gate="identity") from None
+
 
 
 def _target_contract(
