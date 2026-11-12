@@ -771,7 +771,7 @@ models:
         backends:
           local:
             template: video/ltx2_3_t2v
-            template_hash: "sha256:949bd8473a7c29402247f38387a70161cc6f0fb812f1616d61c58beb5935b015"
+            template_hash: "sha256:bf19355cf7c9b17f78dfc2daa120b1e64ad3429ee97044098a4ef4c26cd49d36"
           cloud:
             endpoint: fal-ai/ltx-2.3/text-to-video/fast
       i2v:
