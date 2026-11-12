@@ -42,8 +42,10 @@ def test_apply_and_check_declared_patch(patch_context):
     assert target.dispatch("declared-source-modifications", {**check, "entries": [" M other.py"]})["facts"] == {"valid": False}
     path.write_bytes(b"hand edit")
     assert target.dispatch("declared-source-modifications", check)["facts"] == {"valid": False}
-    with pytest.raises(IntegrityError, match="fixture nested/file.py"):
+    with pytest.raises(IntegrityError, match="source patch digest mismatch") as caught:
         target.dispatch("apply-source-patches", payload)
+    assert caught.value.reason == "source patch digest mismatch"
+    assert path.read_bytes() == b"hand edit"
     path.write_bytes(before)
 
 

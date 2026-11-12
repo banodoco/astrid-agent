@@ -79,10 +79,20 @@ class LocalLinuxExecutionContext:
     def file_fact(self, path, *, hash_bytes, deadline):
         return self._files.file_fact(path, hash_bytes=hash_bytes, deadline=deadline)
 
-    def acquire_install_lock(self, root, *, deadline):
+    def acquire_install_lock(self, root, *, deadline, kind="job"):
         if root != self.root:
             raise UnsafePathError("install lock root differs")
-        return self.adapter.local_install_lock(root, deadline=deadline)
+
+        def on_contention(holder_kind):
+            if holder_kind == "install" and kind == "job":
+                from .engine_contracts import EngineBusy
+                raise EngineBusy("the local engine is being updated; try again when astrid engines install finishes")
+            if holder_kind == "job" and kind == "install":
+                from .engine_custody import refuse_busy_engine
+                refuse_busy_engine(root=root, engine=self.engine, platform=self.platform, deadline=deadline)
+
+        return self.adapter.local_install_lock(root, deadline=deadline, on_contention=on_contention,
+                                               kind=kind)
 
 
 def create_local_backend(*, engine, platform, placement, root, deadline):

@@ -423,7 +423,10 @@ class RunPodLeaseOwner:
                 record = self._read()
                 reason = ((record or {}).get("lease") or {}).get("release_reason") or "recovery"
                 if record is not None and record.get("operation_id") == operation:
-                    self._save(record, {**record["lease"], "release_mechanism": "recovery"})
+                    try:
+                        self._save(record, {**record["lease"], "release_mechanism": "recovery"})
+                    except Exception as exc:  # noqa: BLE001 - optional metadata must not consume the cleanup retry.
+                        self.last_error_type = type(exc).__name__
             self.release(reason=reason, _expected_operation=operation)
         except Exception as exc:
             self.last_error_type = type(exc).__name__
@@ -497,14 +500,28 @@ class RunPodLeaseOwner:
                                  and (record.get("operation_id"), record.get("pod_id")) == captured)
                 except Exception:
                     exact = False
+                released = False
                 if exact and not defer_unsafe_release:
                     try:
                         self.release(reason="custody_changed", _expected_operation=captured[0],
                                      expected_machine_id=captured[1])
                     except Exception:
                         pass  # Exact-release failure keeps durable pending custody/retry.
-                error = RunPodWorkerOwnerError("RunPod machine custody could not be verified; exact release or reconciliation required")
+                    try:
+                        with self.lock:
+                            completed = self._read()
+                            if (completed is not None and completed.get("state") == "cleanup_complete"
+                                    and (completed.get("operation_id"), completed.get("pod_id")) == captured):
+                                _validate_completed_release(completed)
+                                released = True
+                    except Exception:  # noqa: BLE001 - only a validated exact completion receipt proves release.
+                        pass
+                error = RunPodWorkerOwnerError(
+                    f"RunPod acquisition failed; created pod {captured[1]} was released" if released else
+                    "RunPod machine custody could not be verified; exact release or reconciliation required")
                 error.release_identity = captured if exact and defer_unsafe_release else None
+                if released:
+                    raise error from exc
                 raise error from None
             raise
 
