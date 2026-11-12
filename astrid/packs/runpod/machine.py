@@ -68,6 +68,10 @@ class MachineError(RemotePlacementError):
     """A remote-machine step failed; retention follows exact custody checks."""
 
 
+class InstallationUnverified(MachineError):
+    """A completed job did not attest the observed installation."""
+
+
 class MachineCancelled(MachineError):
     """The local run was cancelled; the remote job was stopped."""
 
@@ -905,11 +909,21 @@ class RunPodMachine:
                 from astrid.core._shared import run_logs
 
                 local = Path(destination) / "logs"
-                self._fetch_verified(ops, f"{run.remote_root}/out/logs", local, run.scratch,
-                                     line[len(LOGS_MANIFEST_MARK):].strip())
+                verified = self._fetch_verified(ops, f"{run.remote_root}/out/logs", local, run.scratch,
+                                                line[len(LOGS_MANIFEST_MARK):].strip())
+                rows = run_logs.read_index(Path(destination))
+                for row in rows:
+                    if row.get("role") == "run" and row.get("file") in verified:
+                        try:
+                            payload = json.loads(Path(verified[row["file"]]).read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            continue
+                        report = payload.get("managed_engine_preparation") if isinstance(payload, dict) else None
+                        installation = report.get("installation") if isinstance(report, dict) else None
+                        if isinstance(installation, dict) and "receipt_sha256" in installation:
+                            run.lease.failure_install_receipt = "sha256:" + str(installation["receipt_sha256"])
                 return {"files": [{**row, "path": (str(local / row["file"])
-                                                   if not row.get("missing") else None)}
-                                  for row in run_logs.read_index(Path(destination))]}
+                                                   if not row.get("missing") else None)} for row in rows]}
         except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
             return {"unavailable": type(exc).__name__}
         return {"unavailable": "not_reported"}
@@ -950,6 +964,19 @@ class RunPodMachine:
             files[relative] = str(local)
         return files
 
+    @staticmethod
+    def _save_installation(owner, lease, preparation, installed, *, job=None):
+        """Save an observed installation only while the exact invocation still owns it."""
+        with owner.lock:
+            observed = owner.preparation_claim(lease.lease)
+            if (observed["lease"].get("preparation") != preparation
+                    or observed.get("pod_id") != lease.claim.pod_id
+                    or (job is not None and observed["lease"].get("job") != job)
+                    or owner.closed or owner.clock() >= observed["lease"]["paid_expires_at"]):
+                raise CustodyChanged("retained installation changed during verification")
+            owner._save(observed, {**observed["lease"],
+                                  "preparation": {**preparation, **installed}})
+
     def _checkpoint_installed(self, run: MachineRun, files: Mapping[str, str]) -> None:
         """Retain only the canonical receipt attested by this successful job.
 
@@ -983,15 +1010,11 @@ class RunPodMachine:
                         raise ValueError
                     expected = {**previous, "receipt_sha256": "sha256:" + installed["receipt_sha256"]}
                 except (KeyError, TypeError, ValueError, OSError):
-                    raise MachineError("changed installation has no matching completed-job attestation") from None
+                    raise InstallationUnverified("changed installation has no matching completed-job attestation") from None
                 if state.installed != expected:
-                    raise MachineError("live installation differs from completed-job attestation")
+                    raise InstallationUnverified("live installation differs from completed-job attestation")
             # Recheck the same owner, generation and invocation after observation.
-            observed = owner.preparation_claim(run.lease.lease)
-            if observed["lease"]["preparation"] != preparation:
-                raise MachineError("retained installation checkpoint changed during verification")
-            owner._save(observed, {**observed["lease"],
-                                  "preparation": {**preparation, "installed": dict(expected)}})
+            self._save_installation(owner, run.lease, preparation, {"installed": dict(expected)})
 
     # -- release -------------------------------------------------------------
 
@@ -1052,47 +1075,74 @@ class RunPodMachine:
                     self._checkpoint(lease, {"id": pending["id"], "state": stopped["state"]})
         except Exception:
             pass  # Unknown stop is classified unsafe below; exact release reconciles it.
-        # A stopped or exited job can reuse the pod only after its canonical
-        # installation and Runtime reset have both been verified. An unknown
-        # job stop, custody change, lost lease or host shutdown is never warm.
+        # Snapshot custody before remote verification, then fence it again before saving.
+        rejection = None
         with owner.lock:
             try:
                 record = owner.preparation_claim(lease.lease)
                 job = record["lease"].get("job")
                 preparation = record["lease"].get("preparation") or {}
                 expected_install = dict(preparation.get("installed") or {})
-                safe = (not owner.closed and record.get("pod_id") == lease.claim.pod_id
-                        and preparation.get("state") == "prepared"
-                        and bool(expected_install) and lease.state.installed == expected_install
-                        and (job is None or job.get("state") in {"exited", "cancelled"}))
                 paid_expiry = record["lease"]["paid_expires_at"]
+                if (owner.closed or record.get("pod_id") != lease.claim.pod_id
+                        or preparation.get("state") != "prepared" or not expected_install
+                        or lease.state.installed != expected_install):
+                    rejection = "custody_changed"
+                elif job is not None and job.get("state") not in {"exited", "cancelled"}:
+                    rejection = "job_stop_unverified"
             except Exception:
-                safe = False
-        if failure is not None and verify_deadline is None:
-            safe = False
-        if safe and failure is not None and job is not None:
+                rejection = "custody_changed"
+        if getattr(lease, "unsafe_job_stop", False):
+            rejection = "job_stop_unverified"
+        if isinstance(failure, CustodyChanged):
+            rejection = "custody_changed"
+        elif isinstance(failure, DigestMismatch):
+            rejection = "output_digest_mismatch"
+        elif isinstance(failure, InstallationUnverified):
+            rejection = "installation_unverified"
+        if failure is not None and owner.clock() >= (paid_expiry or 0):
+            rejection = rejection or "paid_limit_exhausted"
+        elif failure is not None and verify_deadline is None:
+            rejection = rejection or "engine_unreachable"
+        if rejection is None and failure is not None and job is not None:
             try:
                 remaining = min(paid_expiry - owner.clock(), verify_deadline - time.monotonic())
-                safe = (remaining > 0 and adapter.placement._canonical_installed(
-                    lease.state, verification_seconds=remaining) and lease.state.installed == expected_install
-                        and owner.clock() < paid_expiry and time.monotonic() < verify_deadline)
-                # A concurrent paid/idle release can fence us while the remote
-                # receipt download is in flight. Recheck exact custody before reset.
-                if safe:
-                    with owner.lock:
-                        latest = owner.preparation_claim(lease.lease)
-                        safe = (latest["lease"].get("preparation") == preparation
-                                and latest.get("pod_id") == lease.claim.pod_id
-                                and latest["lease"].get("job") == job
-                                and owner.clock() < latest["lease"]["paid_expires_at"])
+                if remaining <= 0:
+                    rejection = "paid_limit_exhausted"
+                else:
+                    try:
+                        verified = adapter.placement._canonical_installed(
+                            lease.state, verification_seconds=remaining)
+                    except Exception as exc:
+                        from .remote_placement import RemotePlacementError
+                        if isinstance(exc, RemotePlacementError) and str(exc) == "live installation differs from its canonical receipt":
+                            verified = False
+                        else:
+                            raise
+                    if owner.clock() >= paid_expiry or time.monotonic() >= verify_deadline:
+                        rejection = "paid_limit_exhausted"
+                    elif not verified:
+                        why = getattr(lease.state, "install_unverified", None) or ""
+                        if why.startswith("status_exit_") or why in {"status_no_receipt", "status_deadline_exhausted"}:
+                            rejection = "engine_unreachable"
+                        else:
+                            self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"}, job=job)
+                    elif {**lease.state.installed, "receipt_sha256": expected_install.get("receipt_sha256")} != expected_install:
+                        rejection = "installation_unverified"
+                    else:
+                        attested = getattr(lease, "failure_install_receipt", None)
+                        if attested is not None and attested != lease.state.installed.get("receipt_sha256"):
+                            rejection = "installation_unverified"
+                        else:
+                            self._save_installation(owner, lease, preparation,
+                                                    {"installed": dict(lease.state.installed)}, job=job)
+            except CustodyChanged:
+                rejection = "custody_changed"
             except Exception:
-                safe = False
-        if ((not warm and failure is None) or getattr(lease, "unsafe_job_stop", False)
-                or isinstance(failure, (DigestMismatch, CustodyChanged))):
-            safe = False
-        if not safe:
-            warm, reason = False, "unsafe_job_state"
-        else:
+                rejection = "engine_unreachable"
+        if rejection is not None:
+            warm, reason = False, rejection
+        elif failure is not None:
             warm = True
         if warm and job is not None:
             try:

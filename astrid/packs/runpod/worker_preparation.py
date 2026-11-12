@@ -826,7 +826,7 @@ def validate_lease_preparation(attempt: Mapping[str, Any], *, releasing: bool = 
         return
     if (not isinstance(preparation, Mapping)
             or preparation.get("schema") != "astrid.runpod.lease-preparation.v1"
-            or preparation.get("state") not in {"preparing", "prepared", "unresolved"}
+            or preparation.get("state") not in {"preparing", "prepared", "unresolved", "stale_after_failure"}
             or preparation.get("operation_id") != attempt.get("operation_id")
             or preparation.get("pod_id") != attempt.get("pod_id")
             or preparation.get("compatibility") != attempt.get("lease_compatibility")

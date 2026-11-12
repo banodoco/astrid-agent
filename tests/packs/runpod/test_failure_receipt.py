@@ -145,7 +145,7 @@ def test_tampered_output_names_output_collection_and_unsafe_release(machine_case
     assert isinstance(error, rm.DigestMismatch)
     receipt = _only(receipts)
     assert receipt["stage"] == "output_collection" and receipt["stage_basis"] == "controller_step"
-    assert receipt["machine"] == {"after": "released", "release_reason": "unsafe_job_state",
+    assert receipt["machine"] == {"after": "released", "release_reason": "output_digest_mismatch",
                                   "release_at": receipt["timing"]["stamps"]["released_at"], "cost_usd": None}
     assert c.deletes == ["pod-1"]
 
