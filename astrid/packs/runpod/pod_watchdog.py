@@ -6,6 +6,7 @@ pod process reads provider identity; the host sends source and public bounds.
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
 import math
 import os
@@ -24,9 +25,20 @@ PROGRAM_PATH = Path("/root/astrid/pod-watchdog.py")
 IDENTITY_LOG_PATH = Path("/root/astrid/engines/comfyui/runtime/out/sessions/comfyui-logs/engine.log")
 IDENTITY_MARK = "pod_watchdog: identity="
 
+# Filled by the host in the standalone program; the pod imports no package.
+if globals().get("__package__"):
+    from astrid.packs.runpod.provider_urls import POD_TERMINATE_METHOD, POD_URL_TEMPLATE
+else:
+    POD_URL_TEMPLATE = "__POD_URL_TEMPLATE__"
+    POD_TERMINATE_METHOD = "__POD_TERMINATE_METHOD__"
+
 
 class PodWatchdogError(RuntimeError):
     """A pod must be released rather than retained without its watchdog."""
+
+
+class PodWatchdogTransportError(PodWatchdogError):
+    """The initial transport may not yet be reachable."""
 
 
 def _deadline(value: Any) -> tuple[float, int]:
@@ -45,16 +57,27 @@ class Watchdog:
         self.path, self.deadline, self.generation = path, default_deadline, 0
         self.terminate = terminate
 
-    def tick(self, now: float) -> bool:
+    def _refresh(self) -> None:
         try:
             deadline, generation = _deadline(json.loads(self.path.read_text()))
             if generation > self.generation:
                 self.deadline, self.generation = deadline, generation
         except (OSError, ValueError, TypeError, KeyError):
             pass  # Missing or malformed state never renews the last bound.
+    def tick(self, now: float) -> bool:
+        self._refresh()
         if now < self.deadline:
             return False
-        self.terminate()
+        with self.path.with_suffix(".update-lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            # Publication can have won after the first read. Decide again
+            # under its lock, immediately before committing and deleting.
+            self._refresh()
+            if now < self.deadline:
+                return False
+            _atomic_write(self.path.with_suffix(".terminating"), {
+                "deadline": self.deadline, "generation": self.generation})
+            self.terminate()
         return True
 
 
@@ -65,9 +88,8 @@ def _identity() -> tuple[str, str]:
     return os.environ["RUNPOD_POD_ID"], os.environ["RUNPOD_API_KEY"]
 
 
-def _request(pod: str, key: str, *, method: str = "DELETE") -> Any:
-    # The provider documents v2 self-management with its pod-scoped key.
-    url = "https://api.runpod.io/v2/pods/" + quote(pod, safe="")
+def _request(pod: str, key: str, *, method: str = POD_TERMINATE_METHOD) -> Any:
+    url = POD_URL_TEMPLATE.format(pod_id=quote(pod, safe=""))
     request = Request(url, method=method, headers={"Authorization": "Bearer " + key})
     with urlopen(request, timeout=2 if method == "GET" else 10) as response:
         if method == "GET":
@@ -75,7 +97,7 @@ def _request(pod: str, key: str, *, method: str = "DELETE") -> Any:
         response.read(1)
 
 
-def _report_identity() -> None:
+def _report_identity() -> str:
     """Log fixed vocabulary only; never provider response bodies or identity values."""
     names = [name for name in ("RUNPOD_POD_ID", "RUNPOD_API_KEY")
              if os.environ.get(name, "").strip()]
@@ -96,9 +118,11 @@ def _report_identity() -> None:
     IDENTITY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with IDENTITY_LOG_PATH.open("a", encoding="utf-8") as log:
         log.write(f"{IDENTITY_MARK}{','.join(names) or 'none'} "
-                  f"termination_authorised={authorised} probe=GET-own-pod-actions\n")
+                  f"termination_authorised={authorised} probe=GET-own-pod-actions"
+                  + (" watchdog=unavailable custody=host-only" if authorised == "unknown" else "") + "\n")
         log.flush()
         os.fsync(log.fileno())
+    return authorised
 
 
 def _atomic_write(path: Path, value: Mapping[str, Any]) -> None:
@@ -128,8 +152,6 @@ def _alive(path: Path) -> bool:
 
 def ensure_running(path: Path, default_deadline: float) -> None:
     """Start once, or require a live holder of the watchdog process lock."""
-    import fcntl
-
     _identity()
     ready = path.with_suffix(".ready")
     with path.with_suffix(".process-lock").open("w") as lock:
@@ -138,32 +160,49 @@ def ensure_running(path: Path, default_deadline: float) -> None:
         except BlockingIOError:
             if not _alive(ready):
                 raise PodWatchdogError("startup_failed") from None
+            _check_startup(ready)
             return
     ready.unlink(missing_ok=True)
+    # Accepted limit: this detached process has no independent supervisor;
+    # death after acknowledgement is detected only by a later publication.
     child = subprocess.Popen([sys.executable, str(PROGRAM_PATH), "watch", str(default_deadline)],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
     until = time.monotonic() + 3
     while time.monotonic() < until:
+        try:
+            _check_startup(ready)
+        except PodWatchdogError:
+            child.wait(timeout=1)
+            raise
         if _alive(ready) and child.poll() is None:
             return
         if child.poll() is not None:
             break
         time.sleep(0.02)
+    _check_startup(ready)
     child.kill()
     child.wait(timeout=1)
     raise PodWatchdogError("startup_failed")
 
 
+def _check_startup(ready: Path) -> None:
+    try:
+        cause = json.loads(ready.read_text()).get("cause")
+    except (OSError, ValueError, TypeError):
+        return
+    if cause in {"termination_denied", "termination_unknown"}:
+        raise PodWatchdogError(cause)
+
+
 def publish(path: Path, deadline: float, generation: int) -> None:
     """Serialize atomic updates; an old host message cannot undo a renewal."""
-    import fcntl
-
     _deadline({"deadline": deadline, "generation": generation})
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_suffix(".update-lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        ensure_running(path, deadline)
+        if path.with_suffix(".terminating").exists():
+            raise PodWatchdogError("termination_committed")
         try:
             old_deadline, old_generation = _deadline(json.loads(path.read_text()))
         except (OSError, ValueError, TypeError, KeyError):
@@ -172,20 +211,28 @@ def publish(path: Path, deadline: float, generation: int) -> None:
         if old_generation > generation or (old_generation == generation and old_deadline != deadline):
             raise PodWatchdogError("stale_generation")
         _atomic_write(path, {"deadline": deadline, "generation": generation})
+        # Persist and validate the replacement's input before starting it.
+        if _deadline(json.loads(path.read_text())) != (deadline, generation):
+            raise PodWatchdogError("startup_failed")
+        ensure_running(path, deadline)
 
 
 def run(path: Path, default_deadline: float) -> None:
-    import fcntl
-
     pod, key = _identity()
     with path.with_suffix(".process-lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _report_identity()
+        authorised = _report_identity()
+        if authorised != "yes":
+            cause = "termination_denied" if authorised == "no" else "termination_unknown"
+            _atomic_write(path.with_suffix(".ready"), {"cause": cause})
+            raise PodWatchdogError(cause)
         watch = Watchdog(path, default_deadline, terminate=lambda: _request(pod, key))
         _atomic_write(path.with_suffix(".ready"), {"pid": os.getpid()})
         retry_seconds = 1.0
         while True:
             try:
+                # Accepted limit: deadlines use host/pod wall clocks without
+                # offset validation or a monotonic bound against clock steps.
                 if watch.tick(time.time()):
                     return
             except (OSError, URLError):
@@ -196,12 +243,15 @@ def run(path: Path, default_deadline: float) -> None:
             time.sleep(min(1, max(0.1, watch.deadline - time.time())))
 
 
-def write_deadline(ops: Any, deadline: float, generation: int) -> None:
+def write_deadline(ops: Any, deadline: float, generation: int) -> bool:
     """Bootstrap the watchdog and publish a bound over the existing transport."""
     from astrid.core.contracts.errors import AstridError
 
     _deadline({"deadline": deadline, "generation": generation})
-    source = base64.b64encode(Path(__file__).read_bytes()).decode("ascii")
+    source_text = (Path(__file__).read_text()
+                   .replace('"__POD_URL_TEMPLATE__"', repr(POD_URL_TEMPLATE), 1)
+                   .replace('"__POD_TERMINATE_METHOD__"', repr(POD_TERMINATE_METHOD), 1))
+    source = base64.b64encode(source_text.encode()).decode("ascii")
     loader = (
         "import base64,pathlib; "
         f"p=pathlib.Path({str(PROGRAM_PATH)!r}); p.parent.mkdir(parents=True,exist_ok=True); "
@@ -211,13 +261,18 @@ def write_deadline(ops: Any, deadline: float, generation: int) -> None:
     try:
         code, stdout, _ = ops.exec("python3 -c " + shlex.quote(loader), 10)
     except (AstridError, OSError, RuntimeError, ValueError) as exc:
-        raise PodWatchdogError("RunPod claim refused: pod watchdog transport failed; release the pod and claim again") from exc
+        raise PodWatchdogTransportError("RunPod claim refused: pod watchdog transport failed; release the pod and claim again") from exc
     if code != 0:
-        cause = next((name for name in ("RUNPOD_POD_ID", "RUNPOD_API_KEY", "stale_generation")
+        if stdout.strip() == "pod_watchdog:termination_unknown":
+            print("RunPod pod watchdog unavailable: termination authorisation unknown; host custody only", file=sys.stderr)
+            return False
+        cause = next((name for name in ("RUNPOD_POD_ID", "RUNPOD_API_KEY", "stale_generation",
+                                      "termination_denied", "termination_committed")
                       if stdout.strip() == "pod_watchdog:" + name), "startup_failed")
         detail = "missing " + cause if cause.startswith("RUNPOD_") else cause
         raise PodWatchdogError(
             f"RunPod claim refused: pod watchdog {detail}; use a template with pod identity and claim again")
+    return True
 
 
 def sync_deadline(record: Mapping[str, Any], path: Path, deadline: float) -> dict[str, Any]:
@@ -228,13 +283,14 @@ def sync_deadline(record: Mapping[str, Any], path: Path, deadline: float) -> dic
     generation = record.get("self_stop", {}).get("generation", 0) + 1
     value = {**record, "self_stop": {"deadline": deadline, "generation": generation,
                                     "acknowledged": False}}
+    # Accepted limit: a crash after saving a shorter host idle deadline but
+    # before publication leaves the older pod deadline, bounded by paid expiry.
     replace_target_record(path, value, operation_id=record["operation_id"])
     try:
         ops = connect_claimed_for_preparation(value).ops
     except (AstridError, OSError, RuntimeError, ValueError, KeyError) as exc:
         raise PodWatchdogError("RunPod claim refused: pod watchdog transport unavailable; release the pod and claim again") from exc
-    write_deadline(ops, deadline, generation)
-    value["self_stop"]["acknowledged"] = True
+    value["self_stop"]["acknowledged"] = write_deadline(ops, deadline, generation)
     replace_target_record(path, value, operation_id=record["operation_id"])
     return value
 

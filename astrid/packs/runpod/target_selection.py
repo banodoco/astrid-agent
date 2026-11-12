@@ -37,6 +37,7 @@ from .worker_preparation import (
 )
 from . import worker_preparation
 from .provider import account_gate, parse_rest_pod, provider_budget
+from .pod_watchdog import PodWatchdogError
 
 
 def _exact_volume_id(record):
@@ -937,6 +938,8 @@ class RunPodSelectionOwner:
                             config, handle_path=self.path, attempt=record, volume=volume,
                             ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
                         )
+                except PodWatchdogError:
+                    raise
                 except CapacityExhaustedError:
                     raise
                 except NotReadyTimeout:

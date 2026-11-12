@@ -297,13 +297,18 @@ class RunPodLeaseOwner:
                 return
         reason = "restart"
         self_stop = record.get("self_stop", {})
-        if self_stop.get("acknowledged") is True and self.clock() >= self_stop["deadline"]:
+        # Accepted limit: this observation remains outside release's retry
+        # protection; provider uncertainty can still interrupt fresh recovery.
+        if record.get("pod_id"):
             from .target_selection import RunPodOffer
             limits = record["paid_limits"]
             config = self.selection.config_factory(RunPodOffer(
                 record["provider_account_ref"], record["gpu_type"], limits["hourly_usd"], "lease-recovery"))
             if provider_pod_state(config.api_key, record["pod_id"]) in {"gone", "stopped"}:
-                reason = "self_stop"
+                # Accepted limit: observation time cannot establish when or
+                # why it disappeared; acknowledgement only attributes it.
+                reason = ("self_stop" if self_stop.get("acknowledged") is True
+                          and self.clock() >= self_stop["deadline"] else "provider_terminated")
         self.release(reason=reason, _expected_operation=record["operation_id"],
                      expected_machine_id=expected_machine_id)
 
@@ -570,12 +575,17 @@ class RunPodLeaseOwner:
                              hourly_usd=claimed["paid_limits"]["hourly_usd"],
                              started_at=paid_started, estimated_cost_usd=cost, accounted_at=self.clock())
                 claimed = self._save(claimed, lease, estimated_cost_usd=cost)
-                claimed = self._sync_deadline(claimed)
+                if claimed.get("self_stop", {}).get("deadline") != lease["paid_expires_at"]:
+                    claimed = self._sync_deadline(claimed)
                 if not job:
                     self._paid_consent_ids.add(consent.invocation_id)
                 self._machine_identity = (claimed["operation_id"], claimed["pod_id"])
             except BaseException as exc:
                 current = self.selection._read()
+                if isinstance(exc, PodWatchdogError) and current is not None and current.get("pod_id"):
+                    self.release(reason="watchdog_unavailable", _expected_operation=current["operation_id"],
+                                 expected_machine_id=current["pod_id"])
+                    raise
                 if isinstance(exc, TargetObservationError) and current is not None:
                     operation, pod = current.get("operation_id"), current.get("pod_id")
                     exact = (isinstance(operation, str) and re.fullmatch(r"[0-9a-f]{32}", operation)

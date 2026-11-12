@@ -695,6 +695,33 @@ async def _wait_provider_ready(config: Any, pod: Any, timeout: int) -> Any:
         pod.status = status
 
 
+async def _protect_allocated_target(config: Any, record: dict[str, Any],
+                                    path: Path, timeout: int) -> dict[str, Any]:
+    """Publish at first reachable transport, before readiness or verification."""
+    from .pod_watchdog import PodWatchdogTransportError, write_deadline
+    from .remote_placement import _HttpsOps
+
+    if not record.get("paid_limits") or record.get("transport") != "https":
+        return record
+    deadline = datetime.fromisoformat(record["paid_limits"]["expires_at"].replace("Z", "+00:00")).timestamp()
+    generation = record.get("self_stop", {}).get("generation", 0) + 1
+    value = {**record, "self_stop": {"deadline": deadline, "generation": generation, "acknowledged": False}}
+    replace_target_record(path, value, operation_id=record["operation_id"])
+    until = time.monotonic() + timeout
+    ops = _HttpsOps(record["pod_id"], config.https_token, deadline=until)
+    while True:
+        try:
+            protected = await asyncio.to_thread(write_deadline, ops, deadline, generation)
+            break
+        except PodWatchdogTransportError:
+            if time.monotonic() >= until:
+                raise
+            await asyncio.sleep(min(0.25, max(0, until - time.monotonic())))
+    value["self_stop"]["acknowledged"] = protected
+    replace_target_record(path, value, operation_id=record["operation_id"])
+    return value
+
+
 async def _wait_and_observe_target(
     config: Any,
     pod: Any,
@@ -1600,6 +1627,7 @@ async def acquire_target(
                 f"expected exact request name {expected_name!r}",
                 gate="identity", retryable=False, custody="exact",
             )
+        allocated = await _protect_allocated_target(config, allocated, handle_path, ready_timeout_seconds)
         await _wait_provider_ready(config, pod, ready_timeout_seconds)
     except BaseException as exc:
         if isinstance(exc, TargetObservationError):
@@ -1781,6 +1809,7 @@ async def reconcile_target(
     replace_target_record(handle_path, bound, operation_id=operation_id)
 
     try:
+        bound = await _protect_allocated_target(config, bound, handle_path, ready_timeout_seconds)
         initial_observation = await observe_exact_target(
             config.api_key,
             _target_contract(
