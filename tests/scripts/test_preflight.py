@@ -64,53 +64,86 @@ def test_map_vibe_results_maps_declared_and_sparse_parameters_and_statuses():
         selected[2]: {"nodeid": selected[2], "status": "FAIL", "reason": "bad sparse rebuild"},
     }
     command = FakeCommand(["pytest"])
-    preflight.map_vibe_results(cells, selected, results, {}, command, {})
+    preflight.map_vibe_results(cells, selected, results, command)
     assert cells[0].checks["schema"]["status"] == "PASS"
     assert cells[0].checks["rebuild"]["status"] == "FAIL"
     assert len(cells[0].checks["rebuild"]["tests"]) == 2
 
 
-def test_select_cells_maps_defaults_and_deduplicates_catalog_templates(monkeypatch):
-    class Candidate:
-        def __init__(self, kind, mode, entry, priority):
-            self.kind, self.mode, self.entry, self.priority = kind, mode, entry, priority
+def test_select_cells_reads_authoritative_live_json_and_keeps_ready_ids(monkeypatch, tmp_path):
+    declarations = [
+        {"cell": "catalog-cell", "kind": "image", "entry": "catalog-image", "mode": "t2i"},
+        {"cell": "ready-cell", "kind": "audio", "entry": "audio/ready-template", "mode": "tts"},
+    ]
+    source = tmp_path / "live_cells.json"
+    source.write_text(json.dumps({"cells": declarations}))
+    monkeypatch.setattr(preflight, "LIVE_CELLS", source)
+    catalog = SimpleNamespace(id="catalog-image", modality="image",
+                              modes={"t2i": SimpleNamespace(backends={"local": SimpleNamespace(template="image/catalog")})})
 
+    class Registry:
+        def get(self, identifier):
+            if identifier == catalog.id:
+                return catalog
+            raise KeyError(identifier)
+
+        def get_by_mode(self, identifier, mode):
+            assert (identifier, mode) == (catalog.id, "t2i")
+            return catalog, catalog.modes[mode]
+
+        def list_all(self, include_closed=True):
+            return [catalog, SimpleNamespace(id="other", modality="image",
+                                             modes={"i2i": SimpleNamespace(backends={})})]
+
+    registry = Registry()
+    selected = preflight.select_cells(registry)
+    assert [(item.name, item.entry, item.mode, item.template) for item in selected] == [
+        ("catalog-cell", "catalog-image", "t2i", "image/catalog"),
+        ("ready-cell", "audio/ready-template", "tts", "audio/ready-template"),
+    ]
+    assert [item.name for item in selected] == [row["cell"] for row in declarations]
+    all_cells = preflight.select_cells(registry, all_catalog=True)
+    assert [(item.name, item.entry, item.mode) for item in all_cells] == [
+        ("catalog-cell", "catalog-image", "t2i"),
+        ("ready-cell", "audio/ready-template", "tts"),
+        ("other/i2i", "other", "i2i"),
+    ]
+
+
+def test_live_cell_set_matches_authoritative_json_file():
     from astrid.core.model_catalog.registry import ModelRegistry
 
-    candidates = [Candidate("image", "t2i", "image/flux", 4), Candidate("image", "t2i", "other", 1)]
-    monkeypatch.setattr("astrid.core.generation.defaults.pack_candidates", lambda: candidates)
-    spec = SimpleNamespace(backends={"local": SimpleNamespace(template="image/flux")})
-    extra = SimpleNamespace(backends={"local": SimpleNamespace(template="image/extra")})
-    entries = [SimpleNamespace(id="flux-entry", modes={"t2i": spec}),
-               SimpleNamespace(id="extra-entry", modes={"t2i": extra})]
-
-    registry = ModelRegistry(entries)
-    selected = preflight.select_cells(registry)
-    assert [(item.entry, item.mode, item.template) for item in selected] == [("flux-entry", "t2i", "image/flux")]
-    all_cells = preflight.select_cells(registry, all_catalog=True)
-    assert len(all_cells) == 2
-    assert {item.template for item in all_cells} == {"image/flux", "image/extra"}
+    declarations = preflight.live_cells()
+    cells = preflight.select_cells(ModelRegistry.load_default())
+    assert [(cell.name, cell.kind, cell.entry, cell.mode) for cell in cells] == [
+        (row["cell"], row["kind"], row["entry"], row["mode"]) for row in declarations]
 
 
-def test_map_vibe_results_quarantines_unverified_but_recipe_core_identity_stays_fail():
+def test_map_vibe_results_keeps_recipe_pin_pass_and_fail_and_unverifies_only_missing_check():
     target = "tests/test_ready_templates.py::test_schema[image/flux]"
     c = cell(template="image/flux")
     command = FakeCommand(["pytest"])
-    quarantine = {target: "offline owner metadata absent"}
-    preflight.map_vibe_results([c], [target], {target: {"nodeid": target, "status": "FAIL",
-            "reason": "legacy failure"}}, quarantine, command, {})
-    assert c.checks["schema"]["status"] == "UNVERIFIED"
+    preflight.map_vibe_results([c], [target], {target: {"nodeid": target, "status": "PASS",
+            "reason": ""}}, command)
+    assert c.checks["schema"]["status"] == "PASS"
     c = cell(template="image/flux")
     preflight.map_vibe_results([c], [target], {target: {"nodeid": target, "status": "FAIL",
-            "reason": "no object_info captured for comfy_core at abc"}}, quarantine,
-            command, {"comfy_core": "abc"})
+            "reason": "no object_info captured for comfy_core at recipe pin abc"}}, command)
     assert c.checks["schema"]["status"] == "FAIL"
+    assert f"{target}: no object_info captured for comfy_core at recipe pin abc" == c.checks["schema"]["reason"]
+    c = cell(template="image/flux")
+    preflight.map_vibe_results([c], [target], {target: {"nodeid": target, "status": "FAIL",
+            "reason": "schema input type mismatch"}}, command)
+    assert c.checks["schema"]["status"] == "FAIL"
+    c = cell(template="image/flux")
+    preflight.map_vibe_results([c], [], {}, command)
+    assert c.checks["schema"]["status"] == "UNVERIFIED"
 
 
 def test_map_vibe_results_marks_selected_test_without_result_fail():
     target = "tests/test_ready_templates.py::test_schema[image/flux]"
     c = cell(template="image/flux")
-    preflight.map_vibe_results([c], [target], {}, {}, FakeCommand(["pytest"]), {})
+    preflight.map_vibe_results([c], [target], {}, FakeCommand(["pytest"]))
     assert c.checks["schema"]["status"] == "FAIL"
     assert "selected test produced no result" in c.checks["schema"]["reason"]
 
@@ -138,13 +171,10 @@ def test_check_vibe_head_mismatch_refuses_pytest(tmp_path):
 def test_check_vibe_runs_declared_cases_and_reads_source_ownership(tmp_path):
     checkout = tmp_path / "vibe"
     checkout.mkdir()
-    quarantine = checkout / "tests/quarantine/offline_identity_provenance.txt"
-    quarantine.parent.mkdir(parents=True)
     schema = "test_ready_template_offline_schemas_by_identity[audio/tts]"
     rebuild = "test_ready_template_canonical_first_build_matches_admitted_candidate"
     names = [schema, f"{rebuild}[declared-audio/tts]", f"{rebuild}[sparse-audio/tts]"]
     ids = ["tests/test_ready_templates.py::" + name for name in names]
-    quarantine.write_text("# reason: missing provenance\n" + ids[0] + "\n")
     class VibeRunner(FakeRunner):
         def __call__(self, argv, **kwargs):
             argv = list(map(str, argv))
@@ -160,7 +190,7 @@ def test_check_vibe_runs_declared_cases_and_reads_source_ownership(tmp_path):
                     + ('<failure message="legacy schema failure"/>' if name == schema else '')
                     + '</testcase>' for name in names) + '</testsuite></testsuites>')
             elif "-c" in argv:
-                output = json.dumps({"audio/tts": ["ComfyUI-QwenTTS"]})
+                output = json.dumps({"audio/tts": ["ComfyUI-QwenTTS"], "audio/absent": []})
             result = FakeCommand(argv, output=output)
             self.commands.append(result)
             return result
@@ -170,14 +200,14 @@ def test_check_vibe_runs_declared_cases_and_reads_source_ownership(tmp_path):
     undeclared = cell("undeclared", "audio/absent")
     pins = {"comfy_core": "core-pin"}
     assert preflight.check_vibe([c, undeclared], runner, checkout, Path("/vibe/python"), pins, "pinned") is True
-    assert c.checks["schema"]["status"] == "UNVERIFIED"
-    assert "missing provenance" in c.checks["schema"]["reason"]
+    assert c.checks["schema"]["status"] == "FAIL"
+    assert "legacy schema failure" in c.checks["schema"]["reason"]
     assert c.checks["rebuild"]["status"] == "PASS"
     assert c.sources == ["comfyui-qwentts"]
     assert undeclared.checks["schema"]["status"] == "UNVERIFIED"
     assert undeclared.checks["rebuild"]["status"] == "UNVERIFIED"
     source_query = next(command for command in runner.commands if "-c" in command.command)
-    assert json.loads(source_query.command[-1]) == ["audio/tts"]
+    assert json.loads(source_query.command[-1]) == ["audio/absent", "audio/tts"]
     assert json.loads((tmp_path / "pack-identity-commits.json").read_text()) == pins
     executed = next(command for command in runner.commands if "-rA" in command.command)
     assert all(nodeid in executed.command for nodeid in ids)
@@ -283,7 +313,7 @@ def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, caps
     sources = {name: SimpleNamespace(pin=SimpleNamespace(revision=f"{name}-revision"))
                for name in preflight.SOURCE_SLUGS}
     monkeypatch.setattr(preflight, "recipe_facts", lambda: (recipe, sources, {"comfy_core": "core-rev"}, lock, "vibe-rev"))
-    def fake_catalog(cells, registry, runner):
+    def fake_catalog(cells, registry, runner, stage_controls=None):
         assert sys.path[0] == str(checkout)
         assert os.environ["ASTRID_VIBECOMFY_CHECKOUT"] == str(checkout)
         for c in cells:
@@ -344,8 +374,10 @@ def test_main_registry_crash_reports_every_live_cell(monkeypatch, tmp_path):
 
     monkeypatch.setitem(sys.modules, "astrid.core.model_catalog.registry",
                         SimpleNamespace(ModelRegistry=SimpleNamespace(load_default=crash)))
-    monkeypatch.setattr(preflight, "live_defaults", lambda: {
-        ("audio", "tts"): object(), ("image", "t2i"): object()})
+    monkeypatch.setattr(preflight, "live_cells", lambda: [
+        {"cell": "tts", "kind": "audio", "entry": "audio/tts", "mode": "tts"},
+        {"cell": "t2i", "kind": "image", "entry": "image/t2i", "mode": "t2i"},
+    ])
     output = tmp_path / "crash.json"
     assert preflight.main(["--json", str(output), "--cache-dir", str(tmp_path / "cache")]) == 1
     report = json.loads(output.read_text())
@@ -367,3 +399,78 @@ def test_catalog_dry_run_builds_required_inputs_for_public_cli(tmp_path):
     assert "--input" in argv and "voice=test-value" in argv
     media = Path(argv[argv.index("--video-ref") + 1])
     assert media.read_bytes() == b"test image"
+
+
+def test_check_catalog_requires_stage_controls_and_consumes_exact_values(monkeypatch, tmp_path):
+    class Registry:
+        def get(self, identifier):
+            raise KeyError(identifier)
+
+    c = cell()
+    runner = FakeRunner()
+    monkeypatch.setattr(preflight, "catalog_dry_run", lambda *a, **k: pytest.fail("must not generate without controls"))
+    preflight.check_catalog([c], Registry(), runner)
+    assert c.checks["catalog"]["status"] == "UNVERIFIED"
+    assert "requires --stage-controls" in c.checks["catalog"]["reason"]
+    assert not any("generate" in command.command for command in runner.commands)
+    monkeypatch.setattr(preflight, "catalog_dry_run", catalog_dry_run)
+
+    controls_file = tmp_path / "controls.json"
+    controls_file.write_text(json.dumps({"max_usd": 3.25, "deadline": "2099-02-03T04:05:06Z"}))
+    declarations = preflight.live_cells()
+    monkeypatch.setattr(preflight, "live_cells", lambda: declarations)
+    by_id = {row["entry"]: row["kind"] for row in declarations}
+
+    def describe(identifier, mode, registry, _native):
+        return {"kind": by_id[identifier], "inputs": [
+            {"name": "prompt", "required": True, "type": "string"}]}
+
+    monkeypatch.setattr("astrid.core.generation.entries.describe_entry", describe)
+    from astrid import console
+    seen_argv = []
+
+    def invoke(argv):
+        seen_argv.append(list(argv))
+        print('{"ok": true}')
+        return 0
+
+    monkeypatch.setattr(console, "main", invoke)
+    cells = [preflight.Cell(row["cell"], row["entry"], row["mode"], row["entry"], kind=row["kind"])
+             for row in declarations]
+    preflight.check_catalog(cells, Registry(), runner, controls_file)
+    assert all(c.checks["catalog"]["status"] == "PASS" for c in cells)
+    assert len(seen_argv) == len(declarations)
+    for argv, declaration in zip(seen_argv, declarations):
+        assert argv[0:2] == ["generate", declaration["kind"]]
+        assert argv[argv.index("--entry") + 1] == declaration["entry"]
+        assert "--dry-run" in argv
+        assert argv[argv.index("--max-usd") + 1] == "3.25"
+        assert argv[argv.index("--deadline") + 1] == "2099-02-03T04:05:06Z"
+    assert all("--dry-run" in command.command for command in runner.commands if "generate" in command.command)
+
+
+def test_ready_request_entry_uses_native_descriptor_metadata(monkeypatch):
+    from scripts.catalog_dry_run import ready_request_entry
+
+    descriptor = {"kind": "image", "inputs": [
+        {"name": "prompt", "required": True, "type": "string"},
+        {"name": "seed", "required": True, "type": "integer", "min": 9},
+        {"name": "optional", "required": False, "type": "string"},
+    ]}
+    monkeypatch.setattr("astrid.core.generation.entries.describe_entry",
+                        lambda identifier, mode, registry, _native: descriptor)
+    entry = ready_request_entry("image/ready", "t2i", "image", object())
+    assert entry.id == "image/ready"
+    assert entry.modality == "image"
+    assert entry.modes["t2i"].requires == ("prompt", "seed")
+    assert entry.input_fields["seed"]["min"] == 9
+
+
+def test_ready_required_media_uses_existing_file_even_with_widget_default(tmp_path):
+    from scripts.catalog_dry_run import required_value
+
+    for port in ({"type": "file", "default": "missing-video.mp4"},
+                 {"type": "string", "media_semantics": "image", "default": ""},
+                 {"type": "string", "aliases": ["image_ref"], "default": ""}):
+        value = required_value("media", tmp_path, port)
+        assert Path(value).is_file()

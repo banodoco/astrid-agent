@@ -4,8 +4,8 @@ Run on a machine allowed to start the Runtime, Remotion and process groups, with
 It adopts a private clone of the reference realm into a disposable data root (the reference is never written),
 brings the Runtime up there, and reaps or reports any leftover process group at the end.
 
-Before paid cell proof, run `python3 scripts/preflight.py --json preflight.json` in the Agent environment, with `ASTRID_VIBECOMFY_CHECKOUT` set to a clean checkout at the recipe's pin and its own test environment installed.
-Use repeatable `--cell <name>` to restrict the live defaults, or `--all-catalog` to add every catalog entry/mode; `--engine-venv <path>` reuses a CPU environment matching the engine lock, otherwise `uv` builds one in the cache.
+Before paid cell proof, run `python3 scripts/preflight.py --stage-controls <stage-controls.json> --json preflight.json` in the Agent environment, with `ASTRID_VIBECOMFY_CHECKOUT` set to a clean checkout at the recipe's pin and its own test environment installed.
+The gate reads the live cells from `scripts/live_cells.json`; use repeatable `--cell <name>` to restrict them, or `--all-catalog` to add every catalog entry/mode. `--engine-venv <path>` reuses a CPU environment matching the engine lock, otherwise `uv` builds one in the cache.
 The table and JSON report PASS, blocking FAIL, and nonblocking UNVERIFIED with reasons and command logs; this CPU gate never makes paid calls.
 
 ## Scratch Runtime for CLI work

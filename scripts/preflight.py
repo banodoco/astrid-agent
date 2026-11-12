@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
 from scripts.catalog_dry_run import catalog_dry_run  # noqa: E402
 
 CHECKS = ("catalog", "schema", "rebuild", "constructor")
+LIVE_CELLS = ROOT / "scripts/live_cells.json"
 # Recipe source names -> canonical VibeComfy pack slugs. Crosswalk documented
 # in vibecomfy-agent-r13-inventory-2026-11-12.md; revisions always come from the recipe.
 SOURCE_SLUGS = {
@@ -57,6 +58,7 @@ class Cell:
     mode: str
     template: str | None
     catalog_error: str = ""
+    kind: str = ""
     sources: list[str] = field(default_factory=list)
     checks: dict = field(default_factory=dict)
 
@@ -105,50 +107,37 @@ def outcome(status, reason="", commands=(), tests=()):
             "commands": [command.record() for command in commands], "tests": list(tests)}
 
 
-def live_defaults():
-    from astrid.core.generation.defaults import pack_candidates
-    # Stage 1's tests/helpers/generation_defaults.py reads these same pack
-    # declarations. Highest-priority non-video defaults are the live cell set.
-    defaults = {}
-    for candidate in pack_candidates():
-        if candidate.kind != "video":
-            key = (candidate.kind, candidate.mode)
-            if key not in defaults or candidate.priority > defaults[key].priority:
-                defaults[key] = candidate
-    return defaults
+def live_cells():
+    """The live stage and this gate share this single declaration."""
+    return json.loads(LIVE_CELLS.read_text(encoding="utf-8"))["cells"]
 
 
 def select_cells(registry, all_catalog=False, requested=()):
-    defaults = live_defaults()
-    by_template = {}
-    for entry in registry.list_all(include_closed=True):
-        for mode, spec in entry.modes.items():
-            backend = spec.backends.get("local")
-            if backend and backend.template:
-                by_template.setdefault((backend.template, mode), []).append(entry.id)
     cells = []
     pairs = set()
-    for (_, mode), candidate in sorted(defaults.items()):
-        identifier = candidate.entry
+    for declaration in live_cells():
+        identifier, mode = declaration["entry"], declaration["mode"]
         try:
-            entry, spec = registry.get_by_mode(identifier, mode)
+            entry = registry.get(identifier)
         except KeyError:
-            matches = by_template.get((identifier, mode), [])
-            if len(matches) != 1:
-                cells.append(Cell(mode, identifier, mode, None,
-                                  f"default {identifier}/{mode} has no unique catalog mapping"))
-                continue
-            entry, spec = registry.get_by_mode(matches[0], mode)
-        backend = spec.backends.get("local")
-        cells.append(Cell(mode, entry.id, mode, backend.template if backend else None))
-        pairs.add((entry.id, mode))
+            # Like generate --entry, an id absent from ModelRegistry selects
+            # a ready workflow directly. Admission validates it through
+            # entries.describe_entry; no reverse catalog mapping is required.
+            template = identifier
+        else:
+            _, spec = registry.get_by_mode(identifier, mode)
+            backend = spec.backends.get("local")
+            template = backend.template if backend else None
+        cells.append(Cell(declaration["cell"], identifier, mode, template,
+                          kind=declaration["kind"]))
+        pairs.add((identifier, mode))
     if all_catalog:
         for entry in registry.list_all(include_closed=True):
             for mode, spec in entry.modes.items():
                 if (entry.id, mode) not in pairs:
                     backend = spec.backends.get("local")
                     cells.append(Cell(f"{entry.id}/{mode}", entry.id, mode,
-                                      backend.template if backend else None))
+                                      backend.template if backend else None, kind=entry.modality))
     if requested:
         unknown = set(requested) - {cell.name for cell in cells}
         if unknown:
@@ -173,9 +162,19 @@ def recipe_facts():
     return recipe, sources, identities, lock, VIBECOMFY_ENGINE_REVISION
 
 
-def check_catalog(cells, registry, runner):
+def check_catalog(cells, registry, runner, stage_controls=None):
+    from astrid.core.model_catalog.requests import PaidControls
+    from scripts.catalog_dry_run import ready_request_entry
+
     pin = runner([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
                   "tests/test_vibecomfy_pin.py::test_pin_script_bump_to_the_current_revision_changes_no_bytes"])
+    controls = None
+    controls_reason = "catalog dry-run requires --stage-controls <path>"
+    if stage_controls is not None:
+        try:
+            controls = PaidControls.from_json(stage_controls)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            controls_reason = f"cannot read stage controls {stage_controls}: {exc}"
     with tempfile.TemporaryDirectory(prefix="preflight-inputs-") as directory:
         for cell in cells:
             commands = [pin]
@@ -184,22 +183,23 @@ def check_catalog(cells, registry, runner):
                 reasons.append("current-revision pin no-op check failed: " + pin.log_path)
             if cell.catalog_error:
                 reasons.append(cell.catalog_error)
-            else:
-                probe = catalog_dry_run(registry.get(cell.entry), cell.mode, Path(directory))
-                commands.append(runner.save(["astrid", *probe.argv], ROOT, probe.exit_status,
-                                            probe.stdout + probe.stderr))
-                if probe.failure:
-                    reasons.append(probe.failure)
-            cell.checks["catalog"] = outcome("FAIL" if reasons else "PASS", "\n".join(reasons), commands)
-
-
-def quarantine(path):
-    if not path.is_file():
-        return {}
-    lines = path.read_text(encoding="utf-8").splitlines()
-    reason = " ".join(line.removeprefix("# reason:").strip() for line in lines if line.startswith("# reason:"))
-    return {line.strip(): reason or f"listed in {path}" for line in lines
-            if line.strip() and not line.startswith("#")}
+            elif controls is not None:
+                try:
+                    try:
+                        entry = registry.get(cell.entry)
+                    except KeyError:
+                        entry = ready_request_entry(cell.entry, cell.mode, cell.kind, registry)
+                    probe = catalog_dry_run(entry, cell.mode, Path(directory), controls=controls)
+                    commands.append(runner.save(["astrid", *probe.argv], ROOT, probe.exit_status,
+                                                probe.stdout + probe.stderr))
+                    if probe.failure:
+                        reasons.append(probe.failure)
+                except (ValueError, KeyError, TypeError) as exc:
+                    reasons.append(f"entry admission failed: {exc}")
+            status = "FAIL" if reasons else "PASS" if controls is not None else "UNVERIFIED"
+            if controls is None:
+                reasons.append(controls_reason)
+            cell.checks["catalog"] = outcome(status, "\n".join(reasons), commands)
 
 
 def template_parameter(nodeid):
@@ -240,24 +240,19 @@ def junit_results(path):
     return rows
 
 
-def map_vibe_results(cells, selected, results, quarantined, command, identities):
+def map_vibe_results(cells, selected, results, command):
     for cell in cells:
         for kind in ("schema", "rebuild"):
             ids = [nodeid for nodeid in selected
                    if template_parameter(nodeid) == cell.template and test_kind(nodeid) == kind]
             if not ids:
-                cell.checks[kind] = outcome("UNVERIFIED", "no check of this kind declared for this cell's catalog template", [command])
+                cell.checks[kind] = outcome("UNVERIFIED", "no check of this kind declared for this cell's template", [command])
                 continue
             tests = []
             for nodeid in ids:
                 row = dict(results.get(nodeid, {"nodeid": nodeid, "status": "FAIL", "reason": "selected test produced no result"}))
-                # Recipe-selected identities are mandatory even if a legacy
-                # workflow identity failure was quarantined before the re-pin.
-                missing_recipe_identity = any(
-                    f"no object_info captured for {slug} at {commit}" in row["reason"]
-                    for slug, commit in identities.items())
-                if nodeid in quarantined and not missing_recipe_identity:
-                    row.update(status="UNVERIFIED", reason=quarantined[nodeid])
+                # --pack-identity-commits selects Astrid's actual recipe pins.
+                # Default-selection quarantine cannot override that result.
                 tests.append(row)
             status = "FAIL" if any(t["status"] == "FAIL" for t in tests) else (
                 "UNVERIFIED" if any(t["status"] == "UNVERIFIED" for t in tests) else "PASS")
@@ -295,7 +290,8 @@ def check_vibe(cells, runner, checkout, python, identities, revision):
     if not selected:
         for cell in cells:
             for kind in ("schema", "rebuild"):
-                cell.checks[kind] = outcome("UNVERIFIED", "no preflight checks declared for the catalog template", [collection])
+                cell.checks[kind] = outcome("UNVERIFIED", "no preflight checks declared for the template", [collection])
+        read_template_sources(cells, runner, checkout, python)
         return True
     report = runner.logs / "vibecomfy.xml"
     command = runner([*base, "-q", "-rA", "--junitxml=" + str(report), *selected], cwd=checkout)
@@ -307,16 +303,22 @@ def check_vibe(cells, runner, checkout, python, identities, revision):
         raise RuntimeError("VibeComfy reported an unexpected test/collection error: " + command.log_path)
     if command.exit_status and not any(row["status"] == "FAIL" for row in results.values()):
         raise RuntimeError("VibeComfy failed outside its test outcomes: " + command.log_path)
-    map_vibe_results(cells, selected, results,
-                     quarantine(checkout / "tests/quarantine/offline_identity_provenance.txt"), command, identities)
-    # A catalog template with no declared VibeComfy case is UNVERIFIED for
-    # that cell; it must not crash source inspection for unrelated cells.
-    templates = sorted({template_parameter(nodeid) for nodeid in selected})
+    map_vibe_results(cells, selected, results, command)
+    read_template_sources(cells, runner, checkout, python)
+    return True
+
+
+def read_template_sources(cells, runner, checkout, python):
+    # Source ownership comes from the authored workflows, independently of
+    # whether their schema/rebuild tests are declared.
+    templates = sorted({cell.template for cell in cells if cell.template})
     source_code = (
         "import json,sys; sys.path.insert(0,sys.argv[1]); "
+        "from vibecomfy import resources; "
         "from vibecomfy.registry.ready import workflow_from_ready; "
         "from scripts.preflight import template_source_slugs; "
-        "print(json.dumps({t:template_source_slugs(workflow_from_ready(t)) "
+        "known={t['id'] for t in resources.template_index()['templates']}; "
+        "print(json.dumps({t:template_source_slugs(workflow_from_ready(t)) if t in known else [] "
         "for t in json.loads(sys.argv[2])}))")
     sources = runner([python, "-c", source_code, ROOT, json.dumps(templates)], cwd=checkout)
     if sources.exit_status:
@@ -325,7 +327,6 @@ def check_vibe(cells, runner, checkout, python, identities, revision):
     for cell in cells:
         cell.sources = [source for source, slug in SOURCE_SLUGS.items()
                         if slug in by_template.get(cell.template, [])]
-    return True
 
 
 def locked_versions(lock):
@@ -481,7 +482,7 @@ def run_gate(cells, registry, runner, args):
             sys.path.insert(0, str(checkout))
             os.environ["ASTRID_VIBECOMFY_CHECKOUT"] = str(checkout)
             report["candidate"]["vibecomfy_checkout"] = str(checkout)
-        check_catalog(cells, registry, runner)
+        check_catalog(cells, registry, runner, args.stage_controls)
         report["engine_versions"] = check_constructors(cells, runner, args.engine_venv, args.cache_dir, lock, recipe, sources)
     except Exception as exc:  # noqa: BLE001 - a harness crash must fail every cell
         reason = f"preflight harness crashed: {type(exc).__name__}: {exc}"
@@ -514,6 +515,7 @@ def main(argv=None):
     parser.add_argument("--cell", action="append", default=[], help="restrict to a named cell (repeatable)")
     parser.add_argument("--all-catalog", action="store_true", help="add every catalog entry/mode, including closed entries")
     parser.add_argument("--json", type=Path, help="write the table, reasons, commands and log paths as JSON")
+    parser.add_argument("--stage-controls", type=Path, help="stage-owned paid controls; required for catalog dry-run")
     parser.add_argument("--vibecomfy-checkout", type=Path, default=os.environ.get("ASTRID_VIBECOMFY_CHECKOUT"))
     parser.add_argument("--vibecomfy-python", type=Path, help="VibeComfy's own test interpreter; defaults to its .venv or sibling .env/venv")
     parser.add_argument("--engine-venv", type=Path, help="reuse a CPU engine environment matching the engine lock")
@@ -521,7 +523,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     # Commands run in both repositories; resolve user paths before changing
     # subprocess cwd so relative cache/report/interpreter paths stay usable.
-    for name in ("cache_dir", "json", "vibecomfy_checkout", "vibecomfy_python", "engine_venv"):
+    for name in ("cache_dir", "json", "stage_controls", "vibecomfy_checkout", "vibecomfy_python", "engine_venv"):
         value = getattr(args, name)
         if value is not None:
             # Resolving bin/python's symlink discards its virtual environment.
@@ -539,7 +541,7 @@ def main(argv=None):
         names = args.cell
         if not names:
             try:
-                names = sorted({mode for _, mode in live_defaults()}) or ["candidate"]
+                names = [row["cell"] for row in live_cells()] or ["candidate"]
             except Exception:  # noqa: BLE001 - even unreadable cell declarations must fail closed
                 names = ["candidate"]
         cells = [Cell(name, "unknown", "unknown", None) for name in names]
