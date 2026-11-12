@@ -922,8 +922,8 @@ def test_backend_skill_sync_logs_output_and_failure_result(tmp_path, monkeypatch
     backend = Backend(tmp_path / "program", log, Path(sys.executable), say=messages.append)
     calls = []
 
-    def fail(argv, *, extra_env, timeout):
-        calls.append((argv, extra_env, timeout))
+    def fail(argv, *, extra_env, timeout, separate_stderr=False):
+        calls.append((argv, extra_env, timeout, separate_stderr))
         log.write_text("sync diagnostic output\n", encoding="utf-8")
         raise subprocess.CalledProcessError(1, argv, output="sync diagnostic output")
 
@@ -934,6 +934,7 @@ def test_backend_skill_sync_logs_output_and_failure_result(tmp_path, monkeypatch
     assert calls[0][0] == [Path(sys.executable), "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json",
                            "--skills", "on", "--skill-copies", "off"]
     assert calls[0][2] == 60
+    assert calls[0][3] is True  # warnings on stderr must not corrupt the JSON result
     assert "sync diagnostic output" in log.read_text(encoding="utf-8")
     assert "Astrid skills sync failed (CalledProcessError)." in log.read_text(encoding="utf-8")
     assert messages == ["Couldn't add Astrid's skill to your agents; see the log."]
