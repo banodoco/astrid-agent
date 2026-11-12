@@ -35,12 +35,13 @@ from .worker_preparation import (
     _validate_completed_release, write_target_record,
 )
 from . import worker_preparation
+from .provider import parse_rest_pod
 
 
 def _exact_volume_id(record):
     try:
-        return worker_preparation.pod_field(record, "volume")
-    except worker_preparation.InvalidPodField:
+        return parse_rest_pod(record).require("storage_id")
+    except (ValueError, LookupError):
         raise PaidSelectionError("provider volume evidence is invalid", gate="volume") from None
 
 

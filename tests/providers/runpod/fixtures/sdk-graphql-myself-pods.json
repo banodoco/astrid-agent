@@ -1,0 +1,56 @@
+{
+ "data": {
+  "myself": {
+   "pods": [
+    {
+     "containerDiskInGb": 200,
+     "costPerHr": 1.19,
+     "desiredStatus": "RUNNING",
+     "dockerArgs": "<redacted>",
+     "dockerId": "DOCKER_ID",
+     "env": [
+      {
+       "key": "<redacted>",
+       "value": "<redacted>"
+      },
+      {
+       "key": "<redacted>",
+       "value": "<redacted>"
+      },
+      {
+       "key": "<redacted>",
+       "value": "<redacted>"
+      },
+      {
+       "key": "<redacted>",
+       "value": "<redacted>"
+      }
+     ],
+     "gpuCount": 1,
+     "id": "POD_ID",
+     "imageName": "runpod/base@sha256:820c605eaaa276de20a0d77993fb0846d54e180efff5de67d46341ed399b5a7f",
+     "lastStatusChange": "2026-11-12T00:00:00Z",
+     "machine": {
+      "gpuDisplayName": "RTX 5090"
+     },
+     "machineId": "MACHINE_ID",
+     "memoryInGb": 134,
+     "name": "astrid-product-OPERATION",
+     "podType": "RESERVED",
+     "port": "<redacted>",
+     "ports": "<redacted>",
+     "runtime": {
+      "ports": [
+       "<redacted>",
+       "<redacted>"
+      ]
+     },
+     "uptimeSeconds": 0,
+     "vcpuCount": 17,
+     "volumeInGb": 0,
+     "volumeMountPath": "/workspace"
+    }
+   ]
+  }
+ }
+}

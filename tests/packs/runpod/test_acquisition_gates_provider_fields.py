@@ -11,6 +11,7 @@ import asyncio
 import json
 import socket
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -69,9 +70,11 @@ def gate(case, monkeypatch):  # noqa: F811
     case.owner.observed_hourly_usd = lambda pod: 1.19
     case.grant = PaidRunConsent(
         "invocation-1", offer.digest(case.prefs), 3.0, "2026-11-01T02:00:00Z", ("paid",), 30, 30, 60)
-    state = SimpleNamespace(case=case, pod=POD_GRAPHQL, gpus=GPU_TYPES,
-                            rest={"id": POD_ID, "volumeMountPath": "/workspace", "networkVolumeId": case.prefs.volume_id,
-                                  "machine": {}})
+    fixture = Path(__file__).parents[2] / "providers/runpod/fixtures/rest-get-pod-include-network-volume.json"
+    rest = json.loads(fixture.read_text())
+    rest.update(id=POD_ID, networkVolumeId=case.prefs.volume_id)
+    rest["networkVolume"]["id"] = case.prefs.volume_id
+    state = SimpleNamespace(case=case, pod=POD_GRAPHQL, gpus=GPU_TYPES, rest=rest)
 
     def run_graphql_query(query, api_key=None):
         return state.gpus if "gpuTypes" in query else state.pod
