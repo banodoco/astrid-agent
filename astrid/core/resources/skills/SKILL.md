@@ -57,6 +57,9 @@ Use the SDK through a connected Runtime; do not invoke pack scripts directly.
 Report results and evidence from the admitted Runtime task. A local output
 file alone does not prove completion or publication.
 
+`astrid tasks logs <task>` lists a task's logs; add `--name <log>` to print one.
+`astrid generate failure` shows the last generation failure; add `--logs` to print its logs.
+
 ## Preferences and documents
 
 Current explicit instructions precede project preferences, then user defaults.

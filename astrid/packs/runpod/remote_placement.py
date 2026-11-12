@@ -572,7 +572,10 @@ class RemotePlacement:
                     for stream_name, role in (("stdout", "stdout"), ("stderr", "stderr")):
                         source = f"{directory}/{stream_name}"
                         destination = log_root / f"{safe_what}.{stream_name}"
-                        ops.get(source, destination)
+                        try:
+                            ops.get(source, str(destination))
+                        except Exception:  # noqa: BLE001 - collect the remaining logs
+                            destination.unlink(missing_ok=True)
                         run_logs.declare(
                             log_root,
                             run_logs.LogDecl(
@@ -582,17 +585,66 @@ class RemotePlacement:
                             ),
                         )
                         staged.append((stream_name, role, destination))
+                if what == "engine install":
+                    from astrid.core.generation.engine_custody import engine_log_path
+
+                    installation = state.installation
+                    root = installation.root if installation is not None else ENGINE_ROOT
+                    engine = installation.engine if installation is not None else ENGINE_ID
+                    registry = f"{root}/runtime/out/sessions/{engine}"
+                    sources = (
+                        ("engine-log", engine_log_path(root, engine)),
+                        ("supervisor-log", f"{registry}/daemon.log"),
+                        ("session-marker", f"{root}/.astrid-engine/session/session.json"),
+                        ("registry-config", f"{registry}/config.json"),
+                    )
+                    program = (
+                        "import sys; from pathlib import Path; "
+                        "from astrid.core.gateway.doctor_bundle import redact_log; "
+                        "p=Path(sys.argv[1]); q=Path(sys.argv[2]); "
+                        "q.write_text(redact_log(p.read_text(encoding='utf-8', errors='replace')), encoding='utf-8')"
+                    )
+                    for label, source in sources:
+                        destination = log_root / f"engine.install.{label}.log"
+                        remote_safe = f"/tmp/astrid-{uuid.uuid4().hex}-{label}.redacted"
+                        destination.unlink(missing_ok=True)
+                        try:
+                            code, _, _ = ops.exec(
+                                f"{POD_VENV}/bin/python -c {shlex.quote(program)} "
+                                f"{shlex.quote(source)} {shlex.quote(remote_safe)}", 120)
+                            if code == 0:
+                                ops.get(remote_safe, str(destination))
+                        except Exception:  # noqa: BLE001 - collect the remaining logs
+                            destination.unlink(missing_ok=True)
+                        finally:
+                            try:
+                                ops.exec(f"rm -f {shlex.quote(remote_safe)}", 120)
+                            except Exception:  # noqa: BLE001 - preserve the job failure
+                                pass
+                        run_logs.declare(log_root, run_logs.LogDecl(
+                            name=f"engine.install.{label}", role="install", path=str(destination.resolve())))
                 rows = run_logs.collect(log_root)
                 by_name = {row.get("name"): row for row in rows}
                 for stream_name, _role, _source in staged:
                     row = by_name.get(f"{safe_what}-{stream_name}")
                     if not row or row.get("missing"):
-                        raise OSError("collected job log is unavailable")
+                        continue
                     collected = log_root / "logs" / row["file"]
                     final = state.local_out / "logs" / f"{safe_what}.{stream_name}"
                     final.parent.mkdir(parents=True, exist_ok=True)
                     collected.replace(final)
+                    row["file"] = final.name
                     log_paths.append(final)
+                if what == "engine install":
+                    final_logs = state.local_out / "logs"
+                    final_logs.mkdir(parents=True, exist_ok=True)
+                    for row in rows:
+                        if row.get("name", "").startswith("engine.install.") and not row.get("missing"):
+                            (log_root / "logs" / row["file"]).replace(final_logs / row["file"])
+                    names = {row.get("name") for row in rows}
+                    existing = [row for row in run_logs.read_index(state.local_out) if row.get("name") not in names]
+                    (final_logs / "index.json").write_text(json.dumps(
+                        {"schema": "run-logs.collected.v1", "logs": existing + rows}, sort_keys=True) + "\n")
                 state.note("logs", "kept", what=what, files=[str(path) for path in log_paths])
             except Exception as exc:  # noqa: BLE001 - logs must never mask the job failure
                 state.note("logs", "unavailable", error=type(exc).__name__)
@@ -750,6 +802,7 @@ class RemotePlacement:
         plan = engine_runner.plan_from_receipt(
             recipe, live,
             root=installation.root, placement="local")
+        engine_runner.require_current_receipt(live, plan, recipe)
         receipt = installation.root + "/.astrid-engine/install.json"
         if verification_seconds is None:
             path = state.local_out / "installed.json"
@@ -792,6 +845,7 @@ class RemotePlacement:
         plan = engine_runner.plan_from_receipt(
             recipe, saved,
             root=installation.root, placement="local")
+        engine_runner.require_current_receipt(saved, plan, recipe)
         if (saved.status != "installed" or live.receipt_id != saved.receipt_id
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks

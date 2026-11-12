@@ -597,7 +597,7 @@ def test_media_list_forwards_all_exact_filters(capsys) -> None:
         "media",
         [
             "list", "--project", "demo", "--kind", "video", "--model", "X",
-            "--placement", "runpod", "--tag", "hero", "--json",
+            "--target", "runpod", "--tag", "hero", "--json",
         ],
         client=client,
     )

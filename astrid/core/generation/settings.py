@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -29,6 +30,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
 from astrid.core.contracts.errors import AstridError
+
+_logger = logging.getLogger(__name__)
 
 KEY = "generation"
 DOCUMENT_KEYS = ("placement", "defaults", "machines")
@@ -217,6 +220,7 @@ def read(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapsh
     try:
         store = current_store(client)
     except Exception:  # no Runtime reachable: built-ins only, never the TOML again
+        _logger.exception("Could not reach the settings store; using built-in generation settings")
         return Snapshot(empty_document(), 0, "unavailable")
     if store is None:
         return Snapshot(empty_document(), 0, "unavailable")

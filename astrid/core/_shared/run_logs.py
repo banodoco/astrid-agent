@@ -173,6 +173,8 @@ def _time_slice(payload: bytes, decl: LogDecl) -> bytes:
         return payload
     lower = _parse_time(decl.since, "iso8601") if decl.since else float("-inf")
     upper = _parse_time(decl.until, "iso8601") if decl.until else float("inf")
+    if lower is None or upper is None:
+        raise TypeError("invalid log time boundary")
     lines = payload.splitlines(keepends=True)
     kept: list[bytes] = []
     current: float | None = None
@@ -185,9 +187,11 @@ def _time_slice(payload: bytes, decl: LogDecl) -> bytes:
     return b"".join(kept)
 
 
-def collect(root: Path, *, cap_bytes: int = CAP_BYTES) -> list[dict[str, Any]]:
+def collect(root: Path, *, cap_bytes: int = CAP_BYTES, extra_root: Path | None = None) -> list[dict[str, Any]]:
     root = Path(root).resolve()
-    rows: list[dict[str, Any]] = []
+    merging = extra_root is not None and (root / LOGS_DIR / INDEX_NAME).exists()
+    rows: list[dict[str, Any]] = read_index(root) if merging else []
+    brought_names = {row.get("name"): row.get("source", "transported index") for row in rows if isinstance(row, dict) and isinstance(row.get("name"), str)}
     seen_names: dict[str, int] = {}
     try:
         root.mkdir(parents=True, exist_ok=True)
@@ -220,6 +224,11 @@ def collect(root: Path, *, cap_bytes: int = CAP_BYTES) -> list[dict[str, Any]]:
                         raise ValueError("invalid declaration")
                     source = Path(decl.path)
                     source = source if source.is_absolute() else directory / source
+                    if decl.name in brought_names:
+                        rows.append({"name": decl.name, "missing": True, "reason": "duplicate_name",
+                                     "source": str(source), "first_source": str(brought_names[decl.name])})
+                        continue
+                    brought_names[decl.name] = str(source)
                     if source.is_symlink():
                         raise OSError("symlink source")
                     stat = source.stat()
@@ -265,7 +274,10 @@ def collect(root: Path, *, cap_bytes: int = CAP_BYTES) -> list[dict[str, Any]]:
                     continue
                 walk(child_decl.parent if child_decl.name == DECLARATION_NAME else child_decl, depth + 1)
 
-        walk(root, 0)
+        if not merging:
+            walk(root, 0)
+        if extra_root is not None:
+            walk(Path(extra_root), 0)
     except Exception as exc:  # noqa: BLE001 - collection must not raise
         rows.append({"name": "collection", "missing": True, "reason": type(exc).__name__})
     try:
@@ -297,6 +309,8 @@ def main(argv: list[str]) -> int:
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
+        if exc.code is None:
+            raise TypeError("SystemExit code must be convertible to int")
         return int(exc.code)
     if args.command == "declare":
         try:

@@ -11,7 +11,7 @@ import zipfile
 import lzma
 from pathlib import Path, PurePosixPath
 
-SOURCE_LIMIT = 65536
+SOURCE_LIMIT = 98304
 ARCHIVE_LIMIT = 524288
 SPEC_LIMIT = 16384
 EXPECTED_SPEC = '@SPEC_SHA256@'

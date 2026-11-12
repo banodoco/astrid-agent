@@ -551,10 +551,20 @@ def test_failed_acquire_releases_only_its_captured_exact_identity(small_lease, m
         raise error
 
     monkeypatch.setattr(owner, "_acquire", failed)
-    with pytest.raises(RunPodWorkerOwnerError, match="custody could not be verified") as caught:
+    # 80bbf690: only the unchanged exact identity may be synchronously released.
+    message = ("custody could not be verified" if journal_swapped else
+               "RunPod acquisition failed; created pod pod-1 was released")
+    with pytest.raises(RunPodWorkerOwnerError, match=message) as caught:
         owner.acquire(replace(c.grant, invocation_id="second"))
     assert "SENTINEL_TOKEN" not in str(caught.value)
     assert c.deletes == ([] if journal_swapped else ["pod-1"])
+    if journal_swapped:
+        assert c.read()["pod_id"] == "pod-2" and c.read()["state"] != "cleanup_complete"
+        assert "was released" not in str(caught.value)
+    else:
+        assert isinstance(caught.value.__cause__, TargetObservationError)
+        assert c.read()["state"] == "cleanup_complete"
+        assert c.read()["cleanup"]["pod_id"] == "pod-1"
 
 
 def test_small_lease_reuses_snapshot_and_stale_holder_cannot_expire_next_run(small_lease):

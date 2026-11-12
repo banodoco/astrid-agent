@@ -5,7 +5,10 @@ from pathlib import Path
 
 
 CORE = Path(__file__).resolve().parents[1] / "astrid" / "core"
-BASELINE = {"runpod": 303, "comfy": 1184}
+# Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early
+# generalisation while there is one provider and one engine. M11: a neutral
+# machine interface when a second provider arrives.
+BASELINE = {"runpod": 306, "comfy": 1206}
 
 
 def test_provider_and_engine_mentions_in_core_do_not_grow():

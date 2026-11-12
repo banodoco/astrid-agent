@@ -156,7 +156,7 @@ def cleanup_prompts(url: str, destination: Path, *, confirm: bool = False, timeo
             deadline = time.monotonic() + timeout
             while True:
                 queue = client.request_json("/queue")
-                identities = set()
+                identities: set[str] = set()
                 for key in ("queue_running", "queue_pending"):
                     rows = queue.get(key) if isinstance(queue, dict) else None
                     if (not isinstance(rows, list) or any(not isinstance(row, list) or len(row) < 2

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 # One table of what each generation kind needs at the CLI boundary: its help
 # noun, the SDK keyword that carries its dimensions, whether a video prompt
@@ -57,6 +60,7 @@ def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
         placement = placements.resolve_placement(placements.request_from_selector(target), repo=repo, client=client)
         return _select_generation_target(placements.comfy_selector(placement), repo=repo) is None
     except Exception:
+        _logger.exception("Could not settle whether a local generation target is available")
         return False
 
 
@@ -233,6 +237,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
         command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once, help="Reference image for an edit or image-to-video request.")
+        if modality in {'video', 'audio'}:
+            command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Reference video for video generation or Foley sound effects.')
         command.add_argument("--width", action=_Once, type=int)
         command.add_argument("--height", action=_Once, type=int)
         command.add_argument("--steps", action=_Once, type=int)
@@ -248,7 +254,6 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
         if 'audio_modes' in spec:
-            command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Local video for Foley sound effects.')
             command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
     command = sub.add_parser("describe", help="Describe one entry without checking execution readiness.")
     command.add_argument('workflow', nargs='?')
@@ -424,7 +429,11 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     """Route authored workflows through the same target admission as entries."""
     from astrid.core.generation import entries
 
-    values = _values(parsed)
+    try:
+        values = _values(parsed)
+    except (ValueError, OSError) as exc:
+        from astrid.core.generation.preflight import generation_error
+        raise generation_error(exc, code='input_rejected', details={'field': 'inputs'}) from exc
     from astrid.sdk.generation import _generation_controls
     _generation_controls(engine=parsed.engine, consent=parsed.consent,
                          max_usd=parsed.max_usd, deadline=parsed.deadline)
@@ -432,7 +441,9 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     if path.is_dir():
         path = path / "workflow.py"
     if parsed.replace and not parsed.as_entry:
-        raise ValueError('--replace requires --as-entry')
+        from astrid.core.generation.preflight import generation_error
+        raise generation_error(ValueError('--replace requires --as-entry'),
+                               code='input_rejected', details={'field': 'replace'})
     if parsed.no_run and not parsed.as_entry:
         raise ValueError('--no-run requires --as-entry')
     if parsed.as_entry and parsed.dry_run:
@@ -701,17 +712,18 @@ def _main(argv: list[str]) -> int:
                 if not parsed.no_wait:
                     from .delivery import deliver_generation
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
-    except AstridSDKError as exc:
+    except AstridSDKError as sdk_exc:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
         from astrid.core.generation.preflight import generation_error
-        if is_runpod_placement(parsed.placement) and parsed.offer_digest and "offer or rate changed" in str(exc).lower():
-            exc = ValueError("RunPod offer changed (GPU type or rate; datacenter is also included in the digest). Use the same ordered --gpu values and --datacenter ID in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
+        error: Exception = sdk_exc
+        if is_runpod_placement(parsed.placement) and parsed.offer_digest and "offer or rate changed" in str(sdk_exc).lower():
+            error = ValueError("RunPod offer changed (GPU type or rate; datacenter is also included in the digest). Use the same ordered --gpu values and --datacenter ID in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
         selector = ['--entry', parsed.entry or parsed.model] if parsed.entry or parsed.model else []
-        raise generation_error(exc, fixes=[{
+        raise generation_error(error, fixes=[{
             'argv': ['astrid', 'generate', 'describe', *selector] if selector else
                     ['astrid', 'generate', 'targets', '--placement', parsed.placement],
-            'scope': 'read_only', 'details': {'guidance': getattr(exc, 'fix', None)}}]) from exc
+                    'scope': 'read_only', 'details': {'guidance': getattr(error, 'fix', None)}}]) from error
     if getattr(result, "ok", True) is False:
         from astrid.core.generation.preflight import generation_error
         error = getattr(result, 'error', None) or {
@@ -770,7 +782,7 @@ def _failure_command(parsed) -> int:
     return 0
 
 
-def _kept_failure(before: set[tuple[str, int]]) -> None:
+def _kept_failure(before: set[tuple[str | None, int | None]]) -> None:
     """Read only the bounded owner result after a failed RunPod command."""
     try:
         from astrid.core.machines_cli import _when
@@ -789,6 +801,7 @@ def _kept_failure(before: set[tuple[str, int]]) -> None:
                   f"{_when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
                   f"reuse it or run `astrid machines release {row['id']}`", file=sys.stderr)
     except Exception:
+        _logger.exception("Could not read the retained failure context")
         pass  # Diagnostic reads cannot change settlement or mask the original error.
 
 
@@ -803,7 +816,7 @@ def subcommand_names() -> tuple[str, ...]:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error
-    before = set()
+    before: set[tuple[str | None, int | None]] = set()
     runpod = '--placement' in argv and argv[argv.index('--placement') + 1:][:1] == ['runpod']
     if runpod:
         try:
@@ -811,6 +824,7 @@ def main(argv: list[str] | None = None) -> int:
             before = {(row.get('lease'), (row.get('last_job') or {}).get('generation'))
                       for row in journal_leases()}
         except Exception:
+            _logger.exception("Could not snapshot leases before the command")
             pass
     try:
         scope = nullcontext()

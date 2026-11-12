@@ -37,13 +37,15 @@ def test_apply_and_check_declared_patch(patch_context):
     assert target.dispatch("apply-source-patches", payload)["facts"] == {"changed": True}
     assert path.read_bytes() == after
     assert target.dispatch("apply-source-patches", payload)["facts"] == {"changed": False}
-    check = {**payload, "models_root": None, "entries": [" M nested/file.py"]}
-    assert target.dispatch("models-source-check", check)["facts"] == {"valid": True}
-    assert target.dispatch("models-source-check", {**check, "entries": [" M other.py"]})["facts"] == {"valid": False}
+    check = {**payload, "entries": [" M nested/file.py"]}
+    assert target.dispatch("declared-source-modifications", check)["facts"] == {"valid": True}
+    assert target.dispatch("declared-source-modifications", {**check, "entries": [" M other.py"]})["facts"] == {"valid": False}
     path.write_bytes(b"hand edit")
-    assert target.dispatch("models-source-check", check)["facts"] == {"valid": False}
-    with pytest.raises(IntegrityError, match="fixture nested/file.py"):
+    assert target.dispatch("declared-source-modifications", check)["facts"] == {"valid": False}
+    with pytest.raises(IntegrityError, match="source patch digest mismatch") as caught:
         target.dispatch("apply-source-patches", payload)
+    assert caught.value.reason == "source patch digest mismatch"
+    assert path.read_bytes() == b"hand edit"
     path.write_bytes(before)
 
 

@@ -37,7 +37,6 @@ from .engine_contracts import (
     EngineError,
     EngineId,
     EngineRecipe,
-    EngineReinstallRequired,
     ExecutionContext,
     HealthEvidence,
     InstallPlan,
@@ -54,6 +53,8 @@ from .engine_contracts import (
     UnsafePathError,
     UnsupportedPlacement,
     UnsupportedPlatform,
+    effective_models_root,
+    engine_reason,
 )
 
 _HELPER_SCHEMA = "astrid.engine-runner-helper.v1"
@@ -65,7 +66,7 @@ _STATUS_ERROR_CODES = frozenset({
     "engine_error", "unknown_engine", "unsupported_platform", "invalid_recipe",
     "invalid_model_lock", "integrity_failed", "unsafe_path", "download_failed",
     "command_failed", "transport_failed", "endpoint_ownership", "endpoint_unhealthy",
-    "unsupported_placement", "attestation_invalid", "engine_reinstall_required",
+    "unsupported_placement", "attestation_invalid",
 })
 
 
@@ -215,17 +216,15 @@ def _models_root(root: str, models_root: str | None) -> str | None:
 
 def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement,
                  models_root: str | None = None) -> InstallPlan:
-    from astrid.core.generation.placement import is_runpod_placement
-
     if not isinstance(recipe, EngineRecipe):
         raise RecipeValidationError("plan_install requires an EngineRecipe")
     if placement != "local":
-        from astrid.core.generation.placement import registered_machine_kinds
+        from astrid.core.generation.placement import is_runpod_placement, registered_machine_kinds
 
         if placement not in registered_machine_kinds():
             raise UnsupportedPlacement("unknown engine placement")
-    if is_runpod_placement(placement) and not recipe.platform.startswith("linux-"):
-        raise UnsupportedPlatform("RunPod requires a Linux target")
+        if is_runpod_placement(placement) and not recipe.platform.startswith("linux-"):
+            raise UnsupportedPlatform("RunPod requires a Linux target")
     verified = recipes.load_recipe(recipe.engine, recipe.platform)
     if recipes.recipe_digest(recipe) != recipes.recipe_digest(verified):
         raise IntegrityError("recipe differs from the verified packaged recipe")
@@ -247,7 +246,6 @@ def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement
     for env in verified.environments:
         steps.append(InstallStep("environment:" + env.name, "environment", source_ids,
                                  "Verify hash-locked environment " + env.name))
-    env_ids = tuple(s.id for s in steps if s.kind == "environment")
     # Plan 32 T5h: an install is model-free. Models arrive through align, one manifest row at a time.
     prerequisites = tuple(s.id for s in steps if s.kind == "environment")
     steps.extend((InstallStep("start", "start", prerequisites, "Start or reuse the owned loopback engine"),
@@ -266,9 +264,9 @@ def plan_from_receipt(recipe: EngineRecipe, receipt: InstallReceipt, *, root: Ta
         raise IntegrityError("install receipt placement differs from requested placement")
     plan = plan_install(recipe, root=receipt.root, placement=receipt.placement,
                         models_root=receipt.models_root)
-    for field in ("engine", "platform", "recipe_sha256", "models_lock_sha256"):
+    for field in ("engine", "platform"):
         if getattr(receipt, field) != getattr(plan, field):
-            raise IntegrityError(f"install receipt {field} differs from verified recipe")
+            raise IntegrityError('install receipt identity differs from verified recipe')
     return plan
 
 
@@ -277,6 +275,16 @@ def _plan_receipt(raw, recipe, *, root, placement):
     locator = plan_install(recipe, root=root, placement=placement)
     receipt = _parse_receipt(raw, locator)
     return receipt, plan_from_receipt(recipe, receipt, root=root, placement=placement)
+
+
+def require_current_receipt(receipt: InstallReceipt, plan: InstallPlan, recipe: EngineRecipe) -> None:
+    """Require current recipe evidence at installation admission boundaries."""
+    if (receipt.recipe_sha256 != plan.recipe_sha256
+            or receipt.models_lock_sha256 != plan.models_lock_sha256
+            or tuple((s.id, s.kind) for s in receipt.steps) != tuple((s.id, s.kind) for s in plan.steps)
+            or set(receipt.requirements_locks) != {e.name for e in recipe.environments}
+            or receipt.source_commits != {s.name: s.pin.revision for s in recipe.sources}):
+        raise IntegrityError('engine is installed but stale; run astrid engines install again')
 
 
 def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
@@ -350,6 +358,35 @@ class _Runner:
         self.started_at = _now()
         self.service_owner = None
 
+    def custody_error(self, error, reason):
+        """Enrich a local Linux custody refusal from the pinned owner marker when possible."""
+        if self.plan.placement != "local" or not self.plan.platform.startswith("linux-"):
+            return error
+        try:
+            from .engine_custody import LinuxEngineServiceClient, _directory
+            client = LinuxEngineServiceClient(root=self.plan.root, engine=self.plan.engine,
+                                              platform=self.plan.platform,
+                                              recipe_sha256=self.plan.recipe_sha256,
+                                              helper_sha256=self.helper_sha256)
+            try:
+                with _directory(client.control, create=False) as fd:
+                    diagnostic = client._owner_refusal(fd, type(error), reason)
+            except (EngineError, OSError):
+                diagnostic = client._refusal(type(error), None, reason=reason)
+            error.message = diagnostic.message
+            error.args = (diagnostic.message,)
+            error.custody_details = diagnostic.custody_details
+        except (EngineError, OSError):
+            # A diagnostic must never replace the original refusal.
+            return error
+        return error
+
+    def _custody_refusal(self, error_type, message, *, reason, step_id=None,
+                         retryable=False, recovery_handle=None):
+        error = error_type(message, step_id=step_id, retryable=retryable,
+                           recovery_handle=recovery_handle)
+        return self.custody_error(error, reason)
+
     def path(self, *relative):
         return self.adapter.join(self.plan.root, *relative)
 
@@ -384,14 +421,14 @@ class _Runner:
             raise DeadlineExceeded("owned engine command exceeded deadline", step_id=self.step_id,
                                    retryable=True)
         if result.exit_code is None:
-            raise CustodyUnresolved("command termination is unproven", step_id=self.step_id,
-                                    recovery_handle=result.job_id)
+            raise self._custody_refusal(CustodyUnresolved, "command termination is unproven",
+                                        reason="cleanup_unconfirmed", step_id=self.step_id,
+                                        recovery_handle=result.job_id)
         if type(result.exit_code) is not int:
             raise TransportError("invalid command exit status", step_id=self.step_id)
         if check and result.exit_code != 0:
-            error = CommandFailed(f"engine command failed (exit {result.exit_code})", step_id=self.step_id)
-            # The failed command's whole output belongs to the user running it on their own machine;
-            # the engine CLI writes it after its public error line so the failure is understandable.
+            error = CommandFailed('engine command exited with a nonzero status', step_id=self.step_id)
+            # Retain private command diagnostics; the public CLI renders only fixed checks.
             error.command_output = {"argv": list(argv), "exit_code": result.exit_code,
                                     "stdout": result.stdout or "", "stderr": result.stderr or "",
                                     "truncated": bool(getattr(result, "stdout_truncated", False)
@@ -404,7 +441,7 @@ class _Runner:
 
         ``command`` is a public argv string; ``--venv <primary venv>`` is appended. The child env is
         ``engine_child_env`` (the one ComfyUI gets), never the caller's. A nonzero exit aborts the
-        install before any model download; the message carries the library paths, not raw output.
+        install before any model download with a fixed public reason.
         """
         from ._engine_python_bootstrap import engine_child_env
         self.step_id = "sanity"
@@ -414,11 +451,7 @@ class _Runner:
         env = engine_child_env(venv, self.env) if self.plan.platform.startswith("linux-") else dict(self.env)
         result = self.run(argv + ("--venv", venv), env=env, check=False)
         if result.exit_code != 0:
-            keep = [ln.strip()[:300] for ln in (result.stdout + "\n" + result.stderr).splitlines()
-                    if ln.startswith(("LIB ", "FAIL ", "libs:", "gpu_sanity:"))][:20]
-            raise CommandFailed("engine sanity command failed (exit %s) before any model download; "
-                                "LD_LIBRARY_PATH=%s; %s" % (result.exit_code, env.get("LD_LIBRARY_PATH", ""),
-                                                            " | ".join(keep) or "no library paths reported"),
+            raise CommandFailed('engine sanity command failed before any model download',
                                 step_id="sanity")
 
     def payload(self, **extra):
@@ -426,26 +459,19 @@ class _Runner:
                 "root": self.plan.root, "recipe_sha256": self.plan.recipe_sha256,
                 "helper_sha256": self.helper_sha256, **extra}
 
-    def models_config_helper(self, operation):
-        """The extra-model-paths helper names this install's model directory, volume cache or <root>/models."""
-        return self.helper(operation, models_root=self.plan.models_root)
-
     def helper(self, operation, **extra):
         result = self.run(("python3", "-I", "-m", "astrid.core.generation.engine_runner_target",
                            operation, _json(self.payload(**extra))))
         value = self.response(result, _HELPER_SCHEMA, operation)
-        if set(value) == {"error_code"}:
+        if "error_code" in value:
+            if set(value) != {"error_code", "reason"} or engine_reason(value["reason"]) is None:
+                raise IntegrityError("invalid target helper response", step_id=self.step_id)
             from . import engine_contracts
             errors = {cls.code: cls for cls in (
                 engine_contracts.IntegrityError, engine_contracts.UnsafePathError,
-                engine_contracts.RecipeValidationError, engine_contracts.EngineReinstallRequired)}
+                engine_contracts.RecipeValidationError)}
             error = errors.get(value["error_code"], IntegrityError)
-            if error is EngineReinstallRequired:
-                environment = next((e.name for e in self.recipe.environments
-                                    if e.name == extra.get("environment")), self.recipe.primary_environment)
-                raise error.for_install(engine=self.plan.engine, platform=self.plan.platform,
-                                        root=self.plan.root, environment=environment, step_id=self.step_id)
-            raise error("target helper validation failed", step_id=self.step_id)
+            raise error("target helper validation failed", reason=value["reason"], step_id=self.step_id)
         return value
 
     def response(self, result, schema, operation):
@@ -473,17 +499,23 @@ class _Runner:
                 "launch_sha256", "owner_id", "healthy", "object_info_sha256", "required_nodes_present"}
         if set(value) != keys or any(value[k] != request[k] for k in (
                 "engine", "platform", "root", "recipe_sha256", "helper_sha256")):
-            raise EndpointOwnershipError("service evidence does not match installation", step_id=self.step_id)
+            raise self._custody_refusal(EndpointOwnershipError, "service evidence does not match installation",
+                                        reason="request_mismatch", step_id=self.step_id)
         if value["state"] not in {"absent", "owned", "unowned"}:
-            raise EndpointOwnershipError("invalid service ownership state", step_id=self.step_id)
+            raise self._custody_refusal(EndpointOwnershipError, "invalid service ownership state",
+                                        reason="request_mismatch", step_id=self.step_id)
         if value["state"] == "unowned":
-            raise EndpointOwnershipError("engine port is occupied by an unowned service", step_id=self.step_id)
+            error = self._custody_refusal(EndpointOwnershipError, "engine port is occupied by an unowned service",
+                                         reason="endpoint_unowned", step_id=self.step_id)
+            error.port = self.recipe.start.port
+            raise error
         if value["state"] == "owned":
             if (not isinstance(value["owner_id"], str) or not value["owner_id"]
                     or len(value["owner_id"]) > 256
                     or value["launch_sha256"] != _sha(self.launch_spec())
                     or self.service_owner is not None and value["owner_id"] != self.service_owner):
-                raise EndpointOwnershipError("service incarnation or launch binding differs", step_id=self.step_id)
+                raise self._custody_refusal(EndpointOwnershipError, "service incarnation or launch binding differs",
+                                            reason="request_mismatch", step_id=self.step_id)
             self.service_owner = value["owner_id"]
         return value
 
@@ -508,15 +540,17 @@ class _Runner:
     def placeholder_values(self, environment=None):
         if environment is None:
             environment = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
+        comfy_root = self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui"))
         return {"install_root": self.plan.root,
                 "python": self.adapter.venv_python(self.path(environment.relative_path)),
-                "comfy_root": self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui")),
-                "models_root": self.path("models") if self.plan.models_root is None else self.plan.models_root,
-                "models_config": self.path("runtime/extra_model_paths.yaml"),
+                "comfy_root": comfy_root,
+                "models_root": effective_models_root(self.plan.root, self.plan.models_root),
                 "host": self.recipe.start.bind_host, "port": str(self.recipe.start.port)}
 
     def source(self, source, *, readonly=False):
         path = self.path(source.relative_path)
+        if source.name == "comfyui" and not readonly:
+            self.helper("cleanup-legacy-model-links", models_root=self.plan.models_root)
         fact, git = self.fact(path), self.fact(self.adapter.join(path, ".git"))
         if fact.symlink or git.symlink or git.exists and git.regular:
             raise UnsafePathError("source or Git directory is unsafe", step_id=self.step_id)
@@ -541,12 +575,12 @@ class _Runner:
         dirty = self.run(("git", "-C", path, "status", "--porcelain", "--untracked-files=all"))
         entries = dirty.stdout.splitlines()
         allowed = (not dirty.stdout_truncated and entries
-                   and self.helper("models-source-check", source=source.name,
-                                   models_root=self.plan.models_root, entries=entries) == {"valid": True})
+                   and self.helper("declared-source-modifications", source=source.name,
+                                   entries=entries) == {"valid": True})
         if (dirty.stdout.strip() and not allowed) or dirty.stdout_truncated:
             patch = next((patch for patch in self.recipe.source_patches
                           if patch.source == source.name and any(line[3:] == patch.path for line in entries)), None)
-            reason = (f"source patch digest mismatch: {source.name} {patch.path}" if patch
+            reason = ("source patch digest mismatch" if patch
                       else "source contains uncommitted content")
             error = IntegrityError(reason, step_id=self.step_id)
             # Porcelain lines carry only status codes and paths: no contents, no command output.
@@ -572,58 +606,25 @@ class _Runner:
         self.commits[source.name] = source.pin.revision
         return "executed" if changed else "skipped", {"commit": source.pin.revision}
 
-    def check_environment_identities(self):
-        for environment in self.recipe.environments:
-            self.step_id = "environment:" + environment.name
-            self.environment_state(environment)
-
     def environment_state(self, environment):
         name = environment.name
-        state_path = self.path(".astrid-engine/environments", name, "receipt.json")
-        lock_path = self.path(".astrid-engine/environments", name, "requirements.lock")
-        lock = self.fact(lock_path, hashed=True)
-        state = self.optional_json(state_path)
+        state = self.optional_json(self.path(".astrid-engine/environments", name, "receipt.json"))
+        lock = self.fact(self.path(".astrid-engine/environments", name, "requirements.lock"), hashed=True)
         if lock.exists and (lock.symlink or not lock.regular or not lock.sha256):
             raise IntegrityError("unsafe requirements lock", step_id=self.step_id)
-        identity = {"recipe_sha256": self.plan.recipe_sha256, "helper_sha256": self.helper_sha256,
-                    "environment": name}
-        if state is not None and (not isinstance(state, Mapping)
-                or state.get("recipe_sha256") != identity["recipe_sha256"]
-                or state.get("environment") != name
-                or not isinstance(state.get("helper_sha256"), str)
-                or not _DIGEST.fullmatch(state["helper_sha256"])
-                or not lock.sha256 or lock.sha256 != state.get("requirements_lock_sha256")):
-            raise IntegrityError("environment receipt or persisted lock identity differs", step_id=self.step_id)
-        if state is not None and state["helper_sha256"] != self.helper_sha256:
-            raise EngineReinstallRequired.for_install(engine=self.plan.engine, platform=self.plan.platform,
-                root=self.plan.root, environment=name, step_id=self.step_id)
-        # Interrupted installs can have a lock identity before a receipt. This
-        # is only a refusal check; the target helper still validates the lock.
-        candidate = lock if lock.exists else self.fact(
-            self.path(".astrid-engine/environments", name, "requirements.lock.tmp"), hashed=True)
-        if candidate.exists:
-            if candidate.symlink or not candidate.regular or not candidate.sha256:
-                raise IntegrityError("unsafe requirements lock", step_id=self.step_id)
-            meta = self.optional_json(self.path(".astrid-engine/environments", name, "lock.json"))
-            expected = {"schema": "astrid.requirements-lock.v1", "environment": name,
-                        "recipe_sha256": self.plan.recipe_sha256,
-                        "requirements_lock_sha256": candidate.sha256}
-            if (isinstance(meta, Mapping) and set(meta) == set(expected) | {"helper_sha256"}
-                    and all(meta[k] == v for k, v in expected.items())
-                    and isinstance(meta["helper_sha256"], str) and _DIGEST.fullmatch(meta["helper_sha256"])
-                    and meta["helper_sha256"] != self.helper_sha256
-                    and (environment.requirements.mode != "packaged"
-                         or candidate.sha256 == environment.requirements.packaged_lock.sha256)):
-                raise EngineReinstallRequired.for_install(engine=self.plan.engine, platform=self.plan.platform,
-                    root=self.plan.root, environment=name, step_id=self.step_id)
-        return state, lock
+        if state is not None and not isinstance(state, Mapping):
+            raise IntegrityError("invalid environment receipt", step_id=self.step_id)
+        complete = (state is not None and state.get("validated") is True
+                    and state.get("recipe_sha256") == self.plan.recipe_sha256
+                    and state.get("environment") == name and lock.sha256 is not None
+                    and state.get("requirements_lock_sha256") == lock.sha256)
+        return state if complete else None, lock
 
     def environment(self, environment, *, readonly=False):
         name = environment.name
         state_path = self.path(".astrid-engine/environments", name, "receipt.json")
         lock_path = self.path(".astrid-engine/environments", name, "requirements.lock")
-        identity = {"recipe_sha256": self.plan.recipe_sha256, "helper_sha256": self.helper_sha256,
-                    "environment": name}
+        identity = {"recipe_sha256": self.plan.recipe_sha256, "environment": name}
         state, lock = self.environment_state(environment)
         if environment.node_lock:
             ref = environment.node_lock
@@ -641,6 +642,11 @@ class _Runner:
                 raise IntegrityError("installed environment no longer matches its lock", step_id=self.step_id)
         elif readonly:
             raise IntegrityError("environment has no verified receipt", step_id=self.step_id)
+        # Invalidate completion before any destructive repair. Interrupted repairs
+        # always recreate the environment instead of probing a half-built venv.
+        self.context.ensure_dir(self.path(".astrid-engine/environments", name), deadline=self.deadline)
+        self.write(state_path, {**identity, "requirements_lock_sha256": lock.sha256, "validated": False})
+        self.helper("reset-environment", environment=name)
         uv = self.adapter.uv_executable(self.path("runtime"))
         python = self.adapter.venv_python(self.path(environment.relative_path))
         preparation = self.helper("lock-inputs", environment=name)
@@ -754,23 +760,20 @@ class _Runner:
         launch = self.launch_spec()
         probe = self.service("probe", launch=launch)
         if probe["state"] == "owned":
-            if self.models_config_helper("models-config-check") != {"valid": True}:
-                raise IntegrityError("owned engine models configuration differs", step_id=self.step_id)
             return "skipped", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
                                "cuda_visible_devices": self.visibility}
         if readonly:
             raise EndpointHealthError("owned engine server is absent", step_id=self.step_id)
-        if self.models_config_helper("models-config") != {"written": True}:
-            raise IntegrityError("engine models configuration was not written", step_id=self.step_id)
+        models_root = effective_models_root(self.plan.root, self.plan.models_root)
+        self.context.ensure_dir(models_root, deadline=self.deadline)
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
-            raise EndpointOwnershipError("server start did not establish ownership", step_id=self.step_id)
+            raise self._custody_refusal(EndpointOwnershipError, "server start did not establish ownership",
+                                        reason="endpoint_unowned", step_id=self.step_id)
         return "executed", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
                             "cuda_visible_devices": self.visibility}
 
     def check_health(self):
-        if self.models_config_helper("models-config-check") != {"valid": True}:
-            raise IntegrityError("engine models configuration differs", step_id=self.step_id)
         limit = min(self.deadline, time.monotonic() + self.recipe.health.timeout_seconds)
         value = self.service("health", launch=self.launch_spec(), deadline=limit)
         if value["state"] != "owned":
@@ -811,13 +814,6 @@ class _Runner:
 SANITY_CMD_ENV = "ASTRID_ENGINE_SANITY_CMD"
 
 
-def _check_install_identity(plan, *, context, adapter, deadline):
-    """Read existing environment identities without invoking or adopting a helper."""
-    runner = _Runner(plan, context, adapter, deadline)
-    with context.acquire_install_lock(plan.root, deadline=deadline):
-        runner.check_environment_identities()
-
-
 def install_engine(plan: InstallPlan, *, context: ExecutionContext,
                    adapter: PlatformAdapter, deadline: Deadline, sanity_cmd: str | None = None) -> InstallReceipt:
     """Install the engine. ``sanity_cmd`` (default: ``ASTRID_ENGINE_SANITY_CMD``) runs once after the
@@ -826,10 +822,9 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
     """
     sanity_cmd = sanity_cmd if sanity_cmd is not None else os.environ.get(SANITY_CMD_ENV, "")
     runner = _Runner(plan, context, adapter, deadline)
-    with context.acquire_install_lock(plan.root, deadline=deadline):
-        # Refuse old environment identity before contacting an owner or
-        # publishing an installing receipt. No old facts are re-attested.
-        runner.check_environment_identities()
+    with context.acquire_install_lock(plan.root, deadline=deadline, kind="install"):
+        from .engine_custody import stop_engine_for_converge
+        stop_engine_for_converge(plan, context=context, deadline=deadline)
         # Also bind installed target code/data before any source/environment action.
         runner.step_id = "helper-identity"
         try:
@@ -843,13 +838,17 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
         previous = runner.optional_json(runner.path(_RECEIPT))
         if previous is not None:
             parsed = _parse_receipt(previous, plan)
+            if plan.models_root is None and parsed.models_root is not None:
+                plan = plan_from_receipt(runner.recipe, parsed, root=plan.root, placement=plan.placement)
+                runner.plan = plan
             if parsed.error_code == "custody_unresolved":
                 handle = next((s.facts.get("recovery_handle") for s in reversed(parsed.steps)
                                if s.facts.get("recovery_handle")), None)
-                raise CustodyUnresolved("recover the exact prior command before retrying installation",
-                                        step_id=next((s.id for s in reversed(parsed.steps)
-                                                      if s.validation == "failed"), None),
-                                        recovery_handle=handle)
+                raise runner._custody_refusal(
+                    CustodyUnresolved, "recover the exact prior command before retrying installation",
+                    reason="cleanup_unconfirmed",
+                    step_id=next((s.id for s in reversed(parsed.steps) if s.validation == "failed"), None),
+                    recovery_handle=handle)
         context.ensure_dir(runner.path(".astrid-engine"), deadline=deadline)
         runner.write(runner.path(_RECEIPT), runner.receipt("installing"))
         try:
@@ -901,12 +900,11 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
 def _failure_diagnostics(exc):
     """Bounded, secret-free detail for a failed step: fixed reason text and porcelain paths/status only.
 
-    Only IntegrityError is described: its messages are module literals, whereas transport
-    errors may carry command output, so they never reach the receipt or the caller.
+    Every typed failure carries a closed-vocabulary reason. Transport messages
+    and captured command output never reach the receipt or the caller here.
     """
-    if not isinstance(exc, IntegrityError):
-        return {}
-    diagnostics = {"reason": exc.message[:200]}
+    reason = engine_reason(exc.reason)
+    diagnostics = {"reason": reason} if reason is not None else {}
     porcelain = getattr(exc, "porcelain", None)
     if porcelain:
         diagnostics["porcelain"] = "\n".join(porcelain)
@@ -918,12 +916,12 @@ def _parse_receipt(raw, plan):
     def obj(value, cls):
         if cls is InstallReceipt and isinstance(value, Mapping):
             value = {"failed_step_id": None, "models_root": None, **value}
+            value.pop("helper_sha256", None)
         if not isinstance(value, Mapping) or set(value) != {f.name for f in fields(cls)}:
             raise IntegrityError("invalid install receipt fields")
         return dict(value)
     value = obj(raw, InstallReceipt)
-    recipe = recipes.load_recipe(plan.engine, plan.platform)
-    for key in ("engine", "platform", "placement", "root", "recipe_sha256", "models_lock_sha256"):
+    for key in ("engine", "platform", "placement", "root"):
         if value[key] != getattr(plan, key):
             raise IntegrityError("install receipt identity differs")
     # The receipt records the model directory it bound. A plan that names one must match it; a plan
@@ -941,6 +939,9 @@ def _parse_receipt(raw, plan):
             or not isinstance(value["receipt_id"], str) or not 1 <= len(value["receipt_id"]) <= 256):
         raise IntegrityError("invalid install receipt state")
     try:
+        for key in ("recipe_sha256", "models_lock_sha256"):
+            if not isinstance(value[key], str) or not _DIGEST.fullmatch(value[key]):
+                raise ValueError
         for key in ("started_at", "completed_at"):
             stamp = value[key]
             if stamp is not None and datetime.fromisoformat(stamp).utcoffset() is None:
@@ -952,8 +953,8 @@ def _parse_receipt(raw, plan):
             raise ValueError
         failed_step = value["failed_step_id"]
         if failed_step is not None and (
-                not isinstance(failed_step, str) or failed_step not in _status_step_ids(plan)
-                or value["status"] != "failed" or value["error_code"] not in _STATUS_ERROR_CODES):
+                not isinstance(failed_step, str)
+                or value["status"] != "failed"):
             raise ValueError
         for key in ("requirements_locks", "source_commits"):
             if not isinstance(value[key], Mapping):
@@ -962,19 +963,17 @@ def _parse_receipt(raw, plan):
             raise ValueError
         if not all(isinstance(v, str) and re.fullmatch("[0-9a-f]{40}", v) for v in value["source_commits"].values()):
             raise ValueError
-        if (not set(value["requirements_locks"]).issubset({e.name for e in recipe.environments})
-                or not set(value["source_commits"]).issubset({s.name for s in recipe.sources})):
-            raise ValueError
         if not isinstance(value["models"], (list, tuple)) or not isinstance(value["steps"], (list, tuple)):
             raise ValueError
-        # Plan 32 T5h: a new install writes no model rows; a legacy receipt's verified rows are kept
-        # as the receipt's rows, under <root>/models, exactly as the installer wrote them.
-        models_root = (value["models_root"] if value["models_root"] is not None else plan.root + "/models") + "/"
+        # Preserve old receipt paths as historical evidence alongside the current binding.
+        model_roots = (effective_models_root(plan.root, value["models_root"]) + "/",)
+        if value["models_root"] is None:
+            model_roots += (plan.root + "/models/",)
         models = []
         for model_raw in value["models"]:
             row = obj(model_raw, DownloadResult)
             if (not isinstance(row["model"], str) or not isinstance(row["path"], str)
-                    or not row["path"].startswith(models_root) or row["verified"] is not True
+                    or not row["path"].startswith(model_roots) or row["verified"] is not True
                     or row["action"] not in {"downloaded", "resumed", "skipped"}
                     or type(row["bytes"]) is not int or row["bytes"] < 0
                     or not isinstance(row["sha256"], str) or not _DIGEST.fullmatch(row["sha256"])
@@ -983,20 +982,30 @@ def _parse_receipt(raw, plan):
             models.append(DownloadResult(**row))
         models = tuple(models)
         # Legacy receipts also carry one kind == "model" step per model row. Their shape is checked
-        # here, then they are dropped: the plan's expected steps and the installed equality see none.
+        # here; ordinary rows are omitted from current-plan comparison, except for custody evidence.
         step_rows = [obj(v, StepReceipt) for v in value["steps"]]
         for row in step_rows:
             if row["kind"] == "model" and (not isinstance(row["id"], str) or not row["id"].startswith("model:")
                     or row["action"] not in {"executed", "skipped"} or row["validation"] not in {"passed", "failed"}
                     or not isinstance(row["facts"], Mapping)):
                 raise ValueError
-        steps = tuple(StepReceipt(**row) for row in step_rows if row["kind"] != "model")
+            if (row["kind"] == "model" and value["status"] == "failed"
+                    and value["error_code"] == "custody_unresolved"
+                    and "recovery_handle" in row["facts"]
+                    and (not isinstance(row["facts"]["recovery_handle"], str)
+                         or not row["facts"]["recovery_handle"])):
+                raise ValueError
+        # Old receipts normally discard model rows from the current step projection. Keep a
+        # recovery-bearing one in failed custody receipts so a retry can resume exact custody.
+        steps = tuple(StepReceipt(**row) for row in step_rows
+                      if row["kind"] != "model" or value["status"] == "failed"
+                      and value["error_code"] == "custody_unresolved"
+                      and "recovery_handle" in row["facts"])
         health = None if value["health"] is None else HealthEvidence(**obj(value["health"], HealthEvidence))
         if len({s.id for s in steps}) != len(steps):
             raise ValueError
-        expected = {s.id: s.kind for s in plan.steps}
         for step in steps:
-            if (step.id not in expected or step.kind != expected[step.id]
+            if (not isinstance(step.id, str) or not isinstance(step.kind, str)
                     or step.action not in {"executed", "skipped"} or step.validation not in {"passed", "failed"}
                     or not isinstance(step.facts, Mapping)
                     or not all(isinstance(k, str) and (v is None or type(v) in {str, int, bool})
@@ -1011,13 +1020,10 @@ def _parse_receipt(raw, plan):
                     or not _DIGEST.fullmatch(health.object_info_sha256))):
             raise ValueError
         if value["status"] == "installed" and (
-                tuple(s.id for s in steps) != tuple(s.id for s in plan.steps)
-                or any(s.validation != "passed" for s in steps) or health is None
+                any(s.validation != "passed" for s in steps) or health is None
                 or health.status != "healthy" or health.required_nodes_present is not True
                 or not isinstance(health.object_info_sha256, str) or not _DIGEST.fullmatch(health.object_info_sha256)
-                or value["completed_at"] is None or value["error_code"] is not None
-                or set(value["requirements_locks"]) != {e.name for e in recipe.environments}
-                or value["source_commits"] != {s.name: s.pin.revision for s in recipe.sources}):
+                or value["completed_at"] is None or value["error_code"] is not None):
             raise ValueError
     except (TypeError, ValueError, KeyError) as exc:
         raise IntegrityError("invalid install receipt evidence") from exc
@@ -1034,6 +1040,7 @@ def refresh_installed_launch(runner, raw, *, start_action, start_facts, health_a
     original = _parse_receipt(raw, runner.plan)
     if original.status != "installed":
         raise IntegrityError("managed launch requires a completed installation")
+    require_current_receipt(original, runner.plan, runner.recipe)
     if (runner.health is None or not isinstance(runner.service_owner, str) or not runner.service_owner
             or not isinstance(runner.health.object_info_sha256, str)
             or not _DIGEST.fullmatch(runner.health.object_info_sha256)
@@ -1095,6 +1102,11 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
     plan = plan_from_receipt(recipe, receipt, root=root, placement=placement)
     if receipt.status != "installed":
         return receipt
+    try:
+        require_current_receipt(receipt, plan, recipe)
+    except IntegrityError:
+        return replace(receipt, status="failed", error_code="integrity_failed", failed_step_id="receipt-evidence",
+                       health=HealthEvidence("unhealthy", _now(), None, False), models=(), steps=())
     # Lazy optional production adapter dependency, absent from lookup/planning.
     try:
         from .engine_platforms import platform_adapter
@@ -1123,7 +1135,11 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
         if (runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits
                 or runner.health.object_info_sha256 != receipt.health.object_info_sha256):
             raise IntegrityError("current evidence differs from installed receipt")
-    except (CustodyUnresolved, DeadlineExceeded):
+    except CustodyUnresolved as exc:
+        if not hasattr(exc, "custody_details"):
+            runner.custody_error(exc, "cleanup_unconfirmed")
+        raise
+    except DeadlineExceeded:
         raise
     except EngineError as exc:
         # Use the active trusted boundary, never transport-supplied step IDs,

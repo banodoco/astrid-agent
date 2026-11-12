@@ -74,6 +74,7 @@ class InstalledVibeComfySessionTransport:
             receipt_bytes = self._read(root, receipt_path, deadline)
             receipt = engine_runner._parse_receipt(_json(receipt_bytes), plan)
             plan = engine_runner.plan_from_receipt(recipe, receipt, root=root, placement="local")
+            engine_runner.require_current_receipt(receipt, plan, recipe)
             if receipt.status != "installed":
                 raise ManagedSessionError("canonical installed receipt is required")
             registry = runtime_root + "/out/sessions/" + self.engine
