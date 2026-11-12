@@ -646,15 +646,8 @@ models:
   # =========================================================================
   # wan-2.2 — Wan 2.2 A14B (text-to-video + image-to-video + first-last-frame)
   #
-  # Local templates (vibecomfy):
-  #   i2v: video/wan22_i2v_comfy_lightx2v — ComfyUI native WanImageToVideo
-  #        with fp8 high/low diffusion models and Lightx2v 4-step LoRAs.
-  #        unbound_inputs: image, prompt, negative_prompt, seed,
-  #        width, height, num_frames, steps.
-  #        FLAG-003: bare template — no bind_input calls; adapter uses
-  #        unbound_inputs + node-target fallback.
-  #   t2v: ABSENT per FLAG-001 — no local wan-2.2 text-to-video template
-  #        exists, and wan2.1 substitution is forbidden (SD-001).
+  # The unqualified i2v mode is omitted until it can be validated live.
+  # No local t2v template exists; wan2.1 substitution is forbidden (SD-001).
   #
   # Cloud endpoints (fal):
   #   t2v: fal-ai/wan/v2.2-a14b/text-to-video/turbo — confirmed.
@@ -687,30 +680,6 @@ models:
         backends:
           cloud:
             endpoint: fal-ai/wan/v2.2-a14b/text-to-video/turbo
-      i2v:
-        supports:
-          - prompt
-          - negative_prompt
-          - seed
-          - image_ref
-          - resolution
-          - frames
-          - guidance_scale
-          - steps
-          - shift
-          - loras
-          - enable_safety_checker
-          - enable_prompt_expansion
-          - acceleration
-        requires:
-          - prompt
-          - image_ref
-        backends:
-          local:
-            template: video/wan22_i2v_comfy_lightx2v
-            template_hash: "sha256:3ffd22bd1f1b29f15e70e0cd71aa9f9df3992e15e9411b2ab1ad82cb8dd4735b"
-          cloud:
-            endpoint: fal-ai/wan/v2.2-a14b/image-to-video/turbo
       flf:
         supports:
           - prompt

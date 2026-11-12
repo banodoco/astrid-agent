@@ -44,6 +44,11 @@ def test_fixed_entry_dry_run(entry_id, mode, paid_controls, tmp_path, capsys, mo
     assert runpod_guard.blocked_attempts[before:] == []
 
 
+def test_unqualified_wan_i2v_is_not_offered():
+    entry = next(e for e in ModelRegistry.load_default().list_all() if e.id == "wan-2.2")
+    assert "i2v" not in entry.modes
+
+
 # scail-2's full dry run waits for banodoco/astrid-dev#607.
 @pytest.mark.parametrize("modality", ["video", "audio"])
 def test_video_ref_is_accepted_for_video_and_audio(modality):
