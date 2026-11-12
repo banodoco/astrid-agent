@@ -665,3 +665,11 @@ def test_large_real_edit_template_yields_names_and_ids():
         'code': 'input_rejected', 'category': 'input', 'node_id': '470',
         'node_class': 'KSamplerSelect', 'field': 'prompt'}
     assert fd.MAX_RESULT_BYTES == 64 * 1024 and fd.MAX_GRAPH_BYTES == 8 * 1024 * 1024
+
+
+def test_node_class_allowlist_is_scoped_to_engine():
+    assert fd.fact_allowlist('comfyui')['node_class']
+    assert fd.fact_allowlist('other-engine') == {}
+    diagnostic = {'code': 'generation_failed', 'category': 'execution', 'node_class': 'KSampler'}
+    assert fd.host_summary(RuntimeError(), diagnostic, engine_id='comfyui')['node_class'] == 'KSampler'
+    assert 'node_class' not in fd.host_summary(RuntimeError(), diagnostic, engine_id='other-engine')
