@@ -1,15 +1,16 @@
-"""Construct the cell's patched Qwen3 TTS models without downloading weights.
+"""Construct and run the cell's patched Qwen3 TTS models without weights.
 
 Run in a CPU engine-deps venv, with ASTRID_QWENTTS_CHECKOUT pointing to a clone
 of the recipe's comfyui-qwentts source. Only committed files at the declared pin
 are copied; the engine helper applies and verifies the declared source patches.
 The full upstream config snapshots are verified against the engine model lock.
-All model parameters stay on meta, and Hugging Face access is offline.
+Full-size constructors use meta; tiny random models run on CPU. Hub access is offline.
 """
 
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -146,3 +147,107 @@ def test_real_model_constructors_on_meta(node, component):
     assert all(parameter.device.type == "meta" for parameter in parameters)
     if model.can_generate():
         assert model.generation_config is not None
+
+
+def tiny_talker_config(configs):
+    payload = load_snapshot("speech-config.json", "config.json")
+    talker = payload["talker_config"]
+    predictor = talker["code_predictor_config"]
+    # Keep the real nested architecture, including all three mRoPE axes and
+    # multiple code groups. Six rotary channels give each axis one frequency.
+    for config in (talker, predictor):
+        config.update(hidden_size=6, intermediate_size=12, head_dim=6,
+                      num_attention_heads=1, num_key_value_heads=1,
+                      num_hidden_layers=1, vocab_size=8, num_code_groups=3)
+        if "layer_types" in config:
+            config["layer_types"] = config["layer_types"][:config["num_hidden_layers"]]
+    talker.update(text_hidden_size=6, text_vocab_size=8)
+    talker["rope_scaling"]["mrope_section"] = [1, 1, 1]
+    return configs.Qwen3TTSConfig.from_dict(payload).talker_config
+
+
+def tiny_tokenizer_config(configs):
+    payload = load_snapshot("speech-tokenizer-config.json", "speech_tokenizer/config.json")
+    encoder, decoder = payload["encoder_config"], payload["decoder_config"]
+    for config in (encoder, decoder):
+        config.update(hidden_size=6, intermediate_size=12, head_dim=6,
+                      num_attention_heads=1, num_key_value_heads=1,
+                      num_hidden_layers=1, codebook_size=4, num_quantizers=2,
+                      vector_quantization_hidden_dimension=2)
+    encoder.update(num_filters=2, codebook_dim=2, upsample_groups=6)
+    # Preserve every convolution stage. The encoder has an additional stride-2
+    # downsampler, while the decoder has two extra upsampling stages.
+    encoder["upsampling_ratios"] = [2] * len(encoder["upsampling_ratios"])
+    encoder["upsampling_ratios"][-1] *= 2
+    decoder["upsample_rates"] = [2] * len(decoder["upsample_rates"])
+    decoder["upsampling_ratios"] = [2] * len(decoder["upsampling_ratios"])
+    decoder.update(latent_dim=6, codebook_dim=6,
+                   decoder_dim=2 ** len(decoder["upsample_rates"]))
+    stride = math.prod(decoder["upsample_rates"] + decoder["upsampling_ratios"])
+    # The real config stores an explicit frame rate; scale it with the smaller
+    # convolution strides so Mimi's extra downsampler still has stride two.
+    encoder["_frame_rate"] = encoder["sampling_rate"] / stride
+    payload.update(encoder_valid_num_quantizers=2, decode_upsample_rate=stride,
+                   encode_downsample_rate=stride)
+    return configs.Qwen3TTSTokenizerV2Config.from_dict(payload)
+
+
+@pytest.mark.parametrize("component", ["talker", "code_predictor", "speech_tokenizer"])
+def test_tiny_random_model_forward_on_cpu(node, component):
+    configs, models, tokenizer_configs, tokenizer_models = node
+    torch.manual_seed(0)
+    with torch.no_grad():
+        if component == "speech_tokenizer":
+            config = tiny_tokenizer_config(tokenizer_configs)
+            model = tokenizer_models.Qwen3TTSTokenizerV2Model(config).eval()
+            frames = 2
+            samples = frames * config.encode_downsample_rate
+            waveform = torch.randn(1, samples)
+            encoded = model.encode(waveform, padding_mask=torch.ones_like(waveform, dtype=torch.long))
+            assert len(encoded.audio_codes) == 1
+            codes = encoded.audio_codes[0]
+            assert codes.shape == (frames, config.encoder_valid_num_quantizers)
+            assert codes.dtype == torch.long
+            assert ((codes >= 0) & (codes < config.encoder_config.codebook_size)).all()
+            # Zero in the first codebook denotes padding to this decoder API.
+            codes = torch.randint(1, config.decoder_config.codebook_size,
+                                  (1, frames, config.decoder_config.num_quantizers))
+            decoded = model.decode(codes).audio_values
+            assert len(decoded) == 1
+            # The vocoder's causal transposed convolutions crop both ends:
+            # each decoder block maps L input samples to (L - 1) * rate.
+            decoded_samples = frames * math.prod(config.decoder_config.upsampling_ratios)
+            for rate in config.decoder_config.upsample_rates:
+                decoded_samples = (decoded_samples - 1) * rate
+            assert decoded[0].shape == (decoded_samples,)
+            assert torch.isfinite(decoded[0]).all()
+        else:
+            config = tiny_talker_config(configs)
+            if component == "talker":
+                model = models.Qwen3TTSTalkerForConditionalGeneration(config).eval()
+                prefill_kwargs = dict(trailing_text_hidden=torch.randn(1, 1, config.hidden_size),
+                                      tts_pad_embed=torch.randn(1, 1, config.hidden_size))
+            else:
+                model = models.Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(
+                    config.code_predictor_config, config,
+                ).eval()
+                prefill_kwargs = {}
+            embeddings = torch.randn(1, 2, config.hidden_size)
+            prefill = model(inputs_embeds=embeddings, use_cache=True, **prefill_kwargs)
+            assert prefill.logits.shape == (1, 2, model.config.vocab_size)
+            assert torch.isfinite(prefill.logits).all()
+            assert prefill.past_key_values.get_seq_length() == 2
+            if component == "talker":
+                step_kwargs = dict(past_hidden=prefill.past_hidden,
+                                   generation_step=prefill.generation_step,
+                                   trailing_text_hidden=prefill.trailing_text_hidden,
+                                   tts_pad_embed=prefill.tts_pad_embed,
+                                   subtalker_dosample=False)
+            else:
+                step_kwargs = dict(generation_steps=prefill.generation_steps)
+            step = model(input_ids=torch.ones(1, 1, dtype=torch.long),
+                         past_key_values=prefill.past_key_values, use_cache=True, **step_kwargs)
+            assert step.logits.shape == (1, 1, model.config.vocab_size)
+            assert torch.isfinite(step.logits).all()
+            assert step.past_key_values.get_seq_length() == 3
+        assert all(parameter.device.type == "cpu" for parameter in model.parameters())
