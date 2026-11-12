@@ -41,15 +41,13 @@ def test_collect_child_relative_path(tmp_path):
     assert (tmp_path / "logs/child.log").read_bytes() == b"child"
 
 
+@pytest.mark.posix_native
 def test_missing_and_symlink_sources_are_rows(tmp_path):
     run_logs.declare(tmp_path, run_logs.LogDecl("missing", "run", "absent.log"))
     target = tmp_path / "target.log"
     target.write_text("secret")
     link = tmp_path / "link.log"
-    try:
-        link.symlink_to(target)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks unavailable")
+    link.symlink_to(target)
     run_logs.declare(tmp_path, run_logs.LogDecl("link", "run", "link.log"))
     rows = run_logs.collect(tmp_path)
     assert all(row["missing"] for row in rows)
