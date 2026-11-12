@@ -54,9 +54,17 @@ def file_code_counts(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"path": path, "code": code, "count": count} for (path, code), count in sorted(counts.items())]
 
 
-def main(label: str, default_baseline: Path, file_code_baseline: Path, run: Callable[[], dict[str, Any]]) -> int:
+def main(
+    label: str,
+    default_baseline: Path | None,
+    file_code_baseline: Path,
+    run: Callable[[], dict[str, Any]],
+    *,
+    compare_total: bool = True,
+) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--baseline", type=Path, default=default_baseline)
+    if compare_total:
+        parser.add_argument("--baseline", type=Path, default=default_baseline)
     parser.add_argument("--write-baseline", action="store_true")
     parser.add_argument("--file-code-baseline", type=Path, default=file_code_baseline)
     parser.add_argument("--write-file-code-baseline", action="store_true")
@@ -72,14 +80,16 @@ def main(label: str, default_baseline: Path, file_code_baseline: Path, run: Call
         args.file_code_baseline.write_text(json.dumps(file_code, indent=2) + "\n")
         print(f"Wrote {label} file/code baseline to {args.file_code_baseline} ({len(file_code)} rows)")
         return 0
-    if args.write_baseline:
+    if args.write_baseline and compare_total:
         args.baseline.write_text(json.dumps(current, indent=2) + "\n")
         print(f"Wrote {label} baseline to {args.baseline} ({current['finding_count']} findings)")
         return 0
 
-    baseline = json.loads(args.baseline.read_text())
-    code, message = verdict(label, int(current["finding_count"]), int(baseline["finding_count"]))
-    print(message, file=sys.stderr if code else sys.stdout)
+    code = 0
+    if compare_total:
+        baseline = json.loads(args.baseline.read_text())
+        code, message = verdict(label, int(current["finding_count"]), int(baseline["finding_count"]))
+        print(message, file=sys.stderr if code else sys.stdout)
     file_code_exit, file_code_message = file_code_verdict(
         file_code, json.loads(args.file_code_baseline.read_text())
     )
