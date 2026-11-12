@@ -59,8 +59,8 @@ def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
         # Same inputs as the facade's own decision: the request, the repo and the client it would get.
         placement = placements.resolve_placement(placements.request_from_selector(target), repo=repo, client=client)
         return _select_generation_target(placements.comfy_selector(placement), repo=repo) is None
-    except Exception:
-        _logger.exception("Could not settle whether a local generation target is available")
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        _logger.debug("Could not settle whether a local generation target is available", exc_info=True)
         return False
 
 
@@ -800,8 +800,8 @@ def _kept_failure(before: set[tuple[str | None, int | None]]) -> None:
             print(f"Failure: {summary or 'unknown'}. machine {row['id']} kept until "
                   f"{_when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
                   f"reuse it or run `astrid machines release {row['id']}`", file=sys.stderr)
-    except Exception:
-        _logger.exception("Could not read the retained failure context")
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        _logger.debug("Could not read the retained failure context", exc_info=True)
         pass  # Diagnostic reads cannot change settlement or mask the original error.
 
 
@@ -823,8 +823,8 @@ def main(argv: list[str] | None = None) -> int:
             from astrid.packs.runpod.machine import journal_leases
             before = {(row.get('lease'), (row.get('last_job') or {}).get('generation'))
                       for row in journal_leases()}
-        except Exception:
-            _logger.exception("Could not snapshot leases before the command")
+        except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+            _logger.debug("Could not snapshot leases before the command", exc_info=True)
             pass
     try:
         scope = nullcontext()
