@@ -70,6 +70,13 @@
     {
       "file": "astrid/core/execution/generic_host.py",
       "kind": "pack_import",
+      "value": "astrid.packs.runpod.failure_receipt",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_import",
       "value": "astrid.packs.wan2gp.src.driver",
       "count": 3
     },
@@ -150,6 +157,34 @@
       "kind": "pack_name_literal",
       "value": "comfyui",
       "count": 4
+    },
+    {
+      "file": "astrid/core/generation/canonical_pins.py",
+      "kind": "repo_pack_path",
+      "value": "The one declaration of the engine pins: ``astrid/packs/runpod/pins.json``.\n\nVibeComfy, ComfyUI and runpod-lifecycle are declared there and nowhere else\nthat the Agent can read at runtime. The RunPod recipe binds the file by digest,\nso reading it through that binding is the single point where a pin is resolved.\nFiles that must stay literal (``pyproject.toml``, the second pin file, the App\ninstall manifest) are checked against it by\n``tests/core/generation/test_pin_single_source.py``; the App checks the manifest\nwith ``scripts/installer/pin.mjs --check``, which reads this same file.\n",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/generation/canonical_pins.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/runpod/pins.json",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/generation/cli.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/generation/cli.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod.machine",
+      "count": 2,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
     },
     {
       "file": "astrid/core/generation/cli.py",
@@ -320,6 +355,20 @@
       "count": 5
     },
     {
+      "file": "astrid/core/generation/placement.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod.machine",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/generation/placement.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 5,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
       "file": "astrid/core/generation/preflight.py",
       "kind": "pack_import",
       "value": "astrid.packs.runpod.prepared_task",
@@ -342,6 +391,13 @@
       "kind": "pack_name_literal",
       "value": "comfyui",
       "count": 2
+    },
+    {
+      "file": "astrid/core/generation/settings.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 4,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
     },
     {
       "file": "astrid/core/generation/target_launch.py",
@@ -372,6 +428,48 @@
       "kind": "pack_name_literal",
       "value": "runpod",
       "count": 4
+    },
+    {
+      "file": "astrid/core/machines_cli.py",
+      "kind": "capability_id",
+      "value": "runpod.setup",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/machines_cli.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/machines_cli.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod.machine",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/machines_cli.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod.target_selection",
+      "count": 5,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/machines_cli.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod.worker_owner",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/core/machines_cli.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 6,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
     },
     {
       "file": "astrid/core/structure.py",
@@ -405,6 +503,13 @@
     },
     {
       "file": "astrid/sdk/generation.py",
+      "kind": "capability_id",
+      "value": "runpod.claim",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/sdk/generation.py",
       "kind": "pack_import",
       "value": "astrid.packs.h3_av.actions.transform.run",
       "count": 1
@@ -413,7 +518,8 @@
       "file": "astrid/sdk/generation.py",
       "kind": "pack_import",
       "value": "astrid.packs.runpod.target_selection",
-      "count": 2
+      "count": 6,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
     },
     {
       "file": "astrid/sdk/generation.py",
@@ -441,6 +547,13 @@
     },
     {
       "file": "astrid/sdk/invocation.py",
+      "kind": "capability_id",
+      "value": "runpod.claim",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
       "kind": "pack_import",
       "value": "astrid.packs.h3_av.actions.transform.run",
       "count": 3
@@ -450,6 +563,13 @@
       "kind": "pack_import",
       "value": "astrid.packs.runpod.prepared_task",
       "count": 1
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 1,
+      "note": "Owner ruling, 12 Nov 2026: core neutrality is an aspiration; no early generalisation while there is one provider and one engine. M11: a neutral machine interface when a second provider arrives."
     }
   ]
 }
