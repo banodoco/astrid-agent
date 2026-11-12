@@ -123,6 +123,17 @@ def settlement_case(host_case, tmp_path, monkeypatch):
 
         def fail_attempt(self, attempt_id, *, idempotency_key, **body):
             case.failures.append((attempt_id, copy.deepcopy(body), idempotency_key))
+            if case.mode in {"fail_conflict", "fail_lease", "fail_transport", "cede_outage"} and "result" in body:
+                if case.mode in {"fail_conflict", "cede_outage"}:
+                    raise ApiError(409, "conflict", "output object is outside the task project")
+                if case.mode == "fail_lease":
+                    raise ApiError(409, "lease_expired", "lease expired")
+                if len(case.failures) <= 2:
+                    raise OSError("ACK unavailable")
+            if case.mode == "cede_outage" and "result" not in body and sum(
+                "result" not in item[1] for item in case.failures
+            ) <= 2:
+                raise OSError("cede unavailable")
             if case.mode == "conflict":
                 assert any(t.name == f"astrid-heartbeat-{case.task_id}" and t.is_alive()
                            for t in threading.enumerate())
@@ -373,3 +384,94 @@ def test_rejection_requires_validation_response_and_exact_nonterminal_readback(
                         outputs=[], effect=None)
     assert (type(raised.value).__name__ == "TerminalPublicationRejected") is rejected
     assert len(writes) == (1 if rejected else 2)
+
+
+@pytest.mark.parametrize("mode", ["fail_conflict", "fail_lease"])
+def test_rejected_failure_cedes_without_evidence(settlement_case, monkeypatch, mode):
+    case = settlement_case
+    case.mode = mode
+    sleeps = []
+    real_sleep = time.sleep
+
+    def observe_sleep(seconds):
+        if threading.current_thread().name.startswith("astrid-reconcile-"):
+            sleeps.append(seconds)
+        real_sleep(seconds)
+
+    monkeypatch.setattr(generic_host.time, "sleep", observe_sleep)
+    monkeypatch.setattr(case.host, "_run_command_definition", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("original producer failure")))
+    with pytest.raises(Exception):
+        _run(case)
+    owner = case.host._reconciliation_owners.get(case.attempt["attempt_id"])
+    if owner is not None:
+        owner.join(timeout=3)
+        assert not owner.is_alive()
+    assert case.service.task(case.task_id)["task"]["status"] == "failed"
+    assert len(case.failures) <= 4
+    assert len(sleeps) <= 3
+    assert "result" not in case.failures[-1][1] and "outputs" not in case.failures[-1][1]
+    assert case.failures[-1][1]["error"]["code"] == "reconciliation_required"
+    assert "original producer failure" in case.failures[-1][1]["error"]["message"]
+    receipt = json.loads((case.root / "result.json").read_text())
+    assert "reconcil" in json.dumps(receipt).lower()
+
+
+def test_failure_transport_error_replays_exact_request(settlement_case, monkeypatch):
+    case = settlement_case
+    case.mode = "fail_transport"
+    monkeypatch.setattr(case.host, "_run_command_definition", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("original producer failure")))
+    with pytest.raises(Exception):
+        _run(case)
+    owner = case.host._reconciliation_owners.get(case.attempt["attempt_id"])
+    if owner is not None:
+        owner.join(timeout=3)
+        assert not owner.is_alive()
+    assert case.service.task(case.task_id)["task"]["status"] == "failed"
+    assert len(case.failures) == 3
+    assert case.failures[1:] == [case.failures[0]] * (len(case.failures) - 1)
+
+
+def test_cede_retries_after_outage(settlement_case, monkeypatch):
+    case = settlement_case
+    case.mode = "cede_outage"
+    monkeypatch.setattr(case.host, "_run_command_definition", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("original producer failure")))
+    with pytest.raises(Exception):
+        _run(case)
+    owner = case.host._reconciliation_owners.get(case.attempt["attempt_id"])
+    if owner is not None:
+        owner.join(timeout=3)
+        assert not owner.is_alive()
+    cedes = [item for item in case.failures if "result" not in item[1]]
+    assert len(cedes) == 3
+    assert all(item == cedes[0] for item in cedes)
+    assert cedes[0][2].endswith("-cede")
+    assert case.service.task(case.task_id)["task"]["status"] == "failed"
+
+
+def test_restart_cedes_expired_failure_request(settlement_case, tmp_path, monkeypatch):
+    case = settlement_case
+    case.mode = "restart"
+    case.host.executor_id = "bug14-worker"
+    case.host.attempt_root = tmp_path / "kept"
+    case.host.attempt_root.mkdir()
+    body = {key: case.attempt[key] for key in ("lease_id", "fence", "runtime_epoch")}
+    body.update(error={"code": "producer_failed", "message": "original failure"}, outputs=[], result={})
+    request = {"operation": "fail_attempt", "identifier": case.attempt["attempt_id"],
+               "task_id": case.task_id, "executor_id": case.host.executor_id,
+               "idempotency_key": "original", "body": body}
+    (case.host.attempt_root / "fail-request.json").write_text(json.dumps(request))
+    generated = case.host.client.generated
+    get_task = generated.get_task
+    monkeypatch.setattr(generated, "get_task", lambda task_id: {
+        **get_task(task_id), "lease_expires_at": "2000-01-01T00:00:00Z"})
+    monkeypatch.setattr(case.host, "claim_once", lambda: None)
+    case.host._registration_refresh_deadline = float("inf")
+    case.host.run(once=True)
+    assert case.service.task(case.task_id)["task"]["status"] == "failed"
+    assert case.failures[-1][1]["error"]["code"] == "reconciliation_required"
+    assert "original failure" in case.failures[-1][1]["error"]["message"]
+    assert "result" not in case.failures[-1][1]
+    assert "original failure" in (case.host.attempt_root / "result.json").read_text()
