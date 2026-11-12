@@ -152,7 +152,13 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     after = ("none" if lease is None else "unknown" if kept is None or facts.get("release_failed")
              else "kept" if kept else "released")
     cost = None
+    # The failed job's own logs (stdout, stderr, engine log), brought back unredacted
+    # from the user's own machine before the reset; write_receipt keeps a copy.
+    collected = getattr(lease, "failure_logs", None)
+    logs = [dict(row) for row in (collected or {}).get("files", []) if isinstance(row, Mapping)]
+    unavailable = (collected or {}).get("unavailable") if isinstance(collected, Mapping) else None
     return {
+        "logs": logs, **({"logs_unavailable": unavailable} if unavailable else {}),
         "schema": SCHEMA, "receipt_id": uuid.uuid4().hex, "outcome": "failed",
         "stage": stage, "stage_basis": basis, "phase": phase,
         "cause": cause, "message": message_for(stage, cause),
@@ -176,6 +182,19 @@ def write_receipt(receipt: Mapping[str, Any], *, root: Path | None = None) -> Pa
     name = "".join(ch for ch in str(task or "") if ch.isalnum() or ch in "-_")[:128] or f"local-{uuid.uuid4().hex}"
     folder = root / name
     folder.mkdir(parents=True, exist_ok=True)
+    if receipt.get("logs"):
+        receipt = dict(receipt)
+        kept = []
+        for row in receipt["logs"]:
+            source = Path(str(row.get("path", "")))
+            safe = "".join(ch for ch in str(row.get("name", "")) if ch.isalnum() or ch in "-_.")[:64]
+            if not safe or not source.is_file() or source.is_symlink():
+                continue
+            target = folder / "logs" / safe
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            kept.append({**row, "path": str(target)})
+        receipt["logs"] = kept
     path = folder / RECEIPT_NAME
     partial = path.with_name(RECEIPT_NAME + f".{os.getpid()}.partial")
     partial.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -253,6 +272,8 @@ def render(receipt: Mapping[str, Any]) -> str:
                if isinstance(row, Mapping) and row.get("seconds") is not None]
     if seconds:
         lines.append("Timing: " + ", ".join(seconds))
+    for log in receipt.get("logs", []):
+        lines.append(f"Log: {log['name']} {log['path']}")
     return "\n".join(lines)
 
 

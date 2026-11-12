@@ -412,3 +412,28 @@ def test_provider_gate_in_acquired_claim_receipt_is_fixed_and_private():
     assert receipt["stage"] == "boot"
     assert receipt["cause"]["gate"] == "volume"
     assert "private provider body" not in json.dumps(receipt)
+
+
+def test_failure_command_logs_prints_stderr_first(tmp_path, monkeypatch, capsys):
+    from astrid.core.generation import cli
+
+    stderr = tmp_path / "stderr"
+    stdout = tmp_path / "stdout"
+    stderr.write_text("Traceback ... RuntimeError: CUDA out of memory\n")
+    stdout.write_text("job output\n")
+    receipt_path = tmp_path / "failure-receipt.json"
+    receipt_path.write_text(json.dumps({"logs": [
+        {"name": "stdout", "path": str(stdout)},
+        {"name": "stderr", "path": str(stderr)},
+    ]}))
+    monkeypatch.setattr(failure_receipt, "find_receipt", lambda task_id: receipt_path)
+    parsed = cli._parser().parse_args(["failure", "--logs"])
+    assert cli._failure_command(parsed) == 0
+    output = capsys.readouterr().out
+    assert "Traceback ... RuntimeError: CUDA out of memory" in output
+    assert output.index("Traceback") < output.index("job output")
+
+
+def test_render_shows_collected_log_path():
+    receipt = {"logs": [{"name": "stderr", "path": "/tmp/example/stderr"}]}
+    assert "/tmp/example/stderr" in failure_receipt.render(receipt)

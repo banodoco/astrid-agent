@@ -336,6 +336,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command = sub.add_parser('failure', help='Show the local failure receipt of a failed generation (newest by default).')
     command.add_argument('task_id', nargs='?', help='Task id of the failed generation; omit for the newest receipt.')
     command.add_argument('--json', action='store_true')
+    command.add_argument('--logs', action='store_true', help='Print the collected failure logs.')
     return parser
 
 
@@ -733,6 +734,14 @@ def _failure_command(parsed) -> int:
         return 1
     receipt = json.loads(path.read_text(encoding="utf-8"))
     print(json.dumps(receipt, indent=2, sort_keys=True) if parsed.json else failure_receipt.render(receipt))
+    if parsed.logs:
+        priority = {'stderr': 0, 'engine.log': 1, 'stdout': 2}
+        for log in sorted(receipt.get('logs', []), key=lambda row: priority.get(row.get('name'), 3)):
+            print(f"\n--- {log['name']} ---")
+            try:
+                print(Path(log['path']).read_text(encoding='utf-8', errors='replace'), end='')
+            except OSError as exc:
+                print(f"Log unavailable ({type(exc).__name__})", file=sys.stderr)
     return 0
 
 
