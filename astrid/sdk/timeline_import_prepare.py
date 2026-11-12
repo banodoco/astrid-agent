@@ -300,6 +300,34 @@ def _normalize_legacy_internal_assets(source: dict[str, Any]) -> None:
         internal["assets"] = result
 
 
+def _retarget_owned_descriptor_scopes(source: dict[str, Any], target_project: str) -> None:
+    """Retarget the declared owners of copied shot audio and asset records.
+
+    Do not rewrite opaque source/provenance metadata, or any other project
+    identifiers. A third-project owner cannot be assumed transferable merely
+    because an archive contains it.
+    """
+    source_project = source.get("project_id")
+    for shot in (source.get("shots") or {}).values():
+        if not isinstance(shot, dict):
+            continue
+        payload = shot.get("payload") or shot.get("base_payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        audio = payload.get("audio")
+        assets = payload.get("assets")
+        descriptors = ([audio] if isinstance(audio, dict) else []) + (assets if isinstance(assets, list) else [])
+        for descriptor in descriptors:
+            if not isinstance(descriptor, dict):
+                continue
+            scope = descriptor.get("scope")
+            if not isinstance(scope, dict) or "project_id" not in scope:
+                continue
+            if not isinstance(source_project, str) or not source_project or scope["project_id"] != source_project:
+                _fail("archive contains a descriptor owned by a different source project")
+            scope["project_id"] = target_project
+
+
 def prepare_import(timeline: Mapping[str, Any] | str | Path, manifest: Mapping[str, Any], transcripts: Any,
                    project: str, name: str | None = None, *, timeline_id: str | None = None,
                    elements: Any = None) -> dict[str, Any]:
@@ -315,6 +343,7 @@ def prepare_import(timeline: Mapping[str, Any] | str | Path, manifest: Mapping[s
     differences = check_import_manifest(manifest, elements=elements)
     _crosscheck_inventory(source_bundle, manifest, elements=elements)
     _normalize_legacy_internal_assets(source)
+    _retarget_owned_descriptor_scopes(source, project)
     target_id = timeline_id or uuid.uuid4().hex
     if not isinstance(target_id, str) or not target_id:
         _fail("target timeline id must be a non-empty string")
