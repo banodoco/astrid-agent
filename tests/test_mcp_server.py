@@ -311,14 +311,23 @@ def test_invoke_text_is_the_whole_result(monkeypatch):
 
 
 def test_long_skill_descriptions_are_served_whole(monkeypatch, tmp_path):
-    import astrid
+    from types import SimpleNamespace
+
+    from astrid.skills import discovery, registry
 
     description = "Use this when " + "a long case, " * 120 + "and never for X."
     skill = tmp_path / "packs" / "demo" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text(f'---\nname: demo\ndescription: "{description}"\n---\nBody\n', encoding="utf-8")
-    monkeypatch.setattr(astrid, "__file__", str(tmp_path / "__init__.py"))
-    assert mcp_server.build_prompts()["demo"]["definition"]["description"] == description
+    # Skills come from the declared skill registry; serve one pack's SKILL.md through it.
+    core = SimpleNamespace(pack_id="_core", skill_md=tmp_path / "absent.md", skill_dir=tmp_path / "core",
+                           skill_id="astrid")
+    demo = SimpleNamespace(pack_id="demo", skill_md=skill, skill_dir=skill.parent, skill_id="demo")
+    monkeypatch.setattr(discovery, "list_skills", lambda: [core, demo])
+    monkeypatch.setattr(discovery, "list_extras", lambda packs: [])
+    monkeypatch.setattr(registry, "render_registry_block", lambda packs, view_root: "")
+    prompts = mcp_server.build_prompts(selected_pack_ids=["demo"])
+    assert prompts["demo"]["definition"]["description"] == description
 
 
 def test_comfy_scan_runs_with_requested_ports(monkeypatch):
