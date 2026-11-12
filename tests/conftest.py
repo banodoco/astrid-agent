@@ -37,6 +37,36 @@ runpod_guard.install()
 
 
 @pytest.fixture(autouse=True)
+def _installer_private_home(request):
+    """Keep installer state and service registrations inside each test's root."""
+    path = request.path
+    if path.parent != Path(__file__).parent or not path.name.startswith("test_installer_"):
+        return
+
+    request.getfixturevalue("_sandboxed_home_and_projects")
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    home = Path(os.environ["HOME"])
+    for name, relative in (
+        ("XDG_CONFIG_HOME", ".config"),
+        ("XDG_RUNTIME_DIR", "runtime"),
+    ):
+        directory = home / relative
+        directory.mkdir(parents=True)
+        monkeypatch.setenv(name, str(directory))
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+        monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
+
+    # These tests model an interactive terminal; explicit opt-out cases pass
+    # their own environment to style(). Hosted CI otherwise disables animation.
+    if (path.name == "test_installer_progress.py" or
+            (path.name == "test_installer_lifecycle.py" and
+             request.node.name == "test_update_on_a_terminal_leaves_one_checked_line_per_phase")):
+        monkeypatch.delenv("CI", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_runpod_network_or_credentials(request):
     """Name the running test in guard errors and keep RunPod credentials out of the env."""
     runpod_guard.scrub_credentials()
