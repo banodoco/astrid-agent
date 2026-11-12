@@ -866,6 +866,13 @@ def main(argv: list[str] | None = None) -> int:
             _kept_failure(before)
         error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:
+            from astrid.core.contracts.errors import AstridError, redact_credential_data
+            from astrid.core.generation.local_job import JobFileError
+            from astrid.sdk.exceptions import AstridSDKError
+            if not isinstance(exc, (AstridError, AstridSDKError, JobFileError, ImportError)):
+                import traceback
+                diagnostic = ''.join(traceback.format_exception(exc, chain=True))
+                print(redact_credential_data(diagnostic), file=sys.stderr, end='')
             print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
             return 2
         raise error from exc
