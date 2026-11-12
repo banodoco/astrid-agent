@@ -214,6 +214,16 @@ def test_kind(nodeid):
     return "rebuild" if "canonical_first_build" in nodeid else "schema"
 
 
+def template_source_slugs(workflow):
+    """Read authored pack metadata and typed requirements from the owning workflow."""
+    from vibecomfy.custom_node_refs import workflow_lock_entries
+
+    slugs = set(workflow.metadata.get("custom_node_packs", {}))
+    slugs.update(name for name in workflow.requirements.custom_nodes if isinstance(name, str))
+    slugs.update(pack.slug or pack.name for pack in workflow_lock_entries(workflow))
+    return sorted(slugs)
+
+
 def junit_results(path):
     rows = {}
     for case in ET.parse(path).iter("testcase"):
@@ -303,11 +313,12 @@ def check_vibe(cells, runner, checkout, python, identities, revision):
     # that cell; it must not crash source inspection for unrelated cells.
     templates = sorted({template_parameter(nodeid) for nodeid in selected})
     source_code = (
-        "import json; from vibecomfy.registry.ready import workflow_from_ready; "
-        "from vibecomfy.custom_node_refs import workflow_lock_entries; "
-        "print(json.dumps({t:[p.slug or p.name for p in workflow_lock_entries(workflow_from_ready(t))] "
-        "for t in json.loads(__import__('sys').argv[1])}))")
-    sources = runner([python, "-c", source_code, json.dumps(templates)], cwd=checkout)
+        "import json,sys; sys.path.insert(0,sys.argv[1]); "
+        "from vibecomfy.registry.ready import workflow_from_ready; "
+        "from scripts.preflight import template_source_slugs; "
+        "print(json.dumps({t:template_source_slugs(workflow_from_ready(t)) "
+        "for t in json.loads(sys.argv[2])}))")
+    sources = runner([python, "-c", source_code, ROOT, json.dumps(templates)], cwd=checkout)
     if sources.exit_status:
         raise RuntimeError("could not read template source ownership: " + sources.log_path)
     by_template = json.loads(sources.output)

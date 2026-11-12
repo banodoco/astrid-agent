@@ -115,6 +115,15 @@ def test_map_vibe_results_marks_selected_test_without_result_fail():
     assert "selected test produced no result" in c.checks["schema"]["reason"]
 
 
+def test_template_sources_include_authored_metadata_without_typed_refs():
+    workflow = SimpleNamespace(
+        metadata={"custom_node_packs": {"ComfyUI-QwenTTS": {"commit": "a" * 40}}},
+        requirements=SimpleNamespace(custom_nodes=[], custom_node_refs=[]))
+    assert preflight.template_source_slugs(workflow) == ["ComfyUI-QwenTTS"]
+    workflow.requirements.custom_node_refs = [{"slug": "ComfyUI-VideoHelperSuite", "source": "git"}]
+    assert preflight.template_source_slugs(workflow) == ["ComfyUI-QwenTTS", "ComfyUI-VideoHelperSuite"]
+
+
 def test_check_vibe_head_mismatch_refuses_pytest(tmp_path):
     c = cell()
     runner = FakeRunner()
@@ -254,6 +263,9 @@ def test_catalog_probe_reports_pass_fail_unverified_shape(stdout, rc, want, tmp_
 
 def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
+    for name in list(sys.modules):
+        if name == "vibecomfy" or name.startswith("vibecomfy."):
+            monkeypatch.delitem(sys.modules, name)
     checkout = tmp_path / "pinned-vibecomfy"
     vibe_python = tmp_path / "vibe-venv/bin/python"
     vibe_python.parent.mkdir(parents=True)
