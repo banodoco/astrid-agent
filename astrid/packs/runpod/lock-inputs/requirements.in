@@ -2,5 +2,7 @@ hatchling==1.33.0
 torch @ https://download.pytorch.org/whl/cu130/torch-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl
 torchaudio @ https://download.pytorch.org/whl/cu130/torchaudio-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl
 torchvision @ https://download.pytorch.org/whl/cu130/torchvision-0.25.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl
+# The engine runs transformers 5; a major change is a decision, not drift.
+transformers>=5.22,<6
 # Retained environment-probe requirement from the previous source snapshot.
 opencv-python-headless==5.0.0.93
