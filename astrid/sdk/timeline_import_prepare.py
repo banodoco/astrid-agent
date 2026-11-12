@@ -278,6 +278,28 @@ def _empty_target(project: str, timeline_id: str, config: Mapping[str, Any]) -> 
     }
 
 
+def _normalize_legacy_internal_assets(source: dict[str, Any]) -> None:
+    """Express legacy keyed internal assets as records without losing values.
+
+    Only the detached archive copy is changed; the source archive and the
+    distinct registry map remain untouched. An existing id is rejected
+    because otherwise a flat round trip could not distinguish it from the key
+    added here. Unknown entry types are rejected rather than discarded.
+    """
+    shots = source.get("shots") or {}
+    shot_ids = set(shots)
+    for shot in shots.values():
+        internal = shot.get("internal_timeline") if isinstance(shot, dict) else None
+        if not isinstance(internal, dict) or not isinstance(internal.get("assets"), dict):
+            continue
+        result = []
+        for key, entry in internal["assets"].items():
+            if not isinstance(key, str) or not key or key in shot_ids or not isinstance(entry, Mapping) or "id" in entry:
+                _fail("legacy internal assets require non-empty, non-shot keys and object entries without id")
+            result.append({**copy.deepcopy(dict(entry)), "id": key})
+        internal["assets"] = result
+
+
 def prepare_import(timeline: Mapping[str, Any] | str | Path, manifest: Mapping[str, Any], transcripts: Any,
                    project: str, name: str | None = None, *, timeline_id: str | None = None,
                    elements: Any = None) -> dict[str, Any]:
@@ -292,6 +314,7 @@ def prepare_import(timeline: Mapping[str, Any] | str | Path, manifest: Mapping[s
     # manifest's list is derived from the actual bundle so pins cannot be hidden.
     differences = check_import_manifest(manifest, elements=elements)
     _crosscheck_inventory(source_bundle, manifest, elements=elements)
+    _normalize_legacy_internal_assets(source)
     target_id = timeline_id or uuid.uuid4().hex
     if not isinstance(target_id, str) or not target_id:
         _fail("target timeline id must be a non-empty string")

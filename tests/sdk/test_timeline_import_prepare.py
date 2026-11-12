@@ -13,8 +13,53 @@ import pytest
 
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline_duplicate import _duplicate, copy_content, id_map
-from astrid.sdk.timeline_import_prepare import _document_id, check_import_manifest, prepare_import
+from astrid.sdk.timeline_import_prepare import _document_id, _normalize_legacy_internal_assets, check_import_manifest, prepare_import
 from astrid.sdk.timeline_restructure import is_split
+
+
+def test_legacy_internal_assets_are_reversible_and_registry_is_unchanged():
+    original = {"a": {"media_id": "sha256:" + "a" * 64, "origin": "one"},
+                "b": {"nested": {"arbitrary": [None, False]}}}
+    registry = {"assets": {"a": {"media_id": "sha256:" + "b" * 64, "origin": "different"}}}
+    source = {"shots": {"s": {"internal_timeline": {"assets": copy.deepcopy(original),
+                                                         "registry": copy.deepcopy(registry)}}}}
+    _normalize_legacy_internal_assets(source)
+    result = source["shots"]["s"]["internal_timeline"]
+    assert {entry["id"]: {k: v for k, v in entry.items() if k != "id"}
+            for entry in result["assets"]} == original
+    assert result["registry"] == registry
+
+
+@pytest.mark.parametrize("assets", [{"": {}}, {"a": None}, {"a": 2}, {"a": {"id": "a"}},
+                                     {"a": {"id": "other"}}])
+def test_legacy_internal_assets_refuse_ambiguous_or_invalid_entries(assets):
+    source = {"shots": {"s": {"internal_timeline": {"assets": assets}}}}
+    original = copy.deepcopy(source)
+    with pytest.raises(TimelineEditError):
+        _normalize_legacy_internal_assets(source)
+    assert source == original
+
+
+def test_legacy_asset_key_matching_source_shot_id_is_refused():
+    source = {"shots": {"shot-one": {"internal_timeline": {"assets": {"shot-one": {"type": "image"}}}}}}
+    with pytest.raises(TimelineEditError):
+        _normalize_legacy_internal_assets(source)
+
+
+def test_legacy_assets_normalization_preserves_media_discovery():
+    from astrid.core.timeline.authoring_bundle import authoring_media_inventory
+
+    source = _source_bundle()
+    internal = source["shots"]["A"]["internal_timeline"]
+    # A legacy mirror can differ from the registry without implying a new edit.
+    internal["assets"] = {"P": {"media_id": "sha256:" + "b" * 64, "type": "image"}}
+    before = authoring_media_inventory(source)
+    _normalize_legacy_internal_assets(source)
+    after = authoring_media_inventory(source)
+    selected = lambda report: {row["media_id"] for row in report["media"] if row["selected"]}
+    unresolved = lambda report: {(row["selector"], row["error"]) for row in report["unresolved"]}
+    assert selected(before) == selected(after)
+    assert unresolved(before) == unresolved(after)
 
 
 def _source_bundle() -> dict:
