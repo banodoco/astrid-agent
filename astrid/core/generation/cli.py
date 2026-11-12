@@ -424,7 +424,11 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     """Route authored workflows through the same target admission as entries."""
     from astrid.core.generation import entries
 
-    values = _values(parsed)
+    try:
+        values = _values(parsed)
+    except (ValueError, OSError) as exc:
+        from astrid.core.generation.preflight import generation_error
+        raise generation_error(exc, code='input_rejected', details={'field': 'inputs'}) from exc
     from astrid.sdk.generation import _generation_controls
     _generation_controls(engine=parsed.engine, consent=parsed.consent,
                          max_usd=parsed.max_usd, deadline=parsed.deadline)
@@ -432,7 +436,9 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     if path.is_dir():
         path = path / "workflow.py"
     if parsed.replace and not parsed.as_entry:
-        raise ValueError('--replace requires --as-entry')
+        from astrid.core.generation.preflight import generation_error
+        raise generation_error(ValueError('--replace requires --as-entry'),
+                               code='input_rejected', details={'field': 'replace'})
     if parsed.no_run and not parsed.as_entry:
         raise ValueError('--no-run requires --as-entry')
     if parsed.as_entry and parsed.dry_run:

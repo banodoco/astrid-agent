@@ -48,6 +48,46 @@ def test_exhausted_deadline_is_named(monkeypatch, tmp_path):
     assert state.install_unverified == "status_deadline_exhausted"
 
 
+@pytest.mark.parametrize("evidence", ["live", "saved"])
+def test_canonical_verification_refuses_stale_receipt(monkeypatch, tmp_path, evidence):
+    from dataclasses import asdict
+
+    from astrid.core.generation.engine_contracts import (
+        HealthEvidence,
+        InstallReceipt,
+        IntegrityError,
+        StepReceipt,
+    )
+    from astrid.core.generation.engine_recipe import load_recipe
+    from astrid.core.generation.engine_runner import plan_install
+
+    recipe = load_recipe("comfyui", "linux-x86_64-cu130")
+    plan = plan_install(recipe, root="/workspace/engine", placement="local")
+    stamp = "2026-11-01T00:00:00Z"
+    receipt = InstallReceipt(
+        "astrid.engine-install.v1", "installed-receipt", plan.engine, plan.platform,
+        plan.placement, plan.root, "installed", False, plan.recipe_sha256,
+        plan.models_lock_sha256, {e.name: "b" * 64 for e in recipe.environments},
+        {s.name: s.pin.revision for s in recipe.sources}, (),
+        tuple(StepReceipt(s.id, s.kind, "executed", "passed", {}) for s in plan.steps),
+        HealthEvidence("healthy", stamp, "a" * 64, True), stamp, stamp, None,
+    )
+    current = asdict(receipt)
+    stale = {**current, "recipe_sha256": "0" * 64}
+    live = stale if evidence == "live" else current
+    saved = stale if evidence == "saved" else current
+    placement = _placement(monkeypatch, (0, json.dumps(live), ""))
+    state = _state(tmp_path)
+    state.installation.platform = recipe.platform
+    state.claim = SimpleNamespace(ops=SimpleNamespace(
+        get=lambda remote, local: local.write_text(json.dumps(saved))))
+
+    with pytest.raises(IntegrityError, match="installed but stale"):
+        placement._canonical_installed(state)
+    assert state.installed is None
+    assert not (tmp_path / "installed.json").exists()
+
+
 def test_install_failure_message_carries_the_reason(monkeypatch, tmp_path):
     placement = _placement(monkeypatch, (0, json.dumps({"status": "failed", "error_code": "engine_health_failed",
                                                         "failed_step_id": "start:comfyui"}), ""))

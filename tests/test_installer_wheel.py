@@ -38,6 +38,7 @@ def _engine_resources():
     for entry in load_recipe_index().entries:
         recipe = load_recipe(entry.engine, entry.platform)
         resources.update(ref.path for ref in (entry.recipe, recipe.pins, recipe.models_lock))
+        resources.update(patch.replacement for patch in recipe.source_patches)
         for environment in recipe.environments:
             lock = environment.requirements.packaged_lock
             if lock is not None:

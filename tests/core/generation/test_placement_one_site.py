@@ -104,13 +104,12 @@ def test_facade_explicit_local_never_reaches_attached_comfy(placement, monkeypat
     monkeypatch.setenv("VIBECOMFY_COMFYUI_URL", f"http://127.0.0.1:{server.server_port}")
     monkeypatch.setattr(preflight, "_installed_managed_target", lambda **kwargs: None)
     try:
-        try:
-            result = GenerationFacade().image(placement=placement, prompt="one boat", dry_run=True,
-                                              project_root=tmp_path)
-        except AstridError as exc:
-            assert exc.code == "engine_not_found", exc.code
-        else:
-            assert f"127.0.0.1:{server.server_port}" not in str(result.get("target", {}))
+        with pytest.raises(AstridError) as caught:
+            GenerationFacade().image(placement=placement, prompt="one boat", dry_run=True,
+                                     project_root=tmp_path)
+        assert caught.value.code == "engine_not_found"
+        issue = caught.value.state_snapshot["readiness"]["issues"][0]
+        assert issue["details"]["engine_code"] == "COMFY_TARGET_NOT_READY"
     finally:
         server.shutdown()
         server.server_close()
