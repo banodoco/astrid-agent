@@ -471,15 +471,11 @@ def _claimed_preferences():
         raise PaidSelectionError("no machine: run `astrid machines claim`")
     preferences = record.get("claim_preferences")
     if preferences is None:
-        volume_id = record.get("network_volume_id")
-        preferences = {
-            "provider_account_ref": record.get("provider_account_ref"),
-            "gpu_types": [record.get("gpu_type")], "image": record.get("worker_image"),
-            "datacenter_id": record.get("network_volume_datacenter_id"),
-            **({"volume": {"id": volume_id, "name": record.get("network_volume_name"),
-                           "size_gb": record.get("network_volume_size_gb"),
-                           "mount_path": record.get("volume_mount_path")}} if volume_id else {}),
-        }
+        machine_id = record.get("pod_id")
+        raise PaidSelectionError(
+            f"machine {machine_id} has no recorded claim settings: "
+            f"run `astrid machines release {machine_id}`, then claim again"
+        )
     return preferences
 
 

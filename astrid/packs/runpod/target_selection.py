@@ -393,9 +393,15 @@ class ClaimedJob(PaidRunConsent):
         expires = _utc(self.deadline)
         required = self.preparation_seconds + self.execution_seconds
         if expires <= now or (expires - now).total_seconds() < required:
-            raise PaidSelectionError("job exceeds remaining paid lifetime")
+            raise PaidSelectionError(
+                "job exceeds remaining paid lifetime; to extend it, run "
+                "`astrid machines keep <machine> --for DURATION`"
+            )
         if required * offer.hourly_usd / 3600 > self.max_usd:
-            raise PaidSelectionError("job exceeds remaining budget")
+            raise PaidSelectionError(
+                "job exceeds remaining budget; to extend it, run "
+                "`astrid machines keep <machine> --for DURATION`"
+            )
         return expires
 
 
@@ -528,10 +534,6 @@ class RunPodSelectionOwner:
             temporary.replace(path)
         except (OSError, ValueError):
             pass
-
-    async def select(self, consent: PaidRunConsent, *, dry_run: bool = False,
-                     cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
-        return await self._select(consent, dry_run=dry_run, cancelled=cancelled)
 
     async def _select(self, consent: PaidRunConsent, *, dry_run: bool = False,
                       lease: Mapping[str, Any] | None = None, lock_held: bool = False,

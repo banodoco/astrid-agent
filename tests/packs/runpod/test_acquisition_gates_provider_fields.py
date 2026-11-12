@@ -97,7 +97,7 @@ def gate(case, monkeypatch):  # noqa: F811
 
 
 def _select(gate):
-    return asyncio.run(gate.case.owner.select(gate.case.grant))
+    return asyncio.run(gate.case.owner._select(gate.case.grant))
 
 
 def _journal(gate):
