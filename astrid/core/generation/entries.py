@@ -155,7 +155,8 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
             raise
         except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
             # Workflow metadata is best-effort; preserve declared entry visibility on load errors.
-            logger.debug('Could not load ready workflow metadata for %s', item['id'], exc_info=True)
+            logger.debug('Could not load ready workflow metadata for %s',
+                         item.get('id') if isinstance(item, dict) else None, exc_info=True)
             needs, binds = [], {}
             model_assets = []
             ambiguity = 'ready workflow metadata could not be loaded'
