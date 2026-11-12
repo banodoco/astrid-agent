@@ -105,7 +105,7 @@ def outcome(status, reason="", commands=(), tests=()):
             "commands": [command.record() for command in commands], "tests": list(tests)}
 
 
-def select_cells(registry, all_catalog=False, requested=()):
+def live_defaults():
     from astrid.core.generation.defaults import pack_candidates
     # Stage 1's tests/helpers/generation_defaults.py reads these same pack
     # declarations. Highest-priority non-video defaults are the live cell set.
@@ -115,6 +115,11 @@ def select_cells(registry, all_catalog=False, requested=()):
             key = (candidate.kind, candidate.mode)
             if key not in defaults or candidate.priority > defaults[key].priority:
                 defaults[key] = candidate
+    return defaults
+
+
+def select_cells(registry, all_catalog=False, requested=()):
+    defaults = live_defaults()
     by_template = {}
     for entry in registry.list_all(include_closed=True):
         for mode, spec in entry.modes.items():
@@ -415,9 +420,13 @@ def check_constructors(cells, runner, venv, cache, lock, recipe, sources):
         return {}
 
 
+def new_report():
+    return {"schema": "astrid.cpu-preflight.v1", "created_at": datetime.now(timezone.utc).isoformat(),
+            "candidate": {}, "engine_versions": {}, "cells": [], "commands": [], "ok": False}
+
+
 def run_gate(cells, registry, runner, args):
-    report = {"schema": "astrid.cpu-preflight.v1", "created_at": datetime.now(timezone.utc).isoformat(),
-              "candidate": {}, "engine_versions": {}, "cells": []}
+    report = new_report()
     try:
         report["candidate"]["agent_revision"] = require_success(runner(["git", "rev-parse", "HEAD"])).output.strip()
         report["candidate"]["agent_worktree"] = require_success(runner(
@@ -484,6 +493,12 @@ def main(argv=None):
     parser.add_argument("--engine-venv", type=Path, help="reuse a CPU engine environment matching the engine lock")
     parser.add_argument("--cache-dir", type=Path, default=Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "astrid/preflight")
     args = parser.parse_args(argv)
+    # Commands run in both repositories; resolve user paths before changing
+    # subprocess cwd so relative cache/report/interpreter paths stay usable.
+    for name in ("cache_dir", "json", "vibecomfy_checkout", "vibecomfy_python", "engine_venv"):
+        value = getattr(args, name)
+        if value is not None:
+            setattr(args, name, value.expanduser().resolve())
     if args.vibecomfy_checkout is not None:
         # The public CLI's dependency selection must inspect the same checkout
         # as the VibeComfy checks, including when selected through the flag.
@@ -493,7 +508,13 @@ def main(argv=None):
         registry = ModelRegistry.load_default()
         cells = select_cells(registry, args.all_catalog, args.cell)
     except Exception as exc:  # noqa: BLE001 - selection errors must produce a failed JSON report
-        cells = [Cell(name, "unknown", "unknown", None) for name in args.cell or ["candidate"]]
+        names = args.cell
+        if not names:
+            try:
+                names = sorted({mode for _, mode in live_defaults()}) or ["candidate"]
+            except Exception:  # noqa: BLE001 - even unreadable cell declarations must fail closed
+                names = ["candidate"]
+        cells = [Cell(name, "unknown", "unknown", None) for name in names]
         registry = None
         selection_error = str(exc)
     else:
@@ -502,9 +523,11 @@ def main(argv=None):
     logs = Path(tempfile.mkdtemp(prefix="run-", dir=args.cache_dir))
     runner = Runner(logs)
     if selection_error:
+        crash = runner.save([sys.executable, str(Path(__file__))], ROOT, -1, selection_error)
         for cell in cells:
-            cell.checks = {kind: outcome("FAIL", "preflight harness could not select cells: " + selection_error) for kind in CHECKS}
-        report = {"schema": "astrid.cpu-preflight.v1", "ok": False, "cells": [asdict(cell) for cell in cells], "commands": []}
+            cell.checks = {kind: outcome("FAIL", "preflight harness could not select cells: " + selection_error, [crash]) for kind in CHECKS}
+        report = new_report()
+        report.update(cells=[asdict(cell) for cell in cells], commands=[crash.record()])
     else:
         report = run_gate(cells, registry, runner, args)
     print_table(report)

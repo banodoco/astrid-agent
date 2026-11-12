@@ -216,6 +216,7 @@ def test_catalog_probe_reports_pass_fail_unverified_shape(stdout, rc, want, tmp_
 
 
 def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
     checkout = tmp_path / "pinned-vibecomfy"
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setenv("ASTRID_VIBECOMFY_CHECKOUT", str(checkout))
@@ -252,7 +253,7 @@ def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, caps
 
     monkeypatch.setattr(preflight, "check_constructors", fake_constructors)
     output = tmp_path / "report.json"
-    assert preflight.main(["--json", str(output), "--cache-dir", str(tmp_path / "cache"),
+    assert preflight.main(["--json", str(output), "--cache-dir", "cache",
                            "--vibecomfy-checkout", str(checkout)]) == 0
     payload = json.loads(output.read_text())
     assert payload["schema"] == "astrid.cpu-preflight.v1"
@@ -269,6 +270,7 @@ def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, caps
     assert len(payload["commands"]) == 3  # candidate HEAD, worktree status, catalog probe
     assert payload["commands"][0]["command"] == ["git", "rev-parse", "HEAD"]
     assert all(command["exit_status"] == 0 for command in payload["commands"])
+    assert all(Path(command["log_path"]).is_absolute() for command in payload["commands"])
 
 
 def test_catalog_dry_run_converts_system_exit_to_report(monkeypatch, tmp_path):
@@ -282,8 +284,26 @@ def test_catalog_dry_run_converts_system_exit_to_report(monkeypatch, tmp_path):
     assert result.failure
 
 
+def test_main_registry_crash_reports_every_live_cell(monkeypatch, tmp_path):
+    def crash():
+        raise RuntimeError("catalog load crashed")
+
+    monkeypatch.setitem(sys.modules, "astrid.core.model_catalog.registry",
+                        SimpleNamespace(ModelRegistry=SimpleNamespace(load_default=crash)))
+    monkeypatch.setattr(preflight, "live_defaults", lambda: {
+        ("audio", "tts"): object(), ("image", "t2i"): object()})
+    output = tmp_path / "crash.json"
+    assert preflight.main(["--json", str(output), "--cache-dir", str(tmp_path / "cache")]) == 1
+    report = json.loads(output.read_text())
+    assert set(report) == set(preflight.new_report())
+    assert {row["name"] for row in report["cells"]} == {"tts", "t2i"}
+    assert all(check["status"] == "FAIL" for row in report["cells"] for check in row["checks"].values())
+    assert report["commands"][0]["exit_status"] == -1
+    assert "catalog load crashed" in Path(report["commands"][0]["log_path"]).read_text()
+
+
 def test_catalog_dry_run_builds_required_inputs_for_public_cli(tmp_path):
-    entry = SimpleNamespace(id="audio-demo", modality="audio", modes={"tts": SimpleNamespace(requires=("prompt", "audio_ref", "voice"))})
+    entry = SimpleNamespace(id="audio-demo", modality="audio", modes={"tts": SimpleNamespace(requires=("prompt", "video_ref", "voice"))})
     calls = []
     result = catalog_dry_run(entry, "tts", tmp_path, invoke=lambda argv: calls.append(argv) or (print('{"ok": true}') or 0))
     assert not result.failure
@@ -291,5 +311,5 @@ def test_catalog_dry_run_builds_required_inputs_for_public_cli(tmp_path):
     assert argv[:3] == ["generate", "audio", "A clear test scene"]
     assert "--dry-run" in argv and "--json" in argv
     assert "--input" in argv and "voice=test-value" in argv
-    media = Path(argv[argv.index("--input") + 1].split("=", 1)[1])
-    assert media.read_bytes() == b"test media"
+    media = Path(argv[argv.index("--video-ref") + 1])
+    assert media.read_bytes() == b"test image"

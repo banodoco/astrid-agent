@@ -35,9 +35,9 @@ class DryRun:
 def required_value(name: str, directory: Path) -> str:
     if name in {"prompt", "negative_prompt"}:
         return "A clear test scene"
-    if name in {"image_ref", "video_ref", "audio_ref"}:
+    if name in {"image_ref", "video_ref"}:
         path = directory / f"{name}.png"
-        path.write_bytes(b"test media")
+        path.write_bytes(b"test image")
         return str(path)
     return "test-value"
 
