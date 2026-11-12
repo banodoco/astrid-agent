@@ -233,6 +233,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
         command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once, help="Reference image for an edit or image-to-video request.")
+        command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Reference video for video generation or Foley sound effects.')
         command.add_argument("--width", action=_Once, type=int)
         command.add_argument("--height", action=_Once, type=int)
         command.add_argument("--steps", action=_Once, type=int)
@@ -248,7 +249,6 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
         if 'audio_modes' in spec:
-            command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Local video for Foley sound effects.')
             command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
     command = sub.add_parser("describe", help="Describe one entry without checking execution readiness.")
     command.add_argument('workflow', nargs='?')
