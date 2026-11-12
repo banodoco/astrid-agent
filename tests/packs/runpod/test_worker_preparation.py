@@ -953,3 +953,47 @@ def test_unactivated_evidence_must_bind_exact_claim_identity():
     for field in ('operation_id', 'pod_id', 'provider_account_ref'):
         with pytest.raises(TargetObservationError):
             _validate_release_quiescence({**evidence, field: 'another'}, record)
+
+
+def test_enriched_sdk_record_passes_acquired_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.packs.runpod import worker_preparation as wp
+    from runpod_lifecycle import api
+
+    pod = {"id": "pod-exact", "name": "astrid-prep-1", "desiredStatus": "RUNNING",
+           "imageName": "runpod/base:cuda1300", "gpuCount": 1,
+           "volumeMountPath": "/workspace", "machine": {"gpuDisplayName": "RTX 5090"},
+           "networkVolume": {"id": "vol-persist", "name": "astrid-release", "size": 250,
+                             "dataCenterId": "EU-RO-1"}}
+    monkeypatch.setattr(api, "list_pods", lambda key: [pod])
+    monkeypatch.setattr(api, "get_network_volumes", lambda key: [_volume()])
+    monkeypatch.setattr(wp, "confirm_acquired_machine", lambda *a, **kw: ("RTX 5090", "EU-RO-1"))
+    observed = asyncio.run(wp.observe_and_confirm_acquired_target("test", _contract(), ready_timeout_seconds=1))
+    assert observed.network_volume_id == "vol-persist"
+
+
+@pytest.mark.parametrize(("changes", "gate"), [
+    ({"networkVolume": {"id": "wrong"}}, "volume"),
+    ({"networkVolumeId": "wrong", "networkVolume": {"id": "vol-persist"}}, "volume"),
+    ({"networkVolume": None}, "volume"),
+    ({"networkVolume": {"id": "vol-persist"}, "imageName": "wrong"}, "image"),
+])
+def test_enriched_pod_mismatch_has_fixed_gate(changes, gate) -> None:
+    from astrid.packs.runpod.worker_preparation import observation_failure_gate
+    pod = {"id": "pod-exact", "name": "astrid-prep-1", "desiredStatus": "RUNNING",
+           "imageName": "runpod/base:cuda1300", "machine": {"gpuDisplayName": "RTX 5090"},
+           **changes}
+    with pytest.raises(TargetObservationError) as error:
+        inspect_target_records(_contract(defer_machine=True), pods=[pod], volumes=[_volume()])
+    assert observation_failure_gate(error.value) == gate
+
+
+def test_missing_volume_evidence_fails_closed_only_for_volume_contracts() -> None:
+    from astrid.packs.runpod.pod_fields import pod_field
+    from astrid.packs.runpod.worker_preparation import observation_failure_gate
+
+    bare = {"id": "pod-exact", "name": "astrid-prep-1", "desiredStatus": "RUNNING",
+            "imageName": "runpod/base:cuda1300", "machine": {"gpuDisplayName": "RTX 5090"}}
+    assert pod_field(bare, "volume") is None
+    with pytest.raises(TargetObservationError) as error:
+        inspect_target_records(_contract(defer_machine=True), pods=[bare], volumes=[_volume()])
+    assert observation_failure_gate(error.value) == "volume"

@@ -86,20 +86,25 @@ def normalize_volume(value, volume_id):
 
 
 def check_attachment(pod, volume, image, pod_type):
+    from .pod_fields import InvalidPodField, pod_field
+    try:
+        attached = pod_field(pod, "volume")
+        image_observed = pod_field(pod, "image")
+    except InvalidPodField:
+        raise BuildError("provider attachment evidence is invalid") from None
     network = pod.get("networkVolume") or {}
-    attached = pod.get("networkVolumeId") or network.get("id")
     machine = pod.get("machine") or {}
     dc = pod.get("dataCenterId") or machine.get("dataCenterId") or network.get("dataCenterId")
     observed = {"volume_id": attached, "datacenter": dc,
-                "mount": pod.get("volumeMountPath"), "image": pod.get("imageName")}
+                "mount": pod.get("volumeMountPath"), "image": image_observed}
     missing = [name for name, value in observed.items() if value is None or value == ""]
     if missing:
         raise AttachmentPending("provider attachment metadata pending: " + ", ".join(missing))
     if (attached != volume["id"] or dc != volume["datacenter"]
             or pod.get("volumeMountPath") != volume["mount"]
-            or pod.get("imageName") != image):
+            or image_observed != image):
         observed = {"volume_id": attached, "datacenter": dc,
-                    "mount": pod.get("volumeMountPath"), "image": pod.get("imageName")}
+                    "mount": pod.get("volumeMountPath"), "image": image_observed}
         raise BuildError("provider did not verify exact volume, data center, mount and image: " + json.dumps(observed, sort_keys=True))
     expected = "CPU" if pod_type == "cpu" else "GPU"
     observed_compute = pod.get("computeType")
@@ -230,7 +235,7 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
                     if observed is None:
                         raise BuildError("build pod disappeared")
                     handle["provider_observation"] = {key: observed.get(key) for key in (
-                        "id", "networkVolumeId", "networkVolume", "dataCenterId", "volumeMountPath", "imageName", "computeType", "gpuCount")}
+                        "id", "networkVolumeId", "networkVolume", "dataCenterId", "volumeMountPath", "imageName", "image", "computeType", "gpuCount", "gpu")}
                     remote.atomic_json(handle_path, handle)
                     try:
                         check_attachment(observed, volume, inputs["recipe"]["image"], pod_type)
@@ -394,8 +399,14 @@ class RunPodProvider:
             observed = sdk.get_pod(pod_id, api_key=self._api_key)
             if isinstance(observed, dict):
                 pod["machine"] = observed.get("machine") or pod.get("machine") or {}
-        if pod.get("computeType") is None and type(pod.get("gpuCount")) is int:
-            pod["computeType"] = "GPU" if pod["gpuCount"] > 0 else "CPU"
+        if pod.get("computeType") is None:
+            from .pod_fields import InvalidPodField, pod_field
+            try:
+                gpu_count = pod_field(pod, "gpu_count")
+            except InvalidPodField:
+                raise BuildError("provider GPU evidence is invalid") from None
+            if gpu_count is not None:
+                pod["computeType"] = "GPU" if gpu_count > 0 else "CPU"
         return pod
 
     def delete(self, pod_id):

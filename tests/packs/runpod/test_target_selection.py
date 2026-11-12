@@ -1129,3 +1129,14 @@ def test_capacity_attempt_line_reads_as_waiting_and_keeps_reason_token(case, mon
     with pytest.raises(selection.OfferObservationError):
         asyncio.run(case.owner.select(waiting_grant(case, wait_for_capacity=False)))
     assert "still waiting" not in capsys.readouterr().err
+
+
+def test_rest_exact_pod_volume_object_passes_selection(case, monkeypatch):
+    monkeypatch.setattr(selection, "read_exact_pod", lambda key, pod: (200, {
+        "id": pod, "name": "worker", "image": case.prefs.image,
+        "desiredStatus": "RUNNING", "volumeMountPath": "/workspace",
+        "networkVolume": {"id": case.prefs.volume_id, "name": "storage", "size": 100},
+        "machine": {}, "gpu": {"id": "preferred-gpu", "count": 1},
+    }))
+    result = asyncio.run(case.owner.select(case.grant))
+    assert result["pod_id"] == "pod-1"

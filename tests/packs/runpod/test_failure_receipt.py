@@ -400,3 +400,15 @@ def test_a_non_runpod_machine_failure_writes_no_runpod_receipt_and_no_timing(tmp
             task_id="task", attempt_id="a1", fence=1, terminal=terminal)
     assert seen["timing"] is None and terminal == {}
     assert not (tmp_path / "failures").exists()
+
+
+def test_provider_gate_in_acquired_claim_receipt_is_fixed_and_private():
+    from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
+
+    error = AcquisitionUnresolvedError("private provider body", gate="volume")
+    error.claim_context = {"acquired": True}
+    receipt = failure_receipt.build_receipt({"failure": error, "stage": "claim"},
+        job=SimpleNamespace(task_id="t"), machine=None, timing=None)
+    assert receipt["stage"] == "boot"
+    assert receipt["cause"]["gate"] == "volume"
+    assert "private provider body" not in json.dumps(receipt)

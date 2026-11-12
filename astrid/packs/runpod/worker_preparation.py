@@ -25,6 +25,7 @@ from typing import Any, Awaitable, Callable, Mapping
 from runtime_protocol import platform
 
 from astrid.core.util.time import utc_now_iso
+from .pod_fields import InvalidPodField, pod_field
 
 
 class TargetObservationError(RuntimeError):
@@ -46,6 +47,7 @@ def observation_failure_gate(exc: BaseException) -> str | None:
     gate = getattr(exc, "gate", None)
     return gate if isinstance(gate, str) and gate in {
         "volume", "GPU", "datacenter", "rate", "lifetime", "machine",
+        "identity", "status", "image", "inventory",
     } else "provider"
 
 
@@ -222,10 +224,10 @@ async def resolve_existing_volume(api_key: str, name_or_id: str) -> dict[str, An
         volumes = await asyncio.to_thread(get_network_volumes, api_key)
     except Exception as exc:
         raise TargetObservationError(
-            f"could not observe RunPod network-volume inventory for {name_or_id!r}: {exc}"
-        ) from exc
+            f"could not observe RunPod network-volume inventory for {name_or_id!r}: {exc}",
+            gate="inventory") from exc
     if not isinstance(volumes, list):
-        raise TargetObservationError("RunPod network-volume inventory returned an invalid response")
+        raise TargetObservationError("RunPod network-volume inventory returned an invalid response", gate="inventory")
 
     matches = [
         record for record in volumes
@@ -234,13 +236,13 @@ async def resolve_existing_volume(api_key: str, name_or_id: str) -> dict[str, An
     ]
     if len(matches) != 1:
         raise TargetObservationError(
-            f"existing network volume {name_or_id!r} cannot be uniquely confirmed in the authenticated account"
-        )
+            f"existing network volume {name_or_id!r} cannot be uniquely confirmed in the authenticated account",
+            gate="inventory")
     size = _positive_integer(matches[0].get("size"))
     if size is None:
         raise TargetObservationError(
-            f"existing network volume {name_or_id!r} has no valid provider size"
-        )
+            f"existing network volume {name_or_id!r} has no valid provider size",
+            gate="inventory")
     return dict(matches[0])
 
 
@@ -251,10 +253,10 @@ def _text(value: Any) -> str | None:
     return value or None
 
 
-def _required_text(record: Mapping[str, Any], key: str, *, context: str) -> str:
+def _required_text(record: Mapping[str, Any], key: str, *, context: str, gate: str = "provider") -> str:
     value = _text(record.get(key))
     if value is None:
-        raise TargetObservationError(f"provider {context} is missing required {key}")
+        raise TargetObservationError(f"provider {context} is missing required {key}", gate=gate)
     return value
 
 
@@ -305,23 +307,23 @@ def inspect_target_records(
     ]
     if len(pod_matches) != 1:
         raise TargetObservationError(
-            f"exact pod {contract.pod_id!r} is not uniquely visible in the authenticated account inventory"
-        )
+            f"exact pod {contract.pod_id!r} is not uniquely visible in the authenticated account inventory",
+            gate="identity")
     pod = pod_matches[0]
 
-    pod_name = _required_text(pod, "name", context=f"pod {contract.pod_id}")
+    pod_name = _required_text(pod, "name", context=f"pod {contract.pod_id}", gate="identity")
     if contract.expected_pod_name and pod_name != contract.expected_pod_name:
         raise TargetObservationError(
-            f"pod {contract.pod_id!r} name mismatch: expected {contract.expected_pod_name!r}, observed {pod_name!r}"
-        )
+            f"pod {contract.pod_id!r} name mismatch: expected {contract.expected_pod_name!r}, observed {pod_name!r}",
+            gate="identity")
 
     desired_status = _required_text(
-        pod, "desiredStatus", context=f"pod {contract.pod_id}"
+        pod, "desiredStatus", context=f"pod {contract.pod_id}", gate="status"
     ).upper()
     if not allow_inactive and desired_status not in {"RUNNING", "PROVISIONING"}:
         raise TargetObservationError(
-            f"pod {contract.pod_id!r} is not attachable (desiredStatus={desired_status!r})"
-        )
+            f"pod {contract.pod_id!r} is not attachable (desiredStatus={desired_status!r})",
+            gate="status")
     actual_status = _text(pod.get("actualStatus"))
     if (
         not allow_inactive
@@ -329,12 +331,16 @@ def inspect_target_records(
         and actual_status.upper() not in {"RUNNING", "PROVISIONING"}
     ):
         raise TargetObservationError(
-            f"pod {contract.pod_id!r} is not currently attachable (actualStatus={actual_status!r})"
-        )
+            f"pod {contract.pod_id!r} is not currently attachable (actualStatus={actual_status!r})",
+            gate="status")
 
     machine = pod.get("machine") if isinstance(pod.get("machine"), dict) else {}
+    try:
+        gpu_name = pod_field(pod, "gpu_name")
+    except InvalidPodField:
+        raise TargetObservationError("pod GPU evidence is invalid", gate="GPU") from None
     gpu_candidates = [
-        _text(pod.get("machineType")),
+        gpu_name,
         _text(machine.get("gpuDisplayName")),
         _text(machine.get("gpuTypeId")),
     ]
@@ -349,22 +355,27 @@ def inspect_target_records(
     if observed_gpu is None:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} GPU mismatch: expected {contract.gpu_type!r}, "
-            f"observed {[item for item in gpu_candidates if item]!r}"
-        )
+            f"observed {[item for item in gpu_candidates if item]!r}",
+            gate="GPU")
 
-    image = _required_text(pod, "imageName", context=f"pod {contract.pod_id}")
+    try:
+        image = pod_field(pod, "image")
+    except InvalidPodField:
+        raise TargetObservationError("pod image evidence is invalid", gate="image") from None
     if image != contract.worker_image:
         raise TargetObservationError(
-            f"pod {contract.pod_id!r} image mismatch: expected {contract.worker_image!r}, observed {image!r}"
-        )
+            f"pod {contract.pod_id!r} image mismatch: expected {contract.worker_image!r}, observed {image!r}",
+            gate="image")
 
-    attached_volume_id = _text(pod.get("networkVolumeId"))
-    if (attached_volume_id != contract.network_volume_id
-            or (contract.network_volume_id is None and pod.get("networkVolumeId") not in (None, ""))):
+    try:
+        attached_volume_id = pod_field(pod, "volume")
+    except InvalidPodField:
+        raise TargetObservationError("pod volume evidence is invalid", gate="volume") from None
+    if attached_volume_id != contract.network_volume_id:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} volume mismatch: expected {contract.network_volume_id!r}, "
-            f"observed {attached_volume_id!r}"
-        )
+            f"observed {attached_volume_id!r}",
+            gate="volume")
 
     volume = inspect_volume_records(contract, volumes=volumes)
     volume_name = _text(volume.get("name"))
@@ -376,7 +387,7 @@ def inspect_target_records(
             datacenter_id = contract.datacenter_id  # unreported; not a reason to strand a paid pod
         if (not release and not defer_machine and contract.datacenter_id is not None
                 and datacenter_id != contract.datacenter_id):
-            raise TargetObservationError("no-volume pod datacenter could not be confirmed")
+            raise TargetObservationError("no-volume pod datacenter could not be confirmed", gate="datacenter")
 
     return RunPodTargetObservation(
         pod_id=contract.pod_id,
@@ -401,7 +412,7 @@ def inspect_volume_records(
     """Prove the pinned volume's account identity and immutable sizing."""
     if contract.network_volume_id is None:
         if contract.network_volume_name is not None or contract.network_volume_size_gb != 0:
-            raise TargetObservationError("no-volume target has inconsistent volume identity")
+            raise TargetObservationError("no-volume target has inconsistent volume identity", gate="volume")
         return {"id": None, "name": None, "size": 0, "dataCenterId": contract.datacenter_id}
     if not contract.network_volume_id.strip():
         raise ValueError("network volume identity must be pinned by ID")
@@ -415,29 +426,29 @@ def inspect_volume_records(
     ]
     if len(volume_matches) != 1:
         raise TargetObservationError(
-            f"network volume {contract.network_volume_id!r} cannot be confirmed in the authenticated account inventory"
-        )
+            f"network volume {contract.network_volume_id!r} cannot be confirmed in the authenticated account inventory",
+            gate="volume")
     volume = volume_matches[0]
     volume_name = _required_text(
-        volume, "name", context=f"volume {contract.network_volume_id}"
+        volume, "name", context=f"volume {contract.network_volume_id}", gate="volume"
     )
     if contract.network_volume_name and volume_name != contract.network_volume_name:
         raise TargetObservationError(
             f"network volume {contract.network_volume_id!r} name mismatch: "
-            f"expected {contract.network_volume_name!r}, observed {volume_name!r}"
-        )
+            f"expected {contract.network_volume_name!r}, observed {volume_name!r}",
+            gate="volume")
     size = _positive_integer(volume.get("size"))
     if size != contract.network_volume_size_gb:
         raise TargetObservationError(
             f"network volume {contract.network_volume_id!r} size mismatch: "
-            f"expected {contract.network_volume_size_gb} GB, observed {size!r}"
-        )
+            f"expected {contract.network_volume_size_gb} GB, observed {size!r}",
+            gate="volume")
     datacenter_id = _text(volume.get("dataCenterId"))
     if contract.datacenter_id and datacenter_id != contract.datacenter_id:
         raise TargetObservationError(
             f"network volume {contract.network_volume_id!r} datacenter mismatch: "
-            f"expected {contract.datacenter_id!r}, observed {datacenter_id!r}"
-        )
+            f"expected {contract.datacenter_id!r}, observed {datacenter_id!r}",
+            gate="volume")
     return dict(volume)
 
 
@@ -559,19 +570,22 @@ def read_exact_pod(api_key: str, pod_id: str) -> tuple[int, dict[str, Any] | Non
         response = httpx.get(
             f"{PODS_URL}/{quote(pod_id, safe='')}",
             headers={"Authorization": f"Bearer {api_key}"}, timeout=30,
+            # REST omits networkVolume unless asked (OpenAPI default false);
+            # without it a correct volume pod reads as unattached.
+            params={"includeNetworkVolume": "true"},
         )
         if response.status_code == 404:
             return 404, None
         if response.status_code != 200:
-            raise TargetObservationError("exact pod GET did not succeed")
+            raise TargetObservationError("exact pod GET did not succeed", gate="identity")
         record = response.json()
         if not isinstance(record, dict) or record.get("id") != pod_id:
-            raise TargetObservationError("exact pod GET returned an unverified identity")
+            raise TargetObservationError("exact pod GET returned an unverified identity", gate="identity")
         return 200, record
     except TargetObservationError:
         raise
     except Exception:
-        raise TargetObservationError("exact pod GET could not be confirmed") from None
+        raise TargetObservationError("exact pod GET could not be confirmed", gate="identity") from None
 
 
 def _target_contract(
@@ -647,19 +661,19 @@ def observe_target(
         pods = list_pods(api_key)
     except Exception as exc:
         raise TargetObservationError(
-            f"could not observe RunPod account pod inventory for exact pod {contract.pod_id!r}: {exc}"
-        ) from exc
+            f"could not observe RunPod account pod inventory for exact pod {contract.pod_id!r}: {exc}",
+            gate="inventory") from exc
     if not isinstance(pods, list):
-        raise TargetObservationError("RunPod account pod inventory returned an invalid response")
+        raise TargetObservationError("RunPod account pod inventory returned an invalid response", gate="inventory")
 
     try:
         volumes = get_network_volumes(api_key) if contract.network_volume_id is not None else []
     except Exception as exc:
         raise TargetObservationError(
-            f"could not confirm network volume {contract.network_volume_id!r}: {exc}"
-        ) from exc
+            f"could not confirm network volume {contract.network_volume_id!r}: {exc}",
+            gate="inventory") from exc
     if not isinstance(volumes, list):
-        raise TargetObservationError("RunPod network-volume inventory returned an invalid response")
+        raise TargetObservationError("RunPod network-volume inventory returned an invalid response", gate="inventory")
 
     # get_network_volumes currently degrades some transport errors to an empty
     # list. The record validator treats empty/missing evidence as unconfirmed,
@@ -678,23 +692,23 @@ async def _release_inventory(
         pods = await asyncio.to_thread(list_pods, config.api_key)
     except Exception:
         raise TargetObservationError(
-            "could not observe RunPod account pod inventory for exact release"
-        ) from None
+            "could not observe RunPod account pod inventory for exact release",
+            gate="inventory") from None
     if not isinstance(pods, list):
-        raise TargetObservationError("RunPod account pod inventory returned an invalid response")
+        raise TargetObservationError("RunPod account pod inventory returned an invalid response", gate="inventory")
     ids = [_text(pod.get("id")) if isinstance(pod, dict) else None for pod in pods]
     if any(pod_id is None for pod_id in ids) or len(set(ids)) != len(ids):
-        raise TargetObservationError("RunPod account pod inventory is malformed or ambiguous")
+        raise TargetObservationError("RunPod account pod inventory is malformed or ambiguous", gate="inventory")
 
     try:
         volumes = (await asyncio.to_thread(get_network_volumes, config.api_key)
                    if contract.network_volume_id is not None else [])
     except Exception:
         raise TargetObservationError(
-            "could not confirm the persistent release volume"
-        ) from None
+            "could not confirm the persistent release volume",
+            gate="inventory") from None
     if not isinstance(volumes, list):
-        raise TargetObservationError("RunPod network-volume inventory returned an invalid response")
+        raise TargetObservationError("RunPod network-volume inventory returned an invalid response", gate="inventory")
     volume = inspect_volume_records(contract, volumes=volumes)
 
     matches = [

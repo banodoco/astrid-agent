@@ -11,6 +11,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import math
 import random
 import re
@@ -34,6 +35,13 @@ from .worker_preparation import (
     _validate_completed_release, write_target_record,
 )
 from . import worker_preparation
+
+
+def _exact_volume_id(record):
+    try:
+        return worker_preparation.pod_field(record, "volume")
+    except worker_preparation.InvalidPodField:
+        raise PaidSelectionError("provider volume evidence is invalid", gate="volume") from None
 
 
 class PaidSelectionError(TargetObservationError):
@@ -851,6 +859,8 @@ class RunPodSelectionOwner:
                     ) from None
                 except Exception as exc:
                     gate = worker_preparation.observation_failure_gate(exc)
+                    if gate:
+                        logging.getLogger(__name__).warning("RunPod provider contract failed; gate=%s", gate)
                     detail = f"; failed gate: {gate}" if gate is not None else ""
                     raise AcquisitionUnresolvedError(
                         "provider acquisition remains unresolved; reconcile the same journal" + detail,
@@ -865,7 +875,7 @@ class RunPodSelectionOwner:
                 status, exact = await asyncio.to_thread(read_exact_pod, config.api_key, observation.pod_id)
                 if (status != 200 or exact is None
                         or (p.volume_id is not None and exact.get("volumeMountPath") != p.mount_path)
-                        or exact.get("networkVolumeId") != p.volume_id):
+                        or _exact_volume_id(exact) != p.volume_id):
                     raise PaidSelectionError("provider did not confirm the exact volume mount", gate="volume")
                 # GPU and datacenter come from GraphQL pod.machine and the provider gpuTypes
                 # catalog (REST reports machine {} and no gpuTypeId/dataCenterId on a correct
@@ -896,6 +906,7 @@ class RunPodSelectionOwner:
             except Exception as exc:
                 # Every gate names itself; a failure outside any gate is reported as such.
                 gate = getattr(exc, "gate", None) or "unclassified"
+                logging.getLogger(__name__).warning("RunPod provider contract failed; gate=%s", gate)
                 pending = {**acquired_record, "state": "cleanup_pending", "reconciliation_required": True,
                            "failed_gate": gate}
                 replace_target_record(self.path, pending, operation_id=record["operation_id"])

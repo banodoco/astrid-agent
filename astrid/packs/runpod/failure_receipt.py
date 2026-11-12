@@ -131,8 +131,9 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
         from .target_selection import _OFFER_FAILURES
         if isinstance(reason, str) and reason in _OFFER_FAILURES:
             cause["reason"] = reason
-        if gate in {"volume", "GPU", "datacenter", "rate", "lifetime", "machine", "offer"}:
-            cause["gate"] = gate
+    if isinstance(gate, str) and gate in {"volume", "GPU", "datacenter", "rate", "lifetime", "machine", "offer",
+                                         "identity", "status", "image", "inventory", "provider"}:
+        cause["gate"] = gate
     machine = dict(machine or {})
     remote_root = getattr(run, "remote_root", None)
     kept = getattr(lease, "kept", None)
