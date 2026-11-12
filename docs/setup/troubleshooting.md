@@ -10,7 +10,7 @@ For a source editor, follow the [fully local route](../getting-started.md#run-ev
 
 ## Asking for help
 
-For help, open [Astrid issues](https://github.com/banodoco/astrid-agent/issues)
+For help, open [Astrid issues](https://github.com/banodoco/astrid-dev/issues/new/choose)
 and attach the doctor bundle. By default, it is saved to your Desktop (or
 Downloads if Desktop is unavailable) and its folder opens in Finder or File
 Explorer. It contains installer logs and service states, with home paths, user

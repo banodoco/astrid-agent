@@ -8,3 +8,5 @@ For the human setup path, see
 [docs/getting-started.md](docs/getting-started.md).
 For pack-owned mutable per-project settings and state, see
 [docs/packs/data-storage.md](docs/packs/data-storage.md).
+
+Issues about Astrid are filed on astrid-dev, not here: see https://github.com/banodoco/astrid-dev/blob/main/docs/contribution-workflow.md#issues.
