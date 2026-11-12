@@ -293,7 +293,7 @@ def _catalog_inputs(kind: str, spec: Any, mode: str | None = None) -> list[dict[
             workflow = _load_pinned_catalog_workflow(backend)
         except (ImportError, OSError, ValueError, KeyError):
             return result  # retained declared inputs remain useful offline
-        fields = _workflow_inputs({'binds': {}, 'defaults': {}}, mode or 'workflow', workflow=workflow)
+        fields = _workflow_inputs({'binds': _entry_bindings(workflow, None, mode or 'workflow', backend.param_map), 'defaults': {}}, mode or 'workflow', workflow=workflow)
         for row in fields:
             if {row['name'], *row.get('aliases', ())} & set(spec.requires):
                 row['required'] = True
