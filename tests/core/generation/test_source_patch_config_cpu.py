@@ -263,7 +263,7 @@ def test_flash_attention_dispatch_support_on_cpu(node, component, monkeypatch):
     # optional GPU kernel or executing attention.
     monkeypatch.setattr(cls, "_flash_attn_import_error", lambda *args, **kwargs: None)
     selected = config if component == "talker" else config.code_predictor_config
-    selected._attn_implementation = "flash_attention_2"
     with torch.device("meta"):
         model = cls(selected) if component == "talker" else cls(selected, config)
-    assert model.config._attn_implementation == "flash_attention_2"
+    selected._attn_implementation = "flash_attention_2"
+    assert model._flash_attn_can_dispatch(2, is_init_check=True)
