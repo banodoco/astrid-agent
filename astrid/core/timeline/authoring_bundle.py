@@ -945,6 +945,29 @@ class _RestoredShot(_CopiedShot):
     """Accepted inverse baseline, kept outside the authored JSON representation."""
 
 
+class _ArchiveShot(dict[str, Any]):
+    """A detached archive copy's remapped baseline, never accepted from JSON."""
+
+    def __init__(self, shot: Mapping[str, Any], *, project: str, timeline: str,
+                 shot_id: str, occurrence_id: str, source: Mapping[str, Any]) -> None:
+        super().__init__(shot)
+        self.binding = (project, timeline, shot_id, occurrence_id)
+        self.source = _copy(source)
+        self.baseline = (_copy(shot["payload"]), _copy(shot["internal_timeline"]))
+
+
+def _archive_shot_baseline(root: Mapping[str, Any], shot: _ArchiveShot,
+                           identity: str) -> tuple[dict[str, Any], Mapping[str, Any]]:
+    project, timeline, shot_id, occurrence = shot.binding
+    if (project != root["project_id"] or timeline != root["timeline_id"]
+            or identity != shot_id or root["source_mapping"]["shots"].get(shot_id) != shot.source
+            or shot.source.get("shot_id") == shot_id or not any(
+                row.get("shot_id") == shot_id and row.get("occurrence_id") == occurrence
+                for row in root["placements"])):
+        raise AuthoringBundleError("imported shot source binding changed")
+    return shot.baseline
+
+
 def _copied_shot_baseline(
     root: Mapping[str, Any], shot: _CopiedShot, identity: str,
 ) -> tuple[dict[str, Any], Mapping[str, Any]]:
@@ -1085,7 +1108,9 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
         if isinstance(shot, _CopiedShot) and not created:
             raise AuthoringBundleError("copied shot requires a recorded creation")
         copied_baseline = (_copied_shot_baseline(root, shot, authoring_shot_id)
-                           if isinstance(shot, _CopiedShot) else None)
+                           if isinstance(shot, _CopiedShot) else
+                           _archive_shot_baseline(root, shot, authoring_shot_id)
+                           if isinstance(shot, _ArchiveShot) else None)
         source_shot_id = None if created else _string(source.get("shot_id"), "source shot_id")
         base_shot = _mapping(
             copied_baseline[0] if copied_baseline else {} if created else shot.get("base_payload"),

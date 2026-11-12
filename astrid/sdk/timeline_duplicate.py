@@ -173,7 +173,8 @@ def _copy_source(source: Mapping[str, Any] | str | Path) -> dict[str, Any]:
     return copy.deepcopy(dict(value))
 
 
-def copy_content(source: Mapping[str, Any] | str | Path, target: Mapping[str, Any], *, new_slug: str) -> tuple[dict[str, Any], list[str]]:
+def copy_content(source: Mapping[str, Any] | str | Path, target: Mapping[str, Any], *, new_slug: str,
+                 _archive_baselines: bool = False) -> tuple[dict[str, Any], list[str]]:
     """Return a copy of ``target`` (keeping its provenance and identity) holding ``source``'s content.
 
     Shots, placements and occurrences get new ids (``id_map``). Returns ``(bundle, notes)``
@@ -245,6 +246,15 @@ def copy_content(source: Mapping[str, Any] | str | Path, target: Mapping[str, An
 
         internal = _remap_values(copy.deepcopy(dict(src_shot.get("internal_timeline") or {})), shot_map)
         shot["internal_timeline"] = adopt_parent_assets(internal, source.get("parent") or {})
+        if _archive_baselines:
+            # Preserve the source copy's two media views as a baseline, not as
+            # simultaneous new user selections. This marker is in-memory only.
+            from astrid.core.timeline.authoring_bundle import _ArchiveShot
+
+            shot = _ArchiveShot(shot, project=str(out["project_id"]), timeline=str(out["timeline_id"]),
+                                shot_id=new_shot, occurrence_id=occ_map[str(row["occurrence_id"])],
+                                source=out["source_mapping"]["shots"][new_shot])
+            out["shots"][new_shot] = shot
         new_row = _remap_values(copy.deepcopy(row), ids)
         new_row["shot_id"] = new_shot
         new_row["occurrence_id"] = occ_map[str(row["occurrence_id"])]

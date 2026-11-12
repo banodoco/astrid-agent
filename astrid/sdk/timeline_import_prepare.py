@@ -300,7 +300,7 @@ def prepare_import(timeline: Mapping[str, Any] | str | Path, manifest: Mapping[s
         _fail("timeline parent config must be an object")
     candidate = _empty_target(project, target_id, config)
     try:
-        copied, _notes = copy_content(source, candidate, new_slug=target_id)
+        copied, _notes = copy_content(source, candidate, new_slug=target_id, _archive_baselines=True)
         # Text bindings are source-project records. Carry their existing object
         # identities, but assign deterministic target-project binding identities.
         registrations = _retarget_text_bindings(source, copied, project, target_id)
