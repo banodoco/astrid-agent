@@ -214,7 +214,6 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
     root = tmp_path / 'installed-target'
     recipe = engine_recipe.load_recipe('comfyui', 'linux-x86_64-cu130')
     plan = engine_runner.plan_install(recipe, root=str(root), placement='local')
-    helper_sha = engine_runner._sha(engine_runner.helper_manifest(recipe))
     engine_models = tuple(DownloadResult(model.name, str(root / 'models' / model.destination),
         'skipped', model.bytes, model.sha256, True, 0)
         for model in engine_recipe.load_model_lock(recipe.models_lock).models)
@@ -239,7 +238,7 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
         digest = hashlib.sha256(lock.read_bytes()).hexdigest()
         environment_digests[environment.name] = digest
         (folder / 'receipt.json').write_text(json.dumps({'recipe_sha256': plan.recipe_sha256,
-            'helper_sha256': helper_sha, 'environment': environment.name, 'requirements_lock_sha256': digest}))
+            'environment': environment.name, 'requirements_lock_sha256': digest, 'validated': True}))
         if environment.node_lock:
             import vibecomfy
             ref = environment.node_lock

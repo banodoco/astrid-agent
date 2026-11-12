@@ -33,7 +33,7 @@ from . import engine_recipe as recipes
 from ._engine_python_bootstrap import engine_child_env, engine_process_env
 from .engine_contracts import (
     CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
-    EndpointHealthError, EndpointOwnershipError, EngineError, EngineReinstallRequired, IntegrityError,
+    EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
     RecipeValidationError, UnsafePathError, UnsupportedPlatform,
 )
 from .engine_runner import _json, _object_info_sha256, _root, _sha, helper_manifest
@@ -254,13 +254,6 @@ class LinuxEngineServiceClient:
                     raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
                 identity = marker["identity"]
                 if identity != self.identity:
-                    if (set(identity) == set(self.identity)
-                            and all(identity[k] == self.identity[k] for k in ("root", "engine", "platform", "recipe_sha256"))
-                            and isinstance(identity["helper_sha256"], str)
-                            and re.fullmatch(r"[0-9a-f]{64}", identity["helper_sha256"])):
-                        recipe = recipes.load_recipe(self.identity["engine"], self.identity["platform"])
-                        raise EngineReinstallRequired.for_install(engine=recipe.engine, platform=recipe.platform,
-                            root=self.identity["root"], environment=recipe.primary_environment)
                     raise EndpointOwnershipError("supervisor installation identity differs")
             info = _exists(fd, "control.sock")
             if info is not None:

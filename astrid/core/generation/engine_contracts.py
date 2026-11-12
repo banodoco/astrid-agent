@@ -75,35 +75,6 @@ class IntegrityError(RecipeError):
     code = "integrity_failed"
 
 
-class EngineReinstallRequired(IntegrityError):
-    """The installation belongs to different helper bytes and cannot be reused."""
-
-    code = "engine_reinstall_required"
-
-    def __init__(self, message: str, *, environment: str | None = None, **kwargs):
-        super().__init__(message, **kwargs)
-        self.environment = environment
-        self.clean_root = None
-        self.install_command = None
-
-    @classmethod
-    def for_install(cls, *, engine: str, platform: str, root: str,
-                    environment: str, step_id: str | None = None,
-                    clean_root: str | None = None):
-        """Recovery instructions from verified installation inputs, never transport text."""
-        import shlex
-
-        clean_root = root + "-clean" if clean_root is None else clean_root
-        command = shlex.join(("astrid", "engines", "install", engine, "--platform", platform,
-                              "--placement", "local", "--root", clean_root))
-        error = cls(f"Environment {environment} requires a clean reinstall. The original supervisor "
-                    f"is stale; stop it through its original owner's cleanup path. "
-                    f"Use a new clean root; run: {command}",
-                    environment=environment, step_id=step_id)
-        error.clean_root, error.install_command = clean_root, command
-        return error
-
-
 class UnsafePathError(RecipeValidationError):
     code = "unsafe_path"
 

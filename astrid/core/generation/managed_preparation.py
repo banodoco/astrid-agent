@@ -337,6 +337,7 @@ class ManagedEnginePreparation:
             plan_from_receipt,
             plan_install,
             refresh_installed_launch,
+            require_current_receipt,
         )
 
         self.check()
@@ -355,13 +356,13 @@ class ManagedEnginePreparation:
         plan = plan_from_receipt(self.recipe, receipt, root=self.root, placement="local")
         if receipt.status != "installed":
             raise IntegrityError("managed preparation requires a completed installation")
+        require_current_receipt(receipt, plan, self.recipe)
         runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
-        # These checks read the saved environment identities; they do not
-        # re-enter the install lock or require the HTTP service to be running.
-        runner.check_environment_identities()
         runner.step_id = "helper-identity"
         if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
             raise IntegrityError("managed engine helper identity differs")
+        # These checks read the saved environment identities; they do not
+        # re-enter the install lock or require the HTTP service to be running.
         for step in plan.steps:
             if step.kind in {"source", "environment"}:
                 runner.execute(step, readonly=True)
@@ -451,7 +452,6 @@ class ManagedEnginePreparation:
         if self.mode != "trust":
             self._verify_models(manifest)
         self._guard_runtime(workflow, runner, post=True)
-        runner.check_environment_identities()
         for step in runner.plan.steps:
             if step.kind in {"source", "environment"}:
                 runner.execute(step, readonly=True)
