@@ -39,6 +39,8 @@ import os
 import re
 import shutil
 import sys
+import threading
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,6 +193,28 @@ class _FdGuard:
         reporter = session.config.pluginmanager.get_plugin("terminalreporter")
         if reporter is not None:
             reporter.write_line(f"ERROR: the test session leaked {end - self.start} file descriptors ({self.start} -> {end})")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+class _ThreadGuard:
+    @pytest.hookimpl(trylast=True)
+    def pytest_sessionfinish(self, session, exitstatus):
+        leaked = [thread for thread in threading.enumerate()
+                  if thread is not threading.main_thread() and thread.is_alive() and not thread.daemon]
+        if not leaked:
+            return
+        frames = sys._current_frames()
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line(f"ERROR: the test session leaked non-daemon threads: {', '.join(thread.name for thread in leaked)}")
+            for thread in leaked:
+                reporter.write_line(f"Thread {thread.name!r}, target={getattr(thread, '_target', None)!r}:")
+                frame = frames.get(thread.ident)
+                if frame is None:
+                    reporter.write_line("  stack unavailable")
+                else:
+                    for line in traceback.format_stack(frame):
+                        reporter.write(line)
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
@@ -466,6 +490,7 @@ def pytest_configure(config):
     for name, lane in LANES.items():
         config.addinivalue_line("markers", f"{name}: {lane.kind} lane: {lane.reason}")
     config.pluginmanager.register(_FdGuard(), "fd-leak-guard")
+    config.pluginmanager.register(_ThreadGuard(), "thread-leak-guard")
     guard = _SkipGuard()
     guard.expression = (config.getoption("markexpr", default="") or "").strip()
     config.pluginmanager.register(guard, "skip-guard")
