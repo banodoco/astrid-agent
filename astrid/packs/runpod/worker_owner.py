@@ -35,6 +35,7 @@ from astrid.core.execution.warm_hold import (
     idle_seconds,
 )
 
+from .provider import account_gate, async_provider_call, provider_budget
 from .worker_preparation import (
     AcquisitionUnresolvedError,
     _checkpoint_release_progress,
@@ -184,6 +185,26 @@ class RunPodLeaseOwner:
                     raise RunPodWorkerOwnerError("lease has invalid idle expiry")
         return record
 
+    def _provider_retry_delay(self, record: Mapping[str, Any] | None = None) -> float:
+        """Use this account's shared provider cooldown for recovery timers."""
+        from .target_selection import RunPodOffer
+
+        try:
+            record = record or self.selection._read()
+            if not isinstance(record, Mapping):
+                return 1.0
+            limits = record.get("paid_limits")
+            if not isinstance(limits, Mapping):
+                return 1.0
+            config = self.selection.config_factory(RunPodOffer(
+                record["provider_account_ref"], record["gpu_type"],
+                limits["hourly_usd"], "lease-recovery"))
+            return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay()
+        except Exception:  # noqa: BLE001 - keep durable retry armed on any config failure.
+            # Keep durable recovery armed if its journal/config is currently
+            # unreadable; the account gate cannot be addressed without a key.
+            return 1.0
+
     def _save(self, record: Mapping[str, Any], lease: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
         value = {**record, "lease": dict(lease), **changes}
         replace_target_record(self.selection.path, value, operation_id=record["operation_id"])
@@ -244,7 +265,7 @@ class RunPodLeaseOwner:
                 if not self.closed and (self.deadline_timer is None or self.deadline_timer is deadline_timer):
                     if self.expiry_retry_timer is not None:
                         self.expiry_retry_timer.cancel()
-                    self.expiry_retry_timer = self.timer(1, lambda: self._expire(reason, generation, operation))
+                    self.expiry_retry_timer = self.timer(self._provider_retry_delay(), lambda: self._expire(reason, generation, operation))
 
     def recover(self, *, expected_machine_id: str | None = None) -> None:
         """Startup barrier: reconcile, then terminate the prior host's lease."""
@@ -275,9 +296,10 @@ class RunPodLeaseOwner:
             offer = self.selection._recorded_offer(raw)
             self.selection._owned(raw, offer)
             config = self.selection.config_factory(offer)
+            account_gate(config.api_key, account_ref=raw["provider_account_ref"])
 
             async def inventory():
-                return await asyncio.wait_for(asyncio.to_thread(api.list_pods, config.api_key), timeout=30)
+                return await async_provider_call(config.api_key, api.list_pods, config.api_key)
 
             pods = _run_sync(inventory())
             if not isinstance(pods, list) or any(not isinstance(pod, dict) for pod in pods):
@@ -457,7 +479,7 @@ class RunPodLeaseOwner:
                     self.started = False
                     self._cancel()
                     operation = current["operation_id"]
-                    self.deadline_timer = self.timer(1, lambda: self._retry_recovery(operation))
+                    self.deadline_timer = self.timer(self._provider_retry_delay(current), lambda: self._retry_recovery(operation))
                 raise
             self._arm(claimed)
             return RunPodLease(claimed["operation_id"], self.epoch, lease["generation"],
@@ -673,7 +695,7 @@ class RunPodLeaseOwner:
             self._save(record, {**lease, "state": "releasing", "release_reason": "observer_unreaped"},
                        state="cleanup_pending", reconciliation_required=True, observer_unreaped=True)
             self._cancel()
-            self.deadline_timer = self.timer(1, lambda: self._retry_recovery(invocation.operation_id))
+            self.deadline_timer = self.timer(self._provider_retry_delay(record), lambda: self._retry_recovery(invocation.operation_id))
 
     def release(self, *, reason: str = "explicit", _expected_operation: str | None = None,
                 expected_machine_id: str | None = None) -> Mapping[str, Any] | None:
@@ -700,13 +722,14 @@ class RunPodLeaseOwner:
                 self._check_observer_children(current)
             except AcquisitionUnresolvedError:
                 if current is not None:
-                    self.deadline_timer = self.timer(1, lambda: self._retry_recovery(current["operation_id"]))
+                    self.deadline_timer = self.timer(self._provider_retry_delay(current), lambda: self._retry_recovery(current["operation_id"]))
                 raise
             if self._release_inflight:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
             self._release_inflight = True
         try:
-            return self._release(reason=reason)
+            with provider_budget(EXACT_CLEANUP_SECONDS):
+                return self._release(reason=reason)
         except Exception as exc:
             with self.lock:
                 self.last_error_type = type(exc).__name__
@@ -716,7 +739,7 @@ class RunPodLeaseOwner:
                     record = self.selection._read()
                     if record is not None:
                         operation = record["operation_id"]
-                        self.deadline_timer = self.timer(1, lambda: self._retry_recovery(operation))
+                        self.deadline_timer = self.timer(self._provider_retry_delay(record), lambda: self._retry_recovery(operation))
             raise
         finally:
             with self.lock:
@@ -750,6 +773,7 @@ class RunPodLeaseOwner:
             limits = record["paid_limits"]
             config = self.selection.config_factory(RunPodOffer(
                 record["provider_account_ref"], record["gpu_type"], limits["hourly_usd"], "lease-release"))
+            account_gate(config.api_key, account_ref=record["provider_account_ref"])
             if not record.get("pod_id"):
                 # Never create here, including zero exact-name matches.
                 volume = {"id": record.get("network_volume_id"), "name": record.get("network_volume_name"),
@@ -911,6 +935,7 @@ class RunPodLeaseOwner:
                 limits = record["paid_limits"]
                 config = self.selection.config_factory(RunPodOffer(
                     record["provider_account_ref"], record["gpu_type"], limits["hourly_usd"], "lease-liveness"))
+                account_gate(config.api_key, account_ref=record["provider_account_ref"])
                 observe = lambda pod: provider_pod_state(config.api_key, pod)  # noqa: E731
         if observe(pod_id) != "gone":
             return "live"
@@ -1253,8 +1278,10 @@ def _run_sync(coroutine: Any) -> Any:
     # Runtime's public preparer contract is synchronous. If an embedding
     # caller already owns an event loop, run the I/O coroutine on a short-lived
     # worker thread rather than nesting or patching that caller's loop.
+    from contextvars import copy_context
+
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="astrid-runpod-io") as pool:
-        return pool.submit(asyncio.run, coroutine).result()
+        return pool.submit(copy_context().run, asyncio.run, coroutine).result()
 
 
 def _absolute(value: str, *, label: str) -> Path:

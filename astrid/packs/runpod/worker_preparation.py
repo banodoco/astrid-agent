@@ -15,20 +15,21 @@ import re
 import stat
 import tempfile
 import time
-from dataclasses import asdict, dataclass, replace as _dc_replace
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from dataclasses import replace as _dc_replace
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping, cast
 
-from astrid.core.generation.engine_contracts import Gate, PlacementRefused
-
 from runtime_protocol import platform
 
+from astrid.core.generation.engine_contracts import Gate, PlacementRefused
 from astrid.core.util.time import utc_now_iso
-from .pod_fields import InvalidPodField, pod_field
 
+from .pod_fields import InvalidPodField, pod_field
+from .provider import account_gate, async_provider_call, provider_call
 
 _SHARED_GATES = {
     "GPU": "hardware", "volume": "storage", "datacenter": "region",
@@ -238,6 +239,8 @@ def _exclusive_target_owner(function: Any) -> Any:
                     f"RunPod target journal {path} changed before this operation acquired ownership",
                     gate="identity", retryable=False, custody="unknown",
                 )
+            if current.get("provider_account_ref") and isinstance(getattr(config, "api_key", None), str):
+                account_gate(config.api_key, account_ref=current["provider_account_ref"])
             try:
                 return await function(
                     config,
@@ -265,7 +268,7 @@ async def resolve_existing_volume(api_key: str, name_or_id: str) -> dict[str, An
     from runpod_lifecycle.api import get_network_volumes
 
     try:
-        volumes = await asyncio.to_thread(get_network_volumes, api_key)
+        volumes = await async_provider_call(api_key, get_network_volumes, api_key)
     except Exception as exc:
         raise TargetObservationError(
             f"could not observe RunPod network-volume inventory for {name_or_id!r}: {exc}",
@@ -523,7 +526,6 @@ def confirm_acquired_machine(
     GraphQL still reporting no machine at the timeout fails closed.
     Returns ``(gpuDisplayName, dataCenterId)``.
     """
-    import runpod
     from runpod_lifecycle import graphql as lifecycle_graphql
 
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
@@ -688,7 +690,7 @@ def observe_target(
     from runpod_lifecycle.api import get_network_volumes, list_pods
 
     try:
-        pods = list_pods(api_key)
+        pods = provider_call(api_key, list_pods, api_key)
     except Exception as exc:
         raise TargetObservationError(
             f"could not observe RunPod account pod inventory for exact pod {contract.pod_id!r}: {exc}",
@@ -697,7 +699,7 @@ def observe_target(
         raise TargetObservationError("RunPod account pod inventory returned an invalid response", gate="inventory", retryable=True, custody="unknown")
 
     try:
-        volumes = get_network_volumes(api_key) if contract.network_volume_id is not None else []
+        volumes = provider_call(api_key, get_network_volumes, api_key) if contract.network_volume_id is not None else []
     except Exception as exc:
         raise TargetObservationError(
             f"could not confirm network volume {contract.network_volume_id!r}: {exc}",
@@ -719,11 +721,11 @@ async def _release_inventory(
     from runpod_lifecycle.api import get_network_volumes, list_pods
 
     try:
-        pods = await asyncio.to_thread(list_pods, config.api_key)
-    except Exception:
+        pods = await async_provider_call(config.api_key, list_pods, config.api_key)
+    except Exception as exc:
         raise TargetObservationError(
             "could not observe RunPod account pod inventory for exact release",
-            gate="inventory", retryable=True, custody="unknown") from None
+            gate="inventory", retryable=True, custody="unknown") from exc
     if not isinstance(pods, list):
         raise TargetObservationError("RunPod account pod inventory returned an invalid response", gate="inventory", retryable=True, custody="unknown")
     ids = [_text(pod.get("id")) if isinstance(pod, dict) else None for pod in pods]
@@ -731,7 +733,7 @@ async def _release_inventory(
         raise TargetObservationError("RunPod account pod inventory is malformed or ambiguous", gate="inventory", retryable=True, custody="unknown")
 
     try:
-        volumes = (await asyncio.to_thread(get_network_volumes, config.api_key)
+        volumes = (await async_provider_call(config.api_key, get_network_volumes, config.api_key)
                    if contract.network_volume_id is not None else [])
     except Exception:
         raise TargetObservationError(
@@ -1005,7 +1007,9 @@ async def _confirm_release_absence(config: Any, contract: RunPodTargetContract,
                                    attempt: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     # Lifecycle's DELETE-404 fast path and its list-only reconciliation cannot
     # establish this product receipt. Always make both independent reads here.
-    status, body = await asyncio.to_thread(read_exact_pod, config.api_key, contract.pod_id)
+    status, body = await async_provider_call(
+        config.api_key, read_exact_pod, config.api_key, contract.pod_id, already_gated=True,
+    )
     after, volume = await _release_inventory(config, contract)
     if type(status) is not int or status != 404 or body is not None or after is not None:
         raise TargetObservationError("exact GET404 and successful account-list absence are both required", gate="identity", retryable=False, custody=_record_custody(attempt))
@@ -1138,7 +1142,8 @@ async def _release_exact_target_after_quiescence(
         try:
             # First reconcile a possibly completed delete. This operation is
             # exact-ID only and never mutates provider state.
-            await asyncio.to_thread(
+            await async_provider_call(
+                config.api_key,
                 reconcile_pod_cleanup,
                 contract.pod_id,
                 config.api_key,
@@ -1184,7 +1189,9 @@ async def _release_exact_target_after_quiescence(
         replace_target_record(handle_path, releasing, operation_id=operation_id)
         attempt = releasing
         try:
-            await asyncio.to_thread(terminate_pod, contract.pod_id, config.api_key)
+            await async_provider_call(
+                config.api_key, terminate_pod, contract.pod_id, config.api_key,
+            )
         except BaseException as exc:
             unresolved = {
                 **attempt,
@@ -1607,7 +1614,7 @@ async def reconcile_target(
         replace_target_record(handle_path, started, operation_id=operation_id)
         attempt = started
         try:
-            pods = await asyncio.to_thread(list_pods, config.api_key)
+            pods = await async_provider_call(config.api_key, list_pods, config.api_key)
         except Exception as exc:
             failed_observation = {
                 **attempt,
