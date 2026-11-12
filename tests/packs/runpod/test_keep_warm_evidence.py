@@ -37,6 +37,50 @@ def test_recovery_preserves_release_cause():
     assert calls[0][1]["release_mechanism"] == "recovery"
     assert calls[1][1] == {"reason": "idle", "_expected_operation": "op"}
 
+
+@pytest.mark.parametrize("reason", ["idle", "paid_deadline"])
+def test_recovery_annotation_failure_does_not_consume_release_retry(small_lease, monkeypatch, reason):
+    c = small_lease
+    owner = c.fresh()
+    invocation = owner.acquire(c.grant, requested_idle_seconds=10)
+    if reason == "idle":
+        owner.settle(invocation)
+    record = c.read()
+    pod = record["pod_id"]
+    paid_timer = owner.deadline_timer
+    c.drain_error = RuntimeError("transient drain failure")
+    expires = record["lease"]["idle_expires_at" if reason == "idle" else "paid_expires_at"]
+    c.clock.advance(expires - c.clock())
+
+    pending = c.read()
+    assert pending["state"] == "release_pending" and pending["lease"]["state"] == "releasing"
+    assert pending["lease"]["release_reason"] == reason
+    assert not c.deletes and [visible["id"] for visible in c.pods] == [pod]
+    retry = owner.deadline_timer
+    assert paid_timer.cancelled and retry is not paid_timer and not retry.cancelled
+
+    save = owner._save
+    annotation_failures = []
+
+    def transient_annotation(record, lease, **changes):
+        if not annotation_failures and lease == {**record["lease"], "release_mechanism": "recovery"} and not changes:
+            annotation_failures.append(record["operation_id"])
+            raise OSError("transient recovery annotation write failure")
+        return save(record, lease, **changes)
+
+    monkeypatch.setattr(owner, "_save", transient_annotation)
+    c.drain_error = None
+    c.clock.advance(retry.due - c.clock())
+
+    assert annotation_failures == [invocation.operation_id]
+    assert owner.last_error_type == "OSError"
+    assert c.deletes == [pod]
+    complete = c.read()
+    assert complete["state"] == "cleanup_complete"
+    assert complete["lease"]["ended"] == reason
+    assert complete["cleanup"]["absence"]["account_list_absent"] is True
+
+
 from astrid.packs.runpod import machine as rm  # noqa: E402
 from tests.packs.runpod.test_failed_job_keeps_warm import _failed  # noqa: E402
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: E402,F401

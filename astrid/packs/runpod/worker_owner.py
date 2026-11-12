@@ -367,7 +367,11 @@ class RunPodLeaseOwner:
                 record = self._read()
                 reason = ((record or {}).get("lease") or {}).get("release_reason") or "recovery"
                 if record is not None and record.get("operation_id") == operation:
-                    self._save(record, {**record["lease"], "release_mechanism": "recovery"})
+                    try:
+                        self._save(record, {**record["lease"], "release_mechanism": "recovery"})
+                    except Exception as exc:
+                        # Optional metadata must not consume the cleanup retry.
+                        self.last_error_type = type(exc).__name__
             self.release(reason=reason, _expected_operation=operation)
         except Exception as exc:
             self.last_error_type = type(exc).__name__
