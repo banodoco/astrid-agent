@@ -965,10 +965,20 @@ def _probe_vibecomfy_checkout(checkout: Path) -> dict[str, str]:
 
 
 def _object_info_from_checkout(checkout: Path, *, model_paths: tuple[str, ...] = ()) -> dict[str, Any]:
-    cache_root = checkout.resolve() / "vibecomfy" / "porting" / "cache" / "object_info"
-    index = json.loads((cache_root / "index.json").read_text(encoding="utf-8"))
-    payloads: dict[str, dict[str, Any]] = {}
-    result: dict[str, Any] = {}
+    source = checkout.resolve()
+    probe = subprocess.run(
+        [sys.executable, "-c", (
+            "import json; from pathlib import Path; import vibecomfy; "
+            "from vibecomfy.porting.object_info.consume import list_classes, get_classes; "
+            "print(json.dumps({'origin': str(Path(vibecomfy.__file__).resolve()), "
+            "'rows': get_classes(list_classes())}))"
+        )],
+        cwd=str(source), env=_vibecomfy_child_environment(source),
+        capture_output=True, text=True, check=True, timeout=30,
+    )
+    schema = json.loads(probe.stdout)
+    if not Path(schema["origin"]).resolve().is_relative_to(source):
+        raise RuntimeError("object_info API resolved outside the selected VibeComfy checkout")
 
     def normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
         normalized = dict(row)
@@ -984,39 +994,9 @@ def _object_info_from_checkout(checkout: Path, *, model_paths: tuple[str, ...] =
         normalized.pop("outputs", None)
         return normalized
 
-    def payload_for(path: Path) -> dict[str, Any]:
-        filename = path.name
-        if filename not in payloads:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            payloads[filename] = raw if isinstance(raw, dict) else {}
-        return payloads[filename]
-
-    for class_type, filename in sorted(index.items()):
-        if not isinstance(class_type, str) or not isinstance(filename, str):
-            continue
-        pack_path = (cache_root / filename).resolve()
-        if not pack_path.is_relative_to(cache_root.resolve()) or not pack_path.is_file():
-            continue
-        row = payload_for(pack_path).get(class_type)
-        if isinstance(row, Mapping):
-            # TargetSchemaProvider consumes the same per-node schema shape as
-            # ComfyUI's /object_info endpoint; the payload comes from this
-            # explicit dirty checkout's indexed schema corpus.
-            result[class_type] = normalize_row(row)
-
-    # The index is intentionally authoritative for its existing rows, but
-    # source-derived cache payloads can contain real node metadata that was
-    # omitted from that index.  Add those rows without inventing schemas or
-    # allowing a fallback payload to replace an indexed row.
-    for pack_path in sorted(cache_root.glob("*.json")):
-        if pack_path.name in {"index.json", "provenance.json"}:
-            continue
-        resolved = pack_path.resolve()
-        if not resolved.is_relative_to(cache_root.resolve()) or not resolved.is_file():
-            continue
-        for class_type, row in sorted(payload_for(resolved).items()):
-            if isinstance(class_type, str) and isinstance(row, Mapping):
-                result.setdefault(class_type, normalize_row(row))
+    # Convert VibeComfy's class-only schemas to the /object_info shape used by
+    # the fixture server. Resolve in a child so the chosen checkout owns the API.
+    result = {class_type: normalize_row(row) for class_type, row in schema["rows"].items()}
 
     fixture_root = ASTRID_ROOT / "tests" / "fixtures" / "h3_cpu"
     legacy_artifact = json.loads(
