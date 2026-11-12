@@ -154,6 +154,11 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      target_app_sha:
+        description: NON-PROOF diagnostic-macos-r1-update only. Full App SHA whose own public/install and install-manifest.json run the update (its Agent, Runtime and pins; empty = App 237b28be, Release 12). Not with target_agent_sha
+        required: false
+        default: ''
+        type: string
       target_agent_sha:
         description: NON-PROOF diagnostic-macos-r1-update only. Full Agent SHA to update to with the Release 12 Runtime (empty = Release 12 Agent 0e1543e0 from App 237b28be's manifest)
         required: false
@@ -1581,8 +1586,19 @@ jobs:
       R1_APP: dc277284e66438516a7aa4de0a2dc8beae905bab
       R12_APP: 237b28be935af49c23464fa6ca1cf30db67ebaa0
       TARGET_AGENT_SHA: ${{ inputs.target_agent_sha }}
+      TARGET_APP_SHA: ${{ inputs.target_app_sha }}
       BROWSER: /usr/bin/true
     steps:
+      - name: Validate the update target inputs
+        run: |
+          set -euo pipefail
+          if [ -n "${TARGET_APP_SHA// /}" ] && [ -n "${TARGET_AGENT_SHA// /}" ]; then
+            echo "::error::target_app_sha and target_agent_sha are mutually exclusive: target_app_sha takes the whole tuple from that App's manifest, target_agent_sha swaps only the Agent in App 237b28be's Release 12 manifest. Set one."
+            exit 1
+          fi
+          if [ -n "$TARGET_APP_SHA" ] && ! [[ "$TARGET_APP_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::target_app_sha must be a full 40-hex App commit, not '$TARGET_APP_SHA'"; exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-agent
@@ -1596,44 +1612,52 @@ jobs:
           ref: dc277284e66438516a7aa4de0a2dc8beae905bab
           path: r1-app
           persist-credentials: false
-      - name: Check out the Release 12 App
+      - name: Check out the update target App (default 237b28be, Release 12)
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
-          ref: 237b28be935af49c23464fa6ca1cf30db67ebaa0
-          path: r12-app
+          ref: ${{ inputs.target_app_sha || '237b28be935af49c23464fa6ca1cf30db67ebaa0' }}
+          path: target-app
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Verify the pinned tuples and compare the served Release 12 bytes
+      - name: Verify the pinned tuples and compare the served bytes
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/r1-repro"; mkdir -p "$E"
           python3 - <<'PY'
           import json
           r1 = json.load(open("r1-app/public/install-manifest.json"))
-          r12 = json.load(open("r12-app/public/install-manifest.json"))
+          import os
+          target = json.load(open("target-app/public/install-manifest.json"))
           assert (r1["release"], r1["agent"]["sha"][:8], r1["runtime"]["sha"][:8]) == (1, "7247ea92", "9fc53b77"), r1
-          assert (r12["release"], r12["agent"]["sha"], r12["runtime"]["sha"]) == (
-              12, "0e1543e0da2215db9cb3320cfd1083174c3c62a9", "42ae24aff8d2cb854f874ce134161077a3ba3641"), r12
-          print("R1", r1["agent"]["sha"], r1["runtime"]["sha"]); print("R12", r12["agent"]["sha"], r12["runtime"]["sha"])
+          if not os.environ.get("TARGET_APP_SHA"):
+              assert (target["release"], target["agent"]["sha"], target["runtime"]["sha"]) == (
+                  12, "0e1543e0da2215db9cb3320cfd1083174c3c62a9", "42ae24aff8d2cb854f874ce134161077a3ba3641"), target
+          print("R1", r1["agent"]["sha"], r1["runtime"]["sha"])
+          print("target App manifest release", target["release"], target["agent"]["sha"], target["runtime"]["sha"])
           PY
           for f in install install-manifest.json; do
             curl -fsSL "https://astrid.haus/$f" -o "$E/served-$f" || true
-            echo "$f served=$(shasum -a 256 "$E/served-$f" 2>/dev/null | cut -c1-64) r12-app=$(shasum -a 256 "r12-app/public/$f" | cut -c1-64)"
+            echo "$f served=$(shasum -a 256 "$E/served-$f" 2>/dev/null | cut -c1-64) target-app=$(shasum -a 256 "target-app/public/$f" | cut -c1-64)"
           done | tee "$E/served-compare.txt"
           sw_vers | tee "$E/os.txt"; uname -m | tee -a "$E/os.txt"
       - name: Select the update target manifest
         run: |
           set -euo pipefail
           E="$RUNNER_TEMP/r1-repro"
-          # Default: App 237b28be's Release 12 manifest (byte-identical to the served one, checked above).
-          # Override: the same manifest with only agent.sha replaced, so the bootstrap installs that
-          # Agent commit from GitHub with the Release 12 Runtime and tool pins.
-          python3 - "$E/target-manifest.json" <<'PY'
+          # Default: App 237b28be's own Release 12 manifest (byte-identical to the served one, checked above).
+          # target_app_sha: that App's own public/install and public/install-manifest.json, unmodified.
+          # target_agent_sha: 237b28be's manifest with only agent.sha replaced, so the bootstrap installs
+          # that Agent commit from GitHub with the Release 12 Runtime and tool pins.
+          if [ -n "$TARGET_APP_SHA" ]; then
+            manifest="target-app/public/install-manifest.json"
+          else
+            manifest="$E/target-manifest.json"
+            python3 - "$manifest" <<'PY'
           import json, os, re, sys
-          manifest = json.load(open("r12-app/public/install-manifest.json"))
+          manifest = json.load(open("target-app/public/install-manifest.json"))
           sha = os.environ.get("TARGET_AGENT_SHA", "").strip().lower()
           if sha:
               if not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -1641,9 +1665,28 @@ jobs:
               manifest["agent"]["sha"] = sha
               json.dump(manifest, open(sys.argv[1], "w"), indent=2)
           else:
-              open(sys.argv[1], "wb").write(open("r12-app/public/install-manifest.json", "rb").read())
-          print("target", manifest["release"], "agent", manifest["agent"]["sha"], "runtime", manifest["runtime"]["sha"],
-                "(override)" if sha else "(Release 12 manifest)")
+              open(sys.argv[1], "wb").write(open("target-app/public/install-manifest.json", "rb").read())
+          PY
+          fi
+          python3 - "$manifest" "$GITHUB_ENV" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import hashlib, json, os, sys
+          path, env, summary = sys.argv[1:]
+          raw = open(path, "rb").read()
+          manifest = json.loads(raw)
+          release = manifest["release"]
+          if type(release) is not int or release < 2:
+              raise SystemExit(f"target manifest release must be an integer above 1, not {release!r}")
+          source = ("App " + os.environ["TARGET_APP_SHA"] if os.environ.get("TARGET_APP_SHA")
+                    else "App 237b28be with agent.sha=" + os.environ["TARGET_AGENT_SHA"] if os.environ.get("TARGET_AGENT_SHA")
+                    else "App 237b28be (Release 12)")
+          rows = {"source": source, "manifest": path, "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+                  "release": release, "agent": manifest["agent"]["sha"], "runtime": manifest["runtime"]["sha"]}
+          print(json.dumps(rows, indent=2))
+          with open(env, "a") as out:
+              out.write(f"TARGET_MANIFEST={os.path.abspath(path)}\nTARGET_RELEASE={release}\n")
+          with open(summary, "a") as out:
+              out.write("### Update target\n\n" + "".join(f"- {k}: `{v}`\n" for k, v in rows.items()) + "\n")
+          json.dump(rows, open(os.path.join(os.environ["RUNNER_TEMP"], "r1-repro", "target.json"), "w"), indent=2)
           PY
       - name: Start state, frozen R0 install
         if: matrix.start == 'r0-handoff-by-r1'
@@ -1718,11 +1761,11 @@ jobs:
           cp -R "$HOME/Library/Logs/Astrid Runtime" "$E/before-update/logs" 2>/dev/null || true
           ls -la "$HOME/.local/share/astrid" "$HOME/.local/share/astrid/versions" 2>&1 | tee "$E/before-update/program-listing.txt"
           cat "$HOME/.local/share/astrid/current" 2>&1 | tee "$E/before-update/current.txt"
-      - name: Release 12 update (the candidate's public install --update)
+      - name: Target update (the target App's public install --update)
         run: |
           set +e -uo pipefail
           E="$RUNNER_TEMP/r1-repro"
-          sh r12-app/public/install --manifest "$E/target-manifest.json" --update \
+          sh target-app/public/install --manifest "$TARGET_MANIFEST" --update \
             </dev/null 2>&1 | tee "$E/r12-update.out"
           echo "r12_update_exit=${PIPESTATUS[0]}" | tee -a "$E/exit-codes.txt"
           sleep 20
@@ -1796,6 +1839,6 @@ jobs:
           path: ${{ runner.temp }}/r1-repro
           retention-days: 14
           if-no-files-found: warn
-      - name: Verdict (PASS only for a clean 1 to 12 update that leaves Hivemind untouched)
+      - name: Verdict (PASS only for a clean 1 to N update that leaves Hivemind untouched)
         if: always()
         run: python agent/scripts/journey_r1_update_repro.py verdict "$RUNNER_TEMP/r1-repro"

@@ -5,7 +5,7 @@ Subcommands:
   seed         create a project with a timeline through the live Runtime API
   redact       scrub credential-shaped values from collected evidence in place
   pack-snapshot OUT  record the managed Hivemind registration and checkout identity
-  verdict E    PASS only for a clean Release 1 -> 12 update that left Hivemind untouched
+  verdict E    PASS only for a clean Release 1 -> N update (N = TARGET_RELEASE) that left Hivemind untouched
 
 The credential file is read only to authenticate the seed request; it is never
 printed, copied or written to evidence.
@@ -106,7 +106,9 @@ def redact(root: Path) -> int:
 
 PACK_STATE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "astrid" / "default" / "pack-sources.json"
 PACK_DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "astrid" / "packs"
-UPDATED_LINE = "Astrid updated: Release 1 \u2192 Release 12."
+def updated_line() -> str:
+    """The one exact success line for this target: TARGET_RELEASE comes from the target manifest."""
+    return f"Astrid updated: Release 1 \u2192 Release {int(os.environ.get('TARGET_RELEASE', '12'))}."
 
 
 def _tree_digest(root: Path) -> str | None:
@@ -172,8 +174,9 @@ def verdict(evidence: Path) -> int:
         failures.append(f"install --update exit code is {codes.get('r12_update_exit')!r}, not 0")
     output = (evidence / "r12-update.out").read_text(encoding="utf-8", errors="replace") \
         if (evidence / "r12-update.out").is_file() else ""
-    if UPDATED_LINE not in output:
-        failures.append(f"update output lacks {UPDATED_LINE!r}")
+    expected = updated_line()
+    if expected not in (line.strip() for line in output.splitlines()):
+        failures.append(f"update output has no line exactly {expected!r}")
     pack_host, deadline = None, time.monotonic() + 180
     opener = build_opener(ProxyHandler({}))
     while time.monotonic() < deadline:
@@ -208,7 +211,7 @@ def verdict(evidence: Path) -> int:
         print("===== install.log: Last service log lines")
         print(_last_service_lines(Path.home() / "Library" / "Logs" / "Astrid Runtime" / "install.log"))
         return 1
-    print("PASS: Release 1 -> 12 update exited 0, pack host running with restart_count 0, Hivemind unchanged")
+    print(f"PASS: Release 1 -> {os.environ.get('TARGET_RELEASE', '12')} update exited 0, pack host running with restart_count 0, Hivemind unchanged")
     return 0
 
 
