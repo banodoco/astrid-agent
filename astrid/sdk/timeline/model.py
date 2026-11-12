@@ -202,7 +202,7 @@ class Clip(_Suggest):
     def text(self) -> str | None:
         params = self.data.get("params")
         if isinstance(params, Mapping):
-            for key in ("text", "title", "body", "name"):
+            for key in ("text", "content", "title", "body", "name"):
                 if isinstance(params.get(key), str) and params[key].strip():
                     return params[key]
         return None

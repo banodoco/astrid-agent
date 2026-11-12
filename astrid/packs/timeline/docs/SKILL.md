@@ -24,6 +24,7 @@ tl = Timeline.open("<project>", "<timeline>")
 def tighten_intro(t):
     intro = t.clip("intro")
     intro.trim(1.0, 5.0)
+    # Bundled text-card; stores the caption in params.content.
     t.add_text("Chapter one", at=intro.end, hold=2, id="ch1")
 
 try:

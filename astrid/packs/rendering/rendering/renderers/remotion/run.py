@@ -611,16 +611,9 @@ def _effect_registry_for_assets(
     if registry is None:
         registry = _load_render_element_registry()
     effects = {element.id: element for element in registry.list(kind="effects")}
-    aliases: dict[str, str] = {}
-    if "text-card" in effects:
-        aliases["text"] = "text-card"
-    for effect_id, element in effects.items():
-        raw_aliases = element.metadata.get("clipTypeAliases")
-        if not isinstance(raw_aliases, list):
-            continue
-        for alias in raw_aliases:
-            if isinstance(alias, str) and alias:
-                aliases[alias] = effect_id
+    from astrid.core.element.clip_types import clip_type_aliases
+
+    aliases = clip_type_aliases({key: value.metadata for key, value in effects.items()})
     return effects, aliases
 
 

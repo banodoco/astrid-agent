@@ -464,7 +464,7 @@ def _unresolved(element: str, registry: Any, provider_hint: str | None = None) -
     pack_id, record = moved
     return ElementPackNotInstalled(
         element, f"it belongs to pack {pack_id!r}, which is not installed. {record['evidence_reason']}",
-        fix=f"Run `{record['install']}`, then retry.",
+        fix=f"Please install with `{record['install']}`, then retry.",
         details={"pack_id": pack_id, "install": record["install"]})
 
 
@@ -496,7 +496,14 @@ def element_schema(element: str) -> dict[str, Any]:
 
     try:
         registry = load_default_registry()
-        candidates = [item for item in registry.list() if item.id == element]
+        from astrid.core.element.clip_types import clip_type_aliases
+
+        effects = {item.id: item for item in registry.list(kind="effects")}
+        # Rendering prefers exact effect IDs, then aliases in the effective inventory.
+        aliases = clip_type_aliases({key: value.metadata for key, value in effects.items()})
+        resolved = element if element in effects else aliases.get(element, element)
+        candidates = ([effects[resolved]] if resolved in effects else
+                      [item for item in registry.list() if item.id == resolved])
     except Exception as exc:  # noqa: BLE001 - an unreadable corpus refuses; it never means "schema-less"
         moved = moved_element_pack(element)
         fix = "Run `astrid doctor` to find the pack that breaks the registry."

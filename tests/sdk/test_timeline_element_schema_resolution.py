@@ -30,6 +30,7 @@ from tests.sdk.test_timeline_sync import connected as connected
 TINY = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing" / "tiny.json"
 ELEMENT = "zz-installed-probe"
 PACK = "zz_probe_pack"
+INSTALL = "astrid packs add https://github.com/banodoco/poms_packs --pack-id astrid_motion --subpath astrid_motion"
 
 
 @pytest.fixture(autouse=True)
@@ -168,8 +169,8 @@ def test_a_moved_element_names_its_pack_and_install_command_and_writes_nothing(m
             clip.set(**edit)
         assert caught.value.code == "element_pack_not_installed"
         assert caught.value.cause["details"] == {"element": "am-sprite", "pack_id": "astrid_motion",
-                                                 "install": "astrid packs add astrid_motion"}
-        assert "`astrid packs add astrid_motion`" in str(caught.value)
+                                                 "install": INSTALL}
+        assert f"`{INSTALL}`" in str(caught.value)
         assert "Moved to poms_packs" in str(caught.value)
     with pytest.raises(ElementPackNotInstalled):
         clip.set_param("x", 5)
@@ -183,7 +184,7 @@ def test_without_the_pack_a_timeline_still_shows_inspects_and_round_trips_unchan
     sheet = render_sheet(tl)
     assert "rocket" in sheet and "snap-plate" in sheet
     shown = describe_target(tl, resolve(tl, "c1.rocket"), full=True)
-    assert "[element_pack_not_installed]" in shown and "astrid packs add astrid_motion" in shown
+    assert "[element_pack_not_installed]" in shown and INSTALL in shown
     assert "x" in shown  # the stored params are still listed
     describe_target(tl, resolve(tl, "c1.rocket.x"))
     clip = tl.clip("c1.rocket")
@@ -224,7 +225,7 @@ def test_absent_pack_refuses_each_frontend_with_the_dependency_diagnostic(monkey
     result = run_case(scenario, via)
     diagnostic = result.stderr + (result.error or "")
     assert "element_pack_not_installed" in diagnostic
-    assert "install with `astrid packs add astrid_motion`" in diagnostic
+    assert f"install with `{INSTALL}`" in diagnostic
     assert result.base == result.after
     assert result.new_steps == 0
 
@@ -379,3 +380,75 @@ def test_an_unknown_element_is_not_reported_as_a_moved_pack(monkeypatch):
 def test_a_media_clip_is_not_an_element_and_keeps_its_fade_params():
     assert element_schema("media") == {}
     assert timeline_address.declared_params("media") == sorted(timeline_address.MEDIA_PARAMS)
+
+
+def test_text_alias_set_clear_create_and_unchanged_preserve_legacy_data(monkeypatch):
+    from astrid.sdk.timeline.validation import FinalCandidateError, validate_final_candidate
+    from astrid.sdk.timeline._clip_commands import capture_clip_add
+    from astrid.sdk.timeline.commands import execute
+    from tests.editing_conformance.test_recipe_m2_clip_add import with_track, literal_row
+
+    _uses(monkeypatch, None)
+    assert element_schema("text") == element_schema("text-card")
+    base = with_track()
+    row = literal_row(params={"text": "Hello world", "opaque": {"future": [None, False, "雪"]}})
+    original = execute(base, [capture_clip_add(base, "parent", row)]).bundle
+    tl = Checkout(copy.deepcopy(original))
+    clip = tl.clip("first-clip")
+    before = copy.deepcopy(tl.bundle)
+    clip.set(text="Hello world")
+    assert tl.bundle == before
+    validate_final_candidate(tl.bundle, baseline=before)
+    clip.set(content="Caption")
+    assert clip.params["content"] == "Caption"
+    clip.set(content=None)
+    assert "content" not in clip.params
+    assert clip.params["opaque"] == row["params"]["opaque"]
+    assert clip.element == "text"
+    validate_final_candidate(tl.bundle, baseline=before)
+    new_row = literal_row(id="new", params={"content": "New"}, at=4, hold=1)
+    created = execute(before, [capture_clip_add(before, "parent", new_row)]).bundle
+    validate_final_candidate(created, baseline=before)
+    assert created["parent"]["clips"][-1]["clipType"] == "text"
+    created["parent"]["clips"][-1]["params"]["align"] = "invalid"
+    with pytest.raises(FinalCandidateError, match="align"):
+        validate_final_candidate(created, baseline=before)
+    created["parent"]["clips"][-1]["clipType"] = "zz-unknown-element"
+    with pytest.raises(FinalCandidateError, match="element_pack_not_installed"):
+        validate_final_candidate(created, baseline=before)
+    with pytest.raises(ElementPackNotInstalled):
+        element_schema("zz-unknown-element")
+
+
+def test_default_add_text_uses_bundled_content_without_motion(monkeypatch):
+    from tests.packs.timeline.test_parent_clips import media_only
+
+    _uses(monkeypatch, None)
+    with pytest.raises(ElementPackNotInstalled):
+        element_schema("am-type")
+    tl = Checkout(media_only())
+    clip = tl.add_text("Caption", at=4, hold=2)
+    assert clip.element == "text-card"
+    assert clip.params == {"content": "Caption"}
+    assert clip.text == "Caption"
+    clip.set(content="Edited")
+    assert tl.clip("Edited").id == clip.id
+
+
+def test_moved_element_recovery_command_uses_real_pack_parser(monkeypatch):
+    import shlex
+    from astrid.core.pack.cli_parser import build_parser
+
+    _uses(monkeypatch, None)
+    with pytest.raises(ElementPackNotInstalled) as caught:
+        element_schema("am-type")
+    command = caught.value.cause["details"]["install"]
+    assert f"`{command}`" in str(caught.value)
+    words = shlex.split(command)
+    assert words[:2] == ["astrid", "packs"]
+    args = build_parser().parse_args(words[2:])
+    assert args.source == "https://github.com/banodoco/poms_packs"
+    assert args.pack_id == "astrid_motion"
+    assert args.subpath == "astrid_motion"
+    # No revision is pinned: the add command resolves and shows the revision before asking for consent.
+    assert args.revision is None

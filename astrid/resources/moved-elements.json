@@ -23,8 +23,10 @@
         "am-type",
         "am-ui-sketch"
       ],
-      "install": "astrid packs add astrid_motion",
-      "evidence_reason": "Moved to poms_packs; install with `astrid packs add astrid_motion`."
+      "install": "astrid packs add https://github.com/banodoco/poms_packs --pack-id astrid_motion --subpath astrid_motion",
+      "evidence_reason": "Moved to poms_packs.",
+      "source": "https://github.com/banodoco/poms_packs",
+      "subpath": "astrid_motion"
     }
   }
 }

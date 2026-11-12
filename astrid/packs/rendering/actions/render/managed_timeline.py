@@ -298,12 +298,10 @@ def _validate_render_element_clip_types(
 
     effect_ids = set(element_catalog.list_effect_ids())
 
-    aliases = {"text"} if "text-card" in effect_ids else set()
-    for effect_id in effect_ids:
-        metadata = element_catalog.read_effect_meta(effect_id)
-        raw_aliases = metadata.get("clipTypeAliases")
-        if isinstance(raw_aliases, list):
-            aliases.update(alias for alias in raw_aliases if isinstance(alias, str) and alias)
+    from astrid.core.element.clip_types import clip_type_aliases
+
+    aliases = set(clip_type_aliases({effect_id: element_catalog.read_effect_meta(effect_id)
+                                   for effect_id in sorted(effect_ids)}))
     effect_ids.update(row["reference"]["id"] for row in selections(config)
                       if row["reference"]["kind"] == "effect")
     builtins = {"media", "video", "image", "audio", "effect-layer"}
