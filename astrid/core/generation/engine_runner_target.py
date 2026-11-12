@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -19,7 +20,6 @@ from pathlib import Path
 from . import engine_recipe as recipes
 from .engine_contracts import (
     EngineError,
-    EngineReinstallRequired,
     IntegrityError,
     RecipeValidationError,
     UnsafePathError,
@@ -27,9 +27,11 @@ from .engine_contracts import (
 from .engine_runner import _HELPER_SCHEMA, _json, _object_info_sha256, _root, _sha, helper_manifest
 
 _OPERATIONS = {"identity", "empty-source", "node-lock", "lock-inputs", "commit-lock",
-               "install-locks", "environment-spec", "models-config", "models-config-check", "models-source-check", "declared-source-modifications", "apply-source-patches", "verify-source-patches"}
-_MODEL_OPERATIONS = {"models-config", "models-config-check", "models-source-check"}
-_ENV_OPERATIONS = {"node-lock", "lock-inputs", "commit-lock", "install-locks", "environment-spec"}
+               "install-locks", "environment-spec", "cleanup-legacy-model-links",
+               "declared-source-modifications", "apply-source-patches", "verify-source-patches",
+               "reset-environment"}
+_ENV_OPERATIONS = {"node-lock", "lock-inputs", "commit-lock", "install-locks", "environment-spec",
+                   "reset-environment"}
 
 
 def _models_base(root, models_root):
@@ -47,16 +49,6 @@ def _model_link_matches(link, destination):
             and os.path.abspath(link.parent / os.readlink(link)) == str(destination)
             and not destination.is_symlink()
             and (not destination.exists() or destination.is_dir()))
-
-
-def _tracked_model_folders(comfy):
-    if not (comfy / ".git").exists():
-        return set()
-    result = subprocess.run(("git", "-C", str(comfy), "ls-tree", "--name-only", "HEAD", "models/"),
-                            capture_output=True, text=True, check=False)
-    if result.returncode:
-        raise IntegrityError("cannot inspect tracked model folders")
-    return {line.removeprefix("models/").split("/", 1)[0] for line in result.stdout.splitlines()}
 
 
 def _safe(root, *relative):
@@ -147,35 +139,30 @@ def _paths(root, environment):
     return directory, _safe(root, ".astrid-engine", "environments", environment.name, "requirements.lock")
 
 
-def _lock_identity(recipe, helper_digest, environment, lock, *, digest=None):
+def _lock_identity(recipe, environment, lock, *, digest=None):
     return {"schema": "astrid.requirements-lock.v1", "environment": environment.name,
-            "recipe_sha256": recipes.recipe_digest(recipe), "helper_sha256": helper_digest,
+            "recipe_sha256": recipes.recipe_digest(recipe),
             "requirements_lock_sha256": _hash(lock) if digest is None else digest}
 
 
-def _validate_lock_identity(recipe, helper_digest, environment, lock, meta, root):
+def _validate_lock_identity(recipe, environment, lock, meta):
     _entries(lock.read_text(encoding="utf-8"))
-    expected = _lock_identity(recipe, helper_digest, environment, lock)
+    expected = _lock_identity(recipe, environment, lock)
     actual = json.loads(meta.read_text()) if meta.is_file() else None
-    if (isinstance(actual, dict) and set(actual) == set(expected)
-            and all(actual[key] == expected[key] for key in expected if key != "helper_sha256")
-            and isinstance(actual["helper_sha256"], str)
-            and re.fullmatch(r"[0-9a-f]{64}", actual["helper_sha256"])
-            and actual["helper_sha256"] != helper_digest
-            and (environment.requirements.mode != "packaged"
-                 or _hash(lock) == environment.requirements.packaged_lock.sha256)):
-        raise EngineReinstallRequired.for_install(engine=recipe.engine, platform=recipe.platform,
-            root=str(root), environment=environment.name, step_id="environment:" + environment.name)
-    if actual != expected:
+    # Older releases persisted helper_sha256 here. It described the writer,
+    # not the lock inputs, so accept and ignore it during the transition.
+    acceptable_keys = set(expected) | {"helper_sha256"}
+    if (not isinstance(actual, dict) or set(actual) not in (set(expected), acceptable_keys)
+            or any(actual[key] != value for key, value in expected.items())):
         raise IntegrityError("persisted requirements lock has no matching input identity")
     if environment.requirements.mode == "packaged" and _hash(lock) != environment.requirements.packaged_lock.sha256:
         raise IntegrityError("target requirements lock differs from packaged lock")
 
 
-def _validate_lock(recipe, helper_digest, environment, root):
+def _validate_lock(recipe, environment, root):
     directory, lock = _paths(root, environment)
     meta = _safe(root, ".astrid-engine", "environments", environment.name, "lock.json")
-    _validate_lock_identity(recipe, helper_digest, environment, lock, meta, root)
+    _validate_lock_identity(recipe, environment, lock, meta)
     return directory, lock
 
 
@@ -264,8 +251,8 @@ print(json.dumps({'valid': True}))
 '''
 
 
-def _environment_spec(recipe, environment, root, helper_digest):
-    _, lock = _validate_lock(recipe, helper_digest, environment, root)
+def _environment_spec(recipe, environment, root):
+    _, lock = _validate_lock(recipe, environment, root)
     directory, _ = _paths(root, environment)
     wheels = {w.name: {"version": w.version, "url": w.url, "sha256": w.sha256,
                        "receipt": str(directory / receipt_name(w.name))}
@@ -291,12 +278,10 @@ def dispatch(operation, payload):
         keys.add("environment")
     if operation in {"empty-source", "declared-source-modifications", "apply-source-patches", "verify-source-patches"}:
         keys.add("source")
-    if operation in {"models-source-check", "declared-source-modifications"}:
+    if operation == "declared-source-modifications":
         keys.add("entries")
-    if operation in _MODEL_OPERATIONS or operation == "declared-source-modifications":
+    if operation == "cleanup-legacy-model-links":
         keys.add("models_root")
-    if operation == "models-source-check" and isinstance(payload, dict) and "source" in payload:
-        keys.add("source")
     if not isinstance(payload, dict) or set(payload) != keys or payload["schema"] != _HELPER_SCHEMA:
         raise RecipeValidationError("invalid engine helper request")
     recipe = recipes.load_recipe(payload["engine"], payload["platform"])
@@ -314,6 +299,13 @@ def dispatch(operation, payload):
             raise RecipeValidationError("unknown named environment")
     if operation == "identity":
         facts = {"helper_sha256": digest}
+    elif operation == "reset-environment":
+        # The runner invalidates receipt.json before asking the target to
+        # remove this environment, so a crash can only cause a safe rebuild.
+        path = _safe(root, environment.relative_path)
+        if path.exists():
+            shutil.rmtree(path)
+        facts = {"reset": True}
     elif operation == "empty-source":
         source = next((s for s in recipe.sources if s.name == payload["source"]), None)
         if source is None:
@@ -321,7 +313,7 @@ def dispatch(operation, payload):
         if any(_safe(root, source.relative_path).iterdir()):
             raise IntegrityError("refusing to initialize a nonempty unowned source directory")
         facts = {"empty": True}
-    elif operation in {"declared-source-modifications", "apply-source-patches", "verify-source-patches"} or (operation == "models-source-check" and "source" in payload):
+    elif operation in {"declared-source-modifications", "apply-source-patches", "verify-source-patches"}:
         source = next((s for s in recipe.sources if s.name == payload["source"]), None)
         if source is None:
             raise RecipeValidationError("unknown source")
@@ -354,15 +346,22 @@ def dispatch(operation, payload):
                 except OSError:
                     pass
             entries = payload["entries"]
-            model_entries = [entry for entry in entries if entry not in allowed] if isinstance(entries, list) else []
-            models_valid = False
-            if source.name == "comfyui" and model_entries:
-                model_payload = dict(payload)
-                model_payload.pop("source")
-                model_payload["entries"] = model_entries
-                models_valid = dispatch("models-source-check", model_payload)["facts"]["valid"]
             facts = {"valid": isinstance(entries, list) and bool(entries)
-                     and (not model_entries or models_valid)}
+                     and all(isinstance(entry, str) and entry in allowed for entry in entries)}
+    elif operation == "cleanup-legacy-model-links":
+        comfy = next(source for source in recipe.sources if source.name == "comfyui")
+        models_dir = _safe(root, comfy.relative_path, "models")
+        base = Path(_models_base(root, payload["models_root"]))
+        folders = sorted({model.destination.split("/", 1)[0]
+                          for model in recipes.load_model_lock(recipe.models_lock).models})
+        removed = []
+        for name in folders:
+            link = models_dir / name
+            destination = base / name
+            if _model_link_matches(link, destination):
+                link.unlink()
+                removed.append(name)
+        facts = {"removed": removed}
     elif operation == "node-lock":
         ref = environment.node_lock
         if ref is None:
@@ -382,20 +381,30 @@ def dispatch(operation, payload):
         facts = {"valid": True}
     elif operation == "lock-inputs":
         directory, lock = _paths(root, environment)
+        meta = _safe(root, ".astrid-engine", "environments", environment.name, "lock.json")
+        temporary = _safe(root, ".astrid-engine", "environments", environment.name, "requirements.lock.tmp")
+        # A lock belonging to another recipe is disposable cache state. Clear
+        # its metadata and both candidate/final lock files together before
+        # producing inputs for the current recipe. Same-recipe corruption
+        # still goes through validation below and is refused.
+        if meta.is_file():
+            previous = json.loads(meta.read_text())
+            if isinstance(previous, dict) and previous.get("recipe_sha256") != recipes.recipe_digest(recipe):
+                for stale in (lock, temporary, meta):
+                    if stale.exists():
+                        stale.unlink()
         if lock.exists():
-            _validate_lock(recipe, digest, environment, root)
+            _validate_lock(recipe, environment, root)
         else:
             directory.mkdir(parents=True, exist_ok=True)
-            meta = _safe(root, str(directory.relative_to(root)), "lock.json")
-            temporary = _safe(root, str(directory.relative_to(root)), "requirements.lock.tmp")
             if meta.exists():
                 # A prior commit persisted identity before promotion. Reuse
                 # those exact bytes; do not invoke the resolver on retry.
                 if not temporary.is_file():
                     raise IntegrityError("interrupted requirements lock identity differs")
-                _validate_lock_identity(recipe, digest, environment, temporary, meta, root)
+                _validate_lock_identity(recipe, environment, temporary, meta)
                 _atomic(lock, temporary.read_bytes())
-                _validate_lock(recipe, digest, environment, root)
+                _validate_lock(recipe, environment, root)
                 return {"schema": _HELPER_SCHEMA, "operation": operation,
                         "facts": {"lock_exists": True}}
             req = environment.requirements
@@ -418,7 +427,7 @@ def dispatch(operation, payload):
     elif operation == "commit-lock":
         directory, lock = _paths(root, environment)
         if lock.exists():
-            _validate_lock(recipe, digest, environment, root)
+            _validate_lock(recipe, environment, root)
         else:
             temporary = _safe(root, str(directory.relative_to(root)), "requirements.lock.tmp")
             payload_bytes = temporary.read_bytes()
@@ -427,16 +436,16 @@ def dispatch(operation, payload):
                 raise IntegrityError("packaged requirements lock mismatch")
             meta = _safe(root, str(directory.relative_to(root)), "lock.json")
             if meta.exists():
-                _validate_lock_identity(recipe, digest, environment, temporary, meta, root)
+                _validate_lock_identity(recipe, environment, temporary, meta)
             # Bind the candidate before promoting it. A crash after this write
             # leaves the unchanged candidate reusable, never an unbound lock.
             _atomic(meta,
-                    _json(_lock_identity(recipe, digest, environment, lock,
+                    _json(_lock_identity(recipe, environment, lock,
                                         digest=hashlib.sha256(payload_bytes).hexdigest())).encode())
             _atomic(lock, payload_bytes)
         facts = {"requirements_lock_sha256": _hash(lock)}
     elif operation == "install-locks":
-        directory, lock = _validate_lock(recipe, digest, environment, root)
+        directory, lock = _validate_lock(recipe, environment, root)
         entries = _entries(lock.read_text())
         names = {w.name.lower().replace("_", "-") for w in environment.final_wheels}
         support = [row[2] for row in entries
@@ -446,44 +455,9 @@ def dispatch(operation, payload):
         _atomic(_safe(root, str(directory.relative_to(root)), "wheels.lock"), ("\n".join(wheels) + "\n").encode())
         facts = {"requirements_lock_sha256": _hash(lock)}
     elif operation == "environment-spec":
-        facts = _environment_spec(recipe, environment, root, digest)
-    else:  # JSON is also valid YAML, avoids unsafe YAML interpolation.
-        base = Path(_models_base(root, payload["models_root"]))
-        folders = sorted({model.destination.split("/", 1)[0]
-                          for model in recipes.load_model_lock(recipe.models_lock).models})
-        comfy = next(source for source in recipe.sources if source.name == "comfyui")
-        models_dir = _safe(root, comfy.relative_path, "models")
-        configuration = {"astrid_engine": {"base_path": str(base), **{name: name for name in folders}}}
-        configuration_path = _safe(root, "runtime/extra_model_paths.yaml")
-        configuration_bytes = _json(configuration).encode()
-        tracked = _tracked_model_folders(models_dir.parent)
-        links = [(models_dir / name, base / name) for name in folders if name not in tracked] if base != models_dir else []
-        if operation == "models-source-check":
-            allowed = {"?? models/" + link.name for link, destination in links
-                       if _model_link_matches(link, destination)}
-            entries = payload["entries"]
-            facts = {"valid": isinstance(entries, list) and bool(entries)
-                     and all(isinstance(entry, str) and entry in allowed for entry in entries)}
-        elif operation == "models-config":
-            for link, destination in links:
-                if link.is_symlink():
-                    if not _model_link_matches(link, destination):
-                        raise IntegrityError(f"model folder {link.name} is a different link")
-                elif link.exists() and (not link.is_dir() or any(link.iterdir())):
-                    raise IntegrityError(f"model folder {link.name} is not empty")
-            if links:
-                models_dir.mkdir(parents=True, exist_ok=True)
-            for link, destination in links:
-                if not link.is_symlink():
-                    if link.exists():
-                        link.rmdir()
-                    link.symlink_to(destination, target_is_directory=True)
-            _atomic(configuration_path, configuration_bytes)
-            facts = {"written": True}
-        else:
-            facts = {"valid": configuration_path.is_file()
-                     and configuration_path.read_bytes() == configuration_bytes
-                     and all(_model_link_matches(link, destination) for link, destination in links)}
+        facts = _environment_spec(recipe, environment, root)
+    else:
+        raise RecipeValidationError("unknown engine helper operation")
     return {"schema": _HELPER_SCHEMA, "operation": operation, "facts": facts}
 
 

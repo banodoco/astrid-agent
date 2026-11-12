@@ -696,6 +696,7 @@ def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
     """
     from astrid.core.generation.engine_contracts import EngineError
     from astrid.core.generation.engine_local_endpoint import default_engine_root
+    from astrid.core.generation.managed_preparation import configured_models_root
 
     try:
         manifest = engine.requirements({"bundle": str(workflow_path)}, {})
@@ -713,7 +714,7 @@ def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
     except EngineError:
         root = None
     # An engine that is not installed has no models directory to check; ensure_running names that failure.
-    return {**manifest, "models_root": f"{root}/models" if root and Path(root).is_dir() else ""}
+    return {**manifest, "models_root": configured_models_root(root=root) if root and Path(root).is_dir() else ""}
 
 
 def _refuse_unsealed_hook(spec: Any) -> None:
@@ -891,8 +892,8 @@ def _run_and_settle(
     if manifest is not None and engine_local_run and not manifest.get("models_root"):
         # The models directory the installed engine itself uses, so align judges and fetches
         # only the rows this job lacks there.
-        from astrid.core.generation.engine_local_endpoint import default_engine_root
-        manifest = {**manifest, "models_root": os.path.join(default_engine_root("comfyui"), "models")}
+        from astrid.core.generation.managed_preparation import configured_models_root
+        manifest = {**manifest, "models_root": configured_models_root()}
     profile_id = "local_server"
     workflow_input_bindings: dict[str, Any] = _workflow_inputs(workflow_inputs)
     if managed_assets:

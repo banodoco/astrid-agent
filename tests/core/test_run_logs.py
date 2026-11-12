@@ -41,15 +41,31 @@ def test_collect_child_relative_path(tmp_path):
     assert (tmp_path / "logs/child.log").read_bytes() == b"child"
 
 
+def test_collect_refuses_name_in_transported_index(tmp_path):
+    source = tmp_path / "remote.log"
+    source.write_text("remote")
+    run_logs.declare(tmp_path, run_logs.LogDecl("job.stdout", "stdout", str(source)))
+    original = run_logs.collect(tmp_path)
+    host = tmp_path / ".host-logs"
+    local = tmp_path / "local.log"
+    local.write_text("local")
+    run_logs.declare(host, run_logs.LogDecl("job.stdout", "stdout", str(local)))
+
+    rows = run_logs.collect(tmp_path, extra_root=host)
+
+    assert rows[0] == original[0]
+    assert rows[1] == {"name": "job.stdout", "missing": True, "reason": "duplicate_name",
+                       "source": str(local), "first_source": str(source)}
+    assert (tmp_path / "logs/job.stdout.log").read_text() == "remote"
+
+
+@pytest.mark.posix_native
 def test_missing_and_symlink_sources_are_rows(tmp_path):
     run_logs.declare(tmp_path, run_logs.LogDecl("missing", "run", "absent.log"))
     target = tmp_path / "target.log"
     target.write_text("secret")
     link = tmp_path / "link.log"
-    try:
-        link.symlink_to(target)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks unavailable")
+    link.symlink_to(target)
     run_logs.declare(tmp_path, run_logs.LogDecl("link", "run", "link.log"))
     rows = run_logs.collect(tmp_path)
     assert all(row["missing"] for row in rows)

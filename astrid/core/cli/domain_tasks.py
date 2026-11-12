@@ -143,9 +143,8 @@ def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
 def _add_project_arg(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--project",
-        required=True,
         default=None,
-        help="Owning project id or immutable slug.",
+        help="Owning project id or immutable slug (default: selected project).",
     )
 
 
@@ -545,13 +544,25 @@ COMMANDS: tuple[CommandSpec, ...] = (
 )
 
 
+class _TasksParser(argparse.ArgumentParser):
+    def parse_args(self, args: Any = None, namespace: Any = None) -> argparse.Namespace:
+        parsed = super().parse_args(args, namespace)
+        if not parsed.project:
+            from astrid.core.cli.current_project import resolve_current_project
+
+            parsed.project = resolve_current_project(parsed)
+            if not parsed.project:
+                self.error("no project selected; run astrid projects select <id> or pass --project")
+        return parsed
+
+
 def build_parser(client: Any) -> argparse.ArgumentParser:
     """Build the ``tasks`` product-family parser stamped with *client*.
 
     Exactly the eight product verbs above are registered; executor lifecycle
     and plan/step verbs are absent by construction.
     """
-    parser = argparse.ArgumentParser(
+    parser = _TasksParser(
         prog="astrid tasks",
         description=(
             "Task create/list/show/cancel/retry/events/follow/logs (product family); "
