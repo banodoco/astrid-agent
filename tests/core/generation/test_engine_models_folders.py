@@ -115,3 +115,26 @@ def test_tracked_folders_use_search_paths_and_source_exemptions_are_exact(config
     link.unlink()
     link.mkdir()
     assert target.dispatch("models-source-check", check)["facts"] == {"valid": False}
+
+
+def test_a_destination_that_is_itself_a_link_is_refused(config, tmp_path):
+    root, payload = config
+    target.dispatch("models-config", payload)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    destination = tmp_path_for(payload, "hunyuan_foley")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.symlink_to(elsewhere, target_is_directory=True)
+    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": False}
+    entries = ["?? models/hunyuan_foley"]
+    source = {**payload, "entries": entries}
+    assert target.dispatch("models-source-check", source)["facts"] == {"valid": False}
+
+
+def test_a_destination_that_is_a_file_is_refused(config):
+    root, payload = config
+    target.dispatch("models-config", payload)
+    destination = tmp_path_for(payload, "TTS")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("not a folder")
+    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": False}

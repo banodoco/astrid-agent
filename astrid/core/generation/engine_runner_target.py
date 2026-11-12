@@ -35,7 +35,12 @@ def _models_base(root, models_root):
 
 
 def _model_link_matches(link, destination):
-    return link.is_symlink() and os.path.abspath(link.parent / os.readlink(link)) == str(destination)
+    """The link points exactly at the destination, and the destination is not itself redirected."""
+    destination = Path(destination)
+    return (link.is_symlink()
+            and os.path.abspath(link.parent / os.readlink(link)) == str(destination)
+            and not destination.is_symlink()
+            and (not destination.exists() or destination.is_dir()))
 
 
 def _tracked_model_folders(comfy):
