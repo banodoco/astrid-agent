@@ -92,10 +92,11 @@ def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypat
                                payload={"gpu_qualification": {"qualified": True}})
 
     monkeypatch.setattr(host, "_run_command_definition", run)
+    # Exercise settlement with an attached server; command execution is stubbed.
     workflow = tmp_path / "workflow.json"
     workflow.write_bytes(WORKFLOW_FIXTURE.read_bytes())
     task = {"id": "gpu-test", "capability": "vibecomfy.run", "project_id": "project",
-            "attempt_id": "attempt", "fence": 1, "spec": {"spec": {"inputs": {"workflow": str(workflow)}}}}
+            "attempt_id": "attempt", "fence": 1, "spec": {"spec": {"inputs": {"workflow": str(workflow), "comfy_url": "http://127.0.0.1:8188"}}}}
     runtime.tasks["gpu-test"] = task
     host.run_task(task, lease_token="lease")
     result = runtime.settlements[-1][2]["result"]
@@ -130,10 +131,11 @@ def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, wind
         raise RuntimeError("GPU execution failed")
 
     monkeypatch.setattr(host, "_run_command_definition", fail)
+    # Exercise settlement with an attached server; command execution is stubbed.
     workflow = tmp_path / "workflow.json"
     workflow.write_bytes(WORKFLOW_FIXTURE.read_bytes())
     task = {"id": "failed", "capability": "vibecomfy.run", "project_id": "project", "attempt_id": "failed-attempt", "fence": 1,
-            "spec": {"spec": {"inputs": {"workflow": str(workflow)}}}}
+            "spec": {"spec": {"inputs": {"workflow": str(workflow), "comfy_url": "http://127.0.0.1:8188"}}}}
     runtime.tasks["failed"] = task
     with pytest.raises(RuntimeError, match="GPU execution failed"):
         host.run_task(task, lease_token="lease")
