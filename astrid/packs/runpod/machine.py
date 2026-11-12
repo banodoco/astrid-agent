@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .lease_states import LeaseEvent
 from .remote_placement import (
     MANIFEST_MARK,
     MANIFEST_NAME,
@@ -1013,8 +1014,13 @@ class RunPodMachine:
                     or (job is not None and observed["lease"].get("job") != job)
                     or owner.closed or owner.clock() >= observed["lease"]["paid_expires_at"]):
                 raise CustodyChanged("retained installation changed during verification")
-            owner._save(observed, {**observed["lease"],
-                                  "preparation": {**preparation, **installed}})
+            event = (LeaseEvent.PREPARATION_INVALIDATED
+                     if installed.get("state") == "stale_after_failure" else LeaseEvent.CHECKPOINT)
+            preparation_metadata = {key: value for key, value in {**preparation, **installed}.items()
+                                    if key != "state"}
+            lease_metadata = {key: value for key, value in observed["lease"].items()
+                              if key not in {"state", "preparation"}}
+            owner._save(observed, lease_metadata, event=event, preparation=preparation_metadata)
 
     def _checkpoint_installed(self, run: MachineRun, files: Mapping[str, str]) -> None:
         """Retain only the canonical receipt attested by this successful job.
