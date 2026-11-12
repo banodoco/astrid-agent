@@ -716,3 +716,11 @@ def test_local_job_exception_preserves_execution_diagnostic(monkeypatch, tmp_pat
     assert fd.summarize(envelope, node_ids={'1'}) == {
         'code': 'comfy_execution_error', 'category': 'execution', 'node_id': '1',
         'node_class': 'KSampler', 'exception_type': 'RuntimeError'}
+
+
+def test_node_class_allowlist_is_scoped_to_engine():
+    assert fd.fact_allowlist('comfyui')['node_class']
+    assert fd.fact_allowlist('other-engine') == {}
+    diagnostic = {'code': 'generation_failed', 'category': 'execution', 'node_class': 'KSampler'}
+    assert fd.host_summary(RuntimeError(), diagnostic, engine_id='comfyui')['node_class'] == 'KSampler'
+    assert 'node_class' not in fd.host_summary(RuntimeError(), diagnostic, engine_id='other-engine')

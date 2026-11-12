@@ -66,12 +66,16 @@ EXCEPTION_TYPES = frozenset({
     'AssertionError', 'AttributeError', 'NotImplementedError', 'MemoryError',
     'OSError', 'OverflowError', 'ZeroDivisionError', 'TimeoutError',
 })
+FACT_ALLOW_BY_ENGINE = {
+    'comfyui': {
+        'node_class': frozenset({
+            'KSampler', 'CLIPTextEncode', 'SaveImage', 'LoadImage', 'EmptyLatentImage',
+            'CheckpointLoaderSimple', 'VAEDecode', 'VAEEncode', 'LoadAudio',
+            'SaveAudio', 'TextToSpeech', 'ModelLoader',
+        }),
+    },
+}
 FACT_ALLOW = {
-    'node_class': frozenset({
-        'KSampler', 'CLIPTextEncode', 'SaveImage', 'LoadImage', 'EmptyLatentImage',
-        'CheckpointLoaderSimple', 'VAEDecode', 'VAEEncode', 'LoadAudio',
-        'SaveAudio', 'TextToSpeech', 'ModelLoader',
-    }),
     'field': frozenset({
         'prompt', 'negative_prompt', 'seed', 'steps', 'cfg', 'sampler_name',
         'scheduler', 'denoise', 'model', 'clip', 'vae', 'latent_image',
@@ -100,7 +104,12 @@ EXCEPTIONS = frozenset({
 })
 
 
-def _safe_fact(key, value, node_ids=None, node_names=frozenset()):
+def fact_allowlist(engine_id):
+    """Return fixed safe fact values for one engine; unknown engines authorize none."""
+    return FACT_ALLOW_BY_ENGINE.get(engine_id, {})
+
+
+def _safe_fact(key, value, node_ids=None, node_names=frozenset(), *, engine_id=None):
     if key == 'exception_type':
         return value if isinstance(value, str) and value in EXCEPTION_TYPES else None
     if key == 'oom':
@@ -111,7 +120,8 @@ def _safe_fact(key, value, node_ids=None, node_names=frozenset()):
         if isinstance(value, str) and re.fullmatch(r'[0-9]{1,12}', value) and int(value) < 10**12:
             canonical = str(int(value))
             return canonical if node_ids is None or canonical in node_ids else None
-    elif isinstance(value, str) and value in FACT_ALLOW.get(key, ()):
+    elif isinstance(value, str) and value in (
+            fact_allowlist(engine_id).get(key, ()) if key == 'node_class' else FACT_ALLOW.get(key, ())):
         return value
     elif (key in ('node_class', 'field') and isinstance(value, str) and value in node_names
           and NAME_RE.fullmatch(value)):
@@ -125,15 +135,19 @@ def fallback():
     return {'code': 'unknown', 'category': 'unknown'}
 
 
-def host_summary(error, diagnostic=None, *, stage='execution', node_ids=frozenset(), node_names=frozenset()):
+def host_summary(error, diagnostic=None, *, stage='execution', node_ids=frozenset(), node_names=frozenset(),
+                 engine_id='comfyui'):
     """Journal only bounded facts; exception text and remote output are untrusted."""
-    safe = summarize(diagnostic, node_ids=node_ids, node_names=node_names) if isinstance(diagnostic, Mapping) else fallback()
+    # TODO(engine-id): legacy callers do not carry an engine id yet.
+    safe = summarize(diagnostic, node_ids=node_ids, node_names=node_names,
+                     engine_id=engine_id) if isinstance(diagnostic, Mapping) else fallback()
     if isinstance(diagnostic, Mapping) and {'code', 'category'} <= set(diagnostic) <= {'code', 'category', *FACTS}:
         code = diagnostic.get('code')
         if isinstance(code, str) and code in CODES and diagnostic.get('category') == CODES[code]:
             safe = {'code': code, 'category': CODES[code]}
-            safe.update({key: _safe_fact(key, diagnostic[key], node_ids, node_names) for key in FACTS if key in diagnostic
-                         and _safe_fact(key, diagnostic[key], node_ids, node_names) is not None})
+            safe.update({key: _safe_fact(key, diagnostic[key], node_ids, node_names, engine_id=engine_id)
+                         for key in FACTS if key in diagnostic
+                         and _safe_fact(key, diagnostic[key], node_ids, node_names, engine_id=engine_id) is not None})
     name = type(error).__name__ if error is not None else 'UnknownError'
     if name not in EXCEPTIONS:
         name = 'UnknownError'
@@ -141,20 +155,23 @@ def host_summary(error, diagnostic=None, *, stage='execution', node_ids=frozense
             'execution', 'reset', 'cancel'} else 'execution', **safe}
 
 
-def safe_stored_summary(value, *, node_ids=frozenset(), node_names=frozenset()):
+def safe_stored_summary(value, *, node_ids=frozenset(), node_names=frozenset(), engine_id='comfyui'):
     """Revalidate a journal read before it reaches machine listing or CLI."""
+    # TODO(engine-id): legacy persisted summaries do not carry an engine id.
     if not isinstance(value, Mapping):
         return fallback()
     diagnostic = {key: value[key] for key in ('code', 'category', *FACTS) if key in value}
-    result = host_summary(None, diagnostic, stage=value.get('stage'), node_ids=node_ids, node_names=node_names)
+    result = host_summary(None, diagnostic, stage=value.get('stage'), node_ids=node_ids,
+                          node_names=node_names, engine_id=engine_id)
     name = value.get('exception')
     if isinstance(name, str) and name in EXCEPTIONS:
         result['exception'] = name
     return result
 
 
-def summarize(value, *, node_ids=frozenset(), node_names=frozenset()):
+def summarize(value, *, node_ids=frozenset(), node_names=frozenset(), engine_id='comfyui'):
     """Project only a known error identifier; categories are locally defined."""
+    # TODO(engine-id): legacy worker frames do not carry an engine id.
     if not isinstance(value, Mapping):
         return fallback()
     candidates = []
@@ -169,14 +186,14 @@ def summarize(value, *, node_ids=frozenset(), node_names=frozenset()):
             continue
         facts = dict(inherited)
         for key in FACTS:
-            fact = _safe_fact(key, item.get(key), node_ids, node_names)
+            fact = _safe_fact(key, item.get(key), node_ids, node_names, engine_id=engine_id)
             if fact is not None:
                 facts[key] = fact
         details = item.get('details')
         local_facts = dict(facts)
         if isinstance(details, Mapping):
             for key in FACTS:
-                fact = _safe_fact(key, details.get(key), node_ids, node_names)
+                fact = _safe_fact(key, details.get(key), node_ids, node_names, engine_id=engine_id)
                 if fact is not None:
                     local_facts[key] = fact
         for key in ('engine_code', 'code'):
@@ -303,9 +320,9 @@ def _submitted_graph_facts(job_path):
             raw = stream.read(MAX_RESULT_BYTES + 1)
         job = json.loads(raw)
         source = job.get('execution', {}).get('source') if isinstance(job, Mapping) else None
-        return graph_facts(source)
+        return graph_facts(source), (job.get('engine_id') if isinstance(job, Mapping) else None)
     except (OSError, ValueError, TypeError, RecursionError):
-        return frozenset(), frozenset()
+        return (frozenset(), frozenset()), None
 
 
 def read_result(path, job_path=None):
@@ -318,13 +335,16 @@ def read_result(path, job_path=None):
             raw = stream.read(MAX_RESULT_BYTES + 1)
         if len(raw) > MAX_RESULT_BYTES:
             return fallback()
-        ids, names = _submitted_graph_facts(job_path) if job_path else (frozenset(), frozenset())
-        return summarize(json.loads(raw), node_ids=ids, node_names=names)
+        (ids, names), engine_id = _submitted_graph_facts(job_path) if job_path else ((frozenset(), frozenset()), None)
+        # TODO(engine-id): older shipped job frames do not identify their engine.
+        engine_id = engine_id or 'comfyui'
+        return summarize(json.loads(raw), node_ids=ids, node_names=names, engine_id=engine_id)
     except (OSError, ValueError, TypeError, RecursionError):
         return fallback()
 
 
-def parse_frame(stdout, *, node_ids=frozenset(), node_names=frozenset()):
+def parse_frame(stdout, *, node_ids=frozenset(), node_names=frozenset(), engine_id='comfyui'):
+    # TODO(engine-id): legacy frame callers do not carry an engine id.
     if not isinstance(stdout, str) or len(stdout.encode('utf-8')) > MAX_FRAME_BYTES:
         return fallback()
     lines = [line[len(MARK):] for line in stdout.splitlines() if line.startswith(MARK)]
@@ -336,8 +356,9 @@ def parse_frame(stdout, *, node_ids=frozenset(), node_names=frozenset()):
             return fallback()
         code = value['code']
         if isinstance(code, str) and code in CODES and value['category'] == CODES[code]:
-            facts = {key: _safe_fact(key, value[key], node_ids, node_names) for key in FACTS if key in value
-                     and _safe_fact(key, value[key], node_ids, node_names) is not None}
+            facts = {key: _safe_fact(key, value[key], node_ids, node_names, engine_id=engine_id)
+                     for key in FACTS if key in value
+                     and _safe_fact(key, value[key], node_ids, node_names, engine_id=engine_id) is not None}
             return {'code': code, 'category': CODES[code], **facts}
     except (ValueError, TypeError, RecursionError):
         pass

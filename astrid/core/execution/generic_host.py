@@ -12218,7 +12218,8 @@ class GenericPackHost:
                 return _terminal["pending_outputs"], _terminal["pending_result"]
             output_root = _terminal.get("output_root")
             if output_root is None:
-                result_value = {"status": status, "error": error_value}
+                error_key = "host_failure" if status == "failed" else "error"
+                result_value = {"status": status, error_key: error_value}
                 _terminal.update(pending_outputs=[], pending_result=result_value, pending_status=status)
                 return [], result_value
             try:
@@ -12268,9 +12269,9 @@ class GenericPackHost:
                 ) if typed else []
                 result_value: dict[str, Any] = {
                     "status": status,
-                    "error": error_value,
                     "outcomes": {"execution": {"status": status}},
                 }
+                result_value["host_failure" if status == "failed" else "error"] = error_value
                 manifest = next((row for row in uploaded
                                  if row.get("output_port", row.get("name")) == "result_manifest"), None)
                 if manifest is not None:
@@ -12288,9 +12289,9 @@ class GenericPackHost:
                     warnings.append(f"terminal evidence unavailable: {type(evidence_error).__name__}")
                     result_value = {
                         "status": status,
-                        "error": error_value,
                         "outcomes": {"execution": {"status": status}},
                     }
+                    result_value["host_failure" if status == "failed" else "error"] = error_value
                     _terminal.update(
                         pending_outputs=[], pending_result=result_value, pending_status=status
                     )
