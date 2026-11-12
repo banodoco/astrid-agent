@@ -1018,17 +1018,58 @@ class RunPodMachine:
                 raise DigestMismatch(f"pod manifest names an unsafe path: {relative!r}")
             local = destination / relative
             directory = _open_directory(str(local.parent.absolute()), create=True)
-            os.close(directory)
             try:
                 if admit is None:
-                    ops.get(f"{remote_dir}/{relative}", local)
+                    # The ordinary transport writes a sibling .https-part and
+                    # renames it. Download into private controller scratch;
+                    # keep the checked output directory open through transfer,
+                    # verification and descriptor-relative final placement.
+                    import tempfile
+
+                    with tempfile.TemporaryDirectory(prefix=".fetch-", dir=scratch) as transfer_root:
+                        temporary = Path(transfer_root) / "output"
+                        ops.get(f"{remote_dir}/{relative}", temporary)
+                        valid = (sha256_file(temporary) == entry.get("sha256")
+                                 and temporary.stat().st_size == entry.get("size"))
+                        if valid:
+                            try:
+                                os.replace(temporary, local.name, dst_dir_fd=directory)
+                            except OSError as exc:
+                                import errno
+                                import shutil
+
+                                if exc.errno != errno.EXDEV:
+                                    raise
+                                # Output roots may be on another filesystem.
+                                # Copy into an exclusive descriptor-relative
+                                # sibling, verify it, then atomically place it.
+                                sibling = ".fetch-" + uuid.uuid4().hex
+                                fd = os.open(sibling, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                             0o600, dir_fd=directory)
+                                try:
+                                    with os.fdopen(fd, "w+b") as target, temporary.open("rb") as source:
+                                        shutil.copyfileobj(source, target)
+                                        target.seek(0)
+                                        if (hashlib.file_digest(target, "sha256").hexdigest() != entry.get("sha256")
+                                                or os.fstat(target.fileno()).st_size != entry.get("size")):
+                                            raise DigestMismatch("copied output does not match the pod manifest")
+                                    os.replace(sibling, local.name, src_dir_fd=directory, dst_dir_fd=directory)
+                                finally:
+                                    try:
+                                        os.unlink(sibling, dir_fd=directory)
+                                    except FileNotFoundError:
+                                        pass
                 else:
                     ops.get(f"{remote_dir}/{relative}", local, max_bytes=entry["size"])
+                    valid = sha256_file(local) == entry.get("sha256") and local.stat().st_size == entry.get("size")
+                if not valid:
+                    if admit is not None:
+                        local.unlink(missing_ok=True)
+                    raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
             except TransferOverCap:
                 raise DigestMismatch("downloaded file exceeds its admitted size") from None
-            if sha256_file(local) != entry.get("sha256") or local.stat().st_size != entry.get("size"):
-                local.unlink(missing_ok=True)
-                raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
+            finally:
+                os.close(directory)
             files[relative] = str(local)
         return files
 
@@ -1372,8 +1413,18 @@ class RunPodMachine:
             record.update(state="collector_failed", reason="controller")
             return record
         finally:
+            def dispose(path):
+                # Disposable local files cannot hold pod custody. Give fast
+                # cleanup a small budget; a stuck filesystem continues detached.
+                import threading
+
+                worker = threading.Thread(target=shutil.rmtree, args=(path,),
+                                          kwargs={"ignore_errors": True}, daemon=True)
+                worker.start()
+                worker.join(0.01)
+
             if pod_copy is not None:
-                shutil.rmtree(pod_copy, ignore_errors=True)
+                dispose(pod_copy)
             # Cleanup is part of collection too. Fence the final publication
             # against release's atomic observer signal, including a release
             # that arrived while deleting the temporary pod copy.
@@ -1389,7 +1440,7 @@ class RunPodMachine:
                         for field in ("dir", "files", "bytes", "manifest_sha256"):
                             record.pop(field, None)
             if staging is not None and record.get("state") != "collected":
-                shutil.rmtree(staging, ignore_errors=True)
+                dispose(staging)
             record["seconds"] = round(time.monotonic() - began, 3)
             _stamp(timing, "failure_collection_ended_at")
 
@@ -1419,7 +1470,8 @@ class RunPodMachine:
                     if size > fb.FILE_CAPS[name]:
                         raise BundleOverCap("local bundle file over cap")
                     data = stream.read(fb.FILE_CAPS[name] + 1)
-                bodies[name] = (data, fb.redact_file(name, data, local))
+                bodies[name] = (data, fb.redact_file(name, data, local,
+                    context_complete=collector.get("context_complete") is True))
         total = sum(len(body) for _data, body in bodies.values())
         if total > fb.TOTAL_CAP and "engine-log-tail.txt" in bodies:
             data, body = bodies["engine-log-tail.txt"]

@@ -67,9 +67,24 @@ KEEP_POD_FOLDERS = 5
 PHASES = frozenset({"claim", "preparation", "start", "poll", "fetch", "execution", "reset", "cancel"})
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}")
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
-SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL|COOKIE", re.IGNORECASE)
+CREDENTIAL_WORDS = r"pass|pwd|secret|token|key|auth|session|cookie|sig|credential|bearer|private|cert"
+SECRET_NAME = re.compile(CREDENTIAL_WORDS, re.IGNORECASE)
+CREDENTIAL_ASSIGNMENT = re.compile(
+    r'(?i)(?:"(?:\\.|[^"\\\r\n])*(?:' + CREDENTIAL_WORDS + r')(?:\\.|[^"\\\r\n])*"|'
+    r"'(?:\\.|[^'\\\r\n])*(?:" + CREDENTIAL_WORDS + r")(?:\\.|[^'\\\r\n])*'|"
+    r"\b[A-Za-z0-9_.-]*(?:" + CREDENTIAL_WORDS + r")[A-Za-z0-9_.-]*)"
+    r"[\"']?\s*[:=]\s*(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\r\n]*)")
+# References/escapes taint the entire whitespace-delimited span, including URLs.
+ENCODED_SPAN = re.compile(
+    r"(?<![^\s\"'<>`])[^\s\"'<>`]*(?:%[0-9A-Fa-f]{2}|&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);"
+    r"|\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[0-7]{1,3}))[^\s\"'<>`]*")
+# Dictionary-like means 1–15 ASCII letters per slash-separated word.
+# Everything else in this alphabet is masked at 16 characters, or at eight
+# with a digit or punctuation. This intentionally masks long class names too.
+BASE64_RUN = re.compile(r"[A-Za-z0-9+/_=-]{8,}")
+PLAIN_WORDS = re.compile(r"/?[A-Za-z]{1,15}(?:/[A-Za-z]{1,15})*/?")
 DROPPED = "<line removed: prompt text>"
-COUNTS = ("secret", "url", "email", "ip", "prompt", "lines_dropped")
+COUNTS = ("secret", "url", "email", "ip", "prompt", "lines_dropped", "encoded")
 
 _H = r"[0-9A-Fa-f]{1,4}"
 #: (pattern, replacement, counter), applied in this order to every line after exact values.
@@ -241,6 +256,14 @@ class Redactor:
             if len(edits) > 65536:
                 raise ValueError("redaction match count over cap")
 
+        for match in ENCODED_SPAN.finditer(line):
+            add(match.start(), match.end(), "<encoded>", "encoded")
+        for match in BASE64_RUN.finditer(line):
+            token = match.group(0)
+            if not PLAIN_WORDS.fullmatch(token) and (len(token) >= 16 or re.search(r"[0-9+/_=-]", token)):
+                add(match.start(), match.end(), "<encoded>", "encoded")
+        for match in CREDENTIAL_ASSIGNMENT.finditer(line):
+            add(match.start(), match.end(), "<secret>", "secret")
         low, origins = self._lower_source(line)
         for secret in self._secrets:
             self._check()
@@ -276,7 +299,7 @@ class Redactor:
             if re.search(r"[0-9]", token) and re.search(r"[A-Za-z]", token):
                 add(match.start(), match.end(), "<secret>", "secret")
         merged = []
-        priority = {"url": 0, "secret": 1, "ip": 2, "email": 3, "prompt": 4}
+        priority = {"url": 0, "secret": 1, "ip": 2, "email": 3, "prompt": 4, "encoded": 5}
         for start, end, replacement, kind in sorted(edits):
             if merged and start < merged[-1][1]:
                 previous = merged[-1]
@@ -312,6 +335,7 @@ class Redactor:
             return "<line withheld: processing cap>"
         # JSON escaped slashes must be recognized as a whole URL before email
         # or token substitutions split credentials out of the address.
+        original = line
         line = line.replace("\\/", "/")
         line = re.sub(r"(?:\\u[0-9a-fA-F]{4})+",
                       lambda match: json.loads('"' + match.group(0) + '"'), line)
@@ -326,7 +350,7 @@ class Redactor:
                 replacement = "<encoded withheld>"
             else:
                 try:
-                    decoded = base64.b64decode(token, validate=True).decode("utf-8")
+                    decoded = base64.b64decode(token + "=" * (-len(token) % 4), validate=True).decode("utf-8")
                 except (ValueError, UnicodeError):
                     continue
                 decoded = unicodedata.normalize("NFC", decoded)
@@ -342,6 +366,19 @@ class Redactor:
                         kind = "secret" if self.counts["secret"] > before["secret"] else "prompt"
             if replacement is not None:
                 encoded_edits.append([match.start(), match.end(), replacement, kind])
+        # Structural edits must use original offsets, before canonicalization.
+        if ENCODED_SPAN.search(original):
+            if line != original:
+                cleaned = self._plain_line(line, encoded_edits)
+                if cleaned is None:
+                    return None
+                if cleaned != line:
+                    # Canonicalization may reveal a credential key whose
+                    # value lies beyond the encoded span. Keep that defence
+                    # without attempting to map decoded offsets backwards.
+                    self.counts["encoded"] += 1
+                    return "<encoded>"
+            return self._plain_line(original)
         return self._plain_line(line, encoded_edits)
 
     def text(self, text):
@@ -429,7 +466,7 @@ def fit_json(value, cap):
     return dump({"truncated": True, "reason": "over_cap"}), True
 
 
-def redact_file(name, data, redactor):
+def redact_file(name, data, redactor, *, context_complete=True):
     """One bundle file redacted whole, then held to its cap (the controller's second pass)."""
     cap = FILE_CAPS[name]
     text = data.decode("utf-8", "replace")
@@ -442,7 +479,7 @@ def redact_file(name, data, redactor):
             # Rebuild opaque references together: generic key redaction could
             # collapse generated node IDs while leaving edges inconsistent.
             if name == "workflow.redacted.json":
-                value, _counts = structure(value, redactor)
+                value, _counts = structure(value, redactor, context_complete=context_complete)
             else:
                 value = redactor.value(value)
             return fit_json(value, cap)[0].encode("utf-8")
@@ -468,12 +505,12 @@ def _marker(value, counts):
     return {"redacted": type(value).__name__}
 
 
-def structure(graph, redactor):
+def structure(graph, redactor, context_complete=True):
     """Only validated names and opaque node/edge references; no submitted values."""
     counts = {"strings_replaced": 0, "values_replaced": 0}
 
     def name(value):
-        if isinstance(value, str) and NAME_RE.fullmatch(value):
+        if context_complete and isinstance(value, str) and NAME_RE.fullmatch(value):
             cleaned = redactor.text(value)
             if cleaned == value:
                 return value
@@ -512,7 +549,7 @@ def structure(graph, redactor):
             if "id" in node:
                 row["id"] = node_id(node["id"])
             for key in ("type", "class_type"):
-                if key in node:
+                if key in node and context_complete:
                     row[key] = name(node[key])
             for key in ("inputs", "outputs"):
                 slots = node.get(key)
@@ -527,7 +564,8 @@ def structure(graph, redactor):
                                 continue
                             value = slot[field]
                             if field in ("name", "type"):
-                                shaped[field] = name(value)
+                                if context_complete:
+                                    shaped[field] = name(value)
                             elif field == "links" and isinstance(value, list):
                                 shaped[field] = [v if type(v) is int else _marker(v, counts) for v in value]
                             else:
@@ -548,16 +586,18 @@ def structure(graph, redactor):
                                       name(link[5])])
         return {"format": "litegraph", "nodes": out_nodes, "links": out_links}, counts
     api = nodes if isinstance(nodes, dict) else graph
-    if isinstance(api, dict) and api and all(isinstance(v, dict) and "class_type" in v for v in api.values()):
+    if isinstance(api, dict) and api and all(isinstance(v, dict) and ("class_type" in v or "inputs" in v) for v in api.values()):
         for key in list(api)[:2000]:
             node_id(key)
         out = {}
         for key, node in list(api.items())[:2000]:
             redactor._check()
             inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
-            row = {"class_type": name(node.get("class_type")), "inputs": {}}
-            for field, value in inputs.items():
-                safe_field = name(field)
+            row = {"inputs": {}}
+            if context_complete and "class_type" in node:
+                row["class_type"] = name(node.get("class_type"))
+            for index, (field, value) in enumerate(inputs.items()):
+                safe_field = name(field) if context_complete else "input_" + str(index + 1)
                 if not isinstance(safe_field, str):
                     continue
                 link = (isinstance(value, list) and len(value) == 2 and str(value[0]) in identifiers
@@ -879,7 +919,7 @@ def _collect_files(request, environ, directory, partial, partial_name, began,
             if graph_path is None:
                 raise ValueError("workflow source outside the run folder")
             graph, size = read_json(graph_path)
-            shaped, workflow_counts = structure(graph, redactor)
+            shaped, workflow_counts = structure(graph, redactor, context_complete=context_complete)
             json_file("workflow.redacted.json", shaped, size)
         except (OSError, ValueError, RecursionError):
             facts["workflow.redacted.json"] = {"present": False}
