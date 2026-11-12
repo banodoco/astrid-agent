@@ -81,10 +81,23 @@ def test_remote_logs_are_collectable_by_host_after_machine_is_gone(tmp_path, exi
     else:
         owner.fetch(run, destination)
 
+    # Model the controller's own bounded stream capture. These declarations
+    # live beside the fetched pod logs and must be collected with them.
+    from astrid.core._shared import run_logs
+    controller_logs = destination / '.host-logs'
+    (controller_logs / 'job.stdout').parent.mkdir(parents=True, exist_ok=True)
+    (controller_logs / 'job.stdout').write_text('controller stdout\n')
+    (controller_logs / 'job.stderr').write_text('controller stderr\n')
+    run_logs.declare(controller_logs, run_logs.LogDecl('controller.stdout', 'stdout', 'job.stdout'))
+    run_logs.declare(controller_logs, run_logs.LogDecl('controller.stderr', 'stderr', 'job.stderr'))
+
     # Fetch and host collection happen on different machines in production.
-    # Prove every descriptor is backed by downloaded bytes, not the source pod.
+    # The controller must finish collecting the declared pod logs before the
+    # pod disappears; host-readable descriptors must then need only local files.
     moved_pod = tmp_path / 'pod-collected'
     pod.rename(moved_pod)
+    shutil.rmtree(moved_pod)
+    assert not pod.exists() and not moved_pod.exists()
     host = object.__new__(GenericPackHost)
     descriptors = host._log_outputs(destination)
     logs = {row['name']: Path(row['path']).read_text() for row in descriptors}
@@ -93,6 +106,8 @@ def test_remote_logs_are_collectable_by_host_after_machine_is_gone(tmp_path, exi
         'job.stdout': 'remote stdout\n',
         'job.stderr': 'remote stderr\n',
         'generation.stdout': '{}\n',
+        'controller.stdout': 'controller stdout\n',
+        'controller.stderr': 'controller stderr\n',
     }
 
 

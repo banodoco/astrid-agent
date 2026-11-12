@@ -9950,12 +9950,20 @@ class GenericPackHost:
         try:
             from astrid.core._shared import run_logs
 
-            # A machine may have already collected the declarations where its
-            # source paths exist and transported the index with the log files.
-            if (output_root / "logs.json").exists() and not (output_root / "logs" / run_logs.INDEX_NAME).exists():
-                run_logs.collect(output_root)
+            # Machine fetches can bring their own logs.json and collected
+            # index. Host child declarations live separately so fetched files
+            # cannot replace them; merge both sources in one collection pass.
+            run_logs.collect(output_root, extra_root=output_root / ".host-logs")
             outputs = []
             for row in run_logs.read_index(output_root):
+                if row.get("reason") == "duplicate_name":
+                    if warnings is not None:
+                        warnings.append(
+                            "log declaration conflict for "
+                            f"{row.get('name', 'unknown')}: {row.get('first_source', 'unknown')} and "
+                            f"{row.get('source', 'unknown')}"
+                        )
+                    continue
                 if row.get("missing"):
                     continue
                 name, filename = row["name"], row["file"]
@@ -10429,12 +10437,14 @@ class GenericPackHost:
             launch = popen_owned_group if render_scope else spawn_task_scope
             from astrid.core._shared import run_logs
 
+            host_log_root = output_root / ".host-logs"
             for stream_name in ("stdout", "stderr"):
                 path = output_root / f"job.{stream_name}"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.touch(exist_ok=True)
-                run_logs.declare(output_root, run_logs.LogDecl(
-                    name=path.name, role=stream_name, path=path.name,
+                host_log_root.mkdir(parents=True, exist_ok=True)
+                run_logs.declare(host_log_root, run_logs.LogDecl(
+                    name=path.name, role=stream_name, path=str(path.resolve()),
                 ))
             process = launch(
                 _network_sandbox_argv(argv, attempt, broker_endpoint), cwd=str(cwd), env=env,
