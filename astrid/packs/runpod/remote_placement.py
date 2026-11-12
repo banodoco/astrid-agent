@@ -575,8 +575,9 @@ class RemotePlacement:
                 state, f"ls {BOOTSTRAP_ROOT}/*/ok 2>/dev/null | head -n 1", timeout=60
             )
             if not out.strip():
-                raise RemotePlacementError(
-                    "pod is not bootstrapped and no source archives were provided"
+                raise PlacementReasonError(
+                    "pod is not bootstrapped and no source archives were provided",
+                    reason=Reason(stage="boot", step="bootstrap", gate="provider", code="provider_malformed"),
                 )
             state.note("bootstrap", "skipped", reason="marker present")
             return
@@ -606,7 +607,10 @@ class RemotePlacement:
         self._run_job(state, command, "bootstrap")
         code, _o, _e = self._exec(state, f"test -f {shlex.quote(marker)}", timeout=60)
         if code != 0:
-            raise RemotePlacementError(f"bootstrap finished without marker {marker}")
+            raise PlacementReasonError(
+                "bootstrap finished without its marker",
+                reason=Reason(stage="boot", step="bootstrap", gate="provider", code="provider_malformed"),
+            )
         state.note("bootstrap", "done", digest=digest)
 
     # -- step 3 ------------------------------------------------------------
@@ -834,13 +838,18 @@ class _HttpsOps:
 
     def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Kill a slow-drip caller before it can hold the host's drain forever."""
+        def refuse(code: str, message: str) -> PlacementReasonError:
+            return PlacementReasonError(
+                message, reason=Reason(stage="boot", step="provider_contract", gate="provider", code=code)
+            )
+
         if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
             raise RemotePlacementError("unsupported bounded pod operation")
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
-            raise RemotePlacementError("failure verification deadline expired")
+            raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
         if self.abort_event is not None and self.abort_event.is_set():
-            raise RemotePlacementError("bounded pod operation interrupted by exact release")
+            raise refuse("custody_unresolved", "bounded pod operation was interrupted")
         context = multiprocessing.get_context("spawn")
         recv, send = context.Pipe(duplex=False)
         child = context.Process(target=_bounded_https_call_child,
@@ -892,28 +901,34 @@ class _HttpsOps:
             reader.start()
             while not read_done.wait(0.02):
                 if self.abort_event is not None and self.abort_event.is_set():
-                    raise RemotePlacementError("bounded pod operation interrupted by exact release")
+                    raise refuse("custody_unresolved", "bounded pod operation was interrupted")
                 if time.monotonic() >= request_deadline:
-                    raise RemotePlacementError("failure verification deadline expired")
+                    raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
             if received.get("error") or "raw" not in received:
                 if self.abort_event is not None and self.abort_event.is_set():
-                    raise RemotePlacementError("bounded pod operation interrupted by exact release")
-                raise RemotePlacementError("failure verification deadline expired" if time.monotonic() >= request_deadline
-                                           else "bounded pod operation failed")
+                    raise refuse("custody_unresolved", "bounded pod operation was interrupted")
+                raise refuse("deadline_exceeded" if time.monotonic() >= request_deadline else "transport_failed",
+                             "bounded pod operation deadline expired" if time.monotonic() >= request_deadline
+                             else "bounded pod operation failed")
             raw = received["raw"]
             if self.abort_event is not None and self.abort_event.is_set():
-                raise RemotePlacementError("bounded pod operation interrupted by exact release")
+                raise refuse("custody_unresolved", "bounded pod operation was interrupted")
             if time.monotonic() >= self.deadline:
-                raise RemotePlacementError("failure verification deadline expired")
+                raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
             payload = json.loads(raw)
             if not isinstance(payload, dict) or set(payload) != {"ok", "value"} or payload["ok"] is not True:
-                raise RemotePlacementError("bounded pod operation failed")
+                raise refuse("transport_failed", "bounded pod operation failed")
             if self.abort_event is not None and self.abort_event.is_set():
-                raise RemotePlacementError("bounded pod operation interrupted by exact release")
+                raise refuse("custody_unresolved", "bounded pod operation was interrupted")
             return payload["value"]
-        except (OSError, EOFError, ValueError, TypeError):
-            raise RemotePlacementError("failure verification deadline expired" if time.monotonic() >= request_deadline
-                                       else "bounded pod operation failed") from None
+        except PlacementReasonError:
+            raise
+        except (OSError, EOFError, ValueError, TypeError, RuntimeError):
+            raise refuse("deadline_exceeded" if time.monotonic() >= request_deadline else "transport_failed",
+                         "bounded pod operation deadline expired" if time.monotonic() >= request_deadline
+                         else "bounded pod operation failed") from None
+        except KeyboardInterrupt:
+            raise refuse("custody_unresolved", "bounded pod operation was interrupted") from None
         finally:
             stop_watchdog.set()
             if watchdog is not None:
