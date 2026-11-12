@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -143,6 +144,15 @@ def test_pin_script_bump_updates_catalog_routes_from_target_commit_bytes(packs_c
     files = sorted(path for path in packs_copy.rglob("*") if path.is_file())
     before = {path: path.read_bytes() for path in files}
     assert vibecomfy_pin.main([revision, "--checkout", str(checkout)]) == 0
+    assert {path: path.read_bytes() for path in files} == before
+
+
+def test_pin_script_bump_to_the_current_revision_changes_no_bytes(packs_copy) -> None:
+    checkout = Path(os.environ.get("ASTRID_VIBECOMFY_CHECKOUT", ""))
+    assert checkout.is_dir(), "pin stability needs the VibeComfy checkout (ASTRID_VIBECOMFY_CHECKOUT)"
+    files = sorted(path for path in packs_copy.rglob("*") if path.is_file())
+    before = {path: path.read_bytes() for path in files}
+    vibecomfy_pin.bump(VIBECOMFY_ENGINE_REVISION, checkout=checkout)
     assert {path: path.read_bytes() for path in files} == before
 
 
