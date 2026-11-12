@@ -111,7 +111,8 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
             canonical = _canonical_bundle_value(loaded.resolved).workflow
         identity = loaded_workflow_execution_identity(loaded)
         preparation = ManagedEnginePreparation(task=task_identity, attempt=attempt_identity, mode=align,
-            deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine")
+            deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine",
+            logs_root=out)
         from astrid.core.generation.engine_custody import declare_engine_log
 
         declare_engine_log(out, preparation.root, preparation.recipe.engine)

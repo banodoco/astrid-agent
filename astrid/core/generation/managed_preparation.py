@@ -203,7 +203,8 @@ class ManagedEnginePreparation:
     The install lock excludes another host's preparation and installation while
     the HTTP worker runs. No worker receives this object or its control socket.
     """
-    def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any, scratch: Path, device: int | None = None):
+    def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any, scratch: Path,
+                 device: int | None = None, logs_root: Path | None = None):
         from .engine_execution import create_local_backend
         from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
         from .engine_recipe import load_recipe
@@ -212,6 +213,8 @@ class ManagedEnginePreparation:
         self.device = device
         self.visibility = str(device) if device is not None else os.environ.get("CUDA_VISIBLE_DEVICES")
         self.scratch = scratch
+        # The run root whose logs.json a failed step's whole output is declared in.
+        self.logs_root = logs_root
         self.deadline, self.cancelled = deadline, cancelled
         self.root = default_engine_root("comfyui")
         self.recipe = load_recipe("comfyui", DEFAULT_PLATFORM)
@@ -511,10 +514,29 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 hashlib.sha256(result.stdout.encode()).hexdigest(),
                 hashlib.sha256(result.stderr.encode()).hexdigest())
             detail = f", missing_classes={json.dumps(classes)}" if classes else ""
-            raise IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); "
-                                 "inspect the host log for this attempt")
+            where = ("its whole output is the run logs preparation.{0}.stdout and preparation.{0}.stderr"
+                     .format(step) if self._keep_step_output(step, result) else "inspect the host log for this attempt")
+            raise IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}")
         self.check()
         return result
+
+    def _keep_step_output(self, step, result) -> bool:
+        """Keep a failed step's whole stdout and stderr as declared run logs; never raises."""
+        logs_root = getattr(self, "logs_root", None)
+        if logs_root is None:
+            return False
+        try:
+            from astrid.core._shared import run_logs
+
+            folder = Path(logs_root) / ".preparation-logs"
+            folder.mkdir(parents=True, exist_ok=True)
+            for stream in ("stdout", "stderr"):
+                path = folder / f"{step}.{stream}.log"
+                path.write_text(getattr(result, stream) or "", encoding="utf-8")
+                run_logs.declare(logs_root, run_logs.LogDecl(f"preparation.{step}.{stream}", stream, str(path)))
+            return True
+        except Exception:  # noqa: BLE001 - keeping logs must never change the step's failure
+            return False
 
     def _command(self, argv):
         """Run the pinned CLI in its verified installation, through host custody."""
