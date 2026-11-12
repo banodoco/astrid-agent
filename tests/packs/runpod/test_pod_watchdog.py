@@ -392,19 +392,15 @@ def test_startup_authorisation_controls_claim_and_exact_release(
     monkeypatch.setattr(module, "urlopen", probe_request)
     monkeypatch.setattr(module.subprocess, "Popen", spawn)
     monkeypatch.setattr(c.pod, "exec", execute)
-    if denied:
-        with pytest.raises(module.PodWatchdogError, match="termination_denied") as error:
-            c.host.acquire(c.grant, requested_idle_seconds=10)
-        assert len(str(error.value).splitlines()) == 1
-        assert "fake-pod" not in str(error.value)
-        assert c.deletes == ["pod-1"]
-        assert c.read()["state"] == "cleanup_complete"
-    else:
-        c.host.acquire(c.grant, requested_idle_seconds=10)
-        assert c.read()["self_stop"]["acknowledged"] is False
-        assert c.read()["state"] == "claimed" and not c.deletes
-        assert c.host.deadline_timer is not None
-        assert "host custody only" in capsys.readouterr().err
+    # Release-manager ruling (blocker rule): a denied or unknown termination
+    # authorisation means no watchdog, under the host's custody, never a refused claim.
+    c.host.acquire(c.grant, requested_idle_seconds=10)
+    assert c.read()["self_stop"]["acknowledged"] is False
+    assert c.read()["state"] == "claimed" and not c.deletes
+    assert c.host.deadline_timer is not None
+    err = capsys.readouterr().err
+    assert "host custody only" in err and "can't stop itself" in err
+    if not denied:
         assert "watchdog=unavailable custody=host-only" in log.read_text()
     assert c.creates == 1 and not c.pod.job_log
     assert "fake-pod" not in log.read_text()
