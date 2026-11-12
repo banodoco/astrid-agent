@@ -125,7 +125,9 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     if exit_code is not None:
         cause["exit_code"] = exit_code
     reason = getattr(failure, "reason", None)
-    gate = getattr(failure, "gate", None)
+    # Receipts keep the RunPod gate names users already see (GPU, volume,
+    # datacenter, ...); PlacementRefused carries them as runpod_gate.
+    gate = getattr(failure, "runpod_gate", None) or getattr(failure, "gate", None)
     if stage == "no_machine":
         # Only fixed names (offer reason, gate) are copied; exception text never is.
         from .target_selection import _OFFER_FAILURES

@@ -218,8 +218,11 @@ def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement
 
     if not isinstance(recipe, EngineRecipe):
         raise RecipeValidationError("plan_install requires an EngineRecipe")
-    if placement not in {"local", "runpod"}:
-        raise UnsupportedPlacement("unknown engine placement")
+    if placement != "local":
+        from astrid.core.generation.placement import registered_machine_kinds
+
+        if placement not in registered_machine_kinds():
+            raise UnsupportedPlacement("unknown engine placement")
     if is_runpod_placement(placement) and not recipe.platform.startswith("linux-"):
         raise UnsupportedPlatform("RunPod requires a Linux target")
     verified = recipes.load_recipe(recipe.engine, recipe.platform)

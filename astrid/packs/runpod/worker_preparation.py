@@ -20,7 +20,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Literal, Mapping, cast
+
+from astrid.core.generation.engine_contracts import Gate, PlacementRefused
 
 from runtime_protocol import platform
 
@@ -28,37 +30,49 @@ from astrid.core.util.time import utc_now_iso
 from .pod_fields import InvalidPodField, pod_field
 
 
-class TargetObservationError(RuntimeError):
-    """Provider state was absent, ambiguous, or could not be verified safely.
+_SHARED_GATES = {
+    "GPU": "hardware", "volume": "storage", "datacenter": "region",
+    "machine": "hardware", "status": "state", "provider": "inventory",
+    "offer": "inventory", "unclassified": "inventory",
+}
 
-    ``gate`` is a fixed, secret-free name of the acquisition gate that raised it
-    (volume, GPU, datacenter, rate, lifetime, machine), or None outside a gate.
-    """
 
-    def __init__(self, *args: object, gate: str | None = None) -> None:
-        super().__init__(*args)
-        self.gate = gate
+class TargetObservationError(PlacementRefused):
+    """Provider observation refused; retain the provider gate for old receipts."""
+
+    def __init__(self, message: str, *, gate: str, retryable: bool = False,
+                 retry_after: float | None = None,
+                 custody: Literal["none", "exact", "unknown"] = "unknown") -> None:
+        self.runpod_gate = gate
+        super().__init__(message, gate=cast(Gate, _SHARED_GATES.get(gate, gate)),
+                         retryable=retryable, retry_after=retry_after, custody=custody)
 
 
 def observation_failure_gate(exc: BaseException) -> str | None:
     """Only fixed names may cross the provider-error/journal boundary."""
     if not isinstance(exc, TargetObservationError):
         return None
-    gate = getattr(exc, "gate", None)
+    gate = getattr(exc, "runpod_gate", None)
     return gate if isinstance(gate, str) and gate in {
         "volume", "GPU", "datacenter", "rate", "lifetime", "machine",
-        "identity", "status", "image", "inventory",
+        "identity", "status", "image", "inventory", "capacity", "install",
     } else "provider"
 
 
 class AcquisitionUnresolvedError(TargetObservationError):
     """An earlier create/attach may have succeeded and must be reconciled."""
 
+    def __init__(self, message: str, *, gate: str = "identity", **kwargs) -> None:
+        super().__init__(message, gate=gate, **kwargs)
+
 
 class CapacityExhaustedError(TargetObservationError):
     """The bounded, safe capacity retry policy was exhausted."""
 
     code = "capacity_exhausted"
+
+    def __init__(self, message: str, *, gate: str = "capacity", **kwargs) -> None:
+        super().__init__(message, gate=gate, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -101,6 +115,20 @@ class AcquiredRunPodTarget:
     attempt: dict[str, Any]
     observation: RunPodTargetObservation
     acquisition_mode: str
+
+
+def _record_custody(record: Mapping[str, Any]) -> Literal["none", "exact", "unknown"]:
+    """Only persisted identities or a proven pre-create state establish custody."""
+    if _text(record.get("pod_id")):
+        return "exact"
+    if (record.get("state") == "allocation_ready"
+        and type(record.get("create_attempts", 0)) is int
+        and record.get("create_attempts", 0) == 0) or (
+        record.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
+        and record.get("safe_to_retry") is True
+    ):
+        return "none"
+    return "unknown"
 
 
 def write_target_record(path: Path, value: dict[str, Any]) -> None:
@@ -163,15 +191,16 @@ def target_owner(handle_path: Path):
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError:
-        raise AcquisitionUnresolvedError("RunPod account lock cannot be opened safely") from None
+        raise AcquisitionUnresolvedError("RunPod account lock cannot be opened safely", gate="identity", retryable=False, custody="unknown") from None
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise AcquisitionUnresolvedError("RunPod account lock must be a regular file")
+            raise AcquisitionUnresolvedError("RunPod account lock must be a regular file", gate="identity", retryable=False, custody="unknown")
         try:
             platform.lock_file(fd, blocking=False)
         except BlockingIOError as exc:
             raise AcquisitionUnresolvedError(
-                f"another process currently owns RunPod target journal {path}; retry after it exits"
+                f"another process currently owns RunPod target journal {path}; retry after it exits",
+                gate="identity", retryable=False, custody="unknown",
             ) from exc
         yield fd
     finally:
@@ -198,21 +227,36 @@ def _exclusive_target_owner(function: Any) -> Any:
                 current = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 raise AcquisitionUnresolvedError(
-                    f"cannot verify RunPod target journal {path} before provider use"
+                    f"cannot verify RunPod target journal {path} before provider use",
+                    gate="identity", retryable=False, custody="unknown",
                 ) from exc
             if (
                 not isinstance(current, dict)
                 or current != attempt
             ):
                 raise AcquisitionUnresolvedError(
-                    f"RunPod target journal {path} changed before this operation acquired ownership"
+                    f"RunPod target journal {path} changed before this operation acquired ownership",
+                    gate="identity", retryable=False, custody="unknown",
                 )
-            return await function(
-                config,
-                handle_path=handle_path,
-                attempt=current,
-                **kwargs,
-            )
+            try:
+                return await function(
+                    config,
+                    handle_path=handle_path,
+                    attempt=current,
+                    **kwargs,
+                )
+            except TargetObservationError as exc:
+                # The operation may have journaled a returned pod ID before a
+                # lower-level observer failed. Never infer custody from that
+                # observer's contract alone.
+                try:
+                    latest = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    exc.custody = "unknown"
+                else:
+                    exc.custody = (_record_custody(latest) if isinstance(latest, dict)
+                                   and latest.get("operation_id") == current.get("operation_id") else "unknown")
+                raise
     return wrapped
 
 
@@ -225,9 +269,9 @@ async def resolve_existing_volume(api_key: str, name_or_id: str) -> dict[str, An
     except Exception as exc:
         raise TargetObservationError(
             f"could not observe RunPod network-volume inventory for {name_or_id!r}: {exc}",
-            gate="inventory") from exc
+            gate="inventory", retryable=True, custody="none") from exc
     if not isinstance(volumes, list):
-        raise TargetObservationError("RunPod network-volume inventory returned an invalid response", gate="inventory")
+        raise TargetObservationError("RunPod network-volume inventory returned an invalid response", gate="inventory", retryable=True, custody="none")
 
     matches = [
         record for record in volumes
@@ -237,12 +281,12 @@ async def resolve_existing_volume(api_key: str, name_or_id: str) -> dict[str, An
     if len(matches) != 1:
         raise TargetObservationError(
             f"existing network volume {name_or_id!r} cannot be uniquely confirmed in the authenticated account",
-            gate="inventory")
+            gate="inventory", retryable=True, custody="none")
     size = _positive_integer(matches[0].get("size"))
     if size is None:
         raise TargetObservationError(
             f"existing network volume {name_or_id!r} has no valid provider size",
-            gate="inventory")
+            gate="inventory", retryable=True, custody="none")
     return dict(matches[0])
 
 
@@ -256,7 +300,7 @@ def _text(value: Any) -> str | None:
 def _required_text(record: Mapping[str, Any], key: str, *, context: str, gate: str = "provider") -> str:
     value = _text(record.get(key))
     if value is None:
-        raise TargetObservationError(f"provider {context} is missing required {key}", gate=gate)
+        raise TargetObservationError(f"provider {context} is missing required {key}", gate=gate, retryable=False, custody="unknown")
     return value
 
 
@@ -308,14 +352,14 @@ def inspect_target_records(
     if len(pod_matches) != 1:
         raise TargetObservationError(
             f"exact pod {contract.pod_id!r} is not uniquely visible in the authenticated account inventory",
-            gate="identity")
+            gate="identity", retryable=False, custody="unknown")
     pod = pod_matches[0]
 
     pod_name = _required_text(pod, "name", context=f"pod {contract.pod_id}", gate="identity")
     if contract.expected_pod_name and pod_name != contract.expected_pod_name:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} name mismatch: expected {contract.expected_pod_name!r}, observed {pod_name!r}",
-            gate="identity")
+            gate="identity", retryable=False, custody="unknown")
 
     desired_status = _required_text(
         pod, "desiredStatus", context=f"pod {contract.pod_id}", gate="status"
@@ -323,7 +367,7 @@ def inspect_target_records(
     if not allow_inactive and desired_status not in {"RUNNING", "PROVISIONING"}:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} is not attachable (desiredStatus={desired_status!r})",
-            gate="status")
+            gate="status", retryable=False, custody="unknown")
     actual_status = _text(pod.get("actualStatus"))
     if (
         not allow_inactive
@@ -332,13 +376,13 @@ def inspect_target_records(
     ):
         raise TargetObservationError(
             f"pod {contract.pod_id!r} is not currently attachable (actualStatus={actual_status!r})",
-            gate="status")
+            gate="status", retryable=False, custody="unknown")
 
     machine = pod.get("machine") if isinstance(pod.get("machine"), dict) else {}
     try:
         gpu_name = pod_field(pod, "gpu_name")
     except InvalidPodField:
-        raise TargetObservationError("pod GPU evidence is invalid", gate="GPU") from None
+        raise TargetObservationError("pod GPU evidence is invalid", gate="GPU", retryable=False, custody="unknown") from None
     gpu_candidates = [
         gpu_name,
         _text(machine.get("gpuDisplayName")),
@@ -356,26 +400,26 @@ def inspect_target_records(
         raise TargetObservationError(
             f"pod {contract.pod_id!r} GPU mismatch: expected {contract.gpu_type!r}, "
             f"observed {[item for item in gpu_candidates if item]!r}",
-            gate="GPU")
+            gate="GPU", retryable=False, custody="unknown")
 
     try:
         image = pod_field(pod, "image")
     except InvalidPodField:
-        raise TargetObservationError("pod image evidence is invalid", gate="image") from None
+        raise TargetObservationError("pod image evidence is invalid", gate="image", retryable=False, custody="unknown") from None
     if image != contract.worker_image:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} image mismatch: expected {contract.worker_image!r}, observed {image!r}",
-            gate="image")
+            gate="image", retryable=False, custody="unknown")
 
     try:
         attached_volume_id = pod_field(pod, "volume")
     except InvalidPodField:
-        raise TargetObservationError("pod volume evidence is invalid", gate="volume") from None
+        raise TargetObservationError("pod volume evidence is invalid", gate="volume", retryable=False, custody="unknown") from None
     if attached_volume_id != contract.network_volume_id:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} volume mismatch: expected {contract.network_volume_id!r}, "
             f"observed {attached_volume_id!r}",
-            gate="volume")
+            gate="volume", retryable=False, custody="unknown")
 
     volume = inspect_volume_records(contract, volumes=volumes)
     volume_name = _text(volume.get("name"))
@@ -387,7 +431,7 @@ def inspect_target_records(
             datacenter_id = contract.datacenter_id  # unreported; not a reason to strand a paid pod
         if (not release and not defer_machine and contract.datacenter_id is not None
                 and datacenter_id != contract.datacenter_id):
-            raise TargetObservationError("no-volume pod datacenter could not be confirmed", gate="datacenter")
+            raise TargetObservationError("no-volume pod datacenter could not be confirmed", gate="datacenter", retryable=False, custody="unknown")
 
     return RunPodTargetObservation(
         pod_id=contract.pod_id,
@@ -412,7 +456,7 @@ def inspect_volume_records(
     """Prove the pinned volume's account identity and immutable sizing."""
     if contract.network_volume_id is None:
         if contract.network_volume_name is not None or contract.network_volume_size_gb != 0:
-            raise TargetObservationError("no-volume target has inconsistent volume identity", gate="volume")
+            raise TargetObservationError("no-volume target has inconsistent volume identity", gate="volume", retryable=False, custody="unknown")
         return {"id": None, "name": None, "size": 0, "dataCenterId": contract.datacenter_id}
     if not contract.network_volume_id.strip():
         raise ValueError("network volume identity must be pinned by ID")
@@ -427,7 +471,7 @@ def inspect_volume_records(
     if len(volume_matches) != 1:
         raise TargetObservationError(
             f"network volume {contract.network_volume_id!r} cannot be confirmed in the authenticated account inventory",
-            gate="volume")
+            gate="volume", retryable=False, custody="unknown")
     volume = volume_matches[0]
     volume_name = _required_text(
         volume, "name", context=f"volume {contract.network_volume_id}", gate="volume"
@@ -436,19 +480,19 @@ def inspect_volume_records(
         raise TargetObservationError(
             f"network volume {contract.network_volume_id!r} name mismatch: "
             f"expected {contract.network_volume_name!r}, observed {volume_name!r}",
-            gate="volume")
+            gate="volume", retryable=False, custody="unknown")
     size = _positive_integer(volume.get("size"))
     if size != contract.network_volume_size_gb:
         raise TargetObservationError(
             f"network volume {contract.network_volume_id!r} size mismatch: "
             f"expected {contract.network_volume_size_gb} GB, observed {size!r}",
-            gate="volume")
+            gate="volume", retryable=False, custody="unknown")
     datacenter_id = _text(volume.get("dataCenterId"))
     if contract.datacenter_id and datacenter_id != contract.datacenter_id:
         raise TargetObservationError(
             f"network volume {contract.network_volume_id!r} datacenter mismatch: "
             f"expected {contract.datacenter_id!r}, observed {datacenter_id!r}",
-            gate="volume")
+            gate="volume", retryable=False, custody="unknown")
     return dict(volume)
 
 
@@ -497,7 +541,7 @@ def confirm_acquired_machine(
             raise TargetObservationError(
                 f"pod {contract.pod_id!r} machine was not reported by GraphQL before the readiness timeout",
                 gate="machine",
-            )
+             retryable=True, custody="unknown")
         time.sleep(_MACHINE_POLL_SECONDS)
 
     observed_gpu = machine["gpuDisplayName"]
@@ -507,21 +551,21 @@ def confirm_acquired_machine(
             f"pod {contract.pod_id!r} datacenter mismatch: expected {contract.datacenter_id!r}, "
             f"observed {observed_dc!r}",
             gate="datacenter",
-        )
+         retryable=False, custody="unknown")
     try:
         gpu = _gpu_type_from_graphql(contract.gpu_type, api_key)
     except Exception:
         raise TargetObservationError(
             f"provider gpuTypes catalog could not resolve GPU type {contract.gpu_type!r}",
             gate="GPU",
-        ) from None
+         retryable=False, custody="unknown") from None
     expected_display = gpu.get("displayName") if isinstance(gpu, dict) and gpu.get("id") == contract.gpu_type else None
     if not expected_display or expected_display != observed_gpu:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} GPU mismatch: expected {expected_display!r} "
             f"(catalog displayName of {contract.gpu_type!r}), observed {observed_gpu!r}",
             gate="GPU",
-        )
+         retryable=False, custody="unknown")
     return observed_gpu, observed_dc
 
 
@@ -538,7 +582,7 @@ def read_acquired_gpu_count(api_key: str, pod_id: str) -> int:
         raise TargetObservationError(
             f"pod {pod_id!r} gpuCount was not reported by GraphQL; the pod total rate cannot be compared",
             gate="rate",
-        )
+         retryable=True, custody="unknown")
     return count
 
 
@@ -577,15 +621,15 @@ def read_exact_pod(api_key: str, pod_id: str) -> tuple[int, dict[str, Any] | Non
         if response.status_code == 404:
             return 404, None
         if response.status_code != 200:
-            raise TargetObservationError("exact pod GET did not succeed", gate="identity")
+            raise TargetObservationError("exact pod GET did not succeed", gate="identity", retryable=True, custody="unknown")
         record = response.json()
         if not isinstance(record, dict) or record.get("id") != pod_id:
-            raise TargetObservationError("exact pod GET returned an unverified identity", gate="identity")
+            raise TargetObservationError("exact pod GET returned an unverified identity", gate="identity", retryable=True, custody="unknown")
         return 200, record
     except TargetObservationError:
         raise
     except Exception:
-        raise TargetObservationError("exact pod GET could not be confirmed", gate="identity") from None
+        raise TargetObservationError("exact pod GET could not be confirmed", gate="identity", retryable=True, custody="unknown") from None
 
 
 def _target_contract(
@@ -638,6 +682,8 @@ def _write_target_failure(
     phase: str,
     exc: BaseException,
 ) -> None:
+    if isinstance(exc, TargetObservationError):
+        exc.custody = _record_custody(attempt)
     failed = {
         **attempt,
         "state": "allocated_unverified",
@@ -662,18 +708,18 @@ def observe_target(
     except Exception as exc:
         raise TargetObservationError(
             f"could not observe RunPod account pod inventory for exact pod {contract.pod_id!r}: {exc}",
-            gate="inventory") from exc
+            gate="inventory", retryable=True, custody="unknown") from exc
     if not isinstance(pods, list):
-        raise TargetObservationError("RunPod account pod inventory returned an invalid response", gate="inventory")
+        raise TargetObservationError("RunPod account pod inventory returned an invalid response", gate="inventory", retryable=True, custody="unknown")
 
     try:
         volumes = get_network_volumes(api_key) if contract.network_volume_id is not None else []
     except Exception as exc:
         raise TargetObservationError(
             f"could not confirm network volume {contract.network_volume_id!r}: {exc}",
-            gate="inventory") from exc
+            gate="inventory", retryable=True, custody="unknown") from exc
     if not isinstance(volumes, list):
-        raise TargetObservationError("RunPod network-volume inventory returned an invalid response", gate="inventory")
+        raise TargetObservationError("RunPod network-volume inventory returned an invalid response", gate="inventory", retryable=True, custody="unknown")
 
     # get_network_volumes currently degrades some transport errors to an empty
     # list. The record validator treats empty/missing evidence as unconfirmed,
@@ -693,12 +739,12 @@ async def _release_inventory(
     except Exception:
         raise TargetObservationError(
             "could not observe RunPod account pod inventory for exact release",
-            gate="inventory") from None
+            gate="inventory", retryable=True, custody="unknown") from None
     if not isinstance(pods, list):
-        raise TargetObservationError("RunPod account pod inventory returned an invalid response", gate="inventory")
+        raise TargetObservationError("RunPod account pod inventory returned an invalid response", gate="inventory", retryable=True, custody="unknown")
     ids = [_text(pod.get("id")) if isinstance(pod, dict) else None for pod in pods]
     if any(pod_id is None for pod_id in ids) or len(set(ids)) != len(ids):
-        raise TargetObservationError("RunPod account pod inventory is malformed or ambiguous", gate="inventory")
+        raise TargetObservationError("RunPod account pod inventory is malformed or ambiguous", gate="inventory", retryable=True, custody="unknown")
 
     try:
         volumes = (await asyncio.to_thread(get_network_volumes, config.api_key)
@@ -706,9 +752,9 @@ async def _release_inventory(
     except Exception:
         raise TargetObservationError(
             "could not confirm the persistent release volume",
-            gate="inventory") from None
+            gate="inventory", retryable=True, custody="unknown") from None
     if not isinstance(volumes, list):
-        raise TargetObservationError("RunPod network-volume inventory returned an invalid response", gate="inventory")
+        raise TargetObservationError("RunPod network-volume inventory returned an invalid response", gate="inventory", retryable=True, custody="unknown")
     volume = inspect_volume_records(contract, volumes=volumes)
 
     matches = [
@@ -733,7 +779,7 @@ def _release_contract_from_record(attempt: Mapping[str, Any]) -> RunPodTargetCon
             or attempt.get("name", attempt["request_name"]) != attempt["request_name"]
             or ("ordinary_preparation" in attempt
                 and attempt["request_name"] != "astrid-product-" + str(attempt.get("operation_id")))):
-        raise TargetObservationError("release requires this journal's created pod identity")
+        raise TargetObservationError("release requires this journal's created pod identity", gate="identity", retryable=False, custody=_record_custody(attempt))
     pod_id = _text(attempt.get("pod_id"))
     gpu_type = _text(attempt.get("gpu_type"))
     worker_image = _text(attempt.get("worker_image"))
@@ -749,7 +795,8 @@ def _release_contract_from_record(attempt: Mapping[str, Any]) -> RunPodTargetCon
                  and attempt.get("network_volume_size_gb") == 0)
     if not all((pod_id, gpu_type, worker_image)) or (not ephemeral and not all((volume_id, volume_name, volume_size))):
         raise TargetObservationError(
-            "release record is missing exact pod, GPU, image or persistent-volume identity"
+            "release record is missing exact pod, GPU, image or persistent-volume identity",
+            gate="identity", retryable=False, custody=_record_custody(attempt),
         )
     return RunPodTargetContract(
         pod_id=pod_id,
@@ -785,9 +832,9 @@ def validate_lease_preparation(attempt: Mapping[str, Any], *, releasing: bool = 
         or not isinstance(machine_job.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", machine_job["id"])
         or machine_job.get("state") not in {"starting", "running", "exited", "cancelled"}
     ):
-        raise TargetObservationError("invalid exact machine job custody")
+        raise TargetObservationError("invalid exact machine job custody", gate="install", retryable=False, custody=_record_custody(attempt))
     if releasing and machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}:
-        raise TargetObservationError("machine job remains unresolved; retain the exact lease")
+        raise TargetObservationError("machine job remains unresolved; retain the exact lease", gate="install", retryable=True, custody=_record_custody(attempt))
     preparation = lease.get("preparation")
     if preparation is None:
         return
@@ -799,14 +846,14 @@ def validate_lease_preparation(attempt: Mapping[str, Any], *, releasing: bool = 
             or preparation.get("compatibility") != attempt.get("lease_compatibility")
             or not isinstance(preparation.get("bootstrap_digest"), str)
             or not re.fullmatch(r"[0-9a-f]{16}", preparation["bootstrap_digest"])):
-        raise TargetObservationError("invalid retained lease preparation custody")
+        raise TargetObservationError("invalid retained lease preparation custody", gate="install", retryable=False, custody=_record_custody(attempt))
     job = preparation.get("job")
     if job is not None and (
         not isinstance(job, Mapping) or set(job) != {"id", "state"}
         or not isinstance(job.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", job["id"])
         or job.get("state") not in {"starting", "running", "exited", "cancelled"}
     ):
-        raise TargetObservationError("invalid exact preparation job custody")
+        raise TargetObservationError("invalid exact preparation job custody", gate="install", retryable=False, custody=_record_custody(attempt))
     if preparation["state"] == "prepared":
         snapshot = preparation.get("installed")
         if (not isinstance(snapshot, Mapping)
@@ -815,10 +862,10 @@ def validate_lease_preparation(attempt: Mapping[str, Any], *, releasing: bool = 
                 or not isinstance(snapshot.get("receipt_sha256"), str)
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", snapshot["receipt_sha256"])
                 or (job is not None and job["state"] != "exited")):
-            raise TargetObservationError("retained lease has no verified installed snapshot")
+            raise TargetObservationError("retained lease has no verified installed snapshot", gate="install", retryable=False, custody=_record_custody(attempt))
     if releasing and (preparation["state"] == "preparing"
                       or (job is not None and job["state"] not in {"exited", "cancelled"})):
-        raise TargetObservationError("preparation job remains unresolved; retain the exact lease")
+        raise TargetObservationError("preparation job remains unresolved; retain the exact lease", gate="install", retryable=True, custody=_record_custody(attempt))
 
 
 def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict[str, Any]:
@@ -842,7 +889,7 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
                        for key in ("operation_id", "pod_id", "provider_account_ref"))
                 or any(value.get(key) != lease.get(key) for key in
                        ("owner_epoch", "generation", "invocation_id"))):
-            raise TargetObservationError("release lacks this lease's exact host drain and bridge fence")
+            raise TargetObservationError("release lacks this lease's exact host drain and bridge fence", gate="identity", retryable=False, custody=_record_custody(attempt))
         return dict(value)
     if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.unactivated-quiescence.v1":
         if (attempt.get("schema_version") != "astrid.runpod.allocation-attempt.v1"
@@ -860,38 +907,38 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
                 or any(not value.get(key) or value[key] != attempt.get(key) for key in (
                     "operation_id", "pod_id", "provider_account_ref",
                 ))):
-            raise TargetObservationError("release lacks exclusive unactivated allocation custody")
+            raise TargetObservationError("release lacks exclusive unactivated allocation custody", gate="identity", retryable=False, custody=_record_custody(attempt))
         return dict(value)
     if not isinstance(value, Mapping) or value.get("schema") != "astrid.runpod.worker-quiescence.v1":
-        raise TargetObservationError("release requires exact persisted worker-quiescence evidence")
+        raise TargetObservationError("release requires exact persisted worker-quiescence evidence", gate="identity", retryable=False, custody=_record_custody(attempt))
     if (value.get("operation_id") != attempt.get("operation_id")
             or value.get("pod_id") != attempt.get("pod_id")
             or value.get("provider_account_ref") != attempt.get("provider_account_ref")):
-        raise TargetObservationError("worker-quiescence evidence belongs to another RunPod claim")
+        raise TargetObservationError("worker-quiescence evidence belongs to another RunPod claim", gate="identity", retryable=False, custody=_record_custody(attempt))
     for field in ("task_id", "activation_id", "runtime_instance_id", "runtime_session_id"):
         if not isinstance(value.get(field), str) or not value[field]:
-            raise TargetObservationError(f"worker-quiescence evidence is missing {field}")
+            raise TargetObservationError(f"worker-quiescence evidence is missing {field}", gate="identity", retryable=False, custody=_record_custody(attempt))
     if type(value.get("runtime_epoch")) is not int or value["runtime_epoch"] <= 0:
-        raise TargetObservationError("worker-quiescence evidence has an invalid Runtime epoch")
+        raise TargetObservationError("worker-quiescence evidence has an invalid Runtime epoch", gate="identity", retryable=False, custody=_record_custody(attempt))
     drain = value.get("drain")
     if (not isinstance(drain, Mapping) or drain.get("state") != "complete"
             or drain.get("task_id") != value["task_id"]
             or drain.get("activation_id") != value["activation_id"]):
-        raise TargetObservationError("Runtime did not confirm this exact task activation drain")
+        raise TargetObservationError("Runtime did not confirm this exact task activation drain", gate="identity", retryable=False, custody=_record_custody(attempt))
     stopped = value.get("process_stop")
     if (not isinstance(stopped, Mapping) or stopped.get("stopped") is not True
             or type(stopped.get("pid")) is not int or stopped["pid"] <= 0
             or not all(isinstance(stopped.get(field), str) and stopped[field]
                        for field in ("birth_id", "incarnation"))):
-        raise TargetObservationError("exact managed-worker process stop is not positively recorded")
+        raise TargetObservationError("exact managed-worker process stop is not positively recorded", gate="identity", retryable=False, custody=_record_custody(attempt))
     managed = attempt.get("managed_worker")
     if managed is not None:
         if not isinstance(managed, Mapping):
-            raise TargetObservationError("managed-worker custody is invalid")
+            raise TargetObservationError("managed-worker custody is invalid", gate="identity", retryable=False, custody=_record_custody(attempt))
         qualification = managed.get("activation_qualification")
         process = managed.get("process_handle")
         if not isinstance(qualification, Mapping) or not isinstance(process, Mapping):
-            raise TargetObservationError("managed-worker release identities are missing")
+            raise TargetObservationError("managed-worker release identities are missing", gate="identity", retryable=False, custody=_record_custody(attempt))
         binding = process.get("binding")
         if (not isinstance(binding, Mapping)
                 or any(value.get(key) != qualification.get(key) for key in (
@@ -902,11 +949,11 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
                 or binding.get("pod_id") != attempt.get("pod_id")
                 or binding.get("account_ref") != attempt.get("provider_account_ref")
                 or any(stopped.get(key) != process.get(key) for key in ("pid", "birth_id", "incarnation"))):
-            raise TargetObservationError("quiescence differs from the persisted worker generation")
+            raise TargetObservationError("quiescence differs from the persisted worker generation", gate="identity", retryable=False, custody=_record_custody(attempt))
         if value.get("runtime_drain") != {"state": "drained", "activation_id": value["activation_id"]}:
-            raise TargetObservationError("release lacks the exact Runtime drain response")
+            raise TargetObservationError("release lacks the exact Runtime drain response", gate="identity", retryable=False, custody=_record_custody(attempt))
         if value.get("credential_remove") != {"removed": True}:
-            raise TargetObservationError("release lacks exact remote Runtime credential cleanup evidence")
+            raise TargetObservationError("release lacks exact remote Runtime credential cleanup evidence", gate="identity", retryable=False, custody=_record_custody(attempt))
         fence = value.get("release_fence")
         expected_fence = {
             "retired": True, "operation_id": attempt["operation_id"], "provider": "runpod",
@@ -918,7 +965,7 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
                 or any(fence.get(key) != item for key, item in expected_fence.items())
                 or not isinstance(fence.get("release_fence_digest"), str)
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", fence["release_fence_digest"])):
-            raise TargetObservationError("release lacks the exact physical target fence")
+            raise TargetObservationError("release lacks the exact physical target fence", gate="identity", retryable=False, custody=_record_custody(attempt))
     managed_session = attempt.get("managed_session")
     if managed_session is not None:
         stopped_session = value.get("session_stop")
@@ -929,14 +976,14 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
                 or stopped_session.get("session_ref") != managed_session.get("session_ref")
                 or stopped_session.get("config_digest") != managed_session.get("config_digest")
                 or stopped_session.get("gpu_qualified") is not False):
-            raise TargetObservationError("release lacks exact managed VibeComfy session stop evidence")
+            raise TargetObservationError("release lacks exact managed VibeComfy session stop evidence", gate="identity", retryable=False, custody=_record_custody(attempt))
         if managed_session.get("session_ref") == "comfyui":
             receipt = managed_session.get("receipt")
             if (not isinstance(receipt, Mapping)
                     or stopped_session.get("supervisor_stop") != "original_installation_owner"
                     or any(stopped_session.get(key) != receipt.get(key) or not receipt.get(key)
                            for key in ("daemon_pid", "daemon_birth_id", "comfy_pid", "comfy_birth_id"))):
-                raise TargetObservationError("release lacks original installation supervisor stop evidence")
+                raise TargetObservationError("release lacks original installation supervisor stop evidence", gate="identity", retryable=False, custody=_record_custody(attempt))
     return json.loads(json.dumps(dict(value), sort_keys=True, separators=(",", ":")))
 
 
@@ -953,7 +1000,7 @@ def _validate_absence_receipt(attempt: Mapping[str, Any]) -> None:
             or absence.get("account_list_succeeded") is not True
             or absence.get("account_list_absent") is not True
             or not expected["provider_account_ref"] or not expected["pod_id"]):
-        raise TargetObservationError("completed release lacks independent exact GET404 and account-list absence")
+        raise TargetObservationError("completed release lacks independent exact GET404 and account-list absence", gate="identity", retryable=False, custody=_record_custody(attempt))
 
 
 def _validate_completed_release(attempt: Mapping[str, Any]) -> None:
@@ -967,7 +1014,7 @@ def _validate_completed_release(attempt: Mapping[str, Any]) -> None:
             or cleanup.get("status") not in {"already_gone", "terminated"}
             or attempt.get("cleanup_status") != "complete"
             or attempt.get("reconciliation_required") is not False):
-        raise TargetObservationError("completed release lacks its exact provider cleanup receipt")
+        raise TargetObservationError("completed release lacks its exact provider cleanup receipt", gate="identity", retryable=False, custody=_record_custody(attempt))
 
 
 async def _confirm_release_absence(config: Any, contract: RunPodTargetContract,
@@ -977,7 +1024,7 @@ async def _confirm_release_absence(config: Any, contract: RunPodTargetContract,
     status, body = await asyncio.to_thread(read_exact_pod, config.api_key, contract.pod_id)
     after, volume = await _release_inventory(config, contract)
     if type(status) is not int or status != 404 or body is not None or after is not None:
-        raise TargetObservationError("exact GET404 and successful account-list absence are both required")
+        raise TargetObservationError("exact GET404 and successful account-list absence are both required", gate="identity", retryable=False, custody=_record_custody(attempt))
     return {
         "provider_account_ref": attempt["provider_account_ref"],
         "pod_id": contract.pod_id, "exact_get_status": 404,
@@ -990,11 +1037,11 @@ def _read_release_checkpoint(path: Path, expected: Mapping[str, Any]) -> dict[st
     try:
         current = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise TargetObservationError("release checkpoint cannot be read safely") from exc
+        raise TargetObservationError("release checkpoint cannot be read safely", gate="identity", retryable=False, custody=_record_custody(expected)) from exc
     if (not isinstance(current, dict) or current.get("state") != "release_pending"
             or {k: v for k, v in current.items() if k != "release_progress"}
             != {k: v for k, v in expected.items() if k != "release_progress"}):
-        raise TargetObservationError("release custody changed during its quiescence callback")
+        raise TargetObservationError("release custody changed during its quiescence callback", gate="identity", retryable=False, custody=_record_custody(expected))
     return current
 
 
@@ -1037,10 +1084,11 @@ async def _release_exact_target_after_quiescence(
     operation_id = str(attempt.get("operation_id") or "")
     state = str(attempt.get("state") or "")
     if not operation_id:
-        raise AcquisitionUnresolvedError("release record has no operation ID")
+        raise AcquisitionUnresolvedError("release record has no operation ID", gate="identity", retryable=False, custody=_record_custody(attempt))
     if attempt.get("release_authorized") is not True:
         raise TargetObservationError(
-            "this attached RunPod target has no explicit exclusive release authority"
+            "this attached RunPod target has no explicit exclusive release authority",
+            gate="identity", retryable=False, custody=_record_custody(attempt),
         )
     if not callable(quiesce_worker):
         raise TypeError("quiesce_worker must be the prepared-worker drain owner")
@@ -1048,14 +1096,16 @@ async def _release_exact_target_after_quiescence(
         _validate_completed_release(attempt)
         return attempt
     if state == "claimed" and resume:
-        raise AcquisitionUnresolvedError("a claimed target has no interrupted release to resume")
+        raise AcquisitionUnresolvedError("a claimed target has no interrupted release to resume", gate="identity", retryable=False, custody=_record_custody(attempt))
     if state in {"release_pending", "cleanup_pending"} and not resume:
         raise AcquisitionUnresolvedError(
-            "this target already has an interrupted release; resume that exact release"
+            "this target already has an interrupted release; resume that exact release",
+            gate="identity", retryable=False, custody=_record_custody(attempt),
         )
     if state not in {"claimed", "allocated_unverified", "release_pending", "cleanup_pending"}:
         raise AcquisitionUnresolvedError(
-            f"journal state {state!r} is not a releasable prepared target"
+            f"journal state {state!r} is not a releasable prepared target",
+            gate="identity", retryable=False, custody=_record_custody(attempt),
         )
 
     contract = _release_contract_from_record(attempt)
@@ -1072,7 +1122,8 @@ async def _release_exact_target_after_quiescence(
     if saved_quiescence is not None:
         if not resume:
             raise AcquisitionUnresolvedError(
-                "release already has durable quiescence evidence; resume that exact release"
+                "release already has durable quiescence evidence; resume that exact release",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
             )
         quiescence = _validate_release_quiescence(saved_quiescence, attempt)
     else:
@@ -1223,7 +1274,8 @@ async def acquire_target(
     if pod_id is not None:
         if initial_state != "attachment_pending":
             raise AcquisitionUnresolvedError(
-                f"exact attachment is not a fresh intent (state={initial_state!r}); resume by exact pod ID"
+                f"exact attachment is not a fresh intent (state={initial_state!r}); resume by exact pod ID",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
             )
         requested_pod_id = str(pod_id).strip()
         if not requested_pod_id:
@@ -1249,7 +1301,8 @@ async def acquire_target(
                 raise TargetObservationError(
                     f"RunPod attach returned pod identity "
                     f"({getattr(pod, 'id', None)!r}, {getattr(pod, 'name', None)!r}) "
-                    f"for requested exact pod ({requested_pod_id!r}, {initial.pod_name!r})"
+                    f"for requested exact pod ({requested_pod_id!r}, {initial.pod_name!r})",
+                    gate="identity", retryable=False, custody=_record_custody(attempt),
                 )
         except BaseException as exc:
             unresolved = {
@@ -1272,20 +1325,24 @@ async def acquire_target(
         }:
             raise AcquisitionUnresolvedError(
                 f"allocation intent may already be in flight (state={initial_state!r}); "
-                "reconcile the existing request before another create"
+                "reconcile the existing request before another create",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
             )
         if initial_state != "allocation_ready" and not allow_capacity_retry:
             raise AcquisitionUnresolvedError(
-                "a prior capacity response must be explicitly resumed before another create"
+                "a prior capacity response must be explicitly resumed before another create",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
             )
         create_attempts = attempt.get("create_attempts", 0)
         if isinstance(create_attempts, bool) or not isinstance(create_attempts, int):
             raise AcquisitionUnresolvedError(
-                "allocation journal has an invalid create_attempts count"
+                "allocation journal has an invalid create_attempts count",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
             )
         if initial_state == "allocation_ready" and create_attempts != 0:
             raise AcquisitionUnresolvedError(
-                "allocation journal says a create already started; reconcile it before another create"
+                "allocation journal says a create already started; reconcile it before another create",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
             )
         if (
             initial_state == "capacity_retry_ready" and create_attempts <= 0
@@ -1296,7 +1353,8 @@ async def acquire_target(
             and attempt.get("safe_to_retry") is not True
         ):
             raise AcquisitionUnresolvedError(
-                "allocation journal does not prove the prior capacity response was safe to retry"
+                "allocation journal does not prove the prior capacity response was safe to retry",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
             )
         if max_create_attempts is not None:
             # One lifecycle launch can otherwise walk a GPU x RAM x storage
@@ -1325,7 +1383,7 @@ async def acquire_target(
                 exhausted = {**attempt, "state": "capacity_exhausted", "reconciliation_required": False,
                              "safe_to_retry": True, "completed_at": utc_now_iso()}
                 replace_target_record(handle_path, exhausted, operation_id=operation_id)
-                raise CapacityExhaustedError("capacity_exhausted: create attempt limit reached")
+                raise CapacityExhaustedError("capacity_exhausted: create attempt limit reached", gate="capacity", retryable=False, custody="none")
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -1340,7 +1398,7 @@ async def acquire_target(
                         handle_path, exhausted, operation_id=operation_id
                     )
                     if max_create_attempts is not None:
-                        raise CapacityExhaustedError("capacity_exhausted: capacity window elapsed")
+                        raise CapacityExhaustedError("capacity_exhausted: capacity window elapsed", gate="capacity", retryable=False, custody="none")
                     raise TimeoutError(
                         f"capacity did not appear within {max_wait_seconds}s"
                     )
@@ -1413,7 +1471,7 @@ async def acquire_target(
                 )
                 attempt = retry_ready
                 if single_attempt:
-                    raise CapacityExhaustedError("capacity_unavailable: one definite capacity rejection") from exc
+                    raise CapacityExhaustedError("capacity_unavailable: one definite capacity rejection", gate="capacity", retryable=True, custody="none") from exc
                 if max_create_attempts is not None and attempt["create_attempts"] < max_create_attempts:
                     delay = min(60.0, retry_interval_seconds * 1.5 ** (attempt["create_attempts"] - 1))
                     if deadline is not None:
@@ -1456,10 +1514,13 @@ async def acquire_target(
         if expected_name is not None and str(getattr(pod, "name", "")) != expected_name:
             raise TargetObservationError(
                 f"RunPod launch returned pod name {getattr(pod, 'name', None)!r}; "
-                f"expected exact request name {expected_name!r}"
+                f"expected exact request name {expected_name!r}",
+                gate="identity", retryable=False, custody="exact",
             )
         await pod.wait_ready(timeout=ready_timeout_seconds)
     except BaseException as exc:
+        if isinstance(exc, TargetObservationError):
+            exc.custody = _record_custody(allocated)
         failed = {
             **allocated,
             "state": "allocated_unverified",
@@ -1484,6 +1545,8 @@ async def acquire_target(
             ready_timeout_seconds=ready_timeout_seconds,
         )
     except BaseException as exc:
+        if isinstance(exc, TargetObservationError):
+            exc.custody = _record_custody(allocated)
         failed = {
             **allocated,
             "state": "allocated_unverified",
@@ -1536,7 +1599,8 @@ async def reconcile_target(
         "attached_unverified",
     }:
         raise AcquisitionUnresolvedError(
-            f"journal state {state!r} does not require reconciliation"
+            f"journal state {state!r} does not require reconciliation",
+            gate="identity", retryable=False, custody=_record_custody(attempt),
         )
 
     pod_id = _text(attempt.get("pod_id"))
@@ -1547,7 +1611,8 @@ async def reconcile_target(
         request_name = _text(attempt.get("request_name"))
         if request_name is None:
             raise AcquisitionUnresolvedError(
-                "allocation journal has no exact request name; cannot reconcile"
+                "allocation journal has no exact request name; cannot reconcile",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
             )
         started = {
             **attempt,
@@ -1569,11 +1634,13 @@ async def reconcile_target(
                 handle_path, failed_observation, operation_id=operation_id
             )
             raise AcquisitionUnresolvedError(
-                "RunPod account inventory is unavailable; the original allocation remains unresolved"
+                "RunPod account inventory is unavailable; the original allocation remains unresolved",
+                gate="identity", retryable=True, custody=_record_custody(attempt),
             ) from exc
         if not isinstance(pods, list):
             raise AcquisitionUnresolvedError(
-                "RunPod account inventory returned malformed data; the original allocation remains unresolved"
+                "RunPod account inventory returned malformed data; the original allocation remains unresolved",
+                gate="identity", retryable=True, custody=_record_custody(attempt),
             )
 
         # Count every exact-name match before checking the desired resource
@@ -1598,7 +1665,8 @@ async def reconcile_target(
             replace_target_record(handle_path, unresolved, operation_id=operation_id)
             raise AcquisitionUnresolvedError(
                 f"request {request_name!r} has {len(matches)} exact-name matches; "
-                "preserve custody and retry reconciliation later"
+                "preserve custody and retry reconciliation later",
+                gate="identity", retryable=False, custody=_record_custody(attempt),
             )
 
         pod_id = _text(matches[0].get("id"))
@@ -1612,7 +1680,8 @@ async def reconcile_target(
             }
             replace_target_record(handle_path, unresolved, operation_id=operation_id)
             raise AcquisitionUnresolvedError(
-                "the exact-name provider record has no pod ID; the original allocation remains unresolved"
+                "the exact-name provider record has no pod ID; the original allocation remains unresolved",
+                gate="identity", retryable=True, custody=_record_custody(attempt),
             )
 
     expected_name = _text(attempt.get("name"))
@@ -1652,7 +1721,8 @@ async def reconcile_target(
             raise TargetObservationError(
                 f"RunPod lookup returned pod identity "
                 f"({getattr(pod, 'id', None)!r}, {getattr(pod, 'name', None)!r}) "
-                f"for exact reconciled pod ({pod_id!r}, {expected_name!r})"
+                f"for exact reconciled pod ({pod_id!r}, {expected_name!r})",
+                gate="identity", retryable=False, custody=_record_custody(bound),
             )
     except BaseException as exc:
         _write_target_failure(
