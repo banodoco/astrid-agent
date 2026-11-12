@@ -14098,6 +14098,11 @@ class GenericPackHost:
                         def field(key, default=None):
                             return current.get(key, default) if isinstance(current, Mapping) else getattr(current, key, default)
                         state = field("state", field("status"))
+                        if (state in {"completed", "succeeded", "failed", "cancelled"}
+                                or field("attempt_id") != attempt_id
+                                or field("fence", field("lease_fence")) != body["fence"]
+                                or field("executor_id", self.executor_id) not in (None, self.executor_id)):
+                            _finish_terminal_reconciliation(root, str(task_id), str(attempt_id))
                         if (state != "running" or field("attempt_id") != attempt_id
                                 or field("fence", field("lease_fence")) != body["fence"]
                                 or field("executor_id", self.executor_id) not in (None, self.executor_id)):
@@ -14141,6 +14146,7 @@ class GenericPackHost:
                                     print(f"generic host terminal publication rejected for {task_id}: {rejection}",
                                           file=sys.stderr, flush=True)
                                 raise
+                        _finish_terminal_reconciliation(root, str(task_id), str(attempt_id))
                         print(f"generic host terminal publication recorded for {task_id}", file=sys.stderr, flush=True)
                         resolved = True
                         break
@@ -14151,7 +14157,6 @@ class GenericPackHost:
                 if not resolved:
                     self._unresolved_terminal_publication(root, str(task_id), str(attempt_id), rounds)
                     raise HostError(f"unresolved terminal publication retained at {root}")
-                _finish_terminal_reconciliation(root, str(task_id), str(attempt_id))
                 # Each root owns one attempt. Acknowledging any saved terminal
                 # request also resolves the older requests retained beside it.
                 break
