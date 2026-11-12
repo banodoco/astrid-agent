@@ -112,6 +112,9 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
         identity = loaded_workflow_execution_identity(loaded)
         preparation = ManagedEnginePreparation(task=task_identity, attempt=attempt_identity, mode=align,
             deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine")
+        from astrid.core.generation.engine_custody import declare_engine_log
+
+        declare_engine_log(out, preparation.root, preparation.recipe.engine)
         report = preparation.prepare(workflow, execution_identity=identity, inputs=members,
                                      canonical_workflow=canonical, input_digests=digests)
         if any(path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digests[name]
