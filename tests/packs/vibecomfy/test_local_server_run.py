@@ -721,8 +721,10 @@ def test_trust_absent_auxiliary_asset_is_unverified_in_every_astrid_record(comfy
     from vibecomfy.workflow_bundle import emit_bundle
     loaded = production_engine.load_workflow_path(comfy.workflow, tmp_path / 'author-trust', comfy_url=comfy.url)
     bundle = production_engine._canonical_bundle_value(loaded.resolved)
-    bundle.workflow.metadata['model_assets'] = [{'name': 'absent-aux.bin', 'subdir': 'auxiliary',
-        'url': 'https://example.invalid/absent-aux.bin', 'sha256': 'a' * 64, 'size_bytes': 123}]
+    asset = {'name': 'absent-aux.bin', 'subdir': 'auxiliary',
+        'url': 'https://example.invalid/absent-aux.bin', 'sha256': 'a' * 64, 'size_bytes': 123}
+    bundle.workflow.metadata['model_assets'] = [dict(asset)]
+    bundle.workflow.requirements.models = [dict(asset)]
     canonical = emit_bundle(bundle.workflow, tmp_path / 'trusted-aux/workflow.py', {'operation': 'authored'})
     monkeypatch.setenv('ASTRID_ALIGN', 'trust')
     destination = tmp_path / 'attempt-aux/outputs'
