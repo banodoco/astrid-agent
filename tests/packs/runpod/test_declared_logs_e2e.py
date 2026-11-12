@@ -141,15 +141,20 @@ sys.exit(2)
             host.run_task(task, lease_token='lease-1')
     finally:
         host.shutdown()
-    outputs = runtime.failures[0][3]['outputs']
+    failure_result = runtime.failures[0][3]
 
     class Tasks:
+        """Answers as the real Runtime does for a failed task."""
+
         def list(self, project_id, **kwargs):
             return DomainResult.success([{'task_id': 'task-1'}])
 
-        def list_managed_outputs(self, task_id):
+        def show(self, task_id):
             assert task_id == 'task-1'
-            return DomainResult.success(outputs)
+            return DomainResult.success({'task_id': 'task-1', 'state': 'failed', 'result': failure_result})
+
+        def list_managed_outputs(self, task_id):
+            return DomainResult.success([])  # a failed task commits no managed outputs
 
     parser = build_parser(SimpleNamespace(tasks=Tasks()))
     args = parser.parse_args(['logs', '--project', 'demo', 'task-1'])
