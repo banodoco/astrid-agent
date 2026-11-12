@@ -43,7 +43,7 @@ def test_ruff_findings_exit_one_remains_valid(monkeypatch: pytest.MonkeyPatch) -
         module.subprocess,
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 1, stdout='[{"code": "E501"}]', stderr=""
+            args[0], 1, stdout='[{"code": "E501", "filename": "' + str(Path.cwd() / "example.py") + '"}]', stderr=""
         ),
     )
 
@@ -140,3 +140,73 @@ def test_the_tree_has_exactly_the_baselined_structure_violations() -> None:
     new, fixed = compare(current(), json.loads(BASELINE_PATH.read_text())["violations"])
     assert new == [], f"new structure violations: {new}"
     assert fixed == [], f"fixed violations still in {BASELINE_PATH.name}; regenerate with --write-baseline: {fixed}"
+
+
+@pytest.mark.parametrize(
+    ("current", "baseline", "exit_code", "text"),
+    [(2, 1, 1, "regression"), (1, 0, 1, "baseline=0"), (1, 2, 0, "Ratchet down available")],
+)
+def test_file_code_ratchet(current: int, baseline: int, exit_code: int, text: str) -> None:
+    from scripts.reshape.count_baseline import file_code_verdict
+
+    row = {"path": "astrid/example.py", "code": "F821"}
+    before = [{**row, "count": baseline}] if baseline else []
+    result, message = file_code_verdict([{**row, "count": current}], before)
+    assert result == exit_code
+    assert text in message
+    assert f"baseline={baseline} current={current}" in message
+
+
+@pytest.mark.parametrize("finding_count", [3, 3000])
+def test_mypy_total_does_not_matter_without_a_pair_regression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], finding_count: int
+) -> None:
+    import json
+
+    from scripts.reshape import compare_mypy_baseline
+
+    baseline = tmp_path / "file_code.json"
+    baseline.write_text(json.dumps([{"path": "a.py", "code": "assignment", "count": 1}]))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["compare_mypy_baseline", "--file-code-baseline", str(baseline)],
+    )
+    monkeypatch.setattr(
+        compare_mypy_baseline,
+        "_run",
+        lambda: {
+            "file_code_counts": [{"path": "a.py", "code": "assignment", "count": 1}],
+            "finding_count": finding_count,
+        },
+    )
+
+    assert compare_mypy_baseline.main() == 0
+    output = capsys.readouterr()
+    assert "total" not in output.out.lower() + output.err.lower()
+
+
+def test_mypy_pair_above_baseline_still_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from scripts.reshape import compare_mypy_baseline
+
+    baseline = tmp_path / "file_code.json"
+    baseline.write_text(json.dumps([{"path": "a.py", "code": "assignment", "count": 1}]))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["compare_mypy_baseline", "--file-code-baseline", str(baseline)],
+    )
+    monkeypatch.setattr(
+        compare_mypy_baseline,
+        "_run",
+        lambda: {
+            "file_code_counts": [{"path": "a.py", "code": "assignment", "count": 2}],
+            "finding_count": 2,
+        },
+    )
+
+    assert compare_mypy_baseline.main() == 1
+    output = capsys.readouterr()
+    assert "a.py | assignment: baseline=1 current=2" in output.out

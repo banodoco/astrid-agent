@@ -2452,9 +2452,11 @@ _TASK_OUTPUT_DIAGNOSTIC_NAMES = frozenset(
 )
 
 
-def _attempt_tree_bytes(root: Path) -> int:
+def _attempt_tree_bytes(root: Path, *, excluded_roots: tuple[Path, ...] = ()) -> int:
     """Count owned attempt bytes without following symlink escapes."""
     total = 0
+    resolved_root = root.resolve()
+    excluded = tuple(path.resolve() for path in excluded_roots)
     try:
         for path in root.rglob("*"):
             # Renderers may remove completed frame files or workspaces while
@@ -2463,6 +2465,8 @@ def _attempt_tree_bytes(root: Path) -> int:
             # race, not a renderer failure.
             try:
                 if path.is_symlink() or not path.is_file():
+                    continue
+                if any((resolved_root / path.relative_to(root)).is_relative_to(item) for item in excluded):
                     continue
                 if path.parent == root and path.name in _TASK_OUTPUT_DIAGNOSTIC_NAMES:
                     continue
@@ -2476,11 +2480,13 @@ def _attempt_tree_bytes(root: Path) -> int:
     return total
 
 
-def _storage_tree_bytes(root: Path) -> int:
+def _storage_tree_bytes(root: Path, *, excluded_roots: tuple[Path, ...] = ()) -> int:
     """Count regular files in a bounded subtree without following symlinks."""
     if not root.is_dir():
         return 0
     total = 0
+    resolved_root = root.resolve()
+    excluded = tuple(path.resolve() for path in excluded_roots)
     try:
         for path in root.rglob("*"):
             # Atomic writers use sibling ``*.tmp`` files.  Those bytes are
@@ -2491,6 +2497,8 @@ def _storage_tree_bytes(root: Path) -> int:
             # absent from this point-in-time accounting sample.
             try:
                 if path.is_symlink() or not path.is_file() or path.name.endswith(".tmp"):
+                    continue
+                if any((resolved_root / path.relative_to(root)).is_relative_to(item) for item in excluded):
                     continue
                 total += int(path.stat().st_size)
             except FileNotFoundError:
@@ -4330,16 +4338,36 @@ def _task_storage_limits(task_data: Mapping[str, Any]) -> dict[str, int] | None:
 
 
 def _render_media_roots(root: Path) -> tuple[Path, ...]:
-    """Keep render media out of the diagnostic evidence budget.
-
-    These files are protected by actual volume space. Logs and other evidence
-    retain the existing per-attempt and concurrent retained-root caps.
-    """
+    """Keep render media out of the diagnostic evidence budget."""
     return tuple(
         path for path in root.iterdir()
         if path.name in {"inputs", "managed-objects", "outputs", "render-inputs"}
         or any(marker in path.name for marker in _RENDERER_WORKSPACE_MARKERS)
     )
+
+
+def _collected_log_roots(output_root: Path) -> tuple[Path, ...]:
+    """Logs have their own collection bound and do not consume task evidence/output budgets."""
+    excluded = {
+        (output_root / "logs").resolve(),
+        (output_root / "logs.json").resolve(),
+        (output_root / ".host-logs" / "logs.json").resolve(),
+        (output_root / "job.stdout").resolve(),
+        (output_root / "job.stderr").resolve(),
+    }
+    try:
+        from astrid.core._shared import run_logs
+
+        boundary = output_root.resolve()
+        for declaration_root in (output_root, output_root / ".host-logs"):
+            for _declaration, source in run_logs.read_declared(declaration_root):
+                resolved = source.resolve()
+                if (resolved.is_relative_to(boundary) and source.is_file()
+                        and not source.is_symlink()):
+                    excluded.add(resolved)
+    except Exception:  # noqa: BLE001 - malformed optional logs remain best effort
+        pass
+    return tuple(sorted(excluded, key=str))
 
 
 def _assert_live_storage_envelope(
@@ -4367,8 +4395,9 @@ def _assert_live_storage_envelope(
             )
     if estimate is None:
         return
-    total_bytes = _attempt_tree_bytes(root)
-    output_bytes = _storage_tree_bytes(output_root)
+    log_roots = _collected_log_roots(output_root)
+    output_bytes = _storage_tree_bytes(output_root, excluded_roots=log_roots)
+    total_bytes = _attempt_tree_bytes(root, excluded_roots=log_roots)
     scratch_bytes = max(0, total_bytes - output_bytes)
     if output_bytes > int(estimate["output_bytes"]):
         diagnostic = {
@@ -4432,14 +4461,19 @@ def _task_storage_envelope(
     # published result manifest and any undeclared stable file, while treating
     # atomic writer temporaries as scratch.  The latter prevents the estimate
     # from changing meaning between polling and final settlement.
+    excluded_logs = tuple(path.resolve() for path in _collected_log_roots(output_root))
     stable_output_paths = {
         path.resolve()
         for path in output_root.rglob("*")
         if not path.is_symlink() and path.is_file() and not path.name.endswith(".tmp")
+        and not any(path.resolve().is_relative_to(log_root) for log_root in excluded_logs)
     }
-    output_paths = stable_output_paths | published_paths
+    output_paths = stable_output_paths | {
+        path for path in published_paths
+        if not any(path.is_relative_to(log_root) for log_root in excluded_logs)
+    }
     output_bytes = sum(int(path.stat().st_size) for path in output_paths)
-    total_bytes = _attempt_tree_bytes(root)
+    total_bytes = _attempt_tree_bytes(root, excluded_roots=_collected_log_roots(output_root))
     scratch_bytes = max(0, total_bytes - output_bytes)
     limits = _task_storage_limits(task_data)
     if limits is not None and output_bytes > output_limit:
@@ -9566,7 +9600,9 @@ class GenericPackHost:
             # creative publication into an output-budget failure just because
             # its enhancement would exceed the already-admitted envelope.
             if storage_estimate is not None:
-                output_bytes = _storage_tree_bytes(output_root)
+                output_bytes = _storage_tree_bytes(
+                    output_root, excluded_roots=_collected_log_roots(output_root)
+                )
                 if output_bytes > int(storage_estimate["output_bytes"]):
                     destination.unlink(missing_ok=True)
                     continue
@@ -9951,10 +9987,20 @@ class GenericPackHost:
         try:
             from astrid.core._shared import run_logs
 
-            if (output_root / "logs.json").exists():
-                run_logs.collect(output_root)
+            # Machine fetches can bring their own logs.json and collected
+            # index. Host child declarations live separately so fetched files
+            # cannot replace them; merge both sources in one collection pass.
+            run_logs.collect(output_root, extra_root=output_root / ".host-logs")
             outputs = []
             for row in run_logs.read_index(output_root):
+                if row.get("reason") == "duplicate_name":
+                    if warnings is not None:
+                        warnings.append(
+                            "log declaration conflict for "
+                            f"{row.get('name', 'unknown')}: {row.get('first_source', 'unknown')} and "
+                            f"{row.get('source', 'unknown')}"
+                        )
+                    continue
                 if row.get("missing"):
                     continue
                 name, filename = row["name"], row["file"]
@@ -10428,12 +10474,14 @@ class GenericPackHost:
             launch = popen_owned_group if render_scope else spawn_task_scope
             from astrid.core._shared import run_logs
 
+            host_log_root = output_root / ".host-logs"
             for stream_name in ("stdout", "stderr"):
                 path = output_root / f"job.{stream_name}"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.touch(exist_ok=True)
-                run_logs.declare(output_root, run_logs.LogDecl(
-                    name=path.name, role=stream_name, path=path.name,
+                host_log_root.mkdir(parents=True, exist_ok=True)
+                run_logs.declare(host_log_root, run_logs.LogDecl(
+                    name=path.name, role=stream_name, path=str(path.resolve()),
                 ))
             process = launch(
                 _network_sandbox_argv(argv, attempt, broker_endpoint), cwd=str(cwd), env=env,
@@ -12233,7 +12281,7 @@ class GenericPackHost:
                         evidence_root,
                         immutable_inputs=immutable_input_baseline,
                         cap_bytes=attempt_evidence_cap,
-                        excluded_roots=output_capture_paths + (
+                        excluded_roots=output_capture_paths + _collected_log_roots(root / "outputs") + (
                             _render_media_roots(root) if capability_id == "rendering.render" else ()
                         ),
                     )
@@ -12974,7 +13022,7 @@ class GenericPackHost:
                     root,
                     immutable_inputs=immutable_input_baseline,
                     cap_bytes=attempt_evidence_cap,
-                    excluded_roots=output_capture_paths + (
+                    excluded_roots=output_capture_paths + _collected_log_roots(root / "outputs") + (
                         _render_media_roots(root) if capability_id == "rendering.render" else ()
                     ),
                 )

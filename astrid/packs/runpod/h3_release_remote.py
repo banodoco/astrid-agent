@@ -244,10 +244,8 @@ assert not torch.cuda.is_initialized()
             "requirements_lock_sha256": digest(lock), "gpu_qualified": False})
 
     def launch(self):
-        configuration = self.runtime / "extra_model_paths.yaml"
-        text = "h3_release:\n  base_path: " + json.dumps(str(self.root / "models")) + "\n"
-        text += "".join(f"  {name}: {name}\n" for name in ("diffusion_models", "text_encoders", "vae", "loras"))
-        configuration.write_text(text)
+        models = self.root / "models"
+        models.mkdir(parents=True, exist_ok=True)
         launcher = self.runtime / "launch-comfy.sh"
         # Same pycache prefix as the engine's local ComfyUI launch (start_request).
         pycache = engine_process_env({}, str(self.root))["PYTHONPYCACHEPREFIX"]
@@ -257,7 +255,7 @@ RUNTIME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export VIBECOMFY_HEADLESS=1
 export PYTHONPYCACHEPREFIX=''' + shlex.quote(pycache) + '''
 cd "$RUNTIME/ComfyUI"
-exec "$RUNTIME/venv/bin/python" main.py --listen 0.0.0.0 --port 8188 --extra-model-paths-config "$RUNTIME/extra_model_paths.yaml" "$@"
+exec "$RUNTIME/venv/bin/python" main.py --listen 0.0.0.0 --port 8188 --models-directory ''' + shlex.quote(str(models)) + ''' "$@"
 '''
         if not launcher.is_file() or launcher.read_text() != script:
             launcher.write_text(script)

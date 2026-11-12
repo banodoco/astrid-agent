@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.core.generation.engine_contracts import EngineReinstallRequired, HealthEvidence, LocalAttestation, UnsafePathError
+from astrid.core.generation.engine_contracts import HealthEvidence, LocalAttestation, UnsafePathError
 from astrid.core.generation.engine_endpoint import endpoint_to_dict, parse_endpoint
 from astrid.core.generation.engine_local_endpoint import (
     ENGINE_ROOT_ENV,
@@ -80,11 +80,12 @@ def test_missing_or_unhealthy_engine_fails_fast_with_next_action(tmp_path, overr
     assert "astrid engines install comfyui" in str(caught.value)
 
 
-def test_stale_helper_status_preserves_reinstall_refusal(tmp_path):
+def test_stale_install_status_has_actionable_install_recovery(tmp_path):
     root, _ = _root(tmp_path)
-    with pytest.raises(EngineReinstallRequired):
+    with pytest.raises(EngineNotInstalled) as caught:
         local_engine_endpoint(ENGINE, platform=PLATFORM, root=str(root), context=object(),
-                              status=_status(status="failed", error_code="engine_reinstall_required"))
+                              status=_status(status="failed", error_code="integrity_failed"))
+    assert caught.value.next_action == "astrid engines install comfyui"
 
 
 def _engine_at(path):

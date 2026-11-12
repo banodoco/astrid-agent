@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 from astrid.core.cli.domain_tasks import COMMANDS, build_parser
 from astrid.sdk.contracts import DomainResult
@@ -115,3 +121,61 @@ def test_fake_client_matches_the_real_sdk_surface():
 
     assert callable(getattr(RemoteTasks, "show", None))
     assert callable(getattr(RemoteMedia, "read_bytes", None))
+
+
+@pytest.mark.parametrize("explicit,expected", [(None, "selected"), ("override", "override")])
+def test_logs_uses_selected_or_explicit_project(explicit, expected, capsys):
+    client = FakeClient(outputs())
+    client.projects = type("Projects", (), {"current": lambda self: DomainResult.success(
+        {"project": {"project_id": "selected"}})})()
+    seen = []
+    original = client.tasks.list
+    client.tasks.list = lambda project_id, **kwargs: (seen.append(project_id) or original(project_id, **kwargs))
+    args = ["logs", TASK_ID[:12]]
+    if explicit:
+        args += ["--project", explicit]
+    parsed = build_parser(client).parse_args(args)
+    assert parsed.handler(parsed) == 0
+    assert seen == [expected]
+    assert "engine" in capsys.readouterr().out
+
+
+def test_logs_without_selection_names_the_fix(capsys):
+    client = FakeClient(outputs())
+    client.projects = type("Projects", (), {"current": lambda self: DomainResult.success({"project": None})})()
+    with pytest.raises(SystemExit) as exc:
+        build_parser(client).parse_args(["logs", TASK_ID])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "astrid projects select <id>" in err and "--project" in err
+
+
+def test_logs_without_project_at_module_entrypoint(tmp_path):
+    repo = Path(__file__).resolve().parents[3]
+    (tmp_path / "sitecustomize.py").write_text(
+        "from contextlib import nullcontext\n"
+        "from astrid.sdk.client import AstridClient\n"
+        "from astrid.sdk.contracts import DomainResult\n"
+        "class Projects:\n"
+        "  def current(self): return DomainResult.success({'project': {'project_id': 'selected'}})\n"
+        "class Tasks:\n"
+        "  def list(self, project, **kwargs):\n"
+        "    assert project == 'selected'\n"
+        f"    return DomainResult.success([{{'task_id': '{TASK_ID}'}}])\n"
+        "  def show(self, task):\n"
+        "    return DomainResult.success({'result': {'outputs': [{'role': 'log', 'filename': 'worker.log'}]}})\n"
+        "class Client:\n"
+        "  projects = Projects()\n"
+        "  tasks = Tasks()\n"
+        "AstridClient.open_from_launcher = classmethod(lambda cls, **kwargs: nullcontext(Client()))\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(repo)))
+    env["HOME"] = str(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-m", "astrid", "tasks", "logs", TASK_ID[:12]],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "worker.log" in result.stdout

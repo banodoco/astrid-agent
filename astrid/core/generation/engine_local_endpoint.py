@@ -25,7 +25,6 @@ from .engine_contracts import (
     EndpointOwnershipError,
     EngineEndpoint,
     EngineError,
-    EngineReinstallRequired,
     HealthEvidence,
     LifecycleOwner,
     LocalAttestation,
@@ -64,7 +63,7 @@ class EngineNotInstalled(EngineError):
     def __init__(self, engine: str, reason: str):
         self.next_action = f"astrid engines install {engine}"
         self.reason_code = _READINESS_REASON_CODES.get(reason, "engine_not_ready")
-        super().__init__(f"engine {engine} is not ready locally ({reason}); run: {self.next_action}")
+        super().__init__(f"engine {engine} is not installed or is stale ({reason}); run: {self.next_action}")
 
 
 class EntryAssetsNotReady(EngineError):
@@ -195,14 +194,6 @@ def _installed_receipt(
         raise EngineNotInstalled(engine, "no install receipt")
     if receipt.status == "failed" and getattr(receipt, "error_code", None) == EndpointOwnershipError.code:
         raise EndpointOwnershipError("engine port or supervisor is not owned by this installation")
-    if receipt.status == "failed" and getattr(receipt, "error_code", None) == EngineReinstallRequired.code:
-        from .engine_recipe import load_recipe
-        recipe = load_recipe(engine, platform)
-        step = getattr(receipt, "failed_step_id", None)
-        environment = next((e.name for e in recipe.environments if step == "environment:" + e.name),
-                           recipe.primary_environment)
-        raise EngineReinstallRequired.for_install(engine=engine, platform=platform, root=root,
-            environment=environment, step_id=step)
     health = receipt.health
     if (receipt.status != "installed" or health is None or health.status != "healthy"
             or health.required_nodes_present is not True or not health.object_info_sha256):

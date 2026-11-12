@@ -1605,6 +1605,7 @@ class RunPodRemoteWorkerPreparer:
             _parse_receipt,
             plan_from_receipt,
             plan_install,
+            require_current_receipt,
         )
 
         from .worker_preparation import create_target_record_exclusive
@@ -1662,7 +1663,8 @@ class RunPodRemoteWorkerPreparer:
         installed_path = root + "/.astrid-engine/install.json"
         installed_bytes = read_file(installed_path, deadline=deadline)
         installed = _parse_receipt(_load(installed_bytes), plan_install(recipe, root=root, placement="local"))
-        plan_from_receipt(recipe, installed, root=root, placement="local")
+        plan = plan_from_receipt(recipe, installed, root=root, placement="local")
+        require_current_receipt(installed, plan, recipe)
         if installed.status != "installed" or installed.health is None or installed.health.status != "healthy":
             raise AttestationError("canonical installed endpoint receipt is unavailable")
         registry = selection.runtime_root + "/out/sessions/" + selection.session_ref

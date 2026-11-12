@@ -467,6 +467,31 @@ def test_ensure_reuses_one_original_claim_slot(prepared, network, local_tls):
     assert len(network["upstream"]) == 1
 
 
+@pytest.mark.parametrize("stale_field", ["recipe", "step-layout"])
+def test_prepared_endpoint_refuses_stale_install_evidence(prepared, network, local_tls, stale_field):
+    from astrid.core.generation.engine_contracts import IntegrityError
+
+    p = prepared
+    receipt = dict(p.receipt)
+    if stale_field == "recipe":
+        receipt["recipe_sha256"] = "e" * 64
+    else:
+        # Structural parsing permits a well-formed but obsolete step projection.
+        receipt["steps"] = [dict(row) for row in receipt["steps"]]
+        receipt["steps"][0]["id"] = "retired-source-step"
+    receipt_bytes = encoded(receipt)
+    receipt_sha = hashlib.sha256(receipt_bytes).hexdigest()
+    p.profile["engine_identity"]["receipt_sha256"] = receipt_sha
+    p.profile["endpoint_evidence"]["claim_attestation"]["install_receipt_sha256"] = receipt_sha
+    p.files[p.profile["endpoint_evidence"]["claim_attestation"]["install_receipt_path"]] = receipt_bytes
+    profile_bytes = encoded(p.profile)
+    p.host.reference.readiness_profile_hash = "sha256:" + hashlib.sha256(profile_bytes).hexdigest()
+    p.files[str(p.host.reference.readiness_profile_path)] = profile_bytes
+    with pytest.raises(IntegrityError, match="installed but stale.*astrid engines install"):
+        p.inspector.ensure_endpoint(p.host, **p.kwargs)
+    assert network["upstream"] == []
+
+
 @pytest.mark.parametrize("field", ["operation_id", "provider_account_ref", "pod_id", "network_volume_id",
                                     "network_volume_name", "network_volume_size_gb", "network_volume_datacenter_id", "volume_mount_path"])
 def test_claim_drift_refuses_before_bearer_send(prepared, network, local_tls, field):

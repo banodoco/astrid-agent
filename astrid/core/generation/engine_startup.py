@@ -167,12 +167,18 @@ def _run(argv, *, cwd, env, deadline, logs, stop_event, on_started=None):
 
 def _validate_output(raw, *, root, rerun):
     from .engine_recipe import load_recipe
-    from .engine_runner import _parse_receipt, plan_from_receipt, plan_install
+    from .engine_runner import (
+        _parse_receipt,
+        plan_from_receipt,
+        plan_install,
+        require_current_receipt,
+    )
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     plan = plan_install(recipe, root=str(root), placement='local')
     value = json.loads(raw)
     receipt = _parse_receipt(value, plan)
-    plan_from_receipt(recipe, receipt, root=str(root), placement='local')
+    plan = plan_from_receipt(recipe, receipt, root=str(root), placement='local')
+    require_current_receipt(receipt, plan, recipe)
     if receipt.status != 'installed':
         raise ValueError('canonical operation did not return an installed receipt')
     if rerun and any(s.action != 'skipped' or s.validation != 'passed' for s in receipt.steps):

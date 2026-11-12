@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from ._engine_target_files import _FILE_FLAGS, _check, _parts, _TargetFiles
-from .engine_contracts import EngineError, effective_models_root
+from .engine_contracts import EngineError, IntegrityError, effective_models_root
 
 SCHEMA = "hc03-worker-readiness.v1"
 ENGINE = "comfyui"
@@ -714,7 +714,13 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
 
     from . import engine_recipe
     from .engine_platforms import LinuxPlatformAdapter
-    from .engine_runner import _parse_receipt, _root, plan_from_receipt, plan_install
+    from .engine_runner import (
+        _parse_receipt,
+        _root,
+        plan_from_receipt,
+        plan_install,
+        require_current_receipt,
+    )
 
     _check(deadline)
     if engine not in {ENGINE, "comfyui"}:
@@ -733,12 +739,19 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
     transport = LocalInstalledVibeComfySessionTransport(platform=PLATFORM, engine=engine)
     try:
         # 1. Canonical receipt + installer registry; then the same A2 session live.
+        try:
+            receipt_bytes = transport._read(root, receipt_path, deadline)
+            receipt = _parse_receipt(_strict_json(receipt_bytes), plan)
+            plan = plan_from_receipt(recipe, receipt, root=root, placement="local")
+        except (EngineError, OSError, ValueError):
+            raise ReadinessError("installed session evidence could not be verified") from None
+        try:
+            require_current_receipt(receipt, plan, recipe)
+        except IntegrityError as exc:
+            raise ReadinessError(str(exc)) from None
         installed = transport.read_installed(runtime_root)
-        receipt_bytes = transport._read(root, receipt_path, deadline)
         marker_bytes = transport._read(root, registry + "/launch.json", deadline)
         config_bytes = transport._read(root, registry + "/config.json", deadline)
-        receipt = _parse_receipt(_strict_json(receipt_bytes), plan)
-        plan = plan_from_receipt(recipe, receipt, root=root, placement="local")
         marker = _strict_json(marker_bytes)
         token = marker.get("launch_token")
         if (receipt.status != "installed" or receipt.qualified is not False or not isinstance(token, str)

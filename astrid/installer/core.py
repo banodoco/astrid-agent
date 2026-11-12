@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .launcher import install as install_launcher
 from .launcher import install_runtime
+from .progress import phase
 from .support import HELP_MESSAGE
 
 
@@ -247,6 +248,15 @@ def update_required(mode: str, manifest: dict, old: Version, *, managed_by: str 
     return mode == "update" or release > old.release
 
 
+def release_name(release: int) -> str:
+    """How the installer's phase lines name a release; a release-less manifest is just Astrid."""
+    return f"Release {release}" if release else "Astrid"
+
+
+def version_name(version) -> str:
+    return release_name(getattr(version, "release", 0))
+
+
 def current(root: Path) -> Version | None:
     pointer = root / "current"
     if not pointer.exists():
@@ -387,10 +397,22 @@ class Installer:
         self.backend.register(version, self.data)
         if self.managed_by != "pinokio":
             self._observe_autostart()
-            self.backend.start(version, self.data)
-            self.backend.verify(version, self.data, realm_id)
+            with self._phase(f"Starting {version_name(version)}"):
+                self.backend.start(version, self.data)
+            with self._phase(f"Checking {version_name(version)} started"):
+                self.backend.verify(version, self.data, realm_id)
         elif self.backend.workspace(version, self.data)["realm_id"] != realm_id:
             raise VerificationError("The installed workspace identity changed.")
+
+    def _phase(self, text: str):
+        """One slow step a person cares about: a line, alive while it runs on a terminal."""
+        return phase(self.say, text)
+
+    def _stop(self, version: Version | None, data: Path):
+        if version is None:
+            return self.backend.stop(version, data)
+        with self._phase(f"Stopping {version_name(version)}"):
+            return self.backend.stop(version, data)
 
     def _observe_autostart(self) -> None:
         # Registration is distinct from the Runtime's readiness. Observation
@@ -740,7 +762,7 @@ class Installer:
         if not old and has_workspace and not reinstall:
             raise ValueError("An existing workspace has no usable source profile; repair its profile before installing.")
         if old:
-            self.say("Installing Astrid.")
+            new = release_name(install_release(manifest))
             same_schema = False
             prepared_candidate: Version | None = None
 
@@ -748,31 +770,39 @@ class Installer:
                 nonlocal prepared_candidate, same_schema
                 if prepared_candidate is not None:
                     return prepared_candidate
-                candidate = self.backend.stage(manifest, self.root, self.data)
-                self.backend.validate_candidate(candidate, self.data, realm)
-                same_schema = schema_unchanged(self.backend, old, candidate, realm)
+                with self._phase(f"Downloading {new}"):
+                    candidate = self.backend.stage(manifest, self.root, self.data)
+                with self._phase("Checking it"):
+                    self.backend.validate_candidate(candidate, self.data, realm)
+                    same_schema = schema_unchanged(self.backend, old, candidate, realm)
                 prepared_candidate = candidate
                 return candidate
 
+            def back_up(version: Version, data: Path, selected_realm: dict) -> dict:
+                with self._phase("Backing up your workspace"):
+                    return self.backend.backup(version, data, selected_realm)
+
             def migrate(candidate: Version, data: Path, _realm: dict) -> None:
-                self.say("Updating the workspace with Astrid Runtime.")
-                self.backend.upgrade(candidate, data)
-                # upgrade owns its temporary daemon; return ownership to the
-                # selected login service before switching versions.
-                self.backend.stop(candidate, data)
+                with self._phase("Updating your workspace"):
+                    self.backend.upgrade(candidate, data)
+                    # upgrade owns its temporary daemon; return ownership to the
+                    # selected login service before switching versions.
+                    self.backend.stop(candidate, data)
 
             def select(candidate: Version) -> None:
                 switch(self.root, candidate)
 
             def activate(candidate: Version, data: Path, selected_realm: dict) -> None:
-                self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid.")
-                self.backend.register(candidate, data)
+                with self._phase("Finishing up." if self.managed_by == "pinokio" else f"Starting {new}"):
+                    self.backend.register(candidate, data)
+                    if self.managed_by != "pinokio":
+                        self._observe_autostart()
+                    self.outcomes["startup"] = "configured; readiness not confirmed"
+                    if self.managed_by != "pinokio":
+                        self.backend.start(candidate, data)
                 if self.managed_by != "pinokio":
-                    self._observe_autostart()
-                self.outcomes["startup"] = "configured; readiness not confirmed"
-                if self.managed_by != "pinokio":
-                    self.backend.start(candidate, data)
-                    self.backend.verify(candidate, data, selected_realm["realm_id"])
+                    with self._phase(f"Checking {new} started"):
+                        self.backend.verify(candidate, data, selected_realm["realm_id"])
                     self.outcomes["startup"] = "running and ready"
                 elif self.backend.workspace(candidate, data)["realm_id"] != selected_realm["realm_id"]:
                     raise VerificationError("The installed workspace identity changed.")
@@ -797,12 +827,12 @@ class Installer:
             # the shared runner receives its callbacks as concrete values.
             prepare()
             self._run_update_transaction(
-                old, realm, prepare=prepare, stop=self.backend.stop,
+                old, realm, prepare=prepare, stop=self._stop,
                 switch_candidate=select, switch_old=select_old,
                 activate=activate,
                 activate_old=lambda previous, _data, selected_realm: self._activate(
                     previous, selected_realm["realm_id"]),
-                backup=None if same_schema else self.backend.backup,
+                backup=None if same_schema else back_up,
                 migrate=None if same_schema else migrate, kind="migration",
             )
             backup_image = getattr(self, "_last_update_backup", None)
@@ -813,24 +843,28 @@ class Installer:
 
         candidate_version: Version | None = None
         backup = None
+        new = release_name(install_release(manifest))
         try:
-            self.say("Installing Astrid.")
-            candidate_version = self.backend.stage(manifest, self.root, self.data)
+            with self._phase(f"Downloading {new}"):
+                candidate_version = self.backend.stage(manifest, self.root, self.data)
             if reinstall:
-                realm = self.backend.attach_existing(candidate_version, self.data)
+                with self._phase("Opening your workspace"):
+                    realm = self.backend.attach_existing(candidate_version, self.data)
             else:
-                realm = self.backend.create(candidate_version, self.data)
+                with self._phase("Creating your workspace"):
+                    realm = self.backend.create(candidate_version, self.data)
             switch(self.root, candidate_version)
-            self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid.")
-            self.backend.register(candidate_version, self.data)
+            with self._phase("Finishing up." if self.managed_by == "pinokio" else f"Starting {new}"):
+                self.backend.register(candidate_version, self.data)
+                if self.managed_by != "pinokio":
+                    self._observe_autostart()
+                self.outcomes["startup"] = "configured; readiness not confirmed"
+                install_launcher(self.root)
+                if self.managed_by != "pinokio":
+                    self.backend.start(candidate_version, self.data)
             if self.managed_by != "pinokio":
-                self._observe_autostart()
-            self.outcomes["startup"] = "configured; readiness not confirmed"
-            install_launcher(self.root)
-            if self.managed_by != "pinokio":
-                self.backend.start(candidate_version, self.data)
-            if self.managed_by != "pinokio":
-                self.backend.verify(candidate_version, self.data, realm["realm_id"])
+                with self._phase(f"Checking {new} started"):
+                    self.backend.verify(candidate_version, self.data, realm["realm_id"])
                 self.outcomes["startup"] = "running and ready"
             else:
                 self.outcomes["startup"] = "registered; Pinokio owns startup"

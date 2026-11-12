@@ -548,7 +548,8 @@ def _ordinary_command_custody(custody) -> bool:
             and isinstance(broker, RoleBoundCustodyBroker) and broker.role == "command")
 
 
-def observe_tree(process: subprocess.Popen, *, deadline: float | None = None) -> dict[int, str]:
+def observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
+                 _transaction=None) -> dict[int, str]:
     """Remember birth-fenced ancestry while parents still exist, across sessions.
 
     An empty or failed census is never evidence of absence.
@@ -564,17 +565,18 @@ def observe_tree(process: subprocess.Popen, *, deadline: float | None = None) ->
     ordinary = _ordinary_command_custody(custody)
     bounded = (isinstance(custody, ProcessCustody) and sys.platform == "darwin"
                and (ordinary or deadline is not None))
-    if ordinary:
+    if ordinary and _transaction is None:
         deadline = _candidate_reconciliation_deadline(deadline)
     # Serialize census bookkeeping with registration and concurrent cleanup.
     try:
-        guard = (custody._observation_guard(deadline) if bounded
+        guard = (custody._observation_guard(deadline, transaction=_transaction) if bounded
                  else getattr(custody, "_lock", nullcontext()))
-        with guard:
+        with guard as transaction:
             uncertainty = getattr(process, "_astrid_tree_uncertain", None)
             if uncertainty is not None:
                 raise CleanupUncertainError(uncertainty)
-            return _observe_tree(process, deadline=deadline if bounded else None)
+            return _observe_tree(process, deadline=deadline if bounded else None,
+                                 _transaction=transaction if bounded else None)
     except CustodyLockBusy:
         raise  # lock never taken: no observation, no uncertainty
     except BaseException as exc:
@@ -583,7 +585,8 @@ def observe_tree(process: subprocess.Popen, *, deadline: float | None = None) ->
         raise
 
 
-def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None) -> dict[int, str]:
+def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
+                  _transaction=None) -> dict[int, str]:
     snapshot = _process_snapshot()
     if not snapshot:
         raise CleanupUncertainError(_census_message("owned process census unavailable", snapshot))
@@ -628,6 +631,7 @@ def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None) -
             live, census=_census_evidence(snapshot),
             fresh_census=lambda: _census_evidence(_process_snapshot()),
             **({"deadline": deadline} if deadline is not None else {}),
+            **({"_transaction": _transaction} if _transaction is not None else {}),
         )
         # Fresh reconciliation observations must survive subsequent reparenting.
         known.update({pid: birth for pid, (birth, _) in custody._handles.items()})
@@ -677,8 +681,8 @@ def _verify_tree_absent(process: subprocess.Popen, *, deadline: float | None = N
         deadline = _candidate_reconciliation_deadline(deadline)
     guard = (custody._observation_guard(deadline) if bounded
              else getattr(custody, "_lock", nullcontext()))
-    with guard:
-        if observe_tree(process, **({"deadline": deadline} if bounded else {})):
+    with guard as transaction:
+        if observe_tree(process, **({"deadline": deadline, "_transaction": transaction} if bounded else {})):
             raise CleanupUncertainError("owned command descendants remain")
         if isinstance(custody, ProcessCustody) or hasattr(process, "_astrid_process_group_id"):
             snapshot = _process_snapshot()
