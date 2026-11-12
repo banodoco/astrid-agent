@@ -1124,7 +1124,7 @@ def test_update_on_a_terminal_leaves_one_checked_line_per_phase(tmp_path):
 
     terminal = Terminal()
     Installer(root, data, SameSchemaBackend(root, data),
-              say=Progress(terminal, interval=0.001)).run("install", {"release": 12})
+              say=Progress(terminal, interval=0.001, columns=lambda: 80)).run("install", {"release": 12})
 
     shown = []
     for line in terminal.getvalue().split("\n"):
@@ -1180,7 +1180,7 @@ def _update_with(tmp_path, say, *, fail_start: bool):
 
     backend = Backend(root, data)
     if not callable(say):
-        say = Progress(say, interval=0.001)
+        say = Progress(say, interval=0.001, columns=lambda: 80)
     failure = None
     try:
         Installer(root, data, backend, say=say).run("update", {"release": 12})

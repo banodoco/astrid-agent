@@ -14,6 +14,10 @@ from astrid.installer.progress import ASCII, HINT, UNICODE, Progress, frames, ph
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
+def WIDE():
+    return 80  # an 80-column terminal
+
+
 class Terminal(io.StringIO):
     """A UTF-8 interactive terminal stand-in that records every write."""
 
@@ -108,7 +112,7 @@ def test_bootstrap_hint_applies_only_to_its_relay_pipe(tmp_path):
 
 def test_non_terminal_output_has_plain_lines_without_frames_or_controls():
     output = io.StringIO()
-    say = Progress(output, interval=0.001)
+    say = Progress(output, interval=0.001, columns=WIDE)
     assert say.tracks is None
     say("Using your workspace at /tmp/w.")
     with say.phase("Downloading Release 12"):
@@ -145,7 +149,7 @@ def _rendered(text: str) -> list[str]:
 
 def test_terminal_phase_animates_and_ends_in_a_clean_checked_line():
     output = Terminal()
-    say = Progress(output, interval=0.001)
+    say = Progress(output, interval=0.001, columns=WIDE)
     assert say.tracks == UNICODE
     with say.phase("Downloading Release 12"):
         threading.Event().wait(0.1)
@@ -154,12 +158,13 @@ def test_terminal_phase_animates_and_ends_in_a_clean_checked_line():
     # It drew the stream from tick 0, stepping back over the tracks' 11 cells each tick.
     assert "Downloading Release 12 " + " " * 11 + "".join("\b" * 11 + frame for frame in UNICODE_FRAMES) in text
     assert _rendered(text) == ["Downloading Release 12 ✓", "Open https://astrid.haus"]
-    assert text.endswith("\rDownloading Release 12 ✓" + " " * 13 + "\nOpen https://astrid.haus\n")
+    # The closing rewrite covers the tracks and an echoed ^C, and never runs past them.
+    assert text.endswith("\rDownloading Release 12 ✓" + " " * 12 + "\nOpen https://astrid.haus\n")
 
 
 def test_closing_rewrites_the_line_over_an_echoed_interrupt():
     output = Terminal()
-    say = Progress(output, interval=0.001)
+    say = Progress(output, interval=0.001, columns=WIDE)
     with pytest.raises(KeyboardInterrupt):
         with say.phase("Downloading Release 12"):
             threading.Event().wait(0.02)
@@ -170,7 +175,7 @@ def test_closing_rewrites_the_line_over_an_echoed_interrupt():
 
 def test_ascii_terminal_ends_with_done():
     output = Terminal()
-    say = Progress(output, tracks=ASCII, interval=0.001)
+    say = Progress(output, tracks=ASCII, interval=0.001, columns=WIDE)
     with say.phase("Stopping Release 1"):
         threading.Event().wait(0.02)
     assert _rendered(output.getvalue()) == ["Stopping Release 1 done"]
@@ -179,7 +184,7 @@ def test_ascii_terminal_ends_with_done():
 
 def test_indicator_stops_on_exception_and_leaves_an_unmarked_line():
     output = Terminal()
-    say = Progress(output, interval=0.001)
+    say = Progress(output, interval=0.001, columns=WIDE)
     with pytest.raises(KeyboardInterrupt):
         with say.phase("Starting Release 12"):
             threading.Event().wait(0.02)
@@ -194,7 +199,7 @@ def test_indicator_stops_on_exception_and_leaves_an_unmarked_line():
 
 def test_a_line_printed_during_a_phase_closes_it_first():
     output = Terminal()
-    say = Progress(output, interval=0.001)
+    say = Progress(output, interval=0.001, columns=WIDE)
     with say.phase("Downloading Release 12"):
         threading.Event().wait(0.02)
         say("Rendering unavailable: see the log.")
@@ -204,7 +209,7 @@ def test_a_line_printed_during_a_phase_closes_it_first():
 
 def test_a_phase_inside_a_phase_never_draws_twice_or_closes_the_wrong_line():
     output = Terminal()
-    say = Progress(output, interval=0.001)
+    say = Progress(output, interval=0.001, columns=WIDE)
     with say.phase("Starting Release 12"):
         with say.phase("Checking Release 12 started"):
             threading.Event().wait(0.02)
@@ -270,7 +275,7 @@ class Failing(Terminal):
 
 @pytest.mark.parametrize("survives", range(6))
 def test_a_terminal_that_goes_away_never_fails_a_step(survives):
-    say = Progress(Failing(survives), interval=0.001)
+    say = Progress(Failing(survives), interval=0.001, columns=WIDE)
     ran = []
     with say.phase("Downloading Release 12"):
         threading.Event().wait(0.02)
@@ -284,7 +289,7 @@ def test_a_terminal_that_goes_away_never_fails_a_step(survives):
 
 @pytest.mark.parametrize("survives", range(4))
 def test_a_terminal_that_goes_away_keeps_the_original_exception(survives):
-    say = Progress(Failing(survives), interval=0.001)
+    say = Progress(Failing(survives), interval=0.001, columns=WIDE)
     with pytest.raises(RuntimeError, match="the new release did not start"):
         with say.phase("Starting Release 12"):
             threading.Event().wait(0.02)
@@ -315,7 +320,7 @@ def test_an_interrupt_while_the_ticker_starts_stops_the_drawing(monkeypatch, sta
 
     monkeypatch.setattr(progress.threading, "Thread", Interrupted)
     output = Terminal()
-    say = Progress(output, interval=0.001)
+    say = Progress(output, interval=0.001, columns=WIDE)
     with pytest.raises(KeyboardInterrupt):
         with say.phase("Downloading Release 12"):
             pytest.fail("the step must not run after the interrupt")
@@ -325,3 +330,106 @@ def test_an_interrupt_while_the_ticker_starts_stops_the_drawing(monkeypatch, sta
     assert output.getvalue() == settled  # nothing draws after the interrupt
     assert not any(thread.name == "astrid-install-progress" for thread in threading.enumerate())
     assert _rendered(settled) == ["Downloading Release 12"]
+
+
+def test_a_line_that_does_not_fit_gets_no_tracks_and_ends_plainly():
+    label = "Downloading Release 12"  # 22 cells: with a space, 11 tracks and 2 for ^C it needs 37 columns
+    for columns, animated in ((36, False), (37, True), (None, False)):
+        output = Terminal()
+        say = Progress(output, interval=0.001, columns=lambda: columns)
+        with say.phase(label):
+            threading.Event().wait(0.02)
+        text = output.getvalue()
+        assert ("\b" in text) is animated, columns
+        assert _rendered(text) == [f"{label} ✓"], columns
+        if not animated:
+            assert text == f"{label} ✓\n"  # no frames, no control characters
+    output = Terminal()
+    with pytest.raises(RuntimeError):
+        with Progress(output, interval=0.001, columns=lambda: 20).phase(label):
+            raise RuntimeError("the step failed")
+    assert output.getvalue() == f"{label} \n"
+
+
+def test_a_terminal_narrowed_mid_phase_stops_the_tracks_and_ends_plainly():
+    widths = iter([80, 80, 80, 80])  # wide at first, then narrowed to 30 columns
+
+    def columns():
+        return next(widths, 30)
+
+    output = Terminal()
+    say = Progress(output, interval=0.001, columns=columns)
+    with say.phase("Downloading Release 12"):
+        threading.Event().wait(0.05)
+        settled = output.getvalue()
+        threading.Event().wait(0.02)
+        assert output.getvalue() == settled  # the tracks stopped drawing
+    text = output.getvalue()
+    assert "\b" * 11 + UNICODE_FRAMES[0] in text  # it ran while the line fitted
+    assert text.endswith("\b" * 11 + " " * 11 + "\b" * 11 + "✓\n")  # erased, then the mark
+    assert _rendered(text) == ["Downloading Release 12 ✓"]
+
+
+def test_the_bootstrap_hint_carries_the_tracks_and_a_fallback_width(monkeypatch):
+    monkeypatch.setattr(progress.sys, "stdin", io.StringIO())  # no terminal on stdin either
+    read, write = os.pipe()
+    try:
+        with os.fdopen(write, "w", encoding="utf-8", closefd=False) as pipe:
+            assert style(pipe, {HINT: "unicode:91"}, "darwin") == UNICODE
+            assert style(pipe, {HINT: "ascii:"}, "darwin") == ASCII
+            assert progress.terminal_columns(pipe, {HINT: "unicode:91"})() == 91
+            assert progress.terminal_columns(pipe, {HINT: "unicode:"})() is None
+            assert progress.terminal_columns(pipe, {HINT: "unicode:0"})() is None
+    finally:
+        os.close(read)
+        os.close(write)
+
+
+@pytest.mark.posix_native
+def test_through_the_relay_the_width_is_read_live_from_the_terminal_on_stdin(monkeypatch):
+    import fcntl
+    import struct
+    import termios
+
+    leader, follower = os.openpty()
+    try:
+        terminal = os.fdopen(follower, "r", closefd=False)
+        monkeypatch.setattr(progress.sys, "stdin", terminal)
+        columns = progress.terminal_columns(io.StringIO(), {HINT: "unicode:91"})
+        for width in (77, 33):  # a resize is seen on the next read
+            fcntl.ioctl(follower, termios.TIOCSWINSZ, struct.pack("HHHH", 24, width, 0, 0))
+            assert columns() == width
+    finally:
+        os.close(leader)
+        os.close(follower)
+
+
+@pytest.mark.posix_native
+@pytest.mark.parametrize(("columns", "animated"), [(40, False), (120, True)])
+def test_a_real_pseudo_terminal_width_decides_whether_tracks_run(columns, animated):
+    import fcntl
+    import struct
+    import termios
+
+    leader, follower = os.openpty()
+    try:
+        fcntl.ioctl(follower, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
+        with os.fdopen(follower, "w", encoding="utf-8", closefd=False) as terminal:
+            say = Progress(terminal, tracks=UNICODE, interval=0.001)
+            with say.phase("Getting Astrid ready. The first time takes a few minutes."):
+                threading.Event().wait(0.03)
+        seen = b""
+        while True:
+            try:
+                chunk = os.read(leader, 65536) if __import__("select").select([leader], [], [], 0.1)[0] else b""
+            except OSError:
+                break
+            if not chunk:
+                break
+            seen += chunk
+        text = seen.decode("utf-8").replace("\r\n", "\n")
+        assert ("\b" in text) is animated
+        assert _rendered(text) == ["Getting Astrid ready. The first time takes a few minutes. ✓"]
+    finally:
+        os.close(leader)
+        os.close(follower)
