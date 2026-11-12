@@ -145,17 +145,17 @@ def test_generate_schema_and_argv_for_all_leaves():
     expectations = {
         "generate_list": ({"kind": {"type": "string", "enum": ["image", "video", "audio", "generation", "fixture"]}}, [],
                           {"kind": "audio"}, ["generate", "list", "--kind", "audio", "--json"]),
-        "generate_describe": ({"workflow": "string", "entry": "string", "mode": "string", "target": "string", "engine": "string"}, [],
-                              {"workflow": "bundle/workflow.py", "entry": "entry-a", "mode": "video", "target": "runpod", "engine": "comfyui"},
+        "generate_describe": ({"workflow": "string", "entry": "string", "mode": "string", "placement": "string", "engine": "string"}, [],
+                              {"workflow": "bundle/workflow.py", "entry": "entry-a", "mode": "video", "placement": "runpod", "engine": "comfyui"},
                               ["generate", "describe", "bundle/workflow.py", "--entry", "entry-a", "--mode", "video", "--placement", "runpod", "--engine", "comfyui", "--json"]),
-        "generate_targets": ({"target": "string", "engine": "string", "save": "boolean", "input": "array"}, [],
-                             {"target": "local", "engine": "comfyui", "save": True, "input": ["a=1", "b=true"]},
+        "generate_targets": ({"placement": "string", "engine": "string", "save": "boolean", "input": "array"}, [],
+                             {"placement": "local", "engine": "comfyui", "save": True, "input": ["a=1", "b=true"]},
                              ["generate", "targets", "--placement", "local", "--engine", "comfyui", "--save", "--input", "a=1", "--input", "b=true", "--json"]),
-        "generate_launch": ({"target": "string", "engine": "string", "consent": "array", "timeout": "number"}, [],
-                            {"target": "managed", "engine": "comfyui", "consent": ["user_env"], "timeout": 5},
+        "generate_launch": ({"placement": "string", "engine": "string", "consent": "array", "timeout": "number"}, [],
+                            {"placement": "managed", "engine": "comfyui", "consent": ["user_env"], "timeout": 5},
                             ["generate", "launch", "--placement", "managed", "--engine", "comfyui", "--consent", "user_env", "--timeout", "5", "--json"]),
-        "generate_release": ({"engine": "string", "target": "string", "no_wait": "boolean"}, ["engine", "target"],
-                             {"engine": "engine-a", "target": "local", "no_wait": True},
+        "generate_release": ({"engine": "string", "placement": "string", "no_wait": "boolean"}, ["engine", "placement"],
+                             {"engine": "engine-a", "placement": "local", "no_wait": True},
                              ["generate", "release", "--engine", "engine-a", "--placement", "local", "--no-wait", "--json"]),
     }
     for name, (types, required, arguments, argv_expected) in expectations.items():
@@ -170,18 +170,18 @@ def test_generate_schema_and_argv_for_all_leaves():
 
     launch = tools["generate_launch"]["definition"]["inputSchema"]
     assert {key: value["type"] for key, value in launch["properties"].items()} == {
-        "target": "string", "engine": "string", "consent": "array", "timeout": "number"}
+        "placement": "string", "engine": "string", "consent": "array", "timeout": "number"}
     assert launch["properties"]["consent"]["items"]["enum"] == ["user_env", "paid"]
     assert launch["additionalProperties"] is False
     describe = tools["generate_describe"]["definition"]["inputSchema"]
     assert {key: value["type"] for key, value in describe["properties"].items()} == {
-        "workflow": "string", "entry": "string", "mode": "string", "target": "string", "engine": "string"}
+        "workflow": "string", "entry": "string", "mode": "string", "placement": "string", "engine": "string"}
 
     for name in ("generate_image", "generate_video"):
         props = tools[name]["definition"]["inputSchema"]["properties"]
         expected_types = {
             "prompt": "string", "named_prompt": "string", "model": "string", "entry": "string",
-            "inputs_json": "string", "mode": "string", "execution": "string", "target": "string",
+            "inputs_json": "string", "mode": "string", "execution": "string", "placement": "string",
             "project": "string", "out": "string", "dry_run": "boolean", "image_ref": "string",
             "width": "integer", "height": "integer", "steps": "integer", "seed": "integer",
             "guidance_scale": "number", "negative_prompt": "string", "frames": "integer", "fps": "number",
@@ -193,7 +193,7 @@ def test_generate_schema_and_argv_for_all_leaves():
         assert tools[name]["definition"]["inputSchema"]["required"] == []
         arguments = {"prompt": "portrait", "named_prompt": "alternate", "model": "m", "entry": "e",
                      "inputs_json": "declared.json", "mode": "image", "execution": "catalog",
-                     "target": "local", "project": "p", "out": "out.png", "dry_run": True,
+                     "placement": "local", "project": "p", "out": "out.png", "dry_run": True,
                      "image_ref": "source.png", "width": 640, "height": 480, "steps": 22, "seed": 19,
                      "guidance_scale": 4.5, "negative_prompt": "blur", "frames": 9, "fps": 12.5,
                      "input": ["style=soft", "count=2"], "engine": "engine-a", "no_wait": False,
@@ -216,7 +216,7 @@ def test_generate_schema_and_argv_for_all_leaves():
     schema = workflow["definition"]["inputSchema"]
     assert {key: value["type"] for key, value in schema["properties"].items()} == {
         "workflow": "string", "as_entry": "string", "replace": "boolean", "inputs_json": "string",
-        "target": "string", "mode": "string", "project": "string", "out": "string", "prompt": "string",
+        "placement": "string", "mode": "string", "project": "string", "out": "string", "prompt": "string",
         "negative_prompt": "string", "image_ref": "string", "width": "integer", "height": "integer",
         "seed": "integer", "frames": "integer", "fps": "number", "steps": "integer",
         "guidance_scale": "number", "dry_run": "boolean", "input": "array", "engine": "string",
@@ -226,7 +226,7 @@ def test_generate_schema_and_argv_for_all_leaves():
     assert schema["required"] == ["workflow"]
     assert schema["properties"]["inputs"]["type"] == "object"
     args = {"workflow": "bundle.json", "as_entry": "new", "replace": True, "inputs_json": "in.json",
-            "target": "local", "mode": "video", "project": "p", "out": "o.mp4", "prompt": "p",
+            "placement": "local", "mode": "video", "project": "p", "out": "o.mp4", "prompt": "p",
             "negative_prompt": "n", "image_ref": "i.png", "width": 640, "height": 360, "seed": 4,
             "frames": 12, "fps": 24.0, "steps": 30, "guidance_scale": 7.0, "dry_run": True,
             "input": ["x=1", "y=2"], "engine": "engine-x", "no_wait": False,
@@ -319,16 +319,16 @@ def test_target_launch_cli_and_mcp_envelope(monkeypatch):
     tool = _tools()["generate_launch"]
     schema = tool["definition"]["inputSchema"]
     assert schema["required"] == []
-    assert schema["properties"]["target"]["type"] == "string"
+    assert schema["properties"]["placement"]["type"] == "string"
     assert schema["properties"]["engine"]["type"] == "string"
     assert schema["properties"]["consent"]["items"]["enum"] == ["user_env", "paid"]
     assert schema["properties"]["timeout"]["type"] == "number"
-    arguments = {"target": "managed", "engine": "comfyui", "consent": ["user_env", "paid"], "timeout": 7}
+    arguments = {"placement": "managed", "engine": "comfyui", "consent": ["user_env", "paid"], "timeout": 7}
     argv, parsed = _parse_tool(tool, arguments)
     expected_argv = ["generate", "launch", "--placement", "managed", "--engine", "comfyui",
                      "--consent", "user_env", "--consent", "paid", "--timeout", "7", "--json"]
     assert argv == expected_argv
-    assert (parsed.target, parsed.engine, parsed.consent, parsed.timeout) == (
+    assert (parsed.placement, parsed.engine, parsed.consent, parsed.timeout) == (
         "managed", "comfyui", ["user_env", "paid"], 7.0)
 
     calls = []
@@ -367,7 +367,7 @@ def test_runpod_generation_follow_and_release_cli_and_mcp_envelopes(monkeypatch)
 
     monkeypatch.setattr(mcp_server, "_run", fake_run)
     state = {"tools": tools, "prompts": {}}
-    generation_args = {"prompt": "a red paper boat", "target": "runpod", "engine": "comfyui",
+    generation_args = {"prompt": "a red paper boat", "placement": "runpod", "engine": "comfyui",
                        "consent": ["paid"], "max_usd": 1.25, "deadline": "2030-01-01T00:00:00Z",
                        "recovery_path": "runpod-receipt.json", "no_wait": False}
     generated = mcp_server.handle({"jsonrpc": "2.0", "id": 32, "method": "tools/call",
@@ -387,7 +387,7 @@ def test_runpod_generation_follow_and_release_cli_and_mcp_envelopes(monkeypatch)
     assert calls[-1] == expected_follow
     assert followed == {"content": [{"type": "text", "text": follow_text.strip()}], "isError": False}
 
-    release_args = {"engine": "comfyui", "target": "runpod", "no_wait": True}
+    release_args = {"engine": "comfyui", "placement": "runpod", "no_wait": True}
     released = mcp_server.handle({"jsonrpc": "2.0", "id": 34, "method": "tools/call",
                                   "params": {"name": "generate_release", "arguments": release_args}}, state)["result"]
     expected_release = ["generate", "release", "--engine", "comfyui", "--placement", "runpod", "--no-wait", "--json"]
