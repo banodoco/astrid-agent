@@ -492,6 +492,11 @@ def run_local_server(
                 context = RunContext(run_id, run_dir, task_id=task_identity,
                                      attempt_id=attempt_identity, execution_id=prepared.get("execution_identity"))
                 context.begin(str(bundle.python_path))
+                try:
+                    from astrid.core._shared import run_logs
+                    run_logs.declare_child(destination, run_dir / "logs.json")
+                except Exception:  # noqa: BLE001 -- log declaration must not affect the job.
+                    pass
                 _custody_file(context.receipt_path, destination, "native attempt")
             try:
                 result = run_sync(
