@@ -17,7 +17,7 @@ from astrid.core.generation.interfaces import GenerationAdmission, RunPodPrepara
 from .prepared_task import PreparedWorkerError, PreparedWorkerSelection, _read_mapping
 from .remote_placement import Claim, RemotePlacement, RunPodInstallation, connect_claimed_for_preparation, source_digest
 from .target_selection import ClaimedJob, PaidRunConsent, RunPodSelectionOwner, _utc
-from .worker_owner import RunPodLease, RunPodLeaseOwner, _run_sync
+from .worker_owner import RunPodLease, RunPodLeaseOwner, _off_event_loop, _run_sync
 from .worker_preparation import replace_target_record, target_owner
 
 
@@ -39,6 +39,7 @@ class PreparedRunPodLease:
     reused: bool = False
 
 
+@_off_event_loop
 def prepare_retained_generation(
     request: RunPodPreparationRequest, *, consent: PaidRunConsent,
     lease_owner: RunPodLeaseOwner, placement: RemotePlacement,
@@ -108,8 +109,7 @@ def prepare_retained_generation(
             if set(custody_differences(prior_preparation.get("custody"), expected)) - {"source_digest"}:
                 lease_owner.release(reason="custody_changed", _expected_operation=prior["operation_id"])
         invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds,
-                                         defer_unsafe_release=True,
-                                         **({"cancelled": cancelled} if cancelled is not None else {}))
+                                         defer_unsafe_release=True, cancelled=cancelled)
         if on_acquired is not None:
             on_acquired(invocation)
         claimed = lease_owner.preparation_claim(invocation)
@@ -147,6 +147,7 @@ def prepare_retained_generation(
             if preferences.volume_id is not None:
                 # Pin the mount before anything is written: an unmounted volume
                 # refuses here instead of caching onto container disk.
+                assert cache_root is not None
                 if observe_mounts is None:
                     raise PreparedWorkerError("a saved volume needs the provider's typed mount observation")
                 probe_state = placement.begin_claimed(claim, out=out, deadline_seconds=remaining)
@@ -186,6 +187,10 @@ def prepare_retained_generation(
             saved = save(state="prepared", installed=dict(state.installed))
         except BaseException as exc:
             current = lease_owner._read()
+            if current is None:
+                raise PreparedWorkerError(
+                    "retained lease journal disappeared during preparation failure"
+                ) from exc
             jobs = (preparation.get("job"), current.get("lease", {}).get("job"))
             safe = (not isinstance(exc, CustodyChanged) and "claim" in locals()
                     and "custody" in preparation and current.get("state") == "claimed"
@@ -203,6 +208,10 @@ def prepare_retained_generation(
             # old installed snapshot is still safe, even before installation.
             # Preserve exact custody for immediate release/recovery.
             current = lease_owner._read()
+            if current is None:
+                raise PreparedWorkerError(
+                    "retained lease journal disappeared during preparation failure"
+                ) from exc
             lease_owner._save(current, {**current["lease"], "preparation": {**preparation, "state": "unresolved"}},
                               state="cleanup_pending", reconciliation_required=True)
             raise
