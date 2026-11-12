@@ -498,7 +498,9 @@ def main(argv=None):
     for name in ("cache_dir", "json", "vibecomfy_checkout", "vibecomfy_python", "engine_venv"):
         value = getattr(args, name)
         if value is not None:
-            setattr(args, name, value.expanduser().resolve())
+            # Resolving bin/python's symlink discards its virtual environment.
+            path = value.expanduser()
+            setattr(args, name, path.absolute() if name == "vibecomfy_python" else path.resolve())
     if args.vibecomfy_checkout is not None:
         # The public CLI's dependency selection must inspect the same checkout
         # as the VibeComfy checks, including when selected through the flag.

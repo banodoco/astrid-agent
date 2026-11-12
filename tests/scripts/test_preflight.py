@@ -218,6 +218,9 @@ def test_catalog_probe_reports_pass_fail_unverified_shape(stdout, rc, want, tmp_
 def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     checkout = tmp_path / "pinned-vibecomfy"
+    vibe_python = tmp_path / "vibe-venv/bin/python"
+    vibe_python.parent.mkdir(parents=True)
+    vibe_python.symlink_to(sys.executable)
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setenv("ASTRID_VIBECOMFY_CHECKOUT", str(checkout))
     fake_registry = SimpleNamespace(load_default=lambda: None)
@@ -239,6 +242,7 @@ def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, caps
 
     def fake_vibe(cells, runner, selected_checkout, *args):
         assert selected_checkout == checkout
+        assert args[0] == vibe_python
         for c in cells:
             c.checks.update(schema=preflight.outcome("UNVERIFIED", "no declared schema test"),
                             rebuild=preflight.outcome("PASS", commands=[FakeCommand(["pytest", "rebuild"])]))
@@ -254,7 +258,8 @@ def test_main_json_report_has_stable_top_level_shape(monkeypatch, tmp_path, caps
     monkeypatch.setattr(preflight, "check_constructors", fake_constructors)
     output = tmp_path / "report.json"
     assert preflight.main(["--json", str(output), "--cache-dir", "cache",
-                           "--vibecomfy-checkout", str(checkout)]) == 0
+                           "--vibecomfy-checkout", str(checkout),
+                           "--vibecomfy-python", str(vibe_python)]) == 0
     payload = json.loads(output.read_text())
     assert payload["schema"] == "astrid.cpu-preflight.v1"
     assert payload["candidate"]["vibecomfy_revision"] == "vibe-rev"
