@@ -37,14 +37,21 @@ def ensure_local_engine_server(
     if runner_factory is None:
         from .engine_contracts import IntegrityError
         from .engine_execution import create_local_backend
-        from .engine_runner import _parse_receipt, _Runner, plan_install, refresh_installed_launch
+        from .engine_runner import (
+            _parse_receipt,
+            _Runner,
+            plan_from_receipt,
+            plan_install,
+            refresh_installed_launch,
+        )
         context, adapter = create_local_backend(
             engine=engine, platform=platform, placement="local", root=root, deadline=deadline)
         with context.acquire_install_lock(root, deadline=deadline):
             raw = context.read_json(posixpath.join(root, RECEIPT_RELATIVE_PATH), deadline=deadline)
-            plan = plan_install(load_recipe(engine, platform), root=root, placement="local",
-                                models_root=raw.get("models_root"))
-            receipt = _parse_receipt(raw, plan)
+            recipe = load_recipe(engine, platform)
+            locator = plan_install(recipe, root=root, placement="local")
+            receipt = _parse_receipt(raw, locator)
+            plan = plan_from_receipt(recipe, receipt, root=root, placement="local")
             if receipt.status != "installed":
                 raise IntegrityError("local engine requires a completed installation")
             runner = _Runner(plan, context, adapter, deadline)

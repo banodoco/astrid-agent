@@ -88,13 +88,13 @@ class ManagedAssetTarget:
         source and environment checks continue to use the installed machinery.
         """
         from .engine_execution import create_local_backend
-        from .engine_runner import _parse_receipt, _Runner, plan_install
+        from .engine_runner import _parse_receipt, _Runner, plan_from_receipt, plan_install
 
         raw = json.loads(_safe_path(self.root, self.root / '.astrid-engine/install.json').read_bytes())
         recipe = load_recipe(raw['engine'], raw['platform'])
         # The receipt records the model directory the install bound (a volume cache, or <root>/models).
         receipt = _parse_receipt(raw, plan_install(recipe, root=str(self.root), placement='local'))
-        plan = plan_install(recipe, root=str(self.root), placement='local', models_root=receipt.models_root)
+        plan = plan_from_receipt(recipe, receipt, root=str(self.root), placement='local')
         context, adapter = create_local_backend(engine=recipe.engine, platform=recipe.platform,
             placement='local', root=str(self.root), deadline=deadline)
         runner = _Runner(plan, context, adapter, deadline)
@@ -245,7 +245,7 @@ def selected_target() -> ManagedAssetTarget:
     from vibecomfy.schema.cache import object_info_cache_path
 
     from .engine_local_endpoint import recorded_engine_root
-    from .engine_runner import _parse_receipt, plan_install
+    from .engine_runner import _parse_receipt, plan_from_receipt, plan_install
 
     # This is the same installed-receipt authority used by target selection,
     # without engine_status (which probes and can mutate custody state).
@@ -257,6 +257,7 @@ def selected_target() -> ManagedAssetTarget:
     raw = json.loads(receipt_path.read_bytes())
     recipe = load_recipe(raw['engine'], raw['platform'])
     receipt = _parse_receipt(raw, plan_install(recipe, root=str(root), placement='local'))
+    plan_from_receipt(recipe, receipt, root=str(root), placement='local')
     if receipt.engine != 'comfyui' or receipt.status != 'installed':
         raise IntegrityError('managed target needs an installed ComfyUI receipt before running astrid generate align')
     if receipt.models_lock_sha256 != recipe.models_lock.sha256:

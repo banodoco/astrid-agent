@@ -161,6 +161,7 @@ class RunPodInstallation:
 
     def plan(self):
         from astrid.core.generation import engine_recipe, engine_runner
+
         from .target_selection import RunPodLeaseCompatibility
 
         expected = RunPodLeaseCompatibility(**dict(self.compatibility)).as_mapping()
@@ -643,10 +644,9 @@ class RemotePlacement:
         state.note("install", "done")
 
     def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:
-        from astrid.core.generation import engine_runner
+        from astrid.core.generation import engine_recipe, engine_runner
 
         installation = state.installation
-        plan = installation.plan()
         remaining = min(120, self._remaining() if verification_seconds is None else verification_seconds)
         state.install_unverified = None
         if remaining <= 0:
@@ -672,7 +672,12 @@ class RemotePlacement:
             return False
         # Status re-verifies the actual source/model/environment/start/health
         # through the canonical runner. Parse with that same receipt boundary.
+        recipe = engine_recipe.load_recipe(installation.engine, installation.platform)
+        plan = engine_runner.plan_install(recipe, root=installation.root, placement="local")
         live = engine_runner._parse_receipt(raw, plan)
+        plan = engine_runner.plan_from_receipt(
+            recipe, live,
+            root=installation.root, placement="local")
         receipt = installation.root + "/.astrid-engine/install.json"
         if verification_seconds is None:
             path = state.local_out / "installed.json"
@@ -709,6 +714,9 @@ class RemotePlacement:
             if len(data) > 1024 * 1024:
                 return False
         saved = engine_runner._parse_receipt(json.loads(data), plan)
+        plan = engine_runner.plan_from_receipt(
+            recipe, saved,
+            root=installation.root, placement="local")
         if (saved.status != "installed" or live.receipt_id != saved.receipt_id
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks
