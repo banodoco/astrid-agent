@@ -37,6 +37,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from astrid.core.contracts.errors import AstridError
 
+from .failure_reason import Reason
 from .pod_bootstrap import SCRIPT as POD_BOOTSTRAP_SCRIPT
 
 PLACEMENT = "runpod"
@@ -81,6 +82,16 @@ def _safe_label(value: object) -> str:
 
 class RemotePlacementError(AstridError):
     """A remote placement step failed. The pod has been released unless stated."""
+
+
+class PlacementReasonError(RemotePlacementError):
+    """A refusal at the structured reason boundary."""
+
+    def __init__(self, message: str, *, reason: Reason):
+        if not isinstance(reason, Reason):
+            raise ValueError("a validated reason is required")
+        super().__init__(message)
+        self.reason = reason
 
 
 class BoundedObserverUnreaped(RemotePlacementError):
@@ -639,8 +650,14 @@ class RemotePlacement:
         self._run_job(state, command, "engine install")
         if not self._engine_installed_healthy(state):
             reason = getattr(state, "install_unverified", None) or "unclassified"
-            raise RemotePlacementError(
-                f"engine install finished but status is not installed and healthy (reason: {reason})")
+            match = re.fullmatch(r"status_exit_(-?\d+)", reason)
+            exit_code = int(match.group(1)) if match and -255 <= int(match.group(1)) <= 255 else None
+            code = ("status_exit" if exit_code is not None else reason if reason in {
+                "status_no_receipt", "status_deadline_exhausted", "receipt_read_failed"}
+                else "status_not_installed")
+            raise PlacementReasonError(
+                f"engine install finished but status is not installed and healthy (reason: {reason})",
+                reason=Reason(stage="install", step="verify", gate="install", code=code, exit_code=exit_code))
         state.note("install", "done")
 
     def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:

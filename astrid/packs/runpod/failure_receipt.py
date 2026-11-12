@@ -96,7 +96,7 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     """The receipt body for one failed generation, or ``None`` when none is written (cancelled)."""
     from astrid.core.execution.machine_run import MachineRunCancelled
 
-    from .failure_diagnostics import host_summary
+    from .failure_diagnostics import CODES, host_summary
     failure = facts["failure"]
     from .target_selection import CapacityWaitCancelled
     if isinstance(failure, (MachineRunCancelled, CapacityWaitCancelled)):
@@ -128,6 +128,12 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     # Receipts keep the RunPod gate names users already see (GPU, volume,
     # datacenter, ...); PlacementRefused carries them as runpod_gate.
     gate = getattr(failure, "runpod_gate", None) or getattr(failure, "gate", None)
+    from .failure_reason import Reason
+    if isinstance(reason, Reason):
+        stage, basis = reason.stage, "reason"
+        cause["reason"] = reason.as_dict()
+        cause["code"] = reason.code
+        cause["category"] = CODES.get(reason.code, "installation" if reason.stage == "install" else "execution")
     if stage == "no_machine":
         # Only fixed names (offer reason, gate) are copied; exception text never is.
         from .target_selection import _OFFER_FAILURES
