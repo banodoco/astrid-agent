@@ -171,6 +171,7 @@ on:
           - direct-macos-r11-update
           - direct-linux-autostart-off
           - direct-macos-autostart-off
+          - diagnostic-macos-r1-update
           - direct
           - pinokio-linux
           - pinokio-macos
@@ -186,6 +187,8 @@ permissions:
 
 jobs:
   config:
+    # The NON-PROOF release1-then-update diagnostic runs alone (see release1_update_diagnostic).
+    if: inputs.row != 'diagnostic-macos-r1-update'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -1407,7 +1410,7 @@ jobs:
 
   gate:
     name: Journey evidence (exact tuple)
-    if: always()
+    if: always() && inputs.row != 'diagnostic-macos-r1-update'
     needs: [config, journey, release2, m4_4b_local, failure_modes]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -1547,3 +1550,173 @@ jobs:
               json.dumps({slot: {"result": "skipped"} for slot in slots}), encoding="utf-8")
           PY
           python agent/scripts/check_failure_receipts.py --candidate "$RUNNER_TEMP/m4-6-hosted-candidate.json" --results m4-6-hosted-results --needs "$RUNNER_TEMP/m4-6-hosted-needs.json"
+
+  # NON-PROOF diagnostic: reproduce a field update from an early Release 1 install to Release 12
+  # on macOS, using the default per-user paths, and keep the logs that explain the result.
+  # It never feeds the gate; select it with row=diagnostic-macos-r1-update.
+  release1_update_diagnostic:
+    name: NON-PROOF release1-then-update (${{ matrix.start }})
+    if: github.event_name == 'workflow_dispatch' && inputs.row == 'diagnostic-macos-r1-update'
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # r0-handoff-by-r1: the frozen R0 install handed off by the Release 1 installer (the
+        # "Astrid Runtime-r1" workspace); r1-fresh: a plain Release 1 install.
+        start: [r0-handoff-by-r1, r1-fresh]
+    defaults:
+      run:
+        shell: bash
+    env:
+      R1_APP: dc277284e66438516a7aa4de0a2dc8beae905bab
+      R12_APP: 237b28be935af49c23464fa6ca1cf30db67ebaa0
+      BROWSER: /usr/bin/true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ github.workflow_sha }}
+          path: agent
+          persist-credentials: false
+      - name: Check out the Release 1 App (its own installer and manifest)
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: dc277284e66438516a7aa4de0a2dc8beae905bab
+          path: r1-app
+          persist-credentials: false
+      - name: Check out the Release 12 App
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: 237b28be935af49c23464fa6ca1cf30db67ebaa0
+          path: r12-app
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify the pinned tuples and compare the served Release 12 bytes
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/r1-repro"; mkdir -p "$E"
+          python3 - <<'PY'
+          import json
+          r1 = json.load(open("r1-app/public/install-manifest.json"))
+          r12 = json.load(open("r12-app/public/install-manifest.json"))
+          assert (r1["release"], r1["agent"]["sha"][:8], r1["runtime"]["sha"][:8]) == (1, "7247ea92", "9fc53b77"), r1
+          assert (r12["release"], r12["agent"]["sha"], r12["runtime"]["sha"]) == (
+              12, "0e1543e0da2215db9cb3320cfd1083174c3c62a9", "42ae24aff8d2cb854f874ce134161077a3ba3641"), r12
+          print("R1", r1["agent"]["sha"], r1["runtime"]["sha"]); print("R12", r12["agent"]["sha"], r12["runtime"]["sha"])
+          PY
+          for f in install install-manifest.json; do
+            curl -fsSL "https://astrid.haus/$f" -o "$E/served-$f" || true
+            echo "$f served=$(shasum -a 256 "$E/served-$f" 2>/dev/null | cut -c1-64) r12-app=$(shasum -a 256 "r12-app/public/$f" | cut -c1-64)"
+          done | tee "$E/served-compare.txt"
+          sw_vers | tee "$E/os.txt"; uname -m | tee -a "$E/os.txt"
+      - name: Start state, frozen R0 install
+        if: matrix.start == 'r0-handoff-by-r1'
+        run: |
+          set +e -uo pipefail
+          E="$RUNNER_TEMP/r1-repro"
+          (cd agent/tests/fixtures/release0 && shasum -a 256 -c SHA256SUMS)
+          sh agent/tests/fixtures/release0/served/install --manifest agent/tests/fixtures/release0/served/install-manifest.json \
+            </dev/null 2>&1 | tee "$E/r0-install.out"
+          echo "r0_install_exit=${PIPESTATUS[0]}" | tee -a "$E/exit-codes.txt"
+          python agent/scripts/journey_r1_update_repro.py wait-health 240 2>&1 | tee "$E/r0-health.json"
+          python agent/scripts/journey_r1_update_repro.py seed release0 2>&1 | tee "$E/r0-seed.json"
+          echo "r0_seed_exit=${PIPESTATUS[0]}" | tee -a "$E/exit-codes.txt"
+          cp "$HOME/Library/Logs/Astrid Runtime/install.log" "$E/install-after-r0.log" 2>/dev/null || true
+      - name: Start state, Release 1 installer (handoff update or fresh install)
+        run: |
+          set +e -uo pipefail
+          E="$RUNNER_TEMP/r1-repro"
+          flags=()
+          if [ "${{ matrix.start }}" = r0-handoff-by-r1 ]; then flags=(--update); fi
+          sh r1-app/public/install --manifest r1-app/public/install-manifest.json ${flags[@]+"${flags[@]}"} \
+            </dev/null 2>&1 | tee "$E/r1-install.out"
+          echo "r1_install_exit=${PIPESTATUS[0]}" | tee -a "$E/exit-codes.txt"
+          python agent/scripts/journey_r1_update_repro.py wait-health 240 2>&1 | tee "$E/r1-health.json"
+          python agent/scripts/journey_r1_update_repro.py seed release1 2>&1 | tee "$E/r1-seed.json"
+          echo "r1_seed_exit=${PIPESTATUS[0]}" | tee -a "$E/exit-codes.txt"
+          cp "$HOME/Library/Logs/Astrid Runtime/install.log" "$E/install-after-r1.log" 2>/dev/null || true
+          mkdir -p "$E/before-update"
+          cp -R "$HOME/Library/Logs/Astrid Runtime" "$E/before-update/logs" 2>/dev/null || true
+          ls -la "$HOME/.local/share/astrid" "$HOME/.local/share/astrid/versions" 2>&1 | tee "$E/before-update/program-listing.txt"
+          cat "$HOME/.local/share/astrid/current" 2>&1 | tee "$E/before-update/current.txt"
+      - name: Release 12 update (the candidate's public install --update)
+        run: |
+          set +e -uo pipefail
+          E="$RUNNER_TEMP/r1-repro"
+          sh r12-app/public/install --manifest r12-app/public/install-manifest.json --update \
+            </dev/null 2>&1 | tee "$E/r12-update.out"
+          echo "r12_update_exit=${PIPESTATUS[0]}" | tee -a "$E/exit-codes.txt"
+          sleep 20
+          python agent/scripts/journey_r1_update_repro.py wait-health 60 2>&1 | tee "$E/after-update-health.json" || true
+          cat "$HOME/.local/share/astrid/current" 2>&1 | tee "$E/after-update-current.txt"
+      - name: Collect diagnostics (logs, Runtime state, installer records; never credentials)
+        if: always()
+        run: |
+          set +e -uo pipefail
+          E="$RUNNER_TEMP/r1-repro"; mkdir -p "$E"
+          cp -R "$HOME/Library/Logs/Astrid Runtime" "$E/logs" 2>/dev/null || echo "no Logs/Astrid Runtime" | tee "$E/logs-missing.txt"
+          for data in "$HOME/Library/Application Support/Astrid Runtime" "$HOME/Library/Application Support/Astrid Runtime-r1"; do
+            name=$(basename "$data" | tr ' ' '_'); out="$E/data/$name"; mkdir -p "$out"
+            [ -d "$data" ] || { echo missing > "$out/MISSING"; continue; }
+            # Names only for the whole tree, so nothing secret is read.
+            (cd "$data" && find . -maxdepth 5 -not -path './runtime/realms/*/objects/*' -exec ls -ld {} + ) > "$out/tree.txt" 2>&1 || true
+            for f in discovery.json catalog.json; do cp "$data/runtime/$f" "$out/" 2>/dev/null || true; done
+            cp -R "$data/runtime/source-profiles" "$out/source-profiles" 2>/dev/null || true
+            find "$data" -maxdepth 4 \( -name '*.log' -o -name '*receipt*.json' -o -name 'adoption*.json' \) -not -path '*/credentials/*' \
+              -exec cp {} "$out/" \; 2>/dev/null || true
+          done
+          P="$HOME/.local/share/astrid"; mkdir -p "$E/program"
+          ls -la "$HOME/.local/share" "$P" "$P/versions" > "$E/program/listing.txt" 2>&1 || true
+          find "$P" -maxdepth 1 -type f \( -name '*.json' -o -name current \) -exec cp {} "$E/program/" \; 2>/dev/null || true
+          find "$HOME/.local/share" -maxdepth 1 -type f -name '*.json' -exec cp {} "$E/program/" \; 2>/dev/null || true
+          for v in "$P"/versions/*/; do
+            id=$(basename "$v"); mkdir -p "$E/program/versions/$id"
+            cp "$v/manifest.json" "$v/version.json" "$E/program/versions/$id/" 2>/dev/null || true
+          done
+          ls -la "$HOME/Library/LaunchAgents" > "$E/launchagents.txt" 2>&1 || true
+          launchctl list 2>&1 | grep -i astrid > "$E/launchctl-list.txt" || true
+          ps -axo pid,ppid,etime,stat,comm 2>&1 | grep -i -E 'astrid|python|bun|node' > "$E/processes.txt" || true
+          # The installed version's own redacted support bundle, as a user's diagnostics would show.
+          python3 - "$P" "$E/doctor" <<'PY' || true
+          import json, os, subprocess, sys
+          from pathlib import Path
+          root, out = Path(sys.argv[1]), Path(sys.argv[2]); out.mkdir(parents=True, exist_ok=True)
+          name = (root / "current").read_text().strip()
+          version = json.loads((root / "versions" / name / "version.json").read_text())
+          env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
+          env.update(version["env"])
+          with open(out / "doctor.out", "w") as log:
+              rc = subprocess.run([version["python"], "-I", "-m", "astrid", "install", "--doctor", str(out / "bundle")],
+                                  env=env, stdout=log, stderr=subprocess.STDOUT, timeout=600).returncode
+          print("doctor exit", rc, "for", name)
+          PY
+          python agent/scripts/journey_r1_update_repro.py redact "$E"
+          find "$E" -type f | sort > "$E/FILES.txt"
+      - name: Summarize the failure evidence
+        if: always()
+        run: |
+          set +e -uo pipefail
+          E="$RUNNER_TEMP/r1-repro"
+          {
+            echo "## NON-PROOF release1-then-update (${{ matrix.start }})"
+            echo '```'; cat "$E/exit-codes.txt" 2>/dev/null; echo '```'
+            echo "### R12 update output"; echo '```'; cat "$E/r12-update.out" 2>/dev/null; echo '```'
+            echo "### service-pack-host.log (last 200 lines)"; echo '```'
+            tail -n 200 "$E/logs/service-pack-host.log" 2>/dev/null; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "===== exit codes"; cat "$E/exit-codes.txt" 2>/dev/null
+          echo "===== service-pack-host.log tail"; tail -n 300 "$E/logs/service-pack-host.log" 2>/dev/null
+          echo "===== key lines"; grep -r -n -i -E "needs repair|cannot load timeline|not_accepting|Traceback|Error:" "$E/logs" 2>/dev/null | head -200
+      - name: Upload the diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r1-update-repro-${{ matrix.start }}
+          path: ${{ runner.temp }}/r1-repro
+          retention-days: 14
+          if-no-files-found: warn
