@@ -573,7 +573,7 @@ class RemotePlacement:
                         source = f"{directory}/{stream_name}"
                         destination = log_root / f"{safe_what}.{stream_name}"
                         try:
-                            ops.get(source, str(destination))
+                            ops.get(source, destination)
                         except Exception:  # noqa: BLE001 - collect the remaining logs
                             destination.unlink(missing_ok=True)
                         run_logs.declare(
@@ -613,7 +613,7 @@ class RemotePlacement:
                                 f"{POD_VENV}/bin/python -c {shlex.quote(program)} "
                                 f"{shlex.quote(source)} {shlex.quote(remote_safe)}", 120)
                             if code == 0:
-                                ops.get(remote_safe, str(destination))
+                                ops.get(remote_safe, destination)
                         except Exception:  # noqa: BLE001 - collect the remaining logs
                             destination.unlink(missing_ok=True)
                         finally:
