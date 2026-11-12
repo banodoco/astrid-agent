@@ -48,7 +48,7 @@
         "mode": "packaged",
         "packaged_lock": {
           "path": "packs/runpod/requirements.linux-cu130.lock",
-          "sha256": "f9b4cb36acce81a3a1e68b6fb476685a06271252fbc6cbc48f28130d40d02585"
+          "sha256": "e6e9f858e082845ba799172149c6db40a18ab0e648ac704960ea4322d422ab7e"
         },
         "input_paths": [],
         "constraints": [],
