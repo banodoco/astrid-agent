@@ -354,11 +354,19 @@ def test_retained_install_failure_stays_with_a3_and_does_not_replay(retained):
         c.adapter.prepare(c.request, c.grant)
     record = c.read()
     assert record["lease"]["preparation"]["job"]["state"] == "exited"
-    assert record["lease"]["preparation"]["state"] == "unresolved"
-    with pytest.raises(Exception, match="unresolved"):
+    assert record["lease"]["preparation"]["state"] == "stale_after_failure"
+    assert c.creates == 1 and not c.deletes
+    from astrid.packs.runpod.worker_owner import RunPodLease
+    lease = record["lease"]
+    invocation = RunPodLease(record["operation_id"], lease["owner_epoch"], lease["generation"],
+                             lease["invocation_id"], record)
+    c.host.settle(invocation, outcome="failed")
+    with pytest.raises(Exception, match="engine install"):
         c.adapter.prepare(c.request, replace(c.grant, invocation_id="retry"))
+    assert c.creates == 1 and not c.deletes
+    assert c.read()["lease"]["preparation"]["state"] == "stale_after_failure"
     c.host.release()
-    assert c.creates == 1 and c.deletes == ["pod-1"]
+    assert c.deletes == ["pod-1"]
 
 
 def test_retained_install_is_model_free_and_settles_through_a3(retained):

@@ -84,6 +84,10 @@ class RemotePlacementError(AstridError):
     """A remote placement step failed. The pod has been released unless stated."""
 
 
+class InstallationReceiptChanged(RemotePlacementError):
+    """The reachable installation differs from its canonical receipt."""
+
+
 class PlacementReasonError(RemotePlacementError):
     """A refusal at the structured reason boundary."""
 
@@ -453,7 +457,7 @@ class RemotePlacement:
             if state.job_id is not None:
                 try:
                     stopped = claim.ops.job_cancel(state.job_id)
-                    if checkpoint is not None and stopped.get("state") in {"exited", "cancelled"}:
+                    if checkpoint is not None and stopped.get("id") == state.job_id and stopped.get("state") in {"exited", "cancelled"}:
                         checkpoint({"id": state.job_id, "state": stopped["state"]})
                 except Exception:
                     pass
@@ -780,7 +784,7 @@ class RemotePlacement:
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks
                 or live.health.object_info_sha256 != saved.health.object_info_sha256):
-            raise RemotePlacementError("live installation differs from its canonical receipt")
+            raise InstallationReceiptChanged("live installation differs from its canonical receipt")
         state.installed = {
             "schema": "astrid.runpod.installed-snapshot.v1", "engine": installation.engine,
             "platform": installation.platform, "root": installation.root,

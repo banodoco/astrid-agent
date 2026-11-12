@@ -105,7 +105,7 @@ def prepare_retained_generation(
                 volume={**(prior_preparation.get("custody") or {}).get("volume", {}),
                         "id": preferences.volume_id, "mount_path": preferences.mount_path},
                 source_digest=bootstrap_digest)
-            if custody_differences(prior_preparation.get("custody"), expected):
+            if set(custody_differences(prior_preparation.get("custody"), expected)) - {"source_digest"}:
                 lease_owner.release(reason="custody_changed", _expected_operation=prior["operation_id"])
         invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds,
                                          defer_unsafe_release=True,
@@ -159,10 +159,12 @@ def prepare_retained_generation(
                 volume={"id": preferences.volume_id, "mount_path": preferences.mount_path,
                         "cache_device": storage.get("cache_device"), "mount_id": storage.get("mount_id")},
                 source_digest=bootstrap_digest)
-            reuse = previous is not None and previous.get("state") == "prepared"
-            if previous is not None and custody_differences(previous.get("custody"), custody):
-                raise CustodyChanged("warm machine custody differs: "
-                                     + ", ".join(custody_differences(previous.get("custody"), custody)))
+            differences = (custody_differences(previous.get("custody"), custody)
+                           if previous is not None and previous.get("state") in {"prepared", "stale_after_failure"}
+                           else [])
+            reuse = previous is not None and previous.get("state") == "prepared" and not differences
+            if set(differences) - {"source_digest"}:
+                raise CustodyChanged("warm machine custody differs: " + ", ".join(differences))
             save(custody=custody, storage=storage)
             state = placement.prepare_claimed(
                 claim, out=out,
@@ -179,7 +181,21 @@ def prepare_retained_generation(
                            for name, path in (("source", request.source), ("workflow", request.workflow)))):
                 raise PreparedWorkerError("preparation consumed its paid lifetime or source bytes changed")
             saved = save(state="prepared", installed=dict(state.installed))
-        except BaseException:
+        except BaseException as exc:
+            current = lease_owner._read()
+            jobs = (preparation.get("job"), current.get("lease", {}).get("job"))
+            safe = (not isinstance(exc, CustodyChanged) and "claim" in locals()
+                    and "custody" in preparation and current.get("state") == "claimed"
+                    and current.get("pod_id") == claimed.get("pod_id") == claim.pod_id
+                    and all(job is None or job.get("state") in {"exited", "cancelled"} for job in jobs))
+            if safe:
+                try:
+                    safe = claim.ops.exec("true", timeout=10)[0] == 0
+                except Exception:  # noqa: BLE001 (unknown transport cannot prove reachability)
+                    safe = False
+            if safe:
+                save(state="stale_after_failure")
+                raise
             # A failed current mount/custody observation cannot prove that an
             # old installed snapshot is still safe, even before installation.
             # Preserve exact custody for immediate release/recovery.

@@ -95,3 +95,28 @@ def test_safety_reasons_release(machine_case, monkeypatch, condition, reason):
         failure = rm.DigestMismatch("changed")
     c.machine.release(lease, False, failure=failure)
     assert c.read()["lease"]["ended"] == reason and c.deletes == ["pod-1"]
+
+
+def test_first_preparation_failure_is_retained_and_reprepared(machine_case, monkeypatch):
+    import time
+
+    c = machine_case
+    # This fixture shares one fake local engine deadline across all claims.
+    c.context.deadline = time.monotonic() + 300
+    original = c.placement._install
+    def fail_after_install(state):
+        original(state)
+        raise rm.MachineError("doctor failed")
+    monkeypatch.setattr(c.placement, "_install", fail_after_install)
+    with pytest.raises(rm.MachineError):
+        c.machine.claim(c.job())
+    assert c.read()["lease"]["preparation"]["state"] == "stale_after_failure"
+    assert c.read()["lease"]["state"] == "idle" and c.deletes == []
+    with pytest.raises(rm.MachineError):
+        c.machine.claim(c.job(2))
+    assert c.read()["lease"]["preparation"]["state"] == "stale_after_failure"
+    assert c.read()["lease"]["state"] == "idle" and c.creates == 1 and c.deletes == []
+    monkeypatch.setattr(c.placement, "_install", original)
+    lease = c.machine.claim(c.job(3))
+    assert c.creates == 1 and c.read()["lease"]["preparation"]["state"] == "prepared"
+    c.machine.release(lease, False)

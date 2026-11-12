@@ -275,14 +275,15 @@ def test_unverified_current_storage_probe_releases_previous_warm_pod(machine_cas
     assert c.creates == 1
 
 
-def test_unverified_installation_failure_releases_exact_pod(machine_case, monkeypatch):
+def test_unverified_installation_failure_keeps_exact_pod(machine_case, monkeypatch):
     c = machine_case
     with monkeypatch.context() as patch:
         patch.setattr(c.placement, "prepare_claimed", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad install")))
         with pytest.raises(RuntimeError, match="bad install"):
             c.machine.claim(c.job())
-    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
-    assert c.read()["lease"]["ended"] == "preparation_unverified"
+    assert c.read()["state"] == "claimed" and c.deletes == []
+    assert c.read()["lease"]["state"] == "idle"
+    assert c.read()["lease"]["preparation"]["state"] == "stale_after_failure"
 
 
 @pytest.mark.parametrize("unsafe", ["paid_expired", "changed_receipt"])

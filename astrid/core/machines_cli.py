@@ -33,13 +33,14 @@ def _when(value: Any) -> str:
 
 def render(rows: Sequence[dict[str, Any]]) -> str:
     header = ["ID", "KIND", "GPU", "STATE", "RELEASES (UTC)", "MIN LEFT",
-              "COST EST. (USD)", "RATE (USD/HR)", "LAST JOB", "ENDED"]
+              "COST EST. (USD)", "RATE (USD/HR)", "LAST JOB", "PREPARATION", "RELEASE CAUSE", "ENDED"]
     body = [[str(r.get("id") or "-"), str(r.get("kind") or "-"), str(r.get("gpu") or "-"),
              str(r.get("state") or "-"), _when(r.get("release_at")),
              "-" if r.get("minutes_left") is None else f"{float(r['minutes_left']):.1f}",
              f"{float(r.get('cost_usd') or 0):.2f}",
              "-" if r.get("hourly_usd") is None else f"{float(r['hourly_usd']):.2f}",
              str((r.get("last_job") or {}).get("outcome") or "-"),
+             str(r.get("preparation_state") or "-"), str(r.get("release_reason") or "-"),
              str(r.get("ended") or "-")] for r in rows]
     widths = [max([len(header[i])] + [len(row[i]) for row in body]) for i in range(len(header))]
     lines = ["  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)) for row in [header, *body]]

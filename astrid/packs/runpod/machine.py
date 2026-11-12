@@ -614,6 +614,22 @@ class RunPodMachine:
             if self._begin is not None:
                 self._begin(lease)
 
+        def annotate_claim_failure(error: BaseException) -> None:
+            if not acquired:
+                return
+            record = owner.selection._read() or {}
+            info = record.get("lease") or {}
+            error.machine_failure = {
+                "id": record.get("pod_id"), "lease": record.get("operation_id"),
+                "generation": info.get("generation"), "device": record.get("gpu_type"),
+                "after": ("released" if record.get("state") == "cleanup_complete" else
+                          "kept" if info.get("state") == "idle" else "unknown"),
+                "release_reason": info.get("ended") or info.get("release_reason") or "preparation_failed",
+                "expires_at": info.get("idle_expires_at"),
+                "cost_usd": record.get("estimated_cost_usd", 0) + max(0, owner.clock() - info.get("accounted_at", info.get("started_at", owner.clock()))) * info.get("hourly_usd", 0) / 3600,
+                "preparation_state": (info.get("preparation") or {}).get("state"),
+            }
+
         with staged_workflow_path(workflow=None, python=inputs["python"], companion=inputs["companion"],
                                   source=inputs["source"], scratch=job.scratch) as (workflow, _):
             request = RunPodPreparationRequest({"engine": adapter.installation.engine},
@@ -658,8 +674,8 @@ class RunPodMachine:
                         with owner.lock:
                             record = owner.preparation_claim(acquired[0])
                             prepared = record["lease"].get("preparation") or {}
-                            safe = (not owner.closed and prepared.get("state") == "prepared"
-                                    and isinstance(prepared.get("installed"), dict)
+                            safe = (not owner.closed and prepared.get("state") in {"prepared", "stale_after_failure"}
+                                    and (prepared.get("state") == "stale_after_failure" or isinstance(prepared.get("installed"), dict))
                                     and record.get("pod_id") == acquired[0].claim.get("pod_id"))
                     except Exception:
                         safe = False
@@ -679,9 +695,13 @@ class RunPodMachine:
                             owner.note_failed_job(acquired[0], host_summary(exc, stage="preparation"))
                         except Exception:
                             pass
-                        owner.release(reason="preparation_unverified",
-                                      _expected_operation=acquired[0].operation_id,
-                                      expected_machine_id=acquired[0].claim.get("pod_id"))
+                        try:
+                            owner.release(reason="preparation_unverified",
+                                          _expected_operation=acquired[0].operation_id,
+                                          expected_machine_id=acquired[0].claim.get("pod_id"))
+                        except BaseException as cleanup_error:
+                            annotate_claim_failure(cleanup_error)
+                            raise
                 else:
                     # acquire failed before on_acquired. Its locked failure
                     # snapshot names only an exact journal-created pod; this
@@ -690,6 +710,7 @@ class RunPodMachine:
                     if identity is not None:
                         owner.release(reason="custody_changed", _expected_operation=identity[0],
                                       expected_machine_id=identity[1])
+                annotate_claim_failure(exc)
                 raise
             finally:
                 owner.selection.wait_hook = None
@@ -1077,6 +1098,7 @@ class RunPodMachine:
             pass  # Unknown stop is classified unsafe below; exact release reconciles it.
         # Snapshot custody before remote verification, then fence it again before saving.
         rejection = None
+        stale = False
         with owner.lock:
             try:
                 record = owner.preparation_claim(lease.lease)
@@ -1092,6 +1114,24 @@ class RunPodMachine:
                     rejection = "job_stop_unverified"
             except Exception:
                 rejection = "custody_changed"
+                # preparation_claim also refuses an expired lease. Distinguish
+                # that case only when the exact invocation still owns the pod.
+                try:
+                    record = owner._read()
+                    info = record["lease"]
+                    invocation = lease.lease
+                    if (failure is not None and not owner.closed and record["state"] == "claimed"
+                            and record.get("pod_id") == lease.claim.pod_id
+                            and record["operation_id"] == invocation.operation_id
+                            and info.get("state") == "active"
+                            and info.get("owner_epoch") == invocation.owner_epoch == owner.epoch
+                            and info.get("generation") == invocation.generation
+                            and info.get("invocation_id") == invocation.invocation_id
+                            and owner.clock() >= info["paid_expires_at"]):
+                        paid_expiry = info["paid_expires_at"]
+                        rejection = "paid_limit_exhausted"
+                except Exception:  # noqa: BLE001 (unknown custody remains unsafe)
+                    pass
         if getattr(lease, "unsafe_job_stop", False):
             rejection = "job_stop_unverified"
         if isinstance(failure, CustodyChanged):
@@ -1108,25 +1148,32 @@ class RunPodMachine:
             try:
                 remaining = min(paid_expiry - owner.clock(), verify_deadline - time.monotonic())
                 if remaining <= 0:
-                    rejection = "paid_limit_exhausted"
+                    if owner.clock() >= paid_expiry:
+                        rejection = "paid_limit_exhausted"
+                    else:
+                        self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"}, job=job)
+                        reason = "verification_timeout"
                 else:
                     try:
                         verified = adapter.placement._canonical_installed(
                             lease.state, verification_seconds=remaining)
                     except Exception as exc:
-                        from .remote_placement import RemotePlacementError
-                        if isinstance(exc, RemotePlacementError) and str(exc) == "live installation differs from its canonical receipt":
+                        from .remote_placement import InstallationReceiptChanged
+                        if isinstance(exc, InstallationReceiptChanged):
                             verified = False
                         else:
                             raise
-                    if owner.clock() >= paid_expiry or time.monotonic() >= verify_deadline:
+                    if owner.clock() >= paid_expiry:
                         rejection = "paid_limit_exhausted"
+                    elif time.monotonic() >= verify_deadline:
+                        self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"}, job=job)
+                        reason = "verification_timeout"
                     elif not verified:
                         why = getattr(lease.state, "install_unverified", None) or ""
                         if why.startswith("status_exit_") or why in {"status_no_receipt", "status_deadline_exhausted"}:
                             rejection = "engine_unreachable"
                         else:
-                            self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"}, job=job)
+                            stale = True
                     elif {**lease.state.installed, "receipt_sha256": expected_install.get("receipt_sha256")} != expected_install:
                         rejection = "installation_unverified"
                     else:
@@ -1139,12 +1186,18 @@ class RunPodMachine:
             except CustodyChanged:
                 rejection = "custody_changed"
             except Exception:
-                rejection = "engine_unreachable"
+                if owner.clock() >= paid_expiry:
+                    rejection = "paid_limit_exhausted"
+                elif time.monotonic() >= verify_deadline:
+                    self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"}, job=job)
+                    reason = "verification_timeout"
+                else:
+                    rejection = "engine_unreachable"
         if rejection is not None:
             warm, reason = False, rejection
         elif failure is not None:
             warm = True
-        if warm and job is not None:
+        if warm and job is not None and reason != "verification_timeout":
             try:
                 self._reset(lease, verify_deadline=verify_deadline, paid_expiry=paid_expiry)
                 if (verify_deadline is not None and time.monotonic() >= verify_deadline) or owner.clock() >= paid_expiry:
@@ -1152,6 +1205,8 @@ class RunPodMachine:
             except Exception as exc:  # noqa: BLE001 (any failed reset releases the pod)
                 lease.state.note("reset", "failed", error=type(exc).__name__)
                 warm, reason = False, "reset_failed"
+        if warm and stale:
+            self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"})
         unreaped = getattr(lease.claim.ops, "unreaped_child", None)
         if unreaped is not None:
             owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)
@@ -1182,7 +1237,12 @@ class RunPodMachine:
                               expected_machine_id=lease.claim.pod_id)
                 raise
             lease.released = True
-            lease.kept, lease.release_reason = True, None
+            lease.kept, lease.release_reason = True, reason if reason == "verification_timeout" else None
+            record = owner._read()
+            info = record["lease"]
+            lease.expires_at = info.get("idle_expires_at")
+            lease.cost_usd = record.get("estimated_cost_usd", 0) + max(0, owner.clock() - info.get("accounted_at", info["started_at"])) * info.get("hourly_usd", 0) / 3600
+            lease.preparation_state = (info.get("preparation") or {}).get("state")
             return
         try:
             if observer_key is not None:
@@ -1393,6 +1453,8 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
             "idle_expires_at": lease.get("idle_expires_at") if state == "idle" else None,
             "release_at": release_at, "minutes_left": minutes_left,
             "cost_usd": round(cost_usd, 4), "hourly_usd": hourly_usd,
+            "preparation_state": (lease.get("preparation") or {}).get("state"),
+            "release_reason": lease.get("release_reason") if state == "releasing" else None,
             "ended": None if live else (lease.get("ended") or lease.get("release_reason")),
             "last_job": safe_last}
 

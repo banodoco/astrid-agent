@@ -362,7 +362,12 @@ class RunPodLeaseOwner:
             if self.closed:
                 return
         try:
-            self.release(reason="recovery", _expected_operation=operation)
+            with self.lock:
+                record = self._read()
+                reason = ((record or {}).get("lease") or {}).get("release_reason") or "recovery"
+                if record is not None and record.get("operation_id") == operation:
+                    self._save(record, {**record["lease"], "release_mechanism": "recovery"})
+            self.release(reason=reason, _expected_operation=operation)
         except Exception as exc:
             self.last_error_type = type(exc).__name__
 
