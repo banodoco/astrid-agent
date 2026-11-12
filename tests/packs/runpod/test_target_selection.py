@@ -1188,3 +1188,32 @@ def test_rest_exact_pod_volume_object_passes_selection(case, monkeypatch):
     }))
     result = asyncio.run(case.owner.select(case.grant))
     assert result["pod_id"] == "pod-1"
+
+
+@pytest.mark.parametrize("retryable,custody,retries", [
+    (True, "none", True), (False, "none", False),
+    (True, "exact", False), (True, "unknown", False),
+])
+def test_capacity_wait_uses_refusal_policy_for_new_reason(case, monkeypatch, retryable, custody, retries):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    failure = selection.OfferObservationError("observation_failed")
+    failure.reason = "new_provider_observation"
+    failure.retryable = retryable
+    failure.custody = custody
+    outcomes = iter([failure, case.offer])
+
+    def observe():
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    case.owner.observe_offer = observe
+    if retries:
+        asyncio.run(case.owner.select(waiting_grant(case)))
+        assert sleeps == [5] and case.creates == 1
+    else:
+        with pytest.raises(selection.OfferObservationError) as caught:
+            asyncio.run(case.owner.select(waiting_grant(case)))
+        assert caught.value is failure
+        assert sleeps == [] and case.creates == 0

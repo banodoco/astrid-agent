@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import posixpath
+import random
 from dataclasses import dataclass
 from typing import Any, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
 
 EngineId: TypeAlias = str
 PlatformKey: TypeAlias = Literal["linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130", "windows-x86_64-cu128", "windows-x86_64-cu130"]
-Placement: TypeAlias = Literal["local", "runpod"]
+Placement: TypeAlias = str
+Gate: TypeAlias = Literal["identity", "state", "image", "storage", "hardware", "region",
+                          "rate", "lifetime", "inventory", "capacity", "install"]
 Digest: TypeAlias = str
 Deadline: TypeAlias = float
 TargetPath: TypeAlias = str
@@ -26,6 +29,26 @@ class EngineError(RuntimeError):
         self.step_id = step_id
         self.retryable = retryable
         self.recovery_handle = recovery_handle
+
+
+class PlacementRefused(EngineError):
+    """A placement gate refused progress with explicit retry and custody policy."""
+
+    code = "placement_refused"
+
+    def __init__(self, message: str, *, gate: Gate, retryable: bool = False,
+                 retry_after: float | None = None,
+                 custody: Literal["none", "exact", "unknown"] = "unknown"):
+        super().__init__(message, retryable=retryable)
+        self.gate = gate
+        self.retry_after = retry_after
+        self.custody = custody
+
+
+def next_delay(attempt: int, retry_after: float | None) -> float:
+    """Exponential observation delay, respecting a provider's minimum delay."""
+    base = min(60.0, 5.0 * 2 ** min(4, max(0, attempt - 1)))
+    return max(retry_after or 0.0, base) + random.uniform(0.0, 0.5)
 
 
 class RecipeError(EngineError):
@@ -490,7 +513,10 @@ class PlacementDescriptor:
             raise ValueError("placement.schema must be astrid.generation-placement.v1")
         if not isinstance(self.supported, tuple) or not self.supported:
             raise ValueError("placement.supported must be a non-empty tuple")
-        if any(not isinstance(value, str) or value not in ("local", "runpod")
+        from astrid.core.generation.placement import registered_machine_kinds
+
+        known = {"local", *registered_machine_kinds()}
+        if any(not isinstance(value, str) or value not in known
                for value in self.supported):
             raise ValueError("placement.supported contains an invalid placement")
         if len(set(self.supported)) != len(self.supported):

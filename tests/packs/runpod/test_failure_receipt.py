@@ -277,7 +277,7 @@ def test_stage_decision_rules(kwargs, stage, basis):
     ("credential", "PaidSelectionError"), ("volume", "AcquisitionUnresolvedError"),
     ("machine", "AcquisitionUnresolvedError"),
 ])
-def test_claim_cause_marker_is_projected_without_a_gate(marker, error_type):
+def test_claim_cause_marker_is_projected_with_identity_gate(marker, error_type):
     from astrid.packs.runpod.failure_diagnostics import EXCEPTIONS
     from astrid.packs.runpod.target_selection import PaidSelectionError
     from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError, observation_failure_gate
@@ -288,7 +288,7 @@ def test_claim_cause_marker_is_projected_without_a_gate(marker, error_type):
     receipt = failure_receipt.build_receipt({"failure": error, "stage": "claim"},
         job=SimpleNamespace(task_id="t"), machine=None, timing=None)
     assert receipt["cause"]["cause"] == marker and receipt["stage"] == "no_machine"
-    assert error.gate is None and observation_failure_gate(error) == "provider"
+    assert error.gate == "identity" and observation_failure_gate(error) == "identity"
     assert receipt["cause"]["exception"] == error_type and error_type in EXCEPTIONS
     assert "private" not in json.dumps(receipt)
 

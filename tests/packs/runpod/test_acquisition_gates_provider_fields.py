@@ -186,7 +186,10 @@ def test_each_failing_gate_names_itself_in_the_error_and_the_journal(gate, name)
         _select(gate)
     assert f"unconfirmed {name} gate" in str(caught.value)
     assert "price or lifetime" not in str(caught.value)
-    assert caught.value.gate == name
+    assert caught.value.runpod_gate == name
+    assert caught.value.gate == {"volume": "storage", "GPU": "hardware", "datacenter": "region",
+                                 "machine": "hardware"}.get(name, name)
+    assert caught.value.custody == "exact"
     record = _journal(gate)
     assert record["state"] == "cleanup_pending" and record["failed_gate"] == name
     assert record["pod_id"] == POD_ID  # release behavior unchanged

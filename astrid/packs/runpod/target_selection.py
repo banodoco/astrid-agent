@@ -23,9 +23,10 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
+from astrid.core.generation.engine_contracts import next_delay
 from astrid.sdk.storage_root import resolve_runtime_data_root
 
 from .worker_preparation import (
@@ -52,6 +53,10 @@ class PaidSelectionError(TargetObservationError):
     rate, lifetime, machine) that the outer handler reports.
     """
 
+    def __init__(self, message: str, *, gate: str = "identity",
+                 custody: Literal["none", "exact", "unknown"] = "none", **kwargs) -> None:
+        super().__init__(message, gate=gate, custody=custody, **kwargs)
+
 
 class RunPodSetupRequiredError(PaidSelectionError):
     """Saved RunPod setup is absent or incomplete; never trigger setup implicitly."""
@@ -72,13 +77,13 @@ DEFAULT_RUNPOD_WORKER_IMAGE = (
 
 
 _OFFER_FAILURES = {
-    "stock_unavailable": "no machine is in stock right now for the requested GPU and datacenter; this is normal, and generate with --max-hourly-usd waits for one by itself",
-    "provider_transport_or_response_unavailable": "provider transport or response is unavailable; retry offer observation",
-    "provider_authentication_failed": "provider authentication was rejected; check the configured credential",
-    "provider_rate_limited": "provider rate limit was reached; retry offer observation later",
-    "provider_observation_unavailable": "provider availability could not be confirmed; retry offer observation",
-    "price_unconfirmed": "the selected GPU price could not be confirmed; retry offer observation",
-    "observation_failed": "current RunPod offer could not be confirmed; retry offer observation",
+    "stock_unavailable": ("no machine is in stock right now for the requested GPU and datacenter; this is normal, and generate with --max-hourly-usd waits for one by itself", "capacity", True),
+    "provider_transport_or_response_unavailable": ("provider transport or response is unavailable; retry offer observation", "inventory", True),
+    "provider_authentication_failed": ("provider authentication was rejected; check the configured credential", "identity", False),
+    "provider_rate_limited": ("provider rate limit was reached; retry offer observation later", "rate", True),
+    "provider_observation_unavailable": ("provider availability could not be confirmed; retry offer observation", "inventory", True),
+    "price_unconfirmed": ("the selected GPU price could not be confirmed; retry offer observation", "inventory", True),
+    "observation_failed": ("current RunPod offer could not be confirmed; retry offer observation", "inventory", True),
 }
 
 
@@ -87,9 +92,13 @@ class OfferObservationError(PaidSelectionError):
 
     def __init__(self, reason: str, *, retry_after: float | None = None):
         self.reason = reason if isinstance(reason, str) and reason in _OFFER_FAILURES else "observation_failed"
-        self.retry_after = (float(retry_after) if type(retry_after) in (int, float)
-                            and math.isfinite(retry_after) and retry_after >= 0 else None)
-        super().__init__(f"RunPod offer unavailable (reason={self.reason}): {_OFFER_FAILURES[self.reason]}", gate="offer")
+        retry_after = (float(retry_after) if type(retry_after) in (int, float)
+                       and math.isfinite(retry_after) and retry_after >= 0 else None)
+        message, gate, retryable = _OFFER_FAILURES[self.reason]
+        super().__init__(f"RunPod offer unavailable (reason={self.reason}): {message}",
+                         gate=gate, retryable=retryable, retry_after=retry_after, custody="none")
+        # Receipts name every offer refusal with the user-facing gate "offer".
+        self.runpod_gate = "offer"
 
 
 class CapacityWaitCancelled(asyncio.CancelledError):
@@ -624,26 +633,23 @@ class RunPodSelectionOwner:
                     progress(number, offer, "claimed")
                     return result
                 except OfferObservationError as exc:
-                    retryable_unclear = exc.reason in {
-                        "provider_observation_unavailable", "provider_transport_or_response_unavailable",
-                        "observation_failed", "price_unconfirmed",
-                    }
-                    if not consent.wait_for_capacity or exc.reason not in {
-                            "stock_unavailable", "provider_rate_limited", "provider_observation_unavailable",
-                            "provider_transport_or_response_unavailable", "observation_failed", "price_unconfirmed"}:
+                    if not consent.wait_for_capacity or not exc.retryable or exc.custody != "none":
                         raise
+                    # Admission is provider-independent. Shared gates distinguish a
+                    # definite stock-out from rate limiting and unclear inventory.
+                    retryable_unclear = exc.gate not in {"capacity", "rate"}
                     if retryable_unclear:
                         unclear_failures += 1
                         if unclear_failures >= 9:
                             progress(number, offer, exc.reason)
                             raise
                         rate_limit_failures = 0
-                        base_delay = min(60.0, 5.0 * 2 ** (unclear_failures - 1))
+                        attempt = unclear_failures
                     else:
                         unclear_failures = 0
-                        rate_limit_failures = rate_limit_failures + 1 if exc.reason == "provider_rate_limited" else 0
-                        base_delay = min(60.0, 5.0 * 2 ** (rate_limit_failures - 1)) if rate_limit_failures else 5.0
-                    delay = max(base_delay + random.uniform(0.0, 0.5), exc.retry_after or 0.0)
+                        rate_limit_failures = rate_limit_failures + 1 if exc.gate == "rate" else 0
+                        attempt = rate_limit_failures or 1
+                    delay = next_delay(attempt, exc.retry_after)
                     progress(number, offer, exc.reason,
                              f"provider observation unclear ({exc.reason}); retrying in {delay:.0f} s"
                              if retryable_unclear else None)
@@ -883,7 +889,7 @@ class RunPodSelectionOwner:
                     detail = f"; failed gate: {gate}" if gate is not None else ""
                     raise AcquisitionUnresolvedError(
                         "provider acquisition remains unresolved; reconcile the same journal" + detail,
-                        gate=gate,
+                        gate=gate or "identity", custody=worker_preparation._record_custody(self._read() or {}),
                     ) from None
                 acquired_record, observation = dict(acquired.attempt), acquired.observation
                 # The successful (or reconciled) attempt owns the durable clock.
@@ -924,7 +930,7 @@ class RunPodSelectionOwner:
                     raise PaidSelectionError("claim preparation consumed its paid lifetime", gate="lifetime")
             except Exception as exc:
                 # Every gate names itself; a failure outside any gate is reported as such.
-                gate = getattr(exc, "gate", None) or "unclassified"
+                gate = getattr(exc, "runpod_gate", None) or "unclassified"
                 logging.getLogger(__name__).warning("RunPod provider contract failed; gate=%s", gate)
                 pending = {**acquired_record, "state": "cleanup_pending", "reconciliation_required": True,
                            "failed_gate": gate}
@@ -933,7 +939,7 @@ class RunPodSelectionOwner:
                 detail = (str(exc) if isinstance(exc, TargetObservationError)
                           else f"unexpected {type(exc).__name__}")
                 raise PaidSelectionError(
-                    f"unconfirmed {gate} gate: {detail}; exact claim requires cleanup", gate=gate) from None
+                    f"unconfirmed {gate} gate: {detail}; exact claim requires cleanup", gate=gate, custody="exact") from None
             claimed = {
                 **acquired_record, "schema_version": "astrid.runpod.claim.v1", "state": "claimed",
                 "pod_id": observation.pod_id, "name": observation.pod_name,

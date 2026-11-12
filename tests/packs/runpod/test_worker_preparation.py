@@ -997,3 +997,23 @@ def test_missing_volume_evidence_fails_closed_only_for_volume_contracts() -> Non
     with pytest.raises(TargetObservationError) as error:
         inspect_target_records(_contract(defer_machine=True), pods=[bare], volumes=[_volume()])
     assert observation_failure_gate(error.value) == "volume"
+
+
+def test_target_observation_requires_gate():
+    with pytest.raises(TypeError):
+        TargetObservationError("unconfirmed")
+
+
+@pytest.mark.parametrize("old,shared", [
+    ("GPU", "hardware"), ("machine", "hardware"), ("volume", "storage"),
+    ("datacenter", "region"), ("status", "state"), ("identity", "identity"),
+])
+def test_observation_refusal_preserves_provider_gate(old, shared):
+    from astrid.core.generation.engine_contracts import PlacementRefused
+    from astrid.packs.runpod.worker_preparation import observation_failure_gate
+    error = TargetObservationError("unconfirmed", gate=old, retryable=True, custody="exact")
+    assert isinstance(error, PlacementRefused)
+    assert error.gate == shared
+    assert error.runpod_gate == old
+    assert observation_failure_gate(error) == old
+    assert error.retryable is True and error.custody == "exact"

@@ -20,6 +20,7 @@ MAX_FRAME_BYTES = 4096
 MAX_GRAPH_BYTES = 8 * 1024 * 1024
 MAX_GRAPH_NODE_IDS = 4096
 CODES = {
+    'placement_refused': 'qualification',
     'input_rejected': 'input', 'missing_dependency': 'dependency',
     'engine_not_found': 'installation', 'unknown_engine': 'installation',
     'unsupported_platform': 'installation', 'unsupported_placement': 'installation',
