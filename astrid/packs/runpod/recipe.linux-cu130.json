@@ -144,6 +144,13 @@
       "sha256_before": "659105c9d9e9c754c7ddc828991140580e91fae035d7f106b6956275473ab3bf",
       "sha256_after": "d6be74daff8ad86644bebed0d530ee82188302394478356b7fe91faa794a2c2c",
       "replacement": "packs/runpod/patches/modeling_qwen3_tts_tokenizer_v2.txt"
+    },
+    {
+      "source": "comfyui-qwentts",
+      "path": "qwen_tts/core/models/configuration_qwen3_tts.py",
+      "sha256_before": "f52867f14fde06a416dd14864d503ce6d13d0a08d5f5da30191e1c80c13f5d18",
+      "sha256_after": "7365d5a295b610a442e1f7feebba97e89433013bb59ec9da8c2d2b5c00aceb92",
+      "replacement": "packs/runpod/patches/configuration_qwen3_tts.txt"
     }
   ]
 }
