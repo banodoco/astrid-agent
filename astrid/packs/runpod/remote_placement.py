@@ -741,6 +741,7 @@ class RemotePlacement:
         plan = engine_runner.plan_from_receipt(
             recipe, live,
             root=installation.root, placement="local")
+        engine_runner.require_current_receipt(live, plan, recipe)
         receipt = installation.root + "/.astrid-engine/install.json"
         if verification_seconds is None:
             path = state.local_out / "installed.json"
@@ -780,6 +781,7 @@ class RemotePlacement:
         plan = engine_runner.plan_from_receipt(
             recipe, saved,
             root=installation.root, placement="local")
+        engine_runner.require_current_receipt(saved, plan, recipe)
         if (saved.status != "installed" or live.receipt_id != saved.receipt_id
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks
