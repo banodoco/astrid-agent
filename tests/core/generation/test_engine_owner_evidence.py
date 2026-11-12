@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import time
@@ -46,6 +47,42 @@ def test_owner_process_state_distinguishes_live_and_reused_pid():
     boot, ticks = current.split(":", 1)
     changed_boot = ("0" if boot[0] != "0" else "1") + boot[1:] + ":" + ticks
     assert custody._owner_process_state({"process": {"pid": pid, "birth_id": changed_boot}}) == ("dead", "boot_id")
+
+
+def test_live_owner_survives_one_failed_process_read(tmp_path, monkeypatch):
+    pid = os.getpid()
+    birth = process_group.process_birth_identity(pid)
+    control, marker = _marker(tmp_path, process={"pid": pid, "birth_id": birth})
+    original = custody.process_birth_identity
+    reads = []
+
+    def fail_once(process_id=None):
+        if process_id == pid:
+            reads.append(process_id)
+            if len(reads) == 1:
+                return ""
+        return original(process_id)
+
+    monkeypatch.setattr(custody, "process_birth_identity", fail_once)
+    assert custody._owner_process_state(marker) == ("alive", "pid_start_ticks")
+    assert len(reads) == 2
+    reads.clear()
+    client = custody.LinuxEngineServiceClient(**_identity(tmp_path))
+    with custody._directory(str(control), create=False) as fd:
+        assert client._retire_dead_owner(fd, time.monotonic() + 2) is False
+    assert json.loads((control / "session.json").read_text()) == marker
+
+
+def test_zombie_owner_has_explicit_death_witness():
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        deadline = time.monotonic() + 5
+        while not (birth := process_group._zombie_birth_identity(child.pid)):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert custody._owner_process_state({"process": {"pid": child.pid, "birth_id": birth}}) == ("dead", "pid_start_ticks")
+    finally:
+        child.wait(timeout=5)
 
 
 def test_dead_child_process_evidence_and_different_pod(monkeypatch):
@@ -96,7 +133,8 @@ def test_local_flock_can_retire_unknown_legacy_owner(tmp_path, caplog):
     ("boot_id", "boot_id"), ("pid_reuse", "pid_start_ticks"),
     ("reaped_child", "pid_start_ticks"), ("different_pod", "different_pod"),
 ])
-def test_positive_process_evidence_retires_on_unreliable_mount(tmp_path, monkeypatch, caplog, case, evidence):
+@pytest.mark.parametrize("mount_type", ["nfs", "fuse.test", "unverified", "ext4"])
+def test_process_evidence_requires_native_flock_mount(tmp_path, monkeypatch, caplog, case, evidence, mount_type):
     process = None
     pod_id = None
     if case == "boot_id":
@@ -116,6 +154,7 @@ def test_positive_process_evidence_retires_on_unreliable_mount(tmp_path, monkeyp
     else:
         monkeypatch.setenv("RUNPOD_POD_ID", "current-pod")
         pod_id = "recorded-pod"
+        process = {"pid": os.getpid(), "birth_id": process_group.process_birth_identity()}
 
     control, marker = _marker(tmp_path, process=process)
     if pod_id is not None:
@@ -123,23 +162,51 @@ def test_positive_process_evidence_retires_on_unreliable_mount(tmp_path, monkeyp
         marker_path = control / "session.json"
         marker_path.write_text(json.dumps(marker))
         marker_path.chmod(0o600)
-    monkeypatch.setattr(custody, "_flock_reliable", lambda _fd: False)
+    original_open = open
+
+    def mountinfo(path, *args, **kwargs):
+        if path == "/proc/self/mountinfo":
+            info = control.stat()
+            return __import__("io").StringIO(
+                f"1 0 {os.major(info.st_dev)}:{os.minor(info.st_dev)} / /mount rw - {mount_type} source rw\n")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mountinfo)
     client = custody.LinuxEngineServiceClient(**_identity(tmp_path))
     caplog.set_level(logging.WARNING, logger=custody.__name__)
-    dirfd = os.open(control, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        assert client._retire_dead_owner(dirfd, time.monotonic() + 2) is True
-    finally:
-        os.close(dirfd)
-    assert not (control / "session.json").exists()
-    assert f'"evidence":"{evidence}"' in caplog.text
+    with socket.socket(socket.AF_UNIX) as endpoint:
+        with custody._directory(str(control), create=False) as dirfd:
+            endpoint.bind(custody._socket_path(dirfd))
+            (control / "control.sock").chmod(0o600)
+            socket_inode = (control / "control.sock").stat().st_ino
+            if mount_type == "ext4":
+                assert client._retire_dead_owner(dirfd, time.monotonic() + 2) is True
+                assert not (control / "session.json").exists()
+                assert not (control / "control.sock").exists()
+                assert f'"evidence":"{evidence}"' in caplog.text
+            else:
+                def no_process_evidence(_marker):
+                    pytest.fail("mount ruling must precede process evidence")
+
+                monkeypatch.setattr(custody, "_owner_process_state", no_process_evidence)
+                with pytest.raises(CustodyUnresolved) as err:
+                    client.call("probe", {}, deadline=time.monotonic() + 2)
+                details = err.value.custody_details
+                assert details["reason"] == "owner_network_mount"
+                assert details["owner_state"] == "unknown" and details["evidence"] == "none"
+                assert err.value.reason == "Engine owner state is unprovable on a network mount."
+                assert "Leave the marker and socket in place" in str(err.value)
+                assert json.loads((control / "session.json").read_text()) == marker
+                assert (control / "control.sock").stat().st_ino == socket_inode
+                assert "Engine custody handover" not in caplog.text
     assert marker["owner_id"] not in caplog.text
 
 
-def test_unreadable_same_boot_pid_refuses_without_retiring_or_signalling(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reliable", [False, True])
+def test_unreadable_same_boot_pid_refuses_without_retiring_or_signalling(tmp_path, monkeypatch, reliable):
     birth = process_group.process_birth_identity()
     control, marker = _marker(tmp_path, process={"pid": os.getpid(), "birth_id": birth})
-    monkeypatch.setattr(custody, "_flock_reliable", lambda _fd: False)
+    monkeypatch.setattr(custody, "_flock_reliable", lambda _fd: reliable)
     original = custody.process_birth_identity
 
     def unreadable(pid=None):
@@ -148,12 +215,13 @@ def test_unreadable_same_boot_pid_refuses_without_retiring_or_signalling(tmp_pat
         return original(pid)
 
     monkeypatch.setattr(custody, "process_birth_identity", unreadable)
-    monkeypatch.setattr(custody, "held_child_birth_identity", lambda _pid: None)
+    monkeypatch.setattr(custody, "_zombie_birth_identity", lambda _pid: "")
     client = custody.LinuxEngineServiceClient(**_identity(tmp_path))
     with pytest.raises(CustodyUnresolved) as err:
         client.call("probe", {}, deadline=time.monotonic() + 2)
     details = err.value.custody_details
     assert details["owner_state"] == "unknown" and details["evidence"] == "none"
+    assert custody._owner_process_state(marker) == ("unknown", "none")
     assert json.loads((control / "session.json").read_text()) == marker
     assert Path(f"/proc/{os.getpid()}").exists()
 
@@ -175,10 +243,10 @@ def test_unknown_legacy_owner_on_unreliable_mount_refuses_without_evidence(tmp_p
     marker_path.chmod(0o600)
     client = custody.LinuxEngineServiceClient(**_identity(tmp_path))
     monkeypatch.setattr(custody, "_flock_reliable", lambda _fd: False)
-    with pytest.raises(EndpointOwnershipError) as err:
+    with pytest.raises(CustodyUnresolved) as err:
         client.call("probe", {}, deadline=time.monotonic() + 1)
     details = err.value.custody_details
-    assert details["reason"] in {"owner_unknown", "identity_mismatch"}
+    assert details["reason"] == "owner_network_mount"
     assert details["evidence"] == "none"
     assert json.loads((control / "session.json").read_text()) == marker
 

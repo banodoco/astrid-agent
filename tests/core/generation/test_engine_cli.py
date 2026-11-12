@@ -13,7 +13,7 @@ import pytest
 
 from astrid.core import engine_cli
 from astrid.core.generation.engine_contracts import (
-    CommandFailed, CustodyUnresolved, EndpointOwnershipError, custody_diagnostics, custody_message,
+    CommandFailed, CustodyUnresolved, EndpointOwnershipError, custody_diagnostics, custody_message, engine_reason,
 )
 from astrid.core.generation.engine_local_endpoint import recorded_engine_root
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
@@ -121,6 +121,8 @@ def test_install_disk_check_is_read_only_on_refusal(tmp_path, monkeypatch, capsy
         error = json.loads(err)['error']
         assert rc == 1 and not out and not seen and not root.exists()
         assert error['code'] == 'ENGINE_INSTALL_INSUFFICIENT_DISK'
+        assert error['reason'] == 'insufficient disk space for engine installation'
+        assert engine_reason(error['reason']) == error['reason']
         assert error['free_bytes'] == free and error['required_bytes'] > free
         assert '--root' in error['message']
     else:

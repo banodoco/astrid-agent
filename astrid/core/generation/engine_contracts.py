@@ -20,6 +20,7 @@ _ENGINE_REASONS = frozenset({
     'Engine endpoint is not owned by this installation.',
     'Engine owner is unreachable; custody remains unresolved.',
     'Engine owner state could not be verified; custody remains unresolved.',
+    'Engine owner state is unprovable on a network mount.',
     'Engine request does not match the bound launch or owner.',
     'Engine supervisor did not confirm command cleanup; inspect the engine state before retrying.',
     'Linux helper requires a Linux recipe',
@@ -140,6 +141,7 @@ _ENGINE_REASONS = frozenset({
     'invalid service helper payload',
     'invalid service helper request',
     'invalid service ownership state',
+    'insufficient disk space for engine installation',
     'invalid start placeholder',
     'invalid supervisor cleanup diagnostic',
     'invalid supervisor marker; explicit recovery required',
@@ -290,6 +292,7 @@ _ENGINE_REASONS = frozenset({
     'target write made no progress',
     'the local engine is being updated; try again when astrid engines install finishes',
     'unbound supervisor response',
+    'unexpected engine operation failure',
     'unbound target helper response',
     'unknown engine helper operation',
     'unknown engine placement',
@@ -445,7 +448,7 @@ class EndpointHealthError(EngineError):
 # identifiers never cross this boundary.
 _CUSTODY_REASONS = frozenset({
     "identity_mismatch", "owner_alive", "owner_busy", "owner_unknown", "owner_lock_held",
-    "marker_invalid", "owner_unreachable", "cleanup_unconfirmed", "owner_lock_timeout", "request_mismatch", "endpoint_unowned", "custody_not_private",
+    "marker_invalid", "owner_unreachable", "cleanup_unconfirmed", "owner_lock_timeout", "request_mismatch", "endpoint_unowned", "custody_not_private", "owner_network_mount",
 })
 _CUSTODY_OWNER_STATES = frozenset({"alive", "dead", "unknown"})
 _CUSTODY_LOCK_STATES = frozenset({"held", "available", "unknown"})
@@ -458,6 +461,7 @@ _CUSTODY_MESSAGES = {
     "owner_alive": "An engine owner is still active; retry after it exits.",
     "owner_busy": "An engine owner is still running a job; wait for it to finish.",
     "owner_unknown": "Engine owner state could not be verified; custody remains unresolved.",
+    "owner_network_mount": "Engine owner state is unprovable on a network mount.",
     "owner_lock_held": "Engine custody is locked by another owner; retry after it releases the lock.",
     "marker_invalid": "Engine custody marker is invalid; inspect the local engine state before retrying.",
     "owner_unreachable": "Engine owner is unreachable; custody remains unresolved.",
@@ -472,6 +476,7 @@ _CUSTODY_ACTIONS = {
     "owner_alive": "Wait for the active owner to exit, then retry.",
     "owner_busy": "Wait for the current job to finish, then retry.",
     "owner_unknown": "Leave the marker in place; obtain proof the owner has exited before retrying.",
+    "owner_network_mount": "Leave the marker and socket in place; restore owner connectivity or choose an engine root on a verified local filesystem.",
     "owner_lock_held": "Wait for the owner lock to be released, then retry.",
     "marker_invalid": "Inspect or repair the custody marker before retrying.",
     "owner_unreachable": "Leave the marker in place; restore owner connectivity and prove it exited before retrying.",

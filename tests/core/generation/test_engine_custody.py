@@ -1463,6 +1463,8 @@ def test_converge_refuses_busy_or_pending_queue_before_stop(session, monkeypatch
         with pytest.raises(EngineBusy) as error:
             custody.stop_engine_for_converge(plan, context=context, deadline=time.monotonic() + 5)
     assert error.value.code == "engine_busy"
+    assert error.value.running_count == (1 if setting == "busy" else 0)
+    assert error.value.pending_count == (1 if setting == "pending" else 0)
     assert ("running-work" if setting == "busy" else "pending-work") in str(error.value)
     assert Path(client.control, "session.json").read_bytes() == marker
     assert _alive(client._spawned.pid)

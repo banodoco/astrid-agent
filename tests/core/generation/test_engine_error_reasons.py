@@ -109,6 +109,47 @@ def test_error_reason_survives_failure_receipt_for_non_integrity_errors():
     assert _failure_diagnostics(error) == {'reason': error.reason}
 
 
+def test_unexpected_backend_exception_has_fixed_public_reason(monkeypatch, capsys):
+    secret = 'PRIVATE_BACKEND_EXCEPTION_TOKEN'
+
+    def fail(**kwargs):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(engine_cli, '_disk_anchor', lambda root: ('/', 1, 1, 10**15))
+    assert engine_cli.main(['install', 'comfyui', '--root', '/TARGET_ONLY/engine'],
+                           backend_factory=fail) == 1
+    output = capsys.readouterr()
+    assert not output.out and secret not in output.err
+    error = json.loads(output.err)['error']
+    assert error['code'] == 'engine_error'
+    assert error['reason'] == 'unexpected engine operation failure'
+    assert engine_reason(error['reason']) == error['reason']
+
+
+@pytest.mark.parametrize(('running', 'pending', 'valid'), [
+    (2, 3, True), (0, 0, True), (True, 1, False), (-1, 0, False),
+    ('PRIVATE_QUEUE_TOKEN', 1, False), (1, None, False),
+])
+def test_busy_public_message_contains_only_validated_counts(monkeypatch, capsys, running, pending, valid):
+    def fail(**kwargs):
+        error = contracts.EngineBusy('PRIVATE_QUEUE_TOKEN')
+        error.running_count = running
+        error.pending_count = pending
+        raise error
+
+    monkeypatch.setattr(engine_cli, '_disk_anchor', lambda root: ('/', 1, 1, 10**15))
+    assert engine_cli.main(['install', 'comfyui', '--root', '/TARGET_ONLY/engine'],
+                           backend_factory=fail) == 1
+    output = capsys.readouterr()
+    assert 'PRIVATE_QUEUE_TOKEN' not in output.err
+    error = json.loads(output.err)['error']
+    assert error['code'] == 'engine_busy'
+    if valid:
+        assert f'running={running}, pending={pending}' in error['message']
+    else:
+        assert 'running=' not in error['message'] and 'pending=' not in error['message']
+
+
 @pytest.mark.linux_native
 def test_each_custody_check_has_a_fixed_public_reason(tmp_path):
     from astrid.core.generation.engine_custody import LinuxEngineServiceClient
@@ -119,3 +160,23 @@ def test_each_custody_check_has_a_fixed_public_reason(tmp_path):
     for check, reason in contracts._CUSTODY_MESSAGES.items():
         error = client._refusal(contracts.CustodyUnresolved, None, reason=check)
         assert error.reason == reason
+
+
+@pytest.mark.parametrize('readable', [False, True])
+def test_busy_counts_require_a_successful_queue_read(tmp_path, monkeypatch, readable):
+    from astrid.core.generation import engine_custody
+
+    def queue(*args, **kwargs):
+        if not readable:
+            raise contracts.CustodyUnresolved('PRIVATE_QUEUE_FAILURE')
+        return [[], []], [[]]
+
+    monkeypatch.setattr(engine_custody, '_engine_queue', queue)
+    with pytest.raises(contracts.EngineBusy) as err:
+        engine_custody.refuse_busy_engine(root=str(tmp_path), engine='comfyui',
+                                         platform='linux-x86_64-cu130', deadline=0)
+    if readable:
+        assert (err.value.running_count, err.value.pending_count) == (2, 1)
+    else:
+        assert not hasattr(err.value, 'running_count')
+        assert not hasattr(err.value, 'pending_count')

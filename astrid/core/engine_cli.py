@@ -128,6 +128,7 @@ def main(argv=None, *, backend_factory=None):
                     # Check custody before reporting the disk constraint.
                     _custody_preflight(plan.root)
                 print(json.dumps({'error': {'code': 'ENGINE_INSTALL_INSUFFICIENT_DISK', 'step': None,
+                    'reason': engine_reason('insufficient disk space for engine installation'),
                     'retryable': True, 'recovery_handle': None,
                     'message': 'Free disk space or choose a different --root, then retry.',
                     'required_bytes': required, 'free_bytes': disk['free_bytes']}}, sort_keys=True),
@@ -194,9 +195,14 @@ def main(argv=None, *, backend_factory=None):
                     public['port'] = port
             else:
                 public['message'] = reason + '; inspect the engine owner and launch, then retry.'
+        if exc.code == 'engine_busy':
+            running, pending = getattr(exc, 'running_count', None), getattr(exc, 'pending_count', None)
+            if type(running) is int and running >= 0 and type(pending) is int and pending >= 0:
+                public['message'] += f' running={running}, pending={pending}.'
         print(json.dumps({'error': public},
                          sort_keys=True), file=sys.stderr)
         return 1
     except Exception:  # Avoid leaking transport diagnostics or command arguments.
-        print(json.dumps({'error': {'code': 'engine_error', 'step': None}}, sort_keys=True), file=sys.stderr)
+        print(json.dumps({'error': {'code': 'engine_error', 'step': None,
+              'reason': engine_reason('unexpected engine operation failure')}}, sort_keys=True), file=sys.stderr)
         return 1

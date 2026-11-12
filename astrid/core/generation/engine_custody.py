@@ -30,7 +30,9 @@ import uuid
 
 from runtime_protocol import platform as native
 
-from astrid.core.execution.process_group import process_birth_identity, held_child_birth_identity
+from astrid.core.execution.process_group import (
+    process_birth_identity, held_child_birth_identity, _zombie_birth_identity,
+)
 
 from . import engine_recipe as recipes
 from ._engine_python_bootstrap import engine_child_env, engine_process_env
@@ -310,12 +312,14 @@ class LinuxEngineServiceClient:
     def _retire_dead_owner(self, fd, deadline):
         """Retire only a proved-dead owner, under its unchanged native lock.
 
-        A free lock on an unverified filesystem is never death evidence.
+        An unverified filesystem rules out both lock and process death evidence.
         """
         _remaining(deadline)
         marker = self._marker(fd)
         if marker is None:
             return False
+        if not _flock_reliable(fd):
+            raise self._refusal(CustodyUnresolved, marker, reason="owner_network_mount")
         try:
             lock = os.open("owner.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
         except FileNotFoundError as exc:
@@ -332,7 +336,7 @@ class LinuxEngineServiceClient:
             state, evidence = _owner_process_state(marker)
             if state == "alive":
                 return False
-            if state != "dead" and _flock_reliable(fd):
+            if state != "dead" and "process" not in marker:
                 state, evidence = "dead", "flock"
             if state != "dead":
                 return False
@@ -356,6 +360,8 @@ class LinuxEngineServiceClient:
 
     def _owner_refusal(self, fd, error_type, reason):
         marker = self._marker(fd)
+        if not _flock_reliable(fd):
+            return self._refusal(error_type, marker, reason="owner_network_mount")
         lock_state = "unknown"
         try:
             lock = os.open("owner.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
@@ -588,8 +594,8 @@ def _publish_owner_marker(fd, identity, token, pid):
 def _flock_reliable(fd):
     """Only kernel local filesystems establish cross-process flock exclusion.
 
-    FUSE and network mounts need process or machine evidence instead. Mount
-    identity is read from the kernel, never from a claim stored on the volume.
+    FUSE, network and unverified mounts cannot prove owner death. Mount identity
+    is read from the kernel, never from a claim stored on the volume.
     """
     try:
         device = os.fstat(fd).st_dev
@@ -622,12 +628,12 @@ def _owner_process_state(marker):
         return "unknown", "none"
     if birth.split(":")[0] != current.split(":")[0]:
         return "dead", "boot_id"
-    observed = process_birth_identity(pid)
+    observed = process_birth_identity(pid) or process_birth_identity(pid)
     if observed:
         return ("alive" if observed == birth else "dead"), "pid_start_ticks"
     # The shared helper deliberately collapses absent, zombie and unreadable.
     # Only ENOENT or a witnessed zombie disambiguates death from failed reads.
-    if held_child_birth_identity(pid) == birth:
+    if _zombie_birth_identity(pid) == birth:
         return "dead", "pid_start_ticks"
     try:
         os.stat(f"/proc/{pid}")
@@ -702,8 +708,10 @@ def refuse_busy_engine(*, root, engine, platform, deadline):
     """A job owns the install lock; an empty queue does not end its custody."""
     from .engine_contracts import EngineBusy
 
+    counts = None
     try:
         running, pending = _engine_queue(root, engine, platform, deadline)
+        counts = len(running), len(pending)
     except CustodyUnresolved as exc:
         if Path(root, ".astrid-engine/session/session.json").exists():
             client = LinuxEngineServiceClient.for_stop(root=root, engine=engine, platform=platform)
@@ -724,6 +732,8 @@ def refuse_busy_engine(*, root, engine, platform, deadline):
         # may be unavailable; they cannot turn that refusal into admission.
         error = client._refusal(EngineBusy, None, reason="owner_busy")
     error.args = (str(error) + " " + message,)
+    if counts is not None:
+        error.running_count, error.pending_count = counts
     raise error
 
 
@@ -755,6 +765,7 @@ def stop_engine_for_converge(plan, *, context, deadline):
         with _directory(client.control, create=False) as fd:
             error = client._owner_refusal(fd, EngineBusy, "owner_busy")
         error.args = (str(error) + " " + _busy_message(running, pending),)
+        error.running_count, error.pending_count = len(running), len(pending)
         raise error
     client.stop_owned(deadline=deadline)
 
