@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import re
 import secrets
@@ -60,6 +61,8 @@ from .worker_staging import (
     _canonical_digest,
     prepare_worker,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class RunPodWorkerOwnerError(RuntimeError):
@@ -372,6 +375,7 @@ class RunPodLeaseOwner:
                     except Exception as exc:
                         # Optional metadata must not consume the cleanup retry.
                         self.last_error_type = type(exc).__name__
+                        _LOGGER.exception("RunPod recovery annotation could not be saved; retrying release anyway")
             self.release(reason=reason, _expected_operation=operation)
         except Exception as exc:
             self.last_error_type = type(exc).__name__
@@ -411,7 +415,8 @@ class RunPodLeaseOwner:
                                 _validate_completed_release(completed)
                                 released = True
                     except Exception:
-                        pass  # Only a validated exact completion receipt proves release.
+                        # Only a validated exact completion receipt proves release.
+                        _LOGGER.exception("RunPod completed-release receipt did not validate")
                 error = RunPodWorkerOwnerError(
                     f"RunPod acquisition failed; created pod {captured[1]} was released" if released else
                     "RunPod machine custody could not be verified; exact release or reconciliation required")
