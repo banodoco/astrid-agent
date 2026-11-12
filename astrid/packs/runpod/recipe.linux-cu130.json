@@ -142,14 +142,14 @@
       "source": "comfyui-qwentts",
       "path": "qwen_tts/core/models/modeling_qwen3_tts.py",
       "sha256_before": "9c5b54d9435604c6cbfda0fbbaeb77d4c959b0f95592b00f40c507f5364ede38",
-      "sha256_after": "562dee2c0fe7ac57e31ab77c610685c4389a80045cc216327dd60ef7bc9acfa7",
+      "sha256_after": "335f81a6a636c1675c84fc415b8a792e51790df6c17ff450743976c93fb3b62d",
       "replacement": "packs/runpod/patches/modeling_qwen3_tts.txt"
     },
     {
       "source": "comfyui-qwentts",
       "path": "qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py",
       "sha256_before": "659105c9d9e9c754c7ddc828991140580e91fae035d7f106b6956275473ab3bf",
-      "sha256_after": "a664e72457e377d4132f583586897ed0a9f51934b16b5ff739fa06135c58a736",
+      "sha256_after": "2e19371f13fbf1317a7e112357e9ba30c29ff9f5eb6843f485bb98b25ff23706",
       "replacement": "packs/runpod/patches/modeling_qwen3_tts_tokenizer_v2.txt"
     },
     {
