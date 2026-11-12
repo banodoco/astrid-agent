@@ -227,10 +227,10 @@ def _fetch_model(model: ModelSpec, models_root: Path, *, deadline: float, client
     error = None
     try:
         fetch.download(entry, root=models_root, client=resuming, quiet=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - reported through the raised error or fallback; diagnostic at debug, never a user-facing traceback
         # Keep failures for the no-published-file error below; a published file is still
         # force-verified against the lock before it can be accepted.
-        logging.getLogger(__name__).exception('fetch failed for locked model %s', model.destination)
+        logging.getLogger(__name__).debug('fetch failed for locked model %s', model.destination, exc_info=True)
         error = exc
     if path.exists():
         try:
