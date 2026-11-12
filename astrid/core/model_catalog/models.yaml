@@ -754,14 +754,10 @@ models:
     modality: video
     modes:
       t2v:
-        # The pinned template (video/ltx2_3_t2v) is image-conditioned with conditioning
-        # bypassed (3159 bypass=True) and needs an image file until the text-only graph
-        # lands (ledger M02-40 follow-up). The catalog matches the template.
         supports:
           - prompt
           - negative_prompt
           - seed
-          - image_ref
           - resolution
           - frames
           - fps
@@ -772,11 +768,10 @@ models:
           - enable_safety_checker
         requires:
           - prompt
-          - image_ref
         backends:
           local:
             template: video/ltx2_3_t2v
-            template_hash: "sha256:4f7415f1fc4e776f9a04c70b8cacafcc87682f013b9b88ec80d881437efa77fd"
+            template_hash: "sha256:949bd8473a7c29402247f38387a70161cc6f0fb812f1616d61c58beb5935b015"
           cloud:
             endpoint: fal-ai/ltx-2.3/text-to-video/fast
       i2v:
