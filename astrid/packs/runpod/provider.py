@@ -340,6 +340,9 @@ class ProviderGate:
             except ProviderRefused as exc:
                 raise ProviderNotStarted(exc.retry_after) from exc
         _check_provider_cancelled()
+        entry = _provider_entry.get()
+        if entry is not None and not cleanup:
+            entry()
         try:
             result = operation(*args, **kwargs)
         except Exception as exc:
@@ -407,17 +410,23 @@ def account_gate(api_key, *, account_ref=None):
 _provider_deadline = ContextVar("provider_deadline", default=None)
 _provider_cleanup = ContextVar("provider_cleanup", default=False)
 _provider_cancelled = ContextVar("provider_cancelled", default=None)
+_provider_entry = ContextVar("provider_entry", default=None)
 
 
 def _check_provider_cancelled():
+    import time
+
     cancelled = _provider_cancelled.get()
     if cancelled is not None:
         cancelled()
+    deadline = _provider_deadline.get()
+    if deadline is not None and time.time() >= deadline:
+        raise ProviderNotStarted(0.)
 
 
 
 @contextmanager
-def provider_budget(seconds, *, cleanup=False, cancelled=None):
+def provider_budget(seconds, *, cleanup=False, cancelled=None, entry=None):
     import time
 
     existing = (_provider_deadline.get() if not cleanup or _provider_cleanup.get() else None)
@@ -425,9 +434,11 @@ def provider_budget(seconds, *, cleanup=False, cancelled=None):
     token = _provider_deadline.set(min(existing, deadline) if existing is not None else deadline)
     cleanup_token = _provider_cleanup.set(cleanup or _provider_cleanup.get())
     cancel_token = _provider_cancelled.set(None if cleanup else cancelled or _provider_cancelled.get())
+    entry_token = _provider_entry.set(None if cleanup else entry or _provider_entry.get())
     try:
         yield
     finally:
+        _provider_entry.reset(entry_token)
         _provider_cancelled.reset(cancel_token)
         _provider_cleanup.reset(cleanup_token)
         _provider_deadline.reset(token)
@@ -546,6 +557,16 @@ async def async_provider_operation(api_key, operation, *args, on_late_result=Non
 
     return await async_provider_call(api_key, lambda: asyncio.run(operation(*args, **kwargs)),
                                      on_late_result=on_late_result)
+
+
+async def bounded_observation(operation, *args, **kwargs):
+    """Abandon a read-only call without joining its thread at loop shutdown.
+
+    The copied provider budget fences nested retries and fallback requests.
+    Only the awaiting owner may use a result; no completion callback mutates
+    custody or dispatches another operation after abandonment.
+    """
+    return await async_provider_call(None, operation, *args, already_gated=True, **kwargs)
 
 
 class RunPodMachineProvider:
