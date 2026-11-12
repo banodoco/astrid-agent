@@ -1916,8 +1916,11 @@ def test_two_jobs_retain_verified_managed_launch_refresh(machine_case, monkeypat
         key = c.installation.root + '/.astrid-engine/install.json'
         raw = c.context.files[key]
         before = c.pod.files[key]
-        runner = engine_runner._Runner(c.installation.plan(), c.context, c.context.adapter,
-                                       c.context.deadline)
+        # As production does: the installed plan comes from the receipt job one read.
+        from astrid.core.generation import engine_recipe
+        recipe = engine_recipe.load_recipe(c.installation.engine, c.installation.platform)
+        _receipt, plan = engine_runner._plan_receipt(raw, recipe, root=c.installation.root, placement="local")
+        runner = engine_runner._Runner(plan, c.context, c.context.adapter, c.context.deadline)
         with c.context.acquire_install_lock(c.installation.root, deadline=c.context.deadline):
             action, facts = runner.start()
             health_action, health_facts = runner.check_health()
