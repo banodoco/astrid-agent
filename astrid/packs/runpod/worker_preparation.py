@@ -840,6 +840,10 @@ def validate_lease_preparation(attempt: Mapping[str, Any], *, releasing: bool = 
         or job.get("state") not in {"starting", "running", "exited", "cancelled"}
     ):
         raise TargetObservationError("invalid exact preparation job custody", gate="install", retryable=False, custody=_record_custody(attempt))
+    if preparation["state"] == "stale_after_failure" and any(
+            child is not None and child["state"] not in {"exited", "cancelled"}
+            for child in (job, machine_job)):
+        raise TargetObservationError("stale preparation has an unresolved job", gate="install", retryable=True, custody=_record_custody(attempt))
     if preparation["state"] == "prepared":
         snapshot = preparation.get("installed")
         if (not isinstance(snapshot, Mapping)

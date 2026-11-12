@@ -192,7 +192,8 @@ def test_preparation_install_failure_names_install(machine_case, receipts):
     assert error is not None
     receipt = _only(receipts)
     assert receipt["stage"] == "install" and receipt["phase"] == "claim"
-    assert receipt["identity"]["machine_id"] is None, "the claim never returned, so no machine record exists"
+    assert receipt["identity"]["machine_id"] == "pod-1"
+    assert receipt["machine"]["after"] == "kept"
     assert receipt["timing"]["stamps"]["claimed_at"] and receipt["timing"]["phases"]["preparation"]["end"] is None
 
 

@@ -160,6 +160,9 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
                                          "identity", "status", "image", "inventory", "provider"}:
         cause["gate"] = gate
     machine = dict(machine or {})
+    claim_failure = getattr(failure, "machine_failure", None) or {}
+    if claim_failure:
+        machine.update({key: claim_failure.get(key) for key in ("id", "lease", "generation", "device")})
     remote_root = getattr(run, "remote_root", None)
     kept = getattr(lease, "kept", None)
     identity = {
@@ -174,7 +177,9 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     stamps = (block or {}).get("stamps", {})
     after = ("none" if lease is None else "unknown" if kept is None or facts.get("release_failed")
              else "kept" if kept else "released")
-    cost = None
+    if claim_failure:
+        after = claim_failure.get("after", "unknown")
+    cost = claim_failure.get("cost_usd") if claim_failure else getattr(lease, "cost_usd", None)
     # The failed job's own logs (stdout, stderr, engine log), brought back unredacted
     # from the user's own machine before the reset; write_receipt keeps a copy.
     collected = getattr(lease, "failure_logs", None)
@@ -197,8 +202,10 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
         "cause": cause, "message": message_for(stage, cause),
         "identity": {key: _clean(value) for key, value in identity.items()},
         "timing": block,
-        "machine": {"after": after, "release_reason": getattr(lease, "release_reason", None),
-                    "release_at": stamps.get("released_at"), "cost_usd": cost},
+        "machine": {"after": after, "release_reason": claim_failure.get("release_reason") if claim_failure else getattr(lease, "release_reason", None),
+                    "release_at": stamps.get("released_at"), "cost_usd": cost,
+                    **({"expires_at": claim_failure.get("expires_at") if claim_failure else getattr(lease, "expires_at", None),
+                        "preparation_state": claim_failure.get("preparation_state") if claim_failure else getattr(lease, "preparation_state", None)} if after == "kept" else {})},
         "collection": _collection(stage, logs, unavailable),
         "files": [],
     }
@@ -326,6 +333,8 @@ def render(receipt: Mapping[str, Any]) -> str:
              f"Machine: {ident.get('machine_id') or 'none'}  after: {machine.get('after')}"
              + (f"  release: {machine['release_reason']}" if machine.get("release_reason") else ""),
              f"Logs: {collection.get('state')}"]
+    if machine.get("after") == "kept":
+        lines.append(f"Kept until: {machine.get('expires_at')}  cost: {machine.get('cost_usd')} USD  preparation: {machine.get('preparation_state')}")
     seconds = [f"{name}={row['seconds']}s" for name, row in timing.items()
                if isinstance(row, Mapping) and row.get("seconds") is not None]
     if seconds:
