@@ -11,7 +11,6 @@ import asyncio
 import json
 import re
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -355,47 +354,28 @@ def _validate_retained_workflow(request):
 def prevalidate_task(policy, inputs, *, scratch):
     """Refuse malformed policy and workflow before constructing the owner."""
     from astrid.core.generation.interfaces import RunPodPreparationRequest
-    from astrid.packs.runpod.target_selection import PaidRunConsent, RunPodPreferences, _utc
+    from astrid.packs.runpod.target_selection import RunPodPreferences
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
 
-    required = {"kind", "engine", "preferences", "offer_digest", "consent", "max_usd", "deadline",
-                "preparation_seconds", "execution_seconds", "idle_seconds"}
-    if (not isinstance(policy, dict) or not required <= set(policy) <= required | {
-            "machine", "placement_idle_seconds", "policy_digest", "max_hourly_usd",
-            "capacity_timeout_seconds", "wait_for_capacity"}
+    required = {"kind", "engine", "preferences"}
+    legacy = {"offer_digest", "consent", "max_usd", "deadline", "preparation_seconds",
+              "execution_seconds", "idle_seconds", "placement_idle_seconds", "policy_digest",
+              "max_hourly_usd", "capacity_timeout_seconds", "wait_for_capacity"}
+    if (not isinstance(policy, dict) or not required <= set(policy) <= required | legacy | {"machine"}
             or policy["kind"] != "runpod"):
-        raise PaidSelectionError("target policy lacks exact offer and paid bounds")
+        raise PaidSelectionError("target policy requires a machine placement")
     if policy["engine"] not in {"comfyui"}:
         raise PaidSelectionError("unsupported retained installation route")
     if "machine" in policy and (not isinstance(policy["machine"], str) or not policy["machine"]):
         raise PaidSelectionError("a pinned machine must name a live lease's machine id")
     if RunPodPreferences.from_mapping(policy["preferences"]).as_mapping() != policy["preferences"]:
         raise PaidSelectionError("target preferences are not canonical")
-    policy_wait = policy.get("policy_digest") is not None
-    if not policy_wait and (not isinstance(policy["offer_digest"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", policy["offer_digest"])):
-        raise PaidSelectionError("target policy requires the disclosed offer digest")
-    consent = policy["consent"]
-    if (not isinstance(consent, list) or "paid" not in consent
-            or any(value not in {"paid", "user_env"} for value in consent)):
-        raise PaidSelectionError("fresh paid consent is required")
-    _number(policy["max_usd"], "USD cap")
-    preferences = RunPodPreferences.from_mapping(policy["preferences"])
-    saved_cap = preferences.budget_cap_usd
-    if saved_cap is not None and policy["max_usd"] > saved_cap:
-        raise PaidSelectionError("invocation cap exceeds the saved RunPod budget ceiling")
-    if "placement_idle_seconds" in policy:
-        _number(policy["placement_idle_seconds"], "placement idle", zero=True)
-    durations = [_number(policy[name], name, zero=True) for name in
-                 ("preparation_seconds", "execution_seconds", "idle_seconds")]
-    if policy_wait:
-        PaidRunConsent("preflight", policy["offer_digest"], policy["max_usd"], policy["deadline"],
-                       tuple(consent), *durations, policy_digest=policy["policy_digest"],
-                       max_hourly_usd=policy.get("max_hourly_usd"),
-                       capacity_timeout_seconds=policy.get("capacity_timeout_seconds"),
-                       wait_for_capacity=policy.get("wait_for_capacity", True)).validate_authority(
-                           preferences, datetime.now(timezone.utc))
-    elif sum(durations) <= 0 or (_utc(policy["deadline"]) - datetime.now(timezone.utc)).total_seconds() < sum(durations):
-        raise PaidSelectionError("deadline cannot cover the disclosed paid bounds")
+    consent = policy.get("consent", [])
+    if not isinstance(consent, list) or any(value not in {"paid", "user_env"} for value in consent):
+        raise PaidSelectionError("invalid job consent scope")
+    for name in ("preparation_seconds", "execution_seconds", "idle_seconds", "placement_idle_seconds"):
+        if name in policy:
+            _number(policy[name], name, zero=True)
     if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
         raise PaidSelectionError("target policy cannot be combined with an endpoint override")
     members = tuple(inputs.get(name) for name in ("python", "companion", "source"))
@@ -407,7 +387,7 @@ def prevalidate_task(policy, inputs, *, scratch):
     with staged_workflow_path(workflow=None, python=members[0], companion=members[1], source=members[2],
                               scratch=scratch) as (workflow, _):
         request = RunPodPreparationRequest({"engine": policy["engine"]}, workflow.with_name("source.json"),
-                                           workflow, values, tuple(consent), policy["max_usd"], policy["deadline"])
+                                           workflow, values, tuple(consent), None, None)
         _validate_retained_workflow(request)
 
 

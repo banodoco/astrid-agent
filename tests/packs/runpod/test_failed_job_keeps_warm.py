@@ -3,13 +3,14 @@ import pytest
 
 from astrid.packs.runpod import machine as rm
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401
-from tests.packs.runpod.test_machine import machine_case as machine_case  # noqa: F401
+from tests.packs.runpod.test_machine import _claim_machine as _claim_machine, machine_case as machine_case  # noqa: F401
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401
 from tests.packs.runpod.test_target_selection import case as case  # noqa: F401
 from tests.packs.runpod.test_warm_session import lease_selection_case as lease_selection_case, small_lease as small_lease  # noqa: F401
 
 
 def _failed(c):
+    _claim_machine(c)
     job = c.job()
     lease = c.machine.claim(job)
     run = c.machine.start(lease, job)

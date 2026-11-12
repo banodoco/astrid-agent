@@ -16,7 +16,7 @@ from astrid.core.generation.interfaces import GenerationAdmission, RunPodPrepara
 
 from .prepared_task import PreparedWorkerError, PreparedWorkerSelection, _read_mapping
 from .remote_placement import Claim, RemotePlacement, RunPodInstallation, connect_claimed_for_preparation, source_digest
-from .target_selection import PaidRunConsent, RunPodSelectionOwner, _utc
+from .target_selection import ClaimedJob, PaidRunConsent, RunPodSelectionOwner, _utc
 from .worker_owner import RunPodLease, RunPodLeaseOwner, _run_sync
 from .worker_preparation import replace_target_record, target_owner
 
@@ -129,11 +129,14 @@ def prepare_retained_generation(
         save()
         try:
             claim = connect_claimed_for_preparation(claimed)
-            # Preparation (bootstrap and the model-free engine install) is
-            # bounded by the disclosed --preparation-seconds, never only by the
-            # longer paid claim lifetime.
-            remaining = min(consent.preparation_seconds, (
-                _utc(claimed["paid_limits"]["expires_at"]) - lease_owner.selection.clock()).total_seconds())
+            # Explicit phase estimates remain timeouts. A job without an
+            # estimate is bounded by the existing claim's remaining lifetime.
+            if isinstance(consent, ClaimedJob):
+                remaining = min(consent.preparation_seconds or float("inf"),
+                                claimed["lease"]["paid_expires_at"] - lease_owner.clock())
+            else:
+                remaining = min(consent.preparation_seconds, (
+                    _utc(claimed["paid_limits"]["expires_at"]) - lease_owner.selection.clock()).total_seconds())
             # A saved network volume is pinned by the probe; the install is model-free and align fetches the manifest's rows.
             cache_root = None if preferences.volume_id is None else (
                 f"{preferences.mount_path}/astrid/engines/{installation.engine}/models")

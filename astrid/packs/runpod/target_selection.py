@@ -380,6 +380,25 @@ class PaidRunConsent:
         return min(deadline, expiry) if deadline is not None else expiry
 
 
+@dataclass(frozen=True)
+class ClaimedJob(PaidRunConsent):
+    """Execution bounds on an existing claim, never authority to rent or renew."""
+
+    operation_id: str = ""
+
+    def validate_authority(self, preferences, now):
+        return _utc(self.deadline)
+
+    def validate(self, offer, preferences, now, *, allow_policy=False):
+        expires = _utc(self.deadline)
+        required = self.preparation_seconds + self.execution_seconds
+        if expires <= now or (expires - now).total_seconds() < required:
+            raise PaidSelectionError("job exceeds remaining paid lifetime")
+        if required * offer.hourly_usd / 3600 > self.max_usd:
+            raise PaidSelectionError("job exceeds remaining budget")
+        return expires
+
+
 def policy_consent_digest(preferences: RunPodPreferences, max_hourly_usd: float) -> str:
     """The explicit waiting policy, independent of any current market offer."""
     return _digest({"schema": "astrid.runpod.wait-policy.v1", "preferences": preferences.as_mapping(),
@@ -518,6 +537,13 @@ class RunPodSelectionOwner:
                       lease: Mapping[str, Any] | None = None, lock_held: bool = False,
                       cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
         """One offer/one journaled POST per iteration; ambiguity never re-enters the loop."""
+        if isinstance(consent, ClaimedJob):
+            record = self._read()
+            if (record is None or record.get("state") != "claimed"
+                    or record.get("operation_id") != consent.operation_id):
+                raise PaidSelectionError("no machine: run `astrid machines claim`")
+            return await self._select_once(consent, lease=lease, lock_held=lock_held,
+                                           offer=self._recorded_offer(record), cancelled=cancelled)
         consent.validate_authority(self.preferences, self.clock())
         if dry_run:
             return await self._select_once(consent, dry_run=True, lease=lease, lock_held=lock_held)
@@ -696,7 +722,12 @@ class RunPodSelectionOwner:
         p, now = self.preferences, self.clock()
         if not dry_run and lease is None and (self.compatibility is not None or p.volume_id is None):
             raise PaidSelectionError("this target requires admission through the retained lease owner")
-        offer, expires = self.consented_offer(consent, now, offer=offer)
+        if isinstance(consent, ClaimedJob):
+            if offer is None or lease is None:
+                raise PaidSelectionError("jobs require a live claimed machine")
+            expires = consent.validate(offer, p, now)
+        else:
+            offer, expires = self.consented_offer(consent, now, offer=offer)
         preview = {"offer": asdict(offer), "max_usd": consent.max_usd, "deadline": consent.deadline,
                    "expires_at": expires.isoformat(), "claim_handle_path": str(self.path)}
         if dry_run:
@@ -723,6 +754,10 @@ class RunPodSelectionOwner:
         self._read()  # Reject legacy/symlink custody before creating a lock file.
         with nullcontext() if lock_held else target_owner(self.path):
             record = self._read()
+            if isinstance(consent, ClaimedJob) and (
+                    record is None or record.get("state") != "claimed"
+                    or record.get("operation_id") != consent.operation_id):
+                raise PaidSelectionError("no machine: run `astrid machines claim`")
             completed_operation = None
             if record is not None and record.get("state") == "cleanup_complete" and lease is not None:
                 _validate_completed_release(record)
@@ -777,10 +812,12 @@ class RunPodSelectionOwner:
                 previous = record.get("paid_limits", {})
                 if previous.get("expires_at") and not safe_capacity:
                     expires = min(expires, _utc(previous["expires_at"]))
-                    required = consent.preparation_seconds + consent.execution_seconds + consent.idle_seconds
+                    required = consent.preparation_seconds + consent.execution_seconds
+                    if not isinstance(consent, ClaimedJob):
+                        required += consent.idle_seconds
                     if (expires - now).total_seconds() < required:
                         raise PaidSelectionError("existing claim lifetime cannot be extended by reuse")
-                if (record.get("state") == "claimed"
+                if (not isinstance(consent, ClaimedJob) and record.get("state") == "claimed"
                         and previous.get("invocation_id") == consent.invocation_id):
                     raise PaidSelectionError("an invocation's paid consent cannot authorize another claim or reuse")
             else:
@@ -823,6 +860,8 @@ class RunPodSelectionOwner:
                       "idle_seconds": consent.idle_seconds,
                       **({"policy_digest": consent.policy_digest, "max_hourly_usd": consent.max_hourly_usd}
                          if consent.policy_digest is not None else {})}
+            if isinstance(consent, ClaimedJob):
+                limits = dict(record["paid_limits"])
             if record["state"] == "claimed":
                 try:
                     observation = await observe_exact_target(config.api_key, RunPodTargetContract(

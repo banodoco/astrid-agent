@@ -893,12 +893,18 @@ def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
     assert not case.owner.path.exists() and case.creates == 0
 
 
-def test_machine_claim_refuses_changed_offer_before_staging_or_acquisition(case, monkeypatch, tmp_path):
+def test_generation_job_without_claim_refuses_before_staging_or_acquisition(case, monkeypatch, tmp_path):
     from astrid.core.execution.machine_run import MachineJob
+    from astrid.core.execution.warm_hold import WarmHolds
     from astrid.packs.runpod import adapter, machine
+    from astrid.packs.runpod.worker_owner import RunPodLeaseOwner
 
     monkeypatch.setattr(adapter, "prevalidate_task", lambda *args, **kwargs: None)
-    owner = SimpleNamespace(selection=case.owner)
+    case.owner.compatibility = selection.RunPodLeaseCompatibility(
+        "sha256:" + "a" * 64, "sha256:" + "b" * 64, "a" * 40, "b" * 40).as_mapping()
+    clock = lambda: case.now.timestamp()
+    owner = RunPodLeaseOwner(case.owner, holds=WarmHolds(),
+                             quiesce=lambda record: None, clock=clock, environ={})
     facade = adapter.RunPodAdapter(lease_owner=owner, placement=None,
                                    installation=SimpleNamespace(engine="comfyui"), validate=None)
 
@@ -908,17 +914,17 @@ def test_machine_claim_refuses_changed_offer_before_staging_or_acquisition(case,
     facade.prepare = unreachable
     monkeypatch.setattr("astrid.packs.runpod.generation.prepare_retained_generation", unreachable)
     monkeypatch.setattr("astrid.packs.vibecomfy.shared.bundle_inputs.staged_workflow_path", unreachable)
-    policy = {"kind": "runpod", "engine": "comfyui", "preferences": case.prefs.as_mapping(),
-              "offer_digest": "sha256:" + "9" * 64, "consent": ["paid"], "max_usd": 1.0,
-              "deadline": case.grant.deadline, "preparation_seconds": 30, "execution_seconds": 30,
-              "idle_seconds": 60}
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": case.prefs.as_mapping()}
     inputs = {"python": "workflow.py", "companion": "{}", "source": "{}"}
     job = MachineJob(entry="cpu-image", mode="t2i", policy=policy, inputs=inputs, invocation_id="invocation-1",
                      task_id="task", attempt_id="attempt", scratch=tmp_path,
                      progress_path=tmp_path / ".astrid-progress.json")
     runpod = machine.MACHINE.for_host(facade, begin=unreachable, done=unreachable)
-    with pytest.raises(PaidSelectionError, match="offer or rate changed"):
-        runpod.claim(job)
+    try:
+        with pytest.raises(PaidSelectionError, match="no machine: run `astrid machines claim`"):
+            runpod.claim(job)
+    finally:
+        owner.close()
     assert not case.owner.path.exists() and case.creates == case.configs == 0
 
 
