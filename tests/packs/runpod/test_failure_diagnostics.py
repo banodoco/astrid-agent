@@ -490,7 +490,10 @@ def test_fetch_surfaces_only_fixed_diagnostic_and_safe_exit(tmp_path, exit_code)
     assert str(caught.value) == ('remote generation failed (exit '
         + ('2' if exit_code == 2 else 'unknown') + '; category=model; code=download_failed)')
     assert SENTINEL not in str(caught.value)
-    assert calls == [f'tail -c {fd.MAX_FRAME_BYTES + 1} /fake/job/stdout']
+    # The tail carries no logs marker, so exactly one bounded marker read follows it.
+    assert calls == [f'tail -c {fd.MAX_FRAME_BYTES + 1} /fake/job/stdout',
+                     f"grep -a '^{rm.LOGS_MANIFEST_MARK}' /fake/job/stdout | tail -n 1"]
+    assert run.lease.failure_logs == {'unavailable': 'not_reported'}
 
 
 def test_real_job_cli_keeps_structured_failure_code(monkeypatch, tmp_path, capsys):

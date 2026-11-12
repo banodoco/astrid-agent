@@ -24,7 +24,10 @@ out = Path('{out}')
 if LOGS:
     (out/'engine.log').write_bytes(b'engine bytes')
     (out/'run.json').write_bytes(b'{\"run\":1}')
-    (out/'logs.json').write_text(json.dumps({'schema':'run-logs.v1','logs':[{'name':'engine','role':'engine','path':'engine.log'},{'name':'run','role':'run','path':'run.json'}],'children':[]}))
+    index = out/'logs.json'
+    doc = json.loads(index.read_text()) if index.exists() else {'schema':'run-logs.v1','logs':[],'children':[]}
+    doc['logs'] += [{'name':'engine','role':'engine','path':'engine.log'},{'name':'run','role':'run','path':'run.json'}]
+    index.write_text(json.dumps(doc))
 if MANIFEST:
     p=out/'answer.txt'; p.write_text('ok')
     (out/'manifest.json').write_text(json.dumps({'schema_version':1,'kind':'fixture','inputs':{},'outputs':[{'name':'answer','path':'answer.txt','role':'result','content_hash':'sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':2}],'created':'t','warnings':[]}))
@@ -55,11 +58,16 @@ if FAILED:
         result = runtime.settlements[0][2]
     rows = result['outputs']
     logs_out = [row for row in rows if row.get('role') == 'log']
-    if logs and not upload_failure:
-        assert {row['variant_key'] for row in logs_out} == {'engine', 'run'}
+    # The host always declares the job's own stdout and stderr; pack logs add to them.
+    host_streams = {'job.stdout', 'job.stderr'}
+    if not upload_failure:
+        expected = host_streams | ({'engine', 'run'} if logs else set())
+        assert {row['variant_key'] for row in logs_out} == expected
         assert all(row['output_port'] == 'logs' for row in logs_out)
-        assert {row['digest'].removeprefix('sha256:') for row in logs_out} == {
-            hashlib.sha256(b'engine bytes').hexdigest(), hashlib.sha256(b'{"run":1}').hexdigest()}
+        pack_digests = {row['digest'].removeprefix('sha256:') for row in logs_out
+                        if row['variant_key'] not in host_streams}
+        assert pack_digests == ({hashlib.sha256(b'engine bytes').hexdigest(),
+                                 hashlib.sha256(b'{"run":1}').hexdigest()} if logs else set())
     else:
         assert not logs_out
     assert any(row['name'] == 'answer' for row in rows) == manifest

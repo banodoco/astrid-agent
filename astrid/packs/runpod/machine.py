@@ -441,6 +441,11 @@ FAILURE_LOG_CAP_BYTES = 2 * 1024 * 1024
 LOGS_MANIFEST_MARK = "LOGS_MANIFEST_SHA256="
 
 
+def _last_marked(text: str, mark: str) -> str | None:
+    """The last line of ``text`` that starts with ``mark``."""
+    return next((line for line in reversed(text.splitlines()) if line.startswith(mark)), None)
+
+
 def failure_logs_command(remote_root: str, data_root: str, pod_root: str, *,
                          python: str = f"{POD_VENV}/bin/python") -> str:
     """Pod shell: keep the failed job's own logs as ordinary files, before any reset.
@@ -891,7 +896,7 @@ class RunPodMachine:
             exit_code = record.get("exit_code")
             safe_exit = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else "unknown"
             run.lease.failure_exit_code = safe_exit if type(safe_exit) is int else None
-            run.lease.failure_logs = self._fetch_logs(ops, run, destination)
+            run.lease.failure_logs = self._fetch_failure_logs(ops, run, stdout, destination)
             _stamp(timing, "collection_ended_at")
             raise MachineError(f"remote generation failed (exit {safe_exit}; "
                                f"category={diagnostic['category']}; code={diagnostic['code']})")
@@ -918,24 +923,36 @@ class RunPodMachine:
                 "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
 
     def _fetch_failure_logs(self, ops: Any, run: MachineRun, stdout: str, destination: Path) -> dict[str, Any]:
-        """Bring the failed job's own log folder back, digest-verified, before the reset.
+        """Bring the failed job's declared logs back, digest-verified, before the reset.
 
-        Never masks the job's failure: any problem is recorded as
+        The logs digest normally sits in the stdout tail already read; when it
+        does not (an oversized tail), one bounded grep reads just that marker
+        line. Never masks the job's failure: any problem is recorded as
         ``{"unavailable": <exception type>}`` and the original error is raised.
         """
-        line = next((item for item in stdout.splitlines() if item.startswith(LOGS_MANIFEST_MARK)), None)
-        if line is not None:
-            local = Path(destination) / "logs"
-            try:
-                files = self._fetch_verified(ops, f"{run.remote_root}/out/logs", local, run.scratch,
-                                             line[len(LOGS_MANIFEST_MARK):].strip())
-                rows = json.loads(Path(files["index.json"]).read_text(encoding="utf-8")).get("logs", [])
-                return {"files": [{**row, "path": str(local / row["file"])
-                                    if not row.get("missing") and row.get("file") in files else None}
-                                   for row in rows if isinstance(row, Mapping)]}
-            except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
-                return {"unavailable": type(exc).__name__}
-        line = next((item for item in stdout.splitlines() if item.startswith(FAILURE_MANIFEST_MARK)), None)
+        try:
+            line = _last_marked(stdout, LOGS_MANIFEST_MARK)
+            if line is None and getattr(run, "directory", None) and hasattr(ops, "exec"):
+                command = f"grep -a '^{LOGS_MANIFEST_MARK}' {shlex.quote(run.directory)}/stdout | tail -n 1"
+                _code, output, _error = ops.exec(command, 120)
+                line = _last_marked(output, LOGS_MANIFEST_MARK)
+            if line is not None:
+                from astrid.core._shared import run_logs
+
+                local = Path(destination) / "logs"
+                self._fetch_verified(ops, f"{run.remote_root}/out/logs", local, run.scratch,
+                                     line[len(LOGS_MANIFEST_MARK):].strip())
+                return {"files": [{**row, "path": (str(local / row["file"])
+                                                   if not row.get("missing") else None)}
+                                  for row in run_logs.read_index(Path(destination))]}
+        except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
+            return {"unavailable": type(exc).__name__}
+        return self._fetch_legacy_failure_folder(ops, run, stdout, destination)
+
+    def _fetch_legacy_failure_folder(self, ops: Any, run: MachineRun, stdout: str,
+                                     destination: Path) -> dict[str, Any]:
+        """The pre-declared-logs ``failure/`` folder (removed by the log cleanup task)."""
+        line = _last_marked(stdout, FAILURE_MANIFEST_MARK)
         if line is None:
             return {"unavailable": "not_reported"}
         local = Path(destination) / FAILURE_DIR
@@ -952,27 +969,6 @@ class RunPodMachine:
         return {"files": [{"name": name, "path": path, "bytes": Path(path).stat().st_size,
                            "truncated": name in truncated}
                           for name, path in sorted(files.items()) if name != "truncated"]}
-
-    def _fetch_logs(self, ops: Any, run: MachineRun, destination: Path) -> dict[str, Any]:
-        """Bring the failed job's declared output logs back without masking its error."""
-        try:
-            command = f"grep -a '^LOGS_MANIFEST_SHA256=' {shlex.quote(run.directory)}/stdout | tail -n 1"
-            _code, output, _error = ops.exec(command, 120)
-            line = next((item for item in output.splitlines()
-                         if item.startswith("LOGS_MANIFEST_SHA256=")), None)
-            if line is None:
-                return {"unavailable": "not_reported"}
-            digest = line[len("LOGS_MANIFEST_SHA256="):].strip()
-            self._fetch_verified(ops, f"{run.remote_root}/out/logs", Path(destination) / "logs",
-                                 run.scratch, digest)
-            from astrid.core._shared import run_logs
-
-            rows = run_logs.read_index(Path(destination))
-            return {"files": [{**row, "path": (str(Path(destination) / "logs" / row["file"])
-                                               if not row.get("missing") else None)}
-                              for row in rows]}
-        except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
-            return {"unavailable": type(exc).__name__}
 
     @staticmethod
     def _fetch_verified(ops: Any, remote_dir: str, destination: Path, scratch: Path,
