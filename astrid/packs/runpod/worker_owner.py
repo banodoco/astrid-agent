@@ -28,7 +28,12 @@ from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
 
 from astrid.core.execution.platform_helpers import owned_by_current_user
-from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS, WarmHolds, _start_timer, idle_seconds
+from astrid.core.execution.warm_hold import (
+    DEFAULT_IDLE_SECONDS,
+    WarmHolds,
+    _start_timer,
+    idle_seconds,
+)
 
 from .worker_preparation import (
     AcquisitionUnresolvedError,
@@ -1156,11 +1161,16 @@ def _stop_original_installed_session(selection_value: Mapping[str, Any],
     The installed attachment remains read-only. No PID is adopted or signalled
     here; only the live installation supervisor has process-tree stop authority.
     """
-    from .worker_session import ManagedSessionReceipt, ManagedSessionSelection, RunPodManagedVibeComfySessionOwner
-    from .installed_session import LocalInstalledVibeComfySessionTransport
     from astrid.core.generation import engine_custody as custody
     from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
     from astrid.core.generation.engine_runner import _sha, helper_manifest
+
+    from .installed_session import LocalInstalledVibeComfySessionTransport
+    from .worker_session import (
+        ManagedSessionReceipt,
+        ManagedSessionSelection,
+        RunPodManagedVibeComfySessionOwner,
+    )
 
     selection = ManagedSessionSelection(**dict(selection_value))
     receipt = ManagedSessionReceipt.from_dict(receipt_value)
@@ -1461,11 +1471,19 @@ class RunPodRemoteWorkerPreparer:
         """
         from astrid.core.generation.engine_contracts import AttestationError, EndpointOwnershipError
         from astrid.core.generation.engine_endpoint import (
-            _load, endpoint_to_dict, ensure_prepared_session_endpoint, parse_endpoint_profile_evidence,
+            _load,
+            endpoint_to_dict,
+            ensure_prepared_session_endpoint,
+            parse_endpoint_profile_evidence,
             read_private_endpoint_file,
         )
         from astrid.core.generation.engine_recipe import load_recipe
-        from astrid.core.generation.engine_runner import _parse_receipt, plan_install
+        from astrid.core.generation.engine_runner import (
+            _parse_receipt,
+            plan_from_receipt,
+            plan_install,
+        )
+
         from .worker_preparation import create_target_record_exclusive
 
         recipe = load_recipe(engine, platform)  # support admission precedes effects
@@ -1490,8 +1508,9 @@ class RunPodRemoteWorkerPreparer:
             if (any(claim.get(key) != value for key, value in self._endpoint_claim_identity.items())
                     or (current is not None and current.get("state") not in {"stopped", "released"})):
                 raise EndpointOwnershipError("original prepared endpoint owner changed")
-            from astrid.core.generation.engine_contracts import SecretRef
             from runpod_lifecycle.https import PORT
+
+            from astrid.core.generation.engine_contracts import SecretRef
             storage = reference.effective_target.get("storage", {})
             if (claim.get("transport") != "https" or agent_port != PORT
                     or token_ref != SecretRef("file", claim.get("https_token_file"))
@@ -1520,6 +1539,7 @@ class RunPodRemoteWorkerPreparer:
         installed_path = root + "/.astrid-engine/install.json"
         installed_bytes = read_file(installed_path, deadline=deadline)
         installed = _parse_receipt(_load(installed_bytes), plan_install(recipe, root=root, placement="local"))
+        plan_from_receipt(recipe, installed, root=root, placement="local")
         if installed.status != "installed" or installed.health is None or installed.health.status != "healthy":
             raise AttestationError("canonical installed endpoint receipt is unavailable")
         registry = selection.runtime_root + "/out/sessions/" + selection.session_ref

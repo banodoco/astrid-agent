@@ -36,7 +36,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from ._engine_target_files import _FILE_FLAGS, _TargetFiles, _check, _parts
+from ._engine_target_files import _FILE_FLAGS, _check, _parts, _TargetFiles
 from .engine_contracts import EngineError, effective_models_root
 
 SCHEMA = "hc03-worker-readiness.v1"
@@ -245,9 +245,10 @@ class ComfyProvenance:
             self.observed["pack"][slug] = next(iter(values)) if len(values) == 1 else None
 
     def evidence(self):
-        from .preflight import compare_versions, readiness_envelope
         from packaging.specifiers import InvalidSpecifier, SpecifierSet
         from packaging.version import InvalidVersion, Version
+
+        from .preflight import compare_versions, readiness_envelope
 
         recorded = {key: self.recorded[key] for key in ("engine", "runtime")}
         observed = {key: self.observed[key] for key in ("engine", "runtime")}
@@ -626,7 +627,7 @@ def canonical_status(*, root, deadline, engine=ENGINE):
 
 def _owned_health(root, recipe, adapter, owner_id, deadline, models_root=None, *, visibility):
     """Existing supervisor health; never creates a supervisor or starts an engine."""
-    from .engine_custody import LinuxEngineServiceClient, _SCHEMA
+    from .engine_custody import _SCHEMA, LinuxEngineServiceClient
     from .engine_recipe import recipe_digest
     from .engine_runner import _sha, helper_manifest
 
@@ -673,8 +674,11 @@ def _comfyui_version(transport, root, comfy_root, port, health_path, deadline):
 
 def _model_root_binding(root, receipt, deadline):
     """The receipt's verified model rows (none on a model-free install), byte-verified."""
-    from .model_root import (ModelRootBindingError, canonical_model_inventory_digest,
-                             validate_model_root_binding)
+    from .model_root import (
+        ModelRootBindingError,
+        canonical_model_inventory_digest,
+        validate_model_root_binding,
+    )
 
     inventory = []
     models_root = effective_models_root(root, getattr(receipt, "models_root", None))
@@ -705,11 +709,12 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
     ``status`` and ``hardware`` are explicit seams; production uses the
     canonical status operation and the bounded ``nvidia-smi`` probe.
     """
-    from . import engine_recipe
-    from .engine_platforms import LinuxPlatformAdapter
-    from .engine_runner import _parse_receipt, _root, plan_install
     from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
     from astrid.packs.runpod.worker_session import ManagedSessionError, ManagedSessionSelection
+
+    from . import engine_recipe
+    from .engine_platforms import LinuxPlatformAdapter
+    from .engine_runner import _parse_receipt, _root, plan_from_receipt, plan_install
 
     _check(deadline)
     if engine not in {ENGINE, "comfyui"}:
@@ -733,6 +738,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
         marker_bytes = transport._read(root, registry + "/launch.json", deadline)
         config_bytes = transport._read(root, registry + "/config.json", deadline)
         receipt = _parse_receipt(_strict_json(receipt_bytes), plan)
+        plan = plan_from_receipt(recipe, receipt, root=root, placement="local")
         marker = _strict_json(marker_bytes)
         token = marker.get("launch_token")
         if (receipt.status != "installed" or receipt.qualified is not False or not isinstance(token, str)

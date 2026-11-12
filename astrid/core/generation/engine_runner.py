@@ -58,7 +58,7 @@ from .engine_contracts import (
 _HELPER_SCHEMA = "astrid.engine-runner-helper.v1"
 _SERVICE_SCHEMA = "astrid.engine-service.v1"
 _RECEIPT = ".astrid-engine/install.json"
-__all__ = ["plan_install", "install_engine", "engine_status"]
+__all__ = ["plan_install", "plan_from_receipt", "install_engine", "engine_status"]
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _STATUS_ERROR_CODES = frozenset({
     "engine_error", "unknown_engine", "unsupported_platform", "invalid_recipe",
@@ -254,6 +254,28 @@ def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement
     return InstallPlan("astrid.engine-plan.v1", verified.engine, verified.platform, placement,
                        root, recipes.recipe_digest(verified), verified.models_lock.sha256, tuple(steps),
                        models_root=models_root)
+
+
+def plan_from_receipt(recipe: EngineRecipe, receipt: InstallReceipt, *, root: TargetPath,
+                      placement: Placement) -> InstallPlan:
+    """Rebuild an installed plan from its receipt; locator arguments must agree."""
+    if receipt.root != root:
+        raise IntegrityError("install receipt root differs from requested root")
+    if receipt.placement != placement:
+        raise IntegrityError("install receipt placement differs from requested placement")
+    plan = plan_install(recipe, root=receipt.root, placement=receipt.placement,
+                        models_root=receipt.models_root)
+    for field in ("engine", "platform", "recipe_sha256", "models_lock_sha256"):
+        if getattr(receipt, field) != getattr(plan, field):
+            raise IntegrityError(f"install receipt {field} differs from verified recipe")
+    return plan
+
+
+def _plan_receipt(raw, recipe, *, root, placement):
+    """Validate a located receipt, then return its authoritative install plan."""
+    locator = plan_install(recipe, root=root, placement=placement)
+    receipt = _parse_receipt(raw, locator)
+    return receipt, plan_from_receipt(recipe, receipt, root=root, placement=placement)
 
 
 def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
@@ -887,6 +909,10 @@ def _parse_receipt(raw, plan):
             raise IntegrityError("install receipt identity differs")
     # The receipt records the model directory it bound. A plan that names one must match it; a plan
     # that names none (readers of an existing install) takes the receipt's record.
+    if value["root"] != plan.root:
+        raise IntegrityError("install receipt root differs")
+    if value["placement"] != plan.placement:
+        raise IntegrityError("install receipt placement differs")
     if value["models_root"] is not None:
         _models_root(value["root"], value["models_root"])
     if plan.models_root is not None and value["models_root"] != plan.models_root:
@@ -1047,11 +1073,7 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
     if fact.symlink or not fact.regular or fact.bytes is None or fact.bytes > 1024 * 1024:
         raise IntegrityError("invalid install receipt file")
     receipt = _parse_receipt(context.read_json(path, deadline=deadline), plan)
-    if plan.models_root is None and receipt.models_root is not None:
-        # A reader that names no model directory takes the one the install bound
-        # (see _parse_receipt). Re-plan with it, or every read-only check below
-        # compares the install against <root>/models and refuses a healthy engine.
-        plan = plan_install(recipe, root=root, placement=placement, models_root=receipt.models_root)
+    plan = plan_from_receipt(recipe, receipt, root=root, placement=placement)
     if receipt.status != "installed":
         return receipt
     # Lazy optional production adapter dependency, absent from lookup/planning.

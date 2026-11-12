@@ -322,7 +322,7 @@ def _prepared_session_evidence(reference, session_selection, session_receipt, pr
     import hashlib
 
     from .engine_recipe import load_recipe
-    from .engine_runner import _parse_receipt, plan_install
+    from .engine_runner import _parse_receipt, plan_from_receipt, plan_install
 
     recipe = load_recipe(engine, platform)
     if (type(profile) is not dict or profile.get("schema_version") != "hc03-worker-readiness.v1"
@@ -359,6 +359,7 @@ def _prepared_session_evidence(reference, session_selection, session_receipt, pr
     # Self-start uses the same local installer *on the pod*. Preserve its bytes
     # and placement; never rewrite a local install receipt as a RunPod claim.
     receipt = _parse_receipt(raw_receipt, plan_install(recipe, root=root, placement="local"))
+    plan_from_receipt(recipe, receipt, root=root, placement="local")
     if (receipt.status != "installed" or receipt.health != attestation.health
             or session_selection is None
             or session_selection.runtime_root != root + "/runtime"):

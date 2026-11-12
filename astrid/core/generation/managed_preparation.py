@@ -96,7 +96,7 @@ def configured_models_root(engine: str = "comfyui", *, root: str | None = None) 
     from .engine_contracts import IntegrityError, effective_models_root
     from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
     from .engine_recipe import load_recipe
-    from .engine_runner import _parse_receipt, plan_install
+    from .engine_runner import _parse_receipt, plan_from_receipt, plan_install
     root = root or default_engine_root(engine)
     files = _TargetFiles(root)
     path = str(Path(root) / ".astrid-engine/install.json")
@@ -108,8 +108,9 @@ def configured_models_root(engine: str = "comfyui", *, root: str | None = None) 
         raise IntegrityError("managed install receipt is not a safe regular file")
     raw = files.read_json(path, deadline=deadline)
     recipe = load_recipe(engine, DEFAULT_PLATFORM)
-    plan = plan_install(recipe, root=root, placement="local", models_root=raw.get("models_root"))
-    receipt = _parse_receipt(raw, plan)
+    locator = plan_install(recipe, root=root, placement="local")
+    receipt = _parse_receipt(raw, locator)
+    plan = plan_from_receipt(recipe, receipt, root=root, placement="local")
     return effective_models_root(root, receipt.models_root)
 
 
@@ -282,7 +283,13 @@ class ManagedEnginePreparation:
 
         from .engine_contracts import IntegrityError
         from .engine_recipe import recipe_digest
-        from .engine_runner import _parse_receipt, _Runner, plan_install, refresh_installed_launch
+        from .engine_runner import (
+            _parse_receipt,
+            _Runner,
+            plan_from_receipt,
+            plan_install,
+            refresh_installed_launch,
+        )
 
         self.check()
         staged_members = [workflow]
@@ -295,8 +302,9 @@ class ManagedEnginePreparation:
         self.check()
         receipt_path = str(Path(self.root) / ".astrid-engine/install.json")
         raw = self.context.read_json(receipt_path, deadline=self.deadline)
-        plan = plan_install(self.recipe, root=self.root, placement="local", models_root=raw.get("models_root"))
-        receipt = _parse_receipt(raw, plan)
+        locator = plan_install(self.recipe, root=self.root, placement="local")
+        receipt = _parse_receipt(raw, locator)
+        plan = plan_from_receipt(self.recipe, receipt, root=self.root, placement="local")
         if receipt.status != "installed":
             raise IntegrityError("managed preparation requires a completed installation")
         runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)

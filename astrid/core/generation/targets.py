@@ -279,7 +279,7 @@ def _managed_record(record: TargetRecord) -> TargetRecord:
     """Resolve ownership and paths from existing root/install receipt authority."""
     from .engine_local_endpoint import recorded_engine_root
     from .engine_recipe import load_recipe
-    from .engine_runner import _parse_receipt, plan_install
+    from .engine_runner import _parse_receipt, plan_from_receipt, plan_install
 
     try:
         roots = {root for name in _COMFY_TABLES
@@ -298,6 +298,7 @@ def _managed_record(record: TargetRecord) -> TargetRecord:
             raise TargetConfigError("managed Comfy target needs an installed Comfy receipt")
         recipe = load_recipe(raw["engine"], raw["platform"])
         receipt = _parse_receipt(raw, plan_install(recipe, root=root, placement="local"))
+        plan_from_receipt(recipe, receipt, root=root, placement="local")
         environment = next(e for e in recipe.environments if e.name == recipe.primary_environment)
         executable = "Scripts/python.exe" if recipe.platform.startswith("windows-") else "bin/python"
         python = str(Path(root) / environment.relative_path / executable)

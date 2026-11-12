@@ -104,6 +104,7 @@ class FakeContext:
         self.health_healthy = True
         self.bootstrap_count = 0
         self.models_config_valid = False
+        self.models_config_root = object()
         for environment in self.recipe.environments:
             ref = environment.node_lock
             source = next(s for s in self.recipe.sources if s.name == ref.source)
@@ -219,9 +220,10 @@ class FakeContext:
             elif operation == "models-config":
                 assert self.held
                 self.models_config_valid = True
+                self.models_config_root = payload.get("models_root")
                 facts = {"written": True}
             elif operation == "models-config-check":
-                facts = {"valid": self.models_config_valid}
+                facts = {"valid": self.models_config_valid and payload.get("models_root") == self.models_config_root}
             else:
                 name = payload["environment"]
                 directory = self.adapter.join(self.root, ".astrid-engine/environments", name)
@@ -2309,3 +2311,19 @@ def test_status_rechecks_with_the_model_directory_the_install_bound(setup):
     current = runner.engine_status(plan.engine, platform=plan.platform, placement=plan.placement,
                                    root=plan.root, context=context, deadline=deadline)
     assert current.status == "installed", (current.status, current.error_code, current.failed_step_id)
+
+
+def test_plan_from_receipt_rejects_locator_mismatches(setup):
+    plan, context, adapter, deadline = setup
+    installed = runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline)
+    with pytest.raises(IntegrityError, match="root"):
+        runner.plan_from_receipt(context.recipe, installed, root=ROOT + "/other", placement="local")
+    with pytest.raises(IntegrityError, match="placement"):
+        runner.plan_from_receipt(context.recipe, installed, root=ROOT, placement="runpod")
+
+
+def test_install_plan_bound_fields_are_recorded_or_recipe_derived():
+    # Add every newly bound InstallPlan field to exactly one category here.
+    recorded = {"root", "placement", "models_root"}
+    recipe_derived = {"schema", "engine", "platform", "recipe_sha256", "models_lock_sha256", "steps"}
+    assert {field.name for field in fields(runner.InstallPlan)} == recorded | recipe_derived

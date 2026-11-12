@@ -12,16 +12,16 @@ import base64
 import hashlib
 import json
 import os
+import time
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
-import time
 
 from astrid.core.generation import engine_recipe, engine_runner
+from astrid.core.generation._engine_target_files import _FILE_FLAGS, _check, _TargetFiles
 from astrid.core.generation.engine_contracts import effective_models_root
-from astrid.core.generation._engine_target_files import _TargetFiles, _FILE_FLAGS, _check
 from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
 
-from .worker_session import ManagedSessionError, _DIGEST, _path, _process
+from .worker_session import _DIGEST, ManagedSessionError, _path, _process
 
 ENGINE = "comfyui"
 PLATFORM = "linux-x86_64-cu130"
@@ -73,6 +73,7 @@ class InstalledVibeComfySessionTransport:
             receipt_path = root + "/.astrid-engine/install.json"
             receipt_bytes = self._read(root, receipt_path, deadline)
             receipt = engine_runner._parse_receipt(_json(receipt_bytes), plan)
+            plan = engine_runner.plan_from_receipt(recipe, receipt, root=root, placement="local")
             if receipt.status != "installed":
                 raise ManagedSessionError("canonical installed receipt is required")
             registry = runtime_root + "/out/sessions/" + self.engine
