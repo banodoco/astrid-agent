@@ -724,7 +724,10 @@ class RunPodSelectionOwner:
         # _select already owns the journal lock and calls __wrapped__ below.
         # Bind here, before even volume discovery, rather than relying on the
         # acquisition decorator that this path intentionally bypasses.
-        account_gate(config.api_key, account_ref=p.provider_account_ref)
+        await worker_preparation.async_provider_call(
+            config.api_key, account_gate, config.api_key,
+            account_ref=p.provider_account_ref, already_gated=True,
+        )
         # Restrict lifecycle's launch matrix to the consented target so each
         # journaled attempt can issue at most one create POST.
         config = copy.copy(config)

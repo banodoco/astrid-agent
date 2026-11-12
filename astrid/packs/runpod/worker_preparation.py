@@ -242,7 +242,10 @@ def _exclusive_target_owner(function: Any) -> Any:
                     gate="identity", retryable=False, custody="unknown",
                 )
             if current.get("provider_account_ref") and isinstance(getattr(config, "api_key", None), str):
-                account_gate(config.api_key, account_ref=current["provider_account_ref"])
+                await async_provider_call(
+                    config.api_key, account_gate, config.api_key,
+                    account_ref=current["provider_account_ref"], already_gated=True,
+                )
             try:
                 return await function(
                     config,

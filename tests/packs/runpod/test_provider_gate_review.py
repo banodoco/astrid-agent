@@ -48,3 +48,51 @@ def test_admission_refusal_restores_intent_then_reacquires(case, tmp_path, monke
     assert acquired["operation_id"] == refused["operation_id"]
     assert acquired["create_attempts"] == case.creates == 1
 
+
+
+def test_selection_binding_cancels_while_alias_lock_is_held(case, tmp_path, monkeypatch):
+    import threading
+    from runtime_protocol import platform
+
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "gates"))
+    gate = provider.account_gate("fake-only", account_ref="account-a")
+    alias_lock = gate.alias_path.with_suffix(".json.lock")
+    held, cancelled, released = threading.Event(), threading.Event(), threading.Event()
+    released_before_cancellation = []
+    lookups = []
+
+    def hold_lock():
+        with alias_lock.open("r+") as stream:
+            platform.lock_file(stream.fileno(), blocking=True)
+            held.set()
+            released_before_cancellation.append(not cancelled.wait(0.5))
+            platform.unlock_file(stream.fileno())
+        released.set()
+
+    async def volume(*_):
+        lookups.append("volume")
+        raise RuntimeError("unexpected provider access after lock wait")
+
+    monkeypatch.setattr(selection, "resolve_existing_volume", volume)
+    thread = threading.Thread(target=hold_lock)
+    thread.start()
+    assert held.wait(1)
+
+    async def run():
+        task = asyncio.create_task(case.owner.select(case.grant))
+        asyncio.get_running_loop().call_later(0.01, task.cancel)
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            cancelled.set()
+
+    try:
+        asyncio.run(run())
+    finally:
+        cancelled.set()
+        thread.join(1)
+    assert released.is_set()
+    assert released_before_cancellation == [False]
+    assert lookups == []
+    assert case.creates == 0
