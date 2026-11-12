@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -20,8 +21,8 @@ from .engine_contracts import EngineError, EngineReinstallRequired, IntegrityErr
 from .engine_runner import _HELPER_SCHEMA, _json, _object_info_sha256, _root, _sha, helper_manifest
 
 _OPERATIONS = {"identity", "empty-source", "node-lock", "lock-inputs", "commit-lock",
-               "install-locks", "environment-spec", "models-config", "models-config-check"}
-_MODEL_OPERATIONS = {"models-config", "models-config-check"}
+               "install-locks", "environment-spec", "models-config", "models-config-check", "models-source-check"}
+_MODEL_OPERATIONS = {"models-config", "models-config-check", "models-source-check"}
 _ENV_OPERATIONS = {"node-lock", "lock-inputs", "commit-lock", "install-locks", "environment-spec"}
 
 
@@ -31,6 +32,25 @@ def _models_base(root, models_root):
         return str(_safe(root, "models"))
     from .engine_runner import _models_root
     return _models_root(str(root), models_root)
+
+
+def _model_link_matches(link, destination):
+    """The link points exactly at the destination, and the destination is not itself redirected."""
+    destination = Path(destination)
+    return (link.is_symlink()
+            and os.path.abspath(link.parent / os.readlink(link)) == str(destination)
+            and not destination.is_symlink()
+            and (not destination.exists() or destination.is_dir()))
+
+
+def _tracked_model_folders(comfy):
+    if not (comfy / ".git").exists():
+        return set()
+    result = subprocess.run(("git", "-C", str(comfy), "ls-tree", "--name-only", "HEAD", "models/"),
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise IntegrityError("cannot inspect tracked model folders")
+    return {line.removeprefix("models/").split("/", 1)[0] for line in result.stdout.splitlines()}
 
 
 def _safe(root, *relative):
@@ -265,6 +285,8 @@ def dispatch(operation, payload):
         keys.add("environment")
     if operation == "empty-source":
         keys.add("source")
+    if operation == "models-source-check":
+        keys.add("entries")
     if operation in _MODEL_OPERATIONS:
         keys.add("models_root")
     if not isinstance(payload, dict) or set(payload) != keys or payload["schema"] != _HELPER_SCHEMA:
@@ -376,16 +398,42 @@ def dispatch(operation, payload):
     elif operation == "environment-spec":
         facts = _environment_spec(recipe, environment, root, digest)
     else:  # JSON is also valid YAML, avoids unsafe YAML interpolation.
-        configuration = {"astrid_engine": {"base_path": _models_base(root, payload["models_root"]),
-                         **{name: name for name in ("diffusion_models", "text_encoders", "vae", "loras")}}}
+        base = Path(_models_base(root, payload["models_root"]))
+        folders = sorted({model.destination.split("/", 1)[0]
+                          for model in recipes.load_model_lock(recipe.models_lock).models})
+        comfy = next(source for source in recipe.sources if source.name == "comfyui")
+        models_dir = _safe(root, comfy.relative_path, "models")
+        configuration = {"astrid_engine": {"base_path": str(base), **{name: name for name in folders}}}
         configuration_path = _safe(root, "runtime/extra_model_paths.yaml")
         configuration_bytes = _json(configuration).encode()
-        if operation == "models-config":
+        tracked = _tracked_model_folders(models_dir.parent)
+        links = [(models_dir / name, base / name) for name in folders if name not in tracked] if base != models_dir else []
+        if operation == "models-source-check":
+            allowed = {"?? models/" + link.name for link, destination in links
+                       if _model_link_matches(link, destination)}
+            entries = payload["entries"]
+            facts = {"valid": isinstance(entries, list) and bool(entries)
+                     and all(isinstance(entry, str) and entry in allowed for entry in entries)}
+        elif operation == "models-config":
+            for link, destination in links:
+                if link.is_symlink():
+                    if not _model_link_matches(link, destination):
+                        raise IntegrityError(f"model folder {link.name} is a different link")
+                elif link.exists() and (not link.is_dir() or any(link.iterdir())):
+                    raise IntegrityError(f"model folder {link.name} is not empty")
+            if links:
+                models_dir.mkdir(parents=True, exist_ok=True)
+            for link, destination in links:
+                if not link.is_symlink():
+                    if link.exists():
+                        link.rmdir()
+                    link.symlink_to(destination, target_is_directory=True)
             _atomic(configuration_path, configuration_bytes)
             facts = {"written": True}
         else:
             facts = {"valid": configuration_path.is_file()
-                     and configuration_path.read_bytes() == configuration_bytes}
+                     and configuration_path.read_bytes() == configuration_bytes
+                     and all(_model_link_matches(link, destination) for link, destination in links)}
     return {"schema": _HELPER_SCHEMA, "operation": operation, "facts": facts}
 
 

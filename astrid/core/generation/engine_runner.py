@@ -532,7 +532,12 @@ class _Runner:
         elif origin.stdout.strip() != source.pin.repository:
             raise IntegrityError("source origin differs from canonical pin", step_id=self.step_id)
         dirty = self.run(("git", "-C", path, "status", "--porcelain", "--untracked-files=all"))
-        if dirty.stdout.strip() or dirty.stdout_truncated:
+        entries = dirty.stdout.splitlines()
+        allowed = (not dirty.stdout_truncated and source.name == "comfyui" and entries
+                   and all(line.startswith("?? models/") and "/" not in line[10:] for line in entries)
+                   and self.helper("models-source-check", models_root=self.plan.models_root,
+                                   entries=entries) == {"valid": True})
+        if (dirty.stdout.strip() and not allowed) or dirty.stdout_truncated:
             error = IntegrityError("source contains uncommitted content", step_id=self.step_id)
             # Porcelain lines carry only status codes and paths: no contents, no command output.
             error.porcelain = [line[:200] for line in dirty.stdout.splitlines()[:20]]
