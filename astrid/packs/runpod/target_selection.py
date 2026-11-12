@@ -627,9 +627,14 @@ class RunPodSelectionOwner:
                     else:
                         offer = await interruptible(observe(), provider_timeout=30.0)
                     rate_limit_failures = 0
-                    offer, _ = self.consented_offer(consent, self.clock(), offer=offer)
-                    remaining = (max(0., (_utc(consent.deadline) - self.clock()).total_seconds())
-                                 if consent.deadline is not None else 30.)
+                    offer, paid_expiry = self.consented_offer(consent, self.clock(), offer=offer)
+                    if (record is not None and record.get("state") not in
+                            {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}
+                            and record.get("paid_limits", {}).get("expires_at")):
+                        paid_expiry = min(paid_expiry, _utc(record["paid_limits"]["expires_at"]))
+                    # This is the acquisition budget, including readiness.
+                    # Each individual provider call keeps its own 30s limit.
+                    remaining = max(0., (paid_expiry - self.clock()).total_seconds())
                     if consent.capacity_timeout_seconds is not None:
                         remaining = min(remaining, max(0., consent.capacity_timeout_seconds -
                                                        (self.monotonic() - started)))
