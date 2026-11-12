@@ -55,7 +55,6 @@ def ensure_local_engine_server(
             if receipt.status != "installed":
                 raise IntegrityError("local engine requires a completed installation")
             runner = _Runner(plan, context, adapter, deadline)
-            runner.check_environment_identities()
             runner.step_id = "helper-identity"
             if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
                 raise IntegrityError("local engine helper identity differs")

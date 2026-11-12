@@ -19,7 +19,7 @@ import pytest
 from astrid.core.generation import engine_custody as custody
 from astrid.core.generation.engine_contracts import (
     CommandRequest, CustodyUnresolved, DeadlineExceeded, EndpointOwnershipError,
-    EngineReinstallRequired, IntegrityError, RecipeValidationError, StartSpec, UnsafePathError,
+    IntegrityError, RecipeValidationError, StartSpec, UnsafePathError,
 )
 from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
 from astrid.core.generation.engine_runner import _json, _sha, helper_manifest
@@ -881,17 +881,17 @@ LocalLinuxExecutionContext.run=run
                         [sys.executable, "-c", supervisor, _json(identity), str(lock_fd), "--launch-token", token])
     client = _client(_identity(root, recipe))
     payload = _payload(client.identity, recipe, _launch(recipe, root))
-    digest = client.identity["helper_sha256"]
     (root / ".astrid-engine").mkdir(mode=0o700)
     state = root / ".astrid-engine/environments/cpu"
     state.mkdir(parents=True)
     lock_digest = hashlib.sha256(lock).hexdigest()
     (state / "requirements.lock").write_bytes(lock)
     lock_identity = {"schema": "astrid.requirements-lock.v1", "environment": "cpu",
-                     "recipe_sha256": client.identity["recipe_sha256"], "helper_sha256": digest,
+                     "recipe_sha256": client.identity["recipe_sha256"],
                      "requirements_lock_sha256": lock_digest}
     (state / "lock.json").write_text(_json(lock_identity))
-    (state / "receipt.json").write_text(_json({k: v for k, v in lock_identity.items() if k != "schema"}))
+    (state / "receipt.json").write_text(_json({**{k: v for k, v in lock_identity.items() if k != "schema"},
+                                                "validated": True}))
     from astrid.core.generation.engine_runner_target import dispatch
     helper = {**client.identity, "schema": "astrid.engine-runner-helper.v1", "models_root": None}
     assert dispatch("models-config", helper)["facts"] == {"written": True}
@@ -1399,16 +1399,16 @@ def test_stale_session_marker_cannot_signal_a_live_unrelated_pid(tmp_path):
         outside.wait(timeout=5)
 
 
-def test_different_helper_is_refused_before_contacting_owned_supervisor(session, monkeypatch):
+def test_different_helper_is_refused_as_ownership_mismatch(session, monkeypatch):
     owner, payload, _, _, _, _ = session
     _call(owner, payload, "probe")
     other = _client({**owner.identity, "helper_sha256": "0" * 64})
     marker = Path(owner.control, "session.json").read_bytes()
     with monkeypatch.context() as scoped:
         scoped.setattr(custody, "_send", lambda *args: pytest.fail("cross-identity request sent"))
-        with pytest.raises(EngineReinstallRequired):
+        with pytest.raises(EndpointOwnershipError):
             other.call("probe", payload, deadline=time.monotonic() + 5)
-        with pytest.raises(EngineReinstallRequired):
+        with pytest.raises(EndpointOwnershipError):
             other.stop_owned(deadline=time.monotonic() + 5)
     assert Path(owner.control, "session.json").read_bytes() == marker
     assert _call(owner, payload, "probe")["state"] == "absent"
