@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import math
 import re
 import secrets
@@ -61,8 +60,6 @@ from .worker_staging import (
     _canonical_digest,
     prepare_worker,
 )
-
-_LOGGER = logging.getLogger(__name__)
 
 
 class RunPodWorkerOwnerError(RuntimeError):
@@ -372,10 +369,8 @@ class RunPodLeaseOwner:
                 if record is not None and record.get("operation_id") == operation:
                     try:
                         self._save(record, {**record["lease"], "release_mechanism": "recovery"})
-                    except Exception as exc:
-                        # Optional metadata must not consume the cleanup retry.
+                    except Exception as exc:  # noqa: BLE001 - optional metadata must not consume the cleanup retry.
                         self.last_error_type = type(exc).__name__
-                        _LOGGER.exception("RunPod recovery annotation could not be saved; retrying release anyway")
             self.release(reason=reason, _expected_operation=operation)
         except Exception as exc:
             self.last_error_type = type(exc).__name__
@@ -414,9 +409,8 @@ class RunPodLeaseOwner:
                                     and (completed.get("operation_id"), completed.get("pod_id")) == captured):
                                 _validate_completed_release(completed)
                                 released = True
-                    except Exception:
-                        # Only a validated exact completion receipt proves release.
-                        _LOGGER.exception("RunPod completed-release receipt did not validate")
+                    except Exception:  # noqa: BLE001 - only a validated exact completion receipt proves release.
+                        pass
                 error = RunPodWorkerOwnerError(
                     f"RunPod acquisition failed; created pod {captured[1]} was released" if released else
                     "RunPod machine custody could not be verified; exact release or reconciliation required")
