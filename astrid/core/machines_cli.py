@@ -31,6 +31,9 @@ def _when(value: Any) -> str:
     return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
+_HOST_ONLY_WARNING = "{id}: this pod can't stop itself; Astrid stops it at its deadline while this computer is running."
+
+
 def render(rows: Sequence[dict[str, Any]]) -> str:
     header = ["ID", "KIND", "GPU", "STATE", "RELEASES (UTC)", "MIN LEFT",
               "COST EST. (USD)", "RATE (USD/HR)", "LAST JOB", "PREPARATION", "RELEASE CAUSE", "ENDED"]
@@ -45,7 +48,9 @@ def render(rows: Sequence[dict[str, Any]]) -> str:
     widths = [max([len(header[i])] + [len(row[i]) for row in body]) for i in range(len(header))]
     lines = ["  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)) for row in [header, *body]]
     live = sum(1 for r in rows if r.get("live"))
-    return "\n".join([*lines, f"{live} live, {len(rows) - live} ended. Cost is estimated spend so far.\nAutomatic release only happens while the owning Astrid host is running."])
+    unprotected = [_HOST_ONLY_WARNING.format(id=r.get("id")) for r in rows
+                   if r.get("live") and r.get("self_stop") is False]
+    return "\n".join([*lines, *unprotected, f"{live} live, {len(rows) - live} ended. Cost is estimated spend so far.\nAutomatic release only happens while the owning Astrid host is running."])
 
 
 def _release(machine_id: str, *, as_json: bool, release: Callable[[], Any] | None) -> int:
@@ -286,7 +291,8 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
         print(json.dumps({"ok": True, "machine": machine, "policy": policy}, sort_keys=True) if as_json else
               f"claimed {machine_id}; release scheduled for {_when(machine['release_at'])} UTC "
               f"(spend cap ${cap:.2f}; hourly ceiling ${ceiling:.2f}). "
-              "Automatic release only happens while the owning Astrid host is running.")
+              "Automatic release only happens while the owning Astrid host is running."
+              + (" " + _HOST_ONLY_WARNING.format(id=machine_id) if machine.get("self_stop") is False else ""))
         return 0
     except ValueError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}) if as_json else str(exc))

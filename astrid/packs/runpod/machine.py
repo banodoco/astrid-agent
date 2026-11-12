@@ -1448,7 +1448,8 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
             "preparation_state": (lease.get("preparation") or {}).get("state"),
             "release_reason": lease.get("release_reason") if state == "releasing" else None,
             "ended": None if live else (lease.get("ended") or lease.get("release_reason")),
-            "last_job": safe_last}
+            "last_job": safe_last,
+            "self_stop": bool((record.get("self_stop") or {}).get("acknowledged")) if live else None}
 
 
 def journal_leases(account: str | None = None) -> list[dict[str, Any]]:
