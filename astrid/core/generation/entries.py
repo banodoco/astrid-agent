@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # The one set of generation kinds, shared by every entry source.
 _KINDS = frozenset({'image', 'video', 'audio'})
@@ -44,6 +47,8 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
         from astrid.core.extensions.scopes import contribution_roots
         roots = contribution_roots()
     except Exception:
+        # Contributions are optional; preserve the prior empty projection if discovery fails.
+        logger.exception('Could not discover workflow contribution roots')
         return []
     rows, seen = [], set(exclude)
     for root in roots:
@@ -64,6 +69,8 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
                     ready = (manifest.parent / str(data["ready_root"])).resolve()
                     listed = data.get("entries") or []
                 except Exception:
+                    # A malformed or unavailable third-party manifest is skipped independently.
+                    logger.exception('Could not read workflow contribution manifest %s', manifest)
                     continue
                 if not ready.is_relative_to(pack.resolve()):
                     continue
@@ -147,6 +154,8 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
         except ShippedResourceMissingError:
             raise
         except Exception:
+            # Workflow metadata is best-effort; preserve declared entry visibility on load errors.
+            logger.exception('Could not load ready workflow metadata for %s', item['id'])
             needs, binds = [], {}
             model_assets = []
             ambiguity = 'ready workflow metadata could not be loaded'

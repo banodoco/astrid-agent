@@ -392,7 +392,7 @@ def parse_recipe_declarations(text: str, where: str = "contribution") -> list[di
 
 def _declared_rows() -> list[dict[str, Any]]:
     """Recipe rows declared by the generation.engine contributions (``recipes:`` in each manifest)."""
-    rows = []
+    rows: list[dict[str, Any]] = []
     for manifest in sorted((_ROOT / "packs").glob(f"*/{_ENGINE_POINT}/*.yaml")):
         try:
             text = manifest.read_text(encoding="utf-8")

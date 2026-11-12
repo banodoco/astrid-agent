@@ -215,7 +215,7 @@ class LinuxEngineServiceClient:
             raise RecipeValidationError("invalid installation identity")
         self.control = root + "/.astrid-engine/session"
         self._spawned = None
-        self.cancelled = None
+        self.cancelled: Callable[[], bool] | None = None
 
     @classmethod
     def for_recipe(cls, *, root, recipe, platform):
