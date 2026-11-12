@@ -19,7 +19,7 @@ import pytest
 from astrid.core.generation import engine_custody as custody
 from astrid.core.generation.engine_contracts import (
     CommandRequest, CustodyUnresolved, DeadlineExceeded, EndpointOwnershipError,
-    EngineReinstallRequired, IntegrityError, RecipeValidationError, StartSpec, UnsafePathError,
+    IntegrityError, RecipeValidationError, StartSpec, UnsafePathError,
 )
 from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
 from astrid.core.generation.engine_runner import _json, _sha, helper_manifest
@@ -656,7 +656,7 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     assert vibe._session_composite_ownership_verified(registry, marker["pid"]) is True
     assert vibe._session_ready(registry) is True
     config = json.loads((registry / "config.json").read_text())
-    assert config["models_root"] == str(root / "models")
+    assert config["models_root"] == str(root / "runtime/ComfyUI/models")
     assert config["output_directory"] == str(root / "runtime/ComfyUI/output")
     assert (registry / "source_revision").read_text() == next(s.pin.revision for s in recipe.sources if s.name == "vibecomfy")
     expected = hashlib.sha256(b"tiny.py\0" + hashlib.sha256(b"# immutable fixture source\n").digest()).hexdigest()
@@ -881,20 +881,17 @@ LocalLinuxExecutionContext.run=run
                         [sys.executable, "-c", supervisor, _json(identity), str(lock_fd), "--launch-token", token])
     client = _client(_identity(root, recipe))
     payload = _payload(client.identity, recipe, _launch(recipe, root))
-    digest = client.identity["helper_sha256"]
     (root / ".astrid-engine").mkdir(mode=0o700)
     state = root / ".astrid-engine/environments/cpu"
     state.mkdir(parents=True)
     lock_digest = hashlib.sha256(lock).hexdigest()
     (state / "requirements.lock").write_bytes(lock)
     lock_identity = {"schema": "astrid.requirements-lock.v1", "environment": "cpu",
-                     "recipe_sha256": client.identity["recipe_sha256"], "helper_sha256": digest,
+                     "recipe_sha256": client.identity["recipe_sha256"],
                      "requirements_lock_sha256": lock_digest}
     (state / "lock.json").write_text(_json(lock_identity))
-    (state / "receipt.json").write_text(_json({k: v for k, v in lock_identity.items() if k != "schema"}))
-    from astrid.core.generation.engine_runner_target import dispatch
-    helper = {**client.identity, "schema": "astrid.engine-runner-helper.v1", "models_root": None}
-    assert dispatch("models-config", helper)["facts"] == {"written": True}
+    (state / "receipt.json").write_text(_json({**{k: v for k, v in lock_identity.items() if k != "schema"},
+                                                "validated": True}))
     try:
         # Installation's finite caller exits before either H3 consumer runs.
         facts = json.loads(_finite_client(client.identity, payload, "start", bootstrap=supervisor).stdout)
@@ -1334,7 +1331,7 @@ def test_client_disconnect_cancels_command_but_retains_engine(session):
 def test_explicit_stop_cancels_active_command_and_engine(session):
     client, payload, recipe, root, mode, started = session
     _call(client, payload)
-    retained = [root / "models/retained-model", root / ".astrid-engine/environments/comfy/requirements.lock"]
+    retained = [root / "runtime/ComfyUI/models/retained-model", root / ".astrid-engine/environments/comfy/requirements.lock"]
     for path in retained:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"retained bytes\n")
@@ -1399,17 +1396,20 @@ def test_stale_session_marker_cannot_signal_a_live_unrelated_pid(tmp_path):
         outside.wait(timeout=5)
 
 
-def test_different_helper_is_refused_before_contacting_owned_supervisor(session, monkeypatch):
+def test_different_helper_is_refused_as_ownership_mismatch(session, monkeypatch):
     owner, payload, _, _, _, _ = session
     _call(owner, payload, "probe")
     other = _client({**owner.identity, "helper_sha256": "0" * 64})
     marker = Path(owner.control, "session.json").read_bytes()
+    sent = []
     with monkeypatch.context() as scoped:
-        scoped.setattr(custody, "_send", lambda *args: pytest.fail("cross-identity request sent"))
-        with pytest.raises(EngineReinstallRequired):
+        scoped.setattr(custody, "_send", lambda *args: sent.append(args))
+        with pytest.raises(EndpointOwnershipError):
             other.call("probe", payload, deadline=time.monotonic() + 5)
-        with pytest.raises(EngineReinstallRequired):
+        assert sent == []
+        with pytest.raises(EndpointOwnershipError):
             other.stop_owned(deadline=time.monotonic() + 5)
+        assert sent == []
     assert Path(owner.control, "session.json").read_bytes() == marker
     assert _call(owner, payload, "probe")["state"] == "absent"
 
@@ -1482,7 +1482,7 @@ def installed_consumer(session, monkeypatch):
         "local", str(root), "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
         {e.name: "a" * 64 for e in recipe.environments},
         {s.name: s.pin.revision for s in recipe.sources},
-        tuple(DownloadResult(m.name, str(root / "models" / m.destination), "skipped",
+        tuple(DownloadResult(m.name, str(root / "runtime/ComfyUI/models" / m.destination), "skipped",
                              m.bytes, m.sha256, True, 0) for m in models.models),
         tuple(StepReceipt(s.id, s.kind, "executed", "passed",
                           {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"],
@@ -1499,7 +1499,7 @@ def installed_consumer(session, monkeypatch):
     reference = SimpleNamespace(
         effective_target={"kind": "runpod", "provider_account_ref": "account-1", "pod_id": "pod-1"},
         executable=SimpleNamespace(path=root / "runtime/venv/bin/python"),
-        model_root=root / "models", output_root=Path(config["output_directory"]),
+        model_root=root / "runtime/ComfyUI/models", output_root=Path(config["output_directory"]),
         session_ref="comfyui", session_config_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
     )
     readiness = {

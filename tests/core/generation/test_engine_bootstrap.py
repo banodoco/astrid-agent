@@ -192,7 +192,6 @@ def test_real_console_execution_refuses_without_a2(tmp_path):
         "    _cli._default_backend = _unexpected\n"
         "    _cli._custody_preflight = _unexpected\n"
         "    _cli.install_engine = _unexpected\n"
-        "    _cli._check_install_identity = _unexpected\n"
         "    raise SystemExit(entries[0].load()())",
     )
     result = run(b, env, loader)

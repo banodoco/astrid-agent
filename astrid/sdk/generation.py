@@ -1430,7 +1430,6 @@ class GenerationFacade:
         from astrid.core.generation.preflight import (
             require_generation_target_readiness,
             select_generation_target,
-            validate_generation_request,
             generation_error, readiness_envelope, compare_versions,
         )
 
@@ -1613,8 +1612,6 @@ class GenerationFacade:
                         catalog_entry = registry.get(registry_id)
                         if not is_remote_target and not is_managed_target:
                             require_generation_target_readiness(catalog_entry, mode, target_client)
-                        validate_generation_request(registry, model=registry_id, mode=mode,
-                                                    execution="local", inputs=inputs, modality=modality)
                         workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                             registry=registry, candidate=catalog_entry, mode=mode,
                             modality=modality, inputs=inputs, target_client=target_client, backend=backend,

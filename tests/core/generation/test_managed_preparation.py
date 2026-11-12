@@ -100,7 +100,7 @@ def test_alignment_failure_keeps_native_stderr_out_of_public_error(tmp_path, cap
 def test_configured_models_root_is_read_only_and_refuses_unsafe_receipt(tmp_path):
     from astrid.core.generation.managed_preparation import configured_models_root
     root = tmp_path / 'absent'
-    assert configured_models_root(root=str(root)) == str(root / 'models')
+    assert configured_models_root(root=str(root)) == str(root / 'runtime/ComfyUI/models')
     assert not root.exists()
     receipt = root / '.astrid-engine/install.json'
     receipt.parent.mkdir(parents=True)
@@ -238,7 +238,6 @@ def test_native_pip_uses_real_python312_and_exact_recipe_selector(tmp_path):
     import importlib.util, subprocess
     from astrid.packs.vibecomfy.native_preparation import native_pip_program
     interpreter = Path('/usr/bin/python3.12')
-    if not interpreter.is_file(): pytest.skip('real CPython 3.12 interpreter is unavailable')
     venv = tmp_path / 'python312'
     subprocess.run([str(interpreter), '-I', '-m', 'venv', '--without-pip', str(venv)],
                    check=True, capture_output=True, text=True, timeout=20)
@@ -365,14 +364,17 @@ def test_managed_node_lock_declares_real_recipe_patches(tmp_path):
     from vibecomfy.node_packs import read_lockfile
 
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
-    patch = next(p for p in recipe.source_patches if p.source == 'comfyui-qwentts')
-    source = next(s for s in recipe.sources if s.name == patch.source)
+    patches = [p for p in recipe.source_patches if p.source == 'comfyui-qwentts']
+    assert patches
+    source = next(s for s in recipe.sources if s.name == patches[0].source)
     nodes = [{'repo': source.pin.repository, 'commit': source.pin.revision}]
     lock = tmp_path / 'custom_nodes.lock'
     _write_managed_nodes_lock(lock, nodes, recipe)
     entry = read_lockfile(lock)[0]
     assert entry.name == 'ComfyUI-QwenTTS'
-    assert [(p.path, p.sha256) for p in entry.patches] == [(patch.path, patch.sha256_after)]
+    assert [(p.path, p.sha256) for p in entry.patches] == [
+        (p.path, p.sha256_after) for p in patches
+    ]
 
 
 def test_managed_node_lock_without_patches_preserves_original_bytes(tmp_path):

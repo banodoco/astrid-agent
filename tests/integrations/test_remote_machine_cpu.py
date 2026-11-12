@@ -1228,9 +1228,6 @@ def test_no_stock_writes_a_no_machine_receipt(journey):
             consent=("paid",), max_usd=1.5, deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
             offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
             idle_seconds=1800, wait=True, wait_for_capacity=False)
-    root, found = _receipts()
-    if not found:
-        pytest.skip("admission refused the no-stock job before a task existed; no receipt is expected")
     receipt = _newest_receipt()
     assert receipt["stage"] == "no_machine" and receipt["collection"]["state"] == "local_only"
     assert receipt["identity"]["machine_id"] is None
