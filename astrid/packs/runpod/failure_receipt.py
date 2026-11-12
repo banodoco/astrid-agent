@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
@@ -216,41 +217,86 @@ def write_receipt(receipt: Mapping[str, Any], *, root: Path | None = None, bundl
     The collected bundle's redacted files are copied into ``files/`` first, each
     rechecked against the digest the receipt records; a file that differs is left out.
     """
+    from .failure_bundle import BUNDLE_FILES, _open_directory, _open_regular, _write
+
     root = Path(root) if root is not None else failures_root()
     task = receipt["identity"].get("task_id")
     name = "".join(ch for ch in str(task or "") if ch.isalnum() or ch in "-_")[:128] or f"local-{uuid.uuid4().hex}"
-    folder = root / name
-    folder.mkdir(parents=True, exist_ok=True)
-    files = folder / "files"
-    shutil.rmtree(files, ignore_errors=True)
-    if receipt.get("files"):
-        receipt = dict(receipt)
-        files.mkdir()
-        kept = []
-        for row in receipt["files"]:
-            try:
-                data = (Path(bundle_dir) / row["name"]).read_bytes() if bundle_dir is not None else None
-            except OSError:
-                data = None
-            if data is not None and hashlib.sha256(data).hexdigest() == row["sha256"]:
-                (files / row["name"]).write_bytes(data)
-                kept.append(row)
-        receipt["files"] = kept
-    path = folder / RECEIPT_NAME
-    partial = path.with_name(RECEIPT_NAME + f".{os.getpid()}.partial")
-    partial.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(partial, path)
-    _prune(root, keep=folder)
-    return path
-
-
-def _prune(root: Path, *, keep: Path) -> None:
+    directory = _open_directory(str(root), create=True)
     try:
-        rows = sorted(((p.stat().st_mtime, p) for p in root.iterdir() if (p / RECEIPT_NAME).is_file()),
-                      key=lambda row: row[0], reverse=True)
-        for _mtime, folder in rows[KEEP_RECEIPTS:]:
-            if folder != keep:
-                shutil.rmtree(folder, ignore_errors=True)
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=directory)
+        except FileExistsError:
+            pass
+        folder_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+        try:
+            # rmtree uses its symlink-resistant descriptor traversal; a symlink is refused.
+            try:
+                info = os.stat("files", dir_fd=folder_fd, follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    raise OSError("symlink in receipt path")
+                if stat.S_ISDIR(info.st_mode):
+                    shutil.rmtree("files", dir_fd=folder_fd)
+                else:
+                    os.unlink("files", dir_fd=folder_fd)
+            except FileNotFoundError:
+                pass
+            if receipt.get("files"):
+                receipt = dict(receipt)
+                os.mkdir("files", mode=0o700, dir_fd=folder_fd)
+                files_fd = os.open("files", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=folder_fd)
+                try:
+                    kept = []
+                    for row in receipt["files"]:
+                        if row.get("name") not in BUNDLE_FILES:
+                            continue
+                        try:
+                            if bundle_dir is None:
+                                data = None
+                            else:
+                                source, _size = _open_regular(str(Path(bundle_dir) / row["name"]))
+                                with source:
+                                    data = source.read(CAP_BYTES + 1)
+                        except OSError:
+                            data = None
+                        if (data is not None and len(data) <= CAP_BYTES
+                                and hashlib.sha256(data).hexdigest() == row["sha256"]):
+                            _write(files_fd, row["name"], data)
+                            kept.append(row)
+                    receipt["files"] = kept
+                finally:
+                    os.close(files_fd)
+            partial = RECEIPT_NAME + f".{os.getpid()}.partial"
+            _write(folder_fd, partial, json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+            os.replace(partial, RECEIPT_NAME, src_dir_fd=folder_fd, dst_dir_fd=folder_fd)
+        finally:
+            os.close(folder_fd)
+        _prune(directory, keep=name)
+    finally:
+        os.close(directory)
+    return root / name / RECEIPT_NAME
+
+
+def _prune(root: int, *, keep: str) -> None:
+    rows = []
+    try:
+        for name in os.listdir(root):
+            info = os.stat(name, dir_fd=root, follow_symlinks=False)
+            if not stat.S_ISDIR(info.st_mode):
+                continue
+            folder = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            try:
+                receipt = os.stat(RECEIPT_NAME, dir_fd=folder, follow_symlinks=False)
+                if stat.S_ISREG(receipt.st_mode):
+                    rows.append((receipt.st_mtime, name))
+            except FileNotFoundError:
+                pass
+            finally:
+                os.close(folder)
+        rows.sort(reverse=True)
+        for _mtime, name in rows[KEEP_RECEIPTS:]:
+            if name != keep:
+                shutil.rmtree(name, dir_fd=root, ignore_errors=True)
     except OSError:
         pass
 

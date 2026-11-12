@@ -224,6 +224,14 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         def execute_command(self, *a): return pod.exec(*a)
         def put(self, *a): return pod.put(*a)
         def get(self, *a): return pod.get(*a)
+        def get_limited(self, remote, local, *, max_bytes):
+            from astrid.packs.runpod.remote_placement import TransferOverCap
+            data = pod.files[remote]
+            if pod.corrupt_get and remote.endswith(pod.corrupt_get):
+                data += b"tampered"
+            if len(data) > max_bytes:
+                raise TransferOverCap("download exceeds receive byte limit")
+            return pod.get(remote, local)
         def detached_start(self, *a, **kw): return pod.job_start(*a, **kw)
         def detached_poll(self, *a): return pod.job_poll(*a)
         def detached_cancel(self, *a): return pod.job_cancel(*a)

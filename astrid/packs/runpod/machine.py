@@ -440,14 +440,26 @@ def _json_strings(value: Any) -> list[str]:
     return found
 
 
-def _job_file_prompts(path: Path | None) -> list[str]:
+def _job_file_prompts(path: Path | None) -> list[str] | None:
     """The shipped job's bindings and inputs strings, read from the controller's own copy."""
     from .failure_bundle import job_prompts
 
     try:
-        return job_prompts(json.loads(Path(path).read_text(encoding="utf-8"))) if path is not None else []
+        if path is None:
+            return None
+        from .failure_bundle import read_json
+        job, _ = read_json(str(path))
+        if not isinstance(job, dict) or not all(key in job for key in ("bindings", "inputs")):
+            return None
+        return job_prompts(job)
     except (OSError, ValueError, TypeError):
-        return []
+        return None
+
+
+class _CollectionStopped(Exception):
+    def __init__(self, state: str, reason: str) -> None:
+        self.state, self.reason = state, reason
+        super().__init__(reason)
 
 
 class _CollectionAbort:
@@ -457,7 +469,8 @@ class _CollectionAbort:
         self.owner, self.event = owner, event
 
     def is_set(self) -> bool:
-        return bool((self.event is not None and self.event.is_set()) or getattr(self.owner, "closed", False))
+        return bool((self.event is not None and self.event.is_set())
+                    or getattr(self.owner, "_release_inflight", False) or getattr(self.owner, "closed", False))
 
     def reason(self) -> str:
         if getattr(self.owner, "closed", False):
@@ -630,6 +643,12 @@ class RunPodMachine:
         if reason is not None:
             # Before the claim: the pod only gets the pinned source tuple and this job directory.
             raise MachineError(reason)
+        # Verify exactly what would ship before acquiring any paid resource.
+        try:
+            archive, _selection = build_selection(job.entry, Path(job.scratch) / "preclaim-selection")
+            archive.unlink(missing_ok=True)
+        except Exception as exc:
+            raise MachineError("shipping selection verification failed; refusing paid acquisition") from exc
         prevalidate_task(dict(policy), dict(inputs), scratch=job.scratch)
         owner = adapter.lease_owner
         if (policy.get("kind") != KIND or policy.get("engine") != adapter.installation.engine
@@ -969,7 +988,16 @@ class RunPodMachine:
         later folder fetch (the failure folder).
         """
         manifest_local = scratch / MANIFEST_NAME
-        ops.get(f"{remote_dir}/{MANIFEST_NAME}", manifest_local)
+        from .failure_bundle import MANIFEST_CAP, _open_directory
+        from .remote_placement import TransferOverCap
+
+        try:
+            if admit is None:
+                ops.get(f"{remote_dir}/{MANIFEST_NAME}", manifest_local)
+            else:
+                ops.get(f"{remote_dir}/{MANIFEST_NAME}", manifest_local, max_bytes=MANIFEST_CAP)
+        except TransferOverCap:
+            raise BundleOverCap("bundle manifest is over its receive cap") from None
         if sha256_file(manifest_local) != manifest_digest:
             manifest_local.unlink(missing_ok=True)
             raise DigestMismatch("downloaded manifest does not match the digest the job reported")
@@ -980,7 +1008,8 @@ class RunPodMachine:
             # The failure folder refuses a manifest that breaks its caps before any file is fetched.
             admit(recorded, manifest_local.stat().st_size)
         destination = Path(destination)
-        destination.mkdir(parents=True, exist_ok=True)
+        directory = _open_directory(str(destination.absolute()), create=True)
+        os.close(directory)
         files: dict[str, str] = {}
         for relative, entry in sorted(recorded.items()):
             parts = Path(relative).parts
@@ -988,8 +1017,15 @@ class RunPodMachine:
                     or ".." in parts or relative != Path(relative).as_posix()):
                 raise DigestMismatch(f"pod manifest names an unsafe path: {relative!r}")
             local = destination / relative
-            local.parent.mkdir(parents=True, exist_ok=True)
-            ops.get(f"{remote_dir}/{relative}", local)
+            directory = _open_directory(str(local.parent.absolute()), create=True)
+            os.close(directory)
+            try:
+                if admit is None:
+                    ops.get(f"{remote_dir}/{relative}", local)
+                else:
+                    ops.get(f"{remote_dir}/{relative}", local, max_bytes=entry["size"])
+            except TransferOverCap:
+                raise DigestMismatch("downloaded file exceeds its admitted size") from None
             if sha256_file(local) != entry.get("sha256") or local.stat().st_size != entry.get("size"):
                 local.unlink(missing_ok=True)
                 raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
@@ -1220,14 +1256,14 @@ class RunPodMachine:
     def _collect_failure(self, *, owner: Any, ops: Any, abort_event: Any, paid_expiry: float | None,
                          limit: float | None, scratch: Path | None, name: str, run_dir: str | None,
                          job_dir: str | None, phase: str, exit_code: Any, include_install: bool,
-                         prompts: list[str], timing: Any) -> dict[str, Any]:
+                         prompts: list[str] | None, timing: Any) -> dict[str, Any]:
         """Collect one failure bundle before any reset or release; never raises.
 
         One ``exec`` runs the shipped collector (``failure_bundle.py``), which
         redacts the job's logs and writes a capped folder with a digest
         manifest. That folder is fetched with the output fetch's verification,
-        refusing a manifest over the caps, then redacted again here with what
-        only the controller holds. Bounded by ``COLLECT_SECONDS`` and the paid
+        refusing a manifest over the caps, then redacted again here as defence
+        in depth. Controller-known secrets and prompts reach the pod first. Bounded by ``COLLECT_SECONDS`` and the paid
         limit; an exact release (paid expiry, explicit) or host shutdown aborts it.
         """
         import shutil
@@ -1236,6 +1272,7 @@ class RunPodMachine:
         from .remote_placement import POD_ROOT, BoundedObserverUnreaped
 
         began = time.monotonic()
+        deadline = None
         _stamp(timing, "failure_collection_started_at")
         abort = _CollectionAbort(owner, abort_event)
         record: dict[str, Any] = {"state": "not_collected", "cap_bytes": fb.TOTAL_CAP,
@@ -1256,9 +1293,26 @@ class RunPodMachine:
             if abort.is_set():
                 record.update(state="aborted_by_release", reason=abort.reason())
                 return record
+            def check_collection():
+                if abort.is_set():
+                    raise _CollectionStopped("aborted_by_release", abort.reason())
+                if time.monotonic() >= deadline or owner.clock() >= paid_expiry:
+                    raise _CollectionStopped("timed_out", "collect_budget")
+
+            check_collection()
             paths = pod_paths()
+            secrets = _controller_secrets(ops)
+            # Validate the complete controller context before exporting any pod text.
+            context_complete = prompts is not None
+            try:
+                fb.Redactor(prompts=prompts or (), secrets=secrets, check=check_collection)
+            except ValueError:
+                context_complete = False
             request = {
                 "schema": fb.SCHEMA, "name": name, "failures_root": FAILURE_ROOT,
+                "redaction_context": {"complete": context_complete,
+                                      "prompts": prompts if context_complete else [],
+                                      "secrets": secrets if context_complete else []},
                 "roots": [POD_ROOT, _detached_root()], "run_dir": run_dir, "job_dir": job_dir,
                 "engine_root": getattr(getattr(self._require(), "installation", None), "root", None),
                 "include_install": include_install, "phase": phase,
@@ -1282,7 +1336,8 @@ class RunPodMachine:
                 digest = found[1]
                 staging = Path(scratch) / f"failure-bundle-{uuid.uuid4().hex}"
                 pod_copy = staging / "pod"
-                pod_copy.mkdir(parents=True)
+                directory = fb._open_directory(str(pod_copy), create=True)
+                os.close(directory)
                 fetched = self._fetch_verified(collect_ops, f"{FAILURE_ROOT}/{name}", pod_copy, staging, digest,
                                                admit=_admit_bundle)
             except BundleOverCap:
@@ -1303,8 +1358,15 @@ class RunPodMachine:
                 else:
                     record.update(state="unreachable", reason="transport")
                 return record
-            record.update(self._redact_locally(fetched, staging, prompts=prompts, ops=ops))
+            check_collection()
+            local = self._redact_locally(fetched, staging, prompts=prompts or [], ops=ops,
+                                         check=check_collection)
+            check_collection()
+            record.update(local)
             record.update(state="collected", manifest_sha256=digest)
+            return record
+        except _CollectionStopped as exc:
+            record.update(state=exc.state, reason=exc.reason)
             return record
         except Exception:  # noqa: BLE001 (a collection problem never changes release)
             record.update(state="collector_failed", reason="controller")
@@ -1312,26 +1374,51 @@ class RunPodMachine:
         finally:
             if pod_copy is not None:
                 shutil.rmtree(pod_copy, ignore_errors=True)
+            # Cleanup is part of collection too. Fence the final publication
+            # against release's atomic observer signal, including a release
+            # that arrived while deleting the temporary pod copy.
+            from contextlib import nullcontext
+            with getattr(owner, "lock", nullcontext()):
+                with getattr(owner, "_observer_lock", nullcontext()):
+                    if abort.is_set():
+                        record.update(state="aborted_by_release", reason=abort.reason())
+                    elif (record.get("state") == "collected" and deadline is not None
+                          and (time.monotonic() >= deadline or owner.clock() >= paid_expiry)):
+                        record.update(state="timed_out", reason="collect_budget")
+                    if record.get("state") != "collected":
+                        for field in ("dir", "files", "bytes", "manifest_sha256"):
+                            record.pop(field, None)
             if staging is not None and record.get("state") != "collected":
                 shutil.rmtree(staging, ignore_errors=True)
             record["seconds"] = round(time.monotonic() - began, 3)
             _stamp(timing, "failure_collection_ended_at")
 
     @staticmethod
-    def _redact_locally(fetched: Mapping[str, str], staging: Path, *, prompts: list[str], ops: Any) -> dict[str, Any]:
+    def _redact_locally(fetched: Mapping[str, str], staging: Path, *, prompts: list[str], ops: Any,
+                        check: Callable[[], None] = lambda: None) -> dict[str, Any]:
         """The controller's own pass over the verified pod copy; the caps hold again afterwards."""
         from . import failure_bundle as fb
 
         try:
-            collector = json.loads(Path(fetched["collector.json"]).read_text(encoding="utf-8"))
+            stream, size = fb._open_regular(fetched["collector.json"])
+            with stream:
+                if size > fb.FILE_CAPS["collector.json"]:
+                    raise BundleOverCap("collector facts over cap")
+                collector = json.loads(stream.read(fb.FILE_CAPS["collector.json"] + 1))
         except (KeyError, OSError, ValueError):
             collector = {}
         collector = collector if isinstance(collector, Mapping) else {}
-        local = fb.Redactor(prompts=prompts, secrets=_controller_secrets(ops))
+        check()
+        local = fb.Redactor(prompts=prompts, secrets=_controller_secrets(ops), check=check)
         bodies = {}
         for name in fb.BUNDLE_FILES:
+            check()
             if name in fetched:
-                data = Path(fetched[name]).read_bytes()
+                stream, size = fb._open_regular(fetched[name])
+                with stream:
+                    if size > fb.FILE_CAPS[name]:
+                        raise BundleOverCap("local bundle file over cap")
+                    data = stream.read(fb.FILE_CAPS[name] + 1)
                 bodies[name] = (data, fb.redact_file(name, data, local))
         total = sum(len(body) for _data, body in bodies.values())
         if total > fb.TOTAL_CAP and "engine-log-tail.txt" in bodies:
@@ -1339,21 +1426,26 @@ class RunPodMachine:
             room = max(0, fb.TOTAL_CAP - (total - len(body)))
             bodies["engine-log-tail.txt"] = (data, fb.fit_text(body.decode("utf-8", "replace"), room)[0].encode())
         final = staging / "final"
-        final.mkdir(parents=True, exist_ok=True)
+        final_fd = fb._open_directory(str(final), create=True)
         facts = collector.get("files") if isinstance(collector.get("files"), Mapping) else {}
         rows = []
-        for name, (data, body) in bodies.items():
-            (final / name).write_bytes(body)
-            fact = facts.get(name) if isinstance(facts.get(name), Mapping) else {}
-            source = fact.get("source_bytes")
-            rows.append({"name": name, "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(),
-                         "pod_bytes": len(data), "pod_sha256": hashlib.sha256(data).hexdigest(),
-                         "truncated": fact.get("truncated") is True,
-                         "source_bytes": source if type(source) is int and source >= 0 else None})
+        try:
+            for name, (data, body) in bodies.items():
+                check()
+                fb._write(final_fd, name, body)
+                fact = facts.get(name) if isinstance(facts.get(name), Mapping) else {}
+                source = fact.get("source_bytes")
+                rows.append({"name": name, "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(),
+                             "pod_bytes": len(data), "pod_sha256": hashlib.sha256(data).hexdigest(),
+                             "truncated": fact.get("truncated") is True,
+                             "source_bytes": source if type(source) is int and source >= 0 else None})
+        finally:
+            os.close(final_fd)
         return {"dir": str(final), "files": rows, "bytes": sum(row["bytes"] for row in rows),
                 "pod_counts": _counts(collector.get("redaction"), fb.COUNTS),
                 "local_counts": dict(local.counts),
-                "workflow": _counts(collector.get("workflow"), ("strings_replaced", "values_replaced"))}
+                "workflow": _counts(collector.get("workflow"), ("strings_replaced", "values_replaced")),
+                **({"reason": "free_text_withheld"} if collector.get("context_complete") is False else {})}
 
     def _collect_preparation_failure(self, owner: Any, invocation: Any, exc: BaseException, job: Any,
                                      timing: Any) -> None:
@@ -1380,9 +1472,17 @@ class RunPodMachine:
                 job_dir = (f"{_detached_root()}/{job_id}" if isinstance(job_id, str)
                            and re.fullmatch(r"[0-9a-f]{32}", job_id) else None)
                 try:
-                    prompts = _json_strings(json.loads(job.inputs.get("workflow_inputs") or "{}"))
+                    # Preparation has not decoded the submitted input archive.
+                    # Its path is not a complete prompt context: withhold text.
+                    if job.inputs.get("entry_inputs"):
+                        raise ValueError("opaque preparation input context")
+                    prompts = _json_strings(dict(job.inputs))
+                    raw_inputs = job.inputs.get("workflow_inputs") or "{}"
+                    if not isinstance(raw_inputs, str) or len(raw_inputs) > 256 * 1024:
+                        raise ValueError("preparation context over cap")
+                    prompts += _json_strings(json.loads(raw_inputs))
                 except (ValueError, TypeError, AttributeError):
-                    prompts = []
+                    prompts = None
                 name = "prep-" + re.sub(r"[^A-Za-z0-9_-]", "", str(invocation.operation_id))[:80]
                 bundle = self._collect_failure(
                     owner=owner, ops=ops, abort_event=event, paid_expiry=lease.get("paid_expires_at"), limit=None,
@@ -1483,8 +1583,8 @@ def _active_sources() -> tuple[Any, ...]:
     try:
         from astrid.core.pack.source_setup import active_sources
         return tuple(active_sources(verify=False))
-    except Exception:
-        return ()
+    except Exception as exc:
+        raise MachineError("active pack discovery failed; refusing paid acquisition") from exc
 
 
 def _active_roots() -> list[Path]:
@@ -1514,7 +1614,7 @@ def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
             from astrid.core.extensions.registry import ExtensionRegistry
             registry = ExtensionRegistry().load()
         except Exception:
-            registry = None
+            return "entry registry discovery failed; refusing paid acquisition"
     if registry is not None:
         from astrid.core.generation.workflows import POINT as WORKFLOWS
         for contribution in registry.contributions(WORKFLOWS):
@@ -1534,7 +1634,7 @@ def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
             from astrid.core.generation.entries import action_entries
             action_rows = action_entries()
         except Exception:
-            action_rows = []
+            return "action discovery failed; refusing paid acquisition"
     for row in action_rows:
         if row.get("id") == entry and row.get("action"):
             pack = str(row["action"]).split(".", 1)[0]

@@ -31,9 +31,9 @@ from tests.packs.runpod.test_warm_session import (  # noqa: F401  (fixtures)
     lease_selection_case as lease_selection_case, small_lease as small_lease,
 )
 
-PROMPT = "a quiet harbour at dawn, fishing boats with red sails, mist rolling over the water"
+PROMPT = "a quiet harbour at dawn, fishing boats with red sails, mist rising above water"
 SHORT = "Mira"
-TWO_LINES = "first private line of the story\nsecond private line of the story"
+TWO_LINES = "mauve chrysanthemum vignette\nlilac chrysanthemum vignette"
 #: Key-shaped strings (RunPod, Hugging Face, OpenAI, AWS, GitHub, JWT, generic high entropy, assignments).
 SECRETS = {
     "runpod": "rpa_9ZQXW3K2M7N4B8V1C6X5Z0L9K8J7H6G5F4D3",
@@ -247,13 +247,14 @@ def test_the_pod_folder_holds_the_cause_and_no_planted_value(tmp_path):
     # The workflow comes back as structure only.
     shaped = json.loads(files["workflow.redacted.json"])
     assert shaped["format"] == "litegraph"
-    assert shaped["nodes"][0] == {"id": 1, "type": "CLIPTextEncode",
+    assert shaped["nodes"][0] == {"id": "node_1", "type": "CLIPTextEncode",
                                   "inputs": [{"name": "clip", "type": "CLIP", "link": 3}],
                                   "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [4],
                                                "slot_index": 0}],
                                   "widgets_values": [{"redacted": "string", "len": len(PROMPT)},
                                                      {"redacted": "number"}, {"redacted": "boolean"}]}
-    assert shaped["links"] == [[3, 5, 0, 1, 0, "CLIP"], [4, 1, 0, 6, 1, "CONDITIONING"]]
+    assert shaped["links"] == [[3, "node_3", 0, "node_1", 0, "CLIP"],
+                               [4, "node_1", 0, "node_4", 1, "CONDITIONING"]]
     collector = json.loads(files["collector.json"])
     assert collector["policy"] == fb.POLICY and collector["limits"]["prompt_min_chars"] == 4
     assert collector["limits"]["line_drop_chars"] == 32 and collector["workflow"]["values_replaced"] == 4
@@ -335,6 +336,11 @@ def pod_bundle(machine_case, tmp_path, monkeypatch):
     c.order, c.collector_requests = [], []
     c.pod_environ = {"PATH": "/usr/bin:/bin", "MY_SERVICE_TOKEN": POD_ONLY_SECRET}
     c.before_collect = None
+    # Host control flags can match the credential-name policy too. Isolate the
+    # synthetic credentials so assertions do not depend on the runner's env.
+    for name in tuple(os.environ):
+        if fb.SECRET_NAME.search(name):
+            monkeypatch.delenv(name)
     monkeypatch.setenv("ASTRID_FAKE_API_KEY", CONTROLLER_ONLY_SECRET)  # only the controller holds this value
     exec_original, start_original = c.pod.exec, c.pod.job_start
     log_path = c.installation.root + "/runtime/out/sessions/comfyui/comfy.log"
@@ -409,10 +415,10 @@ def test_an_execution_failure_collects_the_bundle_before_the_reset(pod_bundle, r
     pod_folder = collection["pod_folder"]
     pod_texts = {p: data.decode() for p, data in c.pod.files.items() if p.startswith(pod_folder + "/")}
     assert pod_folder.startswith("/root/astrid/failures/") and len(pod_texts) == len(names) + 1
-    # Pod side: nothing planted survives but the value only the controller knows.
+    # Pod side: the complete context includes the controller-known secrets.
     for path, text in pod_texts.items():
         assert set(_leaks(text)) <= {CONTROLLER_ONLY_SECRET}, path
-    assert any(CONTROLLER_ONLY_SECRET in text for text in pod_texts.values()), "the pod could not know it"
+    assert not any(CONTROLLER_ONLY_SECRET in text for text in pod_texts.values()), "controller secrets must reach pod before export"
     # Controller side and the final local files: nothing planted survives at all.
     for row in receipt["files"]:
         assert _leaks((files / row["name"]).read_text()) == [], row["name"]
@@ -420,7 +426,7 @@ def test_an_execution_failure_collects_the_bundle_before_the_reset(pod_bundle, r
     redaction = receipt["redaction"]
     assert redaction["applied"] and redaction["policy"] == "astrid.failure-redaction.v1"
     assert redaction["pod"]["lines_dropped"] > 0 and redaction["pod"]["secret"] > 0 and redaction["pod"]["url"] > 0
-    assert redaction["local"]["secret"] >= 1, "the controller pass removed its own value"
+    assert redaction["local"]["secret"] >= 1, "controller defence pass applied credential redaction"
     assert redaction["rule"]["prompt_min_chars"] == 4 and redaction["rule"]["line_drop_chars"] == 32
     # The pod was safe: it is kept, and the staging copy is gone.
     assert receipt["machine"]["after"] == "kept" and c.deletes == []

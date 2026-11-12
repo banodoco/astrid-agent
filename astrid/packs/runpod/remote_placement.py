@@ -26,6 +26,7 @@ import multiprocessing
 import os
 import re
 import shlex
+import stat
 import subprocess
 import tarfile
 import threading
@@ -73,6 +74,10 @@ SOURCE_DIRS = (
 
 class RemotePlacementError(AstridError):
     """A remote placement step failed. The pod has been released unless stated."""
+
+
+class TransferOverCap(RemotePlacementError):
+    """A receiving download exceeded its admitted byte limit."""
 
 
 class BoundedObserverUnreaped(RemotePlacementError):
@@ -781,14 +786,95 @@ class _HttpsOps:
     def _call_direct(self, name: str, *args: Any, **kwargs: Any) -> Any:
         transport = self._transport()
         try:
+            if name == "get_limited":
+                limited = getattr(transport, "get_limited", None)
+                if limited is not None:
+                    return limited(*args, **kwargs)
+                return self._get_limited(transport, *args, **kwargs)
             return getattr(transport, name)(*args, **kwargs)
         finally:
             transport.disconnect()
 
+    @staticmethod
+    def _get_limited(transport: Any, remote: str, local: Path, *, max_bytes: int) -> None:
+        """Bound the wire envelope and decoded bytes before writing any chunk."""
+        from .failure_bundle import _open_directory
+
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError("invalid receive byte limit")
+        local = Path(local).absolute()
+        directory = _open_directory(str(local.parent), create=True)
+        staging = local.name + ".https-part"
+        offset, etag = 0, None
+        wire_bytes = 0
+        created = False
+        envelope_cap = 4 * ((max_bytes + 2) // 3) + 2048
+        try:
+            fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=directory)
+            created = True
+            with os.fdopen(fd, "wb") as stream:
+                while True:
+                    request = {"path": remote, "offset": offset}
+                    if etag:
+                        request["etag"] = etag
+                    remaining = transport._remaining()
+                    timeout = transport.request_timeout if remaining is None else min(
+                        transport.request_timeout, remaining)
+                    with transport.http.stream("POST", "/download-chunk", json=request, timeout=timeout,
+                                               headers={"Accept-Encoding": "identity"}) as response:
+                        if not response.is_success:
+                            raise RemotePlacementError("bounded download request rejected")
+                        # Refuse encoding before httpx can allocate an unbounded decompressed body.
+                        if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                            raise RemotePlacementError("encoded bounded download refused")
+                        declared = response.headers.get("Content-Length")
+                        if declared is not None and int(declared) > envelope_cap - wire_bytes:
+                            raise TransferOverCap("download exceeds receive byte limit")
+                        envelope = bytearray()
+                        for block in response.iter_raw(chunk_size=min(4096, envelope_cap - wire_bytes + 1)):
+                            if wire_bytes + len(block) > envelope_cap:
+                                raise TransferOverCap("download exceeds receive byte limit")
+                            wire_bytes += len(block)
+                            envelope.extend(block)
+                    data = json.loads(envelope)
+                    chunk = base64.b64decode(data["data"], validate=True)
+                    total = data.get("total")
+                    if type(total) is not int or total < 0:
+                        raise RemotePlacementError("invalid bounded download size")
+                    if total > max_bytes or offset + len(chunk) > max_bytes:
+                        raise TransferOverCap("download exceeds receive byte limit")
+                    if (type(data.get("offset")) is not int or data["offset"] != offset
+                            or offset + len(chunk) > total
+                            or not isinstance(data.get("etag"), str) or not data["etag"]
+                            or etag is not None and data["etag"] != etag
+                            or hashlib.sha256(chunk).hexdigest() != data.get("sha256")
+                            or not chunk and offset != total):
+                        raise RemotePlacementError("invalid bounded download chunk")
+                    stream.write(chunk)
+                    offset += len(chunk)
+                    etag = data["etag"]
+                    if offset == total:
+                        break
+            try:
+                info = os.stat(local.name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                info = None
+            if info is not None and not stat.S_ISREG(info.st_mode):
+                raise OSError("download destination is not a regular file")
+            os.replace(staging, local.name, src_dir_fd=directory, dst_dir_fd=directory)
+        finally:
+            if created:
+                try:
+                    os.unlink(staging, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+            os.close(directory)
+
     def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Kill a slow-drip caller before it can hold the host's drain forever."""
         # ``get`` lands one failure-bundle file; its digest is verified by the caller.
-        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel", "get"}:
+        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel", "get", "get_limited"}:
             raise RemotePlacementError("unsupported bounded pod operation")
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
@@ -860,6 +946,8 @@ class _HttpsOps:
             if time.monotonic() >= self.deadline:
                 raise RemotePlacementError("failure verification deadline expired")
             payload = json.loads(raw)
+            if payload == {"ok": False, "value": "transfer_over_cap"}:
+                raise TransferOverCap("download exceeds receive byte limit")
             if not isinstance(payload, dict) or set(payload) != {"ok", "value"} or payload["ok"] is not True:
                 raise RemotePlacementError("bounded pod operation failed")
             if self.abort_event is not None and self.abort_event.is_set():
@@ -901,8 +989,11 @@ class _HttpsOps:
     def put(self, local: Path, remote: str) -> None:
         self._call("put", local, remote)
 
-    def get(self, remote: str, local: Path) -> None:
-        self._call("get", remote, local)
+    def get(self, remote: str, local: Path, *, max_bytes: int | None = None) -> None:
+        if max_bytes is None:
+            self._call("get", remote, local)
+        else:
+            self._call("get_limited", remote, local, max_bytes=max_bytes)
 
     def job_start(self, command: str, *, job_id: str | None = None) -> Mapping[str, Any]:
         return self._call("detached_start", command, **({"job_id": job_id} if job_id is not None else {}))
@@ -924,6 +1015,8 @@ def _bounded_https_call_child(send: Any, pod_id: str, token: str, deadline: floa
         if len(payload) > 2 * 1024 * 1024:
             payload = b'{"ok":false,"value":null}'
         send.send_bytes(payload)
+    except TransferOverCap:
+        send.send_bytes(b'{"ok":false,"value":"transfer_over_cap"}')
     except BaseException:
         try:
             send.send_bytes(b'{"ok":false,"value":null}')

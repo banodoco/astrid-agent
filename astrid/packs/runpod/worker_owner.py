@@ -611,6 +611,18 @@ class RunPodLeaseOwner:
         """Register an exact invocation before an out-of-lock remote probe."""
         key = (invocation.operation_id, invocation.owner_epoch, invocation.generation, pod_id)
         with self.lock:
+            record = self._read()
+            lease = (record or {}).get("lease") or {}
+            if (record is None or record.get("operation_id") != invocation.operation_id
+                    or record.get("pod_id") != pod_id or lease.get("owner_epoch") != invocation.owner_epoch
+                    or lease.get("generation") != invocation.generation
+                    or lease.get("invocation_id") != invocation.invocation_id):
+                raise RunPodWorkerOwnerError("failure observation differs from machine custody")
+            if (self._release_inflight or lease.get("state") in {"releasing", "ended", "released"}
+                    or record.get("state") == "cleanup_complete" or getattr(self, "closed", False)):
+                event = threading.Event()
+                event.set()
+                return key, event
             record = self.preparation_claim(invocation)
             if record.get("pod_id") != pod_id:
                 raise RunPodWorkerOwnerError("failure observation differs from machine custody")
@@ -634,8 +646,14 @@ class RunPodLeaseOwner:
                     or lease.get("generation") != invocation.generation):
                 raise RunPodWorkerOwnerError("release observation differs from machine custody")
             event = threading.Event()
-            with self._observer_lock:
-                self._failure_observers[key] = event
+            # Registration shares the release fence's lock: a late observer
+            # must never make an already-authorized release wait.
+            if (self._release_inflight or lease.get("state") in {"releasing", "ended", "released"}
+                    or record.get("state") == "cleanup_complete" or getattr(self, "closed", False)):
+                event.set()
+            else:
+                with self._observer_lock:
+                    self._failure_observers[key] = event
         return key, event
 
     def end_failure_observation(self, key: tuple[str, str, int, str]) -> None:
