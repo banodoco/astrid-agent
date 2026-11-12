@@ -14,8 +14,9 @@ import shutil
 import subprocess
 import sys
 import re
-import urllib.parse
+import unicodedata
 from pathlib import Path
+from urllib.parse import urlsplit
 
 LOGGER = logging.getLogger(__name__)
 AGENT_ROOT = Path(__file__).resolve().parents[3]
@@ -47,17 +48,8 @@ _REMEDY = ("Install a release manifest whose pins match this Agent, or change "
 
 
 def _show_repository(value: object) -> str:
-    if not isinstance(value, str):
-        return "<invalid>"
-    try:
-        url = urllib.parse.urlsplit(value)
-        if (url.scheme.lower() != "https" or not url.hostname or url.username is not None
-                or url.password is not None or url.port is not None or url.query or url.fragment
-                or not url.path.startswith("/") or not url.path):
-            return "<invalid>"
-    except ValueError:
-        return "<invalid>"
-    return f"https://{url.hostname.lower()}{url.path.rstrip('/')}"
+    identity = _repository_identity(value)
+    return f"https://{identity[0]}{identity[1]}" if identity is not None else "<invalid>"
 
 
 def _show_sha(value: object) -> str:
@@ -70,11 +62,33 @@ def _show_version(value: object) -> str:
 
 
 def _repository_identity(value: object) -> tuple[str, str] | None:
-    rendered = _show_repository(value)
-    if rendered == "<invalid>":
+    if not isinstance(value, str):
         return None
-    url = urllib.parse.urlsplit(rendered)
-    return url.hostname.lower(), url.path.rstrip("/")
+    if (len(value) > 200 or not value.startswith("https://")
+            or any(char.isspace() or unicodedata.category(char) == "Cc" for char in value)):
+        return None
+    try:
+        url = urlsplit(value)
+        if (url.scheme != "https" or not url.netloc or "@" in url.netloc or ":" in url.netloc
+                or "[" in url.netloc or "]" in url.netloc or "?" in value or "#" in value
+                or not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*", url.netloc, re.IGNORECASE)
+                or not url.path.startswith("/") or not url.path):
+            return None
+        labels = url.netloc.lower().split(".")
+        if ((len(labels) == 4 and all(label.isdigit() for label in labels))
+                or any(len(label) > 63 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+               for label in labels)):
+            return None
+        segments = url.path[1:].split("/")
+        if segments and segments[-1] == "":
+            segments.pop()
+        if (not segments or any(not segment or segment in {".", ".."} or "%" in segment
+                                or not re.fullmatch(r"[A-Za-z0-9._-]+", segment) for segment in segments)):
+            return None
+    except ValueError:
+        return None
+    path = "/" + "/".join(segments)
+    return url.netloc.lower(), path
 
 
 def pin_mismatch_message(name: str, manifest_pin: dict, canonical: dict) -> str:

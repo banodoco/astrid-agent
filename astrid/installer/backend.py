@@ -42,7 +42,8 @@ from .core import (
 from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
-from .tools import asset_downloads, binary, clone_source, install_tools, source, validate_pack_build
+from .tools import (asset_downloads, binary, clone_source, install_tools, repository_identity,
+                    source, validate_pack_build)
 
 
 class _HttpsRedirect(urllib.request.HTTPRedirectHandler):
@@ -381,30 +382,13 @@ def _public_pin(value: object) -> str:
 
 
 def _public_repository(value: object) -> str:
-    if not isinstance(value, str):
-        return "<invalid>"
-    try:
-        url = urllib.parse.urlsplit(value)
-        if (url.scheme.lower() != "https" or not url.hostname or url.username is not None
-                or url.password is not None or url.port is not None or url.query or url.fragment
-                or not url.path.startswith("/") or not url.path):
-            return "<invalid>"
-    except ValueError:
-        return "<invalid>"
-    return f"https://{url.hostname.lower()}{url.path.rstrip('/')}"
+    identity = repository_identity(value)
+    return f"https://{identity[0]}{identity[1]}" if identity is not None else "<invalid>"
 
 
 def _public_version(value: object) -> str:
     return value if isinstance(value, str) and re.fullmatch(
         r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", value) else "<invalid>"
-
-
-def _repository_identity(value: object) -> tuple[str, str] | None:
-    rendered = _public_repository(value)
-    if rendered == "<invalid>":
-        return None
-    url = urllib.parse.urlsplit(rendered)
-    return url.hostname.lower(), url.path.rstrip("/")
 
 
 def _check_lifecycle_pin(manifest: dict, agent: Path) -> None:
@@ -422,7 +406,7 @@ def _check_lifecycle_pin(manifest: dict, agent: Path) -> None:
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ValueError("The staged Agent has no readable lifecycle pin in astrid/packs/runpod/pins.json.") from exc
     given = (pin.get("repo"), pin.get("sha"), pin.get("version"))
-    equivalent = (_repository_identity(given[0]) == _repository_identity(expected[0])
+    equivalent = (repository_identity(given[0]) == repository_identity(expected[0])
                   and given[1:] == expected[1:])
     if not equivalent:
         raise ValueError(

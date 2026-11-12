@@ -27,6 +27,22 @@ def test_pin_refusal_redacts_unvalidated_repository_values():
     assert "version 1.2.4" in normal
 
 
+@pytest.mark.parametrize("repo", (
+    "https://user%3AFAKE_SECRET%40example.invalid/l.git", "https://[::1]/l.git",
+    "https://127.0.0.1/l.git", "https://git\nhub.com/l.git", "https://github.com/l.git//",
+    " https://github.com/l.git", "https://github.com/l.git ", "HTTPS://github.com/l.git",
+    "https://github.com/l.git?", "https://github.com/l.git#", "https://github.com:/l.git",
+    "https://github.com/a\\b", "https://github.com/" + "a" * 10000,
+))
+def test_managed_resolution_refusal_handles_malformed_repository(repo):
+    canonical = {"repository": "https://github.com/banodoco/runpod-lifecycle.git",
+                 "revision": "a" * 40, "version": "1.2.3"}
+    text = managed_sources.pin_mismatch_message(
+        "lifecycle", {"repository": repo, "revision": "b" * 40, "version": "1.2.4"}, canonical)
+    assert "repository <invalid>" in text
+    assert "FAKE_SECRET" not in text
+
+
 def test_legacy_manifest_is_refused_during_runpod_preparation(tmp_path, monkeypatch):
     version_root = tmp_path / "version"
     version_root.mkdir()

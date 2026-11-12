@@ -735,10 +735,15 @@ def test_stage_refuses_a_lifecycle_pin_that_differs_from_the_staged_agent(tmp_pa
 
 
 def test_stage_lifecycle_refusal_never_prints_url_credentials(tmp_path, monkeypatch):
-    for bad_repo in ("//user:FAKE_SECRET@example.invalid/l.git",
-                     "https://example.invalid/l.git?token=FAKE_SECRET",
-                     "https://user:FAKE_SECRET@example.invalid/l.git"):
-        base = tmp_path / str(len(bad_repo))
+    bad_repositories = (
+        "https://user%3AFAKE_SECRET%40example.invalid/l.git", "https://[::1]/l.git",
+        "https://127.0.0.1/l.git", "https://git\nhub.com/l.git", "https://github.com/l.git//",
+        " https://github.com/l.git", "https://github.com/l.git ", "HTTPS://github.com/l.git",
+        "https://github.com/l.git?", "https://github.com/l.git#", "https://github.com:/l.git",
+        "https://github.com/a\\b", "https://github.com/" + "a" * 10000,
+    )
+    for index, bad_repo in enumerate(bad_repositories):
+        base = tmp_path / str(index)
         pin = {**_canonical_lifecycle(), "repo": bad_repo}
         backend, value, _ = _stage_with_lifecycle(base, monkeypatch, pin)
         with pytest.raises(ValueError, match="lifecycle pin differs") as caught:
