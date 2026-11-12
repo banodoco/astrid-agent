@@ -320,6 +320,46 @@
       "destination": "vae/qwen_image_2.1_vae_bf16.safetensors",
       "bytes": 675509688,
       "sha256": "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9"
+    },
+    {
+      "name": "music-ace-step-diffusion-model",
+      "repository": "Comfy-Org/ACE-Step-1.5",
+      "revision": "371bb1680f8c88d8c1083f6ffb6330d3d55bff76",
+      "path": "split_files/diffusion_models/acestep_v1.5_turbo.safetensors",
+      "url": null,
+      "destination": "diffusion_models/acestep_v1.5_turbo.safetensors",
+      "bytes": 4787825604,
+      "sha256": "3f6e0797fad420a39bd33979eb6e840e30989e34a3794e843d23b60ec6e422d7"
+    },
+    {
+      "name": "music-ace-step-vae",
+      "repository": "Comfy-Org/ACE-Step-1.5",
+      "revision": "371bb1680f8c88d8c1083f6ffb6330d3d55bff76",
+      "path": "split_files/vae/ace_1.5_vae.safetensors",
+      "url": null,
+      "destination": "vae/ace_1.5_vae.safetensors",
+      "bytes": 337431732,
+      "sha256": "6de92e3a862acd287e08b024ac90f0783a8635451b728721a33ff03565bcb2bb"
+    },
+    {
+      "name": "music-ace-step-text-encoder-0-6b",
+      "repository": "Comfy-Org/ACE-Step-1.5",
+      "revision": "371bb1680f8c88d8c1083f6ffb6330d3d55bff76",
+      "path": "split_files/text_encoders/qwen_0.6b_ace15.safetensors",
+      "url": null,
+      "destination": "text_encoders/qwen_0.6b_ace15.safetensors",
+      "bytes": 1191588248,
+      "sha256": "fd4590c82153b8ddb67e15a2e7aaa8afa8b83a858c8a9b82a4831063156aa7a7"
+    },
+    {
+      "name": "music-ace-step-text-encoder-4b",
+      "repository": "Comfy-Org/ACE-Step-1.5",
+      "revision": "371bb1680f8c88d8c1083f6ffb6330d3d55bff76",
+      "path": "split_files/text_encoders/qwen_4b_ace15.safetensors",
+      "url": null,
+      "destination": "text_encoders/qwen_4b_ace15.safetensors",
+      "bytes": 8379154232,
+      "sha256": "ffe5ffb855086c2ab55e467e9859fb01894781020a0376484dd19de166b79873"
     }
   ]
 }

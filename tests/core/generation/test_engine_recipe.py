@@ -33,7 +33,7 @@ def test_index_roundtrips_windows_and_linux_recipes_with_immutable_values():
     assert windows.environments[0].requirements.mode == "resolve-once"
     assert {source.name for source in windows.sources} == {"comfyui", "vibecomfy", "h3-motion-context", "videohelpersuite"}
     models = recipes.load_recipe_model_lock(linux.engine, linux.platform).models
-    assert len(models) == 32
+    assert len(models) == 36
     # The original five H3 models remain the leading locked inventory.
     assert [model.bytes for model in models[:5]] == [
         20970379616, 27141342152, 2811065184, 605254808, 1956193000,
