@@ -94,10 +94,7 @@ def declare(root: Path, decl: LogDecl) -> None:
         raise ValueError("end must be a non-negative integer or null")
     if decl.line_time not in ("iso8601", "epoch", *_FORMATS):
         raise ValueError("unsupported line_time")
-    if decl.since is not None:
-        _parse_time(decl.since, "iso8601")
-    if decl.until is not None:
-        _parse_time(decl.until, "iso8601")
+    _time_bounds(decl)
     root.mkdir(parents=True, exist_ok=True)
     data = _load(root)
     item = dataclasses.asdict(decl)
@@ -168,11 +165,24 @@ def _parse_time(value: str, fmt: str) -> float | None:
     return parsed.timestamp()
 
 
+def _time_bounds(decl: LogDecl) -> tuple[float, float]:
+    bounds = []
+    for name, value, default in (("since", decl.since, float("-inf")),
+                                 ("until", decl.until, float("inf"))):
+        if value is None:
+            bounds.append(default)
+            continue
+        parsed = _parse_time(value, "iso8601") if isinstance(value, str) else None
+        if parsed is None:
+            raise ValueError(f"{name} must be a valid ISO time: {value!r}")
+        bounds.append(parsed)
+    return bounds[0], bounds[1]
+
+
 def _time_slice(payload: bytes, decl: LogDecl) -> bytes:
     if decl.since is None and decl.until is None:
         return payload
-    lower = _parse_time(decl.since, "iso8601") if decl.since else float("-inf")
-    upper = _parse_time(decl.until, "iso8601") if decl.until else float("inf")
+    lower, upper = _time_bounds(decl)
     lines = payload.splitlines(keepends=True)
     kept: list[bytes] = []
     current: float | None = None

@@ -112,6 +112,12 @@ def test_literal_format_guard(tmp_path):
     assert run_logs.read_declared(tmp_path)[0][0] == run_logs.LogDecl("run", "run", "attempt.json")
 
 
+@pytest.mark.parametrize("bound", ["since", "until"])
+def test_declare_rejects_invalid_time_bound(tmp_path, bound):
+    with pytest.raises(ValueError, match=rf"{bound} must be a valid ISO time: 'bad-time'"):
+        run_logs.declare(tmp_path, run_logs.LogDecl("run", "run", "shared.log", **{bound: "bad-time"}))
+
+
 def test_time_window_keeps_interleaved_lines(tmp_path):
     source = tmp_path / "shared.log"
     source.write_text("2025-01-01T00:00:00Z run-b start\n2025-01-01T00:00:01Z run-a start\n2025-01-01T00:00:03Z run-b done\n2025-01-01T00:00:04Z run-a done\n")
