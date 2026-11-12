@@ -92,7 +92,8 @@ class OfferObservationError(PaidSelectionError):
 
     def __init__(self, reason: str, *, retry_after: float | None = None):
         self.reason = reason if isinstance(reason, str) and reason in _OFFER_FAILURES else "observation_failed"
-        retry_after = (float(retry_after) if type(retry_after) in (int, float)
+        retry_after = (float(retry_after) if isinstance(retry_after, (int, float))
+                       and not isinstance(retry_after, bool)
                        and math.isfinite(retry_after) and retry_after >= 0 else None)
         message, gate, retryable = _OFFER_FAILURES[self.reason]
         super().__init__(f"RunPod offer unavailable (reason={self.reason}): {message}",
@@ -370,8 +371,10 @@ class PaidRunConsent:
                 raise PaidSelectionError("offer or rate changed; disclose it and obtain fresh paid consent")
         elif not allow_policy:
             raise PaidSelectionError("keep requires fresh consent for the exact rented offer")
-        elif offer.hourly_usd > self.max_hourly_usd:
-            raise PaidSelectionError("observed RunPod hourly rate exceeds the consented hourly ceiling")
+        else:
+            ceiling = _number(self.max_hourly_usd, "hourly USD ceiling")
+            if offer.hourly_usd > ceiling:
+                raise PaidSelectionError("observed RunPod hourly rate exceeds the consented hourly ceiling")
         seconds = self.preparation_seconds + self.execution_seconds + self.idle_seconds
         cap = _number(self.max_usd, "USD cap")
         if seconds * offer.hourly_usd / 3600 > cap:
@@ -543,8 +546,6 @@ class RunPodSelectionOwner:
             if (record is None or record.get("state") != "claimed"
                     or record.get("operation_id") != consent.operation_id):
                 raise PaidSelectionError("no machine: run `astrid machines claim`")
-            return await self._select_once(consent, lease=lease, lock_held=lock_held,
-                                           offer=self._recorded_offer(record), cancelled=cancelled)
         consent.validate_authority(self.preferences, self.clock())
         if dry_run:
             return await self._select_once(consent, dry_run=True, lease=lease, lock_held=lock_held)
@@ -554,12 +555,11 @@ class RunPodSelectionOwner:
         def check() -> None:
             if cancelled is not None and cancelled():
                 raise CapacityWaitCancelled("RunPod capacity wait cancelled")
-            if claim_lifetime_seconds is not None:
-                record = self._read()
-                if (record is not None and record.get("create_attempts", 0) > 0
-                        and record.get("state") not in {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}
-                        and self.clock() >= _utc(record["paid_limits"]["expires_at"])):
-                    raise CapacityWaitTimeout("machine paid lifetime expired during acquisition", gate="lifetime")
+            record = self._read()
+            if (record is not None and record.get("create_attempts", 0) > 0
+                    and record.get("state") not in {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}
+                    and self.clock() >= _utc(record["paid_limits"]["expires_at"])):
+                raise CapacityWaitTimeout("machine paid lifetime expired during acquisition", gate="lifetime")
             if (consent.capacity_timeout_seconds is not None
                     and self.monotonic() - started >= consent.capacity_timeout_seconds):
                 raise CapacityWaitTimeout("RunPod capacity timeout passed; no further create will be attempted", gate="capacity")
@@ -583,6 +583,12 @@ class RunPodSelectionOwner:
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
 
+        if isinstance(consent, ClaimedJob):
+            assert record is not None  # Validated before entering the deadline watcher.
+            return await interruptible(self._select_once(
+                consent, lease=lease, lock_held=lock_held,
+                offer=self._recorded_offer(record), cancelled=check))
+
         def progress(number: int, offer: RunPodOffer | None, result: str, note: str | None = None) -> None:
             row = {"attempt": number, "gpu": offer.gpu_type if offer else list(self.preferences.gpu_types),
                    "datacenter": offer.datacenter_id if offer else self.preferences.datacenter_id,
@@ -605,7 +611,10 @@ class RunPodSelectionOwner:
 
         async def observe_options() -> tuple[RunPodOffer, ...]:
             try:
-                offers = await asyncio.to_thread(self.observe_offers)
+                observer = self.observe_offers
+                if observer is None:
+                    raise OfferObservationError("observation_failed")
+                offers = await asyncio.to_thread(observer)
                 ordered = ordered_runpod_offers(self.preferences, offers)
                 if not ordered:
                     raise OfferObservationError("stock_unavailable")
@@ -717,11 +726,11 @@ class RunPodSelectionOwner:
                 # The original offer id was not stored by older journals. Its
                 # exact accepted digest remains in the paid authority record.
                 RunPodOffer.digest(self, preferences)
-                return limits.get("offer_digest")
+                return limits["offer_digest"]
 
-        return RecordedOffer(record.get("provider_account_ref"), record.get("gpu_type"),
-                             limits.get("hourly_usd"), "retained-offer",
-                             record.get("network_volume_datacenter_id"), record.get("accepted_gpu_type_id"))
+        return RecordedOffer(record["provider_account_ref"], record["gpu_type"],
+                             limits["hourly_usd"], "retained-offer",
+                             record["network_volume_datacenter_id"], record["accepted_gpu_type_id"])
 
     async def _select_once(self, consent: PaidRunConsent, *, dry_run: bool = False,
                            lease: Mapping[str, Any] | None = None, lock_held: bool = False,
@@ -969,7 +978,9 @@ class RunPodSelectionOwner:
                 try:
                     gpu_count = await asyncio.to_thread(
                         worker_preparation.read_acquired_gpu_count, config.api_key, observation.pod_id)
-                    observed_rate = self.observed_hourly_usd(observation.pod_id)
+                    observed_rate = await asyncio.to_thread(self.observed_hourly_usd, observation.pod_id)
+                except PaidSelectionError:
+                    raise
                 except TargetObservationError as exc:
                     raise PaidSelectionError(str(exc), gate="rate") from None
                 except Exception:
