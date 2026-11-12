@@ -10,14 +10,59 @@ import time
 from concurrent.futures import CancelledError
 from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
+
+from .engine_contracts import EngineRecipe, IntegrityError, SourcePatch
 
 PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
 _NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor"})
+
+
+def _recipe_node_patches(recipe: EngineRecipe) -> dict[str, list[SourcePatch]]:
+    """Resolve recipe patch source IDs to custom-node directory names."""
+    comfy = next((s for s in recipe.sources if s.name == "comfyui"), None)
+    custom_nodes = PurePosixPath(comfy.relative_path) / "custom_nodes" if comfy else None
+    patches_by_pack: dict[str, list[SourcePatch]] = {}
+    sources = {source.name: source for source in recipe.sources}
+    for patch in recipe.source_patches:
+        source = sources.get(patch.source)
+        if source is None or custom_nodes is None:
+            continue
+        try:
+            relative = PurePosixPath(source.relative_path).relative_to(custom_nodes)
+        except ValueError:
+            continue
+        if len(relative.parts) == 1:
+            patches_by_pack.setdefault(relative.name, []).append(patch)
+    return patches_by_pack
+
+
+def _write_managed_nodes_lock(path: Path, nodes: list[dict[str, str]], recipe: EngineRecipe) -> None:
+    """Write the selected node pins and their recipe-owned source patches."""
+    patches_by_pack = _recipe_node_patches(recipe)
+    sources = {source.name: source for source in recipe.sources}
+    lines = []
+    for node in nodes:
+        name = Path(urlsplit(node["repo"]).path).name.removesuffix(".git")
+        if not name or any(c.isspace() or c in "/\\" for c in name):
+            raise IntegrityError("managed node name is invalid")
+        lines += [f"[nodepacks.{json.dumps(name)}]", f"url = {json.dumps(node['repo'])}",
+                  f"commit = {json.dumps(node['commit'])}"]
+        patches = patches_by_pack.get(name, ())
+        pins = {(sources[patch.source].pin.repository, sources[patch.source].pin.revision) for patch in patches}
+        if patches and pins != {(node["repo"], node["commit"])}:
+            # A recipe patch is bound to its source pin; never transfer it to another repository or commit.
+            raise IntegrityError(f"recipe source patches for node pack {name} are pinned to {sorted(pins)}, "
+                                 f"but the workflow locks {node['repo']} at {node['commit']}")
+        if patches:
+            values = ", ".join(f"{{ path = {json.dumps(patch.path)}, sha256 = {json.dumps(patch.sha256_after)} }}"
+                               for patch in patches)
+            lines.append(f"patches = [{values}]")
+    path.write_text("\n".join(lines) + "\n")
 
 
 def native_failure_diagnostic(step: str, stdout: str, stderr: str) -> tuple[str, str]:
@@ -356,14 +401,7 @@ class ManagedEnginePreparation:
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
         self.scratch.mkdir(parents=True, exist_ok=True)
         lockfile = self.scratch / "managed-custom-nodes.lock"
-        lines = []
-        for node in (manifest.get("extra") or {}).get("nodes", []):
-            name = Path(urlsplit(node["repo"]).path).name.removesuffix(".git")
-            if not name or any(c.isspace() or c in "/\\" for c in name):
-                raise IntegrityError("managed node name is invalid")
-            lines += [f"[nodepacks.{json.dumps(name)}]", f"url = {json.dumps(node['repo'])}",
-                      f"commit = {json.dumps(node['commit'])}"]
-        lockfile.write_text("\n".join(lines) + "\n")
+        _write_managed_nodes_lock(lockfile, (manifest.get("extra") or {}).get("nodes", []), self.recipe)
         if engine.commands is None:
             engine.commands = commands_type(str(canonical_path), str(lockfile), runner=self._command)
         self.check()
@@ -517,11 +555,13 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             where = ("its whole output is the run logs preparation.{0}.stdout and preparation.{0}.stderr"
                      .format(step) if self._keep_step_output(step, result) else "inspect the host log for this attempt")
             raise IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}")
+        # A successful step's output is evidence too (for example restore's "declared patches verified").
+        self._keep_step_output(step, result)
         self.check()
         return result
 
     def _keep_step_output(self, step, result) -> bool:
-        """Keep a failed step's whole stdout and stderr as declared run logs; never raises."""
+        """Keep a step's whole stdout and stderr as declared run logs, on success and failure; never raises."""
         logs_root = getattr(self, "logs_root", None)
         if logs_root is None:
             return False

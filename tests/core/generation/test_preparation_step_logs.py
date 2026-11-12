@@ -57,3 +57,14 @@ def test_an_unwritable_logs_root_never_changes_the_failure(tmp_path):
     blocker.write_text("")
     with pytest.raises(IntegrityError, match=r"step=doctor.*inspect the host log for this attempt"):
         _preparation(tmp_path, blocker)._native("print()", step="doctor")
+
+
+def test_a_successful_step_also_keeps_its_output(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    prep = _preparation(tmp_path, out)
+    ok = SimpleNamespace(exit_code=0, timed_out=False, stdout="ComfyUI-QwenTTS: refreshed d8122a8 (declared patches verified: 1)\n", stderr="")
+    prep.context = SimpleNamespace(run=lambda request: ok)
+    prep._native("print()", step="nodes_restore")
+    declared = {row["name"]: row for row in json.loads((out / "logs.json").read_text())["logs"]}
+    assert "declared patches verified: 1" in open(declared["preparation.nodes_restore.stdout"]["path"]).read()

@@ -357,3 +357,80 @@ def test_real_vibecomfy_doctor_stdout_failure_and_success_are_distinguished(tmp_
     prep._native('import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
                  'doctor', str(emitted.python_path), '--non-interactive', '--yes', step='doctor')
     assert observed[-1].returncode == 0
+
+
+def test_managed_node_lock_declares_real_recipe_patches(tmp_path):
+    from astrid.core.generation.engine_recipe import load_recipe
+    from astrid.core.generation.managed_preparation import _write_managed_nodes_lock
+    from vibecomfy.node_packs import read_lockfile
+
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    patch = next(p for p in recipe.source_patches if p.source == 'comfyui-qwentts')
+    source = next(s for s in recipe.sources if s.name == patch.source)
+    nodes = [{'repo': source.pin.repository, 'commit': source.pin.revision}]
+    lock = tmp_path / 'custom_nodes.lock'
+    _write_managed_nodes_lock(lock, nodes, recipe)
+    entry = read_lockfile(lock)[0]
+    assert entry.name == 'ComfyUI-QwenTTS'
+    assert [(p.path, p.sha256) for p in entry.patches] == [(patch.path, patch.sha256_after)]
+
+
+def test_managed_node_lock_without_patches_preserves_original_bytes(tmp_path):
+    from dataclasses import replace
+    from astrid.core.generation.engine_recipe import load_recipe
+    from astrid.core.generation.managed_preparation import _write_managed_nodes_lock
+
+    recipe = replace(load_recipe('comfyui', 'linux-x86_64-cu130'), source_patches=())
+    lock = tmp_path / 'custom_nodes.lock'
+    _write_managed_nodes_lock(lock, [{'repo': 'https://example.test/pack.git', 'commit': 'abc'}], recipe)
+    assert lock.read_text() == ('[nodepacks."pack"]\nurl = "https://example.test/pack.git"\n'
+                                'commit = "abc"\n')
+
+
+def test_asset_alignment_accepts_only_verified_recipe_patch_at_recipe_pin(tmp_path):
+    import subprocess
+    from dataclasses import replace
+    from astrid.core.generation.asset_alignment import ManagedAssetTarget, _pack_state
+    from astrid.core.generation.engine_recipe import load_recipe
+
+    root = tmp_path / 'nodes'
+    pack_path = root / 'ComfyUI-QwenTTS'
+    pack_path.mkdir(parents=True)
+    def git(*args):
+        return subprocess.run(['git', '-C', str(pack_path), *args], check=True, capture_output=True, text=True).stdout.strip()
+    git('init')
+    git('config', 'user.name', 'Fixture')
+    git('config', 'user.email', 'fixture@example.test')
+    (pack_path / 'patched.py').write_text('before')
+    git('add', 'patched.py')
+    git('commit', '-m', 'fixture')
+    revision = git('rev-parse', 'HEAD')
+    repo = 'https://example.test/ComfyUI-QwenTTS.git'
+    git('remote', 'add', 'origin', repo)
+    (pack_path / 'patched.py').write_text('after')
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    old_patch = next(p for p in recipe.source_patches if p.source == 'comfyui-qwentts')
+    patch = replace(old_patch, path='patched.py', sha256_after=hashlib.sha256(b'after').hexdigest())
+    sources = tuple(replace(s, pin=replace(s.pin, repository=repo, revision=revision))
+                    if s.name == patch.source else s for s in recipe.sources)
+    recipe = replace(recipe, sources=sources, source_patches=(patch,))
+    target = ManagedAssetTarget(tmp_path, tmp_path / 'models', root, 'python', 'http://localhost', '',
+                                tmp_path / 'cache', recipe=recipe)
+    pack = {'name': pack_path.name, 'repository': repo, 'revision': revision}
+    assert _pack_state(target, pack) == 'verified'
+    (pack_path / 'untracked').write_text('other')
+    assert _pack_state(target, pack) == 'mismatch'
+
+
+def test_managed_node_lock_refuses_a_recipe_patch_at_another_commit(tmp_path):
+    import pytest
+    from astrid.core.generation.engine_contracts import IntegrityError
+    from astrid.core.generation.engine_recipe import load_recipe
+    from astrid.core.generation.managed_preparation import _write_managed_nodes_lock
+
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    patch = next(p for p in recipe.source_patches if p.source == 'comfyui-qwentts')
+    source = next(s for s in recipe.sources if s.name == patch.source)
+    with pytest.raises(IntegrityError, match='ComfyUI-QwenTTS'):
+        _write_managed_nodes_lock(tmp_path / 'custom_nodes.lock',
+                                  [{'repo': source.pin.repository, 'commit': '0' * 40}], recipe)

@@ -26,6 +26,7 @@ from .engine_contracts import (
     DownloadError,
     DownloadResult,
     EngineError,
+    EngineRecipe,
     IntegrityError,
     ModelSpec,
     UnsafePathError,
@@ -51,6 +52,7 @@ class ManagedAssetTarget:
     vibecomfy_root: Path | None = None
     receipt_sha256: str | None = None
     locked_models: tuple[ModelSpec, ...] = ()
+    recipe: EngineRecipe | None = None
 
     def object_info(self) -> dict[str, Any]:
         from .backends.comfy_target import ComfyTarget, ComfyTargetClient
@@ -276,7 +278,7 @@ def selected_target() -> ManagedAssetTarget:
     return ManagedAssetTarget(root, models, nodes, python, url,
                               receipt.models_lock_sha256, cache, vibecomfy,
                               hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
-                              load_model_lock(recipe.models_lock).models)
+                              load_model_lock(recipe.models_lock).models, recipe)
 
 
 def _locked_models() -> dict[str, ModelSpec]:
@@ -385,6 +387,16 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
     return manifests
 
 
+def _pack_recipe_patches(target: ManagedAssetTarget, pack: dict[str, Any]):
+    if target.recipe is None:
+        return ()
+    from .managed_preparation import _recipe_node_patches
+    patches = _recipe_node_patches(target.recipe).get(pack['name'], ())
+    sources = {source.name: source for source in target.recipe.sources}
+    return tuple(patch for patch in patches if sources[patch.source].pin.repository == pack['repository']
+                 and sources[patch.source].pin.revision == pack['revision'])
+
+
 def _pack_state(target: ManagedAssetTarget, pack: dict[str, Any]) -> str:
     _validate_pack(pack)
     path = _safe_path(target.custom_nodes_root, target.custom_nodes_root / _safe_relative(pack['name']))
@@ -394,12 +406,22 @@ def _pack_state(target: ManagedAssetTarget, pack: dict[str, Any]) -> str:
         raise IntegrityError(f"node pack {pack['name']} is not a plain Git checkout")
     def git(*args):
         return subprocess.run(['git', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', str(path), *args],
-                              capture_output=True, text=True, check=True, timeout=15).stdout.strip()
+                              capture_output=True, text=True, check=True, timeout=15).stdout.rstrip('\n')
     try:
-        if (git('rev-parse', 'HEAD') != pack['revision']
-                or git('config', '--get', 'remote.origin.url') != pack['repository']
-                or git('status', '--porcelain', '--untracked-files=all')):
+        head = git('rev-parse', 'HEAD')
+        if head != pack['revision'] or git('config', '--get', 'remote.origin.url') != pack['repository']:
             return 'mismatch'
+        dirty = git('status', '--porcelain', '--untracked-files=all')
+        if dirty:
+            patches = _pack_recipe_patches(target, pack)
+            if not patches:
+                return 'mismatch'
+            from vibecomfy.node_packs._install import _verified_declared_patches
+            from vibecomfy.node_packs._lockfile import DeclaredPatch, LockEntry
+            entry = LockEntry(pack['name'], commit=pack['revision'], url=pack['repository'],
+                              patches=tuple(DeclaredPatch(p.path, p.sha256_after) for p in patches))
+            if not _verified_declared_patches(path, dirty, entry, head):
+                return 'mismatch'
     except (subprocess.SubprocessError, OSError) as exc:
         raise IntegrityError(f"Cannot verify node pack {pack['name']}") from exc
     return 'verified'
@@ -424,9 +446,10 @@ def _install_pack(target: ManagedAssetTarget, pack: dict[str, Any], *, deadline:
     # Run the existing installer inside the target environment so its pip
     # protection checks observe the target's actual installed distributions.
     code = '''import json, sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
-from vibecomfy.node_packs import install_pack
+from vibecomfy.node_packs import install_pack, read_lockfile, write_lockfile
+from vibecomfy.node_packs._lockfile import DeclaredPatch
 from vibecomfy.security.gate import requesting_provenance
 pack = json.loads(sys.argv[1])
 token = requesting_provenance.set('user_confirmed')
@@ -437,10 +460,19 @@ try:
         cm_cli_resolver=lambda *_: None)
 finally:
     requesting_provenance.reset(token)
+if result.status in ('installed', 'refreshed'):
+    patches = tuple(DeclaredPatch(**patch) for patch in json.loads(sys.argv[4]))
+    if patches:
+        lockpath = Path(sys.argv[3])
+        entries = read_lockfile(lockpath)
+        entries = [replace(entry, patches=patches) if entry.name == pack['name'] else entry for entry in entries]
+        write_lockfile(entries, lockpath)
 print(json.dumps(asdict(result)))
 '''
     try:
-        child = subprocess.run([target.python, '-c', code, json.dumps(pack), str(target.custom_nodes_root), str(lockpath)],
+        child = subprocess.run([target.python, '-c', code, json.dumps(pack), str(target.custom_nodes_root), str(lockpath),
+                                json.dumps([{'path': p.path, 'sha256': p.sha256_after}
+                                            for p in _pack_recipe_patches(target, pack)])],
             cwd=target.root, env={**os.environ, 'PYTHONPATH': str(target.vibecomfy_root),
                                   'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1'},
             capture_output=True, text=True, check=True, timeout=max(0.001, min(600, deadline - time.monotonic())))
