@@ -173,9 +173,15 @@ def real_proxy_listener(monkeypatch):
         monkeypatch.setenv(name, url)
     monkeypatch.delenv("NO_PROXY", raising=False); monkeypatch.delenv("no_proxy", raising=False)
     monkeypatch.setattr(runpod_guard, "_REAL_PROXY_PORTS", frozenset({port}))
+    # urllib builds its process-global opener lazily from the proxy variables
+    # above. Restore the previous opener so later tests don't keep this closed
+    # loopback proxy.
+    import urllib.request
+    saved_opener = urllib.request._opener
     try:
         yield received
     finally:
+        urllib.request.install_opener(saved_opener)
         stop.set(); t.join(2); server.close()
 
 
