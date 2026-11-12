@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -763,6 +763,7 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         raise ValueError(f'entry {entry_id!r} does not support {kind}')
     if description['mode'] is None:
         supported = description['modes']
+        candidates: Sequence[str]
         if inputs.get('image_ref') and inputs.get('image_end_ref'):
             candidates = ['flf']
         elif inputs.get('video_ref'):

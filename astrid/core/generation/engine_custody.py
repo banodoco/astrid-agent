@@ -26,6 +26,7 @@ import tempfile
 import threading
 import time
 import uuid
+from typing import Callable
 
 from runtime_protocol import platform as native
 
@@ -106,7 +107,7 @@ def _send(channel, value, deadline):
     channel.sendall(struct.pack("!I", len(data)) + data)
 
 
-def _receive(channel, deadline, cancelled=None):
+def _receive(channel, deadline, cancelled: Callable[[], bool] | None = None):
     def read(size):
         data = bytearray()
         while len(data) < size:
