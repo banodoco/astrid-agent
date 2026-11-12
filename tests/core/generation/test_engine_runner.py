@@ -305,7 +305,7 @@ def _resolve_once_recipe():
         "resolve-once", None,
         (SourcePath("comfyui", "requirements.txt"), SourcePath("vibecomfy", "pyproject.toml"),
          SourcePath("videohelpersuite", "requirements.txt")),
-        ("comfy-kitchen==0.2.34", "comfy-aimdo==0.5.3", "opencv-python-headless==5.0.0.93", "pip==25.2"),
+        ("comfy-kitchen==0.2.35", "comfy-aimdo==0.5.5", "opencv-python-headless==5.0.0.93", "pip==25.2"),
         "2026-10-19T00:00:00Z")
     return replace(recipe, environments=(replace(recipe.environments[0], requirements=requirements),))
 
@@ -1405,7 +1405,7 @@ def test_target_helper_persists_and_reuses_bound_hash_lock_before_install(resolv
     generated = (directory / "requirements.in").read_text()
     assert "setuptools==80.9.0" in generated
     assert "torch @ https://" in generated
-    assert "comfy-kitchen==0.2.34" in generated
+    assert "comfy-kitchen==0.2.35" in generated
     (directory / "requirements.lock.tmp").write_text(HASH_LOCK)
     committed = target.dispatch("commit-lock", payload)
     expected = hashlib.sha256(HASH_LOCK.encode()).hexdigest()
@@ -1943,7 +1943,7 @@ def test_packaged_requirements_follow_same_hashed_lock_path(tmp_path, monkeypatc
 
 
 LINUX_LOCK_PATH = "packs/runpod/requirements.linux-cu130.lock"
-LINUX_LOCK_SHA256 = "b501e04a13951eb00f03412e9ab5288ab8e8eaca1caf61251268a976a36a1f99"
+LINUX_LOCK_SHA256 = "73589f81c96f487b9ed39f45c9835e47a10add4ba20617b58da8c9072090e51b"
 
 
 def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
@@ -1957,12 +1957,12 @@ def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
     assert hashlib.sha256(path.read_bytes()).hexdigest() == LINUX_LOCK_SHA256
     entries = target._entries(path.read_text(encoding="utf-8"))
     by_name = {re.match(r"[A-Za-z0-9._-]+", row[0])[0].lower(): row for row in entries}
-    assert len(by_name) == len(entries) == 182
+    assert len(by_name) == len(entries) == 183
     for wheel in recipe.environments[0].final_wheels:
         requirement, hashes, _ = by_name[wheel.name]
         assert requirement == f"{wheel.name} @ {wheel.url}"
         assert hashes == [wheel.sha256]
-    for pin in ("comfy-kitchen==0.2.34", "comfy-aimdo==0.5.3", "opencv-python==5.0.0.93"):
+    for pin in ("comfy-kitchen==0.2.35", "comfy-aimdo==0.5.5", "opencv-python==5.0.0.93"):
         name, version = pin.split("==")
         assert by_name[name][0] == pin
     # pip is not declared by the canonical source inputs for this closure.
@@ -2000,7 +2000,7 @@ def test_fresh_root_selects_exact_shipped_lock_bytes_without_resolution(tmp_path
     support = (directory / "support.lock").read_text()
     wheels = (directory / "wheels.lock").read_text()
     assert "torch @" not in support and "torchvision @" not in support and "torchaudio @" not in support
-    assert "comfy-kitchen==0.2.34" in support and "opencv-python==5.0.0.93" in support
+    assert "comfy-kitchen==0.2.35" in support and "opencv-python==5.0.0.93" in support
     assert all(w.sha256 in wheels and w.url in wheels for w in recipe.environments[0].final_wheels)
     # An altered shipped lock is refused rather than re-resolved.
     (directory / "requirements.lock").write_bytes(shipped + b"# tamper\n")

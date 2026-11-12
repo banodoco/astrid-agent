@@ -160,7 +160,7 @@ def test_comfyui_linux_dry_run_resolves_packaged_recipe_and_model_lock(capsys):
     assert data['recipe']['platform'] == 'linux-x86_64-cu130'
     assert data['recipe']['environments'][0]['requirements']['packaged_lock'] == {
         'path': 'packs/runpod/requirements.linux-cu130.lock',
-        'sha256': '62fcd247ea1e9503e04da94bc08f4513b814e31badc54114392db46e7c2dba7a',
+        'sha256': '73589f81c96f487b9ed39f45c9835e47a10add4ba20617b58da8c9072090e51b',
     }
     assert data['recipe']['models_lock']['path'] == 'packs/runpod/models.lock.json'
     assert data['plan']['models_lock_sha256'] == data['recipe']['models_lock']['sha256']

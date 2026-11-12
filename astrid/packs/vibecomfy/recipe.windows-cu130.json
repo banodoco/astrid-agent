@@ -4,7 +4,7 @@
   "platform": "windows-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "00263e34fd2ec93728d68536cf469c19f4242c5a171ddc0c4eeed6515460a9e8"
+    "sha256": "39252bef727f6ac19ebd1813740d8866b6ce30516ae3d1adce994df9121d5d1a"
   },
   "source_bindings": [
     {
@@ -56,8 +56,8 @@
           }
         ],
         "constraints": [
-          "comfy-kitchen==0.2.40",
-          "comfy-aimdo==0.6.0",
+          "comfy-kitchen==0.2.35",
+          "comfy-aimdo==0.5.5",
           "opencv-python-headless==5.0.0.93",
           "setuptools==80.9.0",
           "wheel==0.46.3"

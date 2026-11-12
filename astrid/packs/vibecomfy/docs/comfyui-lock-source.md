@@ -1,4 +1,8 @@
-# Linux ComfyUI requirements lock provenance
+# Historical Linux ComfyUI requirements lock provenance
+
+This records the previous snapshot, not the current packaged lock. The
+current source inputs, command and resolved changes are documented in
+[the Linux lock inputs](../../runpod/lock-inputs/README.md).
 
 P-44-r5 resolved the retained requirements snapshot from ComfyUI commit
 `423cbd20511becb1f16122ab518e92e58bfa03d9`. The exact source snapshot below

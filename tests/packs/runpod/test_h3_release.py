@@ -498,11 +498,11 @@ def test_real_lock_and_recipe_pins():
     }
     assert inputs["recipe"]["source"] == {
         "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-        "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+        "revision": "6bfaacc67c2103481e5f0c84d75257cd0581d86a",
     }
     assert windows["source"] == {
         "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-        "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+        "revision": "6bfaacc67c2103481e5f0c84d75257cd0581d86a",
     }
     assert inputs["recipe"]["custom_nodes"] == windows["custom_nodes"]
     assert inputs["recipe"]["torch"] == windows["torch"]

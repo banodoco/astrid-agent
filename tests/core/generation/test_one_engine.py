@@ -10,7 +10,7 @@ from astrid.core.generation.engine_recipe import load_recipe, load_recipe_index
 ROOT = Path(__file__).resolve().parents[3]
 # Built from parts so this file is not a hit for its own grep.
 GONE = ("vibecomfy" + "-h3", "comfy" + "_wrap", "packs/" + "comfyui")
-COMFY_PIN = "ee71d5c4993f29086b27fde1629a945ae48425bf"
+COMFY_PIN = "6bfaacc67c2103481e5f0c84d75257cd0581d86a"
 
 
 def test_no_removed_name_survives_in_astrid_or_tests():

@@ -185,7 +185,7 @@ print(json.dumps({s.name:{'repository':s.pin.repository,'revision':s.pin.revisio
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
         'comfyui': {'repository': 'https://github.com/Comfy-Org/ComfyUI.git',
-                    'revision': 'ee71d5c4993f29086b27fde1629a945ae48425bf', 'path': 'runtime/ComfyUI'},
+                    'revision': '6bfaacc67c2103481e5f0c84d75257cd0581d86a', 'path': 'runtime/ComfyUI'},
         'vibecomfy': {'repository': 'https://github.com/banodoco/VibeComfy.git',
                       'revision': engine_source_revision('comfyui', 'windows-x86_64-cu130', 'vibecomfy'), 'path': 'runtime/vibecomfy'},
     }
