@@ -208,7 +208,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         allow_redirects: false
@@ -361,7 +360,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         dynamic_route_resolver: runpod_pod_handle_ssh
@@ -489,7 +487,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         allow_redirects: false
@@ -594,7 +591,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         allow_redirects: false
@@ -829,7 +825,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         dynamic_route_resolver: runpod_pod_handle_ssh

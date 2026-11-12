@@ -66,7 +66,7 @@ def test_http_request_naming_runpod_through_a_proxy_connection_is_refused():
     try:
         # AF_UNIX peers count as local, so exercise the scanner directly
         assert runpod_guard._http_target_hosts(b"CONNECT api.runpod.io:443 HTTP/1.1\r\nHost: api.runpod.io:443\r\n\r\n") == ["api.runpod.io", "api.runpod.io"]
-        assert runpod_guard._http_target_hosts(b"GET https://rest.runpod.io/v1/pods HTTP/1.1\r\n\r\n") == ["rest.runpod.io"]
+        assert runpod_guard._http_target_hosts(b"GET https://api.runpod.io/v2/pods HTTP/1.1\r\n\r\n") == ["api.runpod.io"]
         assert runpod_guard._http_target_hosts(b"\x16\x03\x01binary") == []
     finally:
         a.close(); b.close()
@@ -206,8 +206,8 @@ def test_sync_httpx_client_to_runpod_via_the_real_proxy_is_refused_with_no_reque
     before = len(runpod_guard.blocked_attempts)
     with httpx.Client(trust_env=True, timeout=3) as client:
         with pytest.raises(Exception):
-            client.get("https://rest.runpod.io/v1/pods")
-    assert [h for _, h, _ in runpod_guard.blocked_attempts[before:]] == ["rest.runpod.io"]
+            client.get("https://api.runpod.io/v2/pods")
+    assert [h for _, h, _ in runpod_guard.blocked_attempts[before:]] == ["api.runpod.io"]
     assert real_proxy_listener == []
 
 
@@ -219,6 +219,6 @@ def test_requests_and_urllib_to_runpod_via_the_real_proxy_send_nothing(real_prox
     with pytest.raises(Exception):
         requests.get("https://api.runpod.io/graphql", timeout=3)
     with pytest.raises(Exception):
-        urllib.request.urlopen("https://rest.runpod.io/v1/pods", timeout=3)
+        urllib.request.urlopen("https://api.runpod.io/v2/pods", timeout=3)
     assert len(runpod_guard.blocked_attempts) - before >= 2
     assert real_proxy_listener == []

@@ -404,6 +404,22 @@ class MachineProviderHTTP:
 
     # -- HTTP ----------------------------------------------------------------
 
+    @staticmethod
+    def _rest_pod(pod):
+        """Expose native REST v2 fields while GraphQL retains its own projection."""
+        network = ([] if pod.get("networkVolumeId") is None else [
+            {"volumeId": pod["networkVolumeId"], "path": pod["volumeMountPath"]}])
+        return {
+            "id": pod["id"], "name": pod["name"], "status": pod["desiredStatus"],
+            "image": pod["imageName"], "cost": pod["costPerHr"], "disk": 20,
+            "gpu": {"id": pod["machine"]["gpuTypeId"], "count": pod["gpuCount"]},
+            "dataCenterId": pod["dataCenterId"],
+            "mounts": {"network": network},
+            "runtime": {"uptime": 1, "ports": [
+                {"ip": "203.0.113.1", "private": 22, "public": 2222,
+                 "type": "tcp"}]},
+        }
+
     def handle(self, request):
         host, path, method = request.url.host, request.url.path, request.method
         request.read()
@@ -416,12 +432,15 @@ class MachineProviderHTTP:
             encoded = json.dumps(data).encode()
             return httpx.Response(status, stream=httpx.ByteStream(encoded), request=request,
                                   headers={"Content-Type": "application/json", "Content-Length": str(len(encoded))})
-        if host in {"api.runpod.io", "graphql.runpod.io"}:
+        if host in {"api.runpod.io", "graphql.runpod.io"} and path == "/graphql":
             return reply({"data": self.graphql(body)})
-        if host == "rest.runpod.io":
-            if path.startswith("/v1/networkvolumes"):
-                return reply(self._volumes())
-            assert path.startswith("/v1/pods"), path
+        if host == "api.runpod.io":
+            if path.startswith("/v2/network-volumes"):
+                return reply({"networkVolumes": [
+                    {"id": volume["id"], "name": volume["name"], "size": volume["size"],
+                     "dataCenter": volume["dataCenterId"], "type": "STANDARD"} for volume in self._volumes()],
+                    "pagination": {"hasNextPage": False, "nextCursor": None}})
+            assert path.startswith("/v2/pods"), path
             if method == "DELETE":
                 if path.endswith("/" + self.pod_id) and self.pod_id in self.killed:
                     # The provider already terminated this pod: an exact delete finds nothing.
@@ -436,11 +455,12 @@ class MachineProviderHTTP:
                 self.events.append(("pod-delete", self.pod_id))
                 return reply({}, 204)
             assert method == "GET"
-            if path == "/v1/pods":
-                return reply(self.pods)
+            if path == "/v2/pods":
+                return reply({"pods": [self._rest_pod(pod) for pod in self.pods],
+                              "pagination": {"hasNextPage": False, "nextCursor": None}})
             if not self.pods:
                 self.events.append(("pod-404", self.pod_id))
-            return reply(self.pods[0] if self.pods else {}, 200 if self.pods else 404)
+            return reply(self._rest_pod(self.pods[0]) if self.pods else {}, 200 if self.pods else 404)
         if host == "astrid-egress-preflight-8000.proxy.runpod.net":
             return reply({}, 404)
         assert host == self.pod_id + "-8000.proxy.runpod.net", host

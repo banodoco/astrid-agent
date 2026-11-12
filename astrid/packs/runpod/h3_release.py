@@ -21,13 +21,15 @@ from pathlib import Path
 from urllib.parse import quote
 
 from filelock import FileLock
+from runpod_lifecycle.rest import collect_pages, normalize_pod
+from runpod_lifecycle.rest import normalize_volume as normalize_rest_volume
 from runtime_protocol.deadline import bounded_operation
 
 from astrid.core.generation.engine_recipe import load_recipe, load_recipe_model_lock
 from astrid.packs.runpod import h3_release_bootstrap as bootstrap
 from astrid.packs.runpod import h3_release_remote as remote
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
-from astrid.packs.runpod.provider_urls import POD_TERMINATE_METHOD, POD_URL_TEMPLATE
+from astrid.packs.runpod.provider_urls import POD_TERMINATE_METHOD, POD_URL_TEMPLATE, REST_BASE_URL
 
 _DATA = Path(__file__).parent
 
@@ -74,6 +76,7 @@ def release_inputs():
 
 
 def normalize_volume(value, volume_id):
+    value = normalize_rest_volume(value)
     if value.get("id") != volume_id:
         raise BuildError("provider returned a different volume")
     size = value.get("size")
@@ -87,6 +90,7 @@ def normalize_volume(value, volume_id):
 
 
 def check_attachment(pod, volume, image, pod_type):
+    pod = normalize_pod(pod)
     from .pod_fields import InvalidPodField, pod_field
     try:
         attached = pod_field(pod, "volume")
@@ -138,7 +142,7 @@ def _cleanup(provider, handle, path, *, now=time.time, sleep=time.sleep):
                 break
             if absent:
                 handle["cleanup"] = {"status": "verified_absent", "pod_id": handle["pod_id"],
-                                     "verified_by": "GET /v1/pods/{id}: 404", "ended_at": now()}
+                                     "verified_by": "GET /v2/pods/{id}: 404", "ended_at": now()}
                 remote.atomic_json(path, handle)
                 return
             sleep(min(2, max(0, deadline - now())))
@@ -180,7 +184,7 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
             if not matches and cleanup_only:
                 handle["state"] = "allocation_absent"
                 handle["reconciliation"] = {"status": "no_matching_pod", "observed_at": now(),
-                                            "verified_by": "GET /v1/pods: request_name absent"}
+                                            "verified_by": "GET /v2/pods: request_name absent"}
                 remote.atomic_json(handle_path, handle)
                 remote.atomic_json(handle_path.with_suffix(".receipt.json"), handle)
                 return handle
@@ -312,8 +316,9 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
 class RunPodProvider:
     """Lifecycle owns creation; exact REST GET/DELETE preserve strict custody."""
     def __init__(self, key, *, min_cuda_version=None, cpu_api="rest", cpu_instance_id=None, cpu_only_gpu_build=False, transport="ssh"):
-        import httpx
         import secrets
+
+        import httpx
         self.transport = transport
         self.https_token = secrets.token_urlsafe(32) if transport == "https" else None
         self._api_key = key
@@ -321,7 +326,7 @@ class RunPodProvider:
         self.cpu_api = cpu_api
         self.cpu_instance_id = cpu_instance_id
         self.cpu_only_gpu_build = cpu_only_gpu_build
-        self.http = httpx.Client(base_url="https://rest.runpod.io/v1/", timeout=20,
+        self.http = httpx.Client(base_url=REST_BASE_URL, timeout=20,
                                  headers={"Authorization": "Bearer " + key})
 
     def request(self, method, path, **kwargs):
@@ -355,10 +360,10 @@ class RunPodProvider:
         return response.json() if response.content else {}
 
     def volume(self, volume_id):
-        result = self.request("GET", "networkvolumes/" + quote(volume_id, safe=""))
+        result = self.request("GET", "network-volumes/" + quote(volume_id, safe=""))
         if result is None:
             raise BuildError("network volume does not exist")
-        return result
+        return normalize_rest_volume(result)
 
     def preflight(self):
         from runpod_lifecycle.preflight import preflight_transport
@@ -394,6 +399,7 @@ class RunPodProvider:
         pod = self.request("GET", "pods/" + quote(pod_id, safe=""))
         if pod is None:
             return None
+        pod = normalize_pod(pod)
         if not pod.get("dataCenterId") and not (pod.get("machine") or {}).get("dataCenterId"):
             from runpod_lifecycle import api
             sdk = api._get_runpod()
@@ -414,10 +420,11 @@ class RunPodProvider:
         self.request(POD_TERMINATE_METHOD, POD_URL_TEMPLATE.format(pod_id=quote(pod_id, safe="")))
 
     def find(self, name):
-        pods = self.request("GET", "pods")
-        if not isinstance(pods, list):
-            raise BuildError("provider pod discovery returned malformed data")
-        return [pod for pod in pods if pod.get("name") == name]
+        try:
+            pods = collect_pages(lambda params: self.request("GET", "pods", params=params), "pods")
+            return [normalize_pod(pod) for pod in pods if pod.get("name") == name]
+        except ValueError as exc:
+            raise BuildError("provider pod discovery returned malformed data") from exc
 
 
 class LifecycleTransport:
@@ -434,8 +441,12 @@ class LifecycleTransport:
                 raise ConnectionError("build pod HTTPS is not ready") from None
             return
         from runpod_lifecycle.ssh import SSHClient
-        port = (pod.get("portMappings") or {}).get("22")
-        ip = pod.get("publicIp")
+        pod = normalize_pod(pod)
+        routes = (pod.get("runtime") or {}).get("ports") or []
+        route = next((p for p in routes if p.get("privatePort") == 22 and p.get("type") == "tcp"), {})
+        direct = (pod.get("ssh") or {}).get("direct") or {}
+        port = route.get("publicPort") or direct.get("port") or (pod.get("portMappings") or {}).get("22")
+        ip = route.get("ip") or direct.get("host") or pod.get("publicIp")
         if not ip or not port:
             raise ConnectionError("SSH route is not ready")
         self.ssh = SSHClient(ip, int(port), "root", private_key_path=os.environ["RUNPOD_SSH_KEY_PATH"],
