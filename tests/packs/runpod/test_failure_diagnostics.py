@@ -653,7 +653,7 @@ def test_graph_names_survive_the_journal_round_trip_and_are_revalidated():
 
 
 def test_large_real_edit_template_yields_names_and_ids():
-    qwen_edit = Path(os.environ['VIBECOMFY_SOURCE']).resolve() / 'ready_templates/sources/official/edit/qwen_image_2_1_turbo_edit.json'
+    qwen_edit = Path(os.environ['ASTRID_VIBECOMFY_CHECKOUT']).resolve() / 'ready_templates/sources/official/edit/qwen_image_2_1_turbo_edit.json'
     # 100 KB release-cell source (editor format, nodes inside a subgraph definition): above the
     # 64 KiB result-frame cap, which the graph no longer shares.
     assert qwen_edit.stat().st_size > fd.MAX_RESULT_BYTES
