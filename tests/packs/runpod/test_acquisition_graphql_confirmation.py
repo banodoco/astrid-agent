@@ -14,6 +14,7 @@ import socket
 import pytest
 
 from astrid.packs.runpod import worker_preparation as preparation
+from astrid.packs.runpod.worker_owner import RunPodWorkerOwnerError
 from astrid.packs.runpod.worker_preparation import (
     AcquisitionUnresolvedError,
     RunPodTargetContract,
@@ -138,16 +139,18 @@ def test_missing_graphql_machine_fails_acquisition_and_the_release_path_is_reach
                         lambda key, contract, *, timeout_seconds: real(key, contract, timeout_seconds=0.05))
     owner = c.fresh()
 
-    with pytest.raises(AcquisitionUnresolvedError, match="provider acquisition remains unresolved"):
+    # 80bbf690: the exact created pod is released synchronously on this failure.
+    with pytest.raises(RunPodWorkerOwnerError,
+                       match="RunPod acquisition failed; created pod pod-1 was released") as caught:
         owner.acquire(c.grant)
 
     failed = c.read()
+    assert isinstance(caught.value.__cause__, AcquisitionUnresolvedError)
     assert failed["pod_id"] == "pod-1" and failed["failure_phase"] == "provider_contract"
     assert failed["failure_type"] == "TargetObservationError"
-    assert not c.deletes
-
-    c.clock.advance(1)  # the lease owner's scheduled recovery release (unchanged -4 path)
-
     record = c.read()
     assert c.deletes == ["pod-1"], record.get("cleanup_failure_type")
     assert record["state"] == "cleanup_complete"
+    assert record["cleanup"]["pod_id"] == "pod-1"
+    assert record["lease"]["release_reason"] == "custody_changed"
+    assert c.creates == 1 and c.pods == []

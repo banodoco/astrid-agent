@@ -50,6 +50,7 @@
     "astrid/packs/local/shared/readiness-image.tsx": "sha256:353c117886d9dcc0932ae16e25ca4b85e2433919ceaebff7834a96142441dd99",
     "astrid/packs/rendering/editor/catalog.ts": "sha256:f4fa4077339b35ec91482ca7e6cd51dc79edc21969500122688b040ee500c94d",
     "astrid/packs/rendering/elements/catalog.ts": "sha256:8e6ec829bc019cb887e22cbc80cef5b6fcde6e9cdf2aa29e66c20abe99c75b41",
+    "astrid/packs/rendering/pack.yaml": "sha256:36e43494cfbcb0aadc534f50f799e3664cda0e0bc96361e7d0867f708350aa7c",
     "astrid/packs/rendering/rendering/elements/animations/fade-up/element.yaml": "sha256:2534d142fb47e573489ddc08727c26292492f377c6ba39881ee9d1005eb1081d",
     "astrid/packs/rendering/rendering/elements/animations/fade/element.yaml": "sha256:65df111c8e261dded80fb0be284d9aaaafc926dca8052e4e378225a5dcbd864b",
     "astrid/packs/rendering/rendering/elements/animations/scale-in/element.yaml": "sha256:f69a5e42688a7d4f34297e8f10d7e0427aae412116766896bd9e4ee5174889ca",
@@ -88,8 +89,9 @@
     "astrid/packs/rendering/ui/transcript-lane/TranscriptLane.tsx": "sha256:9eb80ec0f6cd9249a6af618cddf284c2e411bf8ff8a4475d2a87b5ab25a19555",
     "astrid/packs/rendering/ui/transcript/TranscriptPanel.tsx": "sha256:2f315298851f579bce16c9a72253d1df37c0f772e05833d5f151f6d5c034dea4",
     "astrid/packs/rendering/ui/transcript/extension.tsx": "sha256:870ef0dadec02b41246161fdd74653756a26fc5d53c4458d7221af67202bee1e",
-    "astrid/tools/catalog.json": "sha256:ab551cfd43f7fc047c4f81709b7ff5c41876541d88ac4e62a58c3d72b875946f",
-    "cli-surface.json": "sha256:79b534f6ebfb41864a89720d88e8ec11bf0da22a348efa8b7f9a2a9a07b67973",
+    "astrid/packs/rendering/ui/video-editor/entry.json": "sha256:ae53de8e3eb3b8fe6157a18f7bdaabda7d0f6886a120f45482e05c982a6523b0",
+    "astrid/tools/catalog.json": "sha256:b34edb136cdd819d16fcd482b950ce144f0bfd31ff3ffc5a768263fe8e306f05",
+    "cli-surface.json": "sha256:aa8b672c581ff8d6c9025e10add21087229e12f53dc45a31133844bd4ff6e867",
     "remotion/public/fonts/DepartureMono-Regular.woff2": "sha256:5b4fed1daa90708aa9c6ee1190abca9dc22164a1c1def0020386e46b61038cfb",
     "remotion/public/fonts/FONT_PROVENANCE.md": "sha256:f67cf424fcb63d4fc17e5cef0e4dbeea837aae1eb3f1eb1e081170c5822e2eec",
     "remotion/public/fonts/Gelasio-Bold.woff2": "sha256:2fdaa469d51ef618d648e27819f10a1df08721ed2331614c3123850162cc147a",
@@ -111,5 +113,5 @@
     "schemas/public-boundary/fixtures/redaction.json": "sha256:d827821a8b1c1bd9b50fa695550deeb770175e283b9949635d1c85ee03bece46"
   },
   "producer": "astrid-agent",
-  "version": "sha256:680cf89c65ddaf9e5650671130d9a80e7e6fc130849b56799b73a51a5048b30f"
+  "version": "sha256:7bb26d02f26aea6ab41d28ae24d916d4550c3ae70703eae527089358ec789a44"
 }

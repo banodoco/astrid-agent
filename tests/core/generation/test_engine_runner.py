@@ -75,7 +75,7 @@ class FakeAdapter:
                               recipe.start.cwd.format_map(values),
                               {k: v.format_map(values) for k, v in recipe.start.env.items()}, deadline)
 
-    def local_install_lock(self, root, *, deadline):
+    def local_install_lock(self, root, *, deadline, **_kwargs):
         pytest.fail("runner must hold the context's target lock")
 
 
@@ -122,7 +122,7 @@ class FakeContext:
             raise self.fail[1]
 
     @contextmanager
-    def acquire_install_lock(self, root, *, deadline):
+    def acquire_install_lock(self, root, *, deadline, kind="job"):
         assert not self.held
         self.record("acquire", root, deadline=deadline)
         self.held = True
@@ -334,6 +334,7 @@ def setup(monkeypatch):
     plan = runner.plan_install(context.recipe, root=ROOT, placement="local")
     module = types.ModuleType("astrid.core.generation.engine_platforms")
     module.platform_adapter = lambda key: adapter
+    module.LinuxPlatformAdapter = lambda key: adapter
     monkeypatch.setitem(sys.modules, module.__name__, module)
     return plan, context, adapter, deadline
 
@@ -341,6 +342,25 @@ def setup(monkeypatch):
 def install(setup):
     plan, context, adapter, deadline = setup
     return runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline)
+
+
+def test_runner_custody_refusal_attaches_safe_details_without_replacing_error(setup, caplog):
+    plan, context, adapter, deadline = setup
+    active = runner._Runner(plan, context, adapter, deadline)
+    original = CustodyUnresolved("transport secret", step_id="start", retryable=True,
+                                 recovery_handle="job-123")
+    enriched = active.custody_error(original, "cleanup_unconfirmed")
+    assert enriched is original
+    assert enriched.step_id == "start" and enriched.retryable is True
+    assert enriched.recovery_handle == "job-123"
+    details = enriched.custody_details
+    assert details["reason"] == "cleanup_unconfirmed"
+    assert details["root"] == ROOT and details["engine"] == plan.engine
+    assert details["marker_path"] == ROOT + "/.astrid-engine/session/session.json"
+    assert details["helper_sha256"] == "unknown"
+    assert "transport secret" not in enriched.message
+    assert "owner_state=unknown" in enriched.message and "evidence=none" in enriched.message
+    assert "Engine custody refusal" in caplog.text
 
 
 def test_install_writes_private_receipt_per_final_wheel(setup, monkeypatch):
@@ -1637,7 +1657,8 @@ def test_helper_error_envelope_preserves_stable_error_without_raw_exception(tmp_
     captured = capsys.readouterr()
     assert captured.err == ""
     value = json.loads(captured.out)
-    assert value == {"schema": runner._HELPER_SCHEMA, "operation": "identity", "facts": {"error_code": "integrity_failed"}}
+    assert value == {"schema": runner._HELPER_SCHEMA, "operation": "identity",
+                     "facts": {"error_code": "integrity_failed", "reason": "engine helper code/data identity differs"}}
 
 
 def test_occupied_source_is_not_initialized_or_overwritten(setup):
@@ -1647,7 +1668,8 @@ def test_occupied_source_is_not_initialized_or_overwritten(setup):
     def run(request):
         if request.argv[-2:-1] == ("empty-source",):
             return context.result(runner._json({"schema": runner._HELPER_SCHEMA, "operation": "empty-source",
-                                               "facts": {"error_code": "integrity_failed"}}))
+                                               "facts": {"error_code": "integrity_failed",
+                                                         "reason": "refusing to initialize a nonempty unowned source directory"}}))
         return original(request)
     context.run = run
     with pytest.raises(IntegrityError):
@@ -1719,7 +1741,8 @@ def test_install_lock_is_held_until_final_receipt_commit(setup):
             competitor = FakeContext()
             competitor.deadline = deadline
             @contextmanager
-            def locked(root, *, deadline):
+            def locked(root, *, deadline, kind):
+                assert kind == "install"
                 raise CustodyUnresolved("exact live lock holder", recovery_handle="/lock/holder-incarnation")
                 yield
             competitor.acquire_install_lock = locked
@@ -2057,7 +2080,8 @@ def test_health_timeout_is_bounded_by_recipe_and_caller_deadline(setup):
 def test_context_lock_failure_never_runs_or_writes(setup):
     error = CustodyUnresolved("live lease has not been fenced", recovery_handle="/holder/exact-incarnation")
     @contextmanager
-    def occupied(root, *, deadline):
+    def occupied(root, *, deadline, kind):
+        assert kind == "install"
         raise error
         yield
     setup[1].acquire_install_lock = occupied
@@ -2149,14 +2173,15 @@ def test_sanity_hook_is_off_by_default(setup, monkeypatch):
     assert not [e for e in setup[1].events if e[0] == "sanity"]
 
 
-def test_sanity_failure_aborts_before_any_model_step_and_names_lib_paths(setup):
+def test_sanity_failure_aborts_before_any_model_step_with_fixed_reason(setup):
     plan, context, adapter, deadline = setup
     _sanity_context(context, code=2, stdout="FAIL RuntimeError: boom\nLIB /v/nvidia/cublas/lib/libcublas.so.13\n")
     with pytest.raises(runner.CommandFailed) as caught:
         runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
                               sanity_cmd="fake-sanity")
     message = str(caught.value)
-    assert "libcublas.so.13" in message and "LD_LIBRARY_PATH=" in message and "exit 2" in message
+    assert message == caught.value.reason == "engine sanity command failed before any model download"
+    assert "libcublas.so.13" not in message and "LD_LIBRARY_PATH=" not in message
     assert not [e for e in context.events if e[0] in {"download", "service:start"}]
 
 
