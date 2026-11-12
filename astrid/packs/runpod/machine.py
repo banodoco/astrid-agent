@@ -435,47 +435,12 @@ def finish_command(remote_root: str, *, python: str = f"{POD_VENV}/bin/python") 
     return "( " + "; ".join(commands) + " ) 2>/dev/null || true"
 
 
-FAILURE_DIR = "failure"
-FAILURE_MANIFEST_MARK = "FAILURE_MANIFEST_SHA256="
-FAILURE_LOG_CAP_BYTES = 2 * 1024 * 1024
 LOGS_MANIFEST_MARK = "LOGS_MANIFEST_SHA256="
 
 
 def _last_marked(text: str, mark: str) -> str | None:
     """The last line of ``text`` that starts with ``mark``."""
     return next((line for line in reversed(text.splitlines()) if line.startswith(mark)), None)
-
-
-def failure_logs_command(remote_root: str, data_root: str, pod_root: str, *,
-                         python: str = f"{POD_VENV}/bin/python") -> str:
-    """Pod shell: keep the failed job's own logs as ordinary files, before any reset.
-
-    The job's stdout and stderr (the agent job folder is ``$(dirname "$0")``), the
-    generation CLI's result envelope, and recent engine server logs are copied
-    into ``<run>/failure/``, each capped to its last 2 MiB (``truncated`` lists
-    the capped ones), then given the same digest manifest as outputs. These are
-    the user's own machine's logs: nothing is filtered or redacted. Every step
-    is best effort so log collection can never change the job's exit status.
-    """
-    d = shlex.quote(f"{remote_root}/{FAILURE_DIR}")
-    cap = FAILURE_LOG_CAP_BYTES
-
-    def keep(src: str, name: str) -> str:
-        return (f"if [ -f {src} ]; then tail -c {cap} {src} > {d}/{name}; "
-                f"[ $(wc -c < {src}) -gt {cap} ] && echo {name} >> {d}/truncated; fi")
-
-    jobdir = '"$(dirname "$0")"'
-    parts = [
-        f"mkdir -p {d}",
-        keep(f'{jobdir}/stderr', "stderr"),
-        keep(f'{jobdir}/stdout', "stdout"),
-        keep(shlex.quote(f"{remote_root}/result.json"), "result.json"),
-        # Engine server logs written during this job (path is per engine session).
-        f"n=0; for f in $(find {data_root} {pod_root} /workspace -maxdepth 9 -name comfy.log -mmin -90 "
-        f"2>/dev/null | head -n 3); do n=$((n+1)); {keep('$f', 'engine-$n.log')}; done",
-        f"{manifest_command(f'{remote_root}/{FAILURE_DIR}', python)} | sed 's/^{MANIFEST_MARK}/{FAILURE_MANIFEST_MARK}/'",
-    ]
-    return "( " + "; ".join(parts) + " ) 2>/dev/null || true"
 
 
 def _stamp(timing: Any, name: str, **kw: Any) -> None:
@@ -947,28 +912,7 @@ class RunPodMachine:
                                   for row in run_logs.read_index(Path(destination))]}
         except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
             return {"unavailable": type(exc).__name__}
-        return self._fetch_legacy_failure_folder(ops, run, stdout, destination)
-
-    def _fetch_legacy_failure_folder(self, ops: Any, run: MachineRun, stdout: str,
-                                     destination: Path) -> dict[str, Any]:
-        """The pre-declared-logs ``failure/`` folder (removed by the log cleanup task)."""
-        line = _last_marked(stdout, FAILURE_MANIFEST_MARK)
-        if line is None:
-            return {"unavailable": "not_reported"}
-        local = Path(destination) / FAILURE_DIR
-        try:
-            files = self._fetch_verified(ops, f"{run.remote_root}/{FAILURE_DIR}", local, run.scratch,
-                                         line[len(FAILURE_MANIFEST_MARK):].strip())
-        except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
-            return {"unavailable": type(exc).__name__}
-        truncated = set()
-        marker = files.get("truncated")
-        if marker:
-            truncated = {row.strip() for row in Path(marker).read_text(encoding="utf-8",
-                                                                     errors="replace").splitlines()}
-        return {"files": [{"name": name, "path": path, "bytes": Path(path).stat().st_size,
-                           "truncated": name in truncated}
-                          for name, path in sorted(files.items()) if name != "truncated"]}
+        return {"unavailable": "not_reported"}
 
     @staticmethod
     def _fetch_verified(ops: Any, remote_dir: str, destination: Path, scratch: Path,

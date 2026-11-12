@@ -82,7 +82,7 @@ def test_generation_script_finishes_logs_once_on_early_and_generation_failures()
     command = machine.generation_command("entry", "/remote/run", mode="t2i")
     assert command.count("finish_logs() {") == 1
     assert "find " not in command and "-mmin" not in command
-    assert "failure_logs_command" not in command
+    assert "/failure" not in command and "FAILURE_MANIFEST" not in command
     failure = command.index("if [ $rc -ne 0 ]")
     assert command.index("finish_logs\n", command.index("rc=$?")) < failure
     assert command.count("|| { finish_logs; exit 3; }") == 3
