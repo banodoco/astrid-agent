@@ -258,7 +258,11 @@ def test_windows_sync_preserves_group_update_and_rollback(source, tmp_path, wind
 
 def test_readonly_git_objects_are_removed_on_windows_permission_failure(tmp_path, monkeypatch):
     import shutil
-    from astrid.installer._pack_cleanup import remove_pack_tree
+    from astrid.installer import _pack_cleanup
+
+    # The injected unlink failure models Windows' read-only behavior on every
+    # host, so exercise the matching read-only-bit retry branch as well.
+    monkeypatch.setattr(_pack_cleanup, "_is_windows", lambda: True)
 
     original_unlink = os.unlink
 
@@ -278,7 +282,7 @@ def test_readonly_git_objects_are_removed_on_windows_permission_failure(tmp_path
         file.chmod(stat.S_IREAD)
     with pytest.raises(PermissionError):
         shutil.rmtree(tree)
-    remove_pack_tree(tree)
+    _pack_cleanup.remove_pack_tree(tree)
     assert not tree.exists()
 
 
