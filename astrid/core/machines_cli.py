@@ -470,12 +470,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         ok = bool(getattr(result, "ok", True))
         payload = {"ok": ok, "preferences": validated}
         if not ok:
-            error = getattr(result, "error", None)
-            code = error.get("code") if isinstance(error, dict) else None
-            if not isinstance(code, str) or not code.strip():
-                code = "runpod_setup_failed"
-            payload["error"] = {"code": code, "message":
-                                "RunPod preferences were not saved; check the error code and retry `astrid machines setup`."}
+            payload["error"] = _setup_failure(getattr(result, "error", None))
         print(json.dumps(payload, sort_keys=True, default=str) if as_json else
               (f"Saved RunPod machine policy: GPUs {', '.join(chosen)}; datacenter {datacenter or 'any'}; "
                f"budget ${float(budget):.2f}/run; volume {selected_volume.get('name') if selected_volume else 'ephemeral disk'}. "
@@ -494,6 +489,37 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         message = "RunPod setup could not confirm account inventory or save preferences; check credentials and retry `astrid machines setup`"
         print(json.dumps({"ok": False, "error": message}) if as_json else message)
         return 1
+
+
+_SETUP_DETAIL_KEYS = ("field", "reason", "error_code", "capability_id", "status", "phase")
+_SETUP_DETAIL_VALUE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
+
+
+def _setup_failure(error: Any) -> dict[str, Any]:
+    """The action's code plus its identifier-like detail fields, never free text.
+
+    The action's message can carry provider bodies or credential material, so it
+    is never shown. Allowlisted detail fields whose values are plain identifiers
+    (an error code, a field or capability name, a phase) are safe and say where
+    the refusal came from.
+    """
+    from collections.abc import Mapping as _Mapping
+
+    error = error if isinstance(error, _Mapping) else {}
+    code = error.get("code")
+    if not isinstance(code, str) or not code.strip():
+        code = "runpod_setup_failed"
+    details = error.get("details")
+    safe = ({key: details[key] for key in _SETUP_DETAIL_KEYS
+             if isinstance(details.get(key), str) and _SETUP_DETAIL_VALUE.fullmatch(details[key])}
+            if isinstance(details, _Mapping) else {})
+    where = "".join(f" {key}={value}" for key, value in safe.items())
+    failure: dict[str, Any] = {"code": code, "message": (
+        "RunPod preferences were not saved" + (f" ({where.strip()})" if where else "")
+        + "; check the error code and retry `astrid machines setup`.")}
+    if safe:
+        failure["details"] = safe
+    return failure
 
 
 def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None = None,
