@@ -38,6 +38,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from astrid.core.contracts.errors import AstridError
 
 from .failure_reason import Reason
+from .failure_receipt import checkpoint_refusal
 from .pod_bootstrap import SCRIPT as POD_BOOTSTRAP_SCRIPT
 
 PLACEMENT = "runpod"
@@ -124,7 +125,7 @@ class PodOps(Protocol):
 
     def get(self, remote: str, local: Path) -> None: ...
 
-    def job_start(self, command: str) -> Mapping[str, Any]: ...
+    def job_start(self, command: str, *, job_id: str | None = None) -> Mapping[str, Any]: ...
 
     def job_poll(self, job_id: str) -> Mapping[str, Any]: ...
 
@@ -443,6 +444,7 @@ class RemotePlacement:
                           installation=installation, checkpoint=checkpoint)
         try:
             if reuse_snapshot is not None:
+                assert self.source_root is not None
                 marker = f"{BOOTSTRAP_ROOT}/{source_digest(self.source_root)}/ok"
                 code, _, _ = self._exec(state, f"test -f {shlex.quote(marker)}", timeout=60)
                 if code != 0 or not self._canonical_installed(state) or state.installed != reuse_snapshot:
@@ -570,7 +572,7 @@ class RemotePlacement:
                     for stream_name, role in (("stdout", "stdout"), ("stderr", "stderr")):
                         source = f"{directory}/{stream_name}"
                         destination = log_root / f"{safe_what}.{stream_name}"
-                        ops.get(source, str(destination))
+                        ops.get(source, destination)
                         run_logs.declare(
                             log_root,
                             run_logs.LogDecl(
@@ -582,7 +584,7 @@ class RemotePlacement:
                         staged.append((stream_name, role, destination))
                 rows = run_logs.collect(log_root)
                 by_name = {row.get("name"): row for row in rows}
-                for stream_name, _role, source in staged:
+                for stream_name, _role, _source in staged:
                     row = by_name.get(f"{safe_what}-{stream_name}")
                     if not row or row.get("missing"):
                         raise OSError("collected job log is unavailable")
@@ -710,6 +712,7 @@ class RemotePlacement:
         from astrid.core.generation import engine_recipe, engine_runner
 
         installation = state.installation
+        assert installation is not None and state.claim is not None
         remaining = min(120, self._remaining() if verification_seconds is None else verification_seconds)
         verification_deadline = time.monotonic() + remaining
         if verification_seconds is not None:
@@ -793,7 +796,9 @@ class RemotePlacement:
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks
                 or live.health.object_info_sha256 != saved.health.object_info_sha256):
-            raise InstallationReceiptChanged("live installation differs from its canonical receipt")
+            state.install_unverified = "installation_receipt_changed"
+            raise checkpoint_refusal(InstallationReceiptChanged("live installation differs from its canonical receipt"),
+                                     state.install_unverified)
         if verification_seconds is not None and time.monotonic() >= verification_deadline:
             state.install_unverified = "status_deadline_exhausted"
             return False
@@ -892,6 +897,7 @@ class _HttpsOps:
 
     def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Kill a slow-drip caller before it can hold the host's drain forever."""
+        assert self.deadline is not None
         def refuse(code: str, message: str) -> PlacementReasonError:
             return PlacementReasonError(
                 message, reason=Reason(stage="boot", step="provider_contract", gate="provider", code=code)
