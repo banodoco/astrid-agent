@@ -29,6 +29,7 @@ Choose the route by the requested result. Read only that route's guidance:
 | Build your own reusable tool, workflow, or visual element | [Pack builder](pack-builder/SKILL.md) |
 | Find Banodoco advice, model settings, or workflow precedents | [Hivemind contract](../../../../docs/reference/hivemind-pack-contract.md) |
 | Develop Astrid itself: its repositories, builds, tests and releases | [Developing Astrid](../../developer/docs/SKILL.md) |
+| Something went wrong, looked wrong or is missing: report it | [Reporting a problem](#reporting-a-problem) |
 
 For contributions to Astrid, [**astrid-dev**](https://github.com/banodoco/astrid-dev)
 has agent workflows: **Dev** (repository orientation), **Plan** (scope new work),
@@ -86,6 +87,25 @@ synced skill. The Runtime owns all work; find it only through these commands.
 5. Name the project and timeline in your reply, with the editor link.
 
 If the Runtime is unavailable, run the Astrid install line again.
+
+## Reporting a problem
+
+The format is in astrid-dev's
+[Issues section](https://github.com/banodoco/astrid-dev/blob/main/docs/contribution-workflow.md#issues);
+follow it there. These rules govern what leaves the person's machine.
+
+1. Ask the person before filing, and show them the exact text.
+2. Leave out their prompts, file contents, file and folder paths, project
+   names, tokens, and any log that may hold a secret, unless they choose to
+   include it. The doctor bundle is already redacted; an agent cannot attach
+   it, so tell the person to drag it into the issue in the browser if they
+   want to.
+3. Include the Astrid version (`python3 -m astrid --version`).
+4. Search first. When the same thing is already there, add a thumbs-up or a
+   comment instead of a new issue.
+5. With no GitHub login, give the person the pre-filled link. With no GitHub
+   account at all, the person cannot file; say so.
+6. Never fill `About`.
 
 ## Preferences and project documents
 
