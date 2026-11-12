@@ -185,6 +185,32 @@ def test_run_gate_harness_exception_fails_every_check(monkeypatch, tmp_path):
     assert "preflight harness crashed" in c.checks["catalog"]["reason"]
 
 
+def test_constructor_checks_reject_transitive_lock_drift_only_for_source_owners(tmp_path):
+    lock = tmp_path / "engine.lock"
+    lock.write_text("\n".join(f"{name}==1.0" for name in preflight.ENGINE_PACKAGES)
+                    + "\nfilelock==4.2.5\n"
+                    + "\n".join(f"{name} @ https://example.test/{name}-2.0.0%2Bcu130.whl"
+                                 for name in preflight.CPU_WHEELS))
+    installed = {name: "1.0" for name in preflight.ENGINE_PACKAGES}
+    installed.update(torch="2.0.0+cpu", torchaudio="2.0.0+cpu", filelock="4.2.4")
+
+    class EngineRunner(FakeRunner):
+        def __call__(self, argv, **kwargs):
+            assert "-c" in argv  # Version inspection happens before any test or source fetch.
+            result = FakeCommand(argv, output=json.dumps(installed))
+            self.commands.append(result)
+            return result
+
+    owner = cell("source-owner", sources=["comfyui-qwentts"])
+    other = cell("other")
+    runner = EngineRunner(logs=tmp_path)
+    preflight.check_constructors([owner, other], runner, tmp_path / "venv", tmp_path, lock, None, {})
+    assert owner.checks["constructor"]["status"] == "FAIL"
+    assert "filelock: requires 4.2.5, installed 4.2.4" in owner.checks["constructor"]["reason"]
+    assert other.checks["constructor"]["status"] == "UNVERIFIED"
+    assert len(runner.commands) == 1
+
+
 def test_runner_refuses_generate_without_dry_run(tmp_path):
     with pytest.raises(ValueError, match="forbids generation"):
         preflight.Runner(tmp_path)(["astrid", "generate", "image"])

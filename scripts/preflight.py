@@ -46,7 +46,7 @@ CONSTRUCTORS = {"comfyui-qwentts": (
 )}
 # Import packages needed by those tests. Versions belong to the engine lock.
 ENGINE_PACKAGES = ("transformers", "einops", "librosa", "soundfile", "soxr",
-                   "scipy", "sentencepiece", "pyyaml", "huggingface-hub", "attrs")
+                   "scipy", "sentencepiece", "pyyaml", "huggingface-hub", "attrs", "pydantic")
 CPU_WHEELS = ("torch", "torchaudio")
 
 
@@ -325,7 +325,10 @@ def locked_versions(lock):
         if not match:
             raise ValueError(f"engine lock does not pin {name}")
         versions[name] = match.group(1)
-    return {name: versions[name] for name in (*ENGINE_PACKAGES, *CPU_WHEELS)}
+    for name in (*ENGINE_PACKAGES, *CPU_WHEELS):
+        if name not in versions:
+            raise ValueError(f"engine lock does not pin {name}")
+    return versions
 
 
 def require_success(command):
@@ -337,6 +340,9 @@ def require_success(command):
 def engine_python(runner, venv, cache, lock, recipe):
     versions = locked_versions(lock)
     if venv is None:
+        constraints = runner.logs / "engine-constraints.txt"
+        constraints.write_text("\n".join(f"{name}=={version}" for name, version in sorted(versions.items())
+                                          if name not in CPU_WHEELS) + "\n", encoding="utf-8")
         digest = hashlib.sha256(lock.read_bytes()).hexdigest()[:16]
         venv = cache / ("engine-" + digest)
         python = venv / "bin/python"
@@ -345,9 +351,12 @@ def engine_python(runner, venv, cache, lock, recipe):
             require_success(runner(["uv", "venv", "--python", environment.python_version, venv]))
         require_success(runner(["uv", "pip", "install", "--python", python,
                                 "--index-url", "https://download.pytorch.org/whl/cpu",
+                                "--no-deps",
                                 *(f"{name}=={versions[name]}" for name in CPU_WHEELS)]))
         require_success(runner(["uv", "pip", "install", "--python", python,
+                                "--constraint", constraints,
                                 *(f"{name}=={versions[name]}" for name in ENGINE_PACKAGES),
+                                *(f"{name}=={versions[name]}+cpu" for name in CPU_WHEELS),
                                 "pytest", "jsonschema", "referencing", "sox", "onnxruntime", "pip"]))
         # Agent's conftest imports Runtime protocol support. Reuse its existing
         # installer, which reads runtime.lock.json; don't maintain another pin.
@@ -357,9 +366,15 @@ def engine_python(runner, venv, cache, lock, recipe):
         "import json,importlib.metadata as m; print(json.dumps({d.metadata['Name']:d.version for d in m.distributions()}))"]))
     installed = json.loads(probe.output)
     normalized = {key.lower().replace("_", "-"): value for key, value in installed.items()}
-    errors = [f"{name}: requires {version}, installed {normalized.get(name, 'missing')}"
-              for name, version in versions.items()
-              if normalized.get(name, "").split("+", 1)[0] != version]
+    required = {*ENGINE_PACKAGES, *CPU_WHEELS}
+    errors = []
+    for name, version in versions.items():
+        if name not in normalized and name not in required:
+            continue  # CPU proof installs the dependency closure it uses, not CUDA's full environment.
+        actual = normalized.get(name, "missing")
+        compared = actual.split("+", 1)[0] if name in CPU_WHEELS else actual
+        if compared != version:
+            errors.append(f"{name}: requires {version}, installed {actual}")
     if errors:
         raise ValueError("engine venv differs from lock: " + "; ".join(errors))
     for name in CPU_WHEELS:
