@@ -112,7 +112,7 @@ def test_canonical_account_path_and_dry_run_make_no_writes(case):
     path = case.owner.path
     assert path == canonical_claim_path("account-a", data_root=path.parents[2])
     assert path != canonical_claim_path("account-b", data_root=path.parents[2])
-    result = asyncio.run(case.owner.select(case.grant, dry_run=True))
+    result = asyncio.run(case.owner._select(case.grant, dry_run=True))
     assert result["offer"]["hourly_usd"] == 1.0
     assert not path.parent.exists()
     assert case.creates == case.configs == 0
@@ -127,7 +127,7 @@ def test_config_cannot_substitute_accepted_placement_before_create(case, change)
     config = case.owner.config_factory(case.offer)
     case.owner.config_factory = lambda offer: SimpleNamespace(**{**vars(config), **change})
     with pytest.raises(PaidSelectionError, match="consented exact placement"):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert not case.owner.path.exists() and case.creates == 0
 
 
@@ -139,7 +139,7 @@ def test_config_cannot_substitute_accepted_placement_before_create(case, change)
 ])
 def test_denial_cap_deadline_and_changed_offer_block_before_claim_or_journal(case, change):
     with pytest.raises(PaidSelectionError):
-        asyncio.run(case.owner.select(replace(case.grant, **change)))
+        asyncio.run(case.owner._select(replace(case.grant, **change)))
     assert not case.owner.path.exists()
     assert case.creates == case.configs == 0
 
@@ -154,26 +154,26 @@ def test_claim_namespaces_intent_before_provider_and_reuses_only_exact_journal(c
             with target_owner(case.owner.path):
                 pytest.fail("concurrent claimant acquired the owner lock")
     case.before_create = before_create
-    first = asyncio.run(case.owner.select(case.grant))
+    first = asyncio.run(case.owner._select(case.grant))
     assert first["pod_id"] == "pod-1"
     assert first["provider_account_ref"] == "account-a"
-    second = asyncio.run(case.owner.select(replace(case.grant, invocation_id="invocation-2")))
+    second = asyncio.run(case.owner._select(replace(case.grant, invocation_id="invocation-2")))
     assert second["pod_id"] == "pod-1"
     assert case.creates == 1
 
 
 def test_denied_reuse_does_not_change_custody_or_extend_hold(case):
-    asyncio.run(case.owner.select(case.grant))
+    asyncio.run(case.owner._select(case.grant))
     before = case.owner.path.read_bytes()
     with pytest.raises(PaidSelectionError):
-        asyncio.run(case.owner.select(replace(case.grant, invocation_id="denied", consent=())))
+        asyncio.run(case.owner._select(replace(case.grant, invocation_id="denied", consent=())))
     assert case.owner.path.read_bytes() == before
     with pytest.raises(PaidSelectionError, match="another claim or reuse"):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert case.owner.path.read_bytes() == before
     case.now += timedelta(hours=2)
     with pytest.raises(PaidSelectionError):
-        asyncio.run(case.owner.select(replace(case.grant, deadline=(case.now + timedelta(hours=1)).isoformat())))
+        asyncio.run(case.owner._select(replace(case.grant, deadline=(case.now + timedelta(hours=1)).isoformat())))
     assert case.owner.path.read_bytes() == before
 
 
@@ -181,9 +181,9 @@ def test_fallback_offer_requires_its_own_disclosed_price_and_consent(case):
     case.offer = RunPodOffer("account-a", "fallback-gpu", 2.0, "fallback-offer")
     case.rate = 2.0
     with pytest.raises(PaidSelectionError, match="offer or rate changed"):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert case.creates == 0
-    selected = asyncio.run(case.owner.select(replace(case.grant, offer_digest=case.offer.digest(case.prefs))))
+    selected = asyncio.run(case.owner._select(replace(case.grant, offer_digest=case.offer.digest(case.prefs))))
     assert selected["gpu_type"] == "fallback-gpu"
     assert selected["paid_limits"]["hourly_usd"] == 2.0
 
@@ -194,12 +194,12 @@ def test_fallback_offer_requires_its_own_disclosed_price_and_consent(case):
     ("request_name", "other-broker"), ("acquisition_mode", "attach"),
 ])
 def test_other_brokers_or_changed_journal_identity_are_never_adopted(case, field, value):
-    record = dict(asyncio.run(case.owner.select(case.grant)))
+    record = dict(asyncio.run(case.owner._select(case.grant)))
     record[field] = value
     case.owner.path.write_text(json.dumps(record))
     before = case.owner.path.read_bytes()
     with pytest.raises(AcquisitionUnresolvedError, match="exact account/pod/image/volume custody"):
-        asyncio.run(case.owner.select(replace(case.grant, invocation_id="another")))
+        asyncio.run(case.owner._select(replace(case.grant, invocation_id="another")))
     assert case.creates == 1
     assert case.owner.path.read_bytes() == before
 
@@ -208,22 +208,22 @@ def test_other_brokers_or_changed_journal_identity_are_never_adopted(case, field
 def test_unconfirmed_actual_price_or_mount_retains_cleanup_pending(case, rate, mount):
     case.rate, case.mounts = rate, mount
     with pytest.raises(PaidSelectionError, match="requires cleanup"):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     record = json.loads(case.owner.path.read_text())
     assert record["state"] == "cleanup_pending"
     assert record["pod_id"] == "pod-1"
     with pytest.raises(AcquisitionUnresolvedError, match="prevents admission"):
-        asyncio.run(case.owner.select(replace(case.grant, invocation_id="again")))
+        asyncio.run(case.owner._select(replace(case.grant, invocation_id="again")))
     assert case.creates == 1
 
 
 def test_restart_reconciles_lost_create_by_journal_name_without_another_claim(case):
     case.create_error = RuntimeError("lost create response")
     with pytest.raises(AcquisitionUnresolvedError, match="remains unresolved"):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert json.loads(case.owner.path.read_text())["state"] == "allocation_pending"
     case.create_error = None
-    restored = asyncio.run(case.owner.select(replace(case.grant, invocation_id="restart")))
+    restored = asyncio.run(case.owner._select(replace(case.grant, invocation_id="restart")))
     assert restored["pod_id"] == "pod-1"
     assert case.creates == 1
 
@@ -231,16 +231,16 @@ def test_restart_reconciles_lost_create_by_journal_name_without_another_claim(ca
 def test_ambiguous_orphan_names_and_legacy_journals_block_replacement(case):
     case.create_error = RuntimeError("lost")
     with pytest.raises(AcquisitionUnresolvedError):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     case.create_error = None
     case.pods.append({**case.pods[0], "id": "other-broker-copy"})
     with pytest.raises(AcquisitionUnresolvedError):
-        asyncio.run(case.owner.select(replace(case.grant, invocation_id="restart")))
+        asyncio.run(case.owner._select(replace(case.grant, invocation_id="restart")))
     assert case.creates == 1
     legacy = case.owner.path.parent / "claim-legacy.json"
     legacy.write_text("{}")
     with pytest.raises(AcquisitionUnresolvedError, match="legacy"):
-        asyncio.run(case.owner.select(replace(case.grant, invocation_id="legacy")))
+        asyncio.run(case.owner._select(replace(case.grant, invocation_id="legacy")))
 
 
 def test_preferences_reject_secret_bytes_without_copying_them_to_errors(case):
@@ -256,7 +256,7 @@ def test_preferences_reject_secret_bytes_without_copying_them_to_errors(case):
 def test_provider_exception_bytes_are_redacted_and_do_not_enable_replacement(case):
     case.create_error = RuntimeError("rpa_fake_secret")
     with pytest.raises(AcquisitionUnresolvedError) as error:
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert "rpa_fake_secret" not in str(error.value)
     assert "rpa_fake_secret" not in case.owner.path.read_text()
     assert json.loads(case.owner.path.read_text())["state"] == "allocation_pending"
@@ -267,7 +267,7 @@ def test_wrong_provider_volume_blocks_before_create(case, monkeypatch):
     from runpod_lifecycle import api
     monkeypatch.setattr(api, "get_network_volumes", lambda key: [])
     with pytest.raises(AcquisitionUnresolvedError, match="volume cannot be confirmed"):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert case.creates == 0
     assert not case.owner.path.exists()
 
@@ -316,12 +316,12 @@ def test_bounded_capacity_retries_use_real_lifecycle_and_fake_provider(case, mon
     monkeypatch.setattr(selection.random, "uniform", lambda *args: 0)
     case.grant = replace(case.grant, capacity_timeout_seconds=20)
     if capacity_failures < 10:
-        result = asyncio.run(case.owner.select(case.grant))
+        result = asyncio.run(case.owner._select(case.grant))
         assert result["pod_id"] == "pod-1"
         assert len(starts) == 4
     else:
         with pytest.raises(selection.CapacityWaitTimeout, match="capacity timeout"):
-            asyncio.run(case.owner.select(case.grant))
+            asyncio.run(case.owner._select(case.grant))
         assert len(starts) == 4
         record = json.loads(case.owner.path.read_text())
         assert record["state"] == "capacity_retry_ready"
@@ -351,7 +351,7 @@ def test_bounded_capacity_retries_never_repeat_ambiguous_post(case, monkeypatch)
     monkeypatch.setattr(lifecycle, "get_storage_volume_id", lambda key, name: case.prefs.volume_id)
     monkeypatch.setattr(lifecycle, "create_pod", create)
     with pytest.raises(AcquisitionUnresolvedError):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert len(starts) == 1
     record = json.loads(case.owner.path.read_text())
     assert record["state"] == "allocation_unknown"
@@ -393,7 +393,7 @@ def test_initial_intent_directory_is_flushed_before_create(case, monkeypatch):
 
     monkeypatch.setattr(worker_preparation.platform, "fsync_directory", fsync)
     case.before_create = lambda: pytest.fail("intent directory was not flushed") if case.owner.path.parent not in flushed else None
-    asyncio.run(case.owner.select(case.grant))
+    asyncio.run(case.owner._select(case.grant))
     assert case.creates == 1
 
 
@@ -403,7 +403,7 @@ def test_symlink_account_lock_refused_before_create(case):
     other.write_text("foreign")
     case.owner.path.with_name(".claim.json.owner.lock").symlink_to(other)
     with pytest.raises(AcquisitionUnresolvedError, match="opened safely"):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert case.creates == 0 and not case.owner.path.exists()
     assert other.read_text() == "foreign"
 
@@ -416,7 +416,7 @@ def test_failed_intent_flush_keeps_custody_and_never_rents(case, monkeypatch):
 
     monkeypatch.setattr(worker_preparation.platform, "fsync_directory", failed_flush)
     with pytest.raises(OSError):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert case.creates == 0
     assert json.loads(case.owner.path.read_text())["state"] == "allocation_ready"
 
@@ -425,7 +425,7 @@ def test_no_volume_legacy_worker_route_refuses_before_renting(case):
     preferences = RunPodPreferences.from_mapping({**case.raw, "volume": None})
     case.owner.preferences = preferences
     with pytest.raises(PaidSelectionError, match="retained lease owner"):
-        asyncio.run(case.owner.select(replace(case.grant, offer_digest=case.offer.digest(preferences))))
+        asyncio.run(case.owner._select(replace(case.grant, offer_digest=case.offer.digest(preferences))))
     assert case.creates == case.configs == 0 and not case.owner.path.exists()
 
 
@@ -438,7 +438,7 @@ def test_mismatched_digest_refuses_before_any_claim_or_pod_create(case, monkeypa
     monkeypatch.setattr(selection.acquire_target, "__wrapped__", unreachable)
     case.owner.config_factory = unreachable
     with pytest.raises(PaidSelectionError, match="offer or rate changed"):
-        asyncio.run(case.owner.select(replace(case.grant, offer_digest="sha256:" + "9" * 64)))
+        asyncio.run(case.owner._select(replace(case.grant, offer_digest="sha256:" + "9" * 64)))
     assert not case.owner.path.exists() and case.creates == case.configs == 0
 
 
@@ -450,7 +450,7 @@ def test_per_job_gpu_override_refuses_a_digest_from_the_saved_gpu_list(case):
     case.owner.preferences = per_job
 
     with pytest.raises(PaidSelectionError, match="offer or rate changed"):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
 
     assert case.creates == case.configs == 0 and not case.owner.path.exists()
 
@@ -598,7 +598,7 @@ def test_policy_wait_observes_stock_again_and_starts_paid_clock_at_post(case, mo
         return case.offer
 
     case.owner.observe_offer = observe
-    selected = asyncio.run(case.owner.select(waiting_grant(case)))
+    selected = asyncio.run(case.owner._select(waiting_grant(case)))
     assert len(attempts) == 3 and sleeps == [5, 5] and case.creates == 1
     assert selected["paid_limits"]["authorized_at"] == (initial + timedelta(seconds=10)).isoformat()
     assert selection._utc(selected["paid_limits"]["expires_at"]) == initial + timedelta(seconds=3610)
@@ -617,7 +617,7 @@ def test_wait_never_refreshes_an_exact_offer_digest(case, monkeypatch):
 
     case.owner.observe_offer = observe
     with pytest.raises(PaidSelectionError, match="offer or rate changed"):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert len(calls) == 2 and case.creates == 0 and not case.owner.path.exists()
 
 
@@ -627,7 +627,7 @@ def test_waiting_policy_refuses_an_offer_outside_its_approved_policy(case, chang
     case.owner.preferences = replace(case.prefs, datacenter_id="approved-datacenter")
     case.offer = replace(case.offer, **{"datacenter_id": "approved-datacenter", **change})
     with pytest.raises(PaidSelectionError):
-        asyncio.run(case.owner.select(waiting_grant(case)))
+        asyncio.run(case.owner._select(waiting_grant(case)))
     assert case.creates == 0 and not case.owner.path.exists()
 
 
@@ -641,10 +641,10 @@ def test_capacity_timeout_and_no_wait_make_no_pod_when_stock_is_absent(case, mon
 
     case.owner.observe_offer = absent
     with pytest.raises(selection.OfferObservationError):
-        asyncio.run(case.owner.select(waiting_grant(case, wait_for_capacity=False)))
+        asyncio.run(case.owner._select(waiting_grant(case, wait_for_capacity=False)))
     assert len(calls) == 1 and not sleeps
     with pytest.raises(selection.CapacityWaitTimeout, match="capacity timeout"):
-        asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=12)))
+        asyncio.run(case.owner._select(waiting_grant(case, capacity_timeout_seconds=12)))
     assert sleeps == [5, 5, 2] and case.creates == 0 and not case.owner.path.exists()
 
 
@@ -654,7 +654,7 @@ def test_absolute_policy_deadline_stops_capacity_wait_without_a_pod(case, monkey
     grant = waiting_grant(case, deadline=(case.now + timedelta(seconds=7)).isoformat(),
                           preparation_seconds=0, execution_seconds=0, idle_seconds=1)
     with pytest.raises(selection.CapacityWaitTimeout, match="paid deadline"):
-        asyncio.run(case.owner.select(grant))
+        asyncio.run(case.owner._select(grant))
     assert sleeps == [5, 2] and case.creates == 0 and not case.owner.path.exists()
 
 
@@ -669,7 +669,7 @@ def test_capacity_rate_limit_honours_retry_after(case, monkeypatch):
         return case.offer
 
     case.owner.observe_offer = observe
-    asyncio.run(case.owner.select(waiting_grant(case)))
+    asyncio.run(case.owner._select(waiting_grant(case)))
     assert sleeps == [12] and case.creates == 1
 
 
@@ -684,7 +684,7 @@ def test_capacity_rate_limit_without_metadata_backs_off_and_resets_after_observa
         return case.offer
 
     case.owner.observe_offer = observe
-    asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=300)))
+    asyncio.run(case.owner._select(waiting_grant(case, capacity_timeout_seconds=300)))
     assert sleeps == [5, 10, 20, 40, 60, 60, 5, 5] and case.creates == 1
 
 
@@ -702,7 +702,7 @@ def test_capacity_wait_retries_unclear_observations_and_resets_after_stock(case,
 
     case.owner.observe_offer = observe
     # 5+5+5+5+10 s of waiting needs more than the helper's 30 s capacity window.
-    asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=120)))
+    asyncio.run(case.owner._select(waiting_grant(case, capacity_timeout_seconds=120)))
     assert sleeps == [5, 5, 5, 5, 10]
     assert case.creates == 1
     assert sum("retrying in" in str(row) for row in rows) == 2
@@ -713,7 +713,7 @@ def test_capacity_wait_stops_after_nine_consecutive_unclear_observations(case, m
     case.owner.observe_offer = lambda: (_ for _ in ()).throw(
         selection.OfferObservationError("provider_observation_unavailable"))
     with pytest.raises(selection.OfferObservationError, match="provider_observation_unavailable"):
-        asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=600)))
+        asyncio.run(case.owner._select(waiting_grant(case, capacity_timeout_seconds=600)))
     assert len(sleeps) == 8 and case.creates == 0
 
 
@@ -722,7 +722,7 @@ def test_capacity_wait_unclear_retries_remain_bounded_by_capacity_timeout(case, 
     case.owner.observe_offer = lambda: (_ for _ in ()).throw(
         selection.OfferObservationError("observation_failed"))
     with pytest.raises(selection.CapacityWaitTimeout, match="capacity timeout"):
-        asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=7)))
+        asyncio.run(case.owner._select(waiting_grant(case, capacity_timeout_seconds=7)))
     assert sleeps == [5, 2] and case.creates == 0
 
 
@@ -732,7 +732,7 @@ def test_capacity_wait_refuses_authentication_failure_and_no_wait_unclear(case, 
     reason = "provider_authentication_failed" if wait_for_capacity else "provider_observation_unavailable"
     case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError(reason))
     with pytest.raises(selection.OfferObservationError, match=reason):
-        asyncio.run(case.owner.select(waiting_grant(case, wait_for_capacity=wait_for_capacity)))
+        asyncio.run(case.owner._select(waiting_grant(case, wait_for_capacity=wait_for_capacity)))
     assert sleeps == [] and case.creates == 0
 
 
@@ -740,7 +740,7 @@ def test_waiting_policy_cannot_create_on_different_storage(case):
     config = case.owner.config_factory(case.offer)
     case.owner.config_factory = lambda offer: SimpleNamespace(**{**vars(config), "network_volume_id": "other-volume"})
     with pytest.raises(PaidSelectionError, match="exact placement"):
-        asyncio.run(case.owner.select(waiting_grant(case)))
+        asyncio.run(case.owner._select(waiting_grant(case)))
     assert case.creates == 0 and not case.owner.path.exists()
 
 
@@ -760,7 +760,7 @@ def test_capacity_wait_cancellation_before_post_creates_no_pod(case, monkeypatch
 
     case.owner.observe_offer, case.owner.sleep = observe, sleep
     with pytest.raises(selection.CapacityWaitCancelled):
-        asyncio.run(case.owner.select(waiting_grant(case), cancelled=lambda: cancelled[0]))
+        asyncio.run(case.owner._select(waiting_grant(case), cancelled=lambda: cancelled[0]))
     assert case.creates == 0 and not case.owner.path.exists()
 
 
@@ -778,24 +778,24 @@ def test_capacity_cancellation_during_post_keeps_exact_journal_for_reconciliatio
 
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
     with pytest.raises(selection.CapacityWaitCancelled):
-        asyncio.run(case.owner.select(waiting_grant(case), cancelled=lambda: cancelled[0]))
+        asyncio.run(case.owner._select(waiting_grant(case), cancelled=lambda: cancelled[0]))
     record = json.loads(case.owner.path.read_text())
     assert record["state"] == "allocation_unknown" and record["safe_to_retry"] is False
-    restored = asyncio.run(case.owner.select(replace(waiting_grant(case), invocation_id="reconcile")))
+    restored = asyncio.run(case.owner._select(replace(waiting_grant(case), invocation_id="reconcile")))
     assert restored["pod_id"] == "pod-1" and case.creates == 1
 
 
 def test_retained_machine_reuse_does_not_require_current_market_stock(case):
-    first = asyncio.run(case.owner.select(case.grant))
+    first = asyncio.run(case.owner._select(case.grant))
     case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError("stock_unavailable"))
-    second = asyncio.run(case.owner.select(replace(case.grant, invocation_id="reuse-with-no-stock")))
+    second = asyncio.run(case.owner._select(replace(case.grant, invocation_id="reuse-with-no-stock")))
     assert second["pod_id"] == first["pod_id"] and case.creates == 1
 
 
 def test_delayed_post_does_not_restart_the_paid_clock_at_readiness(case):
     initial = case.now
     case.before_create = lambda: setattr(case, "now", case.now + timedelta(seconds=30))
-    result = asyncio.run(case.owner.select(waiting_grant(case)))
+    result = asyncio.run(case.owner._select(waiting_grant(case)))
     assert result["paid_limits"]["authorized_at"] == initial.isoformat()
     assert selection._utc(result["paid_limits"]["expires_at"]) == initial + timedelta(hours=1)
 
@@ -881,7 +881,7 @@ def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
     case.offer = RunPodOffer("account-a", "preferred-gpu", 1.5, "offer-2")
     observed = case.offer.digest(case.prefs)
     with pytest.raises(PaidSelectionError, match="offer or rate changed") as raised:
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert case.grant.offer_digest in str(raised.value) and observed in str(raised.value)
     record = json.loads(case.owner.path.with_name("offer-refusal.json").read_text())
     assert record["schema"] == "astrid.runpod.offer-refusal.v1"
@@ -894,12 +894,18 @@ def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
     assert not case.owner.path.exists() and case.creates == 0
 
 
-def test_machine_claim_refuses_changed_offer_before_staging_or_acquisition(case, monkeypatch, tmp_path):
+def test_generation_job_without_claim_refuses_before_staging_or_acquisition(case, monkeypatch, tmp_path):
     from astrid.core.execution.machine_run import MachineJob
+    from astrid.core.execution.warm_hold import WarmHolds
     from astrid.packs.runpod import adapter, machine
+    from astrid.packs.runpod.worker_owner import RunPodLeaseOwner
 
     monkeypatch.setattr(adapter, "prevalidate_task", lambda *args, **kwargs: None)
-    owner = SimpleNamespace(selection=case.owner)
+    case.owner.compatibility = selection.RunPodLeaseCompatibility(
+        "sha256:" + "a" * 64, "sha256:" + "b" * 64, "a" * 40, "b" * 40).as_mapping()
+    clock = lambda: case.now.timestamp()
+    owner = RunPodLeaseOwner(case.owner, holds=WarmHolds(),
+                             quiesce=lambda record: None, clock=clock, environ={})
     facade = adapter.RunPodAdapter(lease_owner=owner, placement=None,
                                    installation=SimpleNamespace(engine="comfyui"), validate=None)
 
@@ -909,17 +915,17 @@ def test_machine_claim_refuses_changed_offer_before_staging_or_acquisition(case,
     facade.prepare = unreachable
     monkeypatch.setattr("astrid.packs.runpod.generation.prepare_retained_generation", unreachable)
     monkeypatch.setattr("astrid.packs.vibecomfy.shared.bundle_inputs.staged_workflow_path", unreachable)
-    policy = {"kind": "runpod", "engine": "comfyui", "preferences": case.prefs.as_mapping(),
-              "offer_digest": "sha256:" + "9" * 64, "consent": ["paid"], "max_usd": 1.0,
-              "deadline": case.grant.deadline, "preparation_seconds": 30, "execution_seconds": 30,
-              "idle_seconds": 60}
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": case.prefs.as_mapping()}
     inputs = {"python": "workflow.py", "companion": "{}", "source": "{}"}
     job = MachineJob(entry="cpu-image", mode="t2i", policy=policy, inputs=inputs, invocation_id="invocation-1",
                      task_id="task", attempt_id="attempt", scratch=tmp_path,
                      progress_path=tmp_path / ".astrid-progress.json")
     runpod = machine.MACHINE.for_host(facade, begin=unreachable, done=unreachable)
-    with pytest.raises(PaidSelectionError, match="offer or rate changed"):
-        runpod.claim(job)
+    try:
+        with pytest.raises(PaidSelectionError, match="no machine: run `astrid machines claim`"):
+            runpod.claim(job)
+    finally:
+        owner.close()
     assert not case.owner.path.exists() and case.creates == case.configs == 0
 
 
@@ -927,7 +933,7 @@ def test_refused_reuse_never_reaches_create_or_reconcile(case, monkeypatch):
     """A reuse refused for lifetime must not start any create, launch or reconcile."""
     from astrid.packs.runpod import target_selection as selection_module
 
-    asyncio.run(case.owner.select(case.grant))
+    asyncio.run(case.owner._select(case.grant))
 
     def must_not_run(*args, **kwargs):
         raise AssertionError("refused reuse reached a pod create, launch or reconcile")
@@ -938,7 +944,7 @@ def test_refused_reuse_never_reaches_create_or_reconcile(case, monkeypatch):
         monkeypatch.setattr(selection_module, name, must_not_run)
     case.now += timedelta(hours=2)
     with pytest.raises(PaidSelectionError, match="cannot be extended by reuse"):
-        asyncio.run(case.owner.select(replace(case.grant, deadline=(case.now + timedelta(hours=1)).isoformat())))
+        asyncio.run(case.owner._select(replace(case.grant, deadline=(case.now + timedelta(hours=1)).isoformat())))
 
 
 @pytest.mark.parametrize('failure,reason', [
@@ -1171,12 +1177,12 @@ def test_capacity_attempt_line_reads_as_waiting_and_keeps_reason_token(case, mon
 
     case.owner.observe_offer = absent
     with pytest.raises(selection.CapacityWaitTimeout):
-        asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=6)))
+        asyncio.run(case.owner._select(waiting_grant(case, capacity_timeout_seconds=6)))
     first = capsys.readouterr().err.splitlines()[0]
     assert "RunPod capacity attempt 1:" in first
     assert first.endswith("no stock yet (stock_unavailable); still waiting, this is normal")
     with pytest.raises(selection.OfferObservationError):
-        asyncio.run(case.owner.select(waiting_grant(case, wait_for_capacity=False)))
+        asyncio.run(case.owner._select(waiting_grant(case, wait_for_capacity=False)))
     assert "still waiting" not in capsys.readouterr().err
 
 
@@ -1187,7 +1193,7 @@ def test_rest_exact_pod_volume_object_passes_selection(case, monkeypatch):
         "networkVolume": {"id": case.prefs.volume_id, "name": "storage", "size": 100},
         "machine": {}, "gpu": {"id": "preferred-gpu", "count": 1},
     }))
-    result = asyncio.run(case.owner.select(case.grant))
+    result = asyncio.run(case.owner._select(case.grant))
     assert result["pod_id"] == "pod-1"
 
 
@@ -1211,10 +1217,10 @@ def test_capacity_wait_uses_refusal_policy_for_new_reason(case, monkeypatch, ret
 
     case.owner.observe_offer = observe
     if retries:
-        asyncio.run(case.owner.select(waiting_grant(case)))
+        asyncio.run(case.owner._select(waiting_grant(case)))
         assert sleeps == [5] and case.creates == 1
     else:
         with pytest.raises(selection.OfferObservationError) as caught:
-            asyncio.run(case.owner.select(waiting_grant(case)))
+            asyncio.run(case.owner._select(waiting_grant(case)))
         assert caught.value is failure
         assert sleeps == [] and case.creates == 0

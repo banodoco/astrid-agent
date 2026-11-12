@@ -286,6 +286,35 @@ class RunPodLeaseOwner:
         self.release(reason="restart", _expected_operation=record["operation_id"],
                      expected_machine_id=expected_machine_id)
 
+    def recover_job(self) -> None:
+        """Adopt a verified idle claim; reconcile all other interrupted custody."""
+        with self.lock:
+            record = self._read()
+            lease = record.get("lease", {}) if record else {}
+            now = self.clock()
+            if (record is not None and record.get("state") == "claimed"
+                    and lease.get("state") == "idle"
+                    and now < lease["idle_expires_at"] and now < lease["paid_expires_at"]):
+                try:
+                    self.selection._owned(record, self.selection._recorded_offer(record))
+                except AcquisitionUnresolvedError:
+                    # Incompatible custody cannot be adopted, but still needs
+                    # the same exact recovery as an interrupted invocation.
+                    pass
+                else:
+                    record = self._save(record, {**lease, "owner_epoch": self.epoch})
+                    self._machine_identity = (record["operation_id"], record["pod_id"])
+                    self.started = True
+                    self._arm(record)
+                    return
+        try:
+            self.recover()
+        except Exception:
+            # release() retains exact custody and arms a retry on failure.
+            # Keep that owner alive in the host instead of cancelling its timer.
+            if self.deadline_timer is None:
+                raise
+
     def _discard_stale_capacity_intent(self, raw: Mapping[str, Any] | None) -> bool:
         if (raw is not None and raw.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
                 and raw.get("safe_to_retry") is True and raw.get("pod_id") is None
@@ -372,6 +401,55 @@ class RunPodLeaseOwner:
         except Exception as exc:
             self.last_error_type = type(exc).__name__
 
+    def job_limits(self, invocation_id, policy):
+        """Read claim authority without provider calls; rechecked on admission."""
+        from .target_selection import ClaimedJob, PaidSelectionError, _number, _utc
+
+        with self.lock:
+            record = self._read()
+            lease = record.get("lease", {}) if record else {}
+            now = self.clock()
+            if record is not None and record["state"] not in {"claimed", "cleanup_complete"}:
+                machine_id = record.get("pod_id") or record["operation_id"]
+                if record["state"] == "cleanup_pending":
+                    raise PaidSelectionError(
+                        f"machine {machine_id} has an unresolved preparation: "
+                        f"run `astrid machines release {machine_id}`, then claim again"
+                    )
+                raise PaidSelectionError(f"machine {machine_id} is {record['state']}: recovery is pending")
+            if (self.closed or not self.started or record is None or record["state"] != "claimed"
+                    or lease.get("owner_epoch") != self.epoch
+                    or lease.get("state") not in {"idle", "active"}
+                    or now >= lease["paid_expires_at"]
+                    or (lease["state"] == "idle" and now >= lease["idle_expires_at"])):
+                state = (f" (machine {record.get('pod_id')} is {record['state']})"
+                         if record is not None and record["state"] == "cleanup_complete" else "")
+                raise PaidSelectionError("no machine: run `astrid machines claim`" + state)
+            paid = record["paid_limits"]
+            expires = min(lease["paid_expires_at"], _utc(paid["expires_at"]).timestamp())
+            rate = lease["hourly_usd"]
+            # A keep grants a new cap from authorized_at; historic machine
+            # cost remains cumulative but is not charged against that cap again.
+            cost = max(0, now - _utc(paid["authorized_at"]).timestamp()) * rate / 3600
+            budget = max(0, paid["max_usd"] - cost)
+            expires = min(expires, now + budget / rate * 3600)
+            # Legacy durations are estimates only. Zero means no estimate;
+            # the phase then uses the remaining lease lifetime as its timeout.
+            preparation = _number(policy.get("preparation_seconds", 0),
+                                  "preparation seconds", zero=True)
+            execution = _number(policy.get("execution_seconds", 0),
+                                "execution seconds", zero=True)
+            idle = min(lease["idle_seconds"], *(
+                _number(policy.get(name, lease["idle_seconds"]), name, zero=True)
+                for name in ("idle_seconds", "placement_idle_seconds")))
+            limits = ClaimedJob(invocation_id, paid["offer_digest"], budget,
+                                datetime.fromtimestamp(expires, timezone.utc).isoformat(),
+                                tuple(value for value in policy.get("consent", ()) if value != "paid"),
+                                preparation, execution, idle, operation_id=record["operation_id"])
+            limits.validate(self.selection._recorded_offer(record), self.selection.preferences,
+                            datetime.fromtimestamp(now, timezone.utc))
+            return limits
+
     def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
                 cancelled: Callable[[], bool] | None = None,
                 defer_unsafe_release: bool = False) -> RunPodLease:
@@ -405,14 +483,23 @@ class RunPodLeaseOwner:
 
     def _acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
                  cancelled: Callable[[], bool] | None = None) -> RunPodLease:
-        from .target_selection import _utc
+        from .target_selection import ClaimedJob, _utc
         from .worker_preparation import TargetObservationError
+        job = isinstance(consent, ClaimedJob)
+        if job:
+            current = self.job_limits(consent.invocation_id, {
+                "preparation_seconds": consent.preparation_seconds,
+                "execution_seconds": consent.execution_seconds,
+                "idle_seconds": consent.idle_seconds, "consent": consent.consent})
+            if current.operation_id != consent.operation_id:
+                raise RunPodWorkerOwnerError("claimed machine changed before job admission")
+            consent = current
         if not self.started:
             self.recover()
         with self.lock:
             if self._release_inflight or self._acquisition_cancel.is_set() or not self.started:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
-            if consent.invocation_id in self._paid_consent_ids:
+            if not job and consent.invocation_id in self._paid_consent_ids:
                 from .target_selection import PaidSelectionError
                 raise PaidSelectionError("paid consent was already used; acquire requires fresh consent")
             record = self._read()
@@ -455,11 +542,14 @@ class RunPodLeaseOwner:
                         if previous is None else previous.get("estimated_cost_usd", 0)
                         + max(0, self.clock() - previous.get("accounted_at", previous["started_at"]))
                         * previous["hourly_usd"] / 3600)
-                lease.update(state="active", paid_expires_at=_utc(claimed["paid_limits"]["expires_at"]).timestamp(),
+                lease.update(state="active", paid_expires_at=min(
+                                 _utc(claimed["paid_limits"]["expires_at"]).timestamp(),
+                                 _utc(consent.deadline).timestamp() if job else float("inf")),
                              hourly_usd=claimed["paid_limits"]["hourly_usd"],
                              started_at=paid_started, estimated_cost_usd=cost, accounted_at=self.clock())
                 claimed = self._save(claimed, lease, estimated_cost_usd=cost)
-                self._paid_consent_ids.add(consent.invocation_id)
+                if not job:
+                    self._paid_consent_ids.add(consent.invocation_id)
                 self._machine_identity = (claimed["operation_id"], claimed["pod_id"])
             except BaseException as exc:
                 current = self.selection._read()
