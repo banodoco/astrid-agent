@@ -50,3 +50,22 @@ def test_vocabulary_does_not_exempt_other_finding_kinds() -> None:
         ("astrid/core/example.py", "repo_pack_path", "astrid/packs/local/file"): 1,
         ("astrid/core/example.py", "capability_id", "local.action"): 1,
     }
+
+
+def test_core_vocabulary_declarations_are_pinned() -> None:
+    """Each declaration the exemption reads is pinned on its own, so widening either one is a visible change.
+
+    A word added to ``BUILTIN_KINDS`` or ``_PACK_ROUTE_BLOCKLIST`` stops the boundary scanner from reporting
+    that word as a pack dependency. Changing either set must therefore be deliberate: update the fingerprint
+    here in the same change, and say in its review that the boundary exemption widens or narrows.
+    """
+    import hashlib
+
+    from astrid.core.generation.placement import BUILTIN_KINDS
+    from astrid.omp_agent import _PACK_ROUTE_BLOCKLIST
+
+    def fingerprint(words) -> str:
+        return hashlib.sha256("\n".join(sorted(words)).encode()).hexdigest()
+
+    assert fingerprint(BUILTIN_KINDS) == "65e5abdff97f7c7a4bcfdd216d9fcfd7a46acc50adf8d016e0bce7aa42279199"
+    assert fingerprint(_PACK_ROUTE_BLOCKLIST) == "1ffba8a7de096d6b59e16647ed6a95f71c3f3df514e54ea03c534e76640ba894"
