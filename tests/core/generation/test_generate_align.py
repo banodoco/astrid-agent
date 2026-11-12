@@ -209,7 +209,7 @@ def test_apply_reprobes_same_target_and_is_idempotent(fake):
 def test_apply_fetches_subdir_name_into_models_root_with_comfyui_path_set(fake, monkeypatch, tmp_path):
     """The explicit models root remains authoritative when a ComfyUI checkout is configured."""
     monkeypatch.setenv('COMFYUI_PATH', str(tmp_path / 'separate-comfyui'))
-    monkeypatch.setenv('VIBECOMFY_MODELS_ROOT', str(fake.target.models_root))
+    monkeypatch.delenv('VIBECOMFY_MODELS_ROOT', raising=False)
     report = apply(fake, client=request_bytes([]))
     expected = fake.target.models_root / fake.model.destination
     assert report['status'] == 'ready'
@@ -448,13 +448,16 @@ def test_noneditable_wheel_align_entrypoint_and_module(tmp_path):
 
 def test_selected_managed_receipt_is_offline_and_validates_models_lock(tmp_path, monkeypatch):
     from dataclasses import asdict
-    from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+    from astrid.core.generation.engine_contracts import (
+        DownloadResult, HealthEvidence, InstallReceipt, StepReceipt, effective_models_root,
+    )
     from astrid.core.generation.engine_recipe import load_recipe, load_model_lock
     from astrid.core.generation.engine_runner import plan_install
     root = tmp_path / 'managed'
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     plan = plan_install(recipe, root=str(root), placement='local')
-    models = tuple(DownloadResult(model.name, str(root / 'models' / model.destination), 'skipped',
+    models_root = Path(effective_models_root(str(root), None))
+    models = tuple(DownloadResult(model.name, str(models_root / model.destination), 'skipped',
         model.bytes, model.sha256, True, 0) for model in load_model_lock(recipe.models_lock).models)
     receipt = InstallReceipt('astrid.engine-install.v1', 'cpu-installed', plan.engine, plan.platform,
         plan.placement, plan.root, 'installed', False, plan.recipe_sha256, plan.models_lock_sha256,
@@ -470,13 +473,13 @@ def test_selected_managed_receipt_is_offline_and_validates_models_lock(tmp_path,
     monkeypatch.setattr('astrid.core.generation.engine_local_endpoint.recorded_engine_root', lambda engine: str(root))
     monkeypatch.setattr('urllib.request.urlopen', lambda *a, **kw: pytest.fail('offline selection probed target'))
     target = alignment.selected_target()
-    assert target.root == root and target.models_root == root / 'models'
+    assert target.root == root and target.models_root == root / 'runtime/ComfyUI/models'
     assert target.models_lock_sha256 == plan.models_lock_sha256
     assert target.url == 'http://127.0.0.1:8188'
     assert not target.models_root.exists()
     raw['models_lock_sha256'] = 'e' * 64
     path.write_text(json.dumps(raw))
-    with pytest.raises(IntegrityError, match='receipt identity differs'):
+    with pytest.raises(IntegrityError, match='installed but stale'):
         alignment.selected_target()
 
 

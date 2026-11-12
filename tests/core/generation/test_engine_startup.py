@@ -229,6 +229,21 @@ def test_existing_attempt_and_symlink_paths_refused(tmp_path):
         startup.run_sequence(**kwargs)
 
 
+@pytest.mark.parametrize('stale_field', ['recipe', 'step-layout'])
+def test_startup_output_refuses_stale_install_evidence(tmp_path, stale_field):
+    from astrid.core.generation.engine_contracts import IntegrityError
+
+    kwargs, _ = _fixture(tmp_path)
+    template = Path(kwargs['cli_prefix'][5])
+    value = json.loads(template.read_text())
+    if stale_field == 'recipe':
+        value['recipe_sha256'] = 'e' * 64
+    else:
+        value['steps'][0]['id'] = 'retired-source-step'
+    with pytest.raises(IntegrityError, match='installed but stale.*astrid engines install'):
+        startup._validate_output(json.dumps(value), root=kwargs['root'], rerun=False)
+
+
 def test_shutdown_uncertainty_preserves_existing_recovery_handle(tmp_path):
     from astrid.core.generation.engine_contracts import CustodyUnresolved
     kwargs, _ = _fixture(tmp_path)

@@ -53,6 +53,7 @@ from .engine_contracts import (
     UnsafePathError,
     UnsupportedPlacement,
     UnsupportedPlatform,
+    effective_models_root,
 )
 
 _HELPER_SCHEMA = "astrid.engine-runner-helper.v1"
@@ -275,6 +276,17 @@ def _plan_receipt(raw, recipe, *, root, placement):
     locator = plan_install(recipe, root=root, placement=placement)
     receipt = _parse_receipt(raw, locator)
     return receipt, plan_from_receipt(recipe, receipt, root=root, placement=placement)
+
+
+def require_current_receipt(receipt: InstallReceipt, plan: InstallPlan, recipe: EngineRecipe) -> None:
+    """Require current recipe evidence at installation admission boundaries."""
+    if (receipt.recipe_sha256 != plan.recipe_sha256
+            or receipt.models_lock_sha256 != plan.models_lock_sha256
+            or tuple((s.id, s.kind) for s in receipt.steps) != tuple((s.id, s.kind) for s in plan.steps)
+            or set(receipt.requirements_locks) != {e.name for e in recipe.environments}
+            or receipt.source_commits != {s.name: s.pin.revision for s in recipe.sources}):
+        raise IntegrityError(f"engine {plan.engine} is installed but stale; "
+                             f"run `astrid engines install {plan.engine}`")
 
 
 def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
@@ -501,7 +513,7 @@ class _Runner:
         return {"install_root": self.plan.root,
                 "python": self.adapter.venv_python(self.path(environment.relative_path)),
                 "comfy_root": comfy_root,
-                "models_root": self.adapter.join(comfy_root, "models") if self.plan.models_root is None else self.plan.models_root,
+                "models_root": effective_models_root(self.plan.root, self.plan.models_root),
                 "host": self.recipe.start.bind_host, "port": str(self.recipe.start.port)}
 
     def source(self, source, *, readonly=False):
@@ -721,8 +733,7 @@ class _Runner:
                                "cuda_visible_devices": self.visibility}
         if readonly:
             raise EndpointHealthError("owned engine server is absent", step_id=self.step_id)
-        models_root = self.plan.models_root or self.adapter.join(
-            self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui")), "models")
+        models_root = effective_models_root(self.plan.root, self.plan.models_root)
         self.context.ensure_dir(models_root, deadline=self.deadline)
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
@@ -922,14 +933,15 @@ def _parse_receipt(raw, plan):
             raise ValueError
         if not isinstance(value["models"], (list, tuple)) or not isinstance(value["steps"], (list, tuple)):
             raise ValueError
-        # Plan 32 T5h: a new install writes no model rows; a legacy receipt's verified rows are kept
-        # as the receipt's rows, under <root>/models, exactly as the installer wrote them.
-        models_root = (value["models_root"] if value["models_root"] is not None else plan.root + "/models") + "/"
+        # Preserve old receipt paths as historical evidence alongside the current binding.
+        model_roots = (effective_models_root(plan.root, value["models_root"]) + "/",)
+        if value["models_root"] is None:
+            model_roots += (plan.root + "/models/",)
         models = []
         for model_raw in value["models"]:
             row = obj(model_raw, DownloadResult)
             if (not isinstance(row["model"], str) or not isinstance(row["path"], str)
-                    or not row["path"].startswith(models_root) or row["verified"] is not True
+                    or not row["path"].startswith(model_roots) or row["verified"] is not True
                     or row["action"] not in {"downloaded", "resumed", "skipped"}
                     or type(row["bytes"]) is not int or row["bytes"] < 0
                     or not isinstance(row["sha256"], str) or not _DIGEST.fullmatch(row["sha256"])
@@ -938,14 +950,25 @@ def _parse_receipt(raw, plan):
             models.append(DownloadResult(**row))
         models = tuple(models)
         # Legacy receipts also carry one kind == "model" step per model row. Their shape is checked
-        # here, then they are dropped: the plan's expected steps and the installed equality see none.
+        # here; ordinary rows are omitted from current-plan comparison, except for custody evidence.
         step_rows = [obj(v, StepReceipt) for v in value["steps"]]
         for row in step_rows:
             if row["kind"] == "model" and (not isinstance(row["id"], str) or not row["id"].startswith("model:")
                     or row["action"] not in {"executed", "skipped"} or row["validation"] not in {"passed", "failed"}
                     or not isinstance(row["facts"], Mapping)):
                 raise ValueError
-        steps = tuple(StepReceipt(**row) for row in step_rows if row["kind"] != "model")
+            if (row["kind"] == "model" and value["status"] == "failed"
+                    and value["error_code"] == "custody_unresolved"
+                    and "recovery_handle" in row["facts"]
+                    and (not isinstance(row["facts"]["recovery_handle"], str)
+                         or not row["facts"]["recovery_handle"])):
+                raise ValueError
+        # Old receipts normally discard model rows from the current step projection. Keep a
+        # recovery-bearing one in failed custody receipts so a retry can resume exact custody.
+        steps = tuple(StepReceipt(**row) for row in step_rows
+                      if row["kind"] != "model" or value["status"] == "failed"
+                      and value["error_code"] == "custody_unresolved"
+                      and "recovery_handle" in row["facts"])
         health = None if value["health"] is None else HealthEvidence(**obj(value["health"], HealthEvidence))
         if len({s.id for s in steps}) != len(steps):
             raise ValueError
@@ -985,6 +1008,7 @@ def refresh_installed_launch(runner, raw, *, start_action, start_facts, health_a
     original = _parse_receipt(raw, runner.plan)
     if original.status != "installed":
         raise IntegrityError("managed launch requires a completed installation")
+    require_current_receipt(original, runner.plan, runner.recipe)
     if (runner.health is None or not isinstance(runner.service_owner, str) or not runner.service_owner
             or not isinstance(runner.health.object_info_sha256, str)
             or not _DIGEST.fullmatch(runner.health.object_info_sha256)
@@ -1046,11 +1070,9 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
     plan = plan_from_receipt(recipe, receipt, root=root, placement=placement)
     if receipt.status != "installed":
         return receipt
-    if (receipt.recipe_sha256 != plan.recipe_sha256
-            or receipt.models_lock_sha256 != plan.models_lock_sha256
-            or tuple((s.id, s.kind) for s in receipt.steps) != tuple((s.id, s.kind) for s in plan.steps)
-            or set(receipt.requirements_locks) != {e.name for e in recipe.environments}
-            or receipt.source_commits != {s.name: s.pin.revision for s in recipe.sources}):
+    try:
+        require_current_receipt(receipt, plan, recipe)
+    except IntegrityError:
         return replace(receipt, status="failed", error_code="integrity_failed", failed_step_id="receipt-evidence",
                        health=HealthEvidence("unhealthy", _now(), None, False), models=(), steps=())
     # Lazy optional production adapter dependency, absent from lookup/planning.

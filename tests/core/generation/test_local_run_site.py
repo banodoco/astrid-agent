@@ -22,7 +22,7 @@ def _install_owned_preparation_fixture(monkeypatch, tmp_path, target, *, root=No
     adapter = platform_adapter("linux-x86_64-cu130")
     observations = {"root": root, "events": [], "lock_states": [], "engine_calls": [],
                     "workflow_callback": None, "report": {"endpoint": target.url},
-                    "models_root": root / "models", "manifest_override": None, "engine": None}
+                    "models_root": root / "runtime" / "ComfyUI" / "models", "manifest_override": None, "engine": None}
 
     def lock_held():
         from runtime_protocol import platform as native

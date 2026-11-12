@@ -34,7 +34,7 @@ from ._engine_python_bootstrap import engine_child_env, engine_process_env
 from .engine_contracts import (
     CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
     EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
-    RecipeValidationError, UnsafePathError, UnsupportedPlatform,
+    RecipeValidationError, UnsafePathError, UnsupportedPlatform, effective_models_root,
 )
 from .engine_runner import _json, _object_info_sha256, _root, _sha, helper_manifest
 from .engine_platforms import LinuxPlatformAdapter
@@ -885,7 +885,7 @@ class _Supervisor:
         self.root = identity["root"]
         self.control = self.root + "/.astrid-engine/session"
         self.adapter = LinuxPlatformAdapter(identity["platform"])
-        # The model directory is the installed receipt's record (a saved volume cache, or <root>/models).
+        # The installed receipt records an explicit model directory or the checkout default.
         request = self.adapter.start_request(recipe, self.root, deadline=time.monotonic() + 1,
                                              models_root=_installed_models_root(self.root, recipe))
         self.launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
@@ -1066,12 +1066,13 @@ class _Supervisor:
 
     def publish_registry(self, source):
         request, port = self.launch, self.recipe.start.port
+        models_root = effective_models_root(self.root, _installed_models_root(self.root, self.recipe))
         output = request["cwd"] + "/output"
         if "--output-directory" in request["argv"]:
             output = request["argv"][request["argv"].index("--output-directory") + 1]
         config = {"runtime_root": self.root + "/runtime", "cwd": request["cwd"], "port": port,
                   "warm_policy": "never", "base_directory": request["cwd"],
-                  "models_root": self.root + "/models", "models_root_normalized": self.root + "/models",
+                  "models_root": models_root, "models_root_normalized": models_root,
                   "output_directory": output, "locality": "managed_local_server",
                   "server_log_path": self.registry + "/comfy.log"}
         url = f"http://127.0.0.1:{port}"

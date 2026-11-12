@@ -6,6 +6,7 @@ import json
 import pytest
 
 from astrid.core.execution.generic_host import GenericPackHost
+from astrid.core._shared import run_logs
 from tests.test_generic_host import FakeRuntime, _write_manifest
 
 
@@ -75,3 +76,27 @@ if FAILED:
         receipt = json.loads(next((tmp_path / 'attempt').rglob('result.json')).read_text())
         assert not receipt.get('evidence_pending')
         assert 'logs unavailable: OSError' in receipt['warnings']
+
+
+def test_duplicate_log_source_is_a_warning_and_keeps_first_output(tmp_path):
+    output = tmp_path / 'outputs'
+    output.mkdir()
+    (output / 'logs').mkdir()
+    (output / 'logs' / 'index.json').write_text(json.dumps({
+        'schema': 'run-logs.collected.v1',
+        'logs': [{'name': 'engine', 'role': 'engine', 'file': 'engine.log', 'missing': False,
+                  'source': '/remote/job/engine.log'}],
+    }))
+    host_logs = output / '.host-logs'
+    host_logs.mkdir()
+    (output / 'host-engine.log').write_text('host engine')
+    run_logs.declare(host_logs, run_logs.LogDecl(
+        name='engine', role='engine', path=str((output / 'host-engine.log').resolve())))
+
+    warnings = []
+    outputs = GenericPackHost(pack_roots=[])._log_outputs(output, warnings=warnings)
+
+    assert [item['variant_key'] for item in outputs] == ['engine']
+    assert len(warnings) == 1
+    assert '/remote/job/engine.log' in warnings[0]
+    assert str((output / 'host-engine.log').resolve()) in warnings[0]

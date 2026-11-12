@@ -893,9 +893,6 @@ LocalLinuxExecutionContext.run=run
     (state / "lock.json").write_text(_json(lock_identity))
     (state / "receipt.json").write_text(_json({**{k: v for k, v in lock_identity.items() if k != "schema"},
                                                 "validated": True}))
-    from astrid.core.generation.engine_runner_target import dispatch
-    helper = {**client.identity, "schema": "astrid.engine-runner-helper.v1", "models_root": None}
-    assert dispatch("models-config", helper)["facts"] == {"written": True}
     try:
         # Installation's finite caller exits before either H3 consumer runs.
         facts = json.loads(_finite_client(client.identity, payload, "start", bootstrap=supervisor).stdout)
@@ -1335,7 +1332,7 @@ def test_client_disconnect_cancels_command_but_retains_engine(session):
 def test_explicit_stop_cancels_active_command_and_engine(session):
     client, payload, recipe, root, mode, started = session
     _call(client, payload)
-    retained = [root / "models/retained-model", root / ".astrid-engine/environments/comfy/requirements.lock"]
+    retained = [root / "runtime/ComfyUI/models/retained-model", root / ".astrid-engine/environments/comfy/requirements.lock"]
     for path in retained:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"retained bytes\n")
@@ -1405,6 +1402,7 @@ def test_different_helper_stop_addresses_old_owner_but_probe_still_refuses(sessi
     _call(owner, payload, "probe")
     other = _client({**owner.identity, "helper_sha256": "0" * 64})
     marker = Path(owner.control, "session.json").read_bytes()
+    sent = []
     with monkeypatch.context() as scoped:
         real_send = custody._send
         sent = []
@@ -1641,7 +1639,7 @@ def installed_consumer(session, monkeypatch):
         "local", str(root), "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
         {e.name: "a" * 64 for e in recipe.environments},
         {s.name: s.pin.revision for s in recipe.sources},
-        tuple(DownloadResult(m.name, str(root / "models" / m.destination), "skipped",
+        tuple(DownloadResult(m.name, str(root / "runtime/ComfyUI/models" / m.destination), "skipped",
                              m.bytes, m.sha256, True, 0) for m in models.models),
         tuple(StepReceipt(s.id, s.kind, "executed", "passed",
                           {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"],
@@ -1658,7 +1656,7 @@ def installed_consumer(session, monkeypatch):
     reference = SimpleNamespace(
         effective_target={"kind": "runpod", "provider_account_ref": "account-1", "pod_id": "pod-1"},
         executable=SimpleNamespace(path=root / "runtime/venv/bin/python"),
-        model_root=root / "models", output_root=Path(config["output_directory"]),
+        model_root=root / "runtime/ComfyUI/models", output_root=Path(config["output_directory"]),
         session_ref="comfyui", session_config_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
     )
     readiness = {

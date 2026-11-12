@@ -14,6 +14,7 @@ import pytest
 from astrid.core import engine_cli
 from astrid.core.generation.engine_contracts import CommandFailed, CustodyUnresolved
 from astrid.core.generation.engine_local_endpoint import recorded_engine_root
+from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 
 @dataclass
 class InstallResult:
@@ -46,7 +47,7 @@ def test_packaged_vibecomfy_checkout_supports_generate_list_json(tmp_path):
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     source = next(s for s in recipe.sources if s.name == 'vibecomfy')
     assert source.pin.repository == 'https://github.com/banodoco/VibeComfy.git'
-    assert source.pin.revision == 'e4118ccfba62cf80e26a90637b4b02f37ead5b67'
+    assert source.pin.revision == VIBECOMFY_ENGINE_REVISION
     source_checkout = Path(os.environ['ASTRID_VIBECOMFY_CHECKOUT'])
     packaged = tmp_path / 'packaged-vibecomfy'
     for argv in (
@@ -164,7 +165,7 @@ def test_comfyui_linux_dry_run_resolves_packaged_recipe_and_model_lock(capsys):
     }
     assert data['recipe']['models_lock']['path'] == 'packs/runpod/models.lock.json'
     assert data['plan']['models_lock_sha256'] == data['recipe']['models_lock']['sha256']
-    assert '{models_config}' in data['recipe']['start']['argv']
+    assert data['recipe']['start']['argv'][-2:] == ['--models-directory', '{models_root}']
 
 
 @pytest.mark.parametrize('placement', ['local', 'runpod'])

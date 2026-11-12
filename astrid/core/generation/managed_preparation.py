@@ -358,6 +358,7 @@ class ManagedEnginePreparation:
             plan_from_receipt,
             plan_install,
             refresh_installed_launch,
+            require_current_receipt,
         )
 
         self.check()
@@ -388,6 +389,7 @@ class ManagedEnginePreparation:
         plan = plan_from_receipt(self.recipe, receipt, root=self.root, placement="local")
         if receipt.status != "installed":
             raise EngineNotInstalled(self.recipe.engine, f"install status {receipt.status}, engine not healthy")
+        require_current_receipt(receipt, plan, self.recipe)
         runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
         runner.step_id = "helper-identity"
         if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
@@ -562,13 +564,18 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 raise IntegrityError("managed runtime requirement is not satisfied by the installed base: " + path)
 
     def _native(self, program, *args, step="runtime_inspect"):
-        from .engine_contracts import CommandRequest, DeadlineExceeded, IntegrityError
+        from .engine_contracts import (
+            CommandRequest,
+            DeadlineExceeded,
+            IntegrityError,
+            effective_models_root,
+        )
         self.check()
         primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
         python = self.adapter.venv_python(self.adapter.join(self.root, primary.relative_path))
         comfy = self.adapter.join(self.root, next(s.relative_path for s in self.recipe.sources if s.name == "comfyui"))
         from .engine_custody import _installed_models_root
-        models = _installed_models_root(self.root, self.recipe) or self.adapter.join(self.root, "models")
+        models = effective_models_root(self.root, _installed_models_root(self.root, self.recipe))
         env = {"COMFYUI_PATH": comfy, "VIBECOMFY_MODELS_ROOT": models,
                "VIBECOMFY_CUSTOM_NODES_DIR": comfy + "/custom_nodes", "VIBECOMFY_HEADLESS": "1",
                "VIBECOMFY_COMFY_CONFIGURATION": json.dumps({"runtime_root": self.root + "/runtime",

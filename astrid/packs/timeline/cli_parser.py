@@ -6,30 +6,13 @@ import argparse
 import sys
 from typing import Any
 
+from astrid.core.cli.current_project import resolve_current_project
+
 # Verbs whose --project is optional: omitted, it is the workspace runtime's current project.
 CURRENT_PROJECT_VERBS = frozenset(
     {"checkout", "apply", "assets", "check", "commit", "create", "discard", "find", "history", "lines", "redo", "status", "undo"}
 )
 
-
-def resolve_current_project(parsed: argparse.Namespace) -> str | None:
-    """The workspace's current project id, or None when none is selected (or the runtime cannot say)."""
-    projects = getattr(getattr(parsed, "client", None), "projects", None)
-    current = getattr(projects, "current", None)
-    if current is None:
-        return None
-    try:
-        result = current()
-    except Exception:  # noqa: BLE001 - unreachable runtime: the caller reports "no current project"
-        return None
-    if not getattr(result, "ok", False):
-        return None
-    data = result.data
-    row = data.get("project") if isinstance(data, dict) else None
-    if not isinstance(row, dict):
-        return None
-    ref = row.get("project_id") or row.get("id") or row.get("slug")
-    return ref.strip() if isinstance(ref, str) and ref.strip() else None
 
 
 class TimelinesParser(argparse.ArgumentParser):

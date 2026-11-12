@@ -864,8 +864,8 @@ def _run_and_settle(
     if manifest is not None and engine_local_run and not manifest.get("models_root"):
         # The models directory the installed engine itself uses, so align judges and fetches
         # only the rows this job lacks there.
-        from astrid.core.generation.engine_local_endpoint import default_engine_root
-        manifest = {**manifest, "models_root": os.path.join(default_engine_root("comfyui"), "models")}
+        from astrid.core.generation.managed_preparation import configured_models_root
+        manifest = {**manifest, "models_root": configured_models_root()}
     profile_id = "local_server"
     workflow_input_bindings: dict[str, Any] = _workflow_inputs(workflow_inputs)
     if managed_assets:
