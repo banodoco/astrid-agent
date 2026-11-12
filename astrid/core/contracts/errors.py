@@ -29,7 +29,7 @@ from astrid.core.audit.util import SECRET_VALUE_RE, redact
 
 
 _CREDENTIAL_ASSIGNMENT = re.compile(
-    r"""(?i)(\b(?:(?:[a-z0-9]+[_-])*api[_-]?key|[a-z0-9]+[_-]key|token|secret|password|authorization|credential)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:bearer\s+)?[^\s,;&}]+)"""
+    r"""(?i)(\b(?:(?:[a-z0-9]+[_-])*api[_-]?key|(?:access|secret|private)[_-]key|key|(?-i:[A-Z][A-Z0-9]*)[_-]key|token|secret|password|authorization|credential)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:bearer\s+)?[^\s,;&}]+)"""
 )
 
 
@@ -45,7 +45,11 @@ def redact_credentials(text: str) -> str:
     return _redact_credentials(text)
 
 
-_CREDENTIAL_KEY = re.compile(r"(?i)(?:api[_-]?key|(?:^|[_-])key$|token|secret|password|authorization|credential)")
+# Credential names only: an identifier that merely ends in "_key" (variant_key, idempotency_key) stays
+# readable, while environment-style UPPERCASE names ending in _KEY (RUNPOD_KEY) are credentials.
+_CREDENTIAL_KEY = re.compile(
+    r"(?i)(?:api[_-]?key|(?:^|[_-])(?:access|secret|private)[_-]key$|^key$|token|secret|password|authorization|credential)"
+    r"|(?-i:^[A-Z][A-Z0-9_]*[_-]KEY$)")
 
 
 def _redact_credential_data(value: Any) -> Any:

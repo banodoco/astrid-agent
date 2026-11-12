@@ -587,10 +587,19 @@ def _main(argv: list[str]) -> int:
         from astrid.core.generation.entries import describe_entry
         try:
             if bool(parsed.entry) == bool(parsed.workflow):
-                raise ValueError('describe requires a workflow path or --entry')
+                raise ValueError('describe requires a workflow path or catalog entry ID')
             if parsed.workflow:
-                from astrid.core.generation.entries import describe_workflow
-                description = describe_workflow(Path(parsed.workflow), mode=parsed.mode)
+                path = Path(parsed.workflow).expanduser()
+                if path.exists():
+                    from astrid.core.generation.entries import describe_workflow
+                    description = describe_workflow(path, mode=parsed.mode)
+                else:
+                    from astrid.core.generation.listing import catalog_rows
+                    if not any(row['id'] == parsed.workflow for row in catalog_rows()):
+                        raise ValueError(
+                            f"{parsed.workflow!r} is neither an existing workflow path nor a known catalog entry ID"
+                        )
+                    description = describe_entry(parsed.workflow, mode=parsed.mode)
             else:
                 description = describe_entry(parsed.entry, mode=parsed.mode)
         except (ValueError, KeyError) as exc:
