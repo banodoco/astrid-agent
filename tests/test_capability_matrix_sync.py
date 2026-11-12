@@ -28,7 +28,13 @@ def test_runpod_host_target_operations_have_cpu_matrix_rows():
     rows = {row["id"]: row for row in matrix["capabilities"]}
 
     assert operation_ids
-    assert operation_ids <= rows.keys()
+    # Declared host-target operations and the RunPod CPU matrix rows are maintained apart; they must agree exactly,
+    # so a lost declaration, a missing row and an orphan row all fail.
+    assert operation_ids == {
+        capability_id
+        for capability_id, row in rows.items()
+        if capability_id.startswith("runpod.") and row["adapter_family"] == "cpu"
+    }
     for capability_id in operation_ids:
         assert rows[capability_id]["adapter_family"] == "cpu"
         assert rows[capability_id]["resource_keys"] == ["cpu"]
