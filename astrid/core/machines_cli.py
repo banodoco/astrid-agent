@@ -80,14 +80,14 @@ def _release(machine_id: str, *, as_json: bool, release: Callable[[], Any] | Non
     return 0 if ok else 1
 
 
-def _duration_seconds(value: str) -> float:
+def _duration_seconds(value: str, option: str = "--for") -> float:
     parts = list(re.finditer(r"(\d+(?:\.\d+)?)([smhd])", value.strip().lower()))
     if not parts or "".join(part.group(0) for part in parts) != value.strip().lower():
-        raise ValueError("invalid --for duration; use s, m, h or d (for example 30m or 2h)")
+        raise ValueError(f"invalid {option} duration; use s, m, h or d (for example 30m or 2h)")
     scales = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     seconds = sum(float(part.group(1)) * scales[part.group(2)] for part in parts)
     if not math.isfinite(seconds) or seconds <= 0:
-        raise ValueError("invalid --for duration; use a finite duration greater than zero (for example 30m or 2h)")
+        raise ValueError(f"invalid {option} duration; use a finite duration greater than zero (for example 30m or 2h)")
     return seconds
 
 
@@ -120,7 +120,7 @@ def _keep(machine_id: str, *, for_duration: str | None, until_release: bool,
         print(json.dumps({"ok": False, "error": message}) if as_json else message)
         return 2
     try:
-        seconds = _duration_seconds(for_duration) if for_duration is not None else None
+        seconds = _duration_seconds(for_duration, "--for") if for_duration is not None else None
         cap = float(max_usd)
         if not math.isfinite(cap) or cap <= 0:
             raise ValueError("invalid --max-usd; enter a finite USD amount greater than zero")
@@ -210,69 +210,138 @@ def _duration_text(seconds: float) -> str:
     return f"{seconds}s"
 
 
-def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_hourly_usd: float | None,
-           for_duration: str | None, capacity_timeout: str | None, wait_for_capacity: bool,
-           consent_scopes: list[str], as_json: bool, claim: Callable[..., Any] | None,
-           describe: Callable[..., Any] | None, input_fn: Callable[[str], str]) -> int:
+def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float | None, max_hourly_usd: float | None,
+           for_duration: str | None, idle_duration: str | None, capacity_timeout: str | None, wait_for_capacity: bool,
+           as_json: bool, claim: Callable[..., Any] | None,
+           describe: Callable[..., Any] | None, input_fn: Callable[[str], str],
+           setup: Callable[..., Any] | None, volumes: Callable[..., Any] | None,
+           datacenters: Callable[..., Any] | None, offered_gpus: Callable[..., Any] | None,
+           _client: Any = None) -> int:
     """Disclose one saved-storage policy, then submit fresh per-claim authority."""
     import sys
 
+    from astrid.core.generation import settings
     from astrid.core.generation.cli import _gpu_placement
-    from astrid.packs.runpod.target_selection import PaidRunConsent, RunPodPreferences, _number
-    from astrid.sdk.generation import GenerationFacade
+    from astrid.packs.runpod.target_selection import (
+        DEFAULT_RUNPOD_WORKER_IMAGE,
+        PaidRunConsent,
+        RunPodPreferences,
+        _number,
+    )
+    from astrid.sdk.generation import GenerationFacade, _runpod_job_preferences, _runpod_status
 
     try:
-        cap = _number(max_usd, "USD cap")
-        placement = _gpu_placement("runpod", gpu_types, argparse.ArgumentParser(prog="astrid machines claim"))
-        timeout = _duration_seconds(capacity_timeout) if capacity_timeout else None
-        if describe is None or claim is None:
+        if _client is None and (describe is None or claim is None):
             from astrid.sdk import AstridClient
-            # Claim is served only by a running host; it must not launch a replacement.
+
             with AstridClient.open_from_launcher(start_pack_host=False) as client:
-                facade = GenerationFacade()
-                return _claim(gpu_types=gpu_types, datacenter=datacenter, max_usd=cap, max_hourly_usd=max_hourly_usd,
-                              for_duration=for_duration, capacity_timeout=capacity_timeout,
-                              wait_for_capacity=wait_for_capacity, consent_scopes=consent_scopes,
-                              as_json=as_json, input_fn=input_fn,
-                              describe=lambda **kwargs: facade.describe(client=client, **kwargs),
-                              claim=lambda **kwargs: facade.claim(client=client, **kwargs))
+                return _claim(gpu_types=gpu_types, datacenter=datacenter, max_usd=max_usd,
+                              max_hourly_usd=max_hourly_usd, for_duration=for_duration,
+                              idle_duration=idle_duration, capacity_timeout=capacity_timeout,
+                              wait_for_capacity=wait_for_capacity, as_json=as_json, claim=claim,
+                              describe=describe, input_fn=input_fn, setup=setup, volumes=volumes,
+                              datacenters=datacenters, offered_gpus=offered_gpus, _client=client)
+        saved = settings.machine_policy("runpod", client=_client) or {}
+        if not saved and sys.stdin.isatty():
+            captured = []
+            def save(policy):
+                if setup is not None:
+                    result = setup(policy)
+                else:
+                    import json as _json
+
+                    result = _client.invoke_result("runpod.setup", kind="action", project=None,
+                        inputs={"placement_policy": _json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": policy}, sort_keys=True)},
+                        wait=True, read_managed_outputs=False)
+                if getattr(result, "ok", True):
+                    captured.append(policy)
+                return result
+            status = _setup(volume=None, datacenter=datacenter, gpu_types=gpu_types, budget_usd=max_usd,
+                            image=None, as_json=False, setup=save, volumes=volumes, datacenters=datacenters,
+                            offered_gpus=offered_gpus, input_fn=input_fn, client=_client)
+            if status:
+                return status
+            saved = captured[0]
+        if not saved:
+            missing = "--gpu" if not gpu_types else "--max-usd" if max_usd is None and for_duration is None else None
+            if missing:
+                raise ValueError(f"run `astrid machines setup` or pass {missing}")
+            saved = {"provider_account_ref": "env:RUNPOD_API_KEY", "credential_ref": "env:RUNPOD_API_KEY",
+                     "image": DEFAULT_RUNPOD_WORKER_IMAGE, "gpu_types": gpu_types}
+        if not (gpu_types or saved.get("gpu_types")):
+            raise ValueError("run `astrid machines setup` or pass --gpu")
+        if max_usd is None and for_duration is None and saved.get("budget_cap_usd") is None:
+            raise ValueError("run `astrid machines setup` or pass --max-usd")
+        effective = dict(saved)
+        if gpu_types:
+            effective["gpu_types"] = gpu_types
+        if datacenter is not None:
+            effective = _runpod_job_preferences(effective, datacenter)
+        if max_usd is not None:
+            effective["budget_cap_usd"] = _number(max_usd, "USD cap")
+        if idle_duration is not None:
+            effective["idle_timeout_seconds"] = int(_duration_seconds(idle_duration, "--idle"))
+        placement = _gpu_placement("runpod", gpu_types, argparse.ArgumentParser(prog="astrid machines claim"))
+        timeout = _duration_seconds(capacity_timeout, "--capacity-timeout") if capacity_timeout else None
+        if describe is None or claim is None:
+            facade = GenerationFacade()
+            if describe is None:
+                def describe(**_kwargs):
+                    return {**_runpod_status(client=_client, include_quote=True, preferences=effective,
+                                             fresh_claim=True),
+                            "waiting_policy": {"preferences": effective}}
+            if claim is None:
+                def claim(**kwargs):
+                    return facade.claim(client=_client, **kwargs)
         description = describe(placement=placement, max_hourly_usd=max_hourly_usd, fresh_claim=True, datacenter=datacenter)
         waiting = description["waiting_policy"]
-        preferences = RunPodPreferences.from_mapping(waiting["preferences"])
+        preferences = RunPodPreferences.from_mapping({**waiting["preferences"], **effective})
         ceiling = max_hourly_usd
         if ceiling is None:
-            ceiling = (description.get("offer") or {}).get("hourly_usd")
+            prices = description.get("prices")
+            if isinstance(prices, list) and prices:
+                rates = [_number(row.get("hourly_usd"), "hourly USD price")
+                         for row in prices if isinstance(row, dict)]
+                if rates:
+                    ceiling = max(rates)
             if ceiling is None:
-                raise ValueError("no current hourly quote; supply --max-hourly-usd to approve waiting for capacity")
+                ceiling = (description.get("offer") or {}).get("hourly_usd")
+            if ceiling is None:
+                raise ValueError(f"no current price for {', '.join(preferences.gpu_types)}; pass --max-hourly-usd to wait for one at or under that rate")
         ceiling = _number(ceiling, "hourly USD ceiling")
-        seconds = _duration_seconds(for_duration) if for_duration else float(preferences.idle_timeout_seconds)
-        if seconds <= 0:
-            seconds = 1800.0
-        if cap < seconds * ceiling / 3600:
-            seconds = cap / ceiling * 3600
+        cap = _number(max_usd, "USD cap") if max_usd is not None else None
+        lifetime = _duration_seconds(for_duration, "--for") if for_duration else None
+        if cap is None and lifetime is None:
+            cap = _number(preferences.budget_cap_usd, "USD cap")
+        if cap is None:
+            cap = lifetime * ceiling / 3600
+        if lifetime is None:
+            lifetime = cap / ceiling * 3600
+        lifetime = min(lifetime, cap / ceiling * 3600)
+        idle = min(float(preferences.idle_timeout_seconds), lifetime)
+        if idle <= 0:
+            raise ValueError("idle time must be positive")
+        effective["budget_cap_usd"] = cap
+        preferences = RunPodPreferences.from_mapping(effective)
         if wait_for_capacity and timeout is None:
-            # A claim never waits for stock longer than it would keep the machine.
-            timeout = seconds
+            # Bound stock waiting by the consented machine lifetime.
+            timeout = lifetime
         from astrid.packs.runpod.target_selection import policy_consent_digest
         consent = PaidRunConsent(
             invocation_id=f"astrid-machines-claim-{uuid.uuid4().hex}", offer_digest=None,
             max_usd=cap, deadline=None, consent=("paid",), preparation_seconds=0,
-            execution_seconds=0, idle_seconds=seconds,
+            execution_seconds=0, idle_seconds=lifetime,
             policy_digest=policy_consent_digest(preferences, ceiling), max_hourly_usd=ceiling,
             capacity_timeout_seconds=timeout, wait_for_capacity=wait_for_capacity)
         consent.validate_authority(preferences, datetime.now(timezone.utc))
         policy = {"preferences": preferences.as_mapping(), "max_usd": cap,
-                  "max_hourly_usd": ceiling, "retention_seconds": seconds,
+                  "max_hourly_usd": ceiling, "retention_seconds": idle, "lifetime_seconds": lifetime,
                   "capacity_timeout_seconds": timeout, "wait_for_capacity": wait_for_capacity}
         print("RunPod claim policy: " + json.dumps(policy, sort_keys=True) +
               ". Capacity polling creates no new pod charges. Automatic release only happens while the owning Astrid host is running.",
               file=sys.stderr)
-        if "paid" not in consent_scopes:
-            if as_json or not sys.stdin.isatty() and input_fn is input:
-                raise ValueError("claim requires paid consent; review the policy and pass --consent paid")
-            if input_fn("Claim this paid machine? [y/N]: ").strip().lower() not in {"y", "yes"}:
-                raise ValueError("claim cancelled; paid consent was not given")
-        result = claim(consent=consent, requested_idle_seconds=seconds, placement=placement, datacenter=datacenter, wait=True)
+        result = claim(consent=consent, requested_idle_seconds=idle, placement=placement, datacenter=datacenter,
+                       preferences=preferences.as_mapping(), wait=True)
         if not bool(getattr(result, "ok", True)):
             raise RuntimeError(str(getattr(result, "error", None)))
         raw = getattr(result, "raw_result", {})
@@ -342,6 +411,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
            volumes: Callable[[], list[dict[str, Any]]] | None = None,
            datacenters: Callable[[], list[str]] | None = None,
            offered_gpus: Callable[[str | None, bool], list[str]] | None = None,
+           client: Any = None,
            input_fn: Callable[[str], str] = input) -> int:
     """Save RunPod setup through runpod.setup; inventory is read-only."""
     from astrid.core.generation import settings
@@ -351,7 +421,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         RunPodSetupRequiredError,
     )
 
-    saved = settings.machine_policy("runpod") or {}
+    saved = settings.machine_policy("runpod", client=client) or {}
     if not isinstance(saved, dict):
         saved = {}
     credential_ref = saved.get("credential_ref") or "env:RUNPOD_API_KEY"
@@ -467,11 +537,11 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         try:
             if setup is None:
                 import json as _json
+                from contextlib import nullcontext
 
                 from astrid.sdk import AstridClient
-
-                with AstridClient.open_from_launcher() as client:
-                    result = client.invoke_result("runpod.setup", kind="action", project=None,
+                with (nullcontext(client) if client is not None else AstridClient.open_from_launcher()) as active:
+                    result = active.invoke_result("runpod.setup", kind="action", project=None,
                                                   inputs={"placement_policy": _json.dumps(
                                                       {"kind": "runpod", "engine": "comfyui",
                                                        "preferences": validated}, sort_keys=True)},
@@ -570,16 +640,16 @@ def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None
     configure.add_argument("--image", help="Override the worker image with a name@sha256:digest pin for this setup.")
     configure.add_argument("--show", action="store_true", help="Show saved preferences and Runtime app-state location.")
     configure.add_argument("--json", action="store_true", dest="setup_json")
-    acquire = sub.add_parser("claim", help="Claim a RunPod machine on saved storage with paid consent.")
+    acquire = sub.add_parser("claim", help="Claim a RunPod machine on saved storage.")
     acquire.add_argument("--gpu", action="append", dest="gpu_types", default=[], help="Ordered GPU choice; repeat for fallbacks.")
     acquire.add_argument("--datacenter", help="Override the saved datacenter for this claim; a saved volume must remain in its datacenter.")
-    acquire.add_argument("--max-usd", type=float, required=True, help="Maximum initial machine spend in USD.")
+    acquire.add_argument("--max-usd", type=float, help="Maximum initial machine spend in USD.")
     acquire.add_argument("--max-hourly-usd", type=float, help="Hourly ceiling for waiting; defaults to the current quoted rate.")
-    acquire.add_argument("--for", dest="claim_for", metavar="DURATION", help="Initial idle retention, capped by the spend limit; defaults to saved idle retention or 30m.")
+    acquire.add_argument("--for", dest="claim_for", metavar="DURATION", help="Maximum machine lifetime.")
+    acquire.add_argument("--idle", dest="claim_idle", metavar="DURATION", help="Idle release time.")
     capacity = acquire.add_mutually_exclusive_group()
     capacity.add_argument("--capacity-timeout", metavar="DURATION", help="Stop waiting for stock after this duration; default: the claim's --for retention.")
     capacity.add_argument("--no-wait-for-capacity", action="store_true", help="Make one capacity observation and at most one create attempt.")
-    acquire.add_argument("--consent", action="append", choices=("paid",), default=[], help="Approve the displayed paid claim policy without prompting.")
     acquire.add_argument("--json", action="store_true", dest="claim_json")
     parsed = parser.parse_args(list(argv or ()))
     as_json = parsed.json or bool(getattr(parsed, "release_json", False))
@@ -591,10 +661,11 @@ def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None
                      as_json=as_json or parsed.keep_json, keep=keep)
     if parsed.command == "claim":
         return _claim(gpu_types=parsed.gpu_types, datacenter=parsed.datacenter, max_usd=parsed.max_usd,
-                      max_hourly_usd=parsed.max_hourly_usd, for_duration=parsed.claim_for,
+                      max_hourly_usd=parsed.max_hourly_usd, for_duration=parsed.claim_for, idle_duration=parsed.claim_idle,
                       capacity_timeout=parsed.capacity_timeout, wait_for_capacity=not parsed.no_wait_for_capacity,
-                      consent_scopes=parsed.consent, as_json=as_json or parsed.claim_json,
-                      claim=claim, describe=describe, input_fn=input_fn)
+                      as_json=as_json or parsed.claim_json,
+                      claim=claim, describe=describe, input_fn=input_fn, setup=setup, volumes=volumes,
+                      datacenters=datacenters, offered_gpus=offered_gpus)
     if parsed.command == "setup":
         if parsed.show:
             return _setup_show(as_json=as_json or parsed.setup_json, location=show_location)

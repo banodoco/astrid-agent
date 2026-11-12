@@ -1115,14 +1115,14 @@ class GenerationFacade:
         return describe_entry(entry, mode=mode) if entry else describe_workflow(Path(workflow), mode=mode)
 
     @_generation_boundary
-    def claim(self, *, consent, requested_idle_seconds, placement='runpod', datacenter=None, client=None, wait=True):
+    def claim(self, *, consent, requested_idle_seconds, placement='runpod', datacenter=None, client=None, wait=True, preferences=None):
         """Claim one machine through the running host, using saved storage."""
         from astrid.core.generation import placement as placements
         resolved = placements.validate_placement(placements.resolve_placement(
             placements.request_from_selector(placement), client=client))
         if resolved.kind != 'runpod':
             raise GenerationInputError('claim requires RunPod placement')
-        preferences = _runpod_job_preferences(_runpod_preferences(client), datacenter)
+        preferences = _runpod_job_preferences(preferences if preferences is not None else _runpod_preferences(client), datacenter)
         if resolved.policy.gpu_types:
             preferences['gpu_types'] = list(resolved.policy.gpu_types)
         return _runpod_operation('claim', client=client, wait=wait, preferences=preferences,

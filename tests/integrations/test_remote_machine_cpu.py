@@ -1106,7 +1106,7 @@ def test_machine_cli_claim_then_generate_reuses_pod_and_paid_expiry(journey, mon
     monkeypatch.setattr(AstridClient, "open_from_launcher", launcher)
     monkeypatch.setattr(machines_cli, "_leases", lambda: [lease_row(j.record())] if state["claim_path"].exists() else [])
     assert machines_cli.main(["claim", "--max-usd", "1.5", "--max-hourly-usd", "1",
-                              "--for", "30m", "--consent", "paid", "--json"]) == 0
+                              "--idle", "30m", "--json"]) == 0
     claimed = json.loads(capsys.readouterr().out.splitlines()[-1])
     before = j.record()
     assert opening == [{"start_pack_host": False}]

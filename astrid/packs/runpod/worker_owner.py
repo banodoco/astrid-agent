@@ -22,8 +22,9 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, ParamSpec, TypeVar
 
 from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
@@ -67,7 +68,32 @@ from .worker_staging import (
 class RunPodWorkerOwnerError(RuntimeError):
     """Exact RunPod preparation or host custody could not be established."""
 
-    release_identity: tuple[str, str] | None
+    release_identity: tuple[str, str] | None = None
+
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _off_event_loop(operation: Callable[_P, _T]) -> Callable[_P, _T]:
+    """Hand off a synchronous entry point before it takes the owner lock."""
+    @wraps(operation)
+    def invoke(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return operation(*args, **kwargs)
+        from contextvars import copy_context
+
+        context = copy_context()
+
+        def run() -> _T:
+            return context.run(operation, *args, **kwargs)
+
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="astrid-runpod-claim") as pool:
+            return pool.submit(run).result()
+
+    return invoke
 
 
 # The expired paid/verification clock cannot be reused for exact cancellation.
@@ -105,17 +131,6 @@ class RunPodLease:
     claim: Mapping[str, Any]
 
 
-@dataclass(frozen=True)
-class _RecordedPaidOffer:
-    """The already-rented offer, whose original digest survives in custody."""
-
-    hourly_usd: float
-    offer_digest: str
-
-    def digest(self, preferences: Any) -> str:
-        return self.offer_digest
-
-
 class RunPodLeaseOwner:
     """Small attached-engine lease owned by the existing long-lived host.
 
@@ -139,7 +154,8 @@ class RunPodLeaseOwner:
         self.environ, self.service_environ = environ, service_environ
         self.epoch = secrets.token_hex(16)
         self.lock = threading.RLock()
-        self.deadline_timer = self.expiry_retry_timer = self.warm_lease = self.key = None
+        self.deadline_timer = self.expiry_retry_timer = self.warm_lease = None
+        self.key: tuple[str, str, str] | None = None
         self.closed, self.started = False, False
         self._release_inflight = False
         self._acquisition_cancel = threading.Event()
@@ -204,7 +220,7 @@ class RunPodLeaseOwner:
                 record["provider_account_ref"], record["gpu_type"],
                 limits["hourly_usd"], "lease-recovery"))
             with provider_budget(0):
-                return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay()
+                return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay(minimum_seconds=1.0)
         except Exception:  # noqa: BLE001 - keep durable retry armed on any config failure.
             # Keep durable recovery armed if its journal/config is currently
             # unreadable; the account gate cannot be addressed without a key.
@@ -472,12 +488,14 @@ class RunPodLeaseOwner:
             limits.validate(datetime.fromtimestamp(now, timezone.utc))
             return limits
 
+    @_off_event_loop
     def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
                 cancelled: Callable[[], bool] | None = None,
-                defer_unsafe_release: bool = False) -> RunPodLease:
+                defer_unsafe_release: bool = False, claim_lifetime_seconds: float | None = None) -> RunPodLease:
         from .worker_preparation import TargetObservationError, observation_failure_gate
         try:
-            return self._acquire(consent, requested_idle_seconds=requested_idle_seconds, cancelled=cancelled)
+            return self._acquire(consent, requested_idle_seconds=requested_idle_seconds, cancelled=cancelled,
+                                 claim_lifetime_seconds=claim_lifetime_seconds)
         except TargetObservationError as exc:
             gate = observation_failure_gate(exc)
             if gate in {"GPU", "volume", "datacenter", "machine"}:
@@ -496,7 +514,7 @@ class RunPodLeaseOwner:
                         type(observation_error).__name__, exc_info=False)
                     exact = False
                 released = False
-                if exact and not defer_unsafe_release:
+                if exact and captured is not None and not defer_unsafe_release:
                     try:
                         self.release(reason="custody_changed", _expected_operation=captured[0],
                                      expected_machine_id=captured[1])
@@ -523,7 +541,8 @@ class RunPodLeaseOwner:
             raise
 
     def _acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
-                 cancelled: Callable[[], bool] | None = None) -> RunPodLease:
+                 cancelled: Callable[[], bool] | None = None,
+                 claim_lifetime_seconds: float | None = None) -> RunPodLease:
         from .target_selection import ClaimedJob, _utc
         from .worker_preparation import TargetObservationError
         job = isinstance(consent, ClaimedJob)
@@ -546,7 +565,7 @@ class RunPodLeaseOwner:
                 # The same journal is reused only after exact release is proved.
                 _validate_completed_release(record)
                 previous = None
-            if previous is not None and (
+            if record is not None and previous is not None and (
                 record["state"] != "claimed" or previous["state"] != "idle"
                 or previous["owner_epoch"] != self.epoch
                 or self.clock() >= previous["idle_expires_at"]
@@ -569,10 +588,25 @@ class RunPodLeaseOwner:
                 lease["keep_until_release"] = True
             # Only P1's already-owned account lock is bypassed here, as in R02.
             acquired = False
+            async def select():
+                try:
+                    return await self.selection._select(
+                        consent, lease=lease, lock_held=True,
+                        claim_lifetime_seconds=claim_lifetime_seconds,
+                        cancelled=lambda: self._acquisition_cancel.is_set() or (cancelled is not None and cancelled()))
+                except TargetObservationError as exc:
+                    if exc.runpod_gate == "lifetime":
+                        current = self.selection._read()
+                        if current is not None and current.get("create_attempts", 0) > 0:
+                            try:
+                                # Release before asyncio's executor shutdown can
+                                # wait for a cancelled provider readiness read.
+                                self.release(reason="paid_deadline", _expected_operation=current["operation_id"])
+                            except Exception:  # noqa: BLE001 - preserve the lifetime refusal and durable cleanup retry.
+                                pass  # Failed cleanup retains custody and recovery.
+                    raise
             try:
-                claimed = dict(_run_sync(self.selection._select(
-                    consent, lease=lease, lock_held=True,
-                    cancelled=lambda: self._acquisition_cancel.is_set() or (cancelled is not None and cancelled()))))
+                claimed = dict(_run_sync(select()))
                 acquired = True
                 paid_started = (_utc(claimed["paid_limits"]["authorized_at"]).timestamp()
                                 if previous is None else previous["started_at"])
@@ -582,6 +616,8 @@ class RunPodLeaseOwner:
                         * previous["hourly_usd"] / 3600)
                 lease.update(state="active", paid_expires_at=min(
                                  _utc(claimed["paid_limits"]["expires_at"]).timestamp(),
+                                 previous["paid_expires_at"] if previous is not None else float("inf"),
+                                 paid_started + claim_lifetime_seconds if claim_lifetime_seconds is not None else float("inf"),
                                  _utc(consent.deadline).timestamp() if job else float("inf")),
                              hourly_usd=claimed["paid_limits"]["hourly_usd"],
                              started_at=paid_started, estimated_cost_usd=cost, accounted_at=self.clock())
@@ -607,7 +643,7 @@ class RunPodLeaseOwner:
                              and current.get("release_authorized") is True
                              and (record is None or record.get("operation_id") == operation)
                              and (self._machine_identity is None or self._machine_identity == (operation, pod)))
-                    exc._astrid_failed_identity = (operation, pod) if exact else None
+                    setattr(exc, "_astrid_failed_identity", (operation, pod) if exact else None)
                 if (current is not None and current.get("state") == "allocation_ready"
                         and current.get("create_attempts") == 0 and current.get("pod_id") is None):
                     # This process still owns the lock and has not written the
@@ -645,13 +681,17 @@ class RunPodLeaseOwner:
                 raise RunPodWorkerOwnerError("claim requires a running host with a live RunPod owner")
             from .target_selection import PaidRunConsent, PaidSelectionError
             if (not isinstance(consent, PaidRunConsent) or consent.preparation_seconds != 0
-                    or consent.execution_seconds != 0 or consent.idle_seconds != requested_idle_seconds
+                    or consent.execution_seconds != 0 or requested_idle_seconds > consent.idle_seconds
                     or requested_idle_seconds <= 0):
                 raise PaidSelectionError("claim requires fresh paid consent for finite initial idle retention")
-            invocation = self.acquire(consent, requested_idle_seconds=requested_idle_seconds,
-                                      cancelled=cancelled)
+        invocation = self.acquire(consent, requested_idle_seconds=requested_idle_seconds,
+                                  cancelled=cancelled, claim_lifetime_seconds=consent.idle_seconds)
+        with self.lock:
             self.settle(invocation)
-            return self._read()
+            record = self._read()
+            if record is None:
+                raise RunPodWorkerOwnerError("claim disappeared while settling its lease")
+            return record
 
     def keep(self, machine_id: str, consent: Any, until_release: bool = False) -> Mapping[str, Any]:
         """Replace the exact live lease's paid bound using fresh explicit consent."""
@@ -687,12 +727,15 @@ class RunPodLeaseOwner:
                 record["provider_account_ref"], record["gpu_type"], rate, "retained-keep",
                 record.get("network_volume_datacenter_id"), record.get("accepted_gpu_type_id")))
             current = datetime.fromtimestamp(now, timezone.utc)
-            expiry = consent.validate(_RecordedPaidOffer(rate, digest), self.selection.preferences, current)
+            expiry = consent.validate(self.selection._recorded_offer(record),
+                                      self.selection.preferences, current)
             if (consent.invocation_id == limits.get("invocation_id")
                     or consent.invocation_id in self._paid_consent_ids):
                 raise PaidSelectionError("paid consent was already used; keep requires fresh consent")
+            accounted_at = _number(lease.get("accounted_at", lease["started_at"]),
+                                   "accounted at", zero=True)
             cost = (_number(lease.get("estimated_cost_usd", 0), "estimated USD cost", zero=True)
-                    + max(0, now - lease.get("accounted_at", lease["started_at"])) * rate / 3600)
+                    + max(0, now - accounted_at) * rate / 3600)
             lease.update(paid_expires_at=expiry.timestamp(),
                          idle_expires_at=(expiry.timestamp() if until_release else
                                           min(now + consent.idle_seconds, expiry.timestamp())),
@@ -799,9 +842,15 @@ class RunPodLeaseOwner:
     def _abort_failure_observation(self, record: Mapping[str, Any] | None) -> None:
         if record is None:
             return
-        lease = record.get("lease") or {}
-        key = (record.get("operation_id"), lease.get("owner_epoch"),
-               lease.get("generation"), record.get("pod_id"))
+        lease = record.get("lease")
+        if not isinstance(lease, Mapping):
+            return
+        operation, epoch = record.get("operation_id"), lease.get("owner_epoch")
+        generation, pod_id = lease.get("generation"), record.get("pod_id")
+        if (not isinstance(operation, str) or not isinstance(epoch, str)
+                or type(generation) is not int or not isinstance(pod_id, str)):
+            return
+        key = (operation, epoch, generation, pod_id)
         with self._observer_lock:
             event = self._failure_observers.get(key)
             if event is not None:
@@ -829,9 +878,10 @@ class RunPodLeaseOwner:
         """An unkillable local HTTPS caller may still mutate this exact pod."""
         with self.lock:
             record = self._read()
-            lease = record.get("lease") if record is not None else {}
+            lease = record.get("lease") if record is not None else None
             if (record is None or record.get("operation_id") != invocation.operation_id
-                    or record.get("pod_id") != pod_id or lease.get("owner_epoch") != invocation.owner_epoch
+                    or record.get("pod_id") != pod_id or not isinstance(lease, dict)
+                    or lease.get("owner_epoch") != invocation.owner_epoch
                     or lease.get("generation") != invocation.generation):
                 raise AcquisitionUnresolvedError("unreaped observer custody changed")
             self._unreaped_children.append(child)
@@ -930,6 +980,8 @@ class RunPodLeaseOwner:
                     if record is None or not record.get("pod_id"):
                         raise AcquisitionUnresolvedError("original create remains unresolved; no replacement is permitted") from None
                 record = self._read()
+            if record is None:
+                raise AcquisitionUnresolvedError("original create remains unresolved; no replacement is permitted")
             lease = {**record["lease"], "state": "releasing", "release_reason": reason}
             record = self._save(record, lease, state="cleanup_pending", reconciliation_required=True)
             preparation = lease.get("preparation")
@@ -1845,6 +1897,8 @@ class RunPodRemoteWorkerPreparer:
         if (any(claim.get(key) != snapshot.get(key) for key in fields)
                 or any(claim.get(key) != value for key, value in self._endpoint_claim_identity.items())):
             raise EndpointOwnershipError("original prepared endpoint owner changed")
+        if self.session_owner is None:
+            raise EndpointOwnershipError("managed endpoint session owner is unavailable")
         self.session_owner.resume(retained["selection"], retained["receipt"])
 
     def observe_provider_identity(self, handle: PreparedRunPodHost) -> dict[str, str]:
@@ -2427,6 +2481,7 @@ class RunPodRemoteWorkerPreparer:
                     or managed.get("claim_operation_id") != claim.get("operation_id")
                     or managed.get("deployment_digest") != reference.digest()):
                 raise RunPodWorkerOwnerError("P1 custody has no matching prepared worker to retire")
+            managed_state = dict(managed)
             process = WorkerProcessHandle.from_dict(managed["process_handle"])
             binding = self._binding(reference)
             activation = managed.get("activation_qualification")
@@ -2469,11 +2524,11 @@ class RunPodRemoteWorkerPreparer:
             progress = dict(progress)
 
             def checkpoint(**changes: Any) -> None:
-                nonlocal managed
+                nonlocal managed_state
                 progress.update(changes)
-                state = {**dict(managed), "task_retirement": dict(progress)}
+                state = {**managed_state, "task_retirement": dict(progress)}
                 self._write_worker_state(state, owner_lock_fd=owner_lock_fd)
-                managed = state
+                managed_state = state
 
             task_id = str(qualification["task_id"])
             activation_id = str(qualification["activation_id"])
@@ -2766,6 +2821,7 @@ class RunPodRemoteWorkerPreparer:
                     or value.get("state") not in {"parked_process", "parked"}
                     or value.get("activation_qualification") is not None):
                 raise RunPodWorkerOwnerError("only the exact unqualified parked process can be replaced")
+            managed_value = dict(value)
             process = WorkerProcessHandle.from_dict(value["process_handle"])
             if process.binding != self._binding(reference):
                 raise RunPodWorkerOwnerError("parked process belongs to another Runtime or RunPod target")
@@ -2776,7 +2832,7 @@ class RunPodRemoteWorkerPreparer:
                     or any(stopped.get(key) != getattr(process, key)
                            for key in ("pid", "birth_id", "incarnation"))):
                 raise RunPodWorkerOwnerError("exact unqualified process stop is not confirmed")
-            state = {**dict(value), "state": "stopped", "stop_evidence": dict(stopped)}
+            state = {**managed_value, "state": "stopped", "stop_evidence": dict(stopped)}
             self._write_worker_state(state, owner_lock_fd=owner_lock_fd)
             self._handle = None
             return dict(stopped)
@@ -2793,6 +2849,7 @@ class RunPodRemoteWorkerPreparer:
                     or value.get("deployment_digest") != reference.digest()
                     or value.get("claim_operation_id") != claim.get("operation_id")):
                 raise RunPodWorkerOwnerError("P1 custody has no matching uncommitted RunPod process")
+            managed_value = dict(value)
             qualification = value.get("activation_qualification")
             stage = value.get("state")
             permitted = {
@@ -2821,10 +2878,10 @@ class RunPodRemoteWorkerPreparer:
             progress = dict(progress)
 
             def checkpoint(**changes: Any) -> None:
-                nonlocal value
+                nonlocal managed_value
                 progress.update(changes)
-                value = {**dict(value), "state": "cleanup_pending", "uncommitted_abort": dict(progress)}
-                self._write_worker_state(value, owner_lock_fd=owner_lock_fd)
+                managed_value = {**managed_value, "state": "cleanup_pending", "uncommitted_abort": dict(progress)}
+                self._write_worker_state(managed_value, owner_lock_fd=owner_lock_fd)
 
             owner = self._owner(reference)
             stopped = progress.get("process_stop")
@@ -2995,8 +3052,11 @@ class RunPodRemoteWorkerInspector:
         handle = self.preparer._assert_handle(raw_handle)
         reference = handle.reference
         if "engine_endpoint" in (self.preparer._read_claim().get("managed_worker") or {}):
+            session_selection = handle.session_selection
+            if session_selection is None:
+                raise RunPodWorkerOwnerError("prepared endpoint has no retained session selection")
             self.preparer.preparation_transport.select_endpoint_files(
-                profile_path=str(reference.readiness_profile_path), runtime_root=handle.session_selection.runtime_root,
+                profile_path=str(reference.readiness_profile_path), runtime_root=session_selection.runtime_root,
                 profile_hash=reference.readiness_profile_hash,
             )
             raw = _run_sync(self.preparer.preparation_transport.read_endpoint_file(

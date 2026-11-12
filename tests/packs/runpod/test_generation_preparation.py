@@ -185,6 +185,8 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
                 self.exec_log.append(command)
                 if not self.installed:
                     return 0, "null", ""
+                seconds = float(command.split("--deadline ", 1)[1].split()[0])
+                context.deadline = c.monotonic() + seconds
                 status = engine_runner.engine_status(
                     "comfyui", platform=installation.platform, placement="local", root=installation.root,
                     context=context, deadline=context.deadline,
@@ -211,6 +213,9 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
                 context.models_root = plan.models_root
             if "engines install" in command and not self.jobs[job_id] and c.install_uses_command_deadline:
                 seconds = float(command.split("--deadline ", 1)[1].split()[0])
+                plan = _pod_plan(installation, command)
+                context.models_root = plan.models_root
+                context.deadline = c.monotonic() + seconds
                 try:
                     receipt = engine_runner.install_engine(plan, context=context, adapter=context.adapter,
                                                            deadline=c.monotonic() + seconds)

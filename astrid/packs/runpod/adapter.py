@@ -142,12 +142,13 @@ async def observe_priced_offer(preferences, config) -> RunPodOffer:
     return (await _observe_priced_offers(preferences, config, first_gpu_only=True))[0]
 
 
-async def observe_priced_offers(preferences, config) -> tuple[RunPodOffer, ...]:
+async def observe_priced_offers(preferences, config, *, confirmed_prices=None) -> tuple[RunPodOffer, ...]:
     """Observe every allowed GPU/datacenter option for one capacity cycle."""
-    return await _observe_priced_offers(preferences, config, first_gpu_only=False)
+    return await _observe_priced_offers(preferences, config, first_gpu_only=False,
+                                        confirmed_prices=confirmed_prices)
 
 
-async def _observe_priced_offers(preferences, config, *, first_gpu_only) -> tuple[RunPodOffer, ...]:
+async def _observe_priced_offers(preferences, config, *, first_gpu_only, confirmed_prices=None) -> tuple[RunPodOffer, ...]:
     """Broker provider semantics, without its allocation/retry/credential path."""
     from runpod_lifecycle import gpu_availability
 
@@ -189,13 +190,18 @@ async def _observe_priced_offers(preferences, config, *, first_gpu_only) -> tupl
                 unavailable.append(_unavailable_offer_reason(getattr(dc, "reason", None)))
             elif dc.status == "available" and dc.price_per_hour is None:
                 unavailable.append("price_unconfirmed")
-            if (dc.status != "available" or dc.price_per_hour is None or not dc.datacenter_id
+            if (dc.status not in {"available", "unavailable"} or dc.price_per_hour is None or not dc.datacenter_id
                     or (datacenter is not None and dc.datacenter_id != datacenter)):
                 continue
             try:
                 rate = _number(dc.price_per_hour, "observed hourly USD rate")
             except PaidSelectionError:
                 raise OfferObservationError("price_unconfirmed") from None
+            if confirmed_prices is not None:
+                confirmed_prices.append({"gpu_type": gpu, "datacenter_id": dc.datacenter_id,
+                                         "hourly_usd": rate})
+            if dc.status != "available":
+                continue
             identity = {"gpu": observed.gpu_type_id, "datacenter": dc.datacenter_id,
                         "hourly_usd": rate, "preferences": p.as_mapping(),
                         "container_disk_gb": config.container_disk_gb,
@@ -240,7 +246,8 @@ def broker_selection(preferences, config, *, account_ref, data_root, compatibili
     owner = RunPodSelectionOwner(
         preferences, account_ref=account_ref, config_factory=exact_config,
         observe_offer=lambda: _run_sync(observe_priced_offer(preferences, config)),
-        observe_offers=lambda: _run_sync(observe_priced_offers(preferences, config)),
+        observe_offers=lambda confirmed_prices=None: _run_sync(
+            observe_priced_offers(preferences, config, confirmed_prices=confirmed_prices)),
         observed_hourly_usd=actual_rate, data_root=data_root, compatibility=compatibility,
     )
     owner.https_token_file = owner.path.parent / "https-token"
@@ -271,16 +278,25 @@ class RunPodAdapter:
         """Return the current, secret-free offer the caller may accept."""
         from dataclasses import asdict
 
+        prices = []
         try:
-            offer = self.lease_owner.selection.observe_offer()
+            selection = self.lease_owner.selection
+            observe_offers = getattr(selection, "observe_offers", None)
+            if observe_offers is None:
+                offer = selection.observe_offer()
+            else:
+                offers = observe_offers(confirmed_prices=prices)
+                offer = offers[0]
         except OfferObservationError as exc:
             if exc.reason != "stock_unavailable":
                 raise
             return {"availability": {"status": "unavailable", "reason": exc.reason,
                                      "message": _availability_message(exc.reason)},
+                    "prices": prices,
                     "preferences": self.lease_owner.selection.preferences.as_mapping()}
         return {"offer": asdict(offer),
-                "offer_digest": offer.digest(self.lease_owner.selection.preferences)}
+                "offer_digest": offer.digest(self.lease_owner.selection.preferences),
+                "prices": prices}
 
     def operate(self, operation, *, include_quote=False, machine_id=None, consent=None, until_release=False,
                 requested_idle_seconds=None, cancelled=None):
