@@ -20,6 +20,7 @@ def paid_controls(tmp_path):
 @pytest.mark.parametrize("entry_id,mode", [
     ("z-image", "i2i"),
     ("hunyuan-foley-local", "sfx"),
+    ("qwen-image-edit", "edit"),
 ])
 def test_fixed_entry_dry_run(entry_id, mode, paid_controls, tmp_path, capsys, monkeypatch):
     from astrid.core.generation import preflight
@@ -41,6 +42,13 @@ def test_fixed_entry_dry_run(entry_id, mode, paid_controls, tmp_path, capsys, mo
     output = json.loads(capsys.readouterr().out)
     assert rc == 0 and output.get("ok", True), output
     assert runpod_guard.blocked_attempts[before:] == []
+
+
+def test_unqualified_wan_i2v_is_not_offered():
+    entry = next(e for e in ModelRegistry.load_default().list_all() if e.id == "wan-2.2")
+    assert "i2v" in entry.modes
+    assert set(entry.modes["i2v"].backends) == {"cloud"}
+    assert entry.modes["i2v"].backends["cloud"].endpoint == "fal-ai/wan/v2.2-a14b/image-to-video/turbo"
 
 
 # scail-2's full dry run waits for banodoco/astrid-dev#607.
