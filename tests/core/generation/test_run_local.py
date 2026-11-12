@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import re
 from pathlib import Path
 
@@ -44,6 +45,37 @@ def _manifest(tmp_path):
     return {"models_root": str(tmp_path), "extra": {"nodes": []}, "models": [
         {"name": "have.safetensors", "subdir": "checkpoints", "size": 4},
         {"name": "need.safetensors", "subdir": "vae", "size": 9}]}
+
+
+def test_pinned_lock_discovery_failure_is_debug_logged_and_falls_back(monkeypatch, caplog, capsys):
+    from astrid.core.generation import entries, engine_recipe
+
+    failure = RuntimeError("lock read failed")
+
+    def fail_load(engine, platform):
+        raise failure
+
+    monkeypatch.setattr(entries, "runpod_engines", lambda: ())
+    monkeypatch.setattr(engine_recipe, "load_recipe_model_lock", fail_load)
+    workflow = type("Workflow", (), {"metadata": {
+        "model_assets": [{"name": "weights.bin", "url": "https://host/repo/resolve/rev/weights.bin"}],
+        "requirements": {},
+    }})()
+
+    with caplog.at_level(logging.DEBUG, logger=mod.__name__):
+        result = mod.ComfyUIEngine().workflow_requirements([workflow])
+
+    assert result["models"] == [{
+        "name": "weights.bin", "subdir": "", "url": "https://host/repo/resolve/rev/weights.bin",
+        "sha256": None, "size": None,
+    }]
+    record = next(record for record in caplog.records if "Could not load pinned model lock" in record.message)
+    assert record.levelno == logging.DEBUG
+    assert record.args == ("comfyui",)
+    assert record.exc_info[1] is failure
+    assert "RuntimeError: lock read failed" in caplog.text
+    assert "Traceback" in caplog.text
+    assert capsys.readouterr().err == ""
 
 
 def test_align_fetches_only_missing_rows(tmp_path):

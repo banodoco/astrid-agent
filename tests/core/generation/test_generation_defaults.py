@@ -158,3 +158,28 @@ def test_runpod_preferences_live_under_machines_runpod(generation_settings_store
     stored = generation_settings_store.documents["generation"][0]["machines"]["runpod"]
     assert stored["provider_account_ref"] == "acct" and "credential" not in json.dumps(stored).replace("credential_ref", "")
     assert target_selection.read_runpod_preferences().gpu_types == ("A40",)
+
+
+def test_unavailable_store_uses_builtin_settings_and_logs_debug(monkeypatch, caplog, capsys):
+    import logging
+
+    failure = RuntimeError("launcher transport unavailable")
+
+    def fail_to_open():
+        raise failure
+
+    monkeypatch.setattr(settings, "_store_factory", None)
+    monkeypatch.setattr(settings, "_launcher_store", fail_to_open)
+    with caplog.at_level(logging.DEBUG, logger=settings.__name__):
+        snapshot = settings.read()
+
+    assert snapshot.source == "unavailable"
+    assert snapshot.version == 0
+    assert snapshot.content == settings.empty_document()
+    records = [record for record in caplog.records if record.name == settings.__name__]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    assert records[0].getMessage() == "Could not reach the settings store; using built-in generation settings"
+    assert records[0].exc_info[1] is failure
+    assert "RuntimeError: launcher transport unavailable" in caplog.text
+    assert "Traceback" not in capsys.readouterr().err

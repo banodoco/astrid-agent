@@ -116,7 +116,9 @@ def test_qwen_canonical_schema_uses_genuine_cpu_classes_and_preserves_missing_mo
     from vibecomfy.schema import get_schema_provider
     from vibecomfy.workflow_bundle import load_bundle, WorkflowReconciliationError, WorkflowBundleError
     from vibecomfy.security.provenance import Provenance
-    source = Path(os.environ['VIBECOMFY_SOURCE']).resolve() / 'ready_templates/image/qwen_image_2_1_turbo.py'
+    import vibecomfy
+    # The checkout the test imports VibeComfy from (CI, Lanes and local runs alike).
+    source = Path(vibecomfy.__file__).resolve().parents[1] / 'ready_templates/image/qwen_image_2_1_turbo.py'
     bundle = load_bundle(source, trust=Provenance.USER_CONFIRMED)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('VIBECOMFY_MODELS_ROOT', str(tmp_path / 'absent-models'))
