@@ -144,6 +144,10 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
     }.get(category, 'generation_failed')
     normalized = _CORE_CODES.get(native, native)
     detail = {**(get('details') or {}), **(details or {})}
+    diagnostic = get('comfy_diagnostic')
+    if isinstance(diagnostic, Mapping):
+        detail['comfy_diagnostic'] = {key: diagnostic[key] for key in
+            ('code', 'node_id', 'node_class', 'exception_type', 'oom') if key in diagnostic}
     if normalized == 'generation_route_unqualified':
         detail['fix'] = get('fix') or get('recovery_command')
     for key in ('sdk_category', 'sdk_error'):

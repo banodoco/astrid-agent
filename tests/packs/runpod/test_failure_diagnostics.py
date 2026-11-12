@@ -665,3 +665,54 @@ def test_large_real_edit_template_yields_names_and_ids():
         'code': 'input_rejected', 'category': 'input', 'node_id': '470',
         'node_class': 'KSamplerSelect', 'field': 'prompt'}
     assert fd.MAX_RESULT_BYTES == 64 * 1024 and fd.MAX_GRAPH_BYTES == 8 * 1024 * 1024
+
+
+def test_nested_execution_diagnostic_round_trip(tmp_path):
+    from vibecomfy.runtime.session import _comfy_execution_diagnostic
+    diagnostic = _comfy_execution_diagnostic({'messages': [['execution_error', {
+        'node_id': '1', 'node_type': 'KSampler', 'exception_type': 'RuntimeError',
+        'exception_message': TTS_PROMPT, 'observed': TTS_PROMPT}]]})
+    payload = {'issues': [{'severity': 'error', 'code': 'task_failed', 'details': {
+        'result': {'error': {'code': 'executor_failed', 'comfy_diagnostic': diagnostic}}}}]}
+    frame = emit(tmp_path, json.dumps(payload).encode(), TTS_GRAPH | {'1': {'class_type': 'KSampler'}})
+    assert fd.parse_frame(frame, node_ids={'1'}, node_names={'KSampler'}) == {
+        'code': 'comfy_execution_error', 'category': 'execution', 'node_id': '1',
+        'node_class': 'KSampler', 'exception_type': 'RuntimeError'}
+    assert TTS_PROMPT not in frame
+
+
+def test_unknown_exception_and_private_text_are_withheld():
+    diagnostic = {'code': 'comfy_execution_error', 'node_id': '1', 'node_class': 'KSampler',
+                  'exception_type': 'PrivateError', 'message': TTS_PROMPT, 'observed': TTS_PROMPT, 'oom': True}
+    result = fd.summarize({'error': {'comfy_diagnostic': diagnostic}}, node_ids={'1'})
+    assert result == {'code': 'comfy_execution_error', 'category': 'execution', 'node_id': '1',
+                      'node_class': 'KSampler', 'oom': True}
+    assert TTS_PROMPT not in json.dumps(result)
+
+
+def test_session_execution_codes_are_known():
+    import ast
+    import inspect
+    from vibecomfy.runtime import session
+    tree = ast.parse(inspect.getsource(session))
+    literals = {node_value.value for node in ast.walk(tree) if isinstance(node, ast.Dict)
+                for key, node_value in zip(node.keys, node.values)
+                if isinstance(key, ast.Constant) and key.value == 'code'
+                and isinstance(node_value, ast.Constant) and isinstance(node_value.value, str)
+                }
+    assert literals <= fd.CODES.keys()
+
+
+def test_local_job_exception_preserves_execution_diagnostic(monkeypatch, tmp_path, capsys):
+    from vibecomfy.runtime.session import _raise_terminal_execution_error
+    from astrid.core.generation import cli, local_job
+    def fail(*args, **kwargs):
+        _raise_terminal_execution_error({'messages': [['execution_error', {
+            'node_id': '1', 'node_type': 'KSampler', 'exception_type': 'RuntimeError'}]]}, None)
+    monkeypatch.setattr(local_job, 'run_job', fail)
+    assert cli.main(['cpu-image', '--placement', 'local', '--job', str(tmp_path / 'job.json'),
+                     '--out', str(tmp_path / 'out'), '--json']) == 2
+    envelope = json.loads(capsys.readouterr().out)
+    assert fd.summarize(envelope, node_ids={'1'}) == {
+        'code': 'comfy_execution_error', 'category': 'execution', 'node_id': '1',
+        'node_class': 'KSampler', 'exception_type': 'RuntimeError'}

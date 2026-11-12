@@ -32,8 +32,39 @@ CODES = {
     'deadline_exceeded': 'deadline', 'transport_failed': 'transport',
     'command_failed': 'execution', 'generation_failed': 'execution',
     'generation_route_unqualified': 'qualification',
+    'comfy_execution_error': 'execution',
+    'executor_failed': 'execution',
+    'task_failed': 'execution',
+    'history_prompt_mismatch': 'execution',
+    'missing_structured_outputs': 'execution',
+    'declared_final_output_missing': 'execution',
+    'declared_final_output_cardinality': 'execution',
+    'declared_final_output_empty_descriptor': 'execution',
+    'declared_final_output_not_video': 'execution',
+    'declared_final_output_empty': 'execution',
+    'final_media_missing': 'execution',
+    'final_media_unverified': 'execution',
+    'final_video_stream_missing': 'execution',
+    'final_audio_stream_missing': 'execution',
+    'final_media_duration_too_short': 'execution',
+    'final_media_width_mismatch': 'execution',
+    'final_media_height_mismatch': 'execution',
+    'unsafe_comfy_output_descriptor': 'execution',
+    'comfy_node_errors': 'execution',
+    'comfy_errors': 'execution',
+    'comfy_execution_errors': 'execution',
+    'comfy_ignored_nodes': 'execution',
+    'comfy_ignored_outputs': 'execution',
+    'comfy_rejected_nodes': 'execution',
+
 }
-FACTS = ('node_id', 'node_class', 'field', 'constraint')
+FACTS = ('node_id', 'node_class', 'field', 'constraint', 'exception_type', 'oom')
+EXCEPTION_TYPES = frozenset({
+    'OutOfMemoryError', 'RuntimeError', 'ValueError', 'KeyError', 'TypeError',
+    'IndexError', 'FileNotFoundError', 'ModuleNotFoundError', 'ImportError',
+    'AssertionError', 'AttributeError', 'NotImplementedError', 'MemoryError',
+    'OSError', 'OverflowError', 'ZeroDivisionError', 'TimeoutError',
+})
 FACT_ALLOW = {
     'node_class': frozenset({
         'KSampler', 'CLIPTextEncode', 'SaveImage', 'LoadImage', 'EmptyLatentImage',
@@ -69,6 +100,10 @@ EXCEPTIONS = frozenset({
 
 
 def _safe_fact(key, value, node_ids=None, node_names=frozenset()):
+    if key == 'exception_type':
+        return value if isinstance(value, str) and value in EXCEPTION_TYPES else None
+    if key == 'oom':
+        return True if value is True else None
     if key == 'node_id':
         if type(value) is int and 0 <= value < 10**12:
             return str(value) if node_ids is None or str(value) in node_ids else None
@@ -122,30 +157,43 @@ def summarize(value, *, node_ids=frozenset(), node_names=frozenset()):
     if not isinstance(value, Mapping):
         return fallback()
     candidates = []
-    issues = value.get('issues')
-    if isinstance(issues, list):
-        for issue in issues:
-            if isinstance(issue, Mapping) and issue.get('severity') == 'error':
-                details = issue.get('details')
-                facts = {}
-                if isinstance(details, Mapping):
-                    for key in FACTS:
-                        fact = _safe_fact(key, details.get(key), node_ids, node_names)
-                        if fact is not None:
-                            facts[key] = fact
-                    candidates.append((details.get('engine_code'), facts))
-                candidates.append((issue.get('code'), facts))
-    error = value.get('error')
-    if isinstance(error, Mapping):
-        candidates.append((error.get('code'), {}))
-    candidates.append((value.get('code'), {}))
-    for code, facts in candidates:
+    # Follow only structured error containers; never traverse arbitrary values.
+    # Limits also protect callers that provide cyclic or unusually wide objects.
+    stack = [(value, 0, {})]
+    visited = 0
+    while stack and visited < 512:
+        item, depth, inherited = stack.pop()
+        visited += 1
+        if not isinstance(item, Mapping) or depth > 12:
+            continue
+        facts = dict(inherited)
+        for key in FACTS:
+            fact = _safe_fact(key, item.get(key), node_ids, node_names)
+            if fact is not None:
+                facts[key] = fact
+        details = item.get('details')
+        local_facts = dict(facts)
+        if isinstance(details, Mapping):
+            for key in FACTS:
+                fact = _safe_fact(key, details.get(key), node_ids, node_names)
+                if fact is not None:
+                    local_facts[key] = fact
+        for key in ('engine_code', 'code'):
+            candidates.append((depth, item.get(key), local_facts))
+        if depth < 12:
+            for key in ('details', 'result', 'error', 'comfy_diagnostic', 'diagnostics', 'issues'):
+                child = item.get(key)
+                if isinstance(child, Mapping):
+                    stack.append((child, depth + 1, facts))
+                elif isinstance(child, list):
+                    for entry in reversed(child[:128]):
+                        if isinstance(entry, Mapping) and (key != 'issues' or entry.get('severity') == 'error'):
+                            stack.append((entry, depth + 1, facts))
+    for _, code, facts in sorted(candidates, key=lambda candidate: -candidate[0]):
         if isinstance(code, str) and code in CODES:
             return {'code': code, 'category': CODES[code], **facts}
-    # A structured producer error with an unrecognized identifier is still a
-    # generation failure, but neither its identifier nor its text is safe.
     if any(isinstance(code, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.-]{0,127}', code)
-           for code, _ in candidates):
+           for _, code, _ in candidates):
         return {'code': 'generation_failed', 'category': 'execution'}
     return fallback()
 
