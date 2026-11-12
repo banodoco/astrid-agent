@@ -625,7 +625,8 @@ class Backend:
             return False
         env["ASTRID_ACP_COMMAND"] = default
         write_json(path, declaration)
-        self.say("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
+        # Handled here without the user's help, so it belongs in the log, not the terminal.
+        self.diagnostic("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
         return True
 
     def _declare_services(self, *, folder: Path, agent: Path, data: Path, python: Path,
@@ -634,7 +635,7 @@ class Backend:
         chat_cwd, chat_options = self._selected_chat_settings(old, data, copy_from=copy_from)
         command = chat_options.get("ASTRID_ACP_COMMAND")
         if command and not self._external_chat_command(command):
-            self.say("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
+            self.diagnostic("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
             chat_options.pop("ASTRID_ACP_COMMAND", None)
         # Mask inherited commands so the selected package chooses its default.
         chat_options.setdefault("ASTRID_ACP_COMMAND", "")

@@ -113,8 +113,10 @@ Good: `State` is `Running`.
 **You should see**
 
 - The line first prints `Getting Astrid ready. The first time takes a few minutes.`, then
-  `Using your workspace at …`, `Installing Astrid.`,
-  `Starting Astrid at sign-in.`, `Open https://astrid.haus`.
+  `Using your workspace at …`, `Downloading Release N`, `Creating your workspace`, `Starting Release N`,
+  `Checking Release N started`, `Open https://astrid.haus`. In a terminal window each slow line shows a small
+  moving zigzag at its end and keeps a ✓ (`done` without Unicode) when it finishes; piped output has the plain lines.
+  The second run starts with `Getting Astrid ready.` alone.
 - Your default browser opens astrid.haus. If it isn't Chrome or Edge, open https://astrid.haus in Chrome or Edge yourself.
 - The page says **Choose Allow in Chrome** (or Edge). After you allow, it opens the editor by itself. A new workspace
   shows **No projects yet**.
@@ -388,9 +390,10 @@ Record its title and a sentence you can find again.
 
 **You should see**
 
-- The line prints, in order: `Stopping Astrid before the update.`, `Backing up your workspace.`,
-  `Installing Astrid.`, `Updating the workspace with Astrid Runtime.`, `Starting Astrid at sign-in.`,
-  `Open https://astrid.haus`. After a successful update, it prints `A backup of your workspace is kept at …`.
+- The line prints, in order: `Getting Astrid ready.`, `Using your workspace at …`, `Downloading Release N`,
+  `Checking it`, `Stopping Release M`, `Backing up your workspace`, `Updating your workspace`, `Starting Release N`,
+  `Checking Release N started`, `Open https://astrid.haus` (the two workspace lines only when the workspace needs
+  a migration). After a successful update, it prints `A backup of your workspace is kept at …`.
 - The page shows **Astrid stopped**, then **Astrid restarted**. After Reload, the same projects are there.
 - Two folders under `versions` (the new one and the previous one) and one under `backups`.
 - Your earlier conversations still appear once in the session list and reopen with their messages.
@@ -405,7 +408,7 @@ Note which OS line it gave you.
 **Rollback (optional).** This checks that a failed update puts everything back.
 
 1. Run the update line again. Progress appears as it happens. When it prints
-   `Installing Astrid.`, press Ctrl+C once.
+   `Downloading Release N`, press Ctrl+C once.
 2. Keep the terminal open and wait for recovery to finish and the failure message with its `Details:` line.
    Do not press Ctrl+C again while Astrid is restoring the previous version.
 3. Run the two checks and open the page.
