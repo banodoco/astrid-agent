@@ -107,13 +107,29 @@ def test_generate_left_padded_batch_matches_full_sequence_and_original(node, rec
     actual = harness.generation_comparison(model)
     expected = REFERENCE["generation"]
     assert actual["cache_lengths"] == expected["cache_lengths"] == [4, 5, 6]
-    assert actual["positions"] == expected["positions"]
-    assert actual["positions"][1] == [[2], [3]]
-    assert actual["positions"][2] == [[3], [4]]
+    # Transformers 5 uses zero for masked generation positions; the 4.57.3
+    # reference uses one. Compare valid prompt positions and every decode ID.
+    prompt_mask = torch.tensor([[0, 0, 1, 1], [0, 1, 1, 1]], dtype=torch.bool)
+    actual_prompt = torch.tensor(actual["positions"][0])
+    expected_prompt = torch.tensor(expected["positions"][0])
+    assert torch.equal(actual_prompt[prompt_mask], expected_prompt[prompt_mask])
+    assert actual["positions"][1:] == expected["positions"][1:] == [[[2], [3]], [[3], [4]]]
     assert actual["sequences"] == expected["sequences"]
     assert max(actual["cached_full_max_abs"]) <= ATOL
     differences = [assert_close(actual[field], expected[field]) for field in ("scores", "full_logits")]
     record_property("max_abs_cross_version_difference", max(differences))
+    record_property("max_abs_cached_full_difference", max(actual["cached_full_max_abs"]))
+
+
+def test_direct_left_padded_cached_calls_match_full_sequence_and_original(node, record_property):
+    cls, kwargs = constructors(node)["talker"]
+    model = cls(**kwargs).eval()
+    model.load_state_dict(load_file(CHECKPOINTS / "talker/model.safetensors"), strict=True)
+    actual = harness.direct_masked_comparison(model)
+    assert actual["cache_lengths"] == [4, 5, 6]
+    assert actual["positions"][1] == [[2], [3]]
+    assert actual["positions"][2] == [[3], [4]]
+    assert max(actual["cached_full_max_abs"]) <= ATOL
     record_property("max_abs_cached_full_difference", max(actual["cached_full_max_abs"]))
 
 

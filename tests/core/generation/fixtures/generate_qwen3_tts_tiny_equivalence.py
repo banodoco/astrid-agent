@@ -106,7 +106,7 @@ def generation_comparison(talker):
     """
     import torch
     torch.manual_seed(8765)
-    embeddings, records = [], []
+    embeddings, records, position_axes = [], [], []
     mask = torch.tensor([[0, 0, 1, 1], [0, 1, 1, 1]])
 
     def capture(module, args, kwargs, output):
@@ -114,7 +114,13 @@ def generation_comparison(talker):
         records.append((kwargs["attention_mask"].clone(), output.last_hidden_state.detach().clone(),
                         output.past_key_values.get_seq_length()))
 
+    def capture_position_ids(module, args):
+        observed = args[1].detach()
+        assert torch.equal(observed, observed.round())
+        position_axes.append(observed.to(torch.long).clone())
+
     hook = talker.model.register_forward_hook(capture, with_kwargs=True)
+    position_hook = talker.model.rotary_emb.register_forward_pre_hook(capture_position_ids)
     try:
         with torch.no_grad():
             generated = talker.generate(inputs_embeds=torch.randn(2, 4, talker.config.hidden_size),
@@ -125,22 +131,99 @@ def generation_comparison(talker):
                 output_scores=True, return_dict_in_generate=True)
     finally:
         hook.remove()
+        position_hook.remove()
     full_logits, differences, positions = [], [], []
     with torch.no_grad():
         for i, (attention, cached, _) in enumerate(records):
             position = attention.long().cumsum(-1) - 1
-            position.masked_fill_(attention == 0, 1)
+            # Transformers generation assigns padded positions zero; the direct
+            # talker path below follows get_rope_index's padding offset instead.
+            position.masked_fill_(attention == 0, 0)
+            used_positions = position_axes[i]
+            assert used_positions.shape[0] == 3
+            assert torch.equal(used_positions[0], used_positions[1])
+            assert torch.equal(used_positions[0], used_positions[2])
+            full_positions = torch.cat(position_axes[:i + 1], dim=-1)
             full = talker.model(inputs_embeds=torch.cat(embeddings[:i+1], dim=1),
-                                attention_mask=attention, position_ids=position, use_cache=False)
+                                attention_mask=attention,
+                                position_ids=full_positions, use_cache=False)
             # Compare all valid queries at prefill; the one current query later.
             expected = full.last_hidden_state[:, -cached.shape[1]:]
             valid = attention[:, -cached.shape[1]:].bool()
             differences.append(float((cached[valid] - expected[valid]).abs().max()))
             full_logits.append(talker.codec_head(expected[:, -1:]).squeeze(1).tolist())
-            positions.append(position[:, -embeddings[i].shape[1]:].tolist())
+            # Capture the exact IDs consumed by the model and ensure they agree
+            # with the padding-aware positions used for no-cache recomputation.
+            current_positions = used_positions[0, :, -embeddings[i].shape[1]:]
+            current_valid = attention[:, -embeddings[i].shape[1]:].bool()
+            expected_current = position[:, -embeddings[i].shape[1]:]
+            assert torch.equal(current_positions[current_valid], expected_current[current_valid])
+            positions.append(current_positions.tolist())
     return dict(sequences=generated.sequences.tolist(), scores=[s.tolist() for s in generated.scores],
                 full_logits=full_logits, cache_lengths=[r[2] for r in records],
                 cached_full_max_abs=differences, positions=positions)
+
+
+def direct_masked_comparison(talker):
+    """Exercise direct cached calls with a padded batch, outside generate()."""
+    import torch
+    torch.manual_seed(4321)
+    embeddings, records, position_axes = [], [], []
+    mask = torch.tensor([[0, 0, 1, 1], [0, 1, 1, 1]])
+    trailing = torch.randn(2, 2, talker.config.hidden_size)
+    pad = torch.randn(2, 1, talker.config.hidden_size)
+
+    def capture(module, args, kwargs, output):
+        embeddings.append(kwargs["inputs_embeds"].detach().clone())
+        records.append((kwargs["attention_mask"].detach().clone(),
+                        output.last_hidden_state.detach().clone(),
+                        output.past_key_values.get_seq_length()))
+
+    def capture_position_ids(module, args):
+        observed = args[1].detach()
+        assert torch.equal(observed, observed.round())
+        position_axes.append(observed.to(torch.long).clone())
+
+    hook = talker.model.register_forward_hook(capture, with_kwargs=True)
+    position_hook = talker.model.rotary_emb.register_forward_pre_hook(capture_position_ids)
+    try:
+        with torch.no_grad():
+            output = talker(inputs_embeds=torch.randn(2, 4, talker.config.hidden_size),
+                attention_mask=mask, trailing_text_hidden=trailing, tts_pad_embed=pad,
+                use_cache=True, subtalker_dosample=False)
+            for step in range(2):
+                mask = torch.cat((mask, torch.ones(2, 1, dtype=mask.dtype)), dim=-1)
+                output = talker(input_ids=torch.ones(2, 1, dtype=torch.long),
+                    attention_mask=mask, past_key_values=output.past_key_values,
+                    past_hidden=output.past_hidden, generation_step=output.generation_step,
+                    trailing_text_hidden=trailing, tts_pad_embed=pad,
+                    subtalker_dosample=False, use_cache=True)
+    finally:
+        hook.remove()
+        position_hook.remove()
+
+    full_errors, positions = [], []
+    with torch.no_grad():
+        for i, (attention, cached, cache_length) in enumerate(records):
+            full_position = attention.long().cumsum(-1) - 1
+            full_position.masked_fill_(attention == 0, 1)
+            used_positions = position_axes[i]
+            assert used_positions.shape[0] == 3
+            assert torch.equal(used_positions[0], used_positions[1])
+            assert torch.equal(used_positions[0], used_positions[2])
+            current_position = used_positions[0, :, -embeddings[i].shape[1]:]
+            assert torch.equal(current_position, full_position[:, -embeddings[i].shape[1]:])
+            full = talker.model(inputs_embeds=torch.cat(embeddings[:i + 1], dim=1),
+                                attention_mask=attention,
+                                position_ids=full_position.unsqueeze(0).expand(3, -1, -1),
+                                use_cache=False)
+            expected = full.last_hidden_state[:, -cached.shape[1]:]
+            valid = attention[:, -cached.shape[1]:].bool()
+            full_errors.append(float((cached[valid] - expected[valid]).abs().max()))
+            positions.append(current_position.tolist())
+            assert cache_length == 4 + i
+    return dict(cache_lengths=[r[2] for r in records], positions=positions,
+                cached_full_max_abs=full_errors)
 
 
 def tokenizer_comparison(tokenizer):

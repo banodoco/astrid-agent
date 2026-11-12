@@ -71,6 +71,18 @@ cache at every step, with the same mask and padding-aware positions. It compares
 all valid queries at prefill and the current queries at cached steps. Both batch
 rows are left-padded, by different amounts. No existing test was changed.
 
+Position IDs are captured at the talker's rotary embedding, after the model has
+expanded them to its three temporal/height/width axes; the test asserts all three
+axes are identical for this text-only path. The 4.57.3 reference uses position 1
+for masked prompt slots, while Transformers 5.22.1 generation uses 0. Cross-version
+checks therefore compare valid prompt positions and all decode positions; full
+sequence recomputation uses the captured IDs for each step. A separate direct
+call test supplies a left-padded mask over prefill and two cached decode calls,
+checks all consumed axes and confirms cached hidden states against full-sequence
+recomputation. On the pre-position-fix `f90ce0323` patch, that direct path fails
+on the first cached call with attention dimensions 9 versus 5; it passes on the
+fixed candidate.
+
 The patch content digests were updated in the recipe, and the dependent engine
 digest regenerated with the repository tool:
 
