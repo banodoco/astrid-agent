@@ -29,6 +29,7 @@ from .engine_contracts import (
     CommandRequest,
     CustodyUnresolved,
     Deadline,
+    DataRef,
     DeadlineExceeded,
     DownloadResult,
     EndpointHealthError,
@@ -302,6 +303,7 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
     refs = [entry.recipe, *recipes.pin_set_refs(recipe.pins), recipe.models_lock]
     refs += [e.requirements.packaged_lock for e in recipe.environments
              if e.requirements.packaged_lock is not None]
+    refs += [DataRef(p.replacement, p.sha256_after) for p in recipe.source_patches]
     for ref in refs:
         _, payload = recipes._read_ref(ref)
         result[ref.path] = hashlib.sha256(payload).hexdigest()
@@ -533,12 +535,15 @@ class _Runner:
             raise IntegrityError("source origin differs from canonical pin", step_id=self.step_id)
         dirty = self.run(("git", "-C", path, "status", "--porcelain", "--untracked-files=all"))
         entries = dirty.stdout.splitlines()
-        allowed = (not dirty.stdout_truncated and source.name == "comfyui" and entries
-                   and all(line.startswith("?? models/") and "/" not in line[10:] for line in entries)
-                   and self.helper("models-source-check", models_root=self.plan.models_root,
-                                   entries=entries) == {"valid": True})
+        allowed = (not dirty.stdout_truncated and entries
+                   and self.helper("models-source-check", source=source.name,
+                                   models_root=self.plan.models_root, entries=entries) == {"valid": True})
         if (dirty.stdout.strip() and not allowed) or dirty.stdout_truncated:
-            error = IntegrityError("source contains uncommitted content", step_id=self.step_id)
+            patch = next((patch for patch in self.recipe.source_patches
+                          if patch.source == source.name and any(line[3:] == patch.path for line in entries)), None)
+            reason = (f"source patch digest mismatch: {source.name} {patch.path}" if patch
+                      else "source contains uncommitted content")
+            error = IntegrityError(reason, step_id=self.step_id)
             # Porcelain lines carry only status codes and paths: no contents, no command output.
             error.porcelain = [line[:200] for line in dirty.stdout.splitlines()[:20]]
             raise error
@@ -553,6 +558,10 @@ class _Runner:
             self.run(("git", "-C", path, "fetch", "--depth=1", "origin", source.pin.revision))
             self.run(("git", "-C", path, "checkout", "--detach", source.pin.revision))
             changed = True
+        if any(p.source == source.name for p in self.recipe.source_patches):
+            operation = "verify-source-patches" if readonly else "apply-source-patches"
+            result = self.helper(operation, source=source.name)
+            changed = changed or result["changed"]
         if changed:
             self.source(source, readonly=True)
         self.commits[source.name] = source.pin.revision

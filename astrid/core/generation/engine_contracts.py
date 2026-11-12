@@ -170,6 +170,15 @@ class SourceSpec:
 
 
 @dataclass(frozen=True)
+class SourcePatch:
+    source: str
+    path: str
+    sha256_before: Digest
+    sha256_after: Digest
+    replacement: str
+
+
+@dataclass(frozen=True)
 class WheelSpec:
     name: str
     version: str
@@ -248,6 +257,7 @@ class EngineRecipe:
     models_lock: DataRef
     start: StartSpec
     health: HealthSpec
+    source_patches: tuple[SourcePatch, ...] = ()
 
 
 @dataclass(frozen=True)
