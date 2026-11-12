@@ -17,6 +17,7 @@ import webbrowser
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlsplit
+import urllib.parse
 
 from runtime_protocol import platform
 from runtime_protocol.door import DEFAULT_DOOR_PORT
@@ -376,13 +377,34 @@ _PIN_REMEDY = ("Install a release manifest whose pins match this Agent, or chang
 
 
 def _public_pin(value: object) -> str:
-    """A pin field for a message: repository URLs and SHAs only, never URL userinfo."""
-    if value is None:
-        return "(none)"
-    text = str(value)
-    if "@" in text.split("://", 1)[-1].split("/", 1)[0]:
-        return "<redacted: contains credentials>"
-    return text if len(text) <= 200 else text[:200] + "..."
+    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) else "<invalid>"
+
+
+def _public_repository(value: object) -> str:
+    if not isinstance(value, str):
+        return "<invalid>"
+    try:
+        url = urllib.parse.urlsplit(value)
+        if (url.scheme.lower() != "https" or not url.hostname or url.username is not None
+                or url.password is not None or url.port is not None or url.query or url.fragment
+                or not url.path.startswith("/") or not url.path):
+            return "<invalid>"
+    except ValueError:
+        return "<invalid>"
+    return f"https://{url.hostname.lower()}{url.path.rstrip('/')}"
+
+
+def _public_version(value: object) -> str:
+    return value if isinstance(value, str) and re.fullmatch(
+        r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", value) else "<invalid>"
+
+
+def _repository_identity(value: object) -> tuple[str, str] | None:
+    rendered = _public_repository(value)
+    if rendered == "<invalid>":
+        return None
+    url = urllib.parse.urlsplit(rendered)
+    return url.hostname.lower(), url.path.rstrip("/")
 
 
 def _check_lifecycle_pin(manifest: dict, agent: Path) -> None:
@@ -400,13 +422,15 @@ def _check_lifecycle_pin(manifest: dict, agent: Path) -> None:
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ValueError("The staged Agent has no readable lifecycle pin in astrid/packs/runpod/pins.json.") from exc
     given = (pin.get("repo"), pin.get("sha"), pin.get("version"))
-    if given != expected:
+    equivalent = (_repository_identity(given[0]) == _repository_identity(expected[0])
+                  and given[1:] == expected[1:])
+    if not equivalent:
         raise ValueError(
             "The manifest's lifecycle pin differs from the staged Agent's canonical pin. "
-            f"Manifest: repository {_public_pin(given[0])} revision {_public_pin(given[1])} "
-            f"version {_public_pin(given[2])}. "
-            f"Agent (astrid/packs/runpod/pins.json): repository {_public_pin(expected[0])} "
-            f"revision {_public_pin(expected[1])} version {_public_pin(expected[2])}. {_PIN_REMEDY}")
+            f"Manifest: repository {_public_repository(given[0])} revision {_public_pin(given[1])} "
+            f"version {_public_version(given[2])}. "
+            f"Agent (astrid/packs/runpod/pins.json): repository {_public_repository(expected[0])} "
+            f"revision {_public_pin(expected[1])} version {_public_version(expected[2])}. {_PIN_REMEDY}")
 
 
 class Backend:

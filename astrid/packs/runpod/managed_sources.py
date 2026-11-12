@@ -13,6 +13,8 @@ import os
 import shutil
 import subprocess
 import sys
+import re
+import urllib.parse
 from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -44,21 +46,44 @@ _REMEDY = ("Install a release manifest whose pins match this Agent, or change "
            "astrid/packs/runpod/pins.json in this checkout to the pin you want to test.")
 
 
-def _show(value: object) -> str:
-    """A pin field for a message: public repository URLs and SHAs only, never URL userinfo."""
-    if value is None:
-        return "(none)"
-    text = str(value)
-    if "@" in text.split("://", 1)[-1].split("/", 1)[0]:
-        return "<redacted: contains credentials>"
-    return text if len(text) <= 200 else text[:200] + "..."
+def _show_repository(value: object) -> str:
+    if not isinstance(value, str):
+        return "<invalid>"
+    try:
+        url = urllib.parse.urlsplit(value)
+        if (url.scheme.lower() != "https" or not url.hostname or url.username is not None
+                or url.password is not None or url.port is not None or url.query or url.fragment
+                or not url.path.startswith("/") or not url.path):
+            return "<invalid>"
+    except ValueError:
+        return "<invalid>"
+    return f"https://{url.hostname.lower()}{url.path.rstrip('/')}"
+
+
+def _show_sha(value: object) -> str:
+    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) else "<invalid>"
+
+
+def _show_version(value: object) -> str:
+    return value if isinstance(value, str) and re.fullmatch(
+        r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", value) else "<invalid>"
+
+
+def _repository_identity(value: object) -> tuple[str, str] | None:
+    rendered = _show_repository(value)
+    if rendered == "<invalid>":
+        return None
+    url = urllib.parse.urlsplit(rendered)
+    return url.hostname.lower(), url.path.rstrip("/")
 
 
 def pin_mismatch_message(name: str, manifest_pin: dict, canonical: dict) -> str:
+    version = (f" version {_show_version(manifest_pin.get('version'))}." if "version" in manifest_pin else "")
+    canonical_version = (f" version {_show_version(canonical.get('version'))}." if "version" in canonical else "")
     return (f"installed manifest {name} pin differs from the Agent's canonical pin. "
-            f"Manifest: repository {_show(manifest_pin.get('repository'))} revision {_show(manifest_pin.get('revision'))}. "
-            f"Agent (astrid/packs/runpod/pins.json): repository {_show(canonical.get('repository'))} "
-            f"revision {_show(canonical.get('revision'))}. {_REMEDY}")
+            f"Manifest: repository {_show_repository(manifest_pin.get('repository'))} revision {_show_sha(manifest_pin.get('revision'))}.{version} "
+            f"Agent (astrid/packs/runpod/pins.json): repository {_show_repository(canonical.get('repository'))} "
+            f"revision {_show_sha(canonical.get('revision'))}.{canonical_version} {_REMEDY}")
 
 
 def _pins() -> dict[str, tuple[str, str]]:
@@ -97,9 +122,12 @@ def _pins() -> dict[str, tuple[str, str]]:
     # The lifecycle and VibeComfy pods run are the Agent's canonical pins; a manifest that names
     # a different lifecycle or VibeComfy would split what is installed locally from what ships.
     canonical = canonical_pin("lifecycle")
-    if (lifecycle.get("sha"), lifecycle.get("repo")) != (canonical["revision"], canonical["repository"]):
+    if (_repository_identity(lifecycle.get("repo")) != _repository_identity(canonical["repository"])
+            or lifecycle.get("sha") != canonical["revision"]
+            or lifecycle.get("version") != canonical.get("version")):
         raise ManagedSourcesError(pin_mismatch_message(
-            "lifecycle", {"repository": lifecycle.get("repo"), "revision": lifecycle.get("sha")}, canonical))
+            "lifecycle", {"repository": lifecycle.get("repo"), "revision": lifecycle.get("sha"),
+                          "version": lifecycle.get("version")}, canonical))
     manifest_vibe = manifest.get("vibecomfy", {})
     if not isinstance(manifest_vibe, dict):
         raise ManagedSourcesError(

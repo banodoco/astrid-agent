@@ -187,10 +187,13 @@ def test_a_vibecomfy_mismatch_shows_both_pins_and_the_remedy(tmp_path, monkeypat
     assert "astrid/packs/runpod/pins.json" in text
 
 
-def test_refusals_never_print_url_credentials(tmp_path, monkeypatch):
+@pytest.mark.parametrize("repo", ["//user:FAKE_SECRET@example.invalid/l.git",
+                                  "https://example.invalid/l.git?token=FAKE_SECRET",
+                                  "https://user:FAKE_SECRET@example.invalid/l.git"])
+def test_refusals_never_print_url_credentials(tmp_path, monkeypatch, repo):
     text = _refusal(tmp_path, monkeypatch,
-                    lambda m: m["lifecycle"].update(repo="https://user:s3cret@example.invalid/l.git"))
-    assert "s3cret" not in text and "user:" not in text and "redacted" in text
+                    lambda m: m["lifecycle"].update(repo=repo))
+    assert "FAKE_SECRET" not in text and "user:" not in text and "repository <invalid>" in text
 
 
 def test_a_non_object_vibecomfy_pin_is_refused_cleanly(tmp_path, monkeypatch):

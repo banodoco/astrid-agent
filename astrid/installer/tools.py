@@ -28,9 +28,8 @@ MANIFEST_SOURCE_REPOSITORIES = {
     "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
 }
 # The lifecycle identity (repository, revision, version) has one source: packs/runpod/pins.json.
-# Read with the stdlib (json + this file's location): the installer's import closure is a
-# fixed file list (see tests/test_installer_wheel.py), and canonical_pins pulls in
-# engine_recipe, which is not in it, so the installer cannot use canonical_pin().
+# The lifecycle check reads the staged Agent's pins.json with stdlib JSON. It
+# deliberately does not import canonical_pins into the installer closure.
 LIFECYCLE_VERSION = json.loads(
     (Path(__file__).resolve().parents[1] / "packs" / "runpod" / "pins.json").read_text(encoding="utf-8")
 )["sources"]["lifecycle"]["version"]
@@ -84,7 +83,8 @@ def validate_manifest(value: dict) -> dict:
                 or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", pin["version"])):
             raise ValueError("The lifecycle source must include a full git SHA and exact version.")
         repository = source_repo(pin["repo"])
-        if isinstance(repository, str) and repository != MANIFEST_SOURCE_REPOSITORIES["lifecycle"]:
+        if isinstance(repository, str) and repository_identity(repository) != repository_identity(
+                MANIFEST_SOURCE_REPOSITORIES["lifecycle"]):
             raise ValueError("The lifecycle source repository does not match its reviewed identity.")
     for name in sources:
         pin = value[name]
@@ -246,6 +246,21 @@ def source_repo(value: str) -> str | Path:
             raise ValueError("A source repo URL must be an HTTPS GitHub repository.")
         return value.rstrip("/")
     return local_repository(value)
+
+
+def repository_identity(value: str) -> tuple[str, str] | None:
+    """Return a public HTTPS repository identity, normalizing only host case and trailing slash."""
+    if not isinstance(value, str):
+        return None
+    try:
+        url = urllib.parse.urlsplit(value)
+        if (url.scheme.lower() != "https" or not url.hostname or url.username is not None
+                or url.password is not None or url.port is not None or url.query or url.fragment
+                or not url.path or not url.path.startswith("/")):
+            return None
+    except ValueError:
+        return None
+    return url.hostname.lower(), url.path.rstrip("/")
 
 
 def local_source(repo: str, sha: str, archive: Path) -> None:

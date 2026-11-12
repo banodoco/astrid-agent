@@ -683,6 +683,7 @@ def test_manifest_lifecycle_version_satisfies_pack_declaration():
 def _stage_with_lifecycle(tmp_path, monkeypatch, lifecycle):
     """Run the real stage() up to the staged-Agent pin check; the staged Agent is the real pins.json."""
     root = Path(__file__).resolve().parents[1]
+    tmp_path.mkdir(parents=True, exist_ok=True)
     value = manifest()
     if lifecycle is not None:
         value["lifecycle"] = lifecycle
@@ -734,8 +735,29 @@ def test_stage_refuses_a_lifecycle_pin_that_differs_from_the_staged_agent(tmp_pa
 
 
 def test_stage_lifecycle_refusal_never_prints_url_credentials(tmp_path, monkeypatch):
-    pin = {**_canonical_lifecycle(), "repo": "https://user:s3cret@example.invalid/l.git"}
-    backend, value, _ = _stage_with_lifecycle(tmp_path, monkeypatch, pin)
-    with pytest.raises(ValueError, match="lifecycle pin differs") as caught:
+    for bad_repo in ("//user:FAKE_SECRET@example.invalid/l.git",
+                     "https://example.invalid/l.git?token=FAKE_SECRET",
+                     "https://user:FAKE_SECRET@example.invalid/l.git"):
+        base = tmp_path / str(len(bad_repo))
+        pin = {**_canonical_lifecycle(), "repo": bad_repo}
+        backend, value, _ = _stage_with_lifecycle(base, monkeypatch, pin)
+        with pytest.raises(ValueError, match="lifecycle pin differs") as caught:
+            backend.stage(value, base / "program", base / "data")
+        assert "FAKE_SECRET" not in str(caught.value)
+        assert "repository <invalid>" in str(caught.value)
+
+
+def test_stage_accepts_lifecycle_repository_with_trailing_slash(tmp_path, monkeypatch):
+    pin = _canonical_lifecycle()
+    pin["repo"] += "/"
+    backend, value, reached = _stage_with_lifecycle(tmp_path, monkeypatch, pin)
+    with pytest.raises(RuntimeError, match="past the lifecycle check"):
         backend.stage(value, tmp_path / "program", tmp_path / "data")
-    assert "s3cret" not in str(caught.value)
+    assert reached == ["runtime"]
+
+
+def test_legacy_manifest_without_lifecycle_stages(tmp_path, monkeypatch):
+    backend, value, reached = _stage_with_lifecycle(tmp_path, monkeypatch, None)
+    with pytest.raises(RuntimeError, match="past the lifecycle check"):
+        backend.stage(value, tmp_path / "program", tmp_path / "data")
+    assert reached == ["runtime"]
