@@ -268,14 +268,14 @@ def _cmd_logs(parsed: argparse.Namespace) -> int:
     task_id, code = _task_id(parsed)
     if task_id is None:
         return code
-    result = parsed.client.tasks.list_managed_outputs(task_id)
+    # The task's terminal result owns its log rows: the host records them there on
+    # success and on failure alike, while managed outputs exist only for a success.
+    result = parsed.client.tasks.show(task_id)
     if not result.ok:
         return print_result(result, as_json=parsed.json)
-    rows = result.data
-    if isinstance(rows, tuple) and len(rows) == 2 and isinstance(rows[0], list):
-        rows = rows[0]
-    if not isinstance(rows, list):
-        rows = []
+    task = result.data if isinstance(result.data, Mapping) else {}
+    terminal = task.get("result") if isinstance(task.get("result"), Mapping) else {}
+    rows = terminal.get("outputs") if isinstance(terminal.get("outputs"), list) else []
     logs = [row for row in rows if isinstance(row, Mapping) and row.get("role") == "log"]
     if not logs:
         print(f"no logs recorded for task {task_id}", file=sys.stderr)
@@ -289,7 +289,7 @@ def _cmd_logs(parsed: argparse.Namespace) -> int:
             print(f"no log named {parsed.name} for task {task_id}", file=sys.stderr)
             return 1
         digest = selected.get("digest") or selected.get("object_id")
-        reader = getattr(parsed.client, "read_bytes", None)
+        reader = getattr(getattr(parsed.client, "media", None), "read_bytes", None)
         if callable(reader) and digest:
             data = reader(str(digest))
             sys.stdout.buffer.write(data)
