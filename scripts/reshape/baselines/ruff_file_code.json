@@ -1,0 +1,2547 @@
+[
+  {
+    "path": "astrid/__init__.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/_shared/jsonio.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/action_cli.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/auth.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/cli/domain_references.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/cli/domain_shots.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/cli/domain_tasks.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/cli/task_progress.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/cli/task_progress.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/contracts/capability_runner.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/contracts/errors.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/contracts/exec_error.py",
+    "code": "F811",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/element/cli.py",
+    "code": "E701",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/element/project_packs.py",
+    "code": "E701",
+    "count": 69
+  },
+  {
+    "path": "astrid/core/element/project_packs.py",
+    "code": "E702",
+    "count": 27
+  },
+  {
+    "path": "astrid/core/element/registry.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/element/schema.py",
+    "code": "F401",
+    "count": 4
+  },
+  {
+    "path": "astrid/core/engine_cli.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/engine_cli.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/__init__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/_child_bridge.py",
+    "code": "BLE001",
+    "count": 4
+  },
+  {
+    "path": "astrid/core/execution/_child_bridge.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/_child_bridge.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/execution/_child_import_receipt.py",
+    "code": "BLE001",
+    "count": 6
+  },
+  {
+    "path": "astrid/core/execution/capability_ledger.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/execution/custody_broker.py",
+    "code": "BLE001",
+    "count": 15
+  },
+  {
+    "path": "astrid/core/execution/custody_broker.py",
+    "code": "E702",
+    "count": 8
+  },
+  {
+    "path": "astrid/core/execution/custody_broker.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/custody_broker.py",
+    "code": "F821",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/execution/executor/actions.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/executor/runner.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/executor/schema.py",
+    "code": "F401",
+    "count": 7
+  },
+  {
+    "path": "astrid/core/execution/generic_host.py",
+    "code": "BLE001",
+    "count": 80
+  },
+  {
+    "path": "astrid/core/execution/generic_host.py",
+    "code": "E402",
+    "count": 28
+  },
+  {
+    "path": "astrid/core/execution/generic_host.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/generic_host.py",
+    "code": "F402",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/generic_host.py",
+    "code": "F841",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/execution/generic_host.py",
+    "code": "I001",
+    "count": 13
+  },
+  {
+    "path": "astrid/core/execution/generic_host_worker.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/execution/network_broker.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/network_policy.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/network_policy.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/orchestrator/registry.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/orchestrator/runner.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/orchestrator/runner.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/orchestrator/schema.py",
+    "code": "F401",
+    "count": 7
+  },
+  {
+    "path": "astrid/core/execution/persistent_supervisor.py",
+    "code": "BLE001",
+    "count": 6
+  },
+  {
+    "path": "astrid/core/execution/pipeline_step.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/pipeline_step.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/pipeline_step.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/pipeline_step_worker.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/platform_helpers.py",
+    "code": "F401",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/execution/process_group.py",
+    "code": "BLE001",
+    "count": 5
+  },
+  {
+    "path": "astrid/core/execution/process_group.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/python_runtime_worker.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/reconciler.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/remotion_frame_owner.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/remotion_frame_owner.py",
+    "code": "E701",
+    "count": 4
+  },
+  {
+    "path": "astrid/core/execution/remotion_frame_owner.py",
+    "code": "E702",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/execution/remotion_frame_owner.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/remotion_host_session.py",
+    "code": "BLE001",
+    "count": 5
+  },
+  {
+    "path": "astrid/core/execution/remotion_host_session.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/remotion_host_session.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/execution/task_scope.py",
+    "code": "BLE001",
+    "count": 4
+  },
+  {
+    "path": "astrid/core/execution/vibecomfy_engine_adapter.py",
+    "code": "F401",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/execution/vibecomfy_engine_adapter.py",
+    "code": "I001",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/experiments/state.py",
+    "code": "E402",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/gateway/__init__.py",
+    "code": "E402",
+    "count": 5
+  },
+  {
+    "path": "astrid/core/gateway/__init__.py",
+    "code": "F401",
+    "count": 7
+  },
+  {
+    "path": "astrid/core/gateway/__init__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/gateway/dev_operator.py",
+    "code": "E702",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/gateway/diagnostics.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/gateway/dispatch.py",
+    "code": "E402",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/gateway/dispatch.py",
+    "code": "F821",
+    "count": 8
+  },
+  {
+    "path": "astrid/core/gateway/dispatch.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/gateway/dispatch.py",
+    "code": "I001",
+    "count": 4
+  },
+  {
+    "path": "astrid/core/gateway/hivemind.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/_engine_bootstrap_loader.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/_engine_release_entry.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/_engine_release_entry.py",
+    "code": "F401",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/generation/_engine_release_entry.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/_engine_target_files.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/asset_alignment.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/backends/__init__.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/backends/codex.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/backends/comfy_target.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/generation/backends/fal.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/backends/openai.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/backends/openai.py",
+    "code": "E402",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/backends/openai.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/backends/openai.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/generation/backends/registry.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/backends/vibecomfy.py",
+    "code": "BLE001",
+    "count": 4
+  },
+  {
+    "path": "astrid/core/generation/backends/vibecomfy_workflow.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/generation/backends/workflow.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/cli.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_bootstrap.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_custody.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/generation/engine_custody.py",
+    "code": "E731",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/generation/engine_custody.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_execution.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/generation/engine_install_task.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_platforms.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_readiness.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_readiness.py",
+    "code": "I001",
+    "count": 5
+  },
+  {
+    "path": "astrid/core/generation/engine_recipe.py",
+    "code": "E701",
+    "count": 41
+  },
+  {
+    "path": "astrid/core/generation/engine_recipe.py",
+    "code": "E702",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_recipe.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_release.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_runner.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_runner_target.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/engine_startup.py",
+    "code": "BLE001",
+    "count": 4
+  },
+  {
+    "path": "astrid/core/generation/entries.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/entries.py",
+    "code": "E701",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/generation/listing.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/generation/model_downloader.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/preflight.py",
+    "code": "E402",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/generation/preflight.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/generation/preflight.py",
+    "code": "I001",
+    "count": 7
+  },
+  {
+    "path": "astrid/core/generation/producer_result.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/generation/storage_policy.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/actions/contribute/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/actions/get_item/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/actions/ingest_article/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/actions/ingest_workflow/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/actions/ingest_youtube/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/actions/refresh_media/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/actions/search/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/_common.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/canonical_representations.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/chunking.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/chunking.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/contribute/run.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/hivemind/executors/embedding_backfill.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/embedding_contract.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/embedding_contract.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/embedding_coverage.py",
+    "code": "F401",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/hivemind/executors/embedding_jobs.py",
+    "code": "F541",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/embedding_jobs.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/get_item/run.py",
+    "code": "E701",
+    "count": 11
+  },
+  {
+    "path": "astrid/core/hivemind/executors/get_item/run.py",
+    "code": "E702",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/hivemind/executors/get_item/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/hivemind/executors/identifier_normalization.py",
+    "code": "F401",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/hivemind/executors/identifier_normalization.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/ingest_article/run.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/ingest_article/run.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/ingest_workflow/run.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/ingest_workflow/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/hivemind/executors/ingest_youtube/run.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/lexical_contract.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/lexical_documents.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/lexical_documents.py",
+    "code": "F822",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/postgres_backfill.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/hivemind/executors/search/run.py",
+    "code": "BLE001",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/hivemind/executors/selected_contract.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/workflow_remediation.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/workflow_representation.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/hivemind/executors/workflow_representation.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/model_setup/manifest.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/__init__.py",
+    "code": "F401",
+    "count": 51
+  },
+  {
+    "path": "astrid/core/pack/__init__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/agent_index.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/core/pack/agent_index.py",
+    "code": "E402",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/cli.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/cli.py",
+    "code": "F822",
+    "count": 6
+  },
+  {
+    "path": "astrid/core/pack/cli_basic.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/cli_inspect.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/cli_parser.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/definitions.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/identity.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/install.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/loader.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/registry.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/transaction.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/validate.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/validate_first_party.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/pack/validate_layout.py",
+    "code": "BLE001",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/receipts/__init__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/release_identity.py",
+    "code": "E701",
+    "count": 173
+  },
+  {
+    "path": "astrid/core/release_identity.py",
+    "code": "E702",
+    "count": 113
+  },
+  {
+    "path": "astrid/core/release_identity.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/release_identity.py",
+    "code": "F841",
+    "count": 8
+  },
+  {
+    "path": "astrid/core/remote_targets.py",
+    "code": "E702",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/remote_targets.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/remote_targets.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/__init__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/artifacts.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/artifacts.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/assets.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/cli.py",
+    "code": "F541",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/cli.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/delivery_audio.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/fixtures/renderer_parity/remotion_backend_wrapper.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/provenance.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/provenance.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/registry.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/remotion_runtime.py",
+    "code": "BLE001",
+    "count": 3
+  },
+  {
+    "path": "astrid/core/rendering/remotion_runtime.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/remotion_runtime.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/rendering/service.py",
+    "code": "BLE001",
+    "count": 5
+  },
+  {
+    "path": "astrid/core/rendering/service.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/scaffold.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/subprocess_env.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/theme/__init__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/astrid_ns.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/events/schema/payloads/config.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/events/schema/types.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/events/schema/types.py",
+    "code": "F601",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/events/schema/types.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/inverses.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/model.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/music_edit.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/snapshot.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/timeline/snapshot.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/core/util/llm_clients.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/installer/adoption_receipt.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/adoption_receipt.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/backend.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/boundary_handoff.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/boundary_handoff.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/choices.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/cli.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/core.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/custody.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/r0_stop.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/service.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/installer/tools.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/mcp_server.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/omp_invoke.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/omp_invoke.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/pack_build.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/pack_build.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/pack_validation.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_audio/run.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_audio/run.py",
+    "code": "E402",
+    "count": 19
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_audio/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_image/golden/demo_flux_local_cloud.py",
+    "code": "E402",
+    "count": 4
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_image/run.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_image/run.py",
+    "code": "E402",
+    "count": 23
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_image/run.py",
+    "code": "F401",
+    "count": 5
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_image/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_image_openai/run.py",
+    "code": "E402",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_image_openai/run.py",
+    "code": "F401",
+    "count": 13
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_image_openai/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_image_upscale/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_speech/run.py",
+    "code": "E402",
+    "count": 17
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_speech/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_video/run.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_video/run.py",
+    "code": "E402",
+    "count": 21
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_video/run.py",
+    "code": "F401",
+    "count": 6
+  },
+  {
+    "path": "astrid/packs/generation/actions/generate_video/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/generation/shared/_common.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/actions/compile/compile.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/actions/compose/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/actions/prepare/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/actions/transform/run.py",
+    "code": "BLE001",
+    "count": 7
+  },
+  {
+    "path": "astrid/packs/h3_av/actions/transform/run.py",
+    "code": "E731",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/h3_av/actions/verify/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/actions/verify/verify.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/cli.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/shared/compose.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/shared/generation.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/h3_av/shared/input_bundle.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/shared/request_v2.py",
+    "code": "E701",
+    "count": 42
+  },
+  {
+    "path": "astrid/packs/h3_av/shared/timing.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/workflows/lanpaint_h3_av_generalized/workflow.py",
+    "code": "F841",
+    "count": 18
+  },
+  {
+    "path": "astrid/packs/h3_av/workflows/lanpaint_h3_av_generalized/workflow.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/workflows/native_h3_continuation/workflow.py",
+    "code": "F841",
+    "count": 8
+  },
+  {
+    "path": "astrid/packs/h3_av/workflows/native_h3_continuation/workflow.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/h3_av/workflows/native_h3_continuation_refs/workflow.py",
+    "code": "F841",
+    "count": 6
+  },
+  {
+    "path": "astrid/packs/h3_av/workflows/native_h3_continuation_refs/workflow.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/assemble_timeline/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/html_canvas_effect/run.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/html_canvas_effect/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/rendering/actions/render/managed_timeline.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/render/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/rendering/actions/render/task_adapter.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/sprite_sheet/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/sprite_sheet/upscale.py",
+    "code": "F401",
+    "count": 3
+  },
+  {
+    "path": "astrid/packs/rendering/actions/sprite_sheet/upscale.py",
+    "code": "F821",
+    "count": 4
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_storyboard/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_transfer_common.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/assets.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/composed_frame.py",
+    "code": "E402",
+    "count": 15
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/composed_frame.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/emit.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/evidence_pack.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/evidence_pack.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/filmstrip_cards.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/filmstrip_cards.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/filmstrip_execution.py",
+    "code": "E402",
+    "count": 22
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/filmstrip_execution.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/filmstrip_execution.py",
+    "code": "F401",
+    "count": 4
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/filmstrip_execution.py",
+    "code": "I001",
+    "count": 4
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/frozen.py",
+    "code": "BLE001",
+    "count": 5
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/frozen.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/frozen.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/inspection_contract.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/inspector_navigation.py",
+    "code": "E702",
+    "count": 8
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/inspector_viewer.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/layers/base.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/model.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/motion/element_motion.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/motion/element_motion.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/motion/sheet.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/motion/window.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/readable_timing.py",
+    "code": "E731",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/readable_timing.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/scene_only.py",
+    "code": "E402",
+    "count": 8
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/select.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/select.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/shot_selector.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/actions/timeline_visualize/sweep.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/api.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/finalizers/compositor/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/finalizers/ffmpeg/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/ffmpeg/command.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/ffmpeg/command.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/ffmpeg/run.py",
+    "code": "E402",
+    "count": 22
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/ffmpeg/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/ffmpeg/support.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/ffmpeg/support.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/ffmpeg/support.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/remotion/lock.py",
+    "code": "E402",
+    "count": 10
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/remotion/lock.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/remotion/root_preparation.py",
+    "code": "E402",
+    "count": 13
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/remotion/run.py",
+    "code": "E402",
+    "count": 38
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/remotion/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/rendering/rendering/renderers/threejs/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/shared/rendering_backend/__init__.py",
+    "code": "E402",
+    "count": 12
+  },
+  {
+    "path": "astrid/packs/rendering/shared/rendering_backend/__init__.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/shared/rendering_backend/__init__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/rendering/shared/runtime_stitch.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/generation.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/h3_release.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/h3_release_bootstrap.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/installed_session.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/runpod/installed_session.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/pod_source_identity.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/prepared_task.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/prepared_task.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/remote_placement.py",
+    "code": "BLE001",
+    "count": 4
+  },
+  {
+    "path": "astrid/packs/runpod/remote_placement.py",
+    "code": "E741",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/runpod/remote_placement.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/runpod/shared/common.py",
+    "code": "BLE001",
+    "count": 3
+  },
+  {
+    "path": "astrid/packs/runpod/target_selection.py",
+    "code": "BLE001",
+    "count": 7
+  },
+  {
+    "path": "astrid/packs/runpod/target_selection.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/worker_owner.py",
+    "code": "BLE001",
+    "count": 6
+  },
+  {
+    "path": "astrid/packs/runpod/worker_owner.py",
+    "code": "I001",
+    "count": 4
+  },
+  {
+    "path": "astrid/packs/runpod/worker_preparation.py",
+    "code": "BLE001",
+    "count": 6
+  },
+  {
+    "path": "astrid/packs/runpod/worker_preparation.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/worker_preparation.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/runpod/worker_process.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/runpod/worker_staging.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/runpod/worker_staging.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli.py",
+    "code": "E701",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli.py",
+    "code": "E702",
+    "count": 4
+  },
+  {
+    "path": "astrid/packs/timeline/cli.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli.py",
+    "code": "F401",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/timeline/cli_common.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli_log.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli_log.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli_look.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli_native.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/timeline/cli_pending.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli_pending.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli_show.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/timeline/cli_working.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/caption_providers/understanding.py",
+    "code": "E402",
+    "count": 15
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/caption_providers/understanding.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/caption_validation.py",
+    "code": "E402",
+    "count": 10
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/caption_validation.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/_common.py",
+    "code": "E402",
+    "count": 5
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/_common.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/black_frame.py",
+    "code": "E402",
+    "count": 8
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/black_frame.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/bucket_judge.py",
+    "code": "E402",
+    "count": 18
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/bucket_judge.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/near_duplicate.py",
+    "code": "E402",
+    "count": 8
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/near_duplicate.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/semantic.py",
+    "code": "E402",
+    "count": 18
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/semantic.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/transcript_keyword.py",
+    "code": "E402",
+    "count": 14
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/transcript_keyword.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/filter_stages/transcript_keyword.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/phases.py",
+    "code": "E402",
+    "count": 20
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/phases.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/review.py",
+    "code": "E402",
+    "count": 9
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/review.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/review_assets.py",
+    "code": "E402",
+    "count": 15
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/run.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/run.py",
+    "code": "E402",
+    "count": 20
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/run.py",
+    "code": "F401",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/source_providers/local_folder.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/dataset_build/state.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/pool_build/run.py",
+    "code": "E402",
+    "count": 10
+  },
+  {
+    "path": "astrid/packs/training/actions/pool_build/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/training/actions/pool_merge/run.py",
+    "code": "E402",
+    "count": 10
+  },
+  {
+    "path": "astrid/packs/training/actions/pool_merge/run.py",
+    "code": "F821",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/pool_merge/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/search_loras/run.py",
+    "code": "E402",
+    "count": 9
+  },
+  {
+    "path": "astrid/packs/training/actions/search_loras/run.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/search_loras/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/training_run/ai_toolkit/review.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/actions/training_run/manifest_input.py",
+    "code": "E402",
+    "count": 7
+  },
+  {
+    "path": "astrid/packs/training/actions/training_run/run.py",
+    "code": "BLE001",
+    "count": 3
+  },
+  {
+    "path": "astrid/packs/training/actions/training_run/run.py",
+    "code": "E402",
+    "count": 22
+  },
+  {
+    "path": "astrid/packs/training/actions/training_run/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/shared/items.py",
+    "code": "E402",
+    "count": 5
+  },
+  {
+    "path": "astrid/packs/training/shared/manifest.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/training/shared/manifest_adapters/ai_toolkit_ltx.py",
+    "code": "E402",
+    "count": 6
+  },
+  {
+    "path": "astrid/packs/training/shared/manifest_adapters/ai_toolkit_ltx.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/vibecomfy/actions/edit/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/vibecomfy/actions/import/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/vibecomfy/actions/inspect/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/vibecomfy/actions/run/run.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/vibecomfy/actions/run/run.py",
+    "code": "E402",
+    "count": 16
+  },
+  {
+    "path": "astrid/packs/vibecomfy/actions/run/run.py",
+    "code": "I001",
+    "count": 5
+  },
+  {
+    "path": "astrid/packs/vibecomfy/actions/validate/run.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/vibecomfy/direct_image/__init__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/vibecomfy/direct_image/compiler.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/vibecomfy/endpoint_checkout.py",
+    "code": "I001",
+    "count": 3
+  },
+  {
+    "path": "astrid/packs/vibecomfy/local.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/vibecomfy/local_server_engine.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/vibecomfy/media/runtime.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/vibecomfy/production_engine.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/vibecomfy/src/dimensional_ltx.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/wan2gp/actions/generate_video/run.py",
+    "code": "E402",
+    "count": 3
+  },
+  {
+    "path": "astrid/packs/wan2gp/actions/generate_video/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/wan2gp/actions/validate_settings/run.py",
+    "code": "E402",
+    "count": 5
+  },
+  {
+    "path": "astrid/packs/wan2gp/actions/validate_settings/run.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/wan2gp/src/driver.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/packs/wan2gp/src/driver.py",
+    "code": "F401",
+    "count": 2
+  },
+  {
+    "path": "astrid/packs/wan2gp/src/persistent.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/_child_bridge.py",
+    "code": "BLE001",
+    "count": 3
+  },
+  {
+    "path": "astrid/sdk/actions.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/actions.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/client.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/client.py",
+    "code": "F811",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/client.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/discovery.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/dto.py",
+    "code": "E402",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/dto.py",
+    "code": "F401",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/dto.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/execution_request.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/generation.py",
+    "code": "I001",
+    "count": 13
+  },
+  {
+    "path": "astrid/sdk/generation_publication.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/host_bootstrap.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/invocation.py",
+    "code": "BLE001",
+    "count": 3
+  },
+  {
+    "path": "astrid/sdk/media_handles.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/media_handles.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/media_open.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/pagination.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/remote.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/remote.py",
+    "code": "E701",
+    "count": 111
+  },
+  {
+    "path": "astrid/sdk/rendering.py",
+    "code": "BLE001",
+    "count": 4
+  },
+  {
+    "path": "astrid/sdk/rendering.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/results.py",
+    "code": "F402",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/results.py",
+    "code": "F841",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/results.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/storage_ownership.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline/check.py",
+    "code": "BLE001",
+    "count": 3
+  },
+  {
+    "path": "astrid/sdk/timeline/check.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/timeline/checkout.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline/commit_session.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/timeline/doc.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline/journal.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/timeline/model.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline/retry.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline_address.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline_address.py",
+    "code": "F541",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline_checkout.py",
+    "code": "E401",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline_checkout.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/timeline_cuts.py",
+    "code": "E701",
+    "count": 6
+  },
+  {
+    "path": "astrid/sdk/timeline_cuts.py",
+    "code": "E702",
+    "count": 3
+  },
+  {
+    "path": "astrid/sdk/timeline_cuts.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline_filmstrip.py",
+    "code": "BLE001",
+    "count": 6
+  },
+  {
+    "path": "astrid/sdk/timeline_filmstrip.py",
+    "code": "E702",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/timeline_filmstrip.py",
+    "code": "I001",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/timeline_intent.py",
+    "code": "E701",
+    "count": 25
+  },
+  {
+    "path": "astrid/sdk/timeline_intent.py",
+    "code": "E702",
+    "count": 28
+  },
+  {
+    "path": "astrid/sdk/timeline_sheet.py",
+    "code": "E702",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline_sheet.py",
+    "code": "E731",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline_sheet.py",
+    "code": "E741",
+    "count": 3
+  },
+  {
+    "path": "astrid/sdk/timeline_sheet.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline_structure.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/sdk/timeline_views.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/sdk/timeline_views.py",
+    "code": "E701",
+    "count": 9
+  },
+  {
+    "path": "astrid/sdk/timeline_views.py",
+    "code": "E702",
+    "count": 14
+  },
+  {
+    "path": "astrid/sdk/verified_speech_authoring.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/services.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/__init__.py",
+    "code": "BLE001",
+    "count": 3
+  },
+  {
+    "path": "astrid/skills/__init__.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/__init__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/__main__.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/cli.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/discovery.py",
+    "code": "BLE001",
+    "count": 2
+  },
+  {
+    "path": "astrid/skills/harnesses/base.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/harnesses/claude.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/harnesses/codex.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/harnesses/hermes.py",
+    "code": "BLE001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/harnesses/hermes.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/state.py",
+    "code": "I001",
+    "count": 1
+  },
+  {
+    "path": "astrid/skills/view.py",
+    "code": "F401",
+    "count": 1
+  },
+  {
+    "path": "astrid/version.py",
+    "code": "I001",
+    "count": 1
+  }
+]

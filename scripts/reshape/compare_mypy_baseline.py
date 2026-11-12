@@ -10,6 +10,7 @@ from typing import Any
 from scripts.reshape import count_baseline
 
 BASELINE_PATH = Path("scripts/reshape/baselines/mypy_astrid.json")
+FILE_CODE_BASELINE_PATH = Path("scripts/reshape/baselines/mypy_file_code.json")
 COMMAND = [
     sys.executable,
     "-m",
@@ -47,6 +48,7 @@ def _run() -> dict[str, Any]:
         detail = (proc.stderr or proc.stdout).strip() or "no diagnostic output"
         raise RuntimeError(f"mypy failed to execute (exit {proc.returncode}): {detail}")
     return {
+        "file_code_counts": count_baseline.file_code_counts(findings),
         "tool": "mypy",
         "scope": COMMAND[3:5],
         "command": COMMAND,
@@ -58,7 +60,7 @@ def _run() -> dict[str, Any]:
 
 
 def main() -> int:
-    return count_baseline.main("Mypy", BASELINE_PATH, _run)
+    return count_baseline.main("Mypy", BASELINE_PATH, FILE_CODE_BASELINE_PATH, _run)
 
 
 if __name__ == "__main__":
