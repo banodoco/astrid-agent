@@ -344,6 +344,25 @@ def install(setup):
     return runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline)
 
 
+def test_runner_custody_refusal_attaches_safe_details_without_replacing_error(setup, caplog):
+    plan, context, adapter, deadline = setup
+    active = runner._Runner(plan, context, adapter, deadline)
+    original = CustodyUnresolved("transport secret", step_id="start", retryable=True,
+                                 recovery_handle="job-123")
+    enriched = active.custody_error(original, "cleanup_unconfirmed")
+    assert enriched is original
+    assert enriched.step_id == "start" and enriched.retryable is True
+    assert enriched.recovery_handle == "job-123"
+    details = enriched.custody_details
+    assert details["reason"] == "cleanup_unconfirmed"
+    assert details["root"] == ROOT and details["engine"] == plan.engine
+    assert details["marker_path"] == ROOT + "/.astrid-engine/session/session.json"
+    assert details["helper_sha256"] == "unknown"
+    assert "transport secret" not in enriched.message
+    assert "owner_state=unknown" in enriched.message and "evidence=none" in enriched.message
+    assert "Engine custody refusal" in caplog.text
+
+
 def test_install_writes_private_receipt_per_final_wheel(setup, monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
     receipt = install(setup)

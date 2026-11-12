@@ -19,7 +19,7 @@ import pytest
 from astrid.core.generation import engine_custody as custody
 from astrid.core.generation.engine_contracts import (
     CommandRequest, CustodyUnresolved, DeadlineExceeded, EndpointOwnershipError,
-    IntegrityError, RecipeValidationError, StartSpec, UnsafePathError,
+    RecipeValidationError, StartSpec, UnsafePathError,
 )
 from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
 from astrid.core.generation.engine_runner import _json, _sha, helper_manifest
@@ -1259,7 +1259,7 @@ def test_changed_launch_or_installation_cannot_reuse_service(session):
     with pytest.raises(EndpointOwnershipError):
         _call(client, bad)
     changed = _client({**client.identity, "helper_sha256": "f" * 64})
-    with pytest.raises(IntegrityError):
+    with pytest.raises(EndpointOwnershipError):
         _call(changed, payload)
     assert _call(client, payload, "probe")["owner_id"] == first["owner_id"]
     assert len(started.read_text().splitlines()) == 1
@@ -1549,12 +1549,11 @@ def test_converge_owner_lock_timeout_refuses_helper_identity(session, monkeypatc
         _wait(lambda: not _alive(int(ready.read_text())))
 
 
-def test_converge_unreachable_old_owner_preserves_marker_and_live_pid(session, monkeypatch):
+def test_converge_unreachable_old_owner_retires_dead_owner(session, monkeypatch):
     client, payload, recipe, root, _, _ = session
     _call(client, payload, "probe")
     owner_pid = client._spawned.pid
     marker_path = Path(client.control, "session.json")
-    marker = marker_path.read_bytes()
     client._spawned.kill()
     client._spawned.wait(timeout=5)
     client.stop_owned = lambda **_kwargs: None
@@ -1565,14 +1564,13 @@ def test_converge_unreachable_old_owner_preserves_marker_and_live_pid(session, m
     from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
     adapter = LinuxPlatformAdapter(recipe.platform)
     with adapter.local_install_lock(str(root), deadline=time.monotonic() + 5):
-        with pytest.raises(CustodyUnresolved, match="restore.*control connection|leave the marker"):
-            custody.stop_engine_for_converge(plan, context=SimpleNamespace(placement="local"),
-                                             deadline=time.monotonic() + 5)
-    assert marker_path.read_bytes() == marker
+        custody.stop_engine_for_converge(plan, context=SimpleNamespace(placement="local"),
+                                         deadline=time.monotonic() + 5)
+    assert not marker_path.exists()
     assert not _alive(owner_pid)
 
 
-def test_original_native_owner_loss_refuses_replacement(tmp_path):
+def test_original_native_owner_loss_hands_over_to_replacement(tmp_path):
     root = tmp_path / "install"
     root.mkdir()
     client = _client(_identity(root))
@@ -1582,10 +1580,10 @@ def test_original_native_owner_loss_refuses_replacement(tmp_path):
     client._spawned.kill()
     client._spawned.wait(timeout=5)
     replacement = _client(client.identity)
-    with pytest.raises(CustodyUnresolved):
-        replacement.run(_request(root, "print('must not run')"))
-    assert replacement._spawned is None
-    assert Path(client.control, "session.json").exists()
+    assert replacement.run(_request(root, "print('must run')")).exit_code == 0
+    assert replacement._spawned is not None
+    replacement.stop_owned(deadline=time.monotonic() + 10)
+    assert not Path(client.control, "session.json").exists()
 
 
 @pytest.mark.parametrize("unsafe", ["permissions", "symlink"])

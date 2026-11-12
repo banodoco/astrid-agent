@@ -17,6 +17,7 @@ from collections.abc import Mapping
 
 from astrid.core.generation.engine_contracts import (
     EngineError, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
+    custody_diagnostics, custody_message,
 )
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_runner import (
@@ -167,6 +168,11 @@ def main(argv=None, *, backend_factory=None):
         print(json.dumps(_plain(result) if result is not None else None, sort_keys=True, ensure_ascii=False))
         return 0
     except EngineError as exc:
+        if isinstance(exc, CustodyNotOwnerOnly):
+            exc.custody_details = dict(reason='custody_not_private', owner_state='unknown',
+                                      lock_state='unknown', evidence='none', root=plan.root, engine=plan.engine,
+                                      marker_path=plan.root + '/.astrid-engine/session/session.json',
+                                      helper_sha256='unknown')
         # Messages from execution transports can contain command output or secrets.
         # Emit only the stable public code and validated step identifier.
         import re
@@ -177,11 +183,19 @@ def main(argv=None, *, backend_factory=None):
         messages = {
             'unsupported_platform': 'Target platform or local execution is unavailable; A2/A7 integration is pending.',
             'unsupported_placement': 'RunPod execution awaits W1 (runpod wrapper).',
+            'engine_busy': 'Managed engine is busy; wait for the current operation to finish, then retry.',
             'custody_not_owner_only': 'Engine custody directory must be owner-only. /workspace is FUSE-unsafe; '
                                       'install under a local --root.',
+            'endpoint_ownership': 'Engine endpoint ownership could not be verified; inspect the engine owner and retry.',
+            'custody_unresolved': 'Engine custody could not be verified; inspect the engine state before retrying.',
+            'unsafe_path': 'Engine custody path or state is unsafe; inspect the engine root before retrying.',
         }
         public = {'code': exc.code, 'step': step, 'retryable': exc.retryable,
                   'recovery_handle': handle, 'message': messages.get(exc.code, 'Engine operation failed.')}
+        details = custody_diagnostics(getattr(exc, 'custody_details', None))
+        if details is not None:
+            public['custody'] = details
+            public['message'] = custody_message(details)
         # Bounded failure detail from the engine runner: fixed reason text and dirty porcelain paths/status.
         diagnostics = getattr(exc, 'diagnostics', None) or {}
         if isinstance(diagnostics.get('reason'), str):

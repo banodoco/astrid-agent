@@ -12,7 +12,9 @@ from dataclasses import dataclass
 import pytest
 
 from astrid.core import engine_cli
-from astrid.core.generation.engine_contracts import CommandFailed, CustodyUnresolved
+from astrid.core.generation.engine_contracts import (
+    CommandFailed, CustodyUnresolved, EndpointOwnershipError, custody_diagnostics, custody_message,
+)
 from astrid.core.generation.engine_local_endpoint import recorded_engine_root
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 
@@ -290,6 +292,62 @@ def test_recovery_handle_is_preserved(capsys):
     assert rc == 1 and json.loads(err)["error"]["recovery_handle"] == "/custody/exact-job-97"
 
 
+def test_custody_diagnostic_is_allowlisted_and_fixed_vocabulary(capsys):
+    details = {
+        'reason': 'owner_alive', 'owner_state': 'alive', 'lock_state': 'held',
+        'evidence': 'flock', 'marker_path': ROOT + '/.astrid-engine/session/session.json',
+        'root': ROOT, 'engine': 'comfyui', 'helper_sha256': 'abcdef012345',
+        'owner_id': 'PRIVATE_OWNER_SENTINEL', 'transport_text': 'PRIVATE_TRANSPORT_SENTINEL',
+    }
+    def fail(**kwargs):
+        error = CustodyUnresolved('PRIVATE_EXCEPTION_SENTINEL')
+        error.custody_details = details
+        raise error
+    rc, out, err = invoke(['status', *BASE], capsys, backend_factory=fail)
+    payload = json.loads(err)['error']
+    assert rc == 1 and not out
+    assert payload['custody'] == {
+        'reason': 'owner_alive', 'owner_state': 'alive', 'lock_state': 'held',
+        'evidence': 'flock', 'marker_path': details['marker_path'], 'root': ROOT,
+        'engine': 'comfyui', 'helper_sha256': 'abcdef012345',
+        'next_action': 'Wait for the active owner to exit, then retry.',
+    }
+    assert all(secret not in err for secret in ('PRIVATE_OWNER_SENTINEL', 'PRIVATE_TRANSPORT_SENTINEL',
+                                                  'PRIVATE_EXCEPTION_SENTINEL'))
+
+
+@pytest.mark.parametrize(('error_type', 'code'), [
+    (EndpointOwnershipError, 'endpoint_ownership'), (CustodyUnresolved, 'custody_unresolved'),
+])
+def test_custody_errors_have_safe_fallback_messages(capsys, error_type, code):
+    def fail(**kwargs):
+        raise error_type('private data')
+    rc, out, err = invoke(['status', *BASE], capsys, backend_factory=fail)
+    payload = json.loads(err)['error']
+    assert rc == 1 and not out and payload['code'] == code
+    assert payload['message'] != 'Engine operation failed.' and 'private data' not in err
+
+
+def test_custody_validation_rejects_untrusted_identity_and_reason():
+    valid = {
+        'reason': 'owner_alive', 'owner_state': 'alive', 'lock_state': 'held',
+        'evidence': 'flock', 'marker_path': ROOT + '/.astrid-engine/session/session.json',
+        'root': ROOT, 'engine': 'comfyui', 'helper_sha256': 'abcdef012345',
+    }
+    assert custody_diagnostics(valid)['reason'] == 'owner_alive'
+    assert 'PRIVATE' not in custody_message(valid)
+    spaced_root = '/tmp/engine root'
+    spaced = dict(valid, root=spaced_root,
+                  marker_path=spaced_root + '/.astrid-engine/session/session.json')
+    assert custody_diagnostics(spaced)['root'] == spaced_root
+    for key, value in (('reason', 'PRIVATE_REASON'), ('engine', 'comfyui\nowner_id=secret'),
+                       ('root', ROOT + '\nsecret'), ('marker_path', '/tmp/private'),
+                       ('helper_sha256', 'abcdef0123456789'), ('reason', []),
+                       ('owner_state', {}), ('lock_state', []), ('evidence', {})):
+        hostile = dict(valid, **{key: value})
+        assert custody_diagnostics(hostile) is None
+
+
 def test_declared_installed_entrypoint_and_module_dispatch(tmp_path):
     repo = Path(__file__).resolve().parents[3]
     script = '''
@@ -375,6 +433,10 @@ def test_fuse_workspace_custody_install_refuses_a_777_directory_before_any_backe
                           backend_factory=lambda **kwargs: pytest.fail('backend built for an unsafe custody directory'))
     assert code == 1 and json.loads(err)['error']['code'] == 'custody_not_owner_only'
     assert '/workspace' in err and 'FUSE-unsafe' in err
+    details = json.loads(err)['error']['custody']
+    assert details['marker_path'] == str(root / '.astrid-engine/session/session.json')
+    assert details['helper_sha256'] == 'unknown' and details['lock_state'] == 'unknown'
+    assert details['evidence'] == 'none' and details['next_action']
     assert recorded_engine_root('comfyui') is None
 
 

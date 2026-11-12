@@ -360,6 +360,35 @@ class _Runner:
         self.started_at = _now()
         self.service_owner = None
 
+    def custody_error(self, error, reason):
+        """Enrich a local Linux custody refusal from the pinned owner marker when possible."""
+        if self.plan.placement != "local" or not self.plan.platform.startswith("linux-"):
+            return error
+        try:
+            from .engine_custody import LinuxEngineServiceClient, _directory
+            client = LinuxEngineServiceClient(root=self.plan.root, engine=self.plan.engine,
+                                              platform=self.plan.platform,
+                                              recipe_sha256=self.plan.recipe_sha256,
+                                              helper_sha256=self.helper_sha256)
+            try:
+                with _directory(client.control, create=False) as fd:
+                    diagnostic = client._owner_refusal(fd, type(error), reason)
+            except (EngineError, OSError):
+                diagnostic = client._refusal(type(error), None, reason=reason)
+            error.message = diagnostic.message
+            error.args = (diagnostic.message,)
+            error.custody_details = diagnostic.custody_details
+        except (EngineError, OSError):
+            # A diagnostic must never replace the original refusal.
+            return error
+        return error
+
+    def _custody_refusal(self, error_type, message, *, reason, step_id=None,
+                         retryable=False, recovery_handle=None):
+        error = error_type(message, step_id=step_id, retryable=retryable,
+                           recovery_handle=recovery_handle)
+        return self.custody_error(error, reason)
+
     def path(self, *relative):
         return self.adapter.join(self.plan.root, *relative)
 
@@ -394,8 +423,9 @@ class _Runner:
             raise DeadlineExceeded("owned engine command exceeded deadline", step_id=self.step_id,
                                    retryable=True)
         if result.exit_code is None:
-            raise CustodyUnresolved("command termination is unproven", step_id=self.step_id,
-                                    recovery_handle=result.job_id)
+            raise self._custody_refusal(CustodyUnresolved, "command termination is unproven",
+                                        reason="cleanup_unconfirmed", step_id=self.step_id,
+                                        recovery_handle=result.job_id)
         if type(result.exit_code) is not int:
             raise TransportError("invalid command exit status", step_id=self.step_id)
         if check and result.exit_code != 0:
@@ -474,17 +504,21 @@ class _Runner:
                 "launch_sha256", "owner_id", "healthy", "object_info_sha256", "required_nodes_present"}
         if set(value) != keys or any(value[k] != request[k] for k in (
                 "engine", "platform", "root", "recipe_sha256", "helper_sha256")):
-            raise EndpointOwnershipError("service evidence does not match installation", step_id=self.step_id)
+            raise self._custody_refusal(EndpointOwnershipError, "service evidence does not match installation",
+                                        reason="request_mismatch", step_id=self.step_id)
         if value["state"] not in {"absent", "owned", "unowned"}:
-            raise EndpointOwnershipError("invalid service ownership state", step_id=self.step_id)
+            raise self._custody_refusal(EndpointOwnershipError, "invalid service ownership state",
+                                        reason="request_mismatch", step_id=self.step_id)
         if value["state"] == "unowned":
-            raise EndpointOwnershipError("engine port is occupied by an unowned service", step_id=self.step_id)
+            raise self._custody_refusal(EndpointOwnershipError, "engine port is occupied by an unowned service",
+                                        reason="endpoint_unowned", step_id=self.step_id)
         if value["state"] == "owned":
             if (not isinstance(value["owner_id"], str) or not value["owner_id"]
                     or len(value["owner_id"]) > 256
                     or value["launch_sha256"] != _sha(self.launch_spec())
                     or self.service_owner is not None and value["owner_id"] != self.service_owner):
-                raise EndpointOwnershipError("service incarnation or launch binding differs", step_id=self.step_id)
+                raise self._custody_refusal(EndpointOwnershipError, "service incarnation or launch binding differs",
+                                            reason="request_mismatch", step_id=self.step_id)
             self.service_owner = value["owner_id"]
         return value
 
@@ -737,7 +771,8 @@ class _Runner:
         self.context.ensure_dir(models_root, deadline=self.deadline)
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
-            raise EndpointOwnershipError("server start did not establish ownership", step_id=self.step_id)
+            raise self._custody_refusal(EndpointOwnershipError, "server start did not establish ownership",
+                                        reason="endpoint_unowned", step_id=self.step_id)
         return "executed", {"owner_id": self.service_owner, "launch_sha256": _sha(launch),
                             "cuda_visible_devices": self.visibility}
 
@@ -812,10 +847,11 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
             if parsed.error_code == "custody_unresolved":
                 handle = next((s.facts.get("recovery_handle") for s in reversed(parsed.steps)
                                if s.facts.get("recovery_handle")), None)
-                raise CustodyUnresolved("recover the exact prior command before retrying installation",
-                                        step_id=next((s.id for s in reversed(parsed.steps)
-                                                      if s.validation == "failed"), None),
-                                        recovery_handle=handle)
+                raise runner._custody_refusal(
+                    CustodyUnresolved, "recover the exact prior command before retrying installation",
+                    reason="cleanup_unconfirmed",
+                    step_id=next((s.id for s in reversed(parsed.steps) if s.validation == "failed"), None),
+                    recovery_handle=handle)
         context.ensure_dir(runner.path(".astrid-engine"), deadline=deadline)
         runner.write(runner.path(_RECEIPT), runner.receipt("installing"))
         try:
@@ -1103,7 +1139,11 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
         if (runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits
                 or runner.health.object_info_sha256 != receipt.health.object_info_sha256):
             raise IntegrityError("current evidence differs from installed receipt")
-    except (CustodyUnresolved, DeadlineExceeded):
+    except CustodyUnresolved as exc:
+        if not hasattr(exc, "custody_details"):
+            runner.custody_error(exc, "cleanup_unconfirmed")
+        raise
+    except DeadlineExceeded:
         raise
     except EngineError as exc:
         # Use the active trusted boundary, never transport-supplied step IDs,

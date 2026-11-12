@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from concurrent.futures import CancelledError
 from dataclasses import asdict, replace
 import hashlib
+import logging
 import json
 import math
 import os
@@ -29,12 +30,15 @@ import uuid
 
 from runtime_protocol import platform as native
 
+from astrid.core.execution.process_group import process_birth_identity, held_child_birth_identity
+
 from . import engine_recipe as recipes
 from ._engine_python_bootstrap import engine_child_env, engine_process_env
 from .engine_contracts import (
     CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
     EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
     RecipeValidationError, UnsafePathError, UnsupportedPlatform, effective_models_root,
+    custody_message,
 )
 from .engine_runner import _json, _object_info_sha256, _root, _sha, helper_manifest
 from .engine_platforms import LinuxPlatformAdapter
@@ -232,22 +236,31 @@ class LinuxEngineServiceClient:
         control = checked_root + "/.astrid-engine/session"
         try:
             with _directory(control, create=False) as fd:
-                identity = cls._marker_identity(fd)
+                marker = cls._marker(fd)
+                identity = marker["identity"] if marker is not None else None
         except FileNotFoundError:
             return None
+        except (CustodyUnresolved, UnsafePathError) as exc:
+            diagnostic = cls(root=checked_root, engine=engine, platform=platform,
+                             recipe_sha256="0" * 64, helper_sha256="0" * 64)
+            raise diagnostic._refusal(type(exc), None, reason="marker_invalid") from exc
         if identity is None:
             return None
         if (set(identity) != {"root", "engine", "platform", "recipe_sha256", "helper_sha256"}
                 or identity.get("root") != checked_root or identity.get("engine") != engine
                 or identity.get("platform") != platform):
-            raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
+            diagnostic = cls(root=checked_root, engine=engine, platform=platform,
+                             recipe_sha256="0" * 64, helper_sha256="0" * 64)
+            raise diagnostic._refusal(CustodyUnresolved, {"identity": identity}, reason="marker_invalid")
         try:
             return cls(**identity)
         except RecipeValidationError as exc:
-            raise CustodyUnresolved("invalid supervisor marker; explicit recovery required") from exc
+            diagnostic = cls(root=checked_root, engine=engine, platform=platform,
+                             recipe_sha256="0" * 64, helper_sha256="0" * 64)
+            raise diagnostic._refusal(CustodyUnresolved, {"identity": identity}, reason="marker_invalid") from exc
 
     @staticmethod
-    def _marker_identity(fd):
+    def _marker(fd):
         marker_info = _exists(fd, "session.json")
         if marker_info is not None:
             _private(marker_info, stat.S_ISREG)
@@ -267,24 +280,111 @@ class LinuxEngineServiceClient:
                     raise CustodyUnresolved("invalid supervisor marker; explicit recovery required") from None
             finally:
                 os.close(marker_fd)
-            if (not isinstance(marker, dict) or set(marker) != {"identity", "owner_id"}
+            if (not isinstance(marker, dict) or not {"identity", "owner_id"} <= set(marker)
+                    or set(marker) - {"identity", "owner_id", "process", "pod_id"}
                     or not isinstance(marker["identity"], dict)
                     or not isinstance(marker["owner_id"], str)
                     or re.fullmatch(r"[0-9a-f]{32}", marker["owner_id"]) is None):
                 raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
-            identity = marker["identity"]
-            return identity
+            return marker
         return None
+
+    def _details(self, marker, *, reason, owner_state="unknown", lock_state="unknown", evidence="none"):
+        identity = marker.get("identity", {}) if isinstance(marker, dict) else {}
+        if not isinstance(identity, dict):
+            identity = {}
+        helper = identity.get("helper_sha256", "")
+        return dict(reason=reason, owner_state=owner_state, lock_state=lock_state, evidence=evidence,
+                    root=self.identity["root"], engine=self.identity["engine"],
+                    helper_sha256=helper[:12] if isinstance(helper, str) and re.fullmatch(r"[0-9a-f]{64}", helper) else "unknown",
+                    marker_path=self.control + "/session.json")
+
+    def _refusal(self, error_type, marker, **state):
+        details = self._details(marker, **state)
+        error = error_type(custody_message(details))
+        error.custody_details = details
+        logging.getLogger(__name__).warning("Engine custody refusal: %s", error)
+        return error
+
+    def _retire_dead_owner(self, fd, deadline):
+        """Retire only a proved-dead owner, under its unchanged native lock.
+
+        A free lock on an unverified filesystem is never death evidence.
+        """
+        _remaining(deadline)
+        marker = self._marker(fd)
+        if marker is None:
+            return False
+        try:
+            lock = os.open("owner.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+        except FileNotFoundError as exc:
+            raise self._refusal(CustodyUnresolved, marker, reason="owner_unknown") from exc
+        try:
+            info = os.fstat(lock)
+            _private(info, stat.S_ISREG)
+            if info.st_nlink != 1:
+                raise UnsafePathError("unsafe engine owner lock")
+            try:
+                native.lock_file(lock, blocking=False)
+            except BlockingIOError:
+                return False
+            state, evidence = _owner_process_state(marker)
+            if state == "alive":
+                return False
+            if state != "dead" and _flock_reliable(fd):
+                state, evidence = "dead", "flock"
+            if state != "dead":
+                return False
+            if self._marker(fd) != marker:
+                raise self._refusal(CustodyUnresolved, marker, reason="owner_unknown")
+            for name, kind in (("control.sock", stat.S_ISSOCK), ("session.json", stat.S_ISREG)):
+                info = _exists(fd, name)
+                if info is not None:
+                    _private(info, kind)
+                    os.unlink(name, dir_fd=fd)
+            os.fsync(fd)
+            details = self._details(marker, reason="owner_unknown", owner_state="dead",
+                                    lock_state="available", evidence=evidence)
+            details.pop("reason")
+            logging.getLogger(__name__).warning("Engine custody handover: %s", _json(details))
+            return True
+        except UnsafePathError as exc:
+            raise self._refusal(UnsafePathError, marker, reason="marker_invalid") from exc
+        finally:
+            os.close(lock)
+
+    def _owner_refusal(self, fd, error_type, reason):
+        marker = self._marker(fd)
+        lock_state = "unknown"
+        try:
+            lock = os.open("owner.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            try:
+                _private(os.fstat(lock), stat.S_ISREG)
+                try:
+                    native.lock_file(lock, blocking=False)
+                    lock_state = "available"
+                except BlockingIOError:
+                    lock_state = "held"
+            finally:
+                os.close(lock)
+        except FileNotFoundError:
+            pass
+        state, evidence = _owner_process_state(marker or {})
+        return self._refusal(error_type, marker, reason=reason, owner_state=state,
+                             lock_state=lock_state, evidence=evidence)
 
     def _connect(self, fd, deadline, *, start, cancelled=None):
         while True:
             _remaining(deadline)
             if cancelled is not None and cancelled():
                 raise CancelledError("engine operation cancelled before connection")
-            identity = self._marker_identity(fd)
+            marker = self._marker(fd)
+            identity = marker["identity"] if marker is not None else None
             if identity is not None:
                 if identity != self.identity:
-                    raise EndpointOwnershipError("supervisor installation identity differs")
+                    if self._retire_dead_owner(fd, deadline):
+                        continue
+                    raise self._owner_refusal(fd, EndpointOwnershipError, "identity_mismatch")
             info = _exists(fd, "control.sock")
             if info is not None:
                 _private(info, stat.S_ISSOCK)
@@ -295,11 +395,15 @@ class LinuxEngineServiceClient:
                     return channel
                 except (ConnectionRefusedError, FileNotFoundError):
                     channel.close()
-                    raise CustodyUnresolved("original supervisor unavailable; explicit recovery required") from None
+                    if self._retire_dead_owner(fd, deadline):
+                        continue
+                    raise self._owner_refusal(fd, CustodyUnresolved, "owner_unreachable") from None
                 except BaseException:
                     channel.close()
                     raise
             if _exists(fd, "session.json") is not None:
+                if self._retire_dead_owner(fd, deadline):
+                    continue
                 _private(_exists(fd, "session.json"), stat.S_ISREG)
                 lock = os.open("owner.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
                 try:
@@ -308,7 +412,7 @@ class LinuxEngineServiceClient:
                     except BlockingIOError:
                         pass
                     else:
-                        raise CustodyUnresolved("original supervisor lost; explicit recovery required")
+                        raise self._owner_refusal(fd, CustodyUnresolved, "owner_unknown")
                 finally:
                     os.close(lock)
                 # A starting owner may still be importing its retained sources.
@@ -330,7 +434,6 @@ class LinuxEngineServiceClient:
                 if _exists(fd, "session.json") is not None or _exists(fd, "control.sock") is not None:
                     continue
                 token = uuid.uuid4().hex
-                _write(fd, "session.json", _json({"identity": self.identity, "owner_id": token}).encode())
                 # The child inherits the locked open description. Closing the parent
                 # copy (without LOCK_UN) leaves ownership with that live supervisor.
                 self._spawned = subprocess.Popen(
@@ -339,6 +442,7 @@ class LinuxEngineServiceClient:
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
                     env=engine_process_env(dict(os.environ), self.identity["root"]),
                 )
+                _publish_owner_marker(fd, self.identity, token, self._spawned.pid)
             except BaseException as exc:
                 if isinstance(exc, EngineError):
                     raise
@@ -405,12 +509,27 @@ class LinuxEngineServiceClient:
                     error.cleanup_failure = cause
                     raise error
                 return response["result"]
+        except (CustodyUnresolved, EndpointOwnershipError, UnsafePathError) as exc:
+            if not hasattr(exc, "custody_details"):
+                try:
+                    with _directory(self.control, create=False) as fd:
+                        reason = ("request_mismatch" if isinstance(exc, EndpointOwnershipError) else
+                                  "marker_invalid" if isinstance(exc, UnsafePathError) else "cleanup_unconfirmed")
+                        error = self._owner_refusal(fd, type(exc), reason)
+                except (EngineError, OSError):
+                    error = self._refusal(type(exc), None, reason="marker_invalid")
+                cause = getattr(exc, "cleanup_failure", None)
+                error.cleanup_failure = cause
+                if _valid_cleanup_failure(cause):
+                    error.args = (str(error) + f" ({cause['stage']}: {cause['exception_type']}: {cause['message']})",)
+                raise error from exc
+            raise
         except FileNotFoundError:
             if not start:
                 return None
             raise UnsafePathError("engine control directory missing") from None
         except (OSError, EOFError, ValueError) as exc:
-            raise CustodyUnresolved("supervisor response uncertain; do not replay") from exc
+            raise self._refusal(CustodyUnresolved, None, reason="owner_unreachable") from exc
 
     def call(self, operation, payload, *, deadline):
         if operation not in {"probe", "start", "health"}:
@@ -441,9 +560,77 @@ class LinuxEngineServiceClient:
                                      "restore its owner's control connection and retry installation; "
                                      f"leave the marker in place: {exc}")
             error.cleanup_failure = getattr(exc, "cleanup_failure", None)
+            error.custody_details = getattr(exc, "custody_details", owner._details(
+                {"identity": owner.identity}, reason="owner_lock_timeout",
+                lock_state="held" if isinstance(exc, DeadlineExceeded) else "unknown"))
             raise error from exc
         if self._spawned is not None:
             self._spawned.wait(timeout=_remaining(deadline))
+
+
+def _publish_owner_marker(fd, identity, token, pid):
+    """Both launch and serving publish the same supervisor incarnation."""
+    birth = held_child_birth_identity(pid)
+    if not birth:
+        raise CustodyUnresolved("supervisor process evidence unavailable; leave its control state in place")
+    marker = {"identity": identity, "owner_id": token, "process": {"pid": pid, "birth_id": birth}}
+    pod_id = os.environ.get("RUNPOD_POD_ID")
+    if isinstance(pod_id, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", pod_id):
+        marker["pod_id"] = pod_id
+    _write(fd, "session.json", _json(marker).encode())
+
+
+def _flock_reliable(fd):
+    """Only kernel local filesystems establish cross-process flock exclusion.
+
+    FUSE and network mounts need process or machine evidence instead. Mount
+    identity is read from the kernel, never from a claim stored on the volume.
+    """
+    try:
+        device = os.fstat(fd).st_dev
+        major_minor = f"{os.major(device)}:{os.minor(device)}"
+        with open("/proc/self/mountinfo", encoding="utf-8") as stream:
+            types = {line.split(" - ", 1)[1].split()[0] for line in stream
+                     if line.split()[2] == major_minor}
+        return bool(types) and types <= {"ext4", "xfs", "btrfs", "tmpfs", "ramfs", "overlay"}
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def _owner_process_state(marker):
+    """Return positive incarnation evidence; an unreadable pid proves nothing."""
+    pod_id = marker.get("pod_id")
+    current_pod = os.environ.get("RUNPOD_POD_ID")
+    if (isinstance(pod_id, str) and isinstance(current_pod, str)
+            and re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", pod_id)
+            and re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", current_pod) and pod_id != current_pod):
+        return "dead", "different_pod"
+    process = marker.get("process")
+    if not isinstance(process, dict) or set(process) != {"pid", "birth_id"}:
+        return "unknown", "none"
+    pid, birth = process["pid"], process["birth_id"]
+    if (type(pid) is not int or pid <= 0 or not isinstance(birth, str)
+            or re.fullmatch(r"[0-9a-f-]{36}:[0-9]+", birth) is None):
+        return "unknown", "none"
+    current = process_birth_identity()
+    if not current:
+        return "unknown", "none"
+    if birth.split(":")[0] != current.split(":")[0]:
+        return "dead", "boot_id"
+    observed = process_birth_identity(pid)
+    if observed:
+        return ("alive" if observed == birth else "dead"), "pid_start_ticks"
+    # The shared helper deliberately collapses absent, zombie and unreadable.
+    # Only ENOENT or a witnessed zombie disambiguates death from failed reads.
+    if held_child_birth_identity(pid) == birth:
+        return "dead", "pid_start_ticks"
+    try:
+        os.stat(f"/proc/{pid}")
+    except FileNotFoundError:
+        return "dead", "pid_start_ticks"
+    except OSError:
+        pass
+    return "unknown", "none"
 
 
 def _wait_owner_lock(control, deadline):
@@ -512,13 +699,27 @@ def refuse_busy_engine(*, root, engine, platform, deadline):
 
     try:
         running, pending = _engine_queue(root, engine, platform, deadline)
-    except CustodyUnresolved:
+    except CustodyUnresolved as exc:
         if Path(root, ".astrid-engine/session/session.json").exists():
+            client = LinuxEngineServiceClient.for_stop(root=root, engine=engine, platform=platform)
+            if client is not None:
+                with _directory(client.control, create=False) as fd:
+                    raise client._owner_refusal(fd, CustodyUnresolved, "owner_unreachable") from exc
             raise
         running, pending = [], []
     message = (_busy_message(running, pending) if running or pending else
                "The local engine is held by a running or preparing job; retry installation when it finishes")
-    raise EngineBusy(message)
+    client = LinuxEngineServiceClient(root=root, engine=engine, platform=platform,
+                                     recipe_sha256="0" * 64, helper_sha256="0" * 64)
+    try:
+        with _directory(client.control, create=False) as fd:
+            error = client._owner_refusal(fd, EngineBusy, "owner_busy")
+    except (EngineError, OSError):
+        # A held job lock is already sufficient for refusal. Marker diagnostics
+        # may be unavailable; they cannot turn that refusal into admission.
+        error = client._refusal(EngineBusy, None, reason="owner_busy")
+    error.args = (str(error) + " " + message,)
+    raise error
 
 
 def stop_engine_for_converge(plan, *, context, deadline):
@@ -531,13 +732,25 @@ def stop_engine_for_converge(plan, *, context, deadline):
         try:
             _wait_owner_lock(control, deadline)
         except DeadlineExceeded as exc:
-            raise CustodyUnresolved("Cannot retire the original supervisor owner lock; "
-                                   "leave its control state in place and retry installation") from exc
+            diagnostic = LinuxEngineServiceClient(root=plan.root, engine=plan.engine, platform=plan.platform,
+                                                   recipe_sha256="0" * 64, helper_sha256="0" * 64)
+            raise diagnostic._refusal(CustodyUnresolved, None, reason="owner_lock_timeout",
+                                      lock_state="held") from exc
         return
-    running, pending = _engine_queue(plan.root, plan.engine, plan.platform, deadline)
+    with _directory(client.control, create=False) as fd:
+        if client._retire_dead_owner(fd, deadline):
+            return
+    try:
+        running, pending = _engine_queue(plan.root, plan.engine, plan.platform, deadline)
+    except CustodyUnresolved as exc:
+        with _directory(client.control, create=False) as fd:
+            raise client._owner_refusal(fd, CustodyUnresolved, "owner_unreachable") from exc
     if running or pending:
         from .engine_contracts import EngineBusy
-        raise EngineBusy(_busy_message(running, pending))
+        with _directory(client.control, create=False) as fd:
+            error = client._owner_refusal(fd, EngineBusy, "owner_busy")
+        error.args = (str(error) + " " + _busy_message(running, pending),)
+        raise error
     client.stop_owned(deadline=deadline)
 
 
@@ -1273,6 +1486,7 @@ def _serve(identity, recipe, lock_fd, token):
     threads = []
     clean = False
     with _directory(owner.control, create=False) as fd:
+        _publish_owner_marker(fd, identity, token, os.getpid())
         with socket.socket(socket.AF_UNIX) as listener:
             pending = "." + uuid.uuid4().hex + ".sock"
             previous_umask = os.umask(0o177)

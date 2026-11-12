@@ -29,6 +29,8 @@ class EngineError(RuntimeError):
         self.step_id = step_id
         self.retryable = retryable
         self.recovery_handle = recovery_handle
+        # Attached only by custody-aware callers; CLI validates before public rendering.
+        self.custody_details: dict[str, str]
 
 
 class EngineBusy(EngineError):
@@ -114,6 +116,94 @@ class EndpointOwnershipError(EngineError):
 
 class EndpointHealthError(EngineError):
     code = "endpoint_unhealthy"
+
+
+# Public custody diagnostics use a closed vocabulary.  Transport output and owner
+# identifiers never cross this boundary.
+_CUSTODY_REASONS = frozenset({
+    "identity_mismatch", "owner_alive", "owner_busy", "owner_unknown", "owner_lock_held",
+    "marker_invalid", "owner_unreachable", "cleanup_unconfirmed", "owner_lock_timeout", "request_mismatch", "endpoint_unowned", "custody_not_private",
+})
+_CUSTODY_OWNER_STATES = frozenset({"alive", "dead", "unknown"})
+_CUSTODY_LOCK_STATES = frozenset({"held", "available", "unknown"})
+_CUSTODY_EVIDENCE = frozenset({"flock", "boot_id", "pid_start_ticks", "different_pod", "none"})
+_CUSTODY_MESSAGES = {
+    "custody_not_private": "Engine custody directory must be owner-only. /workspace is FUSE-unsafe; install under a local --root.",
+    "identity_mismatch": "Engine custody identity does not match this installation.",
+    "request_mismatch": "Engine request does not match the bound launch or owner.",
+    "endpoint_unowned": "Engine endpoint is not owned by this installation.",
+    "owner_alive": "An engine owner is still active; retry after it exits.",
+    "owner_busy": "An engine owner is still running a job; wait for it to finish.",
+    "owner_unknown": "Engine owner state could not be verified; custody remains unresolved.",
+    "owner_lock_held": "Engine custody is locked by another owner; retry after it releases the lock.",
+    "marker_invalid": "Engine custody marker is invalid; inspect the local engine state before retrying.",
+    "owner_unreachable": "Engine owner is unreachable; custody remains unresolved.",
+    "cleanup_unconfirmed": "Engine supervisor did not confirm command cleanup; inspect the engine state before retrying.",
+    "owner_lock_timeout": "Timed out waiting for the engine owner lock; retry after it releases the lock.",
+}
+_CUSTODY_ACTIONS = {
+    "custody_not_private": "Choose an owner-only engine root on local disk before retrying.",
+    "endpoint_unowned": "Ask the endpoint owner to free the port, then retry; do not adopt or stop its process.",
+    "request_mismatch": "Use the installed engine launch and its current owner, then retry.",
+    "identity_mismatch": "Restore the old owner control or verify it exited; do not kill it or remove its marker.",
+    "owner_alive": "Wait for the active owner to exit, then retry.",
+    "owner_busy": "Wait for the current job to finish, then retry.",
+    "owner_unknown": "Leave the marker in place; obtain proof the owner has exited before retrying.",
+    "owner_lock_held": "Wait for the owner lock to be released, then retry.",
+    "marker_invalid": "Inspect or repair the custody marker before retrying.",
+    "owner_unreachable": "Leave the marker in place; restore owner connectivity and prove it exited before retrying.",
+    "cleanup_unconfirmed": "Inspect engine processes and custody state before retrying.",
+    "owner_lock_timeout": "Wait for the owner lock to be released, then retry.",
+}
+
+
+def custody_diagnostics(value: Any) -> dict[str, str] | None:
+    """Return a sanitized, closed-vocabulary custody diagnostic or None."""
+    if not isinstance(value, Mapping):
+        return None
+    reason = value.get("reason")
+    owner_state = value.get("owner_state")
+    lock_state = value.get("lock_state")
+    evidence = value.get("evidence")
+    root = value.get("root")
+    marker_path = value.get("marker_path")
+    engine = value.get("engine")
+    helper_sha256 = value.get("helper_sha256")
+    import re
+    if (not isinstance(reason, str) or reason not in _CUSTODY_REASONS
+            or not isinstance(owner_state, str) or owner_state not in _CUSTODY_OWNER_STATES
+            or not isinstance(lock_state, str) or lock_state not in _CUSTODY_LOCK_STATES
+            or not isinstance(evidence, str) or evidence not in _CUSTODY_EVIDENCE):
+        return None
+    if (not isinstance(root, str) or len(root) > 4096 or not root.startswith("/")
+            or "\x00" in root or "\n" in root or "\r" in root
+            or not isinstance(marker_path, str) or marker_path != root.rstrip("/") + "/.astrid-engine/session/session.json"
+            or len(marker_path) > 4096 or "\x00" in marker_path or "\n" in marker_path or "\r" in marker_path
+            or not isinstance(engine, str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", engine)):
+        return None
+    if not isinstance(helper_sha256, str) or not re.fullmatch(r"(?:[0-9a-f]{12}|unknown)", helper_sha256):
+        return None
+    return {"reason": reason, "owner_state": owner_state, "lock_state": lock_state,
+            "evidence": evidence, "marker_path": marker_path, "root": root,
+            "engine": engine, "helper_sha256": helper_sha256,
+            "next_action": _CUSTODY_ACTIONS[reason]}
+
+
+def custody_message(details: Any) -> str:
+    """Render only fixed public text for a validated custody reason."""
+    if (isinstance(details, Mapping) and isinstance(details.get("reason"), str)
+            and details.get("reason") in _CUSTODY_MESSAGES):
+        base = _CUSTODY_MESSAGES[details["reason"]]
+        # Add only fields that passed the public diagnostic validator.
+        clean = custody_diagnostics(details)
+        if clean is None:
+            return base
+        return (f"{base} root={clean['root']} engine={clean['engine']} "
+                f"helper_sha256={clean['helper_sha256']} marker_path={clean['marker_path']} "
+                f"owner_state={clean['owner_state']} evidence={clean['evidence']} "
+                f"lock_state={clean['lock_state']}. {clean['next_action']}")
+    return "Engine custody could not be verified; inspect the engine state before retrying."
 
 
 class UnsupportedPlacement(EngineError):

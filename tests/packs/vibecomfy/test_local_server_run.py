@@ -25,7 +25,11 @@ def _workflow():
             {"id": 1, "type": "SeedImage", "pos": [0, 0], "size": [200, 100],
              "flags": {}, "order": 0, "mode": 0, "inputs": [],
              "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0}],
-             "properties": {"Node name for S&R": "SeedImage"}, "widgets_values": [42, "installed.safetensors"]},
+             "properties": {"Node name for S&R": "SeedImage", "models": [{
+                 "name": "installed.safetensors", "subdir": "checkpoints",
+                 "url": "https://example.invalid/installed.safetensors", "sha256": "0" * 64,
+                 "size_bytes": 1,
+             }]}, "widgets_values": [42, "installed.safetensors"]},
             {"id": 2, "type": "SaveImage", "pos": [300, 0], "size": [200, 100],
              "flags": {}, "order": 1, "mode": 0,
              "inputs": [{"name": "images", "type": "IMAGE", "link": 1}],
@@ -43,7 +47,7 @@ def comfy(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     schema = {
         "SeedImage": {"input": {"required": {"seed": ["INT", {"default": 42}],
-                                               "ckpt_name": [["installed.safetensors"]]}},
+                                               "asset": [["installed.safetensors"]]}},
                       "output": ["IMAGE"], "output_name": ["IMAGE"], "output_node": False},
         "SaveImage": {"input": {"required": {"images": ["IMAGE"], "filename_prefix": ["STRING", {"default": "astrid"}]}},
                       "output": [], "output_node": True},
@@ -52,7 +56,7 @@ def comfy(tmp_path, monkeypatch):
         {"class_type": "LoadImage", "pack": "core", "inputs": {"image": {"type": "STRING", "required": True}},
          "outputs": [{"type": "IMAGE", "name": "IMAGE"}, {"type": "MASK", "name": "MASK"}]},
         {"class_type": "SeedImage", "pack": "test", "inputs": {"seed": {"type": "INT", "required": True},
-         "ckpt_name": {"type": "STRING", "required": True, "choices": ["installed.safetensors"]}},
+         "asset": {"type": "STRING", "required": True, "choices": ["installed.safetensors"]}},
          "outputs": [{"type": "IMAGE", "name": "IMAGE"}]},
         {"class_type": "SaveImage", "pack": "core", "inputs": {
             "images": {"type": "IMAGE", "required": True},
