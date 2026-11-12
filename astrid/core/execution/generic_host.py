@@ -9950,7 +9950,9 @@ class GenericPackHost:
         try:
             from astrid.core._shared import run_logs
 
-            if (output_root / "logs.json").exists():
+            # A machine may have already collected the declarations where its
+            # source paths exist and transported the index with the log files.
+            if (output_root / "logs.json").exists() and not (output_root / "logs" / run_logs.INDEX_NAME).exists():
                 run_logs.collect(output_root)
             outputs = []
             for row in run_logs.read_index(output_root):
