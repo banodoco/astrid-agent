@@ -508,16 +508,33 @@ def test_unsupported_target_is_coded_before_admission(monkeypatch, target, code)
     assert "--placement" in raised.value.fix
 
 
-def test_runpod_requires_fresh_paid_authority_before_admission(monkeypatch):
+def test_generate_without_claimed_machine_refuses_before_admission(monkeypatch):
     import astrid.sdk as sdk
     monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([]))
-    monkeypatch.setattr(GenerationFacade, 'workflow', Mock(side_effect=AssertionError('unconsented RunPod admission')))
-    with pytest.raises(AstridError) as raised:
+    from astrid.core.generation import placement
+    import astrid.sdk.generation as generation
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [])
+    monkeypatch.setattr(generation, '_runpod_preferences',
+                        lambda *a, **k: pytest.fail('generate read saved machine preferences'))
+    monkeypatch.setattr(GenerationFacade, 'workflow',
+                        Mock(side_effect=AssertionError('no-machine request admitted')))
+    with pytest.raises(generation.GenerationInputError,
+                       match='^no machine: run `astrid machines claim`$'):
         GenerationFacade().image(placement='runpod', prompt='one boat')
-    envelope = raised.value.to_envelope()
-    assert envelope['status'] == 'blocked' and envelope['task_id'] is None
-    assert envelope['issues'][0]['code'] == 'input_rejected'
-    assert envelope['issues'][0]['details']['field'] == 'consent'
+
+
+def test_target_describe_directs_rental_to_machines_claim(monkeypatch):
+    from astrid.core.generation import placement
+    import astrid.sdk.generation as generation
+
+    monkeypatch.setattr(placement, 'resolve_placement', lambda *a, **k: placement.Placement(kind='runpod'))
+    monkeypatch.setattr(placement, 'validate_placement', lambda value: value)
+    monkeypatch.setattr(generation, '_runpod_preferences', lambda client: {})
+    monkeypatch.setattr(generation, '_runpod_status', lambda **kwargs: {'offer_digest': 'digest'})
+    description = GenerationFacade().describe(placement='runpod')
+    assert description['offer_digest'] == 'digest'
+    assert description['waiting_policy']['claim_command'] == 'astrid machines claim'
+    assert 'paid_consent_required' not in description['waiting_policy']
 
 
 def test_explicit_unready_target_names_working_recovery(monkeypatch):
@@ -529,10 +546,10 @@ def test_explicit_unready_target_names_working_recovery(monkeypatch):
     assert raised.value.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_UNAVAILABLE'
 
 def _installed_audio_entry(tmp_path, monkeypatch, mode):
-    """Install a canonical test entry and real, isolated target preferences."""
+    """Install a canonical test entry and expose an existing synthetic machine lease."""
     import json
     from astrid.core.generation import targets
-    from astrid.packs.runpod import target_selection
+    from astrid.core.generation import placement
     from vibecomfy.workflow import VibeWorkflow, WorkflowSource
     from vibecomfy.workflow_bundle import emit_bundle
 
@@ -540,8 +557,8 @@ def _installed_audio_entry(tmp_path, monkeypatch, mode):
     folder.mkdir(parents=True)
     monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(folder.parent))
     monkeypatch.setattr(targets, 'config_path', lambda: tmp_path / 'config.toml')
-    target_selection.save_runpod_preferences({'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
-        'image': 'worker@sha256:' + 'a' * 64})
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [
+        {'machine': 'pod-a', 'id': 'pod-a', 'live': True}])
     workflow = VibeWorkflow('00-audio-test', WorkflowSource('00-audio-test'))
     workflow.add_node('SaveAudio', _id='1', uid='sink', filename_prefix='audio')
     workflow.register_input('filename_prefix', '1', 'filename_prefix', 'audio', type='STRING')
@@ -566,17 +583,15 @@ def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit
                                 kernel_task_id='task-a', raw_result={'state': 'queued'})
     client.invoke_result = invoke
     receipt = tmp_path / 'admission.json'
-    result = GenerationFacade().audio(mode=mode, placement='runpod', client=client, project='demo',
+    result = GenerationFacade().audio(mode=mode, placement={'kind': 'runpod', 'machine': 'pod-a'}, client=client, project='demo',
         **({'entry': '00-audio-test'} if explicit else {}),
-        filename_prefix='test', wait=False, recovery_path=receipt, consent=('paid',), max_usd=2,
-        deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
-        preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+        filename_prefix='test', wait=False, recovery_path=receipt)
     assert result.kernel_task_id == 'task-a' and result.raw_result['state'] == 'queued'
     assert len(calls) == 1
     capability, kwargs = calls[0]
     assert capability == 'vibecomfy.run' and kwargs['recovery_path'] == receipt and not kwargs['wait']
     inputs = kwargs['inputs']
-    assert json.loads(inputs['placement_policy'])['kind'] == 'runpod'
+    assert json.loads(inputs['placement_policy']) == {'kind': 'runpod', 'engine': 'comfyui', 'machine': 'pod-a'}
     assert json.loads(inputs['workflow_inputs'])['filename_prefix'] == 'test'
     assert inputs['generation_intent']['modality'] == 'audio'
     # Without an entry the slot's preferred default owns the route; its declared
@@ -600,16 +615,14 @@ def test_foley_runpod_sound_effects_admits_with_placement_policy(tmp_path, monke
         return InvocationResult(capability, 'executor', 'command', True,
                                 kernel_task_id='task-a', raw_result={'state': 'queued'})
     client.invoke_result = invoke
-    result = GenerationFacade().audio(mode='sfx', placement='runpod', client=client, project='demo',
+    result = GenerationFacade().audio(mode='sfx', placement={'kind': 'runpod', 'machine': 'pod-a'}, client=client, project='demo',
         **({'entry': '00-audio-test'} if explicit else {}),
-        filename_prefix='test', wait=False, consent=('paid',), max_usd=2,
-        deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
-        preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+        filename_prefix='test', wait=False)
     assert result.kernel_task_id == 'task-a' and result.raw_result['state'] == 'queued'
     assert len(calls) == 1
     capability, kwargs = calls[0]
     assert capability == 'vibecomfy.run' and not kwargs['wait']
-    assert json.loads(kwargs['inputs']['placement_policy'])['kind'] == 'runpod'
+    assert json.loads(kwargs['inputs']['placement_policy']) == {'kind': 'runpod', 'engine': 'comfyui', 'machine': 'pod-a'}
 
 
 @pytest.mark.parametrize('mode', ['music', 'tts'])
@@ -629,10 +642,6 @@ def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, mo
         project = client.projects.create(name='Audio receipt', slug='audio-receipt', idempotency_key='project')
         assert project.ok
         project_id = project.data['project_id']
-        # Preferences live in the Runtime's settings document; the facade reads them through this client.
-        from astrid.packs.runpod import target_selection
-        target_selection.save_runpod_preferences({'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
-            'image': 'worker@sha256:' + 'a' * 64}, client=client)
         packs = Path(__file__).resolve().parents[2] / 'astrid' / 'packs'
         host = GenericPackHost(pack_roots=[packs / 'vibecomfy', packs / 'runpod'],
             client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
@@ -641,10 +650,14 @@ def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, mo
         host.preflight()
         host.register()
         receipt = tmp_path / 'receipt.json'
-        args = dict(entry='00-audio-test', mode=mode, placement='runpod', client=client, project=project_id,
-                    filename_prefix='test', wait=False, recovery_path=receipt, consent=('paid',), max_usd=2,
-                    deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
-                    preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+        from astrid.core.generation import placement
+        monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [
+            {'machine': 'pod-a', 'id': 'pod-a', 'live': True}])
+        import astrid.sdk.generation as generation
+        monkeypatch.setattr(generation, '_runpod_preferences',
+                            lambda *a, **k: pytest.fail('generate read saved machine preferences'))
+        args = dict(entry='00-audio-test', mode=mode, placement={'kind': 'runpod', 'machine': 'pod-a'}, client=client, project=project_id,
+                    filename_prefix='test', wait=False, recovery_path=receipt)
         result = GenerationFacade().audio(**args)
         saved = json.loads(receipt.read_text())
         assert result.ok and result.kernel_task_id == saved['locator']['task_id']
