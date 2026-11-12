@@ -128,8 +128,8 @@ def _choices(parser: argparse.ArgumentParser) -> set[str]:
 def test_tasks_and_runs_expose_only_canonical_verbs() -> None:
     from astrid.core.cli.domain_tasks import COMMANDS as TASK_COMMANDS, build_parser as task_parser
     from astrid.core.cli.domain_runs import COMMANDS as RUN_COMMANDS, build_parser as run_parser
-    assert tuple(c.name for c in TASK_COMMANDS) == ("create", "list", "show", "cancel", "retry", "events", "follow")
-    assert _choices(task_parser(_Client())) == {"create", "list", "show", "cancel", "retry", "events", "follow"}
+    assert tuple(c.name for c in TASK_COMMANDS) == ("create", "list", "show", "cancel", "retry", "events", "follow", "logs")
+    assert _choices(task_parser(_Client())) == {"create", "list", "show", "cancel", "retry", "events", "follow", "logs"}
     assert tuple(c.name for c in RUN_COMMANDS) == ("list", "show", "cancel", "retry", "events", "open")
     assert _choices(run_parser(_Client())) == {"list", "show", "cancel", "retry", "events", "open"}
 

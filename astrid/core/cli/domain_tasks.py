@@ -26,6 +26,8 @@ Verbs (six one-call resource operations plus one durable observer):
   fence through its internal seam, while partial fences remain invalid;
 - ``retry <task_id>`` — one ``client.tasks.retry`` call with the same
   idempotency-key contract;
+- ``logs <task_id>`` — list task outputs declared with role ``log``, or read
+  one managed log object;
 - ``events <task_id>`` — one ``client.tasks.events`` call returning the
   task's ordered ``core.task`` stream events (read, no key).
 - ``follow <task_id>`` — repeatedly reads ``client.tasks.show`` until the
@@ -262,6 +264,50 @@ def _cmd_events(parsed: argparse.Namespace) -> int:
     return print_result(result, as_json=parsed.json)
 
 
+def _cmd_logs(parsed: argparse.Namespace) -> int:
+    task_id, code = _task_id(parsed)
+    if task_id is None:
+        return code
+    result = parsed.client.tasks.list_managed_outputs(task_id)
+    if not result.ok:
+        return print_result(result, as_json=parsed.json)
+    rows = result.data
+    if isinstance(rows, tuple) and len(rows) == 2 and isinstance(rows[0], list):
+        rows = rows[0]
+    if not isinstance(rows, list):
+        rows = []
+    logs = [row for row in rows if isinstance(row, Mapping) and row.get("role") == "log"]
+    if not logs:
+        print(f"no logs recorded for task {task_id}", file=sys.stderr)
+        return 1
+    if parsed.name is not None:
+        selected = next(
+            (row for row in logs if (row.get("variant_key") or row.get("filename")) == parsed.name),
+            None,
+        )
+        if selected is None:
+            print(f"no log named {parsed.name} for task {task_id}", file=sys.stderr)
+            return 1
+        digest = selected.get("digest") or selected.get("object_id")
+        reader = getattr(parsed.client, "read_bytes", None)
+        if callable(reader) and digest:
+            data = reader(str(digest))
+            sys.stdout.buffer.write(data)
+            return 0
+        print(f"{selected.get('variant_key') or selected.get('filename')}  {digest or 'object reference unavailable'}")
+        print("This client cannot read managed output bytes; showing the object reference instead.", file=sys.stderr)
+        return 0
+    if parsed.json:
+        return print_result(DomainResult.success(logs), as_json=True)
+    for row in logs:
+        name = row.get("variant_key") or row.get("filename") or "-"
+        media_type = row.get("media_type") or "-"
+        size = row.get("size_bytes", row.get("size", "-"))
+        digest = row.get("digest") or row.get("object_id") or "-"
+        print(f"{name}  {media_type}  {size}  {digest}")
+    return 0
+
+
 def _follow_kwargs(parsed: argparse.Namespace) -> dict[str, Any]:
     return {"project": parsed.project, "poll_seconds": parsed.poll_seconds, "timeout_seconds": parsed.timeout_seconds}
 
@@ -422,6 +468,14 @@ def _configure_events(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_events)
 
 
+def _configure_logs(subparser: argparse.ArgumentParser) -> None:
+    _add_project_arg(subparser)
+    subparser.add_argument("task_id", help="Task id, or a unique hex prefix of at least 8 characters.")
+    subparser.add_argument("--name", default=None, help="Print one named log's bytes.")
+    _add_json_flag(subparser, help_text="Print only role=log managed-output rows as a JSON envelope.")
+    subparser.set_defaults(handler=_cmd_logs)
+
+
 def _configure_follow(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
     subparser.add_argument("task_id", help="Task id, or a unique hex prefix of at least 8 characters.")
@@ -483,19 +537,24 @@ COMMANDS: tuple[CommandSpec, ...] = (
         help="Follow durable task state to completion with quiet progress updates.",
         configure=_configure_follow,
     ),
+    CommandSpec(
+        "logs",
+        help="List or read one task's managed log outputs.",
+        configure=_configure_logs,
+    ),
 )
 
 
 def build_parser(client: Any) -> argparse.ArgumentParser:
     """Build the ``tasks`` product-family parser stamped with *client*.
 
-    Exactly the seven product verbs above are registered; executor lifecycle
+    Exactly the eight product verbs above are registered; executor lifecycle
     and plan/step verbs are absent by construction.
     """
     parser = argparse.ArgumentParser(
         prog="astrid tasks",
         description=(
-            "Task create/list/show/cancel/retry/events/follow (product family); "
+            "Task create/list/show/cancel/retry/events/follow/logs (product family); "
             "executor lifecycle verbs are not exposed."
         ),
     )
