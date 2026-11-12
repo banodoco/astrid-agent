@@ -15,7 +15,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-
 # Owner decision, 12 Nov: only these per-file/code increases block Release 13.
 BLOCKING_CODES = {
     "Ruff": frozenset({"F821", "BLE001"}),
