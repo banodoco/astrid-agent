@@ -215,7 +215,7 @@ def test_explicit_unqualified_entry_uses_coded_refusal(monkeypatch):
 
 @pytest.mark.parametrize('inputs,mode,match', [
     ({'prompt': 'boat'}, 'i2v', 'image_ref'),
-    ({'prompt': 'boat', 'image_ref': 'start.png'}, 'flf', 'Available backends: cloud'),
+    ({'prompt': 'boat', 'image_ref': 'start.png'}, 'flf', 'image_end_ref'),
 ])
 def test_explicit_unqualified_keeps_input_validation_before_probe(monkeypatch, inputs, mode, match):
     from astrid.sdk.exceptions import CapabilityValidationError, CapabilityMissingInputError

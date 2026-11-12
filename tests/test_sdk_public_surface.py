@@ -2128,20 +2128,30 @@ def test_image_execution_inference_single_backend(
     assert seen["kwargs"]["inputs"]["mode"] == "t2i"
 
 
-def test_image_execution_ambiguous_rejected(
+def test_image_omitted_and_auto_select_declared_local(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """When multiple backends are available and no execution is given,
-    the facade raises a diagnostic asking the caller to choose."""
+    """Omitted placement and auto select a catalog-declared local route."""
     astrid = _import_public_module()
+    from astrid.sdk.generation import GenerationFacade
+    seen = []
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        lambda self, **kwargs: seen.append(kwargs) or "routed")
 
-    # z-image t2i has both local and cloud
-    with pytest.raises(astrid.CapabilityValidationError, match="Ambiguous execution"):
-        astrid.generate.image(
-            model="z-image",
-            out=tmp_path,
-            prompt="test",
-        )
+    registry = importlib.import_module("astrid.sdk")._load_model_registry()
+    entry = next(candidate for candidate in registry.list_all(include_closed=True)
+                 if candidate.modality == "image" and "t2i" in candidate.modes
+                 and "local" in candidate.modes["t2i"].backends
+                 and len(candidate.modes["t2i"].backends) > 1)
+    common = {"model": entry.id, "mode": "t2i", "out": tmp_path, "prompt": "test"}
+    assert astrid.generate.image(**common) == "routed"
+    assert astrid.generate.image(**common, placement="auto") == "routed"
+    assert [(row["placement"], row["model"], row["mode"], row["inputs"])
+            for row in seen] == [
+        ("auto", entry.id, "t2i", {"prompt": "test"}),
+        ("auto", entry.id, "t2i", {"prompt": "test"}),
+    ]
 
 
 def test_image_explicit_execution_validated_against_backends(
@@ -2210,20 +2220,30 @@ def test_video_mode_inference_t2v_no_refs(
 
 
 def test_video_mode_inference_i2v_image_ref(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """When mode is omitted and image_ref is present (but not image_end_ref),
-    i2v is inferred.  wan-2.2 i2v has both local and cloud → ambiguous
-    execution is rejected."""
+    i2v is inferred and omitted placement matches auto."""
     astrid = _import_public_module()
+    from astrid.sdk.generation import GenerationFacade
+    seen = []
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        lambda self, **kwargs: seen.append(kwargs) or "routed")
 
-    # wan-2.2 i2v has both local and cloud — ambiguous execution
-    with pytest.raises(astrid.CapabilityValidationError, match="Ambiguous execution"):
-        astrid.generate.video(
-            model="wan-2.2",
-            out=tmp_path,
-            image_ref="https://example.com/frame.png",
-        )
+    registry = importlib.import_module("astrid.sdk")._load_model_registry()
+    entry = next(candidate for candidate in registry.list_all(include_closed=True)
+                 if candidate.modality == "video" and "i2v" in candidate.modes
+                 and "local" in candidate.modes["i2v"].backends)
+    common = {"model": entry.id, "out": tmp_path,
+              "image_ref": "https://example.com/frame.png"}
+    assert astrid.generate.video(**common) == "routed"
+    assert astrid.generate.video(**common, placement="auto") == "routed"
+    assert [(row["placement"], row["model"], row["mode"], row["inputs"])
+            for row in seen] == [
+        ("auto", entry.id, "i2v", {"image_ref": "https://example.com/frame.png"}),
+        ("auto", entry.id, "i2v", {"image_ref": "https://example.com/frame.png"}),
+    ]
 
 
 def test_video_mode_inference_flf_both_refs(
@@ -2272,33 +2292,38 @@ def test_video_explicit_mode_validated(
     assert seen["kwargs"]["inputs"]["mode"] == "t2v"
 
 
-def test_video_execution_inference_single_backend(
+def test_video_execution_inference_single_backend_declared_local_target_route(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Video mode with a single backend auto-infers execution."""
     astrid = _import_public_module()
-    sdk = importlib.import_module("astrid.sdk")
-    preflight = importlib.import_module("astrid.core.generation.preflight")
-    fake_invoke, seen = _make_success_invoke(astrid, tmp_path)
-    monkeypatch.setattr(sdk, "invoke", fake_invoke)
-    monkeypatch.setattr(
-        preflight,
-        "require_local_generation_readiness",
-        lambda *_args, **_kwargs: None,
-    )
-
-    # ltx-2.3 flf only has local
+    from astrid.sdk.generation import GenerationFacade
+    seen = []
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        lambda self, **kwargs: seen.append(kwargs) or "routed")
+    registry = importlib.import_module("astrid.sdk")._load_model_registry()
+    entry = next(candidate for candidate in registry.list_all(include_closed=True)
+                 if candidate.modality == "video"
+                 and any(tuple(mode.backends) == ("local",) for mode in candidate.modes.values()))
+    mode_name = next(name for name, mode in entry.modes.items()
+                     if tuple(mode.backends) == ("local",))
     result = astrid.generate.video(
-        model="ltx-2.3",
-        mode="flf",
+        model=entry.id,
+        mode=mode_name,
         out=tmp_path,
         project="demo",
     )
 
-    assert result.ok is True
-    assert seen["kwargs"]["inputs"]["mode"] == "flf"
-    assert seen["kwargs"]["inputs"]["execution"] == "local"
+    assert result == "routed"
+    assert len(seen) == 1
+    assert seen[0]["placement"] == "auto"
+    assert seen[0]["model"] == entry.id
+    assert seen[0]["mode"] == mode_name
+    assert seen[0]["execution"] is None
+    assert importlib.import_module("astrid.sdk")._resolve_execution(
+        entry, mode_name, None, model=entry.id,
+    ) == "local"
 
 
 def test_unknown_model_raises_validation_error(
@@ -2444,28 +2469,38 @@ def test_video_explicit_execution_rejected_when_unavailable(
         )
 
 
-def test_ambiguous_execution_diagnostic_includes_available_backends(
+def test_conflicting_placement_diagnostic_names_declared_execution_and_valid_placements(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """When multiple backends exist and none is specified, the error
-    message must list every available backend (sorted)."""
+    """Provider-only catalog entries reject concrete target placement clearly."""
     astrid = _import_public_module()
+    from astrid.sdk.generation import GenerationFacade
+    def unexpected_io(self, *args, **kwargs):
+        raise AssertionError(f"target route invoked unexpectedly: {kwargs!r}")
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        unexpected_io)
+    monkeypatch.setattr(GenerationFacade, "_invoke", unexpected_io)
 
-    # z-image t2i has both local and cloud → ambiguous
+    registry = importlib.import_module("astrid.sdk")._load_model_registry()
+    entry = next(candidate for candidate in registry.list_all(include_closed=True)
+                 if candidate.modality == "image"
+                 and any("local" not in mode.backends for mode in candidate.modes.values()))
+    mode_name, mode = next((name, mode) for name, mode in entry.modes.items()
+                           if "local" not in mode.backends)
     with pytest.raises(astrid.CapabilityValidationError) as excinfo:
-        astrid.generate.image(
-            model="z-image",
-            out=tmp_path,
-            prompt="test",
-        )
-
+        astrid.generate.image(model=entry.id, mode=mode_name, placement="runpod",
+                              out=tmp_path, prompt="test", dry_run=True)
     message = str(excinfo.value)
-    assert "Ambiguous execution" in message
-    assert "Available backends:" in message
-    assert "cloud" in message
-    assert "local" in message
-    # Verify the backends are in alphabetical order
-    assert message.index("cloud") < message.index("local")
+    assert entry.id in message
+    assert "declares execution" in message
+    assert "valid placements" in message
+    execution = importlib.import_module("astrid.sdk")._resolve_execution(
+        entry, mode_name, None, model=entry.id,
+    )
+    assert execution in message
+    assert excinfo.value.details["execution"] == execution
+    assert excinfo.value.details["valid_placements"] == [None, "auto"]
 
 
 # ---------------------------------------------------------------------------

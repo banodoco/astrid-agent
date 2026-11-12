@@ -599,6 +599,8 @@ def _resolve_execution(
     inference_backend_ids = [
         backend_id for backend_id in backend_ids if backend_id != "codex"
     ] or backend_ids
+    if "local" in inference_backend_ids:
+        return "local"
     if len(inference_backend_ids) == 1:
         return inference_backend_ids[0]
 
@@ -1982,6 +1984,7 @@ class GenerationFacade:
         kind.check_prompt(model=model, entry=entry, inputs=inputs)
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
+        entry_source = None
         if entry is not None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
@@ -1990,20 +1993,56 @@ class GenerationFacade:
                 entry=entry, model=model, mode=mode, modality=modality,
                 inputs=inputs, registry=registry,
             )
+            entry_source = description["source"]
             model, mode = entry, description["mode"]
             if description["source"] == "workflow" and placement is None:
                 placement = "auto"
-        resolved_mode, explicit_openai = kind.resolve_mode(
-            sdk_module, model=model, mode=mode, execution=execution, inputs=inputs,
-            resume=resume, recovery_path=recovery_path, placement=placement,
-        )
         if registry is None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root,
                 extra_pack_roots=extra_pack_roots,
             )
+        # Engine selects the ComfyUI target resolver; establish that selector
+        # before resolving a catalog execution so provider entries can consume
+        # ``auto`` without it being reintroduced as a target afterward.
         if engine is not None and placement is None:
-            placement = 'auto'
+            placement = "auto"
+        declared_entry = None
+        if model is not None and entry_source != "workflow":
+            try:
+                declared_entry = registry.get(model)
+            except KeyError:
+                pass
+        resolved_mode, explicit_openai = kind.resolve_mode(
+            sdk_module, model=model, mode=mode, execution=execution, inputs=inputs,
+            resume=resume, recovery_path=recovery_path, placement=placement,
+        )
+        # Catalog entries declare their execution in the selected mode. Resolve
+        # that declaration before interpreting placement so provider entries
+        # keep their existing SDK route when placement is omitted or ``auto``.
+        # A concrete placement only applies to the local ComfyUI route.
+        resolved_execution = None
+        if declared_entry is not None:
+            resolved_mode = kind.finish_mode(
+                sdk_module, model=model, model_entry=declared_entry, mode=mode,
+                resolved_mode=resolved_mode, explicit_openai=explicit_openai,
+            )
+            resolved_execution = sdk_module._resolve_execution(
+                declared_entry, resolved_mode, execution, model=model,
+            )
+            if resolved_execution != "local":
+                if placement not in (None, "auto"):
+                    raise CapabilityValidationError(
+                        f"entry {model!r} declares execution {resolved_execution!r}; "
+                        "valid placements: omitted or 'auto'",
+                        details={"entry": model, "execution": resolved_execution,
+                                 "valid_placements": [None, "auto"]},
+                    )
+                execution = resolved_execution
+                placement = None
+            elif placement is None:
+                # Omitted placement and ``auto`` enter the same resolver below.
+                placement = "auto"
         if placement is not None:
             kind.check_target_mode(mode=resolved_mode)
             return self._generate_on_target(
@@ -2029,20 +2068,24 @@ class GenerationFacade:
             )
         if model is None:
             raise CapabilityValidationError("model is required when target is omitted")
-        try:
-            model_entry = registry.get(model)
-        except KeyError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-        resolved_mode = kind.finish_mode(
-            sdk_module, model=model, model_entry=model_entry, mode=mode,
-            resolved_mode=resolved_mode, explicit_openai=explicit_openai,
-        )
-        resolved_execution = sdk_module._resolve_execution(
-            model_entry,
-            resolved_mode,
-            execution,
-            model=model,
-        )
+        model_entry = declared_entry
+        if model_entry is None:
+            try:
+                model_entry = registry.get(model)
+            except KeyError as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+        if resolved_mode is None:
+            resolved_mode = kind.finish_mode(
+                sdk_module, model=model, model_entry=model_entry, mode=mode,
+                resolved_mode=resolved_mode, explicit_openai=explicit_openai,
+            )
+        if resolved_execution is None:
+            resolved_execution = sdk_module._resolve_execution(
+                model_entry,
+                resolved_mode,
+                execution,
+                model=model,
+            )
         from astrid.core.generation.preflight import (
             require_local_generation_readiness,
             validate_generation_request,
