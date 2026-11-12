@@ -2277,3 +2277,35 @@ def test_true_legacy_receipt_with_model_steps_and_rows_parses(setup):
     assert parsed.status == "installed"
     assert parsed.models == rows
     assert tuple(s.id for s in parsed.steps) == tuple(s.id for s in plan.steps)
+
+
+def test_status_rechecks_with_the_model_directory_the_install_bound(setup):
+    """A paid pod install bound a volume model cache; `engines status` names none.
+
+    Status must take the receipt's models_root, or the read-only start check
+    compares the live models configuration against <root>/models and reports a
+    healthy engine as integrity_failed at step "start".
+    """
+    plan, context, adapter, deadline = setup
+    bound = {}
+    original_run = context.run
+
+    def run(request):
+        argv = request.argv
+        if "engine_runner_target" in " ".join(argv):
+            operation, payload = argv[-2], json.loads(argv[-1])
+            if operation == "models-config":
+                bound["models_root"] = payload.get("models_root")
+            elif operation == "models-config-check":
+                context.models_config_valid = (
+                    "models_root" in bound and payload.get("models_root") == bound["models_root"])
+        return original_run(request)
+
+    context.run = run
+    cached = runner.plan_install(context.recipe, root=ROOT, placement="local", models_root="/MODEL_CACHE/models")
+    installed = runner.install_engine(cached, context=context, adapter=adapter, deadline=deadline)
+    assert installed.status == "installed" and installed.models_root == "/MODEL_CACHE/models"
+    # The reader names no model directory, exactly like `astrid engines status` on the pod.
+    current = runner.engine_status(plan.engine, platform=plan.platform, placement=plan.placement,
+                                   root=plan.root, context=context, deadline=deadline)
+    assert current.status == "installed", (current.status, current.error_code, current.failed_step_id)

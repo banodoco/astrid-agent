@@ -1044,6 +1044,11 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
     if fact.symlink or not fact.regular or fact.bytes is None or fact.bytes > 1024 * 1024:
         raise IntegrityError("invalid install receipt file")
     receipt = _parse_receipt(context.read_json(path, deadline=deadline), plan)
+    if plan.models_root is None and receipt.models_root is not None:
+        # A reader that names no model directory takes the one the install bound
+        # (see _parse_receipt). Re-plan with it, or every read-only check below
+        # compares the install against <root>/models and refuses a healthy engine.
+        plan = plan_install(recipe, root=root, placement=placement, models_root=receipt.models_root)
     if receipt.status != "installed":
         return receipt
     # Lazy optional production adapter dependency, absent from lookup/planning.
