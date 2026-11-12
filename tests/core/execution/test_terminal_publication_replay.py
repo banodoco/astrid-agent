@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import threading
+from types import SimpleNamespace
 import pytest
 
 from astrid.core.execution import generic_host
@@ -287,3 +289,161 @@ def test_recovery_total_bound_is_visibly_unresolved(settlement_case, tmp_path, m
         assert calls[1:] == [calls[1]] * (len(calls) - 1)
     assert json.loads((root / "fail-request.json").read_text()) == request
     assert case.service.task(case.task_id)["task"]["status"] == "running"
+
+
+def _fresh_host(case, root):
+    return generic_host.GenericPackHost(pack_roots=list(case.host.pack_roots), client=case.host.client,
+        executor_id=case.host.executor_id, attempt_root=root,
+        capability_matrix=case.host.capability_matrix_path, execution_policy=case.host.execution_policy)
+
+
+def test_interrupted_recovery_preserves_consumed_budget_for_fresh_host(
+    settlement_case, tmp_path, monkeypatch,
+):
+    case = settlement_case
+    root, request = _saved_failure(case, tmp_path)
+    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_MAX_ROUNDS", 3)
+    calls = _wire(case, monkeypatch, [], unavailable=True)
+
+    class Interrupted(BaseException):
+        pass
+
+    waits = []
+
+    def crash(delay):
+        waits.append(delay)
+        if len(waits) == 2:
+            raise Interrupted()
+
+    monkeypatch.setattr(case.host._shutdown, "wait", crash)
+    with pytest.raises(Interrupted):
+        case.host._recover_terminal_requests()
+    assert len(calls) == 2
+    assert not (root / "publication-unresolved.json").exists()
+    fresh = _fresh_host(case, root)
+    with pytest.raises(HostError, match="unresolved terminal publication"):
+        fresh._recover_terminal_requests()
+    assert len(calls) == 3  # Only the unconsumed round survives a restart.
+    assert calls == [calls[0]] * 3
+    assert json.loads((root / "fail-request.json").read_text()) == request
+    assert json.loads((root / "publication-unresolved.json").read_text())["rounds"] == 3
+    assert case.service.task(case.task_id)["task"]["status"] == "running"
+
+
+def test_live_reconciliation_and_restart_share_consumed_budget(settlement_case, monkeypatch):
+    case = settlement_case
+    case.mode = "replay"
+    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_MAX_ROUNDS", 3)
+    calls = _wire(case, monkeypatch, [], unavailable=True)
+    _fail_after_outputs(case, monkeypatch)
+    with pytest.raises(OSError, match="publication unavailable"):
+        _run(case)
+    _join(case)
+    assert len(calls) == 8
+    # Model interruption after charging the final round but before writing
+    # the unresolved marker. Only the pre-I/O budget survives this restart.
+    (case.root / "publication-unresolved.json").unlink()
+    fresh = _fresh_host(case, case.root)
+    with pytest.raises(HostError, match="unresolved terminal publication"):
+        fresh._recover_terminal_requests()
+    assert len(calls) == 8
+    assert json.loads((case.root / "publication-unresolved.json").read_text())["rounds"] == 3
+    assert case.service.task(case.task_id)["task"]["status"] == "running"
+
+
+def _recovery_process(root, executor_id, ready, start, observations, reads, errors):
+    """Independent processes consume the same recovery budget through the host."""
+    generic_host._TERMINAL_RECONCILE_MAX_ROUNDS = 3
+    count = 0
+
+    def unavailable(task_id):
+        nonlocal count
+        count += 1
+        if count == 1:
+            observations.wait(timeout=5)
+        raise OSError("offline observation")
+
+    host = generic_host.GenericPackHost(pack_roots=[], client=SimpleNamespace(task=unavailable),
+                                       executor_id=executor_id, attempt_root=root)
+    host._shutdown.wait = lambda delay: None
+    ready.put(True)
+    if not start.wait(5):
+        errors.put("process start was not released")
+        return
+    try:
+        host._recover_terminal_requests()
+    except HostError as exc:
+        if "unresolved terminal publication" not in str(exc):
+            errors.put(str(exc))
+    except BaseException as exc:
+        errors.put(repr(exc))
+    finally:
+        reads.put(count)
+
+
+def test_concurrent_recovery_processes_share_one_total_budget(settlement_case, tmp_path):
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    context = multiprocessing.get_context("spawn")
+    ready, reads, errors, start = context.Queue(), context.Queue(), context.Queue(), context.Event()
+    observations = context.Barrier(2)
+    workers = [context.Process(target=_recovery_process,
+        args=(root, case.host.executor_id, ready, start, observations, reads, errors)) for _ in range(2)]
+    try:
+        for worker in workers:
+            worker.start()
+        assert all(ready.get(timeout=10) for _ in workers)
+        start.set()
+        for worker in workers:
+            worker.join(timeout=10)
+            assert not worker.is_alive() and worker.exitcode == 0
+        assert sum(reads.get(timeout=2) for _ in workers) == 3
+        assert errors.empty()
+        assert json.loads((root / "publication-unresolved.json").read_text())["rounds"] == 3
+    finally:
+        start.set()
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+            worker.join(timeout=3)
+
+
+def test_cede_is_journaled_and_restart_replays_its_exact_wire(settlement_case, tmp_path, monkeypatch):
+    case = settlement_case
+    root, original = _saved_failure(case, tmp_path)
+    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_MAX_ROUNDS", 3)
+    calls = _wire(case, monkeypatch, [400], unavailable=True)
+
+    class Interrupted(BaseException):
+        pass
+
+    waits = []
+
+    def crash(delay):
+        waits.append(delay)
+        if len(waits) == 2:
+            raise Interrupted()
+
+    monkeypatch.setattr(case.host._shutdown, "wait", crash)
+    with pytest.raises(Interrupted):
+        case.host._recover_terminal_requests()
+    cede_path = root / "cede-request.json"
+    assert cede_path.is_file()
+    cede = json.loads(cede_path.read_text())
+    assert cede["idempotency_key"].endswith("-cede")
+    assert json.loads((root / "fail-request.json").read_text()) == original
+    assert json.loads(calls[-1][2]) == cede["body"]
+    # A fresh host replays that journal even when the lease has since expired.
+    restarted = _fresh_host(case, root)
+    replayed = _wire(case, monkeypatch, [])
+    get_task = restarted.client.generated.get_task
+    monkeypatch.setattr(restarted.client.generated, "get_task", lambda task_id: {
+        **get_task(task_id), "lease_expires_at": "2000-01-01T00:00:00Z"})
+    restarted._recover_terminal_requests()
+    assert replayed == [calls[-1]]
+    assert case.service.task(case.task_id)["task"]["status"] == "failed"
+    # The acknowledgement used the final round. Another restart must preserve
+    # that resolution rather than mark the retained older journals unresolved.
+    _fresh_host(case, root)._recover_terminal_requests()
+    assert replayed == [calls[-1]]
+    assert not (root / "publication-unresolved.json").exists()

@@ -284,13 +284,65 @@ def _terminal_publication_rejection(
 
 def _persist_terminal_request(path: Path, request: Mapping[str, Any]) -> None:
     """Keep the exact fenced wire request before sending any terminal mutation."""
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        json.dump(request, stream, separators=(",", ":"), allow_nan=False)
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+    # Distinct temporary names also permit concurrent recovery processes to
+    # publish the same unresolved marker without sharing a truncated inode.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(request, stream, separators=(",", ":"), allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        if sys.platform != "win32":
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def _terminal_reconciliation_budget(root: Path, task_id: str, attempt_id: str):
+    """Lock a stable sibling inode, never the atomically replaced budget file."""
+    from astrid.core.pack._filelock import lock_fd, unlock_fd
+
+    path = root / "publication-reconciliation.json"
+    with (root / "publication-reconciliation.lock").open("a+b") as guard:
+        lock_fd(guard.fileno())
+        try:
+            budget = {"task_id": task_id, "attempt_id": attempt_id, "rounds": 0}
+            if path.exists():
+                budget = json.loads(path.read_text(encoding="utf-8"))
+                rounds = budget["rounds"]
+                if (budget.get("task_id") != task_id or budget.get("attempt_id") != attempt_id
+                        or type(rounds) is not int or rounds < 0):
+                    raise HostError("invalid terminal reconciliation budget")
+            yield budget
+        finally:
+            unlock_fd(guard.fileno())
+
+
+def _take_terminal_reconciliation_round(root: Path, task_id: str, attempt_id: str) -> int | None:
+    """Charge before I/O: crashes may consume rounds but cannot restore them."""
+    with _terminal_reconciliation_budget(root, task_id, attempt_id) as budget:
+        if budget["rounds"] >= _TERMINAL_RECONCILE_MAX_ROUNDS:
+            return None
+        budget["rounds"] += 1
+        _persist_terminal_request(root / "publication-reconciliation.json", budget)
+        return budget["rounds"]
+
+
+def _finish_terminal_reconciliation(root: Path, task_id: str, attempt_id: str) -> None:
+    """Retain the acknowledged outcome so old journals cannot reopen custody."""
+    with _terminal_reconciliation_budget(root, task_id, attempt_id) as budget:
+        budget["resolved"] = True
+        _persist_terminal_request(root / "publication-reconciliation.json", budget)
 
 
 class _RuntimeSourceCustody:
@@ -498,7 +550,8 @@ class CommandCleanupUnresolved(HostError):
 _LEASE_POLL_SECONDS = 5.0
 _TERMINAL_RECONCILE_SECONDS = 30.0
 _TERMINAL_RECONCILE_POLL_SECONDS = 0.25
-# Count every reconciliation round, including failed reads and cede attempts.
+# Durably count every reconciliation round across live/restart/concurrent
+# owners, including failed reads and cede attempts, before beginning its I/O.
 # Twelve rounds allow transient recovery with exponential back-off (capped at
 # five seconds), without letting renewed leases or unavailable cedes loop forever.
 _TERMINAL_RECONCILE_MAX_ROUNDS = 12
@@ -11691,8 +11744,17 @@ class GenericPackHost:
             delay = _TERMINAL_RECONCILE_POLL_SECONDS
             announced_rejection = False
             rounds = 0
-            while not terminal.get("recorded") and rounds < _TERMINAL_RECONCILE_MAX_ROUNDS:
-                rounds += 1
+            while not terminal.get("recorded"):
+                try:
+                    charged = _take_terminal_reconciliation_round(
+                        terminal["root"], str(data["id"]), str(exact_attempt))
+                except Exception as exc:
+                    terminal["reporting_error"] = exc
+                    break  # A journal failure cannot authorize another RPC.
+                if charged is None:
+                    rounds = _TERMINAL_RECONCILE_MAX_ROUNDS
+                    break
+                rounds = charged
                 try:
                     current = self.client.task(str(data["id"]))
                     current = current.get("task", current) if isinstance(current, Mapping) else current
@@ -11734,7 +11796,9 @@ class GenericPackHost:
                         response = self._handoff_settlement_call(
                             self.client.fail, str(data["id"]), lease_token, detail,
                             retryable=False, attempt_id=exact_attempt, fence=exact_fence,
-                            structured_error={"code": "reconciliation_required"})
+                            structured_error={"code": "reconciliation_required"},
+                            **({"request_path": terminal["root"] / "cede-request.json"}
+                               if isinstance(self.client, RuntimeProtocolClient) else {}))
                         terminal.update(recorded=True, completion=response, status="failed")
                         print(f"generic host: ceded terminal publication for {data['id']}", file=sys.stderr, flush=True)
                         break
@@ -11784,6 +11848,7 @@ class GenericPackHost:
                     terminal["root"], str(data["id"]), str(exact_attempt), rounds)
                 return
             print(f"generic host: terminal publication recorded for {data['id']}", file=sys.stderr, flush=True)
+            _finish_terminal_reconciliation(terminal["root"], str(data["id"]), str(exact_attempt))
             terminal.pop("evidence_pending", None)
             terminal.pop("publication_pending", None)
             if terminal.get("status") == "succeeded":
@@ -13952,7 +14017,7 @@ class GenericPackHost:
                         or marker.get("executor_id") == self.executor_id):
                     self._halt_unresolved_terminal_publication()
                     raise HostError(f"unresolved terminal publication retained at {root}")
-            for name in ("fail-request.json", "cancel-request.json"):
+            for name in ("cede-request.json", "fail-request.json", "cancel-request.json"):
                 path = root / name
                 if not path.is_file() or path.is_symlink():
                     continue
@@ -13984,8 +14049,21 @@ class GenericPackHost:
                 rejected = None
                 rounds = 0
                 resolved = False
-                while not self._shutdown.is_set() and rounds < _TERMINAL_RECONCILE_MAX_ROUNDS:
-                    rounds += 1
+                while not self._shutdown.is_set():
+                    try:
+                        with _terminal_reconciliation_budget(root, str(task_id), str(attempt_id)) as budget:
+                            if budget.get("resolved") is True:
+                                resolved = True
+                                break
+                        charged = _take_terminal_reconciliation_round(root, str(task_id), str(attempt_id))
+                    except Exception as exc:
+                        print(f"generic host recovery could not charge reconciliation round: {exc}",
+                              file=sys.stderr, flush=True)
+                        break
+                    if charged is None:
+                        rounds = _TERMINAL_RECONCILE_MAX_ROUNDS
+                        break
+                    rounds = charged
                     try:
                         current = self.client.task(str(task_id))
                         current = current.get("task", current) if isinstance(current, Mapping) else current
@@ -14000,7 +14078,7 @@ class GenericPackHost:
                         expiry = field("lease_expires_at")
                         expired = bool(expiry and datetime.fromisoformat(expiry.replace("Z", "+00:00"))
                                        <= datetime.now(timezone.utc))
-                        if rejected or expired:
+                        if (rejected or expired) and name != "cede-request.json":
                             reason = str(rejected or "lease expired")
                             original = body.get("error") or {}
                             message = (f"terminal evidence refused ({reason}); original failure "
@@ -14010,7 +14088,9 @@ class GenericPackHost:
                             self._handoff_settlement_call(
                                 self.client.fail, str(task_id), body["lease_id"], message,
                                 attempt_id=str(attempt_id), fence=body["fence"], retryable=False,
-                                structured_error={"code": "reconciliation_required"})
+                                structured_error={"code": "reconciliation_required"},
+                                **({"request_path": root / "cede-request.json"}
+                                   if isinstance(self.client, RuntimeProtocolClient) else {}))
                             warnings = receipt.setdefault("warnings", [])
                             warnings.append(message)
                             write_json_atomic(receipt_path, receipt)
@@ -14043,6 +14123,10 @@ class GenericPackHost:
                 if not resolved:
                     self._unresolved_terminal_publication(root, str(task_id), str(attempt_id), rounds)
                     raise HostError(f"unresolved terminal publication retained at {root}")
+                _finish_terminal_reconciliation(root, str(task_id), str(attempt_id))
+                # Each root owns one attempt. Acknowledging any saved terminal
+                # request also resolves the older requests retained beside it.
+                break
 
     def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
