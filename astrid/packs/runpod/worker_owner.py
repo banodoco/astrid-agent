@@ -413,6 +413,20 @@ class RunPodLeaseOwner:
     def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
                 cancelled: Callable[[], bool] | None = None,
                 defer_unsafe_release: bool = False, claim_lifetime_seconds: float | None = None) -> RunPodLease:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            from contextvars import copy_context
+
+            # Keep acquisition and expiry cleanup on the same lock-owning
+            # thread when a synchronous caller embeds us in an event loop.
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="astrid-runpod-claim") as pool:
+                return pool.submit(copy_context().run, self.acquire, consent,
+                    requested_idle_seconds=requested_idle_seconds, cancelled=cancelled,
+                    defer_unsafe_release=defer_unsafe_release,
+                    claim_lifetime_seconds=claim_lifetime_seconds).result()
         from .worker_preparation import TargetObservationError, observation_failure_gate
         try:
             return self._acquire(consent, requested_idle_seconds=requested_idle_seconds, cancelled=cancelled,
@@ -445,7 +459,7 @@ class RunPodLeaseOwner:
     def _acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
                  cancelled: Callable[[], bool] | None = None,
                  claim_lifetime_seconds: float | None = None) -> RunPodLease:
-        from .target_selection import ClaimedJob, _utc
+        from .target_selection import CapacityWaitTimeout, ClaimedJob, _utc
         from .worker_preparation import TargetObservationError
         job = isinstance(consent, ClaimedJob)
         if job:
@@ -493,10 +507,25 @@ class RunPodLeaseOwner:
                 lease["keep_until_release"] = True
             # Only P1's already-owned account lock is bypassed here, as in R02.
             acquired = False
+            async def select():
+                try:
+                    return await self.selection._select(
+                        consent, lease=lease, lock_held=True,
+                        claim_lifetime_seconds=claim_lifetime_seconds,
+                        cancelled=lambda: self._acquisition_cancel.is_set() or (cancelled is not None and cancelled()))
+                except CapacityWaitTimeout as exc:
+                    if exc.runpod_gate == "lifetime":
+                        current = self.selection._read()
+                        if current is not None and current.get("create_attempts", 0) > 0:
+                            try:
+                                # Release before asyncio's executor shutdown can
+                                # wait for a cancelled provider readiness read.
+                                self.release(reason="paid_deadline", _expected_operation=current["operation_id"])
+                            except Exception:  # noqa: BLE001 - preserve the lifetime refusal and durable cleanup retry.
+                                pass  # Failed cleanup retains custody and recovery.
+                    raise
             try:
-                claimed = dict(_run_sync(self.selection._select(
-                    consent, lease=lease, lock_held=True,
-                    cancelled=lambda: self._acquisition_cancel.is_set() or (cancelled is not None and cancelled()))))
+                claimed = dict(_run_sync(select()))
                 acquired = True
                 paid_started = (_utc(claimed["paid_limits"]["authorized_at"]).timestamp()
                                 if previous is None else previous["started_at"])
@@ -534,7 +563,7 @@ class RunPodLeaseOwner:
                     # pending-POST stamp. Cancellation here cannot have allocated.
                     self.selection.path.unlink()
                     current = None
-                if current is not None and (acquired or current.get("state") != "claimed"
+                if current is not None and current.get("state") != "cleanup_complete" and (acquired or current.get("state") != "claimed"
                                            or current.get("lease", {}).get("state") == "preparing"):
                     self.started = False
                     self._cancel()
@@ -568,8 +597,9 @@ class RunPodLeaseOwner:
                     or consent.execution_seconds != 0 or requested_idle_seconds > consent.idle_seconds
                     or requested_idle_seconds <= 0):
                 raise PaidSelectionError("claim requires fresh paid consent for finite initial idle retention")
-            invocation = self.acquire(consent, requested_idle_seconds=requested_idle_seconds,
-                                      cancelled=cancelled, claim_lifetime_seconds=consent.idle_seconds)
+        invocation = self.acquire(consent, requested_idle_seconds=requested_idle_seconds,
+                                  cancelled=cancelled, claim_lifetime_seconds=consent.idle_seconds)
+        with self.lock:
             self.settle(invocation)
             return self._read()
 

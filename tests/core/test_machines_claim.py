@@ -15,7 +15,7 @@ def test_claim_discloses_policy_without_consent_prompt(monkeypatch, capsys):
         "image": DEFAULT_RUNPOD_WORKER_IMAGE,
         "budget_cap_usd": 3.0,
     }
-    monkeypatch.setattr(settings, "machine_policy", lambda _kind: preferences)
+    monkeypatch.setattr(settings, "machine_policy", lambda _kind, client=None: preferences)
     calls = []
     monkeypatch.setattr(machines_cli, "_leases", lambda: [{"id": "pod", "release_at": 2000000000}])
 
@@ -47,7 +47,7 @@ def _claim_fixture(monkeypatch, *, preferences=None, hourly=0.5):
         "image": DEFAULT_RUNPOD_WORKER_IMAGE, "budget_cap_usd": 2.0,
         "idle_timeout_seconds": 1800,
     }
-    monkeypatch.setattr(settings, "machine_policy", lambda _kind: saved)
+    monkeypatch.setattr(settings, "machine_policy", lambda _kind, client=None: saved)
     calls = []
 
     def describe(**kwargs):
@@ -116,25 +116,112 @@ def test_claim_collects_missing_setup_on_tty_but_never_prompts_in_batch(monkeypa
     assert len(saved_policy) == 1 and len(calls) == 1
     capsys.readouterr()
 
-    _saved, batch_calls, describe, claim = _claim_fixture(monkeypatch, preferences={
-        "provider_account_ref": "env:RUNPOD_API_KEY", "image": DEFAULT_RUNPOD_WORKER_IMAGE,
-    })
+    _saved, batch_calls, describe, claim = _claim_fixture(monkeypatch, preferences={})
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-    code = machines_cli.main(["claim", "--gpu", "RTX 4090", "--max-usd", "3"],
+    code = machines_cli.main(["claim", "--gpu", "RTX 4090", "--for", "2h"],
                              describe=describe, claim=claim,
                              setup=lambda policy: pytest.fail("batch claim must not save setup"))
     assert code == 0 and len(batch_calls) == 1
+    assert batch_calls[0]["preferences"]["gpu_types"] == ["RTX 4090"]
+    assert batch_calls[0]["consent"].max_usd == 1
+    assert batch_calls[0]["consent"].idle_seconds == 7200
+    assert _saved == {}
     capsys.readouterr()
 
-    _saved, _calls, describe, claim = _claim_fixture(monkeypatch, preferences={
-        "provider_account_ref": "env:RUNPOD_API_KEY", "image": DEFAULT_RUNPOD_WORKER_IMAGE,
-    })
+    _saved, _calls, describe, claim = _claim_fixture(monkeypatch, preferences={})
     code = machines_cli.main(["claim", "--max-usd", "3"], describe=describe, claim=claim,
                              setup=lambda policy: pytest.fail("incomplete batch claim must not save setup"))
     assert code == 2
     output = capsys.readouterr().out
     assert "machines setup" in output
     assert "--gpu" in output
+
+
+def test_batch_first_claim_uses_empty_saved_preferences_without_saving_setup(monkeypatch, capsys):
+    import sys
+
+    _saved, calls, describe, claim = _claim_fixture(monkeypatch, preferences={})
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    def priced_description(**kwargs):
+        return {"waiting_policy": {"preferences": {}},
+                "prices": [{"gpu_type": "RTX 4090", "datacenter_id": "EU-RO-1", "hourly_usd": 0.5}]}
+
+    result = machines_cli.main(["claim", "--gpu", "RTX 4090", "--for", "2h"],
+                               describe=priced_description, claim=claim,
+                               setup=lambda _policy: pytest.fail("batch claim must not save setup"))
+    assert result == 0
+    assert len(calls) == 1
+    assert calls[0]["consent"].max_usd == 1
+    assert calls[0]["preferences"]["gpu_types"] == ["RTX 4090"]
+    assert _saved == {}
+    capsys.readouterr()
+
+
+def test_real_settings_lookup_uses_no_start_client_for_claim_and_inline_setup(monkeypatch, capsys):
+    import sys
+
+    from astrid.core.generation import settings
+
+    events = []
+    store_content = {"placement": {}, "defaults": {}, "machines": {"runpod": {
+        "provider_account_ref": "env:RUNPOD_API_KEY", "credential_ref": "env:RUNPOD_API_KEY",
+        "gpu_types": ["RTX 4090"], "image": DEFAULT_RUNPOD_WORKER_IMAGE, "budget_cap_usd": 2.0,
+    }}}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def get_user_app_state(self, _key):
+            events.append("settings")
+            return {"content": store_content, "version": 1}
+
+        def invoke_result(self, *_args, **_kwargs):
+            events.append("setup")
+            return SimpleNamespace(ok=True)
+
+    class ClientFactory:
+        @staticmethod
+        def open_from_launcher(*, start_pack_host=True):
+            events.append(("open", start_pack_host))
+            return Client()
+
+    monkeypatch.setattr("astrid.sdk.AstridClient", ClientFactory)
+    settings.set_store_factory(lambda: pytest.fail("settings lookup must use the explicit Runtime client"))
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [{"id": "pod", "release_at": 2000000000}])
+    monkeypatch.setattr("astrid.sdk.generation.GenerationFacade.claim",
+                        lambda _facade, **_kwargs: SimpleNamespace(
+                            ok=True, raw_result={"result": {"target_operation": {"pod_id": "pod"}}}))
+    monkeypatch.setattr("astrid.sdk.generation._runpod_status",
+                        lambda **_kwargs: {"offer": {"hourly_usd": 0.5}})
+    assert machines_cli.main(["claim"], input_fn=lambda _prompt: pytest.fail("saved policy avoids setup")) == 0
+    assert events[:2] == [("open", False), "settings"]
+    capsys.readouterr()
+
+    events.clear()
+    store_content["machines"] = {}
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    assert machines_cli.main(["claim", "--gpu", "RTX 4090", "--max-usd", "2"],
+                             volumes=lambda: [], datacenters=lambda: [],
+                             offered_gpus=lambda _dc, _volume: ["RTX 4090"],
+                             input_fn=lambda _prompt: "") == 0
+    assert events[0] == ("open", False)
+    assert events[1] == "settings"
+    assert "setup" in events
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("argv, option", [(["claim", "--for", "forever"], "--for"),
+                                           (["claim", "--idle", "0s"], "--idle")])
+def test_claim_duration_errors_name_the_right_option_and_example(monkeypatch, capsys, argv, option):
+    _saved, _calls, describe, claim = _claim_fixture(monkeypatch)
+    assert machines_cli.main(argv, describe=describe, claim=claim) == 2
+    message = capsys.readouterr().out
+    assert f"{option} duration" in message
+    assert "30m or 2h" in message
 
 
 def test_claim_cli_supplies_paid_consent_authority(monkeypatch, capsys):

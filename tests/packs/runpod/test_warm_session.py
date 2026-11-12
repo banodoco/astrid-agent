@@ -1137,6 +1137,86 @@ def test_manual_claim_has_separate_lifetime_and_idle(small_lease):
     assert claimed["lease"]["idle_expires_at"] == c.clock() + 300
 
 
+@pytest.mark.parametrize("phase", ["post", "readiness", "thread_readiness", "embedded_readiness"])
+def test_manual_claim_releases_at_lifetime_during_acquisition(small_lease, monkeypatch, phase):
+    import threading
+    import runpod_lifecycle
+    from runpod_lifecycle import api
+
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    original_launch = runpod_lifecycle.launch_when_available
+    stamps = []
+    observations = []
+    stopped = threading.Event()
+    ordering = []
+    original_delete = api.terminate_pod
+
+    def delete(*args, **kwargs):
+        result = original_delete(*args, **kwargs)
+        ordering.append("released")
+        stopped.set()
+        return result
+
+    def observe():
+        observations.append(c.clock())
+        if len(observations) == 1:
+            raise target_selection.OfferObservationError("stock_unavailable")
+        return c.offer
+
+    async def sleep(seconds):
+        c.clock.now += seconds
+
+    async def delayed():
+        paid = c.read()["paid_limits"]
+        started = target_selection._utc(paid["authorized_at"]).timestamp()
+        assert target_selection._utc(paid["expires_at"]).timestamp() == started + 30
+        stamps.append(started)
+        c.clock.now = started + 30
+        # Readiness (or the POST response) would take another minute.
+        # The durable lifetime must interrupt it before then.
+        if phase == "thread_readiness":
+            def blocking_read():
+                assert stopped.wait(5), "executor shutdown delayed paid release"
+                ordering.append("readiness_returned")
+            await asyncio.to_thread(blocking_read)
+        else:
+            await asyncio.Event().wait()
+
+    async def launch(*args, **kwargs):
+        pod = await original_launch(*args, **kwargs)
+        if phase == "post":
+            await delayed()
+        else:
+            async def ready(**kwargs):
+                assert kwargs["timeout"] <= 30
+                await delayed()
+            pod.wait_ready = ready
+        return pod
+
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
+    monkeypatch.setattr(api, "terminate_pod", delete)
+    c.owner.observe_offer, c.owner.sleep = observe, sleep
+    grant = replace(c.grant, preparation_seconds=0, execution_seconds=0, idle_seconds=30,
+                    max_usd=3, offer_digest=None, deadline=None,
+                    policy_digest=target_selection.policy_consent_digest(c.prefs, 1), max_hourly_usd=1)
+    with pytest.raises(target_selection.CapacityWaitTimeout, match="paid lifetime expired"):
+        if phase == "embedded_readiness":
+            async def claim():
+                return owner.claim(grant, requested_idle_seconds=10)
+            asyncio.run(claim())
+        else:
+            owner.claim(grant, requested_idle_seconds=10)
+    assert len(observations) == 2 and stamps[0] > observations[0]
+    assert c.clock() == stamps[0] + 30
+    assert c.creates == 1 and c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["cleanup"]["absence"]["exact_get_status"] == 404
+    if phase == "thread_readiness":
+        assert ordering == ["released", "readiness_returned"]
+
+
 def test_manual_claim_waits_then_settles_idle_and_reuses_without_extending_paid_limit(small_lease):
     c = small_lease
     owner = c.fresh()

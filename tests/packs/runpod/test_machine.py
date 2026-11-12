@@ -1891,7 +1891,7 @@ def _claim_cli_case(monkeypatch):
 
     preferences = raw_preferences()
     rows, calls = [], []
-    monkeypatch.setattr(settings, "machine_policy", lambda kind: preferences if kind == "runpod" else None)
+    monkeypatch.setattr(settings, "machine_policy", lambda kind, client=None: preferences if kind == "runpod" else None)
     monkeypatch.setattr(machines_cli, "_leases", lambda: rows)
 
     def describe(**kwargs):

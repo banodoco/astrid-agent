@@ -159,31 +159,43 @@ def test_engine_readiness_parser_uses_its_distinct_query(tmp_path):
     assert observed["vram_bytes"] == 12 * 1024**3
 
 
-def test_runpod_machine_claim_cli_supplies_fresh_paid_consent(monkeypatch, capsys):
+def test_runpod_machine_claim_without_live_claim_refuses_before_create(case, monkeypatch, tmp_path):
     from types import SimpleNamespace
-    from astrid.core import machines_cli
-    from astrid.core.generation import settings
+    from astrid.packs.runpod import adapter, machine
+    from astrid.core.execution.machine_run import MachineJob
+    from astrid.core.execution.warm_hold import WarmHolds
+    from astrid.packs.runpod.target_selection import PaidSelectionError, RunPodLeaseCompatibility
+    from astrid.packs.runpod.worker_owner import RunPodLeaseOwner
 
-    prefs = {
-        "provider_account_ref": "env:RUNPOD_API_KEY", "gpu_types": ["RTX 4090"],
-        "image": "runpod/worker@sha256:" + "1" * 64, "budget_cap_usd": 3.0,
-    }
-    monkeypatch.setattr(settings, "machine_policy", lambda _kind: prefs)
-    monkeypatch.setattr(machines_cli, "_leases", lambda: [{"id": "pod", "release_at": 2_000_000_000}])
-    captured = []
+    monkeypatch.setattr(adapter, "prevalidate_task", lambda *args, **kwargs: None)
+    case.owner.compatibility = RunPodLeaseCompatibility(
+        "sha256:" + "a" * 64, "sha256:" + "b" * 64, "a" * 40, "b" * 40,
+    ).as_mapping()
+    clock = lambda: case.now.timestamp()
+    owner = RunPodLeaseOwner(case.owner, holds=WarmHolds(),
+                             quiesce=lambda record: None, clock=clock, environ={})
+    facade = adapter.RunPodAdapter(lease_owner=owner, placement=None,
+                                   installation=SimpleNamespace(engine="comfyui"), validate=None)
 
-    def claim(**kwargs):
-        captured.append(kwargs["consent"])
-        return SimpleNamespace(ok=True, raw_result={"result": {"target_operation": {"pod_id": "pod"}}})
+    def unreachable(*args, **kwargs):
+        raise AssertionError("preparation reached before lease admission")
 
-    assert machines_cli.main(
-        ["claim", "--max-usd", "3"],
-        describe=lambda **_: {"waiting_policy": {"preferences": prefs},
-                              "offer": {"hourly_usd": 0.5}},
-        claim=claim,
-    ) == 0
-    assert captured[0].consent == ("paid",)
-    capsys.readouterr()
+    facade.prepare = unreachable
+    monkeypatch.setattr("astrid.packs.runpod.generation.prepare_retained_generation", unreachable)
+    monkeypatch.setattr("astrid.packs.vibecomfy.shared.bundle_inputs.staged_workflow_path", unreachable)
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": case.prefs.as_mapping()}
+    inputs = {"python": "workflow.py", "companion": "{}", "source": "{}"}
+    job = MachineJob(entry="cpu-image", mode="t2i", policy=policy, inputs=inputs,
+                     invocation_id="invocation-1", task_id="task", attempt_id="attempt",
+                     scratch=tmp_path, progress_path=tmp_path / ".astrid-progress.json")
+    remote = machine.MACHINE.for_host(facade, begin=unreachable, done=unreachable)
+    before = case.creates
+    try:
+        with pytest.raises(PaidSelectionError, match="no machine: run `astrid machines claim`"):
+            remote.claim(job)
+    finally:
+        owner.close()
+    assert not case.owner.path.exists() and case.creates == case.configs == before
 
 
 def test_runpod_setter_guide_command_uses_hidden_prompt_without_key_in_argv_or_env(

@@ -850,7 +850,8 @@ def test_stockless_description_keeps_policy_disclosure_and_exact_quote_unchanged
 
     adapter = RunPodAdapter(lease_owner=SimpleNamespace(selection=case.owner), placement=None,
                             installation=None, validate=None)
-    assert adapter.quote() == {"offer": asdict(case.offer), "offer_digest": case.offer.digest(case.prefs)}
+    assert adapter.quote() == {"offer": asdict(case.offer), "offer_digest": case.offer.digest(case.prefs),
+                               "prices": []}
     case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError("stock_unavailable"))
     stockless = adapter.quote()
     assert stockless["availability"]["reason"] == "stock_unavailable"
@@ -1183,6 +1184,52 @@ def test_capacity_attempt_line_reads_as_waiting_and_keeps_reason_token(case, mon
     with pytest.raises(selection.OfferObservationError):
         asyncio.run(case.owner.select(waiting_grant(case, wait_for_capacity=False)))
     assert "still waiting" not in capsys.readouterr().err
+
+
+def test_stockout_quote_keeps_confirmed_prices_without_allocatable_offers(case, monkeypatch):
+    import runpod_lifecycle
+    from runpod_lifecycle import availability
+    from astrid.packs.runpod.adapter import RunPodAdapter, observe_priced_offer, observe_priced_offers
+
+    preferences = RunPodPreferences.from_mapping({**case.raw, "volume": None})
+    config = SimpleNamespace(api_key="fake-only", container_disk_gb=40,
+                             allowed_cuda_versions=("13.0",), min_cuda_version=None)
+    calls = []
+
+    async def observe(**kwargs):
+        gpu = kwargs["gpu"]
+        calls.append(gpu)
+        rate = 1.25 if gpu == "preferred-gpu" else 0.75
+        return availability.GpuAvailability(
+            gpu, "id-" + gpu, gpu, "unavailable", "now", {},
+            [availability.DataCenterAvailability("DC-OUT", None, None, "unavailable", None, rate, False)],
+        )
+
+    monkeypatch.setattr(runpod_lifecycle, "gpu_availability", observe)
+    selection_owner = SimpleNamespace(
+        preferences=preferences,
+        observe_offer=lambda: pytest.fail("quote should use the all-option shared observation path"),
+    )
+    selection_owner.observe_offers = lambda confirmed_prices=None: asyncio.run(
+        observe_priced_offers(preferences, config, confirmed_prices=confirmed_prices))
+    adapter = RunPodAdapter(lease_owner=SimpleNamespace(selection=selection_owner), placement=None,
+                            installation=None, validate=None)
+
+    quote = adapter.quote()
+    assert quote["availability"]["reason"] == "stock_unavailable"
+    assert quote["prices"] == [
+        {"gpu_type": "preferred-gpu", "datacenter_id": "DC-OUT", "hourly_usd": 1.25},
+        {"gpu_type": "fallback-gpu", "datacenter_id": "DC-OUT", "hourly_usd": 0.75},
+    ]
+    assert calls == ["preferred-gpu", "fallback-gpu"]
+    with pytest.raises(selection.OfferObservationError) as raised:
+        asyncio.run(observe_priced_offers(preferences, config))
+    assert raised.value.reason == "stock_unavailable"
+    with pytest.raises(selection.OfferObservationError) as raised:
+        asyncio.run(observe_priced_offer(preferences, config))
+    assert raised.value.reason == "stock_unavailable"
+    assert calls == ["preferred-gpu", "fallback-gpu", "preferred-gpu", "fallback-gpu",
+                     "preferred-gpu", "fallback-gpu"]
 
 
 def test_rest_exact_pod_volume_object_passes_selection(case, monkeypatch):

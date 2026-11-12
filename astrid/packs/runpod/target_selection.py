@@ -535,7 +535,8 @@ class RunPodSelectionOwner:
 
     async def _select(self, consent: PaidRunConsent, *, dry_run: bool = False,
                       lease: Mapping[str, Any] | None = None, lock_held: bool = False,
-                      cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
+                      cancelled: Callable[[], bool] | None = None,
+                      claim_lifetime_seconds: float | None = None) -> Mapping[str, Any]:
         """One offer/one journaled POST per iteration; ambiguity never re-enters the loop."""
         if isinstance(consent, ClaimedJob):
             record = self._read()
@@ -553,6 +554,12 @@ class RunPodSelectionOwner:
         def check() -> None:
             if cancelled is not None and cancelled():
                 raise CapacityWaitCancelled("RunPod capacity wait cancelled")
+            if claim_lifetime_seconds is not None:
+                record = self._read()
+                if (record is not None and record.get("create_attempts", 0) > 0
+                        and record.get("state") not in {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}
+                        and self.clock() >= _utc(record["paid_limits"]["expires_at"])):
+                    raise CapacityWaitTimeout("machine paid lifetime expired during acquisition", gate="lifetime")
             if (consent.capacity_timeout_seconds is not None
                     and self.monotonic() - started >= consent.capacity_timeout_seconds):
                 raise CapacityWaitTimeout("RunPod capacity timeout passed; no further create will be attempted", gate="capacity")
@@ -655,7 +662,8 @@ class RunPodSelectionOwner:
                     rate_limit_failures = 0
                     offer, _ = self.consented_offer(consent, self.clock(), offer=offer)
                     result = await interruptible(self._select_once(
-                        consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
+                        consent, lease=lease, lock_held=True, offer=offer, cancelled=check,
+                        claim_lifetime_seconds=claim_lifetime_seconds))
                     progress(number, offer, "claimed")
                     return result
                 except OfferObservationError as exc:
@@ -718,7 +726,8 @@ class RunPodSelectionOwner:
     async def _select_once(self, consent: PaidRunConsent, *, dry_run: bool = False,
                            lease: Mapping[str, Any] | None = None, lock_held: bool = False,
                            offer: RunPodOffer | None = None,
-                           cancelled: Callable[[], None] | None = None) -> Mapping[str, Any]:
+                           cancelled: Callable[[], None] | None = None,
+                           claim_lifetime_seconds: float | None = None) -> Mapping[str, Any]:
         p, now = self.preferences, self.clock()
         if not dry_run and lease is None and (self.compatibility is not None or p.volume_id is None):
             raise PaidSelectionError("this target requires admission through the retained lease owner")
@@ -894,6 +903,8 @@ class RunPodSelectionOwner:
                                 cancelled()
                             stamp = self.clock()
                             paid_expiry = consent.validate(offer, p, stamp, allow_policy=True)
+                            if claim_lifetime_seconds is not None:
+                                paid_expiry = min(paid_expiry, stamp + timedelta(seconds=claim_lifetime_seconds))
                             paid = {**limits, "authorized_at": stamp.isoformat(), "expires_at": paid_expiry.isoformat()}
                             return {**pending, "paid_limits": paid, "consented_offer": asdict(offer),
                                     "last_create_started_at": stamp.isoformat(),
@@ -907,7 +918,9 @@ class RunPodSelectionOwner:
                             max_create_attempts=record.get("create_attempts", 0) + 1,
                             allow_capacity_retry=safe_capacity,
                             single_attempt=True, before_post=before_post,
-                            ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
+                            ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS,
+                                int(claim_lifetime_seconds) if claim_lifetime_seconds is not None else _READINESS_TIMEOUT_SECONDS,
+                                int((expires - self.clock()).total_seconds()))),
                         )
                     else:
                         acquired = await reconcile_target.__wrapped__(

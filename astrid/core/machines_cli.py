@@ -80,14 +80,14 @@ def _release(machine_id: str, *, as_json: bool, release: Callable[[], Any] | Non
     return 0 if ok else 1
 
 
-def _duration_seconds(value: str) -> float:
+def _duration_seconds(value: str, option: str = "--for") -> float:
     parts = list(re.finditer(r"(\d+(?:\.\d+)?)([smhd])", value.strip().lower()))
     if not parts or "".join(part.group(0) for part in parts) != value.strip().lower():
-        raise ValueError("invalid --for duration; use s, m, h or d (for example 30m or 2h)")
+        raise ValueError(f"invalid {option} duration; use s, m, h or d (for example 30m or 2h)")
     scales = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     seconds = sum(float(part.group(1)) * scales[part.group(2)] for part in parts)
     if not math.isfinite(seconds) or seconds <= 0:
-        raise ValueError("invalid --for duration; use a finite duration greater than zero (for example 30m or 2h)")
+        raise ValueError(f"invalid {option} duration; use a finite duration greater than zero (for example 30m or 2h)")
     return seconds
 
 
@@ -120,7 +120,7 @@ def _keep(machine_id: str, *, for_duration: str | None, until_release: bool,
         print(json.dumps({"ok": False, "error": message}) if as_json else message)
         return 2
     try:
-        seconds = _duration_seconds(for_duration) if for_duration is not None else None
+        seconds = _duration_seconds(for_duration, "--for") if for_duration is not None else None
         cap = float(max_usd)
         if not math.isfinite(cap) or cap <= 0:
             raise ValueError("invalid --max-usd; enter a finite USD amount greater than zero")
@@ -206,7 +206,8 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float | Non
            as_json: bool, claim: Callable[..., Any] | None,
            describe: Callable[..., Any] | None, input_fn: Callable[[str], str],
            setup: Callable[..., Any] | None, volumes: Callable[..., Any] | None,
-           datacenters: Callable[..., Any] | None, offered_gpus: Callable[..., Any] | None) -> int:
+           datacenters: Callable[..., Any] | None, offered_gpus: Callable[..., Any] | None,
+           _client: Any = None) -> int:
     """Disclose one saved-storage policy, then submit fresh per-claim authority."""
     import sys
 
@@ -221,7 +222,17 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float | Non
     from astrid.sdk.generation import GenerationFacade, _runpod_job_preferences, _runpod_status
 
     try:
-        saved = settings.machine_policy("runpod") or {}
+        if _client is None and (describe is None or claim is None):
+            from astrid.sdk import AstridClient
+
+            with AstridClient.open_from_launcher(start_pack_host=False) as client:
+                return _claim(gpu_types=gpu_types, datacenter=datacenter, max_usd=max_usd,
+                              max_hourly_usd=max_hourly_usd, for_duration=for_duration,
+                              idle_duration=idle_duration, capacity_timeout=capacity_timeout,
+                              wait_for_capacity=wait_for_capacity, as_json=as_json, claim=claim,
+                              describe=describe, input_fn=input_fn, setup=setup, volumes=volumes,
+                              datacenters=datacenters, offered_gpus=offered_gpus, _client=client)
+        saved = settings.machine_policy("runpod", client=_client) or {}
         if not saved and sys.stdin.isatty():
             captured = []
             def save(policy):
@@ -230,17 +241,15 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float | Non
                 else:
                     import json as _json
 
-                    from astrid.sdk import AstridClient
-                    with AstridClient.open_from_launcher() as client:
-                        result = client.invoke_result("runpod.setup", kind="action", project=None,
-                            inputs={"placement_policy": _json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": policy}, sort_keys=True)},
-                            wait=True, read_managed_outputs=False)
+                    result = _client.invoke_result("runpod.setup", kind="action", project=None,
+                        inputs={"placement_policy": _json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": policy}, sort_keys=True)},
+                        wait=True, read_managed_outputs=False)
                 if getattr(result, "ok", True):
                     captured.append(policy)
                 return result
             status = _setup(volume=None, datacenter=datacenter, gpu_types=gpu_types, budget_usd=max_usd,
                             image=None, as_json=False, setup=save, volumes=volumes, datacenters=datacenters,
-                            offered_gpus=offered_gpus, input_fn=input_fn)
+                            offered_gpus=offered_gpus, input_fn=input_fn, client=_client)
             if status:
                 return status
             saved = captured[0]
@@ -262,32 +271,37 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float | Non
         if max_usd is not None:
             effective["budget_cap_usd"] = _number(max_usd, "USD cap")
         if idle_duration is not None:
-            effective["idle_timeout_seconds"] = int(_duration_seconds(idle_duration))
+            effective["idle_timeout_seconds"] = int(_duration_seconds(idle_duration, "--idle"))
         placement = _gpu_placement("runpod", gpu_types, argparse.ArgumentParser(prog="astrid machines claim"))
-        timeout = _duration_seconds(capacity_timeout) if capacity_timeout else None
+        timeout = _duration_seconds(capacity_timeout, "--capacity-timeout") if capacity_timeout else None
         if describe is None or claim is None:
-            from astrid.sdk import AstridClient
-            # Claim is served only by a running host; it must not launch a replacement.
-            with AstridClient.open_from_launcher(start_pack_host=False) as client:
-                facade = GenerationFacade()
-                return _claim(gpu_types=gpu_types, datacenter=datacenter, max_usd=max_usd, max_hourly_usd=max_hourly_usd,
-                              for_duration=for_duration, idle_duration=idle_duration, capacity_timeout=capacity_timeout,
-                              wait_for_capacity=wait_for_capacity,
-                              as_json=as_json, input_fn=input_fn, setup=setup, volumes=volumes,
-                              datacenters=datacenters, offered_gpus=offered_gpus,
-                              describe=lambda **kwargs: {**_runpod_status(client=client, include_quote=True, preferences=effective, fresh_claim=True), "waiting_policy": {"preferences": effective}},
-                              claim=lambda **kwargs: facade.claim(client=client, **kwargs))
+            facade = GenerationFacade()
+            if describe is None:
+                def describe(**_kwargs):
+                    return {**_runpod_status(client=_client, include_quote=True, preferences=effective,
+                                             fresh_claim=True),
+                            "waiting_policy": {"preferences": effective}}
+            if claim is None:
+                def claim(**kwargs):
+                    return facade.claim(client=_client, **kwargs)
         description = describe(placement=placement, max_hourly_usd=max_hourly_usd, fresh_claim=True, datacenter=datacenter)
         waiting = description["waiting_policy"]
         preferences = RunPodPreferences.from_mapping({**waiting["preferences"], **effective})
         ceiling = max_hourly_usd
         if ceiling is None:
-            ceiling = (description.get("offer") or {}).get("hourly_usd")
+            prices = description.get("prices")
+            if isinstance(prices, list) and prices:
+                rates = [_number(row.get("hourly_usd"), "hourly USD price")
+                         for row in prices if isinstance(row, dict)]
+                if rates:
+                    ceiling = max(rates)
+            if ceiling is None:
+                ceiling = (description.get("offer") or {}).get("hourly_usd")
             if ceiling is None:
                 raise ValueError(f"no current price for {', '.join(preferences.gpu_types)}; pass --max-hourly-usd to wait for one at or under that rate")
         ceiling = _number(ceiling, "hourly USD ceiling")
         cap = _number(max_usd, "USD cap") if max_usd is not None else None
-        lifetime = _duration_seconds(for_duration) if for_duration else None
+        lifetime = _duration_seconds(for_duration, "--for") if for_duration else None
         if cap is None and lifetime is None:
             cap = _number(preferences.budget_cap_usd, "USD cap")
         if cap is None:
@@ -378,6 +392,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
            volumes: Callable[[], list[dict[str, Any]]] | None = None,
            datacenters: Callable[[], list[str]] | None = None,
            offered_gpus: Callable[[str | None, bool], list[str]] | None = None,
+           client: Any = None,
            input_fn: Callable[[str], str] = input) -> int:
     """Save RunPod setup through runpod.setup; inventory is read-only."""
     from astrid.core.generation import settings
@@ -387,7 +402,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         RunPodSetupRequiredError,
     )
 
-    saved = settings.machine_policy("runpod") or {}
+    saved = settings.machine_policy("runpod", client=client) or {}
     if not isinstance(saved, dict):
         saved = {}
     credential_ref = saved.get("credential_ref") or "env:RUNPOD_API_KEY"
@@ -503,11 +518,11 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         try:
             if setup is None:
                 import json as _json
+                from contextlib import nullcontext
 
                 from astrid.sdk import AstridClient
-
-                with AstridClient.open_from_launcher() as client:
-                    result = client.invoke_result("runpod.setup", kind="action", project=None,
+                with (nullcontext(client) if client is not None else AstridClient.open_from_launcher()) as active:
+                    result = active.invoke_result("runpod.setup", kind="action", project=None,
                                                   inputs={"placement_policy": _json.dumps(
                                                       {"kind": "runpod", "engine": "comfyui",
                                                        "preferences": validated}, sort_keys=True)},
