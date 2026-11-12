@@ -1098,8 +1098,10 @@ class RunPodMachine:
             except (RemotePlacementError, EngineError, ValueError, TypeError, KeyError, OSError) as observation_error:
                 why = getattr(observation_error, "install_unverified", None)
                 if why is None:
+                    transport_reason = getattr(observation_error, "reason", None)
                     why = ("checkpoint_observation_interrupted" if abort_event.is_set()
                            else "status_deadline_exhausted" if time.monotonic() >= deadline
+                           or getattr(transport_reason, "code", None) == "deadline_exceeded"
                            else "checkpoint_observation_failed")
                 raise checkpoint_refusal(observation_error, why)
         finally:
@@ -1108,6 +1110,9 @@ class RunPodMachine:
                 if unreaped is not None:
                     from .worker_preparation import AcquisitionUnresolvedError
                     owner.fence_unreaped_observer(run.lease.lease, run.lease.claim.pod_id, unreaped)
+                    # The owner now holds the handle; failure release must not
+                    # discover and transfer it a second time.
+                    run.lease.claim.ops = original_ops
                     raise checkpoint_refusal(AcquisitionUnresolvedError("bounded pod observer remains alive"),
                                              "checkpoint_observer_unreaped")
                 run.lease.claim.ops = original_ops
@@ -1174,6 +1179,7 @@ class RunPodMachine:
         if lease.released:
             return
         owner = adapter.lease_owner
+        original_ops = lease.claim.ops
         paid_expiry = None
         verify_deadline = None
         if failure is not None:
@@ -1318,6 +1324,7 @@ class RunPodMachine:
         unreaped = getattr(lease.claim.ops, "unreaped_child", None)
         if unreaped is not None:
             owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)
+            lease.claim.ops = original_ops
             raise AcquisitionUnresolvedError("bounded pod observer remains alive; exact custody is pending")
         from astrid.core.execution.machine_run import MachineRunCancelled
 

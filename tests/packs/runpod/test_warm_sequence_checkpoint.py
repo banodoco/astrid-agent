@@ -166,6 +166,191 @@ def test_changed_canonical_installation_has_fixed_reason_in_receipt(machine_case
     assert reason in render(receipt)
 
 
+def test_checkpoint_unreaped_observer_releases_failure_then_timer_owner_recovers(
+    machine_case, monkeypatch,
+):
+    from astrid.packs.runpod import remote_placement
+    from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
+
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    run = c.machine.start(lease, c.job())
+    c.machine._checkpoint(lease, {"id": run.job_id, "state": "exited"})
+
+    class Child:
+        alive = True
+        closed = False
+        close_count = 0
+
+        def _check_open(self):
+            assert not self.closed, "observer handle accessed after close"
+
+        def is_alive(self):
+            self._check_open()
+            return self.alive
+
+        def join(self, timeout=0):
+            self._check_open()
+
+        def close(self):
+            self._check_open()
+            self.close_count += 1
+            self.closed = True
+
+    child = Child()
+    registrations = []
+    fence = c.host.fence_unreaped_observer
+
+    def count_registration(*args, **kwargs):
+        registrations.append(args)
+        return fence(*args, **kwargs)
+
+    monkeypatch.setattr(c.host, "fence_unreaped_observer", count_registration)
+
+    def unreaped(self, *_args, **_kwargs):
+        self.unreaped_child = child
+        raise remote_placement.BoundedObserverUnreaped("observer could not be reaped")
+
+    monkeypatch.setattr(remote_placement._HttpsOps, "_bounded_call", unreaped)
+    monkeypatch.setattr(c.placement, "_canonical_installed",
+                        lambda state, **kwargs: state.claim.ops.job_poll(run.job_id))
+    with pytest.raises(AcquisitionUnresolvedError) as checkpoint_error:
+        c.machine._checkpoint_installed(run, {})
+    with pytest.raises(AcquisitionUnresolvedError):
+        c.machine.release(lease, False, failure=checkpoint_error.value)
+    pending = c.read()
+    assert len(registrations) == 1
+    assert pending["state"] == "cleanup_pending" and pending["lease"]["state"] == "releasing"
+    assert c.deletes == [] and child.alive and not child.closed
+
+    # A provider delete failure leaves cleanup pending for the real fake timer's
+    # owner callback to retry. The child is now gone, so the retry may close it.
+    child.alive = False
+    from runpod_lifecycle import api
+    original_delete = api.terminate_pod
+    delete_attempts = []
+
+    def fail_first_delete(pod_id, key):
+        delete_attempts.append(pod_id)
+        if len(delete_attempts) == 1:
+            raise RuntimeError("temporary provider failure")
+        return original_delete(pod_id, key)
+
+    monkeypatch.setattr(api, "terminate_pod", fail_first_delete)
+    c.clock.advance(c.host.deadline_timer.due - c.clock())
+    assert delete_attempts == ["pod-1"]
+    assert c.read()["state"] == "cleanup_pending"
+    assert c.deletes == []
+    c.clock.advance(c.host.deadline_timer.due - c.clock())
+    assert delete_attempts == ["pod-1", "pod-1"]
+    assert c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
+    assert child.closed and child.close_count == 1
+
+
+def test_earlier_observer_deadline_reason_is_retained_in_receipt(machine_case, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+
+    from astrid.packs.runpod.failure_receipt import build_receipt, render
+    from astrid.packs.runpod.remote_placement import PlacementReasonError, _HttpsOps
+
+    c = machine_case
+    job = c.job()
+    lease = c.machine.claim(job)
+    run = c.machine.start(lease, job)
+    c.machine._checkpoint(lease, {"id": run.job_id, "state": "exited"})
+    entered, unblock = Event(), Event()
+
+    class Stalled(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            entered.set()
+            unblock.wait(5)
+            self.close_connection = True
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Stalled)
+    Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", c.real_bounded_call)
+    deadline = time.monotonic() + 3
+    original_ops = _HttpsOps("pod1", "x" * 32, deadline=deadline,
+                             base_url=f"http://127.0.0.1:{server.server_port}")
+    lease.claim.ops = original_ops
+    try:
+        with pytest.raises(PlacementReasonError) as caught:
+            c.machine._checkpoint_installed(run, {})
+        assert entered.is_set(), "the request must stall before its deadline"
+        assert time.monotonic() < deadline, "request cleanup must finish inside the reserved allowance"
+        assert lease.claim.ops is original_ops
+        error = caught.value
+        assert error.reason.code == "deadline_exceeded"
+        assert error.install_unverified == "status_deadline_exhausted"
+        assert "status_deadline_exhausted" in str(error)
+        receipt = build_receipt({"failure": error, "stage": "fetch", "lease": lease, "run": run},
+                                job=job, machine=c.machine.describe(lease), timing=None)
+        assert receipt is not None
+        assert receipt["cause"]["install_unverified"] == "status_deadline_exhausted"
+        assert receipt["cause"]["reason"]["code"] == "deadline_exceeded"
+        assert "status_deadline_exhausted" in receipt["message"]
+        headline = render(receipt).splitlines()[1]
+        assert headline == receipt["message"] and "status_deadline_exhausted" in headline
+    finally:
+        unblock.set()
+        server.shutdown()
+        server.server_close()
+
+
+def test_owner_reaper_retries_after_one_handle_fails_during_liveness_check(machine_case):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+
+    class Child:
+        def __init__(self, *, alive=False, fail_liveness=False):
+            self.alive = alive
+            self.fail_liveness = fail_liveness
+            self.closed = False
+            self.close_count = 0
+            self.liveness_calls = 0
+
+        def _check_open(self):
+            assert not self.closed, "owner reaper accessed a closed observer handle"
+
+        def is_alive(self):
+            self._check_open()
+            self.liveness_calls += 1
+            if self.fail_liveness:
+                self.fail_liveness = False
+                raise ValueError("temporary process handle failure")
+            return self.alive
+
+        def join(self, timeout=0):
+            self._check_open()
+
+        def close(self):
+            self._check_open()
+            self.close_count += 1
+            self.closed = True
+
+    first = Child()
+    second = Child(fail_liveness=True)
+    c.host.fence_unreaped_observer(lease.lease, lease.claim.pod_id, first)
+    c.host.fence_unreaped_observer(lease.lease, lease.claim.pod_id, second)
+    scheduled_before = len(c.clock.timers)
+    c.clock.advance(c.host.deadline_timer.due - c.clock())
+    assert first.closed and first.close_count == 1 and first.liveness_calls == 1
+    assert not second.closed and second.liveness_calls == 1
+    assert c.read()["state"] == "cleanup_pending" and c.deletes == []
+    assert len(c.clock.timers) > scheduled_before, "failed liveness check must schedule another recovery"
+
+    c.clock.advance(c.host.deadline_timer.due - c.clock())
+    assert first.closed and first.liveness_calls == 1
+    assert second.closed and second.close_count == 1 and second.liveness_calls == 2
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
 def test_success_checkpoint_verification_does_not_hold_owner_lock_during_stalled_http(
     machine_case, monkeypatch,
 ):
