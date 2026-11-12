@@ -19,7 +19,6 @@ def paid_controls(tmp_path):
 
 @pytest.mark.parametrize("entry_id,mode", [
     ("z-image", "i2i"),
-    ("scail-2", "v2v"),
     ("hunyuan-foley-local", "sfx"),
 ])
 def test_fixed_entry_dry_run(entry_id, mode, paid_controls, tmp_path, capsys, monkeypatch):
@@ -42,3 +41,22 @@ def test_fixed_entry_dry_run(entry_id, mode, paid_controls, tmp_path, capsys, mo
     output = json.loads(capsys.readouterr().out)
     assert rc == 0 and output.get("ok", True), output
     assert runpod_guard.blocked_attempts[before:] == []
+
+
+# scail-2's full dry run waits for banodoco/astrid-dev#607.
+@pytest.mark.parametrize("modality", ["video", "audio"])
+def test_video_ref_is_accepted_for_video_and_audio(modality):
+    from astrid.core.generation import cli
+
+    args = [modality, "test prompt", "--video-ref", "reference.mp4"]
+    if modality == "audio":
+        args.extend(["--mode", "sfx"])
+    parsed = cli._parser().parse_args(args)
+    assert parsed.video_ref == "reference.mp4"
+
+
+def test_video_ref_is_rejected_for_image():
+    from astrid.core.generation import cli
+
+    with pytest.raises(SystemExit):
+        cli._parser().parse_args(["image", "test prompt", "--video-ref", "reference.mp4"])
