@@ -197,26 +197,67 @@ class _FdGuard:
 
 
 class _ThreadGuard:
+    _active_session = None
+
+    def __init__(self):
+        self.session = None
+        self.hard_exit = False
+
+    def pytest_sessionstart(self, session):
+        self.session = session
+        main = sys.modules.get("__main__")
+        spec = getattr(main, "__spec__", None)
+        entrypoint = getattr(spec, "name", None) == "pytest.__main__" or Path(
+            getattr(main, "__file__", "") or ""
+        ).name in ("pytest", "py.test")
+        if (os.environ.get("ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS") == "1"
+                and not hasattr(session.config, "workerinput")
+                and "PYTEST_XDIST_WORKER" not in os.environ
+                and "PYTEST_CURRENT_TEST" not in os.environ and entrypoint
+                and _ThreadGuard._active_session is None):
+            _ThreadGuard._active_session = session
+            self.hard_exit = True
+
+    @staticmethod
+    def _report(leaked):
+        frames = sys._current_frames()
+        lines = [f"ERROR: the test session leaked non-daemon threads: {', '.join(thread.name for thread in leaked)}\n"]
+        for thread in leaked:
+            lines.append(f"Thread {thread.name!r}, target={getattr(thread, '_target', None)!r}:\n")
+            frame = frames.get(thread.ident)
+            lines.extend(traceback.format_stack(frame) if frame else ["  stack unavailable\n"])
+        return "".join(lines)
+
+    @staticmethod
+    def _leaked():
+        return [thread for thread in threading.enumerate()
+                if thread is not threading.main_thread() and thread.is_alive() and not thread.daemon]
+
     @pytest.hookimpl(trylast=True)
     def pytest_sessionfinish(self, session, exitstatus):
-        leaked = [thread for thread in threading.enumerate()
-                  if thread is not threading.main_thread() and thread.is_alive() and not thread.daemon]
-        if not leaked:
-            return
-        frames = sys._current_frames()
+        leaked = self._leaked()
         reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-        if reporter is not None:
-            reporter.write_line(f"ERROR: the test session leaked non-daemon threads: {', '.join(thread.name for thread in leaked)}")
-            for thread in leaked:
-                reporter.write_line(f"Thread {thread.name!r}, target={getattr(thread, '_target', None)!r}:")
-                frame = frames.get(thread.ident)
-                if frame is None:
-                    reporter.write_line("  stack unavailable")
-                else:
-                    for line in traceback.format_stack(frame):
-                        reporter.write(line)
-        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        if leaked and reporter is not None:
+            reporter.write(self._report(leaked))
 
+    @pytest.hookimpl(trylast=True)
+    def pytest_unconfigure(self, config):
+        if not self.hard_exit:
+            return
+        leaked = self._leaked()
+        if leaked:
+            # Normally _ensure_unconfigure closes this stack after the hook.
+            # Run it here so capture restoration and exception cleanup still happen.
+            config._cleanup_stack.close()
+            leaked = self._leaked()
+        if leaked:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            data = self._report(leaked).encode("utf-8", errors="backslashreplace")
+            while data:
+                data = data[os.write(1, data):]
+            os._exit(int(self.session.exitstatus))
+        _ThreadGuard._active_session = None
 
 
 def current_job() -> str:
