@@ -16,7 +16,7 @@ def test_shipped_ledger_reconciles_historical_capability_sets():
     assert sources["counts"]["pack_labels"] == 35
     assert sources["counts"]["historical_pack_labels"] == 39
     lock = json.loads(Path("config/astrid-capability-census.lock.json").read_text(encoding="utf-8"))
-    assert sources["counts"]["executor_inventory"] == len(lock["executor_inventory"]) == 49
+    assert sources["counts"]["executor_inventory"] == len(lock["executor_inventory"]) == 51
     assert len(lock["source_labels"]) == 35
     assert len(lock["historical_source_labels"]) == 39
     assert all(section["complete"] for section in coverage.values())

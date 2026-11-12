@@ -2030,7 +2030,9 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
     )
     from astrid.core.execution.executor.folder import discover_folder_executor_roots, load_folder_executor
     from astrid.core.execution.executor.schema import ExecutorValidationError
-    matrix = GenericPackHost._load_matrix(capability_matrix)
+    ledger = (load_capability_ledger(capability_matrix, pack_roots=pack_roots)
+              if capability_matrix else None)
+    matrix = GenericPackHost._load_matrix(capability_matrix, ledger=ledger)
     safe_base_env = set(_SAFE_BASE_ENV)
     if sys.platform == "win32":
         safe_base_env.update(_WINDOWS_BASE_ENV)
