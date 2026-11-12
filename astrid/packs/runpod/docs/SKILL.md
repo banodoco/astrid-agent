@@ -175,12 +175,11 @@ preferences and replayed consent refuse the operation.
 
 ### Claim, inspect, keep and release
 
-Claim reserves a machine without running a generation. It shows the policy
-and asks for paid consent; `--consent paid` is the explicit unattended form.
-For example, after approving the displayed terms:
+Claim reserves a machine without running a generation and prints its paid
+policy before submitting the claim. For example:
 
 ```sh
-astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --max-hourly-usd 1 --max-usd 3 --for 30m --consent paid
+astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --max-hourly-usd 1 --max-usd 3 --for 30m
 astrid machines
 astrid machines --json
 ```
@@ -188,9 +187,12 @@ astrid machines --json
 Claim uses saved storage, with optional per-claim `--gpu` and `--datacenter`.
 It supports the same `--capacity-timeout` and `--no-wait-for-capacity` controls.
 Without an hourly ceiling it uses the current quote; no current quote means
-it asks for `--max-hourly-usd`. `--for` is the initial idle retention after
-claim, capped by the paid expiry. Without `--for`, it uses saved idle retention
-or 30 minutes, disclosed before consent. The machine is idle once claimed; a
+it asks for `--max-hourly-usd`. `--for` sets the paid lifetime; `--max-usd`
+sets the spend cap, and either can derive the other from the hourly rate.
+When both are given, the earlier limit applies. Without either, the saved
+budget cap sets the lifetime. `--idle` overrides the saved idle retention for
+this claim; idle release occurs at that limit or the paid expiry, whichever
+comes first. The machine is idle once claimed; a
 compatible generation can reuse it with fresh paid consent and the same
 expiry, without another create.
 

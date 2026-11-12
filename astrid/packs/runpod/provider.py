@@ -194,8 +194,8 @@ class ProviderGate:
                          self.clock() + next_delay(attempt, delay)))
         self._state(update)
 
-    def retry_delay(self):
-        return self._state(lambda state: min(60., max(5.0, state.get("cooldown", 0.) - self.clock(),
+    def retry_delay(self, *, minimum_seconds=5.0):
+        return self._state(lambda state: min(60., max(minimum_seconds, state.get("cooldown", 0.) - self.clock(),
                                                       state.get("next", 0.) - self.clock())))
 
     def call(self, operation, *args, deadline=None, **kwargs):

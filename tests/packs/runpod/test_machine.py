@@ -1886,10 +1886,12 @@ def test_claim_reads_workflow_bundle_before_preparing(machine_case, monkeypatch)
 def _claim_cli_case(monkeypatch):
     from types import SimpleNamespace
     from astrid.core import machines_cli
+    from astrid.core.generation import settings
     from tests.packs.runpod.test_pack_actions import raw_preferences
 
     preferences = raw_preferences()
     rows, calls = [], []
+    monkeypatch.setattr(settings, "machine_policy", lambda kind: preferences if kind == "runpod" else None)
     monkeypatch.setattr(machines_cli, "_leases", lambda: rows)
 
     def describe(**kwargs):
@@ -1910,9 +1912,11 @@ def _claim_cli_case(monkeypatch):
 def test_machine_claim_real_parser_discloses_gpu_storage_and_fresh_policy_consent(monkeypatch, capsys):
     cli, saved, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
     assert cli.main(["claim", "--gpu", "gpu-b", "--datacenter", "DC-OVERRIDE", "--max-usd", "2", "--max-hourly-usd", "2",
-                     "--for", "20m", "--capacity-timeout", "10m", "--consent", "paid", "--json"],
+                     "--for", "20m", "--capacity-timeout", "10m", "--json"],
                     claim=claim, describe=describe) == 0
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert captured.err.count("RunPod claim policy:") == 1
     assert payload["ok"] and payload["machine"]["release_at"] == rows[0]["release_at"]
     assert payload["policy"]["preferences"]["datacenter_id"] == "DC-OVERRIDE"
     assert "datacenter_id" not in saved
@@ -1931,19 +1935,22 @@ def test_machine_claim_prompt_and_default_retention_and_one_attempt(monkeypatch,
                     claim=claim, describe=describe,
                     input_fn=lambda prompt: (prompts.append(prompt), "yes")[1]) == 0
     grant = calls[-1][1]["consent"]
-    assert prompts and grant.max_hourly_usd == 1.5
-    assert grant.idle_seconds == saved["idle_timeout_seconds"] == 120
+    assert not prompts and grant.max_hourly_usd == 1.5
+    assert grant.idle_seconds == 4800
+    assert calls[-1][1]["requested_idle_seconds"] == saved["idle_timeout_seconds"] == 120
     assert grant.wait_for_capacity is False
     assert "claimed manual-pod" in capsys.readouterr().out
 
 
 def test_machine_claim_refuses_missing_paid_consent_or_stockless_missing_ceiling(monkeypatch, capsys):
     cli, saved, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
-    assert cli.main(["claim", "--max-usd", "2", "--json"], claim=claim, describe=describe) == 2
-    assert "--consent paid" in capsys.readouterr().out
-    assert not rows and all(name != "claim" for name, _ in calls)
+    assert cli.main(["claim", "--max-usd", "2", "--json"], claim=claim, describe=describe) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] and rows and any(name == "claim" for name, _ in calls)
+    rows.clear()
+    calls.clear()
     stockless = lambda **kwargs: {"waiting_policy": {"preferences": saved}}
-    assert cli.main(["claim", "--max-usd", "2", "--consent", "paid", "--json"], claim=claim, describe=stockless) == 2
+    assert cli.main(["claim", "--max-usd", "2", "--json"], claim=claim, describe=stockless) == 2
     assert "--max-hourly-usd" in capsys.readouterr().out and not rows
 
 
@@ -1951,10 +1958,12 @@ def test_machine_claim_stockless_policy_and_cap_shortens_retention(monkeypatch, 
     cli, saved, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
     stockless = lambda **kwargs: {"waiting_policy": {"preferences": saved}, "availability": {"reason": "stock_unavailable"}}
     assert cli.main(["claim", "--max-usd", "0.1", "--max-hourly-usd", "2", "--for", "2h",
-                     "--consent", "paid", "--json"], claim=claim, describe=stockless) == 0
+                     "--json"], claim=claim, describe=stockless) == 0
     grant = calls[-1][1]["consent"]
     assert grant.idle_seconds == 180 and grant.max_usd == 0.1
-    assert json.loads(capsys.readouterr().out)["policy"]["retention_seconds"] == 180
+    assert calls[-1][1]["requested_idle_seconds"] == saved["idle_timeout_seconds"] == 120
+    policy = json.loads(capsys.readouterr().out)["policy"]
+    assert policy["lifetime_seconds"] == 180 and policy["retention_seconds"] == 120
 
 
 def test_machine_claim_without_host_refuses_without_bootstrapping(monkeypatch, capsys):
@@ -1967,7 +1976,7 @@ def test_machine_claim_without_host_refuses_without_bootstrapping(monkeypatch, c
         raise RuntimeError("no running host")
 
     monkeypatch.setattr(AstridClient, "open_from_launcher", unavailable)
-    assert machines_cli.main(["claim", "--max-usd", "2", "--max-hourly-usd", "2", "--consent", "paid", "--json"]) == 1
+    assert machines_cli.main(["claim", "--gpu", "gpu-a", "--max-usd", "2", "--max-hourly-usd", "2", "--json"]) == 1
     assert calls == [{"start_pack_host": False}]
     assert "no running host" in capsys.readouterr().out
 @pytest.mark.parametrize("tamper", [None, "receipt", "report"])

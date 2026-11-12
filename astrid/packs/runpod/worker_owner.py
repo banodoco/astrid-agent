@@ -199,7 +199,7 @@ class RunPodLeaseOwner:
             config = self.selection.config_factory(RunPodOffer(
                 record["provider_account_ref"], record["gpu_type"],
                 limits["hourly_usd"], "lease-recovery"))
-            return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay()
+            return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay(minimum_seconds=1.0)
         except Exception:  # noqa: BLE001 - keep durable retry armed on any config failure.
             # Keep durable recovery armed if its journal/config is currently
             # unreadable; the account gate cannot be addressed without a key.
@@ -412,10 +412,11 @@ class RunPodLeaseOwner:
 
     def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
                 cancelled: Callable[[], bool] | None = None,
-                defer_unsafe_release: bool = False) -> RunPodLease:
+                defer_unsafe_release: bool = False, claim_lifetime_seconds: float | None = None) -> RunPodLease:
         from .worker_preparation import TargetObservationError, observation_failure_gate
         try:
-            return self._acquire(consent, requested_idle_seconds=requested_idle_seconds, cancelled=cancelled)
+            return self._acquire(consent, requested_idle_seconds=requested_idle_seconds, cancelled=cancelled,
+                                 claim_lifetime_seconds=claim_lifetime_seconds)
         except TargetObservationError as exc:
             gate = observation_failure_gate(exc)
             if gate in {"GPU", "volume", "datacenter", "machine"}:
@@ -442,7 +443,8 @@ class RunPodLeaseOwner:
             raise
 
     def _acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
-                 cancelled: Callable[[], bool] | None = None) -> RunPodLease:
+                 cancelled: Callable[[], bool] | None = None,
+                 claim_lifetime_seconds: float | None = None) -> RunPodLease:
         from .target_selection import ClaimedJob, _utc
         from .worker_preparation import TargetObservationError
         job = isinstance(consent, ClaimedJob)
@@ -504,6 +506,8 @@ class RunPodLeaseOwner:
                         * previous["hourly_usd"] / 3600)
                 lease.update(state="active", paid_expires_at=min(
                                  _utc(claimed["paid_limits"]["expires_at"]).timestamp(),
+                                 previous["paid_expires_at"] if previous is not None else float("inf"),
+                                 paid_started + claim_lifetime_seconds if claim_lifetime_seconds is not None else float("inf"),
                                  _utc(consent.deadline).timestamp() if job else float("inf")),
                              hourly_usd=claimed["paid_limits"]["hourly_usd"],
                              started_at=paid_started, estimated_cost_usd=cost, accounted_at=self.clock())
@@ -561,11 +565,11 @@ class RunPodLeaseOwner:
                 raise RunPodWorkerOwnerError("claim requires a running host with a live RunPod owner")
             from .target_selection import PaidRunConsent, PaidSelectionError
             if (not isinstance(consent, PaidRunConsent) or consent.preparation_seconds != 0
-                    or consent.execution_seconds != 0 or consent.idle_seconds != requested_idle_seconds
+                    or consent.execution_seconds != 0 or requested_idle_seconds > consent.idle_seconds
                     or requested_idle_seconds <= 0):
                 raise PaidSelectionError("claim requires fresh paid consent for finite initial idle retention")
             invocation = self.acquire(consent, requested_idle_seconds=requested_idle_seconds,
-                                      cancelled=cancelled)
+                                      cancelled=cancelled, claim_lifetime_seconds=consent.idle_seconds)
             self.settle(invocation)
             return self._read()
 

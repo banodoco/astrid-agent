@@ -590,6 +590,20 @@ def test_small_lease_paid_bound_fences_active_invocation(small_lease):
     assert c.deletes == ["pod-1"]
 
 
+def test_small_lease_cleanup_retry_respects_provider_cooldown(small_lease, monkeypatch, tmp_path):
+    from astrid.packs.runpod.provider import ProviderGate
+
+    c = small_lease
+    owner = c.fresh()
+    owner.acquire(c.grant)
+    gate = ProviderGate(tmp_path / "provider-gate.json", clock=c.clock)
+    monkeypatch.setattr(worker_owner, "account_gate", lambda *args, **kwargs: gate)
+    monkeypatch.setattr("random.uniform", lambda *_: 0.25)
+    assert owner._provider_retry_delay() == 1
+    gate.after_response(429, "45")
+    assert owner._provider_retry_delay() == 45.25
+
+
 def test_small_lease_restart_terminates_even_unexpired_custody(small_lease):
     c = small_lease
     old = c.fresh()
@@ -1113,6 +1127,16 @@ def manual_claim_grant(c, **changes):
                    **changes)
 
 
+def test_manual_claim_has_separate_lifetime_and_idle(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    grant = replace(manual_claim_grant(c), idle_seconds=1200)
+    claimed = owner.claim(grant, requested_idle_seconds=300)
+    assert claimed["lease"]["paid_expires_at"] == c.clock() + 1200
+    assert claimed["lease"]["idle_expires_at"] == c.clock() + 300
+
+
 def test_manual_claim_waits_then_settles_idle_and_reuses_without_extending_paid_limit(small_lease):
     c = small_lease
     owner = c.fresh()
@@ -1130,13 +1154,15 @@ def test_manual_claim_waits_then_settles_idle_and_reuses_without_extending_paid_
         c.clock.now += seconds
 
     c.owner.observe_offer, c.owner.sleep = observe, sleep
-    grant = manual_claim_grant(c, offer_digest=None, deadline=None,
-        policy_digest=target_selection.policy_consent_digest(c.prefs, 1), max_hourly_usd=1)
+    # Keep the paid lifetime longer than idle retention so this test isolates idle expiry.
+    grant = replace(manual_claim_grant(c, offer_digest=None, deadline=None,
+        policy_digest=target_selection.policy_consent_digest(c.prefs, 1), max_hourly_usd=1), idle_seconds=1200)
     claimed = owner.claim(grant, requested_idle_seconds=600)
     assert len(observations) == 3 and len(waits) == 2 and c.creates == 1
     assert claimed["lease"]["state"] == "idle"
     assert claimed["lease"]["idle_expires_at"] == c.clock() + 600
     expiry, started = claimed["lease"]["paid_expires_at"], claimed["lease"]["started_at"]
+    assert expiry == started + 1200
     # A normal generation admission needs fresh consent but no market stock.
     c.owner.observe_offer = lambda: pytest.fail("retained reuse observed market stock")
     later = owner.acquire(replace(c.grant, invocation_id="later-job", idle_seconds=60,

@@ -15,7 +15,6 @@ import pytest
 
 from astrid.core.generation import engine_readiness
 from astrid.packs.vibecomfy import local as local_scan
-from tests.packs.runpod.test_machine import machine_case as machine_case  # noqa: F401
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401
 from tests.packs.runpod.test_target_selection import case as case  # noqa: F401
@@ -160,17 +159,31 @@ def test_engine_readiness_parser_uses_its_distinct_query(tmp_path):
     assert observed["vram_bytes"] == 12 * 1024**3
 
 
-def test_runpod_machine_refuses_claim_without_paid_consent(machine_case):
-    from dataclasses import replace
-    from astrid.packs.runpod.target_selection import PaidSelectionError
+def test_runpod_machine_claim_cli_supplies_fresh_paid_consent(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
 
-    case = machine_case
-    job = case.job()
-    job = replace(job, policy={**job.policy, "consent": []})
-    before = case.creates
-    with pytest.raises(PaidSelectionError):
-        case.machine.claim(job)
-    assert case.creates == before
+    prefs = {
+        "provider_account_ref": "env:RUNPOD_API_KEY", "gpu_types": ["RTX 4090"],
+        "image": "runpod/worker@sha256:" + "1" * 64, "budget_cap_usd": 3.0,
+    }
+    monkeypatch.setattr(settings, "machine_policy", lambda _kind: prefs)
+    monkeypatch.setattr(machines_cli, "_leases", lambda: [{"id": "pod", "release_at": 2_000_000_000}])
+    captured = []
+
+    def claim(**kwargs):
+        captured.append(kwargs["consent"])
+        return SimpleNamespace(ok=True, raw_result={"result": {"target_operation": {"pod_id": "pod"}}})
+
+    assert machines_cli.main(
+        ["claim", "--max-usd", "3"],
+        describe=lambda **_: {"waiting_policy": {"preferences": prefs},
+                              "offer": {"hourly_usd": 0.5}},
+        claim=claim,
+    ) == 0
+    assert captured[0].consent == ("paid",)
+    capsys.readouterr()
 
 
 def test_runpod_setter_guide_command_uses_hidden_prompt_without_key_in_argv_or_env(
