@@ -125,6 +125,33 @@ def test_preparation_failure_remains_primary_when_owned_stop_is_unconfirmed(tmp_
         managed_preparation._UNRESOLVED_CUSTODY.pop(id(preparation), None)
 
 
+def test_owned_engine_stop_failure_is_logged_and_reported_as_unconfirmed_custody(monkeypatch, caplog, capsys):
+    import logging
+
+    from astrid.core.generation import managed_preparation
+
+    stop_failure = RuntimeError("injected owned stop failure")
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep._preparing_engine = True
+    prep.uncertain = False
+    service = SimpleNamespace(stop_owned=lambda **_kwargs: None)
+    monkeypatch.setattr(service, 'stop_owned', lambda **_kwargs: (_ for _ in ()).throw(stop_failure))
+    prep.context = SimpleNamespace(service_client=service)
+
+    with caplog.at_level(logging.DEBUG, logger=managed_preparation.__name__):
+        with pytest.raises(CustodyUnresolved) as caught:
+            prep._stop_preparing_engine()
+
+    assert prep.uncertain is True
+    assert prep._preparing_engine is True
+    assert caught.value.code == "custody_unresolved"
+    assert str(caught.value) == "managed preparation failed; exact owned engine stop remains unconfirmed"
+    assert caught.value.__notes__ == ["owned engine stop failed: RuntimeError"]
+    assert "managed preparation owned-engine stop failed" in caplog.text
+    assert "injected owned stop failure" in caplog.text
+    assert not capsys.readouterr().err
+
+
 def test_alignment_failure_keeps_native_stderr_out_of_public_error(tmp_path, caplog):
     from astrid.core.generation.engine_recipe import load_recipe
     from astrid.core.generation.engine_platforms import platform_adapter
