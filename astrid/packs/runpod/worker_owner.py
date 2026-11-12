@@ -199,7 +199,8 @@ class RunPodLeaseOwner:
             config = self.selection.config_factory(RunPodOffer(
                 record["provider_account_ref"], record["gpu_type"],
                 limits["hourly_usd"], "lease-recovery"))
-            return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay()
+            with provider_budget(0):
+                return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay()
         except Exception:  # noqa: BLE001 - keep durable retry armed on any config failure.
             # Keep durable recovery armed if its journal/config is currently
             # unreadable; the account gate cannot be addressed without a key.
@@ -734,7 +735,7 @@ class RunPodLeaseOwner:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
             self._release_inflight = True
         try:
-            with provider_budget(EXACT_CLEANUP_SECONDS):
+            with provider_budget(EXACT_CLEANUP_SECONDS, cleanup=True):
                 return self._release(reason=reason)
         except Exception as exc:
             with self.lock:

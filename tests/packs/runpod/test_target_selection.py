@@ -78,6 +78,7 @@ def case(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
     monkeypatch.setattr(runpod_lifecycle, "get_pod", get_pod)
+    monkeypatch.setattr("astrid.packs.runpod.worker_preparation._get_provider_pod", get_pod)
     monkeypatch.setattr(api, "list_pods", pods)
     monkeypatch.setattr(api, "get_network_volumes", volumes)
     monkeypatch.setattr(selection, "read_exact_pod", lambda key, pod: (

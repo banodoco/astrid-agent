@@ -36,7 +36,7 @@ from .worker_preparation import (
     _validate_completed_release, write_target_record,
 )
 from . import worker_preparation
-from .provider import parse_rest_pod
+from .provider import account_gate, parse_rest_pod, provider_budget
 
 
 def _exact_volume_id(record):
@@ -627,9 +627,22 @@ class RunPodSelectionOwner:
                     else:
                         offer = await interruptible(observe(), provider_timeout=30.0)
                     rate_limit_failures = 0
-                    offer, _ = self.consented_offer(consent, self.clock(), offer=offer)
-                    result = await interruptible(self._select_once(
-                        consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
+                    offer, paid_expiry = self.consented_offer(consent, self.clock(), offer=offer)
+                    if (record is not None and record.get("state") not in
+                            {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}
+                            and record.get("paid_limits", {}).get("expires_at")):
+                        paid_expiry = min(paid_expiry, _utc(record["paid_limits"]["expires_at"]))
+                    # This is the acquisition budget, including readiness.
+                    # Each individual provider call keeps its own 30s limit.
+                    remaining = max(0., (paid_expiry - self.clock()).total_seconds())
+                    if remaining <= 0:
+                        raise PaidSelectionError("existing claim lifetime cannot be extended by reuse", gate="lifetime")
+                    if consent.capacity_timeout_seconds is not None:
+                        remaining = min(remaining, max(0., consent.capacity_timeout_seconds -
+                                                       (self.monotonic() - started)))
+                    with provider_budget(remaining, cancelled=check):
+                        result = await interruptible(self._select_once(
+                            consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
                     progress(number, offer, "claimed")
                     return result
                 except OfferObservationError as exc:
@@ -715,6 +728,13 @@ class RunPodSelectionOwner:
                 or getattr(config, "gpu_type_id", None) != offer.gpu_type_id
                 or getattr(config, "storage_name", None) or getattr(config, "storage_volumes", ())):
             raise PaidSelectionError("provider configuration differs from the consented exact placement")
+        # _select already owns the journal lock and calls __wrapped__ below.
+        # Bind here, before even volume discovery, rather than relying on the
+        # acquisition decorator that this path intentionally bypasses.
+        await worker_preparation.async_provider_call(
+            config.api_key, account_gate, config.api_key,
+            account_ref=p.provider_account_ref, already_gated=True,
+        )
         # Restrict lifecycle's launch matrix to the consented target so each
         # journaled attempt can issue at most one create POST.
         config = copy.copy(config)
