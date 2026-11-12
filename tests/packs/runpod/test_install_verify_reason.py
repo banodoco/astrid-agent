@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.packs.runpod import remote_placement as rp
+from astrid.packs.runpod.failure_reason import Reason
+from astrid.packs.runpod.failure_receipt import build_receipt, render
 
 
 def _placement(monkeypatch, exec_result, remaining=600.0):
@@ -56,3 +58,29 @@ def test_install_failure_message_carries_the_reason(monkeypatch, tmp_path):
     state = _state(tmp_path)
     with pytest.raises(rp.RemotePlacementError, match=r"reason: status=failed;error_code=engine_health_failed"):
         placement._install(state)
+
+
+def test_install_refusal_reaches_receipt_and_cli(monkeypatch, tmp_path):
+    placement = _placement(monkeypatch, (7, "", ""))
+    monkeypatch.setattr(placement, "_run_job", lambda *args: None)
+    with pytest.raises(rp.PlacementReasonError) as raised:
+        placement._install(_state(tmp_path))
+    receipt = build_receipt({"failure": raised.value, "stage": "claim"}, job=SimpleNamespace(),
+                            machine=None, timing=None)
+    assert receipt["stage"] == "install"
+    assert receipt["cause"]["reason"] == {"stage": "install", "step": "verify", "gate": "install",
+                                           "code": "status_exit", "exit_code": 7}
+    assert receipt["cause"]["code"] == "status_exit"
+    assert "status_exit" in render(receipt)
+
+
+def test_structured_refusal_requires_reason():
+    with pytest.raises((TypeError, ValueError)):
+        rp.PlacementReasonError("refused")
+    with pytest.raises(ValueError):
+        rp.PlacementReasonError("refused", reason=None)
+
+
+def test_reason_rejects_free_text():
+    with pytest.raises(ValueError):
+        Reason(stage="install", step="verify", code="private/path")
