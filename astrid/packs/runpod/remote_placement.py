@@ -71,6 +71,14 @@ SOURCE_DIRS = (
 )
 
 
+_LABEL_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
+def _safe_label(value: object) -> str:
+    """A fixed-vocabulary label safe for journals and messages; anything else is withheld."""
+    return value if isinstance(value, str) and _LABEL_RE.fullmatch(value) else "withheld"
+
+
 class RemotePlacementError(AstridError):
     """A remote placement step failed. The pod has been released unless stated."""
 
@@ -338,6 +346,7 @@ class RemoteRun:
     installation: RunPodInstallation | None = None
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None
     installed: Mapping[str, Any] | None = None
+    install_unverified: str | None = None
 
     @property
     def remote_in(self) -> str:
@@ -598,7 +607,9 @@ class RemotePlacement:
             f"--root {shlex.quote(ENGINE_ROOT)}"
         )
         code, stdout, _err = self._exec(state, command, timeout=120)
+        state.install_unverified = None
         if code != 0:
+            state.install_unverified = _safe_label(f"status_exit_{code}")
             return False
         try:
             receipt = json.loads(stdout.strip().splitlines()[-1]) if stdout.strip() else None
@@ -626,7 +637,9 @@ class RemotePlacement:
         )
         self._run_job(state, command, "engine install")
         if not self._engine_installed_healthy(state):
-            raise RemotePlacementError("engine install finished but status is not installed and healthy")
+            reason = getattr(state, "install_unverified", None) or "unclassified"
+            raise RemotePlacementError(
+                f"engine install finished but status is not installed and healthy (reason: {reason})")
         state.note("install", "done")
 
     def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:
@@ -635,7 +648,9 @@ class RemotePlacement:
         installation = state.installation
         plan = installation.plan()
         remaining = min(120, self._remaining() if verification_seconds is None else verification_seconds)
+        state.install_unverified = None
         if remaining <= 0:
+            state.install_unverified = "status_deadline_exhausted"
             return False
         command = (f"{POD_VENV}/bin/astrid engines status {installation.engine} "
                    f"--platform {installation.platform} --placement local "
@@ -645,9 +660,15 @@ class RemotePlacement:
         code, stdout, _ = (self._exec(state, command, timeout=120) if verification_seconds is None
                            else state.claim.ops.exec(command, remaining))
         if code != 0 or stdout.strip() in {"", "null"}:
+            state.install_unverified = (_safe_label(f"status_exit_{code}") if code != 0
+                                        else "status_no_receipt")
             return False
         raw = json.loads(stdout)
         if raw.get("status") != "installed":
+            # engine_status returns only fixed vocabulary here (status, error_code,
+            # failed_step_id); re-validate so nothing else reaches a journal.
+            state.install_unverified = ";".join(
+                f"{key}={_safe_label(raw.get(key))}" for key in ("status", "error_code", "failed_step_id"))
             return False
         # Status re-verifies the actual source/model/environment/start/health
         # through the canonical runner. Parse with that same receipt boundary.
@@ -679,6 +700,7 @@ class RemotePlacement:
             code, output, _ = state.claim.ops.exec(
                 f"{POD_VENV}/bin/python -c {shlex.quote(script)} {shlex.quote(receipt)}", remaining)
             if code != 0 or len(output) > 1400000:
+                state.install_unverified = "receipt_read_failed"
                 return False
             try:
                 data = base64.b64decode(output.strip(), validate=True)
