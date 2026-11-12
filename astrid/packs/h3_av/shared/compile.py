@@ -534,7 +534,7 @@ def _compile_native_masked_edit(
             raise CompilationError(str(exc)) from exc
         mask_path = destination / "resolved-mask.png"
         mask_path.write_bytes(resolved.mask_png)
-    during = tuple(round(value * 24) for value in operation.during)
+    during = (round(operation.during[0] * 24), round(operation.during[1] * 24))
     if during != (0, frame_load_cap):
         mask_path = _bounded_edit_mask(mask_path, kind=mask_kind, frames=frame_load_cap,
                                        during=during, destination=destination)

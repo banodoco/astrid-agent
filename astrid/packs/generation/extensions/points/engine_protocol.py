@@ -15,7 +15,7 @@ from typing import Any, Protocol
 
 
 class Engine(Protocol):
-    __optional__ = ("probe",)
+    __optional__: tuple[str, ...] = ("probe",)
 
     def requirements(self, entry: Any, inputs: Any) -> dict[str, Any]: ...
 

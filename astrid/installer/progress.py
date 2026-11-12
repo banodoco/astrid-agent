@@ -173,7 +173,7 @@ class Progress:
             columns = self._columns()
         except Exception:  # noqa: BLE001 - an unreadable width only means no tracks
             columns = None
-        return columns is not None and len(text) + 1 + self.tracks.width + 2 < columns
+        return columns is not None and self.tracks is not None and len(text) + 1 + self.tracks.width + 2 < columns
 
     def _close(self, mark: str = "") -> None:
         """End the open phase line with ``mark`` in place of the tracks.
@@ -186,11 +186,13 @@ class Progress:
             if self._still:
                 self._write(f"{mark}\n")
             else:
+                assert self.tracks is not None
                 pad = " " * max(self.tracks.width + 2 - len(mark), 0)
                 self._write(f"\r{self._text} {mark}{pad}\n")
 
     def _still_line(self) -> None:
         """Stop the tracks on the open line: erase them, leaving the label and a space."""
+        assert self.tracks is not None
         width = self.tracks.width
         self._write("\b" * width + " " * width + "\b" * width)
         self._still = True

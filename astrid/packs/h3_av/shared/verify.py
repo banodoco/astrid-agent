@@ -368,7 +368,7 @@ def verify_candidate(
 
     spatial_evidence: list[dict[str, Any]] = []
     try:
-        spatial_masks = _spatial_video_masks(preparation, source_path)
+        spatial_masks: list[Mapping[str, Any]] = list(_spatial_video_masks(preparation, source_path))
     except CompositionError as exc:
         raise VerificationError(str(exc)) from exc
     if spatial_masks:
@@ -388,11 +388,11 @@ def verify_candidate(
                 record = assets.get(mask["asset"], {})
                 if "derived_box" not in mask and (record.get("sha256") != _sha256(path) or record.get("size") != path.stat().st_size):
                     raise VerificationError("regional mask provenance does not match preparation asset evidence")
-            for start, end, _generated, mask in _segments_with_spatial_masks(
+            for start, end, _generated, segment_mask in _segments_with_spatial_masks(
                 float(schedule["duration"]), list(schedule["video"]["generated_intervals"]), spatial_masks
             ):
-                if mask is not None:
-                    expected_segments.append({"during": [start, end], **_mask_segment_evidence(mask)})
+                if segment_mask is not None:
+                    expected_segments.append({"during": [start, end], **_mask_segment_evidence(segment_mask)})
             fields = ("during", "mask_asset", "mask_sha256", "mask_kind", "mask_frames", "mask_union")
             actual_segments = [
                 {field: segment[field] for field in fields if field in segment}

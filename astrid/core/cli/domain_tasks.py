@@ -228,6 +228,7 @@ def _task_id(parsed: argparse.Namespace) -> tuple[str | None, int | None]:
 def _cmd_show(parsed: argparse.Namespace) -> int:
     task_id, code = _task_id(parsed)
     if task_id is None:
+        assert code is not None
         return code
     result = parsed.client.tasks.show(task_id)
     return print_result(result, as_json=parsed.json)
@@ -236,6 +237,7 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
 def _cmd_cancel(parsed: argparse.Namespace) -> int:
     task_id, code = _task_id(parsed)
     if task_id is None:
+        assert code is not None
         return code
     result = parsed.client.tasks.cancel(
         task_id,
@@ -247,6 +249,7 @@ def _cmd_cancel(parsed: argparse.Namespace) -> int:
 def _cmd_retry(parsed: argparse.Namespace) -> int:
     task_id, code = _task_id(parsed)
     if task_id is None:
+        assert code is not None
         return code
     result = parsed.client.tasks.retry(
         task_id,
@@ -258,6 +261,7 @@ def _cmd_retry(parsed: argparse.Namespace) -> int:
 def _cmd_events(parsed: argparse.Namespace) -> int:
     task_id, code = _task_id(parsed)
     if task_id is None:
+        assert code is not None
         return code
     result = parsed.client.tasks.events(task_id)
     return print_result(result, as_json=parsed.json)
@@ -266,6 +270,7 @@ def _cmd_events(parsed: argparse.Namespace) -> int:
 def _cmd_logs(parsed: argparse.Namespace) -> int:
     task_id, code = _task_id(parsed)
     if task_id is None:
+        assert code is not None
         return code
     # The task's terminal result owns its log rows: the host records them there on
     # success and on failure alike, while managed outputs exist only for a success.
@@ -273,8 +278,12 @@ def _cmd_logs(parsed: argparse.Namespace) -> int:
     if not result.ok:
         return print_result(result, as_json=parsed.json)
     task = result.data if isinstance(result.data, Mapping) else {}
-    terminal = task.get("result") if isinstance(task.get("result"), Mapping) else {}
-    rows = terminal.get("outputs") if isinstance(terminal.get("outputs"), list) else []
+    terminal = task.get("result")
+    if not isinstance(terminal, Mapping):
+        terminal = {}
+    rows = terminal.get("outputs")
+    if not isinstance(rows, list):
+        rows = []
     logs = [row for row in rows if isinstance(row, Mapping) and row.get("role") == "log"]
     if not logs:
         print(f"no logs recorded for task {task_id}", file=sys.stderr)
@@ -323,6 +332,7 @@ def _completed_line(data: Mapping[str, Any]) -> str:
 def _cmd_follow(parsed: argparse.Namespace) -> int:
     task_id, code = _task_id(parsed)
     if task_id is None:
+        assert code is not None
         return code
     parsed.task_id = task_id
     if parsed.json:

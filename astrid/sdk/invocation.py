@@ -3482,7 +3482,7 @@ def _wait_for_kernel_task_loop(
 
     started = last_heartbeat = time.monotonic()
     effective_timeout = float(timeout_seconds)
-    deadline = started + effective_timeout
+    deadline: float | None = started + effective_timeout
     previous = None
     while True:
         try:
@@ -3525,7 +3525,7 @@ def _wait_for_kernel_task_loop(
             capacity_timeout = runpod_policy.get("capacity_timeout_seconds")
             if capacity_timeout is None and float(timeout_seconds) == 3600.0:
                 deadline = None
-            elif (type(capacity_timeout) in (int, float) and math.isfinite(capacity_timeout)
+            elif (type(capacity_timeout) in (int, float) and isinstance(capacity_timeout, (int, float)) and math.isfinite(capacity_timeout)
                   and capacity_timeout > 0):
                 effective_timeout = float(timeout_seconds) + capacity_timeout
                 deadline = started + effective_timeout
@@ -3801,6 +3801,7 @@ def _observe_task_invocation(
         raw_result = {"ok": False}
 
     if wait and ok:
+        assert raw_result is not None
         raw_result, ok, waited_attempt_id = _wait_for_kernel_task(
             client,
             task_id=task_id,

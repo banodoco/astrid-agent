@@ -65,14 +65,14 @@ _OVERRIDES = {"model", "steps", "seed", "sampler", "guidance"}
 def _asset_ids(request: H3Request) -> list[str]:
     value = request.value
     if value.get("version") == 2:
-        result = [str(item["asset"]) for item in value["media"]]
+        result: list[str] = [str(item["asset"]) for item in value["media"]]
         for item in value["media"]:
             for edit in item.get("edit", []):
                 mask = edit.get("mask", {})
                 if isinstance(mask, Mapping) and "asset" in mask:
                     result.append(str(mask["asset"]))
         return list(dict.fromkeys(result))
-    result: list[str] = []
+    result = []
     source = value.get("source")
     if isinstance(source, Mapping):
         result.append(source["asset"])

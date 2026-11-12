@@ -222,7 +222,7 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
             f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} has no video stream; {SOURCE_AV_CONFORM_HINT}",
             code=SOURCE_AV_RATE_CODE, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
         )
-    container = payload.get("format")
+    container = payload.get("format") if isinstance(payload, Mapping) else None
     container_duration = _seconds(container.get("duration")) if isinstance(container, Mapping) else None
     r_rate = _rate_fraction(video.get("r_frame_rate"))
     avg_rate = _rate_fraction(video.get("avg_frame_rate"))
@@ -242,7 +242,7 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
         problems.append("video dimensions are not 1024x576")
     if video_duration is None or (audio is not None and audio_duration is None):
         problems.append("durations could not be measured")
-    elif audio is not None and abs(audio_duration - video_duration) > _SOURCE_AV_TOLERANCE_SECONDS:
+    elif audio is not None and audio_duration is not None and abs(audio_duration - video_duration) > _SOURCE_AV_TOLERANCE_SECONDS:
         problems.append(
             f"audio and video durations differ by more than {_SOURCE_AV_TOLERANCE_SECONDS:.6f}s"
         )

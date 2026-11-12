@@ -317,7 +317,7 @@ def main(argv: list[str]) -> int:
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
-        return int(exc.code)
+        return int(exc.code) if exc.code is not None else 0
     if args.command == "declare":
         try:
             declare(Path(args.root), LogDecl(args.name, args.role, args.path, args.start))

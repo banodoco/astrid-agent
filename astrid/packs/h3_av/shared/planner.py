@@ -107,7 +107,7 @@ def plan_request(
         ) for index in range(len(passes))]
         preparation = prepare_request(request, asset_map=asset_map)
         preparation_path = write_preparation(root / "preparation.json", preparation)
-        compiled = all(item["runtime_submission"] == "eligible" for item in plans)
+        all_compiled = all(item["runtime_submission"] == "eligible" for item in plans)
         plan = {
             "schema_version": 1, "kind": "h3_av_plan", "status": "planned",
             "request_digest": request.digest, "spec": asdict(spec),
@@ -122,9 +122,9 @@ def plan_request(
             "mask_schedule": preparation["mask_schedule"],
             "warnings": [warning for item in plans for warning in item["warnings"]],
             "ignored_fields": [field for item in plans for field in item["ignored_fields"]],
-            "compilation": {"status": "compiled" if compiled else "blocked", "ordered_passes": len(passes)},
+            "compilation": {"status": "compiled" if all_compiled else "blocked", "ordered_passes": len(passes)},
             "preparation_path": str(preparation_path),
-            "runtime_submission": "eligible" if compiled else "blocked_until_compilation",
+            "runtime_submission": "eligible" if all_compiled else "blocked_until_compilation",
             "capabilities": spec.capabilities, "plan_path": str(plan_path),
         }
         facts().write_json_atomic(plan_path, plan)

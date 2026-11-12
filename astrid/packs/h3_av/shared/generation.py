@@ -174,8 +174,8 @@ def _h3_locked_urls() -> dict[str, Any]:
 def _locked_asset(models: Mapping[str, Any], destination: str, **kwargs: Any) -> Any:
     """A ModelAsset carrying the lock's own url, digest and size."""
     from vibecomfy.templates import ModelAsset
-    model = models[destination] if destination in models else None
     url = _required_locked_url(models, destination)
+    model = models[destination]
     digest = model.sha256.removeprefix("sha256:")
     return ModelAsset(url=url, sha256=digest, size_bytes=model.bytes, **kwargs)
 

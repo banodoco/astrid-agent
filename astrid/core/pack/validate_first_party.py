@@ -373,8 +373,8 @@ def _first_party_inventory(
     )
     excluded: list[str] = []
     if pack_roots is not None:
-        selected = tuple(Path(path).expanduser().resolve() for path in pack_roots)
-        return [], selected, excluded, runtime_mounts
+        explicit_roots = tuple(Path(path).expanduser().resolve() for path in pack_roots)
+        return [], explicit_roots, excluded, runtime_mounts
 
     errors: list[str] = []
     selected: list[Path] = []
@@ -393,8 +393,8 @@ def _first_party_inventory(
     for name, child in sorted(child_dirs.items()):
         if name == "_core":
             continue
-        manifest = pack_manifest_path(child)
-        if manifest is not None:
+        child_manifest = pack_manifest_path(child)
+        if child_manifest is not None:
             # A CLI entrypoint does not exempt a directory from pack validation.
             selected.append(child)
             continue

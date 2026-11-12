@@ -587,10 +587,10 @@ def sync(
                 for record in current_state["installs"].get(harness_name, {}).values():
                     if not isinstance(record, dict):
                         continue
-                    target, source = record.get("target"), record.get("source")
-                    if not isinstance(target, str) or not isinstance(source, str) or not Path(source).is_absolute():
+                    target_value, source = record.get("target"), record.get("source")
+                    if not isinstance(target_value, str) or not isinstance(source, str) or not Path(source).is_absolute():
                         continue
-                    target = Path(target).expanduser()
+                    target = Path(target_value).expanduser()
                     if ours_link_to_pack_id(target.name) is None:
                         prune_sources.setdefault(target, set()).add(Path(source))
                 removed_paths = prune_orphan_skill_links(
