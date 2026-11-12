@@ -14,6 +14,7 @@ from tests.packs.runpod.test_failure_receipt import _only, _run
 from tests.packs.runpod.test_generation_preparation import (
     retained as retained,  # noqa: F401 (fixture)
 )
+from tests.packs.runpod.test_machine import _claim_machine
 from tests.packs.runpod.test_machine import machine_case as machine_case  # noqa: F401 (fixture)
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401 (fixture)
 from tests.packs.runpod.test_target_selection import case as case  # noqa: F401 (fixture)
@@ -31,6 +32,7 @@ def test_checkpoint_refuses_custody_changed_during_verification(machine_case, mo
 
     c = machine_case
     job = c.job()
+    _claim_machine(c)  # a job attaches to an explicit claim (owner decision O3)
     lease = c.machine.claim(job)
     run = c.machine.start(lease, job)
     c.machine._checkpoint(lease, {"id": run.job_id, "state": "exited"})
@@ -173,6 +175,7 @@ def test_checkpoint_unreaped_observer_releases_failure_then_timer_owner_recovers
     from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
 
     c = machine_case
+    _claim_machine(c)  # a job attaches to an explicit claim (owner decision O3)
     lease = c.machine.claim(c.job())
     run = c.machine.start(lease, c.job())
     c.machine._checkpoint(lease, {"id": run.job_id, "state": "exited"})
@@ -257,6 +260,7 @@ def test_earlier_observer_deadline_reason_is_retained_in_receipt(machine_case, m
 
     c = machine_case
     job = c.job()
+    _claim_machine(c)  # a job attaches to an explicit claim (owner decision O3)
     lease = c.machine.claim(job)
     run = c.machine.start(lease, job)
     c.machine._checkpoint(lease, {"id": run.job_id, "state": "exited"})
@@ -305,6 +309,7 @@ def test_earlier_observer_deadline_reason_is_retained_in_receipt(machine_case, m
 
 def test_owner_reaper_retries_after_one_handle_fails_during_liveness_check(machine_case):
     c = machine_case
+    _claim_machine(c)  # a job attaches to an explicit claim (owner decision O3)
     lease = c.machine.claim(c.job())
 
     class Child:
@@ -362,6 +367,7 @@ def test_success_checkpoint_verification_does_not_hold_owner_lock_during_stalled
 
     c = machine_case
     job = c.job()
+    _claim_machine(c)  # a job attaches to an explicit claim (owner decision O3)
     lease = c.machine.claim(job)
     run = c.machine.start(lease, job)
     c.machine._checkpoint(lease, {"id": run.job_id, "state": "exited"})
@@ -460,6 +466,7 @@ def test_success_checkpoint_uses_bounded_paid_verification_window(machine_case, 
 
     c = machine_case
     job = c.job()
+    _claim_machine(c)  # a job attaches to an explicit claim (owner decision O3)
     lease = c.machine.claim(job)
     run = c.machine.start(lease, job)
     c.machine._checkpoint(lease, {"id": run.job_id, "state": "exited"})
@@ -508,6 +515,7 @@ def test_checkpoint_reason_survives_failure_receipt_and_render(
                     rm.InstallationUnverified if mode.startswith("attestation") else RunPodWorkerOwnerError)
     c = machine_case
     job = c.job()
+    _claim_machine(c)  # a job attaches to an explicit claim (owner decision O3)
     lease = c.machine.claim(job)
     run = c.machine.start(lease, job)
     c.machine._checkpoint(lease, {"id": run.job_id, "state": "exited"})

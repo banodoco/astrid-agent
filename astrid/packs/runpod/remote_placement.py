@@ -37,7 +37,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from astrid.core.contracts.errors import AstridError
 
-from .failure_reason import Reason
+from .failure_reason import Reason, attach_reason, installation_reason
 from .failure_receipt import checkpoint_refusal
 from .pod_bootstrap import SCRIPT as POD_BOOTSTRAP_SCRIPT
 
@@ -93,10 +93,8 @@ class PlacementReasonError(RemotePlacementError):
     """A refusal at the structured reason boundary."""
 
     def __init__(self, message: str, *, reason: Reason):
-        if not isinstance(reason, Reason):
-            raise ValueError("a validated reason is required")
         super().__init__(message)
-        self.reason = reason
+        attach_reason(self, reason)
 
 
 class BoundedObserverUnreaped(RemotePlacementError):
@@ -750,24 +748,20 @@ class RemotePlacement:
         self._run_job(state, command, "engine install")
         if not self._engine_installed_healthy(state):
             reason = getattr(state, "install_unverified", None) or "unclassified"
-            match = re.fullmatch(r"status_exit_(-?\d+)", reason)
-            exit_code = int(match.group(1)) if match and -255 <= int(match.group(1)) <= 255 else None
-            code = ("status_exit" if exit_code is not None else reason if reason in {
-                "status_no_receipt", "status_deadline_exhausted", "receipt_read_failed"}
-                else "status_not_installed")
             raise PlacementReasonError(
                 f"engine install finished but status is not installed and healthy (reason: {reason})",
-                reason=Reason(stage="install", step="verify", gate="install", code=code, exit_code=exit_code))
+                reason=installation_reason(reason))
         state.note("install", "done")
 
     def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:
         from astrid.core.generation import engine_recipe, engine_runner
 
         installation = state.installation
-        assert installation is not None and state.claim is not None
+        assert installation is not None
         remaining = min(120, self._remaining() if verification_seconds is None else verification_seconds)
         verification_deadline = time.monotonic() + remaining
         if verification_seconds is not None:
+            assert state.claim is not None
             transport_deadline = getattr(state.claim.ops, "deadline", None)
             if transport_deadline is not None:
                 verification_deadline = min(verification_deadline, transport_deadline)
@@ -781,8 +775,11 @@ class RemotePlacement:
                    f"--root {shlex.quote(installation.root)} --deadline {remaining}")
         # Checkpoint verification is read-only and bounded by the original paid
         # lease, independently of the execution timer that the job may exhaust.
-        code, stdout, _ = (self._exec(state, command, timeout=120) if verification_seconds is None
-                           else state.claim.ops.exec(command, remaining))
+        if verification_seconds is None:
+            code, stdout, _ = self._exec(state, command, timeout=120)
+        else:
+            assert state.claim is not None
+            code, stdout, _ = state.claim.ops.exec(command, remaining)
         if code != 0 or stdout.strip() in {"", "null"}:
             state.install_unverified = (_safe_label(f"status_exit_{code}") if code != 0
                                         else "status_no_receipt")
@@ -803,6 +800,7 @@ class RemotePlacement:
             recipe, live,
             root=installation.root, placement="local")
         engine_runner.require_current_receipt(live, plan, recipe)
+        assert state.claim is not None
         receipt = installation.root + "/.astrid-engine/install.json"
         if verification_seconds is None:
             path = state.local_out / "installed.json"
