@@ -854,6 +854,16 @@
    "required_packages": []
   },
   {
+   "id": "runpod.claim",
+   "disposition": "optional",
+   "evidence_reason": "Claim a retained target through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "runpod.exec",
    "disposition": "optional",
    "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
@@ -861,6 +871,16 @@
    "resource_keys": [
     "provider"
    ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.keep",
+   "disposition": "optional",
+   "evidence_reason": "Keep a retained target through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
    "required_env": [],
    "required_binaries": [],
    "required_packages": []
