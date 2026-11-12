@@ -91,6 +91,24 @@ def _clean(value: Any) -> Any:
     return value if isinstance(value, (str, int, float, bool)) or value is None else None
 
 
+def _log_role(row: Mapping[str, Any]) -> str:
+    role = row.get("role")
+    if isinstance(role, str) and role:
+        return role
+    name = str(row.get("name", ""))
+    if name.startswith("job."):
+        name = name[4:]
+    if name == "engine.log" or name.startswith("engine-"):
+        return "engine"
+    return name if name in {"engine", "run", "stderr", "stdout", "install"} else "run"
+
+
+def log_order(row: Mapping[str, Any]) -> tuple[int, str]:
+    """Stable display order for declared logs."""
+    return ({"engine": 0, "run": 1, "stderr": 2, "stdout": 3, "install": 4}.get(_log_role(row), 5),
+            str(row.get("name", "")))
+
+
 def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, Any] | None,
                   timing: Any) -> dict[str, Any] | None:
     """The receipt body for one failed generation, or ``None`` when none is written (cancelled)."""
@@ -155,7 +173,17 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     # The failed job's own logs (stdout, stderr, engine log), brought back unredacted
     # from the user's own machine before the reset; write_receipt keeps a copy.
     collected = getattr(lease, "failure_logs", None)
-    logs = [dict(row) for row in (collected or {}).get("files", []) if isinstance(row, Mapping)]
+    logs = []
+    for original in (collected or {}).get("files", []):
+        if not isinstance(original, Mapping):
+            continue
+        row = dict(original)
+        row["role"] = _log_role(row)
+        row.setdefault("bytes", 0)
+        row.setdefault("truncated", False)
+        row.setdefault("missing", False)
+        row.setdefault("path", None if row["missing"] else row.get("path"))
+        logs.append(row)
     unavailable = (collected or {}).get("unavailable") if isinstance(collected, Mapping) else None
     return {
         "logs": logs, **({"logs_unavailable": unavailable} if unavailable else {}),
@@ -186,14 +214,29 @@ def write_receipt(receipt: Mapping[str, Any], *, root: Path | None = None) -> Pa
         receipt = dict(receipt)
         kept = []
         for row in receipt["logs"]:
+            row = dict(row)
+            row["role"] = _log_role(row)
+            row.setdefault("bytes", 0)
+            row.setdefault("truncated", False)
+            row.setdefault("missing", False)
+            if row["missing"]:
+                row["path"] = None
+                kept.append(row)
+                continue
             source = Path(str(row.get("path", "")))
             safe = "".join(ch for ch in str(row.get("name", "")) if ch.isalnum() or ch in "-_.")[:64]
             if not safe or not source.is_file() or source.is_symlink():
+                row["missing"] = True
+                row.setdefault("reason", "FileNotFoundError")
+                row["path"] = None
+                kept.append(row)
                 continue
-            target = folder / "logs" / safe
+            suffix = source.suffix if source.suffix in {".log", ".json", ".txt"} else ".log"
+            filename = safe if Path(safe).suffix in {".log", ".json", ".txt"} else safe + suffix
+            target = folder / "logs" / filename
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
-            kept.append({**row, "path": str(target)})
+            kept.append({**row, "missing": False, "path": str(target)})
         receipt["logs"] = kept
     path = folder / RECEIPT_NAME
     partial = path.with_name(RECEIPT_NAME + f".{os.getpid()}.partial")
@@ -272,8 +315,12 @@ def render(receipt: Mapping[str, Any]) -> str:
                if isinstance(row, Mapping) and row.get("seconds") is not None]
     if seconds:
         lines.append("Timing: " + ", ".join(seconds))
-    for log in receipt.get("logs", []):
-        lines.append(f"Log: {log['name']} {log['path']}")
+    for log in sorted(receipt.get("logs", []), key=log_order):
+        if log.get("missing"):
+            lines.append(f"Log: {log.get('name')} missing ({log.get('reason', 'unavailable')})")
+            continue
+        suffix = ", truncated" if log.get("truncated") else ""
+        lines.append(f"Log: {log.get('name')} ({_log_role(log)}, {log.get('bytes', 0)} bytes{suffix}) {log.get('path')}")
     return "\n".join(lines)
 
 
