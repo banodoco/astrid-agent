@@ -181,7 +181,7 @@ def replace_target_record(path: Path, value: dict[str, Any], *, operation_id: st
 
 
 @contextmanager
-def target_owner(handle_path: Path):
+def target_owner(handle_path: Path, *, blocking: bool = False):
     """Own the existing claim lock, including first creation of its journal.
 
     Product selection and worker preparation use the same lock pathname.
@@ -198,7 +198,7 @@ def target_owner(handle_path: Path):
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise AcquisitionUnresolvedError("RunPod account lock must be a regular file", gate="identity", retryable=False, custody="unknown")
         try:
-            platform.lock_file(fd, blocking=False)
+            platform.lock_file(fd, blocking=blocking)
         except BlockingIOError as exc:
             raise AcquisitionUnresolvedError(
                 f"another process currently owns RunPod target journal {path}; retry after it exits",
@@ -1397,20 +1397,16 @@ async def acquire_target(
                 "allocation journal does not prove the prior capacity response was safe to retry",
                 gate="identity", retryable=False, custody=_record_custody(attempt),
             )
-        if max_create_attempts is not None:
-            # One lifecycle launch can otherwise walk a GPU x RAM x storage
-            # matrix, issuing multiple POSTs without returning to this journal.
-            # The lifecycle launch matrix has exactly one storage target when
-            # the config names an exact network volume, one named storage, or
-            # no volume at all; more than one named storage would walk it.
-            storages = {name for name in [getattr(config, "storage_name", None),
-                                          *getattr(config, "storage_volumes", ())] if name}
-            exact_volume = getattr(config, "network_volume_id", None) is not None
-            if (max_create_attempts < 1 or capacity_window_seconds < 60
-                    or retry_interval_seconds < 15 or len(config.gpu_type_candidates) != 1
-                    or config.ram_tiers_enabled
-                    or len(storages) > 1 or (exact_volume and storages)):
-                raise ValueError("bounded capacity retries require one GPU, RAM tier and storage")
+        # Every lifecycle operation must contain one concrete POST, including
+        # callers without an attempt cap. The journal owns every retry.
+        storages = {name for name in [getattr(config, "storage_name", None),
+                                      *getattr(config, "storage_volumes", ())] if name}
+        exact_volume = getattr(config, "network_volume_id", None) is not None
+        if (len(config.gpu_type_candidates) != 1 or config.ram_tiers_enabled
+                or len(storages) > 1 or (exact_volume and storages)
+                or (max_create_attempts is not None and (max_create_attempts < 1
+                    or capacity_window_seconds < 60 or retry_interval_seconds < 15))):
+            raise ValueError("bounded capacity retries require one GPU, RAM tier and storage")
         expected_name = str(attempt.get("request_name") or "").strip()
         if not expected_name:
             raise ValueError("allocation attempt must have an exact request_name")
@@ -1460,14 +1456,35 @@ async def acquire_target(
                 pending = before_post(pending)
             replace_target_record(handle_path, pending, operation_id=operation_id)
             attempt = pending
+
+            def retain_late_pod(pod):
+                # The cancelled caller releases ownership before this worker
+                # can update custody. Re-read rather than restoring its stale
+                # snapshot over a concurrent reconciliation or cleanup.
+                with target_owner(handle_path, blocking=True):
+                    current = json.loads(handle_path.read_text(encoding="utf-8"))
+                    if (current.get("operation_id") != operation_id
+                            or current.get("request_name") != expected_name
+                            or current.get("pod_id") not in (None, str(pod.id))):
+                        raise AcquisitionUnresolvedError("late create result has conflicting journal custody")
+                    state = current.get("state")
+                    if state in {"allocation_pending", "allocation_unknown"}:
+                        state = "allocated_unverified"
+                    replace_target_record(handle_path, {
+                        **current, "state": state, "pod_id": str(pod.id), "name": str(pod.name),
+                        "allocated_at": utc_now_iso(), "safe_to_retry": False,
+                        "reconciliation_required": state != "cleanup_complete",
+                    }, operation_id=operation_id)
+
             try:
                 with provider_budget(max(0., deadline - time.monotonic()) if deadline is not None else window):
                     pod = await async_provider_operation(
                         config.api_key, launch_when_available, config,
+                        on_late_result=retain_late_pod,
                         name=expected_name,
                         # Zero asks lifecycle for one launch; the bounded loop
                         # owns timing and persists each POST before it starts.
-                        max_wait_sec=0 if max_create_attempts is not None else window,
+                        max_wait_sec=0,
                         retry_interval_sec=retry_interval_seconds,
                     )
             except ProviderNotStarted:
@@ -1492,8 +1509,7 @@ async def acquire_target(
                 raise
             except LaunchFailure as exc:
                 if (not getattr(exc, "retryable", True) or
-                        (max_create_attempts is not None and
-                         not isinstance(exc.__cause__, ProviderCapacityUnavailable))):
+                        not isinstance(exc.__cause__, ProviderCapacityUnavailable)):
                     known_pod_id = getattr(exc, "pod_id", None)
                     failed = {
                         **attempt,
@@ -1522,7 +1538,7 @@ async def acquire_target(
                 attempt = retry_ready
                 if single_attempt:
                     raise CapacityExhaustedError("capacity_unavailable: one definite capacity rejection", gate="capacity", retryable=True, custody="none") from exc
-                if max_create_attempts is not None and attempt["create_attempts"] < max_create_attempts:
+                if max_create_attempts is None or attempt["create_attempts"] < max_create_attempts:
                     delay = min(60.0, retry_interval_seconds * 1.5 ** (attempt["create_attempts"] - 1))
                     if deadline is not None:
                         delay = min(delay, max(0.0, deadline - time.monotonic()))

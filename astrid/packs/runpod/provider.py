@@ -444,7 +444,7 @@ def provider_call(api_key, operation, *args, **kwargs):
     return account_gate(api_key).call(operation, *args, deadline=_provider_deadline.get(), **kwargs)
 
 
-async def async_provider_call(api_key, operation, *args, already_gated=False, **kwargs):
+async def async_provider_call(api_key, operation, *args, already_gated=False, on_late_result=None, **kwargs):
     """Bound the waiter and cancel admission, retaining already-started custody."""
     import asyncio
     from concurrent.futures import Future
@@ -487,10 +487,38 @@ async def async_provider_call(api_key, operation, *args, already_gated=False, **
             future.set_result(result)
 
     Thread(target=run, daemon=True, name="provider-call").start()
+
+    def retain_late_result():
+        if on_late_result is None:
+            return
+
+        def completed(done):
+            try:
+                result = done.result()
+            except BaseException:
+                return  # The pending journal already owns uncertain failures.
+
+            def persist():
+                import logging
+
+                try:
+                    on_late_result(result)
+                except BaseException:
+                    logging.getLogger(__name__).error(
+                        "Late provider result could not be persisted; allocation requires reconciliation")
+
+            # The callback may need the journal lock still held by the caller
+            # while cancellation unwinds. Never wait for it on the event loop.
+            Thread(target=persist, daemon=True, name="provider-late-result").start()
+
+        # Also handles a result arriving between waiter cancellation and here.
+        future.add_done_callback(completed)
+
     try:
         return await asyncio.wait_for(asyncio.wrap_future(future), timeout=provider_remaining_budget())
     except TimeoutError:
         stopped.set()
+        retain_late_result()
         if gate is not None and not context.get(_provider_cleanup):
             # Never resolve an alias or wait for a lock on the event loop after
             # timeout. Use the already resolved gate and an immediate lock budget.
@@ -508,14 +536,16 @@ async def async_provider_call(api_key, operation, *args, already_gated=False, **
         raise
     except asyncio.CancelledError:
         stopped.set()
+        retain_late_result()
         raise
 
 
-async def async_provider_operation(api_key, operation, *args, **kwargs):
+async def async_provider_operation(api_key, operation, *args, on_late_result=None, **kwargs):
     """One admitted lifecycle coroutine; never retry an ambiguous create here."""
     import asyncio
 
-    return await async_provider_call(api_key, lambda: asyncio.run(operation(*args, **kwargs)))
+    return await async_provider_call(api_key, lambda: asyncio.run(operation(*args, **kwargs)),
+                                     on_late_result=on_late_result)
 
 
 class RunPodMachineProvider:

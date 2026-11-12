@@ -148,3 +148,130 @@ def test_policy_readiness_can_finish_after_thirty_seconds(case, tmp_path, monkey
     assert case.creates == 1
     assert polls[-1] == elapsed[0] == 40
     assert provider.provider_remaining_budget() == 30.  # Individual-call default stays bounded.
+
+
+def _fresh_acquisition(tmp_path):
+    attempt = {"schema_version": "astrid.runpod.allocation-attempt.v1",
+               "operation_id": "review-operation", "request_name": "review-pod",
+               "state": "allocation_ready", "create_attempts": 0}
+    path = tmp_path / "attempt.json"
+    preparation.write_target_record(path, attempt)
+    config = SimpleNamespace(api_key="fake", gpu_type_candidates=("gpu",),
+                             ram_tiers_enabled=False, storage_volumes=(), storage_name=None,
+                             network_volume_id=None, worker_image="fake-image")
+    kwargs = dict(handle_path=path, attempt=attempt, volume={"size": 0}, pod_id=None,
+                  max_wait_seconds=600, capacity_window_seconds=60,
+                  retry_interval_seconds=15, ready_timeout_seconds=1)
+    return config, path, kwargs
+
+
+def test_cancellation_during_lifecycle_capacity_sleep_never_posts_again(tmp_path, monkeypatch):
+    import json
+    import threading
+    import runpod_lifecycle
+    from runpod_lifecycle import lifecycle
+    from runpod_lifecycle.errors import ProviderCapacityUnavailable
+
+    config, path, kwargs = _fresh_acquisition(tmp_path)
+    gate = provider.ProviderGate(tmp_path / "gate.json", minimum_interval=0)
+    monkeypatch.setattr(provider, "account_gate", lambda _: gate)
+    sleeping, resume, finished = threading.Event(), threading.Event(), threading.Event()
+    posts = []
+
+    async def launch(*_, **__):
+        posts.append(json.loads(path.read_text())["create_attempts"])
+        if len(posts) == 1:
+            raise lifecycle._CapacityLaunchFailure("no capacity") from ProviderCapacityUnavailable(503, "no capacity")
+        return SimpleNamespace(id="late-pod", name="review-pod")
+
+    async def pause(_):
+        sleeping.set()
+        await asyncio.to_thread(resume.wait, 1)
+
+    original = lifecycle.launch_when_available
+
+    async def observed(*args, **kwargs):
+        try:
+            return await original(*args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(lifecycle, "launch", launch)
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", observed)
+    monkeypatch.setattr(asyncio, "sleep", pause)
+
+    async def run():
+        task = asyncio.create_task(preparation.acquire_target(config, **kwargs))
+        assert await asyncio.to_thread(sleeping.wait, 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        resume.set()
+        assert await asyncio.to_thread(finished.wait, 1)
+
+    try:
+        asyncio.run(run())
+        assert posts == [1]
+        state = json.loads(path.read_text())
+        assert state["state"] == "capacity_retry_ready"
+        assert state["safe_to_retry"] is True
+        assert state["create_attempts"] == 1
+    finally:
+        resume.set()
+
+
+@pytest.mark.parametrize("interrupt", ["cancel", "timeout"])
+def test_started_create_late_result_retains_exact_custody(tmp_path, monkeypatch, interrupt):
+    import json
+    import threading
+    import runpod_lifecycle
+
+    config, path, kwargs = _fresh_acquisition(tmp_path)
+    gate = provider.ProviderGate(tmp_path / "gate.json", minimum_interval=0)
+    monkeypatch.setattr(provider, "account_gate", lambda _: gate)
+    started, resume, returned, recorded = [threading.Event() for _ in range(4)]
+    posts = []
+    replace_record = preparation.replace_target_record
+
+    def track_record(*args, **kwargs):
+        replace_record(*args, **kwargs)
+        if args[1].get("pod_id") == "late-pod":
+            recorded.set()
+
+    async def launch(*_, **__):
+        posts.append(json.loads(path.read_text())["create_attempts"])
+        started.set()
+        assert await asyncio.to_thread(resume.wait, 1)
+        returned.set()
+        return SimpleNamespace(id="late-pod", name="review-pod")
+
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
+    monkeypatch.setattr(preparation, "replace_target_record", track_record)
+    if interrupt == "timeout":
+        monkeypatch.setattr(provider, "provider_remaining_budget", lambda: 0.05)
+
+    async def run():
+        task = asyncio.create_task(preparation.acquire_target(config, **kwargs))
+        assert await asyncio.to_thread(started.wait, 1)
+        if interrupt == "cancel":
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if interrupt == "cancel" else TimeoutError):
+            await task
+        unresolved = json.loads(path.read_text())
+        assert unresolved["reconciliation_required"] is True
+        assert unresolved["safe_to_retry"] is False
+        resume.set()
+        assert await asyncio.to_thread(returned.wait, 1)
+        assert await asyncio.to_thread(recorded.wait, 1), "late successful POST lost its exact pod ID"
+
+    try:
+        asyncio.run(run())
+        state = json.loads(path.read_text())
+        assert posts == [1]
+        assert state["pod_id"] == "late-pod"
+        assert state["operation_id"] == "review-operation"
+        assert state["state"] == "allocated_unverified"
+        assert state["reconciliation_required"] is True
+        assert state["safe_to_retry"] is False
+    finally:
+        resume.set()
