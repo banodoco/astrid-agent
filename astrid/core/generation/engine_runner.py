@@ -731,8 +731,6 @@ class _Runner:
                                "cuda_visible_devices": self.visibility}
         if readonly:
             raise EndpointHealthError("owned engine server is absent", step_id=self.step_id)
-        models_root = effective_models_root(self.plan.root, self.plan.models_root)
-        self.context.ensure_dir(models_root, deadline=self.deadline)
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
             raise EndpointOwnershipError("server start did not establish ownership", step_id=self.step_id)
