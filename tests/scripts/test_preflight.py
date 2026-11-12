@@ -126,6 +126,50 @@ def test_check_vibe_head_mismatch_refuses_pytest(tmp_path):
     assert not any("pytest" in cmd.command for cmd in runner.commands)
 
 
+def test_check_vibe_runs_declared_cases_and_reads_source_ownership(tmp_path):
+    checkout = tmp_path / "vibe"
+    checkout.mkdir()
+    quarantine = checkout / "tests/quarantine/offline_identity_provenance.txt"
+    quarantine.parent.mkdir(parents=True)
+    schema = "test_ready_template_offline_schemas_by_identity[audio/tts]"
+    rebuild = "test_ready_template_canonical_first_build_matches_admitted_candidate"
+    names = [schema, f"{rebuild}[declared-audio/tts]", f"{rebuild}[sparse-audio/tts]"]
+    ids = ["tests/test_ready_templates.py::" + name for name in names]
+    quarantine.write_text("# reason: missing provenance\n" + ids[0] + "\n")
+    class VibeRunner(FakeRunner):
+        def __call__(self, argv, **kwargs):
+            argv = list(map(str, argv))
+            output = ""
+            if argv == ["git", "rev-parse", "HEAD"]:
+                output = "pinned"
+            elif "--collect-only" in argv:
+                output = "\n".join(ids)
+            elif any(arg.startswith("--junitxml=") for arg in argv):
+                report = Path(next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--junitxml=")))
+                report.write_text('<testsuites><testsuite>' + ''.join(
+                    f'<testcase classname="tests.test_ready_templates" name="{name}">'
+                    + ('<failure message="legacy schema failure"/>' if name == schema else '')
+                    + '</testcase>' for name in names) + '</testsuite></testsuites>')
+            elif "-c" in argv:
+                output = json.dumps({"audio/tts": ["ComfyUI-QwenTTS"]})
+            result = FakeCommand(argv, output=output)
+            self.commands.append(result)
+            return result
+
+    runner = VibeRunner(logs=tmp_path)
+    c = cell("tts", "audio/tts")
+    pins = {"comfy_core": "core-pin"}
+    assert preflight.check_vibe([c], runner, checkout, Path("/vibe/python"), pins, "pinned") is True
+    assert c.checks["schema"]["status"] == "UNVERIFIED"
+    assert "missing provenance" in c.checks["schema"]["reason"]
+    assert c.checks["rebuild"]["status"] == "PASS"
+    assert c.sources == ["comfyui-qwentts"]
+    assert json.loads((tmp_path / "pack-identity-commits.json").read_text()) == pins
+    executed = next(command for command in runner.commands if "-rA" in command.command)
+    assert all(nodeid in executed.command for nodeid in ids)
+    assert "--pack-identity-commits=" + str(tmp_path / "pack-identity-commits.json") in executed.command
+
+
 def test_run_gate_harness_exception_fails_every_check(monkeypatch, tmp_path):
     c = cell()
     runner = FakeRunner()
