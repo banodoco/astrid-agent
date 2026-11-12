@@ -6828,7 +6828,12 @@ class GenericPackHost:
             return True, self._handoff_quiescence_locked()
 
     def _handoff_enter_claim_rpc(self) -> bool:
-        self._check_terminal_publication_admission()
+        try:
+            self._check_terminal_publication_admission()
+        except HostError:
+            # This gate's callers use False to decline a claim. The durable
+            # check has already latched shutdown and unresolved handoff.
+            return False
         with self._handoff_condition:
             if self._handoff_claim_gate_closed or not self._handoff_observation_known:
                 return False
