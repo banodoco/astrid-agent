@@ -191,10 +191,13 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
                 self.files[directory + "/" + name] = self.files.pop(old["dir"] + "/" + name)
             if self.active_job and self.active_job.get("job_dir") == old["dir"]:
                 self.active_job["job_dir"] = directory  # the agent folder under its checkpointed id
+            if "engines install" in command and not self.jobs[job_id]:
+                plan = _pod_plan(installation, command)
+                context.models_root = plan.models_root
             if "engines install" in command and not self.jobs[job_id] and c.install_uses_command_deadline:
                 seconds = float(command.split("--deadline ", 1)[1].split()[0])
                 try:
-                    receipt = engine_runner.install_engine(_pod_plan(installation, command), context=context, adapter=context.adapter,
+                    receipt = engine_runner.install_engine(plan, context=context, adapter=context.adapter,
                                                            deadline=c.monotonic() + seconds)
                 except Exception as exc:  # the pod-side process exits non-zero
                     self.jobs[job_id] = 1
@@ -202,7 +205,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
                 else:
                     self.files[installation.root + "/.astrid-engine/install.json"] = engine_runner._json(receipt).encode()
             elif "engines install" in command and not self.jobs[job_id]:
-                receipt = engine_runner.install_engine(_pod_plan(installation, command), context=context, adapter=context.adapter,
+                receipt = engine_runner.install_engine(plan, context=context, adapter=context.adapter,
                                                        deadline=context.deadline)
                 self.files[installation.root + "/.astrid-engine/install.json"] = engine_runner._json(receipt).encode()
             if c.lost_start:
