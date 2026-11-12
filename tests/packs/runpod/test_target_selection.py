@@ -630,6 +630,22 @@ def test_waiting_policy_refuses_an_offer_outside_its_approved_policy(case, chang
     assert case.creates == 0 and not case.owner.path.exists()
 
 
+def test_hourly_ceiling_refusal_names_gpu_cloud_rate_and_next_action(case):
+    case.owner.preferences = replace(case.prefs, gpu_types=("RTX 5090",))
+    case.offer = replace(case.offer, gpu_type="RTX 5090", hourly_usd=1.39)
+    grant = waiting_grant(
+        case, max_hourly_usd=1.25,
+        policy_digest=selection.policy_consent_digest(case.owner.preferences, 1.25),
+    )
+    with pytest.raises(PaidSelectionError) as caught:
+        asyncio.run(case.owner._select(grant))
+    assert str(caught.value) == (
+        "RTX 5090 secure is $1.39/h, above your hourly ceiling (--max-hourly-usd 1.25). "
+        "Raise --max-hourly-usd to at least 1.39, or choose another GPU."
+    )
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
 def test_capacity_timeout_and_no_wait_make_no_pod_when_stock_is_absent(case, monkeypatch):
     sleeps = fake_capacity_clock(case, monkeypatch)
     calls = []

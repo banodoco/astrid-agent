@@ -8,6 +8,7 @@ the detached job is checkpointed before start, so a crash is cancelled by
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -108,13 +109,8 @@ def machine_case(retained, tmp_path, monkeypatch):
         "id": "cpu-image", "kind": "image", "modes": ["t2i"],
         "engine": "comfyui", "bundle": str(root / "workflow.py"),
     }])
-    deadline = (datetime.fromtimestamp(c.clock(), timezone.utc) + timedelta(hours=2)).isoformat()
     monkeypatch.setattr("astrid.packs.runpod.adapter.prevalidate_task", lambda *a, **k: None)
-    policy = {"kind": "runpod", "engine": "comfyui", "preferences": c.prefs.as_mapping(),
-              "offer_digest": c.grant.offer_digest, "consent": list(c.grant.consent), "max_usd": c.grant.max_usd,
-              "deadline": c.grant.deadline, "preparation_seconds": 60, "execution_seconds": 60,
-              "idle_seconds": 1800}
-    assert deadline  # the grant's own deadline is the disclosed one
+    policy = {"kind": "runpod", "engine": "comfyui"}
     c.active = []
     c.machine = rm.MACHINE.for_host(c.adapter, begin=lambda lease: c.active.append(("begin", lease.generation)),
                                     done=lambda lease: c.active.append(("done", lease.generation)))
@@ -183,17 +179,14 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     assert c.deletes == ["pod-1"]
 
 
-@pytest.mark.parametrize(('requested', 'bound', 'expected'), [(600, 60, 60), (0, 60, 0), (15, 60, 15)])
-def test_claim_caps_idle_and_reports_the_acquired_timeout(machine_case, requested, bound, expected):
-    from dataclasses import replace
+def test_job_cannot_change_claim_idle_timeout(machine_case):
     c = machine_case
     _claim_machine(c)
-    original = c.job()
-    job = replace(original, policy={**original.policy, 'placement_idle_seconds': requested, 'idle_seconds': bound})
-    lease = c.machine.claim(job)
+    before = c.read()['lease']['idle_seconds']
+    lease = c.machine.claim(c.job())
     try:
-        assert c.read()['lease']['idle_seconds'] == expected
-        assert c.machine.describe(lease)['idle_timeout_s'] == expected
+        assert c.read()['lease']['idle_seconds'] == before
+        assert c.machine.describe(lease)['idle_timeout_s'] == before
     finally:
         c.machine.release(lease, False)
 
@@ -371,6 +364,7 @@ def test_blocked_failure_verifier_does_not_hold_owner_lock_or_revive_lease(machi
         try:
             c.machine.release(lease, False, failure=rm.MachineError("job failed"))
         except Exception as exc:
+            logging.getLogger(__name__).exception("failure settlement thread failed (%s)", type(exc).__name__, exc_info=False)
             errors.append(exc)
 
     verifier = threading.Thread(target=settle_failure)
@@ -443,6 +437,7 @@ def test_paid_timer_drains_real_https_slow_drip_without_late_warm_settlement(mac
         try:
             c.machine.release(lease, False, failure=rm.MachineError("private failure"))
         except Exception as exc:
+            logging.getLogger(__name__).exception("paid timer verification thread failed (%s)", type(exc).__name__, exc_info=False)
             errors.append(exc)
     verifier = Thread(target=release_failure)
     try:
@@ -607,6 +602,7 @@ def test_exact_cleanup_cancel_does_not_hold_owner_lock(machine_case, monkeypatch
             c.host.release(reason="paid_deadline", _expected_operation=lease.lease.operation_id,
                            expected_machine_id=lease.claim.pod_id)
         except Exception as exc:
+            logging.getLogger(__name__).exception("deadline cleanup thread failed (%s)", type(exc).__name__, exc_info=False)
             errors.append(exc)
 
     thread = Thread(target=cleanup)
@@ -797,14 +793,9 @@ def test_unverified_cancel_ack_never_settles_warm(machine_case, monkeypatch, bad
 
 
 def test_generation_policy_waits_for_stock_through_the_real_machine_claim(machine_case, monkeypatch):
-    from dataclasses import replace
     from astrid.packs.runpod import target_selection
-
     c = machine_case
     job = c.job()
-    policy = {**job.policy, "offer_digest": None, "deadline": None, "max_hourly_usd": 1.5,
-              "policy_digest": target_selection.policy_consent_digest(c.owner.preferences, 1.5),
-              "capacity_timeout_seconds": 30, "wait_for_capacity": True}
     calls = []
     original = c.owner.observe_offer
 
@@ -827,8 +818,7 @@ def test_generation_policy_waits_for_stock_through_the_real_machine_claim(machin
                          max_hourly_usd=1.5, capacity_timeout_seconds=30, wait_for_capacity=True,
                          preparation_seconds=0, execution_seconds=0),
                  requested_idle_seconds=c.grant.idle_seconds)
-    run_on_machine(c.machine, replace(job, policy={"kind": policy["kind"], "engine": policy["engine"],
-                                                    "preferences": policy["preferences"]}),
+    run_on_machine(c.machine, job,
                    destination=job.scratch / "outputs", cancelled=lambda: False,
                    sleep=lambda seconds: None)
     assert len(calls) == 3 and c.creates == 1 and c.read()["lease"]["state"] == "idle"
@@ -1709,11 +1699,9 @@ def test_warm_gpu_id_uses_confirmed_display_and_refuses_mismatch(machine_case, m
     monkeypatch.setattr(worker_preparation, "confirm_acquired_machine", confirm)
     _claim_machine(c)
     first = c.job()
-    first = replace(first, policy={**first.policy, "preferences": c.prefs.as_mapping(), "offer_digest": c.grant.offer_digest})
     run_on_machine(c.machine, first, destination=first.scratch / "outputs", cancelled=lambda: False,
                    sleep=lambda s: None)
     second = c.job(2)
-    second = replace(second, policy={**second.policy, "preferences": c.prefs.as_mapping(), "offer_digest": c.grant.offer_digest})
     if mismatch:
         with pytest.raises(Exception, match="custody could not be verified"):
             run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
@@ -1746,11 +1734,12 @@ def test_execution_gets_its_own_deadline_after_preparation(machine_case, monkeyp
     monkeypatch.setattr(c.placement, "prepare_claimed", prepare)
     job = c.job()
     lease = c.machine.claim(job)
-    ticks[0] = 65.0  # preparation bound passed; execution still has 50s
+    ticks[0] = 65.0  # execution gets a fresh phase clock, bounded by the lease
     run = c.machine.start(lease, job)
     assert c.machine.poll(run)["state"] == "exited"
     c.machine.fetch(run, destination=job.scratch / "outputs")
-    deadline = 115.0 if paid_remaining is None else 75.0
+    deadline = (55.0 + c.read()["lease"]["paid_expires_at"] - c.clock()
+                if paid_remaining is None else 75.0)
     assert c.placement._deadline_at == deadline
     with pytest.raises(rm.RemotePlacementError, match="already established"):
         c.placement.begin_execution(deadline_seconds=60)
