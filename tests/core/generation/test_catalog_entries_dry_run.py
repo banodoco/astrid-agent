@@ -4,6 +4,7 @@ import json
 
 from astrid import console
 from astrid.core.model_catalog.registry import ModelRegistry
+from astrid.core.model_catalog.requests import PaidControls, build_generate_argv
 
 
 def _required_value(name, kind, tmp_path):
@@ -28,6 +29,9 @@ def test_catalog_entries_with_required_inputs_dry_run_to_admission(tmp_path, cap
     # Catalog-backed validation/admission is the subject; readiness is an
     # external host property and would make this test machine-dependent.
     monkeypatch.setattr(preflight, "require_generation_target_readiness", lambda *a, **k: None)
+    controls_path = tmp_path / "stage.json"
+    controls_path.write_text(json.dumps({"max_usd": 2, "deadline": "2099-01-01T00:00:00Z"}))
+    controls = PaidControls.from_json(controls_path)
     registry = ModelRegistry.load_default()
     rows = []
     for entry in registry.list_all():
@@ -37,19 +41,8 @@ def test_catalog_entries_with_required_inputs_dry_run_to_admission(tmp_path, cap
     assert rows
     failures = []
     for entry, mode, spec in rows:
-        modality = entry.modality
-        args = ["generate", modality, "A clear test scene", "--entry", entry.id,
-                "--mode", mode, "--placement", "runpod", "--dry-run", "--json"]
-        for name in spec.requires:
-            value = _required_value(name, "string", tmp_path)
-            if name == "prompt":
-                continue  # supplied by the positional public prompt above
-            if name == "image_ref":
-                args.extend(["--edit", value])
-            elif name == "video_ref":
-                args.extend(["--video-ref", value])
-            else:
-                args.extend(["--input", f"{name}={value}"])
+        inputs = {name: _required_value(name, "string", tmp_path) for name in spec.requires}
+        args = build_generate_argv(entry, mode, inputs, "runpod", controls, dry_run=True)
         rc = console.main(args)
         output = capsys.readouterr().out
         payload = json.loads(output)
