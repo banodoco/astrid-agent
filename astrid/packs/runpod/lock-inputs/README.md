@@ -109,3 +109,7 @@ requirements select frontend 1.53.6, templates 0.11.62, and docs 0.5.11,
 with the corresponding template dependencies listed above. Other unconstrained
 Windows transitive selections remain dependent on the resolver and index;
 no Windows execution or complete Windows resolution is claimed here.
+
+## After compiling
+
+Run `python astrid/packs/runpod/lock-inputs/normalize_direct_urls.py astrid/packs/runpod/requirements.linux-cu130.lock`. uv 0.11.32 merged the registry files of `setuptools==84.0.0` into the pinned wheel's direct-URL entry, adding the sdist hash, and `uv pip sync --require-hashes` on the pod then refused the environment ("Conflicting archive URL hashes"). The policy pins the exact wheel, so only its URL fragment's hash belongs there; the step keeps exactly that one, as in the original lock. `tests/core/generation/test_lock_direct_urls.py` enforces it.

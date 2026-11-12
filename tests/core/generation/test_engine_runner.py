@@ -1947,7 +1947,7 @@ def test_packaged_requirements_follow_same_hashed_lock_path(tmp_path, monkeypatc
 
 
 LINUX_LOCK_PATH = "packs/runpod/requirements.linux-cu130.lock"
-LINUX_LOCK_SHA256 = "73589f81c96f487b9ed39f45c9835e47a10add4ba20617b58da8c9072090e51b"
+LINUX_LOCK_SHA256 = "f9b4cb36acce81a3a1e68b6fb476685a06271252fbc6cbc48f28130d40d02585"
 
 
 def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
