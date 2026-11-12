@@ -18,7 +18,7 @@ from astrid.core.execution.phase_timing import PhaseTiming
 from astrid.packs.runpod import failure_receipt
 from astrid.packs.runpod import machine as rm
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401  (fixture)
-from tests.packs.runpod.test_machine import machine_case as machine_case  # noqa: F401  (fixture)
+from tests.packs.runpod.test_machine import _claim_machine as _claim_machine, machine_case as machine_case  # noqa: F401
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401  (fixture)
 from tests.packs.runpod.test_target_selection import case as case  # noqa: F401  (fixture)
 from tests.packs.runpod.test_warm_session import (  # noqa: F401  (fixtures)
@@ -232,6 +232,7 @@ def test_cancelled_runs_write_no_receipt(machine_case, receipts):
     from astrid.core.execution.machine_run import MachineRunCancelled
 
     c = machine_case
+    _claim_machine(c)
     job = replace(c.job(), timing=PhaseTiming())
     failed = failure_receipt.recorder(job, lambda: None, job.timing, root=receipts)
     claimed = []
@@ -337,6 +338,7 @@ def test_host_job_function_puts_timing_on_terminal_machine_and_writes_the_receip
     from astrid.core.execution import generic_host, machine_run
 
     c = machine_case
+    _claim_machine(c)
     monkeypatch.setattr(machine_run, "resolve_machine", lambda kind: SimpleNamespace(for_host=lambda *a, **k: c.machine))
     monkeypatch.setattr(failure_receipt, "failures_root", lambda: receipts)
     context = SimpleNamespace(get=lambda **k: c.adapter, begin=lambda *a: None, done=lambda *a: None)

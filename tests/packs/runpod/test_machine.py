@@ -1703,7 +1703,7 @@ def test_warm_gpu_id_uses_confirmed_display_and_refuses_mismatch(machine_case, m
     def confirm(api_key, contract, *, timeout_seconds):
         assert contract.gpu_type == "NVIDIA GeForce RTX 5090"
         confirmations.append(contract)
-        if mismatch and len(confirmations) == 3:
+        if mismatch and len(confirmations) == 4:
             raise worker_preparation.TargetObservationError("GPU mismatch", gate="GPU")
         return "RTX 5090", contract.datacenter_id
     monkeypatch.setattr(worker_preparation, "confirm_acquired_machine", confirm)
