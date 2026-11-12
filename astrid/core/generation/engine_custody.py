@@ -38,7 +38,7 @@ from .engine_contracts import (
     CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
     EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
     RecipeValidationError, UnsafePathError, UnsupportedPlatform, effective_models_root,
-    custody_message,
+    custody_message, engine_reason,
 )
 from .engine_runner import _json, _object_info_sha256, _root, _sha, helper_manifest
 from .engine_platforms import LinuxPlatformAdapter
@@ -302,6 +302,7 @@ class LinuxEngineServiceClient:
     def _refusal(self, error_type, marker, **state):
         details = self._details(marker, **state)
         error = error_type(custody_message(details))
+        error.reason = engine_reason(custody_message({"reason": details["reason"]}))
         error.custody_details = details
         logging.getLogger(__name__).warning("Engine custody refusal: %s", error)
         return error
@@ -494,11 +495,14 @@ class LinuxEngineServiceClient:
                     except DeadlineExceeded as exc:
                         raise CustodyUnresolved("supervisor did not confirm command cleanup before the response deadline") from exc
                 if (not isinstance(response, dict) or response.get("identity") != self.identity
-                        or set(response) not in ({"identity", "result"}, {"identity", "error"},
-                                                 {"identity", "error", "cleanup_failure"})):
+                        or set(response) not in ({"identity", "result"}, {"identity", "error", "reason"},
+                                                 {"identity", "error", "reason", "cleanup_failure"})):
                     raise IntegrityError("unbound supervisor response")
                 if "error" in response:
                     code = response["error"]
+                    reason = engine_reason(response["reason"])
+                    if reason is None:
+                        raise IntegrityError("unbound supervisor response")
                     cause = response.get("cleanup_failure")
                     if "cleanup_failure" in response and not _valid_cleanup_failure(cause):
                         raise IntegrityError("invalid supervisor cleanup diagnostic")
@@ -506,6 +510,7 @@ class LinuxEngineServiceClient:
                     if cause is not None:
                         message += f" ({cause['stage']}: {cause['exception_type']}: {cause['message']})"
                     error = _ERRORS.get(code, CustodyUnresolved)(message)
+                    error.reason = reason
                     error.cleanup_failure = cause
                     raise error
                 return response["result"]
@@ -519,6 +524,8 @@ class LinuxEngineServiceClient:
                 except (EngineError, OSError):
                     error = self._refusal(type(exc), None, reason="marker_invalid")
                 cause = getattr(exc, "cleanup_failure", None)
+                if exc.reason is not None:
+                    error.reason = exc.reason
                 error.cleanup_failure = cause
                 if _valid_cleanup_failure(cause):
                     error.args = (str(error) + f" ({cause['stage']}: {cause['exception_type']}: {cause['message']})",)
@@ -556,9 +563,7 @@ class LinuxEngineServiceClient:
                 time.sleep(min(0.02, _remaining(deadline)))
             _wait_owner_lock(self.control, deadline)
         except (CustodyUnresolved, DeadlineExceeded) as exc:
-            error = CustodyUnresolved(f"Cannot stop the original supervisor at {self.control}/session.json; "
-                                     "restore its owner's control connection and retry installation; "
-                                     f"leave the marker in place: {exc}")
+            error = CustodyUnresolved("Cannot stop the original supervisor; restore its owner's control connection and retry installation; leave the marker in place")
             error.cleanup_failure = getattr(exc, "cleanup_failure", None)
             error.custody_details = getattr(exc, "custody_details", owner._details(
                 {"identity": owner.identity}, reason="owner_lock_timeout",
@@ -940,8 +945,7 @@ class _Owned:
             if self.cleanup_failure is None:
                 self.cleanup_failure = _cleanup_failure(stage, exc, self._cleanup_secrets)
             cause = self.cleanup_failure
-            error = CustodyUnresolved(f"native owned process cleanup unresolved "
-                                     f"({cause['stage']}: {cause['exception_type']}: {cause['message']})")
+            error = CustodyUnresolved('native owned process cleanup unresolved')
             error.cleanup_failure = cause
             raise error from exc
 
@@ -1245,7 +1249,7 @@ class _Supervisor:
         source = next((s for s in self.recipe.sources if s.name == "vibecomfy"), None)
         if source is None:
             raise RecipeValidationError(
-                f"{self.recipe.engine} recipe must bind a VibeComfy source at source_bindings",
+                'comfyui recipe must bind a VibeComfy source at source_bindings',
                 step_id="source:vibecomfy",
             )
         root = Path(self.root, source.relative_path)
@@ -1459,7 +1463,9 @@ class _Supervisor:
         except BaseException as exc:
             try:
                 response = {"identity": self.identity, "error": exc.code if isinstance(exc, EngineError)
-                            else CustodyUnresolved.code}
+                            else CustodyUnresolved.code,
+                            "reason": (engine_reason(exc.reason) if isinstance(exc, EngineError) else None)
+                            or "engine supervisor operation failed"}
                 if self.cleanup_failure is not None:
                     response["cleanup_failure"] = self.cleanup_failure
                 _send(channel, response, time.monotonic() + 1)

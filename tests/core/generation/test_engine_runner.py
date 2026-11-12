@@ -1657,7 +1657,8 @@ def test_helper_error_envelope_preserves_stable_error_without_raw_exception(tmp_
     captured = capsys.readouterr()
     assert captured.err == ""
     value = json.loads(captured.out)
-    assert value == {"schema": runner._HELPER_SCHEMA, "operation": "identity", "facts": {"error_code": "integrity_failed"}}
+    assert value == {"schema": runner._HELPER_SCHEMA, "operation": "identity",
+                     "facts": {"error_code": "integrity_failed", "reason": "engine helper code/data identity differs"}}
 
 
 def test_occupied_source_is_not_initialized_or_overwritten(setup):
@@ -1667,7 +1668,8 @@ def test_occupied_source_is_not_initialized_or_overwritten(setup):
     def run(request):
         if request.argv[-2:-1] == ("empty-source",):
             return context.result(runner._json({"schema": runner._HELPER_SCHEMA, "operation": "empty-source",
-                                               "facts": {"error_code": "integrity_failed"}}))
+                                               "facts": {"error_code": "integrity_failed",
+                                                         "reason": "refusing to initialize a nonempty unowned source directory"}}))
         return original(request)
     context.run = run
     with pytest.raises(IntegrityError):
@@ -2171,14 +2173,15 @@ def test_sanity_hook_is_off_by_default(setup, monkeypatch):
     assert not [e for e in setup[1].events if e[0] == "sanity"]
 
 
-def test_sanity_failure_aborts_before_any_model_step_and_names_lib_paths(setup):
+def test_sanity_failure_aborts_before_any_model_step_with_fixed_reason(setup):
     plan, context, adapter, deadline = setup
     _sanity_context(context, code=2, stdout="FAIL RuntimeError: boom\nLIB /v/nvidia/cublas/lib/libcublas.so.13\n")
     with pytest.raises(runner.CommandFailed) as caught:
         runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
                               sanity_cmd="fake-sanity")
     message = str(caught.value)
-    assert "libcublas.so.13" in message and "LD_LIBRARY_PATH=" in message and "exit 2" in message
+    assert message == caught.value.reason == "engine sanity command failed before any model download"
+    assert "libcublas.so.13" not in message and "LD_LIBRARY_PATH=" not in message
     assert not [e for e in context.events if e[0] in {"download", "service:start"}]
 
 

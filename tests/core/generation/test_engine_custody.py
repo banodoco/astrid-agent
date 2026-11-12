@@ -177,6 +177,24 @@ def _call(client, payload, operation="start", seconds=8):
     return client.call(operation, payload, deadline=time.monotonic() + seconds)
 
 
+def test_supervisor_ownership_check_survives_client_roundtrip(tmp_path, monkeypatch):
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "private-owner")
+    client = _client(supervisor.identity)
+    local, remote = socket.socketpair()
+    thread = threading.Thread(target=supervisor.connection, args=(remote,))
+    monkeypatch.setattr(client, '_connect', lambda *args, **kwargs: local)
+    thread.start()
+    try:
+        with pytest.raises(EndpointOwnershipError) as caught:
+            client.call('start', {}, deadline=time.monotonic() + 5)
+        assert caught.value.reason == 'service request differs from bound recipe or owner'
+        assert supervisor.engine is None and supervisor.commands == []
+        assert 'private-owner' not in caught.value.reason
+    finally:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+
 def _finite_client(identity, payload, operation, *, bootstrap=None):
     program = '''
 import json,sys,time
@@ -285,7 +303,10 @@ def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_pa
         record = Path(supervisor.control, "cleanup-failure.json")
         assert json.loads(record.read_bytes()) == cause == owned.cleanup_failure
         assert record.stat().st_mode & 0o777 == 0o600
-        assert cause["message"] in str(error.value)
+        assert error.value.reason == str(error.value) == (
+            "Cannot stop the original supervisor; restore its owner's control connection "
+            "and retry installation; leave the marker in place")
+        assert cause["message"] not in str(error.value)
         for secret in (token, env_secret, arg_secret, "labelled-value", "private-url", "sk-abcdefghijklmnopqrstuvwx"):
             assert secret not in record.read_text() + str(error.value)
 
@@ -296,6 +317,7 @@ def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_pa
         with pytest.raises(CustodyUnresolved) as repeated:
             client.stop_owned(deadline=time.monotonic() + 5)
         assert repeated.value.cleanup_failure == cause
+        assert repeated.value.reason == error.value.reason
         assert json.loads(record.read_bytes()) == cause
         assert supervisor.unresolved and supervisor.engine is owned and supervisor.commands == [owned]
         assert owned.process is process and not supervisor.finished.is_set()

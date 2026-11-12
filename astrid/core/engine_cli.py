@@ -17,7 +17,7 @@ from collections.abc import Mapping
 
 from astrid.core.generation.engine_contracts import (
     EngineError, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
-    custody_diagnostics, custody_message,
+    custody_diagnostics, custody_message, engine_reason,
 )
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_runner import (
@@ -101,21 +101,6 @@ def _plain(value):
 ENGINE_INSTALL_MIN_FREE_BYTES = 10 * 1024 ** 3
 
 
-def _print_command_output(output) -> None:
-    """After the public error line, the failed command's whole output, for the user who ran it."""
-    if not isinstance(output, dict):
-        return
-    argv = output.get('argv') if isinstance(output.get('argv'), list) else []
-    print(f"--- failed command (exit {output.get('exit_code')}): {' '.join(str(a) for a in argv)}",
-          file=sys.stderr)
-    for stream in ('stdout', 'stderr'):
-        text = output.get(stream) if isinstance(output.get(stream), str) else ''
-        print(f"--- {stream} ---", file=sys.stderr)
-        print(text, end='' if text.endswith('\n') or not text else '\n', file=sys.stderr)
-    if output.get('truncated'):
-        print("--- (output was truncated at the capture limit) ---", file=sys.stderr)
-
-
 def main(argv=None, *, backend_factory=None):
     try:
         args = _parser().parse_args(argv)
@@ -174,7 +159,7 @@ def main(argv=None, *, backend_factory=None):
                                       marker_path=plan.root + '/.astrid-engine/session/session.json',
                                       helper_sha256='unknown')
         # Messages from execution transports can contain command output or secrets.
-        # Emit only the stable public code and validated step identifier.
+        # Emit only declared fixed reasons and validated public fields.
         import re
         step = exc.step_id if isinstance(exc.step_id, str) and re.fullmatch(r'[a-z0-9:_-]{1,128}', exc.step_id) else None
         handle = exc.recovery_handle
@@ -192,19 +177,25 @@ def main(argv=None, *, backend_factory=None):
         }
         public = {'code': exc.code, 'step': step, 'retryable': exc.retryable,
                   'recovery_handle': handle, 'message': messages.get(exc.code, 'Engine operation failed.')}
+        reason = engine_reason(exc.reason)
+        if reason is not None:
+            public['reason'] = reason
         details = custody_diagnostics(getattr(exc, 'custody_details', None))
         if details is not None:
             public['custody'] = details
             public['message'] = custody_message(details)
-        # Bounded failure detail from the engine runner: fixed reason text and dirty porcelain paths/status.
-        diagnostics = getattr(exc, 'diagnostics', None) or {}
-        if isinstance(diagnostics.get('reason'), str):
-            public['reason'] = diagnostics['reason'][:200]
-        if isinstance(diagnostics.get('porcelain'), str):
-            public['porcelain'] = diagnostics['porcelain'][:4000]
+        if exc.code == 'endpoint_ownership' and reason is not None:
+            if reason == 'engine port is occupied by an unowned service':
+                port = getattr(exc, 'port', None)
+                check = f'Port {port}' if type(port) is int and 1 <= port <= 65535 else 'Engine port'
+                public['message'] = (check + ' is held by a service this installation does not own: '
+                                     'stop it, or let the previous job release the engine.')
+                if type(port) is int and 1 <= port <= 65535:
+                    public['port'] = port
+            else:
+                public['message'] = reason + '; inspect the engine owner and launch, then retry.'
         print(json.dumps({'error': public},
                          sort_keys=True), file=sys.stderr)
-        _print_command_output(getattr(exc, 'command_output', None))
         return 1
     except Exception:  # Avoid leaking transport diagnostics or command arguments.
         print(json.dumps({'error': {'code': 'engine_error', 'step': None}}, sort_keys=True), file=sys.stderr)

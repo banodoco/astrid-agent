@@ -54,6 +54,7 @@ from .engine_contracts import (
     UnsupportedPlacement,
     UnsupportedPlatform,
     effective_models_root,
+    engine_reason,
 )
 
 _HELPER_SCHEMA = "astrid.engine-runner-helper.v1"
@@ -267,7 +268,7 @@ def plan_from_receipt(recipe: EngineRecipe, receipt: InstallReceipt, *, root: Ta
                         models_root=receipt.models_root)
     for field in ("engine", "platform"):
         if getattr(receipt, field) != getattr(plan, field):
-            raise IntegrityError(f"install receipt {field} differs from verified recipe")
+            raise IntegrityError('install receipt identity differs from verified recipe')
     return plan
 
 
@@ -285,8 +286,7 @@ def require_current_receipt(receipt: InstallReceipt, plan: InstallPlan, recipe: 
             or tuple((s.id, s.kind) for s in receipt.steps) != tuple((s.id, s.kind) for s in plan.steps)
             or set(receipt.requirements_locks) != {e.name for e in recipe.environments}
             or receipt.source_commits != {s.name: s.pin.revision for s in recipe.sources}):
-        raise IntegrityError(f"engine {plan.engine} is installed but stale; "
-                             f"run `astrid engines install {plan.engine}`")
+        raise IntegrityError('engine is installed but stale; run astrid engines install again')
 
 
 def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
@@ -429,9 +429,8 @@ class _Runner:
         if type(result.exit_code) is not int:
             raise TransportError("invalid command exit status", step_id=self.step_id)
         if check and result.exit_code != 0:
-            error = CommandFailed(f"engine command failed (exit {result.exit_code})", step_id=self.step_id)
-            # The failed command's whole output belongs to the user running it on their own machine;
-            # the engine CLI writes it after its public error line so the failure is understandable.
+            error = CommandFailed('engine command exited with a nonzero status', step_id=self.step_id)
+            # Retain private command diagnostics; the public CLI renders only fixed checks.
             error.command_output = {"argv": list(argv), "exit_code": result.exit_code,
                                     "stdout": result.stdout or "", "stderr": result.stderr or "",
                                     "truncated": bool(getattr(result, "stdout_truncated", False)
@@ -444,7 +443,7 @@ class _Runner:
 
         ``command`` is a public argv string; ``--venv <primary venv>`` is appended. The child env is
         ``engine_child_env`` (the one ComfyUI gets), never the caller's. A nonzero exit aborts the
-        install before any model download; the message carries the library paths, not raw output.
+        install before any model download with a fixed public reason.
         """
         from ._engine_python_bootstrap import engine_child_env
         self.step_id = "sanity"
@@ -454,11 +453,7 @@ class _Runner:
         env = engine_child_env(venv, self.env) if self.plan.platform.startswith("linux-") else dict(self.env)
         result = self.run(argv + ("--venv", venv), env=env, check=False)
         if result.exit_code != 0:
-            keep = [ln.strip()[:300] for ln in (result.stdout + "\n" + result.stderr).splitlines()
-                    if ln.startswith(("LIB ", "FAIL ", "libs:", "gpu_sanity:"))][:20]
-            raise CommandFailed("engine sanity command failed (exit %s) before any model download; "
-                                "LD_LIBRARY_PATH=%s; %s" % (result.exit_code, env.get("LD_LIBRARY_PATH", ""),
-                                                            " | ".join(keep) or "no library paths reported"),
+            raise CommandFailed('engine sanity command failed before any model download',
                                 step_id="sanity")
 
     def payload(self, **extra):
@@ -470,13 +465,15 @@ class _Runner:
         result = self.run(("python3", "-I", "-m", "astrid.core.generation.engine_runner_target",
                            operation, _json(self.payload(**extra))))
         value = self.response(result, _HELPER_SCHEMA, operation)
-        if set(value) == {"error_code"}:
+        if "error_code" in value:
+            if set(value) != {"error_code", "reason"} or engine_reason(value["reason"]) is None:
+                raise IntegrityError("invalid target helper response", step_id=self.step_id)
             from . import engine_contracts
             errors = {cls.code: cls for cls in (
                 engine_contracts.IntegrityError, engine_contracts.UnsafePathError,
                 engine_contracts.RecipeValidationError)}
             error = errors.get(value["error_code"], IntegrityError)
-            raise error("target helper validation failed", step_id=self.step_id)
+            raise error("target helper validation failed", reason=value["reason"], step_id=self.step_id)
         return value
 
     def response(self, result, schema, operation):
@@ -510,8 +507,10 @@ class _Runner:
             raise self._custody_refusal(EndpointOwnershipError, "invalid service ownership state",
                                         reason="request_mismatch", step_id=self.step_id)
         if value["state"] == "unowned":
-            raise self._custody_refusal(EndpointOwnershipError, "engine port is occupied by an unowned service",
-                                        reason="endpoint_unowned", step_id=self.step_id)
+            error = self._custody_refusal(EndpointOwnershipError, "engine port is occupied by an unowned service",
+                                         reason="endpoint_unowned", step_id=self.step_id)
+            error.port = self.recipe.start.port
+            raise error
         if value["state"] == "owned":
             if (not isinstance(value["owner_id"], str) or not value["owner_id"]
                     or len(value["owner_id"]) > 256
@@ -583,7 +582,7 @@ class _Runner:
         if (dirty.stdout.strip() and not allowed) or dirty.stdout_truncated:
             patch = next((patch for patch in self.recipe.source_patches
                           if patch.source == source.name and any(line[3:] == patch.path for line in entries)), None)
-            reason = (f"source patch digest mismatch: {source.name} {patch.path}" if patch
+            reason = ("source patch digest mismatch" if patch
                       else "source contains uncommitted content")
             error = IntegrityError(reason, step_id=self.step_id)
             # Porcelain lines carry only status codes and paths: no contents, no command output.
@@ -903,12 +902,11 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
 def _failure_diagnostics(exc):
     """Bounded, secret-free detail for a failed step: fixed reason text and porcelain paths/status only.
 
-    Only IntegrityError is described: its messages are module literals, whereas transport
-    errors may carry command output, so they never reach the receipt or the caller.
+    Every typed failure carries a closed-vocabulary reason. Transport messages
+    and captured command output never reach the receipt or the caller here.
     """
-    if not isinstance(exc, IntegrityError):
-        return {}
-    diagnostics = {"reason": exc.message[:200]}
+    reason = engine_reason(exc.reason)
+    diagnostics = {"reason": reason} if reason is not None else {}
     porcelain = getattr(exc, "porcelain", None)
     if porcelain:
         diagnostics["porcelain"] = "\n".join(porcelain)

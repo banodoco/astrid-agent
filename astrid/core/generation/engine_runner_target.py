@@ -327,14 +327,14 @@ def dispatch(operation, payload):
                     if current == patch.sha256_after:
                         continue
                     if operation == "verify-source-patches" or current != patch.sha256_before:
-                        raise IntegrityError(f"source patch digest mismatch: {source.name} {patch.path}")
+                        raise IntegrityError('source patch digest mismatch')
                     _, replacement = recipes._read_ref(recipes.DataRef(patch.replacement, patch.sha256_after))
                     _atomic(path, replacement)
                     if _hash(path) != patch.sha256_after:
-                        raise IntegrityError(f"source patch digest mismatch: {source.name} {patch.path}")
+                        raise IntegrityError('source patch digest mismatch')
                     changed = True
                 except OSError as exc:
-                    raise IntegrityError(f"source patch unavailable: {source.name} {patch.path}") from exc
+                    raise IntegrityError('source patch unavailable') from exc
             facts = {"changed": changed}
         else:
             allowed = set()
@@ -472,8 +472,9 @@ def main(argv=None):
         # controlled JSON, paths, command output or exception text.
         if len(argv) == 2 and argv[0] in _OPERATIONS:
             error_code = exc.code if isinstance(exc, EngineError) else "integrity_failed"
+            reason = (exc.reason if isinstance(exc, EngineError) else None) or "target helper operation failed"
             print(_json({"schema": _HELPER_SCHEMA, "operation": argv[0],
-                         "facts": {"error_code": error_code}}))
+                         "facts": {"error_code": error_code, "reason": reason}}))
             return 0
         print("engine target helper validation failed", file=sys.stderr)
         return 1

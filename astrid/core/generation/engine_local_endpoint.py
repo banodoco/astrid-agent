@@ -282,9 +282,9 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
             key = (row['subdir'], row['name'])
             previous = inventory.get(key)
             if previous is not None and previous != row:
-                raise IntegrityError(f'entry declaration conflicts with managed inventory: {model.destination}')
+                raise IntegrityError('entry declaration conflicts with managed inventory')
             if not _matches(path, model, deadline=deadline):
-                raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}')
+                raise IntegrityError('declared entry asset failed size/SHA verification')
             inventory[key] = row
     if entry_id is not None:
         from astrid.core.model_catalog.registry import ModelRegistry
@@ -316,7 +316,7 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
             if not path.exists():
                 missing.append(model.destination)
             elif not _matches(path, model, deadline=deadline):
-                raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}')
+                raise IntegrityError('declared entry asset failed size/SHA verification')
         if missing:
             raise EntryAssetsNotReady(entry_id, sorted(set(missing)))
     document = binding.as_dict()
