@@ -6828,6 +6828,7 @@ class GenericPackHost:
             return True, self._handoff_quiescence_locked()
 
     def _handoff_enter_claim_rpc(self) -> bool:
+        self._check_terminal_publication_admission()
         with self._handoff_condition:
             if self._handoff_claim_gate_closed or not self._handoff_observation_known:
                 return False
@@ -6966,6 +6967,39 @@ class GenericPackHost:
             # but does not invalidate accounting or sibling settlement RPCs.
             owner._terminal_publication_unresolved = True
             owner._handoff_condition.notify_all()
+
+    def _terminal_request_roots(self) -> list[Path]:
+        roots = []
+        if self.attempt_root is not None:
+            roots.append(self.attempt_root)
+        if self.attempt_base is not None and self.attempt_base.is_dir():
+            roots.extend(path for path in self.attempt_base.iterdir()
+                         if path.is_dir() and not path.is_symlink())
+        if self.attempt_root is None and self.attempt_base is None:
+            roots.extend(path for path in Path(tempfile.gettempdir()).glob("astrid-attempt-*")
+                         if path.is_dir() and not path.is_symlink())
+        return roots
+
+    def _check_terminal_publication_admission(self) -> None:
+        """Honor retained custody on every admission surface, including restart."""
+        if self._handoff_accounting_owner._terminal_publication_unresolved:
+            raise HostError("unresolved terminal publication retained by host")
+        for root in self._terminal_request_roots():
+            marker_path = root / "publication-unresolved.json"
+            if not marker_path.exists() and not marker_path.is_symlink():
+                continue
+            try:
+                if marker_path.is_symlink():
+                    raise HostError("linked publication marker")
+                marker = json.loads(marker_path.read_text(encoding="utf-8"))
+                if (self.attempt_root is None and self.attempt_base is None
+                        and marker.get("executor_id") != self.executor_id):
+                    continue
+            except (OSError, ValueError, AttributeError, HostError) as exc:
+                self._halt_unresolved_terminal_publication()
+                raise HostError(f"unresolved terminal publication marker at {root}: {exc}") from exc
+            self._halt_unresolved_terminal_publication()
+            raise HostError(f"unresolved terminal publication retained at {root}")
 
     def _unresolved_terminal_publication(
         self, root: Path, task_id: str, attempt_id: str, rounds: int,
@@ -11320,6 +11354,14 @@ class GenericPackHost:
         provider_route_grant: str | None = None,
         _setup_error: BaseException | None = None,
     ) -> Mapping[str, Any]:
+        # Reject before entering failure publication/result writers: the
+        # retained root belongs to the older unresolved attempt. Attempts
+        # already counted by this coordinator keep their release authority.
+        owner = self._handoff_accounting_owner
+        with owner._handoff_condition:
+            already_owned = threading.get_ident() in owner._handoff_attempt_threads
+        if not already_owned:
+            self._check_terminal_publication_admission()
         owns_attempt = False
         busy_published = False
         thread_id = threading.get_ident()
@@ -13741,6 +13783,7 @@ class GenericPackHost:
 
     def claim_once(self) -> Mapping[str, Any] | None:
         """Run one claim cycle while publishing host-side quiescence counters."""
+        self._check_terminal_publication_admission()
         thread_id = threading.get_ident()
         try:
             with self._handoff_condition:
@@ -14000,23 +14043,8 @@ class GenericPackHost:
         """Resume terminal requests left by an interrupted host before claiming work."""
         if self.client is None:
             return
-        roots = []
-        if self.attempt_root is not None:
-            roots.append(self.attempt_root)
-        if self.attempt_base is not None and self.attempt_base.is_dir():
-            roots.extend(path for path in self.attempt_base.iterdir()
-                         if path.is_dir() and not path.is_symlink())
-        if self.attempt_root is None and self.attempt_base is None:
-            roots.extend(path for path in Path(tempfile.gettempdir()).glob("astrid-attempt-*")
-                         if path.is_dir() and not path.is_symlink())
-        for root in roots:
-            marker_path = root / "publication-unresolved.json"
-            if marker_path.is_file():
-                marker = json.loads(marker_path.read_text(encoding="utf-8"))
-                if (self.attempt_root is not None or self.attempt_base is not None
-                        or marker.get("executor_id") == self.executor_id):
-                    self._halt_unresolved_terminal_publication()
-                    raise HostError(f"unresolved terminal publication retained at {root}")
+        self._check_terminal_publication_admission()
+        for root in self._terminal_request_roots():
             for name in ("cede-request.json", "fail-request.json", "cancel-request.json"):
                 path = root / name
                 if not path.is_file() or path.is_symlink():
@@ -14197,6 +14225,7 @@ class GenericPackHost:
         Runtime performs all authority and capacity checks atomically. This
         entry has one exact RPC and never enters the ordinary claim loop.
         """
+        self._check_terminal_publication_admission()
         thread_id = threading.get_ident()
         try:
             if self._shutdown.is_set():

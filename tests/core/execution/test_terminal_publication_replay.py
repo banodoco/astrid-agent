@@ -17,6 +17,13 @@ from tests.core.execution.test_bug14_settlement_liveness import (  # noqa: F401
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_ephemeral_attempt_namespace(tmp_path, monkeypatch):
+    # Each test has an independent Runtime with the same fake executor name.
+    # Its durable attempt registry must therefore be independent too.
+    monkeypatch.setattr(generic_host.tempfile, "tempdir", str(tmp_path))
+
+
 def _wire(case, monkeypatch, statuses, *, unavailable=False):
     calls = []
 
@@ -447,3 +454,52 @@ def test_cede_is_journaled_and_restart_replays_its_exact_wire(settlement_case, t
     _fresh_host(case, root)._recover_terminal_requests()
     assert replayed == [calls[-1]]
     assert not (root / "publication-unresolved.json").exists()
+
+
+@pytest.mark.parametrize("storage", ["root", "base", "ephemeral"])
+@pytest.mark.parametrize("entry", ["run_task", "supervisor", "claim", "delegated"])
+def test_fresh_host_entrypoints_honor_durable_publication_latch(
+    settlement_case, tmp_path, monkeypatch, storage, entry,
+):
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    case.host._unresolved_terminal_publication(root, case.task_id, case.attempt["attempt_id"], 12)
+    if storage == "ephemeral":
+        renamed = tmp_path / "astrid-attempt-unresolved"
+        root.rename(renamed)
+        root = renamed
+    before = {path.name: path.read_bytes() for path in root.iterdir() if path.is_file()}
+    fresh = _fresh_host(case, root)
+    if storage != "root":
+        fresh.attempt_root = None
+        fresh.attempt_base = tmp_path if storage == "base" else None
+    assert fresh is not case.host and not fresh._shutdown.is_set()
+    fresh.capabilities = dict(case.host.capabilities)
+    executions, claims = [], []
+    monkeypatch.setattr(fresh, "_run_task_impl", lambda *a, **kw: executions.append(a) or {"ok": True})
+    monkeypatch.setattr(fresh, "_claim_once_impl", lambda *a: claims.append(a))
+    frame = {"task": case.task, "task_id": case.task_id, "lease_id": case.attempt["lease_id"],
+             "attempt_id": case.attempt["attempt_id"], "fence": case.attempt["fence"]}
+    if entry == "supervisor":
+        supervisor = fresh.persistent_supervisor(tmp_path / "supervisor.jsonl")
+        response = supervisor.start(frame, run_to_terminal=True)
+        assert response["status"] == "failed"
+        assert "unresolved terminal publication" in json.dumps(response)
+    else:
+        with pytest.raises(HostError, match="unresolved terminal publication"):
+            if entry == "run_task":
+                fresh.run_task(case.task, lease_token=case.attempt["lease_id"])
+            elif entry == "claim":
+                fresh.claim_once()
+            else:
+                # Readiness is deliberately stopped at a sentinel. The durable
+                # latch must run before any delegated admission work at all.
+                monkeypatch.setattr(fresh, "_registration_admission_reason",
+                                    lambda: claims.append("delegated admission") or "sentinel")
+                fresh.run_delegated_child(case.task["task"], parent={}, authority_client=None,
+                                          target={}, live=lambda: None)
+    assert not executions and not claims
+    assert fresh._shutdown.is_set()
+    assert fresh.handoff_quiescence()["observation_status"] == "unknown"
+    assert {path.name: path.read_bytes() for path in root.iterdir() if path.is_file()} == before
+    assert case.service.task(case.task_id)["task"]["status"] == "running"
