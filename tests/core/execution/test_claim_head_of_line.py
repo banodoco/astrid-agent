@@ -223,3 +223,18 @@ def test_live_guard_interval_is_bounded(interval) -> None:
     from astrid.core.execution import generic_host
 
     assert generic_host._LIVE_GUARD_INTERVAL_SECONDS == interval
+
+
+def test_waiting_reason_changes_are_logged(tmp_path, capsys):
+    task = SimpleNamespace(task_id="t1", capability_id="fixture.chiptune",
+                           capability_digest=None, waiting_reason="insufficient_storage")
+    host = _host(tmp_path, _QueueRuntime([task]))
+    host.claim_once()
+    task.waiting_reason = "waiting_for_worker"
+    host.claim_once()
+    host.claim_once()
+    task.waiting_reason = "insufficient_storage"
+    host.claim_once()
+    logged = capsys.readouterr().err
+    assert logged.count("insufficient_storage") == 2
+    assert logged.count("waiting_for_worker") == 1
