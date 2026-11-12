@@ -46,9 +46,9 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
     try:
         from astrid.core.extensions.scopes import contribution_roots
         roots = contribution_roots()
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
         # Contributions are optional; preserve the prior empty projection if discovery fails.
-        logger.exception('Could not discover workflow contribution roots')
+        logger.debug('Could not discover workflow contribution roots', exc_info=True)
         return []
     rows, seen = [], set(exclude)
     for root in roots:
@@ -68,9 +68,9 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
                     data = _yaml(manifest)
                     ready = (manifest.parent / str(data["ready_root"])).resolve()
                     listed = data.get("entries") or []
-                except Exception:
+                except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
                     # A malformed or unavailable third-party manifest is skipped independently.
-                    logger.exception('Could not read workflow contribution manifest %s', manifest)
+                    logger.debug('Could not read workflow contribution manifest %s', manifest, exc_info=True)
                     continue
                 if not ready.is_relative_to(pack.resolve()):
                     continue
@@ -153,9 +153,9 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
             binds = {name: name for name in workflow.inputs}
         except ShippedResourceMissingError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
             # Workflow metadata is best-effort; preserve declared entry visibility on load errors.
-            logger.exception('Could not load ready workflow metadata for %s', item['id'])
+            logger.debug('Could not load ready workflow metadata for %s', item['id'], exc_info=True)
             needs, binds = [], {}
             model_assets = []
             ambiguity = 'ready workflow metadata could not be loaded'

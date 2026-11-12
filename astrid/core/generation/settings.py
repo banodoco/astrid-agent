@@ -219,8 +219,8 @@ def read(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapsh
     """Read the document; a missing one is created once from any old TOML Astrid default."""
     try:
         store = current_store(client)
-    except Exception:  # no Runtime reachable: built-ins only, never the TOML again
-        _logger.exception("Could not reach the settings store; using built-in generation settings")
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback (no Runtime reachable: built-ins only, never the TOML again)
+        _logger.debug("Could not reach the settings store; using built-in generation settings", exc_info=True)
         return Snapshot(empty_document(), 0, "unavailable")
     if store is None:
         return Snapshot(empty_document(), 0, "unavailable")
