@@ -22,6 +22,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -414,6 +415,38 @@ def engine_log_path(root: str, engine: str) -> str:
     return root + "/runtime/out/sessions/" + engine + "-logs/engine.log"
 
 
+def _engine_log_size(path: str) -> int:
+    try:
+        info = os.stat(path)
+        return info.st_size if stat.S_ISREG(info.st_mode) else 0
+    except OSError:
+        return 0
+
+
+def _write_engine_launch(path: str, launch: int, ready: int | None) -> None:
+    target = Path(os.path.dirname(path), "launch.json")
+    temporary = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".launch.", dir=target.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"schema": "engine-launch.v1", "launch": launch, "ready": ready}, stream,
+                      sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        temporary = None
+    except OSError:
+        pass
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
 def declare_engine_log(out, root: str, engine: str) -> None:
     """Declare the slice of the engine log that belongs to the run writing ``out``.
 
@@ -426,12 +459,21 @@ def declare_engine_log(out, root: str, engine: str) -> None:
         from astrid.core._shared import run_logs
 
         log = engine_log_path(str(root), engine)
-        try:
-            info = os.stat(log)
-            start = info.st_size if stat.S_ISREG(info.st_mode) else 0
-        except OSError:
-            start = 0
+        start = _engine_log_size(log)
         run_logs.declare(out, run_logs.LogDecl("engine", "engine", log, start=start))
+        try:
+            value = json.loads(Path(os.path.dirname(log), "launch.json").read_text(encoding="utf-8"))
+            launch, ready = value.get("launch"), value.get("ready")
+            if not isinstance(value, dict) or value.get("schema") != "engine-launch.v1":
+                raise ValueError("invalid engine launch metadata")
+            valid_launch = type(launch) is int and launch >= 0
+            valid_ready = ready is None or type(ready) is int and launch <= ready
+            if valid_launch and valid_ready and launch < start:
+                end = ready if ready is not None and ready <= start else start
+                run_logs.declare(out, run_logs.LogDecl("engine.startup", "engine", log,
+                                                       start=launch, end=end))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
     except Exception:  # noqa: BLE001 - log declaration must not affect the job
         pass
 
@@ -966,13 +1008,19 @@ class _Supervisor:
                 pass
             request = _command({**self.launch, "max_output_bytes": 262144}, deadline)
             # The engine's complete stdout and stderr are appended here from launch.
+            launch_size = _engine_log_size(path)
             self.engine = self.spawn(request, output_log=path)
+            ready = None
             try:
                 facts = self.health(channel, deadline)
+                ready = _engine_log_size(path)
+                _write_engine_launch(path, launch_size, ready)
                 self.publish_registry(source)
                 self.check(channel, deadline)
                 return facts
             except BaseException:
+                if ready is None:
+                    _write_engine_launch(path, launch_size, None)
                 self.stop_engine()
                 raise
         if operation == "health":
