@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.packs.vibecomfy import production_engine
 from astrid.core.generation import cli
 from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401  (CPU stand-in ComfyUI)
 from tests.integrations.test_managed_host_preparation import managed_install, session, _workflow  # noqa: F401
@@ -35,24 +36,37 @@ def test_cli_accepts_all_three_align_modes(mode):
 
 
 def test_job_align_reaches_engine_align(comfy, tmp_path, monkeypatch):  # noqa: F811
-    _endpoint(comfy, monkeypatch)
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    from tests.core.generation.test_local_run_site import _install_owned_preparation_fixture
+    preparation = _install_owned_preparation_fixture(monkeypatch, tmp_path, comfy)
     seen = []
     engine_cls = type(_engine("comfyui"))
 
     class Spy(engine_cls):
+        def workflow_requirements(self, workflows):
+            result = super().workflow_requirements(workflows)
+            seen.append(("requirements", result))
+            return result
+
         def align(self, manifest, mode, **kwargs):
             seen.append((mode, manifest))
             return super().align(manifest, mode, **kwargs)
 
-    monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
+    preparation["engine"] = Spy()
     manifest = {"models": [], "extra": {"nodes": []}, "engine": "comfyui", "base": None}
     for mode in ("trust", "check"):
         action._run_and_settle(comfy.workflow, tmp_path / mode / "outputs", task_identity="t", attempt_identity="a",
                                align=mode, manifest=manifest)
-    assert [row[0] for row in seen] == ["trust", "check"]
-    assert seen[0][1] == {**manifest, "models_root": seen[0][1]["models_root"]}  # the install's models dir is added
-    assert seen[0][1]["models_root"].endswith("/runtime/ComfyUI/models")
+    aligned = [row for row in seen if row[0] in {"trust", "check"}]
+    assert [row[0] for row in aligned] == ["trust", "check"]
+    declared = next(row[1] for row in seen if row[0] == "requirements")
+    assert all({key: value for key, value in row[1].items() if key != "models_root"} == declared
+               for row in aligned)
+    assert all(row[1]["models_root"] == str(preparation["models_root"]) for row in aligned)
+    assert str(preparation["models_root"]).endswith("/runtime/ComfyUI/models")
+    assert preparation["engine_calls"].count("workflow_requirements") == 2
+    assert preparation["events"] == ["workflow_requirements", "align", "prompt_submit"] * 2
+    assert preparation["lock_states"] == [True] * 6
 
 
 @pytest.mark.integration
@@ -82,7 +96,8 @@ def test_job_file_rejects_a_foreign_document(tmp_path):
 
 
 def test_local_run_writes_astrid_progress_path(comfy, tmp_path, monkeypatch, capsys):  # noqa: F811
-    _endpoint(comfy, monkeypatch)
+    from tests.core.generation.test_local_run_site import _install_owned_preparation_fixture
+    _install_owned_preparation_fixture(monkeypatch, tmp_path, comfy)
     progress = tmp_path / "progress.json"
     monkeypatch.setenv("ASTRID_PROGRESS_PATH", str(progress))
     phases = []
@@ -103,6 +118,7 @@ def test_local_run_writes_astrid_progress_path(comfy, tmp_path, monkeypatch, cap
             pass
     job = tmp_path / "job.json"
     job.write_text(json.dumps({"schema": "astrid.machine-job.v1", "entry": None, "mode": None, "align": "check",
+                               "task_identity": "task-progress", "attempt_identity": "attempt-progress",
                                "inputs": {"source": str(comfy.workflow)}}))
     assert cli._main(["workflow", "--placement", "local", "--job", str(job),
                       "--out", str(tmp_path / "attempt" / "out"), "--json"]) == 0
@@ -180,14 +196,22 @@ def test_a_stopped_server_is_started_by_a_job_and_reused_by_the_next(installed_r
         sup.proc and sup.proc.kill()
 
 
-def test_the_local_run_ensures_the_server_before_it_reads_the_endpoint(comfy, tmp_path, monkeypatch):  # noqa: F811
-    _endpoint(comfy, monkeypatch)
-    order = []
-    monkeypatch.setattr("astrid.core.generation.engine_local_server.ensure_local_engine_server",
-                        lambda *a, **k: order.append("ensure"))
+def test_the_local_run_prepares_before_submitting(comfy, tmp_path, monkeypatch):  # noqa: F811
+    from tests.core.generation.test_local_run_site import _install_owned_preparation_fixture
+    preparation = _install_owned_preparation_fixture(monkeypatch, tmp_path, comfy)
+    real = production_engine.run_workflow_result_path
+
+    def submit(*args, **kwargs):
+        preparation["events"].append("submit")
+        preparation["lock_states"].append(preparation["lock_held"]())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(production_engine, "run_workflow_result_path", submit)
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     action._run_and_settle(comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="t", attempt_identity="a")
-    assert order == ["ensure"] and len(comfy.prompts) == 1
+    assert preparation["events"] == ["workflow_requirements", "align", "submit", "prompt_submit"]
+    assert preparation["lock_states"] == [True, True, True, True]
+    assert len(comfy.prompts) == 1
 
 
 # -- review fixes ----------------------------------------------------------------------------------------
@@ -213,28 +237,40 @@ def test_job_file_inputs_reach_the_run_as_file_arguments(tmp_path, monkeypatch):
 
 
 def test_the_plain_local_run_passes_align_and_the_requirements_manifest_to_align(comfy, tmp_path, monkeypatch):  # noqa: F811
-    """host admission -> ASTRID_ALIGN / ASTRID_GENERATION_ENTRY -> run.main -> engine.align(manifest, mode)."""
-    _endpoint(comfy, monkeypatch)
+    """The direct local route carries admitted alignment mode through owned preparation."""
+    from tests.core.generation.test_local_run_site import _install_owned_preparation_fixture
+    preparation = _install_owned_preparation_fixture(monkeypatch, tmp_path, comfy)
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     from astrid.core.generation import entries
-    manifest = {"engine": "comfyui", "base": None, "models": [], "extra": {"nodes": []}, "marker": "from-requirements"}
     monkeypatch.setattr(entries, "find_entry", lambda entry_id: {"id": entry_id})
-    monkeypatch.setattr(entries, "requirements", lambda entry, inputs=None: manifest)
+    requirements = {"engine": "comfyui", "base": None, "models": [], "extra": {"nodes": []},
+                    "marker": "from-requirements"}
+    monkeypatch.setattr(entries, "requirements", lambda entry, inputs=None: requirements)
     seen = []
     engine_cls = type(_engine("comfyui"))
 
     class Spy(engine_cls):
+        def workflow_requirements(self, workflows):
+            manifest = super().workflow_requirements(workflows)
+            seen.append(("requirements", manifest))
+            return manifest
+
         def align(self, manifest, mode, **kwargs):
             seen.append((mode, manifest))
             return super().align(manifest, mode, **kwargs)
 
-    monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
+    preparation["engine"] = Spy()
     monkeypatch.setenv("ASTRID_ALIGN", "trust")
     monkeypatch.setenv("ASTRID_GENERATION_ENTRY", "some-entry")
     out = tmp_path / "attempt" / "outputs"
     assert action.main(["run", str(comfy.workflow), "--out", str(out), "--task-identity", "t"]) == 0
-    assert [(mode, {k: v for k, v in m.items() if k != "models_root"}) for mode, m in seen] == [("trust", manifest)]
-    assert seen[0][1]["models_root"].endswith("/models")
+    aligned = [row for row in seen if row[0] == "trust"]
+    assert len(aligned) == 1 and aligned[0][0] == "trust"
+    declared = next(row[1] for row in seen if row[0] == "requirements")
+    assert {key: value for key, value in aligned[0][1].items() if key != "models_root"} == declared
+    assert aligned[0][1]["models_root"] == str(preparation["models_root"])
+    assert preparation["events"] == ["workflow_requirements", "align", "prompt_submit"]
+    assert preparation["lock_states"] == [True, True, True]
 
 
 def test_the_host_admits_the_requested_align_mode_and_entry():
@@ -303,20 +339,19 @@ def test_the_real_runner_start_probe_reuses_then_restarts_a_cpu_standin_server(i
 
 
 def test_a_plain_align_run_fetches_only_the_manifests_missing_rows(comfy, tmp_path, monkeypatch):  # noqa: F811
-    """align uses the install's own models dir, so only rows missing there are fetched."""
-    _endpoint(comfy, monkeypatch)
+    """Owned preparation fetches only absent rows from its configured model root."""
+    from tests.core.generation.test_local_run_site import _install_owned_preparation_fixture
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    from astrid.core.generation import entries
     engine_root = tmp_path / "engine-root"
     present = engine_root / "runtime" / "ComfyUI" / "models" / "checkpoints" / "have.safetensors"
     present.parent.mkdir(parents=True)
     present.write_bytes(b"12345")
     have = {"name": "have.safetensors", "subdir": "checkpoints", "url": "u1", "sha256": None, "size": 5}
     lack = {"name": "lack.safetensors", "subdir": "loras", "url": "u2", "sha256": None, "size": 9}
+    preparation = _install_owned_preparation_fixture(monkeypatch, tmp_path, comfy, root=engine_root)
+    preparation["manifest_override"] = {"models": [have, lack]}
     manifest = {"engine": "comfyui", "base": None, "models": [have, lack], "extra": {"nodes": []}}
-    monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.default_engine_root", lambda engine: str(engine_root))
-    monkeypatch.setattr(entries, "find_entry", lambda entry_id: {"id": entry_id})
-    monkeypatch.setattr(entries, "requirements", lambda entry, inputs=None: manifest)
+    monkeypatch.setattr(action, "_entry_manifest", lambda *_args, **_kwargs: manifest)
     calls = []
 
     class Commands:
@@ -326,13 +361,15 @@ def test_a_plain_align_run_fetches_only_the_manifests_missing_rows(comfy, tmp_pa
         def fetch(self, rows): calls.append(("fetch", [row["name"] for row in rows]))
 
     engine_cls = type(_engine("comfyui"))
-    monkeypatch.setattr(action, "_engine_for", lambda manifest: engine_cls(commands=Commands()))
+    preparation["engine"] = engine_cls(commands=Commands())
     monkeypatch.setenv("ASTRID_ALIGN", "align")
     monkeypatch.setenv("ASTRID_GENERATION_ENTRY", "some-entry")
     out = tmp_path / "attempt" / "outputs"
     assert action.main(["run", str(comfy.workflow), "--out", str(out), "--task-identity", "t"]) == 0
     assert ("fetch", ["lack.safetensors"]) in calls and ("fetch", ["have.safetensors"]) not in calls
     assert [call for call in calls if call[0] == "fetch"] == [("fetch", ["lack.safetensors"])]
+    assert preparation["events"] == ["workflow_requirements", "align", "prompt_submit"]
+    assert preparation["lock_states"] == [True, True, True]
 
 
 def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeypatch):
