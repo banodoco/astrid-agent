@@ -142,7 +142,7 @@
       "source": "comfyui-qwentts",
       "path": "qwen_tts/core/models/modeling_qwen3_tts.py",
       "sha256_before": "9c5b54d9435604c6cbfda0fbbaeb77d4c959b0f95592b00f40c507f5364ede38",
-      "sha256_after": "335f81a6a636c1675c84fc415b8a792e51790df6c17ff450743976c93fb3b62d",
+      "sha256_after": "843101a8dc83a00430a2dfc644b149dbbf523396be30d2fe71ac7c8680da47b1",
       "replacement": "packs/runpod/patches/modeling_qwen3_tts.txt"
     },
     {

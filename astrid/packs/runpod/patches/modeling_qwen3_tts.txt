@@ -1573,7 +1573,6 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
             config=config.code_predictor_config,
             talker_config=config
         )
-        self.rope_deltas = None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1682,25 +1681,19 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
                 inputs_embeds = inputs_embeds + trailing_text_hidden[:, generation_step].unsqueeze(1)
             else:
                 inputs_embeds = inputs_embeds + tts_pad_embed
-        if attention_mask is not None:
-            if (
-                cache_position is None
-                or (cache_position is not None and cache_position[0] == 0)
-                or self.rope_deltas is None
-            ):
-                delta0 = (1 - attention_mask).sum(dim=-1).unsqueeze(1)
-                position_ids, rope_deltas = self.get_rope_index(
-                    attention_mask,
-                )
-                rope_deltas = rope_deltas - delta0
-                self.rope_deltas = rope_deltas
+        if position_ids is None:
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            seq_length = inputs_embeds.shape[1]
+            if attention_mask is not None:
+                # Like generation's native position preparation, account for
+                # left padding, then select only the current cache interval.
+                position_ids, _ = self.get_rope_index(attention_mask)
+                position_ids = position_ids[..., past_seen_tokens:past_seen_tokens + seq_length]
             else:
-                batch_size, seq_length = input_ids.shape
-                delta = cache_position[0] + self.rope_deltas if cache_position is not None else 0
-                position_ids = torch.arange(seq_length, device=input_ids.device)
-                position_ids = position_ids.view(1, -1).expand(batch_size, -1)
-                position_ids = position_ids.add(delta)
-                position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+                position_ids = torch.arange(
+                    past_seen_tokens, past_seen_tokens + seq_length, device=inputs_embeds.device
+                )
+                position_ids = position_ids.view(1, 1, -1).expand(3, inputs_embeds.shape[0], -1)
 
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=None,
