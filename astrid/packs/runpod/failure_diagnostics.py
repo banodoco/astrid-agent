@@ -93,7 +93,7 @@ FACT_ALLOW = {
 NAME_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}')
 MAX_GRAPH_NAMES = 2048
 EXCEPTIONS = frozenset({
-    'MachineError', 'MachineRunError', 'MachineRunCancelled', 'RemotePlacementError', 'PlacementReasonError',
+    'MachineError', 'MachineRunError', 'MachineRunCancelled', 'RemotePlacementError', 'PlacementReasonError', 'ProviderRefused',
     'RunPodWorkerOwnerError', 'TargetObservationError', 'AcquisitionUnresolvedError',
     'PreparedWorkerError', 'PreparationDeadlineExceeded', 'DigestMismatch',
     'CustodyChanged', 'TimeoutError', 'ValueError', 'RuntimeError', 'OSError',
