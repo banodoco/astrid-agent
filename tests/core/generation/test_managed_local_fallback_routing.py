@@ -62,7 +62,7 @@ def test_direct_local_run_routes_through_owned_preparation(tmp_path, monkeypatch
         "align": "check",
         "workflow_inputs": '{"asset_input": "asset.png", "seed": 7, "source_video": "source.mp4"}',
         "execution_request": None,
-        "manifest": {"engine": "comfyui", "models_root": str(tmp_path / "managed-engine" / "models")},
+        "manifest": {"engine": "comfyui", "models_root": str(tmp_path / "managed-engine" / "runtime/ComfyUI/models")},
         "entry": None,
         "after_outputs_job": "{}",
     }

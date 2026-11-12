@@ -277,7 +277,7 @@ class ManagedEnginePreparation:
             placement="local", root=self.root, deadline=deadline)
         self.context.service_client.cancelled = cancelled
         self.lock = None
-        self.report = None
+        self.report: dict[str, Any] | None = None
         self.uncertain = False
         self._preparing_engine = False
 

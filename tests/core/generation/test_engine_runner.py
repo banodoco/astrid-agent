@@ -1720,7 +1720,8 @@ def test_install_lock_is_held_until_final_receipt_commit(setup):
             competitor = FakeContext()
             competitor.deadline = deadline
             @contextmanager
-            def locked(root, *, deadline):
+            def locked(root, *, deadline, kind):
+                assert kind == "install"
                 raise CustodyUnresolved("exact live lock holder", recovery_handle="/lock/holder-incarnation")
                 yield
             competitor.acquire_install_lock = locked
@@ -2058,7 +2059,8 @@ def test_health_timeout_is_bounded_by_recipe_and_caller_deadline(setup):
 def test_context_lock_failure_never_runs_or_writes(setup):
     error = CustodyUnresolved("live lease has not been fenced", recovery_handle="/holder/exact-incarnation")
     @contextmanager
-    def occupied(root, *, deadline):
+    def occupied(root, *, deadline, kind):
+        assert kind == "install"
         raise error
         yield
     setup[1].acquire_install_lock = occupied

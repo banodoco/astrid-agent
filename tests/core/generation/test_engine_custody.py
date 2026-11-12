@@ -1412,6 +1412,7 @@ def test_different_helper_stop_addresses_old_owner_but_probe_still_refuses(sessi
         scoped.setattr(custody, "_send", observe_send)
         with pytest.raises(EndpointOwnershipError):
             other.call("probe", payload, deadline=time.monotonic() + 5)
+        assert sent == []
         assert Path(owner.control, "session.json").read_bytes() == marker
         other.stop_owned(deadline=time.monotonic() + 8)
     assert any(row.get("operation") == "stop" and row.get("identity") == owner.identity for row in sent)

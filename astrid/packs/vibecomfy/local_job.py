@@ -3,9 +3,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from types import FrameType
+from typing import Any, NotRequired, TypedDict
 
 from astrid.core.generation.local_job import JobFileError, JobInputError
+
+
+class _RunState(TypedDict):
+    phase: str
+    signum: int | None
+    failure: NotRequired[BaseException]
 
 
 def run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
@@ -53,14 +60,14 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
     out.parent.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="astrid-pod-preparation-", dir=out.parent))
     cancelled = threading.Event()
-    state = {"phase": "prepare", "signum": None}
+    state: _RunState = {"phase": "prepare", "signum": None}
 
     from astrid.core.generation.progress import write_progress
 
     def on_phase(phase: str) -> None:
         write_progress(phase)
 
-    def stop(signum, _frame):
+    def stop(signum: int, _frame: FrameType | None) -> None:
         if state["signum"] is not None:
             return
         # Latch before Event.set and before raising: repeated signals must not
@@ -94,7 +101,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
                 raise JobFileError("pod workflow member changed during staging")
             members[name] = target
         digests = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in members.items()}
-        workflow = members.get("python", members.get("workflow"))
+        workflow = members["python"] if "python" in members else members["workflow"]
         loaded = load_workflow_path(workflow, scratch / "load")
         if any(path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digests[name]
                for name, path in members.items()):
@@ -155,10 +162,10 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
                 try:
                     preparation.close(execution_root=out, worker_drained=True)
                 except BaseException as close_error:
-                    original_error = state.get("failure")
-                    if original_error is None:
+                    failure = state.get("failure")
+                    if failure is None:
                         raise
-                    original_error.add_note(
+                    failure.add_note(
                         f"managed preparation close failed: {type(close_error).__name__}"
                     )
                 else:
@@ -190,6 +197,8 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
         except (ValueError, KeyError, TypeError) as exc:
             raise JobInputError(f"job inputs are not valid for entry {entry!r}: {exc}") from exc
         mode = description.get("mode") or mode
+        if not isinstance(mode, str):
+            raise JobInputError(f"entry {entry!r} did not resolve a mode")
         described = entries.find_entry(entry)
         named = entry
         if described is None:
@@ -242,6 +251,8 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
     except (ValueError, KeyError, TypeError) as exc:
         raise JobInputError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
     mode = description.get("mode") or mode
+    if not isinstance(mode, str):
+        raise JobInputError(f"entry {named!r} did not resolve a mode")
     # (c) readiness and target schema, on the machine that runs the job. The pod has no attached
     # target client, which is the controller's managed-placement case (client None).
     prerequisite = SimpleNamespace(id=named, modes={mode: SimpleNamespace(
@@ -250,12 +261,14 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
     # A contribution's build and after_outputs come from its vibecomfy.workflows entry.
     hooks = entries.entry_hooks(described)
     run_files = dict(files)
-    job_dir = None
+    job_dir: Path | None = None
     manifest = None
     try:
         if "build" in hooks:
             job_dir = Path(tempfile.mkdtemp(prefix="astrid-job-"))
             built = entries.build_entry(described, inputs, job_dir)  # (b) build, once
+            if built is None:
+                raise JobFileError(f"entry {named!r} build returned no workflow")
             workflow, workflow_inputs = Path(built["bundle"]) / "workflow.py", dict(built["bindings"])
             if bindings:
                 # Native bindings belong to the chosen graph, never to the public
@@ -296,7 +309,10 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
             if plan["unbound"]:
                 raise JobInputError("workflow has no binding for requested controls: " + ", ".join(plan["unbound"]))
             entries.target_schema(described, loaded, None, align=align)
-            workflow, workflow_inputs = entries.bundle_path(described), dict(plan["bindings"])
+            bundle = entries.bundle_path(described)
+            if bundle is None:
+                raise JobFileError(f"entry {named!r} has no workflow bundle")
+            workflow, workflow_inputs = bundle, dict(plan["bindings"])
             if assets:
                 # Media bindings are file paths on this machine; they ride as plain bindings.
                 workflow_inputs.update({name: str(path) for name, path in assets.items()})
