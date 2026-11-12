@@ -8,14 +8,17 @@ Full-size constructors use meta; tiny random models run on CPU. Hub access is of
 """
 
 import hashlib
+import importlib.util
 import io
 import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
+import types
 from pathlib import Path
 
 import pytest
@@ -67,6 +70,10 @@ def node(tmp_path_factory):
     target.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(archive)) as files:
         files.extractall(target, filter="data")
+    loader_source = subprocess.check_output(
+        ["git", "-C", checkout, "show", f"{source.pin.revision}:AILab_QwenTTS.py"],
+    )
+    (target / "AILab_QwenTTS.py").write_bytes(loader_source)
     payload = dict(schema=_HELPER_SCHEMA, engine=recipe.engine, platform=recipe.platform,
                    root=str(root), recipe_sha256=recipe_digest(recipe),
                    helper_sha256=_sha(helper_manifest(recipe)), source=source.name)
@@ -101,6 +108,22 @@ def load_snapshot(filename, model_path):
     assert len(data) == model.bytes
     assert hashlib.sha256(data).hexdigest() == model.sha256
     return json.loads(data)
+
+
+def copy_locked_node_asset(destination, relative_path):
+    recipe = load_recipe("comfyui", "linux-x86_64-cu130")
+    models = load_model_lock(recipe.models_lock).models
+    model = next(m for m in models
+                 if m.repository == "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+                 and m.path == relative_path)
+    source = Path(__file__).parent / "fixtures" / "qwen3-tts-node" / relative_path
+    data = source.read_bytes()
+    assert len(data) == model.bytes, relative_path
+    assert hashlib.sha256(data).hexdigest() == model.sha256, relative_path
+    target = destination / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    return target
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -251,6 +274,81 @@ def test_tiny_random_model_forward_on_cpu(node, component):
             assert torch.isfinite(step.logits).all()
             assert step.past_key_values.get_seq_length() == 3
         assert all(parameter.device.type == "cpu" for parameter in model.parameters())
+
+
+def test_comfyui_node_loads_complete_tiny_checkpoint_on_cpu(node, tmp_path, monkeypatch):
+    configs, models, tokenizer_configs, tokenizer_models = node
+    model_id = "Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    model_dir = tmp_path / "models" / "TTS" / "Qwen3-TTS" / model_id
+    model_dir.mkdir(parents=True)
+
+    # Create only tiny random weights from the real model structure. The source
+    # configs and tokenizer assets below remain lock-verified upstream files;
+    # the model and speech-tokenizer configs are shrunk to fit these weights.
+    torch.manual_seed(2468)
+    model_payload = load_snapshot("speech-config.json", "config.json")
+    model_payload["talker_config"] = tiny_talker_config(configs).to_dict()
+    model_config = configs.Qwen3TTSConfig.from_dict(model_payload)
+    random_model = models.Qwen3TTSForConditionalGeneration(model_config).eval()
+    from safetensors.torch import save_file
+
+    save_file({key: value.detach().cpu().contiguous()
+               for key, value in random_model.state_dict().items()}, model_dir / "model.safetensors")
+    model_config.save_pretrained(model_dir)
+    saved_config_path = model_dir / "config.json"
+    saved_config = json.loads(saved_config_path.read_text(encoding="utf-8"))
+    # The upstream model config omits this optional section for CustomVoice;
+    # the config class's default object adds it when serializing.
+    saved_config.pop("speaker_encoder_config", None)
+    saved_config_path.write_text(json.dumps(saved_config, indent=2) + "\n", encoding="utf-8")
+    del random_model
+
+    for path in ("generation_config.json", "merges.txt", "preprocessor_config.json",
+                 "tokenizer_config.json", "vocab.json", "speech_tokenizer/configuration.json",
+                 "speech_tokenizer/preprocessor_config.json"):
+        copy_locked_node_asset(model_dir, path)
+    # These are tiny versions of the hash-verified upstream configs. The
+    # tokenizer's original-layout weights exercise Mimi's native key mapping.
+    speech_config = tiny_tokenizer_config(tokenizer_configs)
+    speech_dir = model_dir / "speech_tokenizer"
+    speech_dir.mkdir(exist_ok=True)
+    (speech_dir / "config.json").write_text(speech_config.to_json_string(), encoding="utf-8")
+    shutil.copyfile(
+        Path(__file__).parent / "fixtures" / "qwen3-tts-tiny" / "tokenizer" / "model.safetensors",
+        speech_dir / "model.safetensors",
+    )
+
+    # The node's imports are the only ComfyUI integration boundary required by
+    # _load_model; model discovery itself uses the ordinary models_dir layout.
+    folder_paths = types.ModuleType("folder_paths")
+    folder_paths.models_dir = str(tmp_path / "models")
+    folder_paths.folder_names_and_paths = {}
+    folder_paths.get_folder_paths = lambda _name: []
+    comfy = types.ModuleType("comfy")
+    model_management = types.ModuleType("comfy.model_management")
+    comfy.model_management = model_management
+    monkeypatch.setitem(sys.modules, "folder_paths", folder_paths)
+    monkeypatch.setitem(sys.modules, "comfy", comfy)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", model_management)
+
+    node_root = Path(models.__file__).parents[3]
+    spec = importlib.util.spec_from_file_location("qwentts_node_loader_test", node_root / "AILab_QwenTTS.py")
+    assert spec and spec.loader
+    node_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(node_module)
+    monkeypatch.setattr(node_module, "_MODEL_CACHE", {})
+
+    loaded = node_module._load_model("CustomVoice", "0.6B", "cpu", "fp32", "eager")
+    assert loaded.device == torch.device("cpu")
+    assert loaded.processor.tokenizer is not None
+    assert type(loaded.processor).__name__ == "Qwen3TTSProcessor"
+    assert loaded.model.speech_tokenizer is not None
+    assert loaded.model.speech_tokenizer.feature_extractor is not None
+    assert loaded.model.speech_tokenizer.model is not None
+    assert loaded.model.generate_config
+    assert all(parameter.device.type == "cpu" for parameter in loaded.model.parameters())
+    assert all(parameter.device.type == "cpu"
+               for parameter in loaded.model.speech_tokenizer.model.parameters())
 
 
 @pytest.mark.parametrize("component", ["talker", "code_predictor"])
