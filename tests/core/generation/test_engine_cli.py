@@ -46,7 +46,7 @@ def test_packaged_vibecomfy_checkout_supports_generate_list_json(tmp_path):
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     source = next(s for s in recipe.sources if s.name == 'vibecomfy')
     assert source.pin.repository == 'https://github.com/banodoco/VibeComfy.git'
-    assert source.pin.revision == '8d065a8fef3dd602d5462e27d8eca088cf4e8262'
+    assert source.pin.revision == '88cff6d5f19795f54f8fcf87bb47e93fc0534cbc'
     source_checkout = Path(os.environ['ASTRID_VIBECOMFY_CHECKOUT'])
     packaged = tmp_path / 'packaged-vibecomfy'
     for argv in (
