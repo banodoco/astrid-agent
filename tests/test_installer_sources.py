@@ -914,7 +914,7 @@ def test_staged_pin_reader_accepts_the_real_repository_tree_and_returns_the_cano
 
     shutil.copytree(Path(__file__).parents[1] / "astrid/packs", tmp_path / "astrid/packs")
     revision = Backend._staged_vibecomfy_revision(tmp_path)
-    assert revision == "87d5e82556b008ce1c85ce6150509ede36d9b85a"
+    assert revision == VIBECOMFY_ENGINE_REVISION
     assert revision == canonical_pin("vibecomfy")["revision"]
 
 

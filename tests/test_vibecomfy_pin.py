@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -80,17 +81,55 @@ def packs_copy(tmp_path, monkeypatch) -> Path:
     """Copy the checkout's real package-owned pins, recipes and index for a bump."""
     root = tmp_path / "astrid"
     shutil.copytree(engine_recipe._ROOT / "packs", root / "packs")
+    shutil.copytree(engine_recipe._ROOT / "core" / "model_catalog", root / "core" / "model_catalog")
     monkeypatch.setattr(engine_recipe, "_ROOT", root)
     monkeypatch.setattr(vibecomfy_pin, "ROOT", root)
     return root
 
 
-def test_pin_script_bump_rewrites_every_vibecomfy_pin_and_keeps_digests_verified(packs_copy, capsys) -> None:
-    revision = "b" * 40
-    assert vibecomfy_pin.main([revision]) == 0
+@pytest.fixture
+def vibecomfy_checkout(tmp_path) -> tuple[Path, str, dict[str, bytes]]:
+    """Create an offline VibeComfy-shaped git repo containing catalog templates."""
+    checkout = tmp_path / "vibecomfy"
+    checkout.mkdir()
+    catalog = (ROOT / "astrid" / "core" / "model_catalog" / "models.yaml").read_text(encoding="utf-8")
+    template_ids = list(dict.fromkeys(row[0] for row in vibecomfy_pin._catalog_routes(catalog)))
+    payloads: dict[str, bytes] = {}
+    for index, template_id in enumerate(template_ids):
+        payload = f"workflow for {template_id}, fixture {index}\n".encode()
+        payloads[template_id] = payload
+        path = checkout / "ready_templates" / (template_id + ".py")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "user.name", "Pin tests"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "fixture templates"], check=True)
+    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    # Make the working tree disagree with HEAD so the bump must hash git-show
+    # bytes from the requested commit, rather than whatever happens to be checked out.
+    first_id = template_ids[0]
+    (checkout / "ready_templates" / (first_id + ".py")).write_bytes(b"uncommitted different bytes\n")
+    return checkout, revision, payloads
+
+
+def test_pin_script_bump_updates_catalog_routes_from_target_commit_bytes(packs_copy, vibecomfy_checkout, capsys) -> None:
+    checkout, revision, payloads = vibecomfy_checkout
+    original_catalog = (ROOT / "astrid" / "core" / "model_catalog" / "models.yaml").read_text(encoding="utf-8")
+    routes = list(dict.fromkeys(row[0] for row in vibecomfy_pin._catalog_routes(original_catalog)))
+    assert set(routes) == set(payloads)
+    assert vibecomfy_pin.main([revision, "--checkout", str(checkout)]) == 0
     # main() prints the revision read back through the digest-verified authority.
     assert capsys.readouterr().out == revision + "\n"
     assert vibecomfy_pin.read() == revision
+    catalog_path = packs_copy / "core" / "model_catalog" / "models.yaml"
+    catalog_after = catalog_path.read_text(encoding="utf-8")
+    expected_catalog = original_catalog
+    for template_id, start, end in reversed(vibecomfy_pin._catalog_routes(original_catalog)):
+        expected_hash = "sha256:" + hashlib.sha256(payloads[template_id]).hexdigest()
+        expected_catalog = expected_catalog[:start] + expected_hash + expected_catalog[end:]
+    assert catalog_after == expected_catalog
     bumped = 0
     for path in (packs_copy / "packs").glob("*/pins.json"):
         for name, source in json.loads(path.read_text(encoding="utf-8")).get("sources", {}).items():
@@ -101,12 +140,44 @@ def test_pin_script_bump_rewrites_every_vibecomfy_pin_and_keeps_digests_verified
     # Every indexed recipe still loads: the pin and recipe digest chain was rewritten together.
     for entry in engine_recipe._index_rows():
         engine_recipe.load_recipe(entry["engine"], entry["platform"])
+    # Reapplying the same resolved pin and target commit is byte stable.
+    files = sorted(path for path in packs_copy.rglob("*") if path.is_file())
+    before = {path: path.read_bytes() for path in files}
+    assert vibecomfy_pin.main([revision, "--checkout", str(checkout)]) == 0
+    assert {path: path.read_bytes() for path in files} == before
 
 
 def test_pin_script_bump_to_the_current_revision_changes_no_bytes(packs_copy) -> None:
-    files = sorted(path for path in (packs_copy / "packs").rglob("*") if path.is_file())
+    checkout = Path(os.environ.get("ASTRID_VIBECOMFY_CHECKOUT", ""))
+    assert checkout.is_dir(), "pin stability needs the VibeComfy checkout (ASTRID_VIBECOMFY_CHECKOUT)"
+    files = sorted(path for path in packs_copy.rglob("*") if path.is_file())
     before = {path: path.read_bytes() for path in files}
-    vibecomfy_pin.bump(VIBECOMFY_ENGINE_REVISION)
+    vibecomfy_pin.bump(VIBECOMFY_ENGINE_REVISION, checkout=checkout)
+    assert {path: path.read_bytes() for path in files} == before
+
+
+def test_pin_script_missing_template_fails_before_any_writes(packs_copy, vibecomfy_checkout) -> None:
+    checkout, revision, _ = vibecomfy_checkout
+    missing = next(row[0] for row in vibecomfy_pin._catalog_routes(
+        (packs_copy / "core" / "model_catalog" / "models.yaml").read_text(encoding="utf-8")))
+    path = checkout / "ready_templates" / (missing + ".py")
+    path.unlink()
+    subprocess.run(["git", "-C", str(checkout), "rm", "-q", str(path.relative_to(checkout))], check=True)
+    subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "remove catalog template"], check=True)
+    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    files = sorted(path for path in packs_copy.rglob("*") if path.is_file())
+    before = {path: path.read_bytes() for path in files}
+    with pytest.raises(SystemExit, match="cannot resolve target ready template"):
+        vibecomfy_pin.main([revision, "--checkout", str(checkout)])
+    assert {path: path.read_bytes() for path in files} == before
+
+
+def test_pin_script_missing_revision_fails_before_any_writes(packs_copy, vibecomfy_checkout) -> None:
+    checkout, _, _ = vibecomfy_checkout
+    files = sorted(path for path in packs_copy.rglob("*") if path.is_file())
+    before = {path: path.read_bytes() for path in files}
+    with pytest.raises(SystemExit, match="VibeComfy git operation failed"):
+        vibecomfy_pin.main(["b" * 40, "--checkout", str(checkout)])
     assert {path: path.read_bytes() for path in files} == before
 
 
