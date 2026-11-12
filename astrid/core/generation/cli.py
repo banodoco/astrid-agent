@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 # One table of what each generation kind needs at the CLI boundary: its help
 # noun, the SDK keyword that carries its dimensions, whether a video prompt
@@ -57,6 +60,7 @@ def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
         placement = placements.resolve_placement(placements.request_from_selector(target), repo=repo, client=client)
         return _select_generation_target(placements.comfy_selector(placement), repo=repo) is None
     except Exception:
+        _logger.exception("Could not settle whether a local generation target is available")
         return False
 
 
@@ -797,6 +801,7 @@ def _kept_failure(before: set[tuple[str | None, int | None]]) -> None:
                   f"{_when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
                   f"reuse it or run `astrid machines release {row['id']}`", file=sys.stderr)
     except Exception:
+        _logger.exception("Could not read the retained failure context")
         pass  # Diagnostic reads cannot change settlement or mask the original error.
 
 
@@ -819,6 +824,7 @@ def main(argv: list[str] | None = None) -> int:
             before = {(row.get('lease'), (row.get('last_job') or {}).get('generation'))
                       for row in journal_leases()}
         except Exception:
+            _logger.exception("Could not snapshot leases before the command")
             pass
     try:
         scope = nullcontext()

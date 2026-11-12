@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from astrid.core.generation.local_job import JobFileError, JobInputError
+
+
+class _SignalState(TypedDict):
+    phase: str
+    signum: int | None
 
 
 def run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
@@ -45,7 +50,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
     out.parent.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="astrid-pod-preparation-", dir=out.parent))
     cancelled = threading.Event()
-    state = {"phase": "prepare", "signum": None}
+    state: _SignalState = {"phase": "prepare", "signum": None}
 
     def stop(signum, _frame):
         if state["signum"] is not None:
@@ -81,7 +86,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
                 raise JobFileError("pod workflow member changed during staging")
             members[name] = target
         digests = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in members.items()}
-        workflow = members.get("python", members.get("workflow"))
+        workflow = members["python"] if "python" in members else members["workflow"]
         loaded = load_workflow_path(workflow, scratch / "load")
         if any(path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digests[name]
                for name, path in members.items()):
@@ -122,9 +127,10 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
                for name, path in members.items()):
             raise JobFileError("pod workflow member changed during preparation")
         state["phase"] = "execute"
-        if state["signum"] is not None:
+        signum = state["signum"]
+        if signum is not None:
             state["phase"] = "drain"
-            raise SystemExit(128 + state["signum"])
+            raise SystemExit(128 + signum)
         with preparation_scope(report):
             return run_action._run_and_settle(workflow, out, task_identity=task_identity,
                 attempt_identity=attempt_identity, execution_identity=identity,

@@ -104,11 +104,13 @@ def _print_command_output(output) -> None:
     """After the public error line, the failed command's whole output, for the user who ran it."""
     if not isinstance(output, dict):
         return
-    argv = output.get('argv') if isinstance(output.get('argv'), list) else []
+    raw_argv = output.get('argv')
+    argv = raw_argv if isinstance(raw_argv, list) else []
     print(f"--- failed command (exit {output.get('exit_code')}): {' '.join(str(a) for a in argv)}",
           file=sys.stderr)
     for stream in ('stdout', 'stderr'):
-        text = output.get(stream) if isinstance(output.get(stream), str) else ''
+        raw_text = output.get(stream)
+        text = raw_text if isinstance(raw_text, str) else ''
         print(f"--- {stream} ---", file=sys.stderr)
         print(text, end='' if text.endswith('\n') or not text else '\n', file=sys.stderr)
     if output.get('truncated'):
