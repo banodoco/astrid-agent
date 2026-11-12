@@ -253,6 +253,35 @@ class TerminalPublicationRejected(HostError):
     """A Runtime validation/conflict response with verified nonterminal custody."""
 
 
+def _terminal_publication_rejection(
+    error: BaseException, task_id: str, owner: tuple[str, int] | None,
+    observe: Callable[[str], Any],
+) -> TerminalPublicationRejected | None:
+    """Classify a mutation error, never a failed observation, as rejection.
+
+    A status alone cannot establish custody. Only validation/conflict plus an
+    exact running-owner readback permits replacing the original publication.
+    Transport uncertainty and unreadable custody always require exact replay.
+    """
+    if isinstance(error, TerminalPublicationRejected):
+        return error
+    if owner is None or getattr(error, "status", None) not in {400, 409, 422}:
+        return None
+    try:
+        task = observe(task_id)
+        task = task.get("task", task) if isinstance(task, Mapping) else task
+        def field(name, default=None):
+            return task.get(name, default) if isinstance(task, Mapping) else getattr(task, name, default)
+        if (str(field("id", field("task_id"))) == task_id
+                and field("state", field("status")) == "running"
+                and field("attempt_id") == owner[0]
+                and field("fence", field("lease_fence")) == owner[1]):
+            return TerminalPublicationRejected(str(error))
+    except Exception:  # noqa: BLE001 - failed observations cannot prove rejection
+        pass
+    return None
+
+
 def _persist_terminal_request(path: Path, request: Mapping[str, Any]) -> None:
     """Keep the exact fenced wire request before sending any terminal mutation."""
     temporary = path.with_suffix(".tmp")
@@ -469,6 +498,10 @@ class CommandCleanupUnresolved(HostError):
 _LEASE_POLL_SECONDS = 5.0
 _TERMINAL_RECONCILE_SECONDS = 30.0
 _TERMINAL_RECONCILE_POLL_SECONDS = 0.25
+# Count every reconciliation round, including failed reads and cede attempts.
+# Twelve rounds allow transient recovery with exponential back-off (capped at
+# five seconds), without letting renewed leases or unavailable cedes loop forever.
+_TERMINAL_RECONCILE_MAX_ROUNDS = 12
 
 
 class HostCancelled(HostError):
@@ -5834,21 +5867,9 @@ class RuntimeProtocolClient:
                 # A transport failure (including a lost ACK) says nothing
                 # about commit. Only a validation/conflict response AND a
                 # read of this same nonterminal owner permit a fenced failure.
-                if rejected_owner is not None and getattr(exc, "status", None) in {400, 409, 422}:
-                    try:
-                        task = self.task(task_id)
-                        task = task.get("task", task) if isinstance(task, Mapping) else task
-                        def field(name, default=None):
-                            return task.get(name, default) if isinstance(task, Mapping) else getattr(task, name, default)
-                        if (str(field("id", field("task_id"))) == task_id
-                                and field("state", field("status")) == "running"
-                                and field("attempt_id") == rejected_owner[0]
-                                and field("fence", field("lease_fence")) == rejected_owner[1]):
-                            raise TerminalPublicationRejected(str(exc)) from exc
-                    except TerminalPublicationRejected:
-                        raise
-                    except Exception:  # noqa: BLE001 - unreadable custody remains ambiguous
-                        pass
+                rejection = _terminal_publication_rejection(exc, task_id, rejected_owner, self.task)
+                if rejection is not None:
+                    raise rejection from exc
                 if attempt == 0:
                     continue
                 raise
@@ -6879,6 +6900,37 @@ class GenericPackHost:
                 "errors": [str(exc)],
             }
             raise
+
+    def _halt_unresolved_terminal_publication(self) -> None:
+        """Unacknowledged custody cannot advertise a clean host handoff."""
+        self._shutdown.set()
+        owner = self._handoff_accounting_owner
+        owner._shutdown.set()
+        with owner._handoff_condition:
+            owner._handoff_claim_gate_closed = True
+            owner._handoff_observation_known = False
+            owner._handoff_condition.notify_all()
+
+    def _unresolved_terminal_publication(
+        self, root: Path, task_id: str, attempt_id: str, rounds: int,
+    ) -> None:
+        """Stop admission and leave durable, explicit custody for an operator.
+
+        Exhaustion is neither rejection nor a terminal Runtime acknowledgement.
+        Keep the original wire journal and evidence; never report success.
+        """
+        self._halt_unresolved_terminal_publication()
+        message = f"unresolved terminal publication for {task_id} after {rounds} reconciliation rounds"
+        print(f"generic host: {message}; retained at {root}", file=sys.stderr, flush=True)
+        marker = {"status": "unresolved", "task_id": task_id, "attempt_id": attempt_id,
+                  "executor_id": self.executor_id, "rounds": rounds, "reason": message}
+        _persist_terminal_request(root / "publication-unresolved.json", marker)
+        receipt_path = root / "result.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8")) if receipt_path.is_file() else {}
+        receipt.update(status="failed", ok=False)
+        receipt["publication"] = {"status": "unresolved", "receipt": None, "reason": message}
+        receipt.setdefault("warnings", []).append(message)
+        write_json_atomic(receipt_path, receipt)
 
     def _track_process(self, process: subprocess.Popen) -> None:
         with self._process_lock:
@@ -11260,10 +11312,18 @@ class GenericPackHost:
             try:
                 result = self._handoff_settlement_call(operation, *args, **kwargs)
             except Exception as exc:
-                if operation == self.client.fail and (isinstance(exc, TerminalPublicationRejected)
-                        or 400 <= (getattr(exc, "status", 0) or 0) < 500
-                        or "lease" in str(getattr(exc, "code", "")).lower()):
-                    terminal["publication_rejection"] = str(exc)
+                rejection = (_terminal_publication_rejection(
+                    exc, str(data["id"]), (exact_attempt, exact_fence), self.client.task)
+                    if operation in (self.client.settle, self.client.fail) else None)
+                if operation == self.client.fail:
+                    # All failed publications, including evidence-free failures,
+                    # belong to the bounded replay owner. Do not let the outer
+                    # failure guard add another synchronous retry family.
+                    terminal.update(evidence_pending=True, publication_pending=True, pending_status="failed")
+                    if rejection is not None:
+                        terminal["publication_rejection"] = str(rejection)
+                if rejection is not None and rejection is not exc:
+                    raise rejection from exc
                 raise
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
@@ -11623,15 +11683,13 @@ class GenericPackHost:
                         lease_transport_fault=lease_transport_fault, task_snapshot=task_snapshot)
 
         def reconcile_publication():
-            """Own bounded exact replays, then request explicit fenced cancellation.
-
-            If Runtime cannot acknowledge cancellation, this owner stays live
-            and keeps trying. A local spool alone is never a custody transfer.
-            """
+            """Replay unchanged requests, bounded across reads and cede failures."""
             reconcile_deadline = time.monotonic() + _TERMINAL_RECONCILE_SECONDS
             delay = _TERMINAL_RECONCILE_POLL_SECONDS
             announced_rejection = False
-            while not terminal.get("recorded"):
+            rounds = 0
+            while not terminal.get("recorded") and rounds < _TERMINAL_RECONCILE_MAX_ROUNDS:
+                rounds += 1
                 try:
                     current = self.client.task(str(data["id"]))
                     current = current.get("task", current) if isinstance(current, Mapping) else current
@@ -11697,13 +11755,13 @@ class GenericPackHost:
                         try:
                             response = self._handoff_settlement_call(operation, *args, **kwargs)
                         except Exception as exc:
-                            if (isinstance(exc, TerminalPublicationRejected)
-                                    or 400 <= (getattr(exc, "status", 0) or 0) < 500
-                                    or "lease" in str(getattr(exc, "code", "")).lower()):
+                            rejection = _terminal_publication_rejection(
+                                exc, str(data["id"]), (exact_attempt, exact_fence), self.client.task)
+                            if rejection is not None:
                                 if operation == self.client.fail:
-                                    terminal["publication_rejection"] = str(exc)
+                                    terminal["publication_rejection"] = str(rejection)
                                 else:
-                                    reject_publication(exc)
+                                    reject_publication(rejection)
                             else:
                                 raise
                         else:
@@ -11713,9 +11771,15 @@ class GenericPackHost:
                                             settlement=response)
                 except Exception as exc:  # noqa: BLE001 - retain custody through Runtime outages
                     terminal["reporting_error"] = exc
-                if not terminal.get("recorded"):
+                if not terminal.get("recorded") and rounds < _TERMINAL_RECONCILE_MAX_ROUNDS:
                     time.sleep(delay)
                     delay = min(delay * 2, 5.0)
+            if not terminal.get("recorded"):
+                stop.set()
+                terminal.update(retain_spool=True, settled=False, status="failed")
+                self._unresolved_terminal_publication(
+                    terminal["root"], str(data["id"]), str(exact_attempt), rounds)
+                return
             print(f"generic host: terminal publication recorded for {data['id']}", file=sys.stderr, flush=True)
             terminal.pop("evidence_pending", None)
             terminal.pop("publication_pending", None)
@@ -13878,6 +13942,13 @@ class GenericPackHost:
             roots.extend(path for path in Path(tempfile.gettempdir()).glob("astrid-attempt-*")
                          if path.is_dir() and not path.is_symlink())
         for root in roots:
+            marker_path = root / "publication-unresolved.json"
+            if marker_path.is_file():
+                marker = json.loads(marker_path.read_text(encoding="utf-8"))
+                if (self.attempt_root is not None or self.attempt_base is not None
+                        or marker.get("executor_id") == self.executor_id):
+                    self._halt_unresolved_terminal_publication()
+                    raise HostError(f"unresolved terminal publication retained at {root}")
             for name in ("fail-request.json", "cancel-request.json"):
                 path = root / name
                 if not path.is_file() or path.is_symlink():
@@ -13908,7 +13979,10 @@ class GenericPackHost:
                     continue
                 delay = _TERMINAL_RECONCILE_POLL_SECONDS
                 rejected = None
-                while not self._shutdown.is_set():
+                rounds = 0
+                resolved = False
+                while not self._shutdown.is_set() and rounds < _TERMINAL_RECONCILE_MAX_ROUNDS:
+                    rounds += 1
                     try:
                         current = self.client.task(str(task_id))
                         current = current.get("task", current) if isinstance(current, Mapping) else current
@@ -13918,6 +13992,7 @@ class GenericPackHost:
                         if (state != "running" or field("attempt_id") != attempt_id
                                 or field("fence", field("lease_fence")) != body["fence"]
                                 or field("executor_id", self.executor_id) not in (None, self.executor_id)):
+                            resolved = True
                             break
                         expiry = field("lease_expires_at")
                         expired = bool(expiry and datetime.fromisoformat(expiry.replace("Z", "+00:00"))
@@ -13941,21 +14016,30 @@ class GenericPackHost:
                             if not isinstance(self.client, RuntimeProtocolClient):
                                 raise HostError("terminal request replay requires a Runtime protocol client")
                             wire = {**body, "idempotency_key": request["idempotency_key"]}
-                            self._handoff_settlement_call(
-                                self.client._terminal_evidence_request, self.client._lifecycle_client(),
-                                operation, request["identifier"], wire)
+                            try:
+                                self._handoff_settlement_call(
+                                    self.client._terminal_evidence_request, self.client._lifecycle_client(),
+                                    operation, request["identifier"], wire)
+                            except Exception as exc:
+                                # Only this mutation's error may authorize a
+                                # cede. A failed task read cannot reject evidence.
+                                rejection = _terminal_publication_rejection(
+                                    exc, str(task_id), (str(attempt_id), body["fence"]), self.client.task)
+                                if rejection is not None:
+                                    rejected = rejection
+                                    print(f"generic host terminal publication rejected for {task_id}: {rejection}",
+                                          file=sys.stderr, flush=True)
+                                raise
                         print(f"generic host terminal publication recorded for {task_id}", file=sys.stderr, flush=True)
+                        resolved = True
                         break
                     except Exception as exc:  # noqa: BLE001 - retain custody during Runtime outages
-                        status = getattr(exc, "status", None)
-                        if not rejected and (isinstance(exc, TerminalPublicationRejected)
-                                             or isinstance(status, int) and 400 <= status < 500
-                                             or "lease" in type(exc).__name__.lower()):
-                            rejected = exc
-                            print(f"generic host terminal publication rejected for {task_id}: {exc}", file=sys.stderr, flush=True)
-                            continue
-                        self._shutdown.wait(delay)
-                        delay = min(5.0, max(_TERMINAL_RECONCILE_POLL_SECONDS, delay * 2))
+                        if rounds < _TERMINAL_RECONCILE_MAX_ROUNDS:
+                            self._shutdown.wait(delay)
+                            delay = min(5.0, max(_TERMINAL_RECONCILE_POLL_SECONDS, delay * 2))
+                if not resolved:
+                    self._unresolved_terminal_publication(root, str(task_id), str(attempt_id), rounds)
+                    raise HostError(f"unresolved terminal publication retained at {root}")
 
     def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
