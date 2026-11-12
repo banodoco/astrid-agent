@@ -467,7 +467,7 @@ def _claimed_preferences():
     selection = RunPodSelectionOwner.__new__(RunPodSelectionOwner)
     selection.path = canonical_claim_path(saved["provider_account_ref"])
     record = selection._read()
-    if record is None or record.get("state") != "claimed":
+    if record is None:
         raise PaidSelectionError("no machine: run `astrid machines claim`")
     preferences = record.get("claim_preferences")
     if preferences is None:

@@ -294,13 +294,25 @@ class RunPodLeaseOwner:
             if (record is not None and record.get("state") == "claimed"
                     and lease.get("state") == "idle"
                     and now < lease["idle_expires_at"] and now < lease["paid_expires_at"]):
-                self.selection._owned(record, self.selection._recorded_offer(record))
-                record = self._save(record, {**lease, "owner_epoch": self.epoch})
-                self._machine_identity = (record["operation_id"], record["pod_id"])
-                self.started = True
-                self._arm(record)
-                return
-        self.recover()
+                try:
+                    self.selection._owned(record, self.selection._recorded_offer(record))
+                except AcquisitionUnresolvedError:
+                    # Incompatible custody cannot be adopted, but still needs
+                    # the same exact recovery as an interrupted invocation.
+                    pass
+                else:
+                    record = self._save(record, {**lease, "owner_epoch": self.epoch})
+                    self._machine_identity = (record["operation_id"], record["pod_id"])
+                    self.started = True
+                    self._arm(record)
+                    return
+        try:
+            self.recover()
+        except Exception:
+            # release() retains exact custody and arms a retry on failure.
+            # Keep that owner alive in the host instead of cancelling its timer.
+            if self.deadline_timer is None:
+                raise
 
     def _discard_stale_capacity_intent(self, raw: Mapping[str, Any] | None) -> bool:
         if (raw is not None and raw.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
@@ -396,12 +408,22 @@ class RunPodLeaseOwner:
             record = self._read()
             lease = record.get("lease", {}) if record else {}
             now = self.clock()
+            if record is not None and record["state"] not in {"claimed", "cleanup_complete"}:
+                machine_id = record.get("pod_id") or record["operation_id"]
+                if record["state"] == "cleanup_pending":
+                    raise PaidSelectionError(
+                        f"machine {machine_id} has an unresolved preparation: "
+                        f"run `astrid machines release {machine_id}`, then claim again"
+                    )
+                raise PaidSelectionError(f"machine {machine_id} is {record['state']}: recovery is pending")
             if (self.closed or not self.started or record is None or record["state"] != "claimed"
                     or lease.get("owner_epoch") != self.epoch
                     or lease.get("state") not in {"idle", "active"}
                     or now >= lease["paid_expires_at"]
                     or (lease["state"] == "idle" and now >= lease["idle_expires_at"])):
-                raise PaidSelectionError("no machine: run `astrid machines claim`")
+                state = (f" (machine {record.get('pod_id')} is {record['state']})"
+                         if record is not None and record["state"] == "cleanup_complete" else "")
+                raise PaidSelectionError("no machine: run `astrid machines claim`" + state)
             paid = record["paid_limits"]
             expires = min(lease["paid_expires_at"], _utc(paid["expires_at"]).timestamp())
             rate = lease["hourly_usd"]
