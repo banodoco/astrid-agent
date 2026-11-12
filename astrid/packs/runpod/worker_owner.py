@@ -587,7 +587,8 @@ class RunPodLeaseOwner:
             if self.closed or self.clock() >= lease["paid_expires_at"]:
                 raise RunPodWorkerOwnerError("paid lease expired before settlement")
             preparation = lease.get("preparation")
-            if preparation is not None and preparation["state"] != "prepared":
+            if preparation is not None and (preparation["state"] != "prepared"
+                    and not (preparation["state"] == "stale_after_failure" and outcome in {"failed", "cancelled"})):
                 raise RunPodWorkerOwnerError("unresolved preparation cannot enter warm retention")
             if outcome not in {"success", "failed", "cancelled"}:
                 raise RunPodWorkerOwnerError("invalid job outcome")

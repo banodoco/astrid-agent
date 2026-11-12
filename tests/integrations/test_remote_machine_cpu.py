@@ -1213,7 +1213,7 @@ def test_a_manifest_digest_mismatch_writes_an_output_collection_receipt(journey)
         j.image()
     receipt = _newest_receipt()
     assert receipt["stage"] == "output_collection" and receipt["cause"]["exception"] == "DigestMismatch"
-    assert receipt["machine"]["after"] == "released" and receipt["machine"]["release_reason"] == "unsafe_job_state"
+    assert receipt["machine"]["after"] == "released" and receipt["machine"]["release_reason"] == "output_digest_mismatch"
     _released(s["provider"], j.record())
 
 

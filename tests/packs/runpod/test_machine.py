@@ -288,8 +288,13 @@ def test_unverified_installation_failure_releases_exact_pod(machine_case, monkey
 @pytest.mark.parametrize("unsafe", ["paid_expired", "changed_receipt"])
 def test_unsafe_failed_job_verification_releases_exact_pod(machine_case, monkeypatch, unsafe):
     c = machine_case
-    lease = c.machine.claim(c.job())
-    c.machine._checkpoint(lease, {"id": "f" * 32, "state": "exited"})
+    job = c.job()
+    lease = c.machine.claim(job)
+    if unsafe == "changed_receipt":
+        run = c.machine.start(lease, job)
+        c.machine._checkpoint(lease, {"id": run.job_id, "state": "exited"})
+    else:
+        c.machine._checkpoint(lease, {"id": "f" * 32, "state": "exited"})
     paid = c.read()["lease"]["paid_expires_at"]
 
     def unverified(*args, **kwargs):
@@ -301,9 +306,17 @@ def test_unsafe_failed_job_verification_releases_exact_pod(machine_case, monkeyp
 
     monkeypatch.setattr(c.placement, "_canonical_installed", unverified)
     c.machine.release(lease, False, failure=rm.MachineError("job failed"))
-    assert c.read()["state"] == "cleanup_complete"
-    assert c.read()["lease"]["ended"] == "unsafe_job_state"
-    assert c.creates == 1 and c.deletes == ["pod-1"]
+    if unsafe == "paid_expired":
+        assert c.read()["state"] == "cleanup_complete"
+        assert c.read()["lease"]["ended"] == "paid_limit_exhausted"
+        assert c.deletes == ["pod-1"]
+    else:
+        record = c.read()
+        assert record["lease"]["state"] == "idle" and not c.deletes
+        assert record["lease"]["preparation"]["installed"] == lease.state.installed
+        assert record["lease"]["idle_expires_at"] == min(c.clock() + record["lease"]["idle_seconds"], paid)
+        assert c.pod.resets[-1]["ok"]
+    assert c.creates == 1
 
 
 def test_unreadable_invocation_lease_releases_known_exact_pod(machine_case, monkeypatch):

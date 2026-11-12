@@ -92,7 +92,7 @@ def prepare_retained_generation(
         prior = lease_owner._read()
         prior_preparation = prior.get("lease", {}).get("preparation") if prior else None
         if (prior is not None and prior["state"] != "cleanup_complete" and prior_preparation is not None
-                and prior_preparation["state"] != "prepared"):
+                and prior_preparation["state"] not in {"prepared", "stale_after_failure"}):
             raise PreparedWorkerError("retained preparation is unresolved; reconcile the same journal")
         if (prior is not None and prior["state"] != "cleanup_complete" and prior_preparation is not None
                 and prior.get("lease", {}).get("state") == "idle"):
@@ -160,7 +160,7 @@ def prepare_retained_generation(
                         "cache_device": storage.get("cache_device"), "mount_id": storage.get("mount_id")},
                 source_digest=bootstrap_digest)
             reuse = previous is not None and previous.get("state") == "prepared"
-            if reuse and custody_differences(previous.get("custody"), custody):
+            if previous is not None and custody_differences(previous.get("custody"), custody):
                 raise CustodyChanged("warm machine custody differs: "
                                      + ", ".join(custody_differences(previous.get("custody"), custody)))
             save(custody=custody, storage=storage)
