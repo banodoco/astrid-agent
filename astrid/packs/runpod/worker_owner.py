@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
-from functools import wraps
+from functools import partial, wraps
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, ParamSpec, TypeVar
 
@@ -67,6 +67,38 @@ class RunPodWorkerOwnerError(RuntimeError):
     """Exact RunPod preparation or host custody could not be established."""
 
     release_identity: tuple[str, str] | None = None
+
+
+class _AcquisitionLoop(asyncio.SelectorEventLoop):
+    """Keep nested lifecycle reads off the loop's joining default executor.
+
+    The acquisition coroutine still owns every transition. Only these known
+    read-only offloads may outlive it; create and other mutations keep their
+    normal executor and cancellation semantics.
+    """
+
+    def run_in_executor(self, executor: Any, func: Callable[..., Any], *args: Any) -> asyncio.Future[Any]:
+        from contextvars import Context
+
+        from runpod_lifecycle import api
+        from runpod_lifecycle.https import HttpsPodTransport
+        from runpod_lifecycle.pod import Pod
+
+        from .target_selection import _observation_future
+        from .worker_preparation import confirm_acquired_machine, observe_target
+
+        operation = func
+        # asyncio.to_thread submits Context.run(callback, ...). Inspect the
+        # callback, but execute the original submission to preserve context.
+        if (isinstance(func, partial) and func.args
+                and isinstance(getattr(func.func, "__self__", None), Context)):
+            operation = func.args[0]
+        underlying = getattr(operation, "__func__", operation)
+        reads = (api.get_pod_status, observe_target, confirm_acquired_machine,
+                 HttpsPodTransport.wait_ready, Pod._ensure_ssh_details_sync)
+        if executor is None and underlying in reads:
+            return _observation_future(func, *args)
+        return super().run_in_executor(executor, func, *args)
 
 
 _P = ParamSpec("_P")
@@ -464,7 +496,7 @@ class RunPodLeaseOwner:
     def _acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
                  cancelled: Callable[[], bool] | None = None,
                  claim_lifetime_seconds: float | None = None) -> RunPodLease:
-        from .target_selection import ClaimedJob, _utc
+        from .target_selection import CapacityWaitCancelled, ClaimedJob, _utc
         from .worker_preparation import TargetObservationError
         job = isinstance(consent, ClaimedJob)
         if job:
@@ -512,25 +544,41 @@ class RunPodLeaseOwner:
                 lease["keep_until_release"] = True
             # Only P1's already-owned account lock is bypassed here, as in R02.
             acquired = False
-            async def select():
+
+            def acquisition_cancelled() -> bool:
+                # Called on the acquiring thread while it owns self.lock.
+                # No late read can authorize a transition after custody ends.
+                current = self._read()
+                current_lease = current.get("lease", {}) if current is not None else {}
+                custody_lost = (current is not None and current.get("state") != "cleanup_complete"
+                                and (current_lease.get("owner_epoch") != self.epoch
+                                     or current_lease.get("state") == "releasing"))
+                return (self._acquisition_cancel.is_set() or self._release_inflight
+                        or not self.started or custody_lost
+                        or (cancelled is not None and cancelled()))
+
+            async def select() -> Mapping[str, Any]:
                 try:
                     return await self.selection._select(
                         consent, lease=lease, lock_held=True,
                         claim_lifetime_seconds=claim_lifetime_seconds,
-                        cancelled=lambda: self._acquisition_cancel.is_set() or (cancelled is not None and cancelled()))
-                except TargetObservationError as exc:
-                    if exc.runpod_gate == "lifetime":
+                        cancelled=acquisition_cancelled)
+                except (CapacityWaitCancelled, TargetObservationError) as exc:
+                    lifetime = isinstance(exc, TargetObservationError) and exc.runpod_gate == "lifetime"
+                    if isinstance(exc, CapacityWaitCancelled) or lifetime:
                         current = self.selection._read()
                         if current is not None and current.get("create_attempts", 0) > 0:
                             try:
-                                # Release before asyncio's executor shutdown can
-                                # wait for a cancelled provider readiness read.
-                                self.release(reason="paid_deadline", _expected_operation=current["operation_id"])
-                            except Exception:  # noqa: BLE001 - preserve the lifetime refusal and durable cleanup retry.
+                                self.release(reason="paid_deadline" if lifetime else "cancelled",
+                                             _expected_operation=current["operation_id"])
+                            except Exception:  # noqa: BLE001 - preserve the refusal and durable cleanup retry.
                                 pass  # Failed cleanup retains custody and recovery.
+                            if lifetime and isinstance(exc, TargetObservationError):
+                                exc.message = self.selection.lifetime_refusal()
+                                exc.args = (exc.message,)
                     raise
             try:
-                claimed = dict(_run_sync(select()))
+                claimed = dict(_run_sync(select(), loop_factory=_AcquisitionLoop))
                 acquired = True
                 paid_started = (_utc(claimed["paid_limits"]["authorized_at"]).timestamp()
                                 if previous is None else previous["started_at"])
@@ -1380,19 +1428,23 @@ def _stop_original_installed_session(selection_value: Mapping[str, Any],
             "comfy_pid": receipt.comfy_pid, "comfy_birth_id": receipt.comfy_birth_id}
 
 
-def _run_sync(coroutine: Any) -> Any:
+def _run_sync(coroutine: Any, *, loop_factory: Any = None) -> Any:
     """Bridge existing async RunPod APIs to Runtime's synchronous preparer API."""
+    def run() -> Any:
+        with asyncio.Runner(loop_factory=loop_factory) as runner:
+            return runner.run(coroutine)
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coroutine)
+        return run()
     # Runtime's public preparer contract is synchronous. If an embedding
     # caller already owns an event loop, run the I/O coroutine on a short-lived
     # worker thread rather than nesting or patching that caller's loop.
     from contextvars import copy_context
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="astrid-runpod-io") as pool:
-        return pool.submit(copy_context().run, asyncio.run, coroutine).result()
+        return pool.submit(copy_context().run, run).result()
 
 
 def _absolute(value: str, *, label: str) -> Path:

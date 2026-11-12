@@ -18,11 +18,14 @@ import re
 import sys
 import time
 import uuid
+from concurrent.futures import Future
 from contextlib import nullcontext
+from contextvars import copy_context
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
+from threading import Thread
 from typing import Any, Callable, Literal, Mapping
 
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
@@ -31,7 +34,7 @@ from astrid.sdk.storage_root import resolve_runtime_data_root
 
 from .worker_preparation import (
     AcquisitionUnresolvedError, CapacityExhaustedError, RunPodTargetContract, TargetObservationError,
-    acquire_target, create_target_record_exclusive, observe_exact_target, read_exact_pod,
+    acquire_target, create_target_record_exclusive, read_exact_pod,
     inspect_volume_records, reconcile_target, replace_target_record, resolve_existing_volume, target_owner,
     _validate_completed_release, write_target_record,
 )
@@ -108,6 +111,29 @@ class CapacityWaitCancelled(asyncio.CancelledError):
 
 class CapacityWaitTimeout(PaidSelectionError):
     """The disclosed capacity wait or absolute paid deadline passed."""
+
+
+def _observation_future(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> asyncio.Future[Any]:
+    """Deliver a read without making loop shutdown join an abandoned observer.
+
+    Only read-only callbacks belong here. Cancellation discards their result;
+    journal transitions and provider mutations stay on the owning coroutine.
+    """
+    future: Future[Any] = Future()
+    context = copy_context()
+
+    def run() -> None:
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            result = context.run(operation, *args, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 - forward the observer failure to its caller.
+            future.set_exception(exc)
+        else:
+            future.set_result(result)
+
+    Thread(target=run, daemon=True, name="runpod-observation").start()
+    return asyncio.wrap_future(future)
 
 
 # The readiness timeout the acquisition path already used (was the literal in
@@ -532,6 +558,14 @@ class RunPodSelectionOwner:
         except (OSError, ValueError):
             pass
 
+    def lifetime_refusal(self) -> str:
+        """Name the recovery command appropriate to the durable cleanup state."""
+        prefix = "machine paid lifetime expired; it cannot be extended by reuse"
+        record = self._read()
+        if record is not None and record.get("state") == "cleanup_complete":
+            return f"{prefix}; cleanup completed; run `astrid machines claim`"
+        return f"{prefix}; cleanup pending; run `astrid machines release`"
+
     async def select(self, consent: PaidRunConsent, *, dry_run: bool = False,
                      cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
         return await self._select(consent, dry_run=dry_run, cancelled=cancelled)
@@ -559,8 +593,7 @@ class RunPodSelectionOwner:
             if (record is not None and record.get("create_attempts", 0) > 0
                     and record.get("state") not in {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}
                     and self.clock() >= _utc(record["paid_limits"]["expires_at"])):
-                raise CapacityWaitTimeout(
-                    "machine paid lifetime expired; it cannot be extended by reuse", gate="lifetime")
+                raise CapacityWaitTimeout(self.lifetime_refusal(), gate="lifetime")
             if (consent.capacity_timeout_seconds is not None
                     and self.monotonic() - started >= consent.capacity_timeout_seconds):
                 raise CapacityWaitTimeout("RunPod capacity timeout passed; no further create will be attempted", gate="capacity")
@@ -885,7 +918,7 @@ class RunPodSelectionOwner:
                 limits = dict(record["paid_limits"])
             if record["state"] == "claimed":
                 try:
-                    observation = await observe_exact_target(config.api_key, RunPodTargetContract(
+                    observation = await _observation_future(worker_preparation.observe_target, config.api_key, RunPodTargetContract(
                         str(record["pod_id"]), offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id, p.volume_name,
                         p.volume_size_gb, record["request_name"], datacenter, defer_machine=True,
                     ))
@@ -962,7 +995,7 @@ class RunPodSelectionOwner:
                 limits = dict(acquired_record["paid_limits"])
                 expires = _utc(limits["expires_at"])
             try:
-                status, exact = await asyncio.to_thread(read_exact_pod, config.api_key, observation.pod_id)
+                status, exact = await _observation_future(read_exact_pod, config.api_key, observation.pod_id)
                 if (status != 200 or exact is None
                         or (p.volume_id is not None and exact.get("volumeMountPath") != p.mount_path)
                         or _exact_volume_id(exact) != p.volume_id):
@@ -970,7 +1003,7 @@ class RunPodSelectionOwner:
                 # GPU and datacenter come from GraphQL pod.machine and the provider gpuTypes
                 # catalog (REST reports machine {} and no gpuTypeId/dataCenterId on a correct
                 # fresh pod). Unreported or unequal fails closed; no REST fallback.
-                gpu_display, observed_datacenter = await asyncio.to_thread(
+                gpu_display, observed_datacenter = await _observation_future(
                     worker_preparation.confirm_acquired_machine, config.api_key,
                     RunPodTargetContract(
                         observation.pod_id, offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id,
@@ -980,9 +1013,9 @@ class RunPodSelectionOwner:
                 )
                 observation = replace(observation, gpu_type=gpu_display, datacenter_id=observed_datacenter)
                 try:
-                    gpu_count = await asyncio.to_thread(
+                    gpu_count = await _observation_future(
                         worker_preparation.read_acquired_gpu_count, config.api_key, observation.pod_id)
-                    observed_rate = await asyncio.to_thread(self.observed_hourly_usd, observation.pod_id)
+                    observed_rate = await _observation_future(self.observed_hourly_usd, observation.pod_id)
                 except TargetObservationError as exc:
                     if exc.runpod_gate == "lifetime":
                         raise
@@ -1014,5 +1047,7 @@ class RunPodSelectionOwner:
                 "provider_observation": observation.to_dict(), "target_identity_verified": True,
                 "paid_limits": limits, "reconciliation_required": False,
             }
+            if cancelled is not None:
+                cancelled()
             replace_target_record(self.path, claimed, operation_id=record["operation_id"])
             return claimed
