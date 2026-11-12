@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import pytest
 
 from astrid.core.execution import generic_host
@@ -157,6 +158,74 @@ def _saved_failure(case, tmp_path):
                "idempotency_key": "saved-failure", "body": body}
     (root / "fail-request.json").write_text(json.dumps(request))
     return root, request
+
+
+def test_exhausted_slot_allows_owned_sibling_to_release_reservation(settlement_case, monkeypatch):
+    case = settlement_case
+    case.mode = "replay"
+    coordinator = case.host
+    monkeypatch.setattr(coordinator.client, "fork_for_host_slot", lambda: coordinator.client)
+    exhausted, healthy = coordinator._new_claim_slot(), coordinator._new_claim_slot()
+    with case.service.store._mutex:
+        case.service.register_executor({"executor_id": "bug14-worker", "capabilities": ["test.echo"],
+            "max_concurrency": 2, "runtime_epoch": case.attempt["runtime_epoch"]},
+            idempotency_key="two-slots")
+        created = case.service.create_task({"capability_id": "test.echo",
+            "capability_digest": coordinator.capabilities["test.echo"].capability_digest,
+            "idempotency_key": "sibling"})
+        sibling = case.service.claim_next({"executor_id": "bug14-worker", "capability_ids": ["test.echo"],
+            "runtime_epoch": case.attempt["runtime_epoch"]}, idempotency_key="sibling-claim")
+    assert sibling["task_id"] == created["task"]["id"]
+    # The sibling already owns its attempt before the other slot exhausts.
+    owned, release_sibling = threading.Event(), threading.Event()
+    errors = []
+
+    def release():
+        with case.service.store._mutex:
+            return case.service.fail_attempt(sibling["attempt_id"], {
+                **{key: sibling[key] for key in ("lease_id", "fence", "runtime_epoch")},
+                "error": {"code": "sibling_stopped"}}, idempotency_key="sibling-fail")
+
+    def sibling_owner():
+        try:
+            assert healthy._handoff_begin_direct_attempt()
+            owned.set()
+            assert release_sibling.wait(2)
+            healthy._handoff_settlement_call(release)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            healthy._handoff_leave_attempt(threading.get_ident())
+
+    worker = threading.Thread(target=sibling_owner)
+    worker.start()
+    assert owned.wait(2)
+    monkeypatch.setattr(exhausted, "_allocate_attempt_root", coordinator._allocate_attempt_root)
+    monkeypatch.setattr(exhausted, "_run_command_definition", coordinator._run_command_definition)
+    case.host = exhausted
+    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_MAX_ROUNDS", 1)
+    _wire(case, monkeypatch, [], unavailable=True)
+    try:
+        with pytest.raises(OSError, match="publication unavailable"):
+            _run(case)
+        _join(case)
+        assert (case.root / "publication-unresolved.json").is_file()
+        assert coordinator.handoff_quiescence()["observation_status"] == "unknown"
+        assert not coordinator._handoff_enter_claim_rpc()
+
+        release_sibling.set()
+        worker.join(timeout=3)
+        assert not worker.is_alive()
+        assert not errors
+        assert case.service.task(sibling["task_id"])["task"]["status"] == "failed"
+        assert case.service.store.conn.execute(
+            "SELECT count(*) FROM reservations WHERE task_id=? AND released_at IS NULL",
+            (sibling["task_id"],)).fetchone()[0] == 0
+        assert case.service.task(case.task_id)["task"]["status"] == "running"
+    finally:
+        release_sibling.set()
+        worker.join(timeout=3)
+        assert not worker.is_alive()
 
 
 def test_recovery_transient_read_and_write_preserve_request(settlement_case, tmp_path, monkeypatch):

@@ -6686,6 +6686,7 @@ class GenericPackHost:
         self._handoff_registration_authorized_id: str | None = None
         self._handoff_attempt_threads: set[int] = set()
         self._handoff_observation_known = True
+        self._terminal_publication_unresolved = False
         self._reconciliation_owners: dict[str, threading.Thread] = {}
         self._claim_slots: tuple[GenericPackHost, ...] = ()
         self._claim_loop_lock = threading.Lock()
@@ -6726,7 +6727,7 @@ class GenericPackHost:
         return dict(self._last_cleanup_receipt) if self._last_cleanup_receipt is not None else None
 
     def _handoff_quiescence_locked(self) -> dict[str, Any]:
-        known = bool(self._handoff_observation_known)
+        known = bool(self._handoff_observation_known and not self._terminal_publication_unresolved)
         return {
             "claim_gate_closed": self._handoff_claim_gate_closed if known else None,
             "claim_rpc_in_flight": self._handoff_claim_rpc_in_flight if known else None,
@@ -6908,7 +6909,9 @@ class GenericPackHost:
         owner._shutdown.set()
         with owner._handoff_condition:
             owner._handoff_claim_gate_closed = True
-            owner._handoff_observation_known = False
+            # Publication uncertainty blocks admission and a clean handoff,
+            # but does not invalidate accounting or sibling settlement RPCs.
+            owner._terminal_publication_unresolved = True
             owner._handoff_condition.notify_all()
 
     def _unresolved_terminal_publication(
