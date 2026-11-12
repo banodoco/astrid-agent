@@ -1,6 +1,6 @@
 """RunPod as a remote machine: the ``runpod`` contribution to ``generation.machine`` (Plan 32 T5).
 
-The controller rents the pod, ships the job, runs the same local command there
+The controller attaches to a claimed pod, ships the job, runs the same local command there
 (``astrid generate <entry> --placement local``), copies the job's progress file
 back on each poll, copies the outputs back under a digest manifest and settles
 the pod idle when verification succeeds. Cancel is ``job_cancel``. Nothing about the pod's models or
@@ -8,8 +8,8 @@ nodes travels back to the controller: the pod aligns its own disk.
 
 Money rules (pinned by ``tests/packs/runpod/test_machine.py``):
 
-* one claim per job, under the existing paid-consent and lease owner
-  (``RunPodLeaseOwner``); this module never retries a claim;
+* a job uses the existing lease owner (``RunPodLeaseOwner``); it never rents
+  or renews a machine;
 * a failed job settles idle only after exact job stop, installation verification
   and in-place reset; unknown custody or preparation releases the exact pod;
 * the detached job id is checkpointed in the lease journal before the job
@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import shlex
@@ -346,7 +347,9 @@ def _user_entry_folder(entry: str | None, entries_dir: Path | None = None) -> Pa
     try:
         from vibecomfy.entries import entries_dir as default_dir
         root = Path(entries_dir) if entries_dir is not None else Path(default_dir())
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).exception("entry directory lookup failed (%s)", type(exc).__name__,
+                                               exc_info=False)
         return None
     for path in sorted(root.glob("*/entry.json")):
         try:
@@ -478,6 +481,12 @@ class MachineLease:
     #: What release decided, for the failure receipt: the exact-release reason, and whether the pod was kept.
     release_reason: str | None = None
     kept: bool | None = None
+    #: Populated only when observed, retaining the existing missing-attribute defaults.
+    unsafe_job_stop: bool = field(init=False, repr=False, compare=False)
+    failure_diagnostic: Mapping[str, Any] | None = field(init=False, repr=False, compare=False)
+    failure_exit_code: int | None = field(init=False, repr=False, compare=False)
+    failure_logs: dict[str, Any] | None = field(init=False, repr=False, compare=False)
+    failure_install_receipt: str | None = field(init=False, repr=False, compare=False)
 
 
 @dataclass
@@ -588,7 +597,7 @@ class RunPodMachine:
                                          f"live leases: {', '.join(live) or 'none'}")
 
         check_pin()
-        consent = owner.job_limits(job.invocation_id, policy)
+        consent = owner.job_limits(job.invocation_id, consent=tuple(policy.get("consent", ())))
         # Observe only after local admission: absent or expired claims never
         # reach the provider. Preserve the detailed pin diagnostic if it ended.
         owner.observe_liveness(observe=getattr(adapter, "observe_pod", None))
@@ -612,7 +621,7 @@ class RunPodMachine:
                 return
             record = owner.selection._read() or {}
             info = record.get("lease") or {}
-            error.machine_failure = {
+            failure = {
                 "id": record.get("pod_id"), "lease": record.get("operation_id"),
                 "generation": info.get("generation"), "device": record.get("gpu_type"),
                 "after": ("released" if record.get("state") == "cleanup_complete" else
@@ -622,6 +631,7 @@ class RunPodMachine:
                 "cost_usd": record.get("estimated_cost_usd", 0) + max(0, owner.clock() - info.get("accounted_at", info.get("started_at", owner.clock()))) * info.get("hourly_usd", 0) / 3600,
                 "preparation_state": (info.get("preparation") or {}).get("state"),
             }
+            setattr(error, "machine_failure", failure)
 
         with staged_workflow_path(workflow=None, python=inputs["python"], companion=inputs["companion"],
                                   source=inputs["source"], scratch=job.scratch) as (workflow, _):
@@ -639,44 +649,52 @@ class RunPodMachine:
                     **({"cancelled": cancelled} if cancelled is not None else {}),
                 )
                 _stamp(timing, "preparation_ended_at")
-                try:
-                    timing.paid_started_at = float(prepared.lease.claim["lease"]["started_at"])
-                except Exception:
-                    pass
-                # Legacy execution estimates remain timeouts. Without one, use
-                # the claim's remaining lifetime; jobs never extend that expiry.
-                adapter.placement.begin_execution(deadline_seconds=min(
-                    consent.execution_seconds or float("inf"),
-                    prepared.lease.claim["lease"]["paid_expires_at"] - owner.clock(),
-                ))
+                if timing is not None:
+                    try:
+                        timing.paid_started_at = float(prepared.lease.claim["lease"]["started_at"])
+                    except Exception as exc:
+                        logging.getLogger(__name__).exception(
+                            "Could not record paid start for job %s (%s)", job.invocation_id,
+                            type(exc).__name__, exc_info=False)
+                adapter.placement.begin_execution(deadline_seconds=(
+                    prepared.lease.claim["lease"]["paid_expires_at"] - owner.clock()))
             except BaseException as exc:
                 if acquired:
-                    exc.claim_context = {"acquired": True, "preparation_job": False}
+                    context = {"acquired": True, "preparation_job": False}
+                    setattr(exc, "claim_context", context)
                     try:
                         # Read by the failure receipt: a bootstrap/install job was started if it was checkpointed.
                         journal = owner.selection._read() or {}
-                        exc.claim_context["preparation_job"] = bool(
+                        context["preparation_job"] = bool(
                             ((journal.get("lease") or {}).get("preparation") or {}).get("job"))
-                    except Exception:
-                        pass
+                    except Exception as context_error:
+                        logging.getLogger(__name__).exception(
+                            "Could not read preparation context for job %s (%s)", job.invocation_id,
+                            type(context_error).__name__, exc_info=False)
                     # Only a fully attested preparation can be reused. Failure
                     # before or during installation leaves unknown pod state.
                     self._finish(acquired[0])
                     try:
                         with owner.lock:
                             record = owner.preparation_claim(acquired[0])
-                            prepared = record["lease"].get("preparation") or {}
-                            safe = (not owner.closed and prepared.get("state") in {"prepared", "stale_after_failure"}
-                                    and (prepared.get("state") == "stale_after_failure" or isinstance(prepared.get("installed"), dict))
+                            preparation = record["lease"].get("preparation") or {}
+                            safe = (not owner.closed and preparation.get("state") in {"prepared", "stale_after_failure"}
+                                    and (preparation.get("state") == "stale_after_failure" or isinstance(preparation.get("installed"), dict))
                                     and record.get("pod_id") == acquired[0].claim.get("pod_id"))
-                    except Exception:
+                    except Exception as custody_error:
+                        logging.getLogger(__name__).exception(
+                            "Could not verify preparation custody for job %s (%s)", job.invocation_id,
+                            type(custody_error).__name__, exc_info=False)
                         safe = False
                     if safe:
                         from .failure_diagnostics import host_summary
                         try:
                             owner.settle(acquired[0], outcome="failed",
                                          failure=host_summary(exc, stage="preparation"))
-                        except Exception:
+                        except Exception as settlement_error:
+                            logging.getLogger(__name__).exception(
+                                "Could not settle failed preparation for job %s; releasing (%s)", job.invocation_id,
+                                type(settlement_error).__name__, exc_info=False)
                             owner.release(reason="preparation_settlement_unverified",
                                           _expected_operation=acquired[0].operation_id,
                                           expected_machine_id=acquired[0].claim.get("pod_id"))
@@ -685,8 +703,10 @@ class RunPodMachine:
                         from .failure_diagnostics import host_summary
                         try:
                             owner.note_failed_job(acquired[0], host_summary(exc, stage="preparation"))
-                        except Exception:
-                            pass
+                        except Exception as note_error:
+                            logging.getLogger(__name__).exception(
+                                "Could not record failed preparation for job %s (%s)", job.invocation_id,
+                                type(note_error).__name__, exc_info=False)
                         try:
                             owner.release(reason="preparation_unverified",
                                           _expected_operation=acquired[0].operation_id,
@@ -800,7 +820,9 @@ class RunPodMachine:
         if timing is not None and isinstance(progress, Mapping):
             try:
                 timing.pod_phase(progress.get("phase"))
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).exception("pod phase timing update failed (%s)",
+                                                      type(exc).__name__, exc_info=False)
                 pass
         if state == "exited":
             _stamp(timing, "job_ended_at", first=True)
@@ -813,7 +835,9 @@ class RunPodMachine:
         landing = run.scratch / ("progress-" + run.job_id + ".json")
         try:
             run.lease.claim.ops.get(f"{run.remote_root}/{PROGRESS_NAME}", landing)
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).exception("job progress fetch failed (%s)", type(exc).__name__,
+                                                   exc_info=False)
             return None  # the run has not written a phase yet
         try:
             if landing.is_symlink() or landing.stat().st_size > MAX_PROGRESS_BYTES:
@@ -937,7 +961,9 @@ class RunPodMachine:
                             run.lease.failure_install_receipt = "sha256:" + str(installation["receipt_sha256"])
                 return {"files": [{**row, "path": (str(local / row["file"])
                                                    if not row.get("missing") else None)} for row in rows]}
-        except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
+        except Exception as exc:
+            logging.getLogger(__name__).exception("failed job log collection failed (%s)",
+                                                  type(exc).__name__, exc_info=False)
             return {"unavailable": type(exc).__name__}
         return {"unavailable": "not_reported"}
 
@@ -1335,7 +1361,9 @@ def _active_sources() -> tuple[Any, ...]:
     try:
         from astrid.core.pack.source_setup import active_sources
         return tuple(active_sources(verify=False))
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).exception("active source lookup failed (%s)", type(exc).__name__,
+                                               exc_info=False)
         return ()
 
 
@@ -1365,7 +1393,9 @@ def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
         try:
             from astrid.core.extensions.registry import ExtensionRegistry
             registry = ExtensionRegistry().load()
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).exception("extension registry lookup failed (%s)",
+                                                  type(exc).__name__, exc_info=False)
             registry = None
     if registry is not None:
         from astrid.core.generation.workflows import POINT as WORKFLOWS
@@ -1385,7 +1415,9 @@ def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
         try:
             from astrid.core.generation.entries import action_entries
             action_rows = action_entries()
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).exception("action entry lookup failed (%s)", type(exc).__name__,
+                                                  exc_info=False)
             action_rows = []
     for row in action_rows:
         if row.get("id") == entry and row.get("action"):
@@ -1462,7 +1494,9 @@ def journal_leases(account: str | None = None) -> list[dict[str, Any]]:
         record = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
         ended_path = ended_leases_path(path)
         ended = json.loads(ended_path.read_text(encoding="utf-8")) if ended_path.is_file() else []
-    except Exception:  # no preferences or no journal: no leases
+    except Exception as exc:
+        logging.getLogger(__name__).exception("lease journal lookup failed (%s)", type(exc).__name__,
+                                              exc_info=False)
         return []
     current = [lease_row(record)] if isinstance(record, Mapping) and record.get("pod_id") else []
     seen = {row["lease"] for row in current}

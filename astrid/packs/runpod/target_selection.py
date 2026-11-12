@@ -370,8 +370,12 @@ class PaidRunConsent:
                 raise PaidSelectionError("offer or rate changed; disclose it and obtain fresh paid consent")
         elif not allow_policy:
             raise PaidSelectionError("keep requires fresh consent for the exact rented offer")
-        elif offer.hourly_usd > self.max_hourly_usd:
-            raise PaidSelectionError("observed RunPod hourly rate exceeds the consented hourly ceiling")
+        elif offer.hourly_usd > _number(self.max_hourly_usd, "hourly USD ceiling"):
+            raise PaidSelectionError(
+                f"{offer.gpu_type} secure is ${offer.hourly_usd}/h, above your "
+                f"hourly ceiling (--max-hourly-usd {self.max_hourly_usd}). Raise --max-hourly-usd "
+                f"to at least {offer.hourly_usd}, or choose another GPU."
+            )
         seconds = self.preparation_seconds + self.execution_seconds + self.idle_seconds
         cap = _number(self.max_usd, "USD cap")
         if seconds * offer.hourly_usd / 3600 > cap:
@@ -381,25 +385,26 @@ class PaidRunConsent:
 
 
 @dataclass(frozen=True)
-class ClaimedJob(PaidRunConsent):
-    """Execution bounds on an existing claim, never authority to rent or renew."""
+class ClaimedJob:
+    """Lease bounds for one job, never authority to rent or renew."""
 
-    operation_id: str = ""
+    invocation_id: str
+    max_usd: float
+    deadline: str
+    idle_seconds: float
+    operation_id: str
+    consent: tuple[str, ...] = ()
 
-    def validate_authority(self, preferences, now):
-        return _utc(self.deadline)
-
-    def validate(self, offer, preferences, now, *, allow_policy=False):
+    def validate(self, now: datetime) -> datetime:
         expires = _utc(self.deadline)
-        required = self.preparation_seconds + self.execution_seconds
-        if expires <= now or (expires - now).total_seconds() < required:
-            raise PaidSelectionError(
-                "job exceeds remaining paid lifetime; to extend it, run "
-                "`astrid machines keep <machine> --for DURATION`"
-            )
-        if required * offer.hourly_usd / 3600 > self.max_usd:
+        if self.max_usd <= 0:
             raise PaidSelectionError(
                 "job exceeds remaining budget; to extend it, run "
+                "`astrid machines keep <machine> --for DURATION`"
+            )
+        if expires <= now:
+            raise PaidSelectionError(
+                "job exceeds remaining paid lifetime; to extend it, run "
                 "`astrid machines keep <machine> --for DURATION`"
             )
         return expires
@@ -509,7 +514,9 @@ class RunPodSelectionOwner:
             offer = offer if offer is not None else self.observe_offer()
         except OfferObservationError as exc:
             raise OfferObservationError(exc.reason, retry_after=exc.retry_after) from None
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).exception(
+                "RunPod offer observation failed (%s)", type(exc).__name__, exc_info=False)
             raise OfferObservationError("observation_failed") from None
         observed = offer.digest(self.preferences)
         if consent.policy_digest is None and consent.offer_digest != observed:
@@ -535,7 +542,7 @@ class RunPodSelectionOwner:
         except (OSError, ValueError):
             pass
 
-    async def _select(self, consent: PaidRunConsent, *, dry_run: bool = False,
+    async def _select(self, consent: PaidRunConsent | ClaimedJob, *, dry_run: bool = False,
                       lease: Mapping[str, Any] | None = None, lock_held: bool = False,
                       cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
         """One offer/one journaled POST per iteration; ambiguity never re-enters the loop."""
@@ -595,7 +602,9 @@ class RunPodSelectionOwner:
                 return await asyncio.to_thread(self.observe_offer)
             except OfferObservationError:
                 raise
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).exception(
+                    "RunPod capacity offer observation failed (%s)", type(exc).__name__, exc_info=False)
                 raise OfferObservationError("observation_failed") from None
 
         async def observe_options() -> tuple[RunPodOffer, ...]:
@@ -607,7 +616,9 @@ class RunPodSelectionOwner:
                 return ordered
             except PaidSelectionError:
                 raise
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).exception(
+                    "RunPod capacity options observation failed (%s)", type(exc).__name__, exc_info=False)
                 raise OfferObservationError("observation_failed") from None
 
         prefetched_offer = prefetched_failure = None
@@ -630,8 +641,9 @@ class RunPodSelectionOwner:
             if hook is not None:
                 try:
                     hook()
-                except Exception:
-                    pass  # A timing stamp never changes selection.
+                except Exception as exc:
+                    logging.getLogger(__name__).exception(
+                        "Could not stamp RunPod capacity wait (%s)", type(exc).__name__, exc_info=False)
             while True:
                 check()
                 number += 1
@@ -717,7 +729,7 @@ class RunPodSelectionOwner:
                              limits.get("hourly_usd"), "retained-offer",
                              record.get("network_volume_datacenter_id"), record.get("accepted_gpu_type_id"))
 
-    async def _select_once(self, consent: PaidRunConsent, *, dry_run: bool = False,
+    async def _select_once(self, consent: PaidRunConsent | ClaimedJob, *, dry_run: bool = False,
                            lease: Mapping[str, Any] | None = None, lock_held: bool = False,
                            offer: RunPodOffer | None = None,
                            cancelled: Callable[[], None] | None = None) -> Mapping[str, Any]:
@@ -727,7 +739,7 @@ class RunPodSelectionOwner:
         if isinstance(consent, ClaimedJob):
             if offer is None or lease is None:
                 raise PaidSelectionError("jobs require a live claimed machine")
-            expires = consent.validate(offer, p, now)
+            expires = consent.validate(now)
         else:
             offer, expires = self.consented_offer(consent, now, offer=offer)
         preview = {"offer": asdict(offer), "max_usd": consent.max_usd, "deadline": consent.deadline,
@@ -737,7 +749,9 @@ class RunPodSelectionOwner:
             return preview
         try:
             config = self.config_factory(offer)
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).exception(
+                "RunPod configuration could not be constructed (%s)", type(exc).__name__, exc_info=False)
             error = PaidSelectionError("authenticated RunPod configuration is unavailable")
             error.cause = "credential"
             raise error from None
@@ -789,7 +803,9 @@ class RunPodSelectionOwner:
                     "unclaimed", offer.gpu_type, p.image, p.volume_id, p.volume_name,
                     p.volume_size_gb, datacenter_id=datacenter,
                 ), volumes=[observed_volume] if observed_volume is not None else [])
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).exception(
+                    "RunPod volume confirmation failed before claim or reuse (%s)", type(exc).__name__, exc_info=False)
                 error = AcquisitionUnresolvedError("existing account volume cannot be confirmed before claim or reuse")
                 error.cause = "volume"
                 raise error from None
@@ -814,15 +830,17 @@ class RunPodSelectionOwner:
                 previous = record.get("paid_limits", {})
                 if previous.get("expires_at") and not safe_capacity:
                     expires = min(expires, _utc(previous["expires_at"]))
-                    required = consent.preparation_seconds + consent.execution_seconds
-                    if not isinstance(consent, ClaimedJob):
-                        required += consent.idle_seconds
-                    if (expires - now).total_seconds() < required:
+                    if expires <= now or (
+                            isinstance(consent, PaidRunConsent)
+                            and (expires - now).total_seconds()
+                            < consent.preparation_seconds + consent.execution_seconds + consent.idle_seconds):
                         raise PaidSelectionError("existing claim lifetime cannot be extended by reuse")
                 if (not isinstance(consent, ClaimedJob) and record.get("state") == "claimed"
                         and previous.get("invocation_id") == consent.invocation_id):
                     raise PaidSelectionError("an invocation's paid consent cannot authorize another claim or reuse")
             else:
+                if isinstance(consent, ClaimedJob):
+                    raise PaidSelectionError("no machine: run `astrid machines claim`")
                 operation = uuid.uuid4().hex
                 record = {
                     "schema_version": "astrid.runpod.allocation-attempt.v1", "state": "allocation_ready",
@@ -856,27 +874,32 @@ class RunPodSelectionOwner:
                     write_target_record(self.path, record)
             volume = {"id": p.volume_id, "name": p.volume_name, "size": p.volume_size_gb,
                       "dataCenterId": datacenter}
-            limits = {"invocation_id": consent.invocation_id, "offer_digest": offer.digest(p),
-                      "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
-                      "deadline": consent.deadline, "expires_at": expires.isoformat(),
-                      "authorized_at": record.get("paid_limits", {}).get("authorized_at", now.isoformat()),
-                      "idle_seconds": consent.idle_seconds,
-                      **({"policy_digest": consent.policy_digest, "max_hourly_usd": consent.max_hourly_usd}
-                         if consent.policy_digest is not None else {})}
             if isinstance(consent, ClaimedJob):
                 limits = dict(record["paid_limits"])
+            else:
+                limits = {"invocation_id": consent.invocation_id, "offer_digest": offer.digest(p),
+                          "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
+                          "deadline": consent.deadline, "expires_at": expires.isoformat(),
+                          "authorized_at": record.get("paid_limits", {}).get("authorized_at", now.isoformat()),
+                          "idle_seconds": consent.idle_seconds,
+                          **({"policy_digest": consent.policy_digest, "max_hourly_usd": consent.max_hourly_usd}
+                             if consent.policy_digest is not None else {})}
             if record["state"] == "claimed":
                 try:
                     observation = await observe_exact_target(config.api_key, RunPodTargetContract(
                         str(record["pod_id"]), offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id, p.volume_name,
                         p.volume_size_gb, record["request_name"], datacenter, defer_machine=True,
                     ))
-                except Exception:
+                except Exception as exc:
+                    logging.getLogger(__name__).exception(
+                        "RunPod claimed pod observation failed (%s)", type(exc).__name__, exc_info=False)
                     error = AcquisitionUnresolvedError("exact journal-owned pod observation is unresolved")
                     error.cause = "machine"
                     raise error from None
                 acquired_record = dict(record)
             else:
+                if isinstance(consent, ClaimedJob):
+                    raise PaidSelectionError("jobs require a live claimed machine")
                 # Paid limits survive a lost create response and process restart.
                 safe_capacity = (record["state"] in {"capacity_retry_ready", "capacity_exhausted"}
                                  and record.get("safe_to_retry") is True
@@ -926,8 +949,9 @@ class RunPodSelectionOwner:
                     ) from None
                 except Exception as exc:
                     gate = worker_preparation.observation_failure_gate(exc)
-                    if gate:
-                        logging.getLogger(__name__).warning("RunPod provider contract failed; gate=%s", gate)
+                    logging.getLogger(__name__).exception(
+                        "RunPod provider acquisition failed; gate=%s (%s)", gate or "unclassified",
+                        type(exc).__name__, exc_info=False)
                     detail = f"; failed gate: {gate}" if gate is not None else ""
                     raise AcquisitionUnresolvedError(
                         "provider acquisition remains unresolved; reconcile the same journal" + detail,
@@ -962,7 +986,9 @@ class RunPodSelectionOwner:
                     observed_rate = self.observed_hourly_usd(observation.pod_id)
                 except TargetObservationError as exc:
                     raise PaidSelectionError(str(exc), gate="rate") from None
-                except Exception:
+                except Exception as exc:
+                    logging.getLogger(__name__).exception(
+                        "RunPod claimed pod rate observation failed (%s)", type(exc).__name__, exc_info=False)
                     raise PaidSelectionError("actual hourly USD rate could not be read", gate="rate") from None
                 if not pod_rate_within_offer(observed_rate, offer.hourly_usd, gpu_count):
                     raise PaidSelectionError(
@@ -973,7 +999,8 @@ class RunPodSelectionOwner:
             except Exception as exc:
                 # Every gate names itself; a failure outside any gate is reported as such.
                 gate = getattr(exc, "runpod_gate", None) or "unclassified"
-                logging.getLogger(__name__).warning("RunPod provider contract failed; gate=%s", gate)
+                logging.getLogger(__name__).exception(
+                    "RunPod provider contract failed; gate=%s (%s)", gate, type(exc).__name__, exc_info=False)
                 pending = {**acquired_record, "state": "cleanup_pending", "reconciliation_required": True,
                            "failed_gate": gate}
                 replace_target_record(self.path, pending, operation_id=record["operation_id"])

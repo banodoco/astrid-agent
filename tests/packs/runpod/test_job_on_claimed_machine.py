@@ -1,6 +1,7 @@
 """Jobs use the claim's authority and cannot allocate a replacement machine."""
 import json
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
@@ -19,10 +20,10 @@ def claim(c):
                          execution_seconds=0), requested_idle_seconds=c.grant.idle_seconds)
 
 
-def job(c, n=1, **bounds):
+def job(c, n=1):
     original = c.job(n)
-    policy = {key: original.policy[key] for key in ("kind", "engine", "preferences")}
-    return replace(original, policy={**policy, **bounds})
+    policy = {key: original.policy[key] for key in ("kind", "engine")}
+    return replace(original, policy=policy)
 
 
 def run(c, request):
@@ -77,6 +78,32 @@ def test_job_without_consent_runs_on_claim_and_never_allocates(machine_case, mon
     assert c.read()["paid_limits"] == paid
 
 
+@pytest.mark.parametrize("field", [
+    "preferences", "offer_digest", "max_usd", "deadline", "preparation_seconds",
+    "execution_seconds", "idle_seconds", "placement_idle_seconds", "policy_digest",
+    "max_hourly_usd", "capacity_timeout_seconds", "wait_for_capacity",
+])
+def test_job_policy_rejects_retired_fields(field):
+    from astrid.packs.runpod.adapter import prevalidate_task
+    from astrid.packs.runpod.target_selection import PaidSelectionError
+
+    policy = {"kind": "runpod", "engine": "comfyui", field: None}
+    with pytest.raises(PaidSelectionError, match="target policy requires a machine placement"):
+        prevalidate_task(policy, {}, scratch=None)
+
+
+def test_job_policy_allows_user_env_consent_but_rejects_paid_consent():
+    from astrid.packs.runpod.adapter import prevalidate_task
+    from astrid.packs.runpod.target_selection import PaidSelectionError
+
+    with pytest.raises(PaidSelectionError, match="retained generation requires materialized canonical workflow"):
+        prevalidate_task({"kind": "runpod", "engine": "comfyui", "consent": ["user_env"]},
+                         {}, scratch=None)
+    with pytest.raises(PaidSelectionError, match="invalid job consent scope"):
+        prevalidate_task({"kind": "runpod", "engine": "comfyui", "consent": ["paid"]},
+                         {}, scratch=None)
+
+
 def test_no_machine_refuses_one_line_without_provider_calls(machine_case, monkeypatch):
     c = machine_case
     forbid_allocation(c, monkeypatch)
@@ -108,12 +135,15 @@ def test_insufficient_claim_refuses_before_job(machine_case, monkeypatch, limit)
     if limit == "time":
         record["lease"]["paid_expires_at"] = c.clock() + 30
         record["lease"]["idle_expires_at"] = c.clock() + 30
+        record["paid_limits"]["expires_at"] = datetime.fromtimestamp(
+            c.clock() - 1, timezone.utc).isoformat()
     else:
-        record["paid_limits"]["max_usd"] = 0.001
+        record["paid_limits"]["max_usd"] = 0
     write_target_record(c.owner.path, record)
     forbid_allocation(c, monkeypatch)
-    with pytest.raises(Exception, match="remaining (paid lifetime|budget)"):
-        run(c, job(c, preparation_seconds=30, execution_seconds=30))
+    reason = "remaining paid lifetime" if limit == "time" else "remaining budget"
+    with pytest.raises(Exception, match=reason):
+        run(c, job(c))
     assert c.creates == 1 and not c.pod.job_log
 
 
@@ -139,7 +169,7 @@ def test_jobs_ignore_changed_preferences(machine_case, monkeypatch):
     saved = {**c.prefs.as_mapping(), "gpu_types": ["changed-saved-gpu"]}
     monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
     for n in (1, 2):
-        request = job(c, n, preferences={**saved, "gpu_types": [f"job-gpu-{n}"]})
+        request = job(c, n)
         run(c, request)
         assert c.read()["pod_id"] == "pod-1"
     assert c.creates == 1
@@ -158,8 +188,8 @@ def test_host_cache_jobs_ignore_changed_preferences(machine_case, monkeypatch):
     saved = {**c.prefs.as_mapping(), "gpu_types": ["changed-saved-gpu"]}
     monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: saved)
     for n in (1, 2):
-        request = job(c, n, preferences={**saved, "gpu_types": [f"job-gpu-{n}"]})
-        provider = bindings.get(kind="runpod", engine="comfyui", preferences=request.policy["preferences"], job=True)
+        request = job(c, n)
+        provider = bindings.get(kind="runpod", engine="comfyui", preferences=None, job=True)
         assert provider is c.machine.adapter
         run(c, request)
     assert c.creates == 1 and c.read()["pod_id"] == "pod-1"
@@ -185,10 +215,9 @@ def test_restart_recovers_claim_from_journal_through_provider_bindings(machine_c
     monkeypatch.setattr(target_selection, "canonical_claim_path", lambda *args, **kwargs: c.owner.path)
     bindings, holds = restart_bindings(c, monkeypatch)
     assert bindings.provider is None and bindings.signature is None
-    request = job(c, preferences=saved)
+    request = job(c)
     old_epoch = c.read()["lease"]["owner_epoch"]
-    provider = bindings.get(kind="runpod", engine="comfyui",
-                            preferences=request.policy["preferences"], job=True)
+    provider = bindings.get(kind="runpod", engine="comfyui", preferences=None, job=True)
     assert provider is not c.machine.adapter
     assert json.loads(bindings.signature) == ["runpod", "comfyui", original_record["claim_preferences"]]
     assert provider.lease_owner.epoch != old_epoch

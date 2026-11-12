@@ -357,10 +357,7 @@ def prevalidate_task(policy, inputs, *, scratch):
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
 
     required = {"kind", "engine"}
-    legacy = {"preferences", "offer_digest", "consent", "max_usd", "deadline", "preparation_seconds",
-              "execution_seconds", "idle_seconds", "placement_idle_seconds", "policy_digest",
-              "max_hourly_usd", "capacity_timeout_seconds", "wait_for_capacity"}
-    if (not isinstance(policy, dict) or not required <= set(policy) <= required | legacy | {"machine"}
+    if (not isinstance(policy, dict) or not required <= set(policy) <= required | {"machine", "consent"}
             or policy["kind"] != "runpod"):
         raise PaidSelectionError("target policy requires a machine placement")
     if policy["engine"] not in {"comfyui"}:
@@ -368,11 +365,8 @@ def prevalidate_task(policy, inputs, *, scratch):
     if "machine" in policy and (not isinstance(policy["machine"], str) or not policy["machine"]):
         raise PaidSelectionError("a pinned machine must name a live lease's machine id")
     consent = policy.get("consent", [])
-    if not isinstance(consent, list) or any(value not in {"paid", "user_env"} for value in consent):
+    if not isinstance(consent, list) or any(value != "user_env" for value in consent):
         raise PaidSelectionError("invalid job consent scope")
-    for name in ("preparation_seconds", "execution_seconds", "idle_seconds", "placement_idle_seconds"):
-        if name in policy:
-            _number(policy[name], name, zero=True)
     if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
         raise PaidSelectionError("target policy cannot be combined with an endpoint override")
     members = tuple(inputs.get(name) for name in ("python", "companion", "source"))

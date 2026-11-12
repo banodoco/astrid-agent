@@ -40,15 +40,12 @@ def _claim(c):
     c.host.claim(claim_consent, requested_idle_seconds=claim_consent.idle_seconds)
 
 
-def _job(c, invocation_id="job-1", **bounds):
-    policy = {"consent": c.grant.consent, "preparation_seconds": 60,
-              "execution_seconds": 60, "idle_seconds": c.grant.idle_seconds,
-              "placement_idle_seconds": c.grant.idle_seconds, **bounds}
-    return c.host.job_limits(invocation_id, policy)
+def _job(c, invocation_id="job-1"):
+    return c.host.job_limits(invocation_id)
 
 
-def _request_for_job(c, invocation_id="job-1", **bounds):
-    job = _job(c, invocation_id, **bounds)
+def _request_for_job(c, invocation_id="job-1"):
+    job = _job(c, invocation_id)
     return replace(c.request, consent=job.consent, max_usd=job.max_usd, deadline=job.deadline), job
 
 

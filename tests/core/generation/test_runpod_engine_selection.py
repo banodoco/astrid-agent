@@ -15,9 +15,7 @@ from astrid.core.generation import entries
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.results import InvocationResult
 
-PAID = dict(consent=('paid',), max_usd=2.0, deadline='2099-01-01T00:00:00Z')
-LIVE = dict(PAID, offer_digest='sha256:' + 'b' * 64, preparation_seconds=60,
-            execution_seconds=60, idle_seconds=1800)
+LIVE_PLACEMENT = {'kind': 'runpod', 'machine': 'pod-a'}
 # Explicit refusals a target route may answer with instead of resolving.
 REFUSALS = {'runpod_engine_unavailable', 'missing_dependency',
             'engine_not_found', 'COMFY_TARGET_NO_MODEL'}
@@ -69,12 +67,10 @@ def _target_value(target, request):
 
 
 @pytest.fixture
-def preferences(monkeypatch):
-    from astrid.packs.runpod import target_selection
-    saved = target_selection.RunPodPreferences.from_mapping({
-        'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
-        'image': 'worker@sha256:' + 'a' * 64, 'idle_timeout_seconds': 1800})
-    monkeypatch.setattr(target_selection, 'read_runpod_preferences', lambda: saved)
+def live_machine(monkeypatch):
+    from astrid.core.generation import placement
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [
+        {'machine': 'pod-a', 'id': 'pod-a', 'live': True}])
 
 
 class NoPodClient:
@@ -167,8 +163,7 @@ def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, imag
         monkeypatch.setattr(entries, 'runpod_engine', lambda *a, **k: pytest.fail('RunPod engine chosen'))
         monkeypatch.setattr(generation, '_runpod_placement_policy', lambda *a, **k: pytest.fail('RunPod policy'))
     try:
-        plan = _call(modality, mode, image, placement=_target_value(target, request), dry_run=True,
-                     **(PAID if target == 'runpod' else {}))
+        plan = _call(modality, mode, image, placement=_target_value(target, request), dry_run=True)
     except AstridError as exc:
         assert exc.code in REFUSALS, (slot, target, exc.code, str(exc))
         return
@@ -182,29 +177,31 @@ def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, imag
 
 @pytest.mark.parametrize('slot', [s for s in SLOTS if s[1] in {'t2i', 'edit', 'tts', 'music'}],
                          ids=lambda slot: '/'.join(slot))
-def test_dry_run_target_and_engine_equal_live_policy(slot, image, preferences):
+def test_dry_run_target_and_engine_equal_live_policy(slot, image, live_machine):
     modality, mode = slot
-    plan = dict(_call(modality, mode, image, placement='runpod', dry_run=True, **PAID))
+    plan = dict(_call(modality, mode, image, placement='runpod', dry_run=True))
     client = NoPodClient()
-    _call(modality, mode, image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
+    _call(modality, mode, image, placement=LIVE_PLACEMENT, client=client, project='demo', wait=False)
     assert [capability for capability, _ in client.calls] == ['vibecomfy.run']
     inputs = client.calls[0][1]['inputs']
     policy = json.loads(inputs['placement_policy'])
     assert 'comfy_url' not in inputs  # never a local execution path
     assert (policy['kind'], policy['engine']) == (plan['target']['placement'], plan['target']['engine'])
+    assert set(policy) <= {'kind', 'engine', 'machine'}
     assert inputs['generation_intent']['metadata']['model'] == plan['entry']['id']
 
 
 @pytest.mark.parametrize('slot,engine', [(('audio', 'tts'), 'comfyui'), (('audio', 'music'), 'comfyui'),
                                          (('image', 't2i'), 'comfyui'), (('image', 'edit'), 'comfyui')],
                          ids=lambda value: '/'.join(value) if isinstance(value, tuple) else value)
-def test_runpod_engine_matches_slot_recipe(slot, engine, image, preferences):
+def test_runpod_engine_matches_slot_recipe(slot, engine, image, live_machine):
     modality, mode = slot
-    plan = dict(_call(modality, mode, image, placement='runpod', dry_run=True, **PAID))
+    plan = dict(_call(modality, mode, image, placement='runpod', dry_run=True))
     assert plan['target']['engine'] == engine
     client = NoPodClient()
-    _call(modality, mode, image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
-    assert json.loads(client.calls[0][1]['inputs']['placement_policy'])['engine'] == engine
+    _call(modality, mode, image, placement=LIVE_PLACEMENT, client=client, project='demo', wait=False)
+    policy = json.loads(client.calls[0][1]['inputs']['placement_policy'])
+    assert policy == {'kind': 'runpod', 'engine': engine, 'machine': 'pod-a'}
 
 
 @pytest.mark.parametrize('message', ['required values were not supplied', 'input contract incomplete'])
@@ -243,15 +240,14 @@ def test_automatic_selection_skips_only_typed_missing_entry_inputs(monkeypatch, 
         GenerationFacade()._generate_on_target_impl(
             _job_dirs=[], registry=SimpleNamespace(list_by_modality=lambda _: []), model=None,
             mode='t2v', modality='video', placement='runpod', execution=None,
-            inputs={'prompt': 'boat'}, dry_run=True, consent=('paid',), max_usd=2,
-            deadline='2099-01-01T00:00:00Z')
+            inputs={'prompt': 'boat'}, dry_run=True)
 
 
-def test_runpod_request_never_selects_a_local_target(image, preferences, monkeypatch):
+def test_runpod_request_never_selects_a_local_target(image, live_machine, monkeypatch):
     from astrid.core.generation import preflight
     monkeypatch.setattr(preflight, 'select_generation_target', lambda *a, **k: pytest.fail('local target selected'))
     client = NoPodClient()
-    _call('audio', 'music', image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
+    _call('audio', 'music', image, placement=LIVE_PLACEMENT, client=client, project='demo', wait=False)
     assert len(client.calls) == 1
 
 
@@ -266,14 +262,14 @@ def test_local_request_never_reaches_runpod(target, image, monkeypatch):
     assert client.calls == []
 
 
-def test_uncovered_entry_reaches_submission(image, preferences):
+def test_uncovered_entry_reaches_submission(image, live_machine):
     client = NoPodClient()
-    _call('video', 'i2v', image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
+    _call('video', 'i2v', image, placement=LIVE_PLACEMENT, client=client, project='demo', wait=False)
     assert [capability for capability, _ in client.calls] == ['vibecomfy.run']
 
 
 @pytest.mark.parametrize('pinned', [False, True])
-def test_selected_h3_does_not_fall_back_when_required_inputs_missing(image, preferences, monkeypatch, pinned):
+def test_selected_h3_does_not_fall_back_when_required_inputs_missing(image, live_machine, monkeypatch, pinned):
     from astrid.core.generation import defaults
     if pinned:
         monkeypatch.setattr(defaults, 'pinned_entry', lambda *args: 'h3')
@@ -282,7 +278,7 @@ def test_selected_h3_does_not_fall_back_when_required_inputs_missing(image, pref
     with pytest.raises(Exception, match="unsupported entry inputs|needs the 'request' input"):
         GenerationFacade().video(prompt='a boat', image_ref=str(image), placement='runpod',
                                  client=client, project='demo', wait=False,
-                                 **({} if pinned else {'entry': 'h3'}), **LIVE)
+                                 **({} if pinned else {'entry': 'h3'}))
     assert client.calls == []
 
 
@@ -308,7 +304,7 @@ def test_pending_target_does_not_check_controller_lock():
     assert entries.target_schema(entry, None, None, engine='comfyui') is None
 
 
-def test_h3_resolves_to_its_engine_through_the_same_helper(preferences, monkeypatch):
+def test_h3_resolves_to_its_engine_through_the_same_helper(live_machine, monkeypatch):
     """H3 pins its Ref2V LoRA in its own graph; the comfyui lock supplies the rest."""
     h3 = entries.find_entry('h3')
     assert entries.runpod_engine(h3) == 'comfyui'
@@ -316,8 +312,8 @@ def test_h3_resolves_to_its_engine_through_the_same_helper(preferences, monkeypa
     real = entries.runpod_engine
     monkeypatch.setattr(entries, 'runpod_engine', lambda entry: chosen.append(entry['id']) or real(entry))
     client = NoPodClient()
-    GenerationFacade().video(entry='h3', placement='runpod', client=client,
-                             inputs={'request': 'r.json', 'asset_map': 'a.json'}, **LIVE)
+    GenerationFacade().video(entry='h3', placement=LIVE_PLACEMENT, client=client,
+                             inputs={'request': 'r.json', 'asset_map': 'a.json'})
     assert chosen == ['h3']
     assert [capability for capability, _ in client.calls] == ['h3_av.transform']
     assert client.calls[0][1]['inputs']['placement_policy']['engine'] == 'comfyui'

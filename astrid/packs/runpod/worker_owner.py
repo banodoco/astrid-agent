@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import re
 import secrets
@@ -64,6 +65,8 @@ from .worker_staging import (
 
 class RunPodWorkerOwnerError(RuntimeError):
     """Exact RunPod preparation or host custody could not be established."""
+
+    release_identity: tuple[str, str] | None
 
 
 # The expired paid/verification clock cannot be reused for exact cancellation.
@@ -400,9 +403,9 @@ class RunPodLeaseOwner:
         except Exception as exc:
             self.last_error_type = type(exc).__name__
 
-    def job_limits(self, invocation_id, policy):
+    def job_limits(self, invocation_id, *, consent=()):
         """Read claim authority without provider calls; rechecked on admission."""
-        from .target_selection import ClaimedJob, PaidSelectionError, _number, _utc
+        from .target_selection import ClaimedJob, PaidSelectionError, _utc
 
         with self.lock:
             record = self._read()
@@ -432,21 +435,10 @@ class RunPodLeaseOwner:
             cost = max(0, now - _utc(paid["authorized_at"]).timestamp()) * rate / 3600
             budget = max(0, paid["max_usd"] - cost)
             expires = min(expires, now + budget / rate * 3600)
-            # Legacy durations are estimates only. Zero means no estimate;
-            # the phase then uses the remaining lease lifetime as its timeout.
-            preparation = _number(policy.get("preparation_seconds", 0),
-                                  "preparation seconds", zero=True)
-            execution = _number(policy.get("execution_seconds", 0),
-                                "execution seconds", zero=True)
-            idle = min(lease["idle_seconds"], *(
-                _number(policy.get(name, lease["idle_seconds"]), name, zero=True)
-                for name in ("idle_seconds", "placement_idle_seconds")))
-            limits = ClaimedJob(invocation_id, paid["offer_digest"], budget,
+            limits = ClaimedJob(invocation_id, budget,
                                 datetime.fromtimestamp(expires, timezone.utc).isoformat(),
-                                tuple(value for value in policy.get("consent", ()) if value != "paid"),
-                                preparation, execution, idle, operation_id=record["operation_id"])
-            limits.validate(self.selection._recorded_offer(record), self.selection.preferences,
-                            datetime.fromtimestamp(now, timezone.utc))
+                                lease["idle_seconds"], record["operation_id"], tuple(consent))
+            limits.validate(datetime.fromtimestamp(now, timezone.utc))
             return limits
 
     def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
@@ -467,14 +459,19 @@ class RunPodLeaseOwner:
                         record = self._read()
                         exact = (captured is not None and record is not None
                                  and (record.get("operation_id"), record.get("pod_id")) == captured)
-                except Exception:
+                except Exception as observation_error:
+                    logging.getLogger(__name__).exception(
+                        "Could not confirm failed acquisition identity (%s)",
+                        type(observation_error).__name__, exc_info=False)
                     exact = False
                 if exact and not defer_unsafe_release:
                     try:
                         self.release(reason="custody_changed", _expected_operation=captured[0],
                                      expected_machine_id=captured[1])
-                    except Exception:
-                        pass  # Exact-release failure keeps durable pending custody/retry.
+                    except Exception as release_error:
+                        logging.getLogger(__name__).exception(
+                            "Exact release after failed acquisition remains pending (%s)",
+                            type(release_error).__name__, exc_info=False)
                 error = RunPodWorkerOwnerError("RunPod machine custody could not be verified; exact release or reconciliation required")
                 error.release_identity = captured if exact and defer_unsafe_release else None
                 raise error from None
@@ -486,10 +483,7 @@ class RunPodLeaseOwner:
         from .worker_preparation import TargetObservationError
         job = isinstance(consent, ClaimedJob)
         if job:
-            current = self.job_limits(consent.invocation_id, {
-                "preparation_seconds": consent.preparation_seconds,
-                "execution_seconds": consent.execution_seconds,
-                "idle_seconds": consent.idle_seconds, "consent": consent.consent})
+            current = self.job_limits(consent.invocation_id, consent=consent.consent)
             if current.operation_id != consent.operation_id:
                 raise RunPodWorkerOwnerError("claimed machine changed before job admission")
             consent = current

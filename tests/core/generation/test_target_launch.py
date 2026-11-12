@@ -129,7 +129,9 @@ def test_sdk_launch_and_reprobe_require_fresh_consent_each_time(public_launch):
     result = facade.launch(consent=('user_env',), timeout=0.3)
     assert result['status'] == 'ready'
     assert result['target']['facts']['launch_observation']['birth_id'] == h.expected.birth_id
-    assert facade.launch(consent=('paid',))['status'] == 'blocked'
+    from astrid.sdk.generation import GenerationInputError
+    with pytest.raises(GenerationInputError, match='astrid machines claim'):
+        facade.launch(consent=('paid',))
     assert facade.launch(consent=('user_env',))['status'] == 'ready'
     assert len(h.spawned) == 1
 
