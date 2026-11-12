@@ -16,7 +16,7 @@ EXPECTED = {
     "generate_list", "generate_image", "generate_video", "generate_describe",
     "generate_workflow", "generate_targets", "generate_launch", "generate_release",
     "tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry",
-    "tasks_events", "tasks_follow", "engines_install",
+    "tasks_events", "tasks_follow", "tasks_logs", "engines_install",
 }
 
 
@@ -65,7 +65,7 @@ def test_phase_one_tools_list_and_parser_registration():
     from astrid.core.generation.cli import _parser as generation_parser
     gen_names = {"generate_" + path[-1] for path, _, _ in mcp_server._leaves(
         generation_parser(), ("generate",), "")}
-    assert task_names == {"tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry", "tasks_events", "tasks_follow"}
+    assert task_names == {"tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry", "tasks_events", "tasks_follow", "tasks_logs"}
     assert gen_names == {"generate_list", "generate_image", "generate_video", "generate_describe", "generate_workflow", "generate_targets", "generate_launch", "generate_release"}
 
     state = {"tools": tools, "prompts": {}}

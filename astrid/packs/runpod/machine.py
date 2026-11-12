@@ -387,8 +387,10 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
     active = json.dumps({**dict(active_job or {"run_id": remote_root.rsplit("/", 1)[-1]}), "run_dir": remote_root},
                         sort_keys=True)
     check_entry = "" if entry in (None, WORKFLOW_FILE_ENTRY) else entry
+    finish = finish_command(remote_root)
     return (
         "set -u\n"
+        f"finish_logs() {{ {finish}; }}\n"
         f"exec 9>>{p['lock']}\n"
         "flock -s 9 || exit 75\n"
         f"if [ ! -f {p['ready']} ] || [ ! -f {p['prepared']} ] || [ -e {p['active']} ]; then "
@@ -401,17 +403,79 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         f"ASTRID_RUNTIME_SOURCE_MANIFEST={p['source_manifest']} ASTRID_RUNTIME_DOOR_PORT=0\n"
         f"export ASTRID_PROGRESS_PATH={shlex.quote(f'{remote_root}/{PROGRESS_NAME}')}\n"
         f"export {selection_env(remote_root)}\n"
-        f"{extract_selection_command(remote_root)} || exit 3\n"
-        f"{POD_VENV}/bin/astrid generate list --json > {listing} || exit 3\n"
-        f"{POD_VENV}/bin/python -c {shlex.quote(_ENTRY_CHECK)} {listing} {shlex.quote(check_entry)} {shlex.quote(mode or '')} || exit 3\n"
+        f"{extract_selection_command(remote_root)} || {{ finish_logs; exit 3; }}\n"
+        f"{POD_VENV}/bin/astrid generate list --json > {listing} || {{ finish_logs; exit 3; }}\n"
+        f"{POD_VENV}/bin/python -c {shlex.quote(_ENTRY_CHECK)} {listing} {shlex.quote(check_entry)} {shlex.quote(mode or '')} || {{ finish_logs; exit 3; }}\n"
         f"{line} > {result}\n"
         "rc=$?\n"
+        "finish_logs\n"
         f"if [ $rc -ne 0 ]; then {POD_VENV}/bin/python -c "
         f"{shlex.quote(Path(__file__).with_name('failure_diagnostics.py').read_text(encoding='utf-8'))} "
         f"{result} {shlex.quote(f'{remote_root}/{JOB_NAME}')}; exit $rc; fi\n"
         f"printf '%s' {shlex.quote(RESULT_MARK)}; tr -d '\\n' < {result}; echo\n"
         f"{manifest_command(f'{remote_root}/out')}\n"
     )
+
+
+def finish_command(remote_root: str, *, python: str = f"{POD_VENV}/bin/python") -> str:
+    """Best-effort declaration, collection and transfer manifest for pod job logs."""
+    from astrid.core._shared import run_logs
+
+    source = shlex.quote(Path(run_logs.__file__).read_text(encoding="utf-8"))
+    interpreter = shlex.quote(python)
+    out = f"{remote_root}/out"
+    jobdir = '"$(dirname "$0")"'
+    commands = [
+        f"{interpreter} -c {source} declare {shlex.quote(out)} --name job.stdout --role stdout --path {jobdir}/stdout",
+        f"{interpreter} -c {source} declare {shlex.quote(out)} --name job.stderr --role stderr --path {jobdir}/stderr",
+        f"{interpreter} -c {source} declare {shlex.quote(out)} --name generation.stdout --role stdout --path {shlex.quote(f'{remote_root}/result.json')}",
+        f"{interpreter} -c {source} collect {shlex.quote(out)}",
+        f"{manifest_command(f'{out}/logs', interpreter)} | sed 's/^{MANIFEST_MARK}/LOGS_MANIFEST_SHA256=/'",
+    ]
+    return "( " + "; ".join(commands) + " ) 2>/dev/null || true"
+
+
+FAILURE_DIR = "failure"
+FAILURE_MANIFEST_MARK = "FAILURE_MANIFEST_SHA256="
+FAILURE_LOG_CAP_BYTES = 2 * 1024 * 1024
+LOGS_MANIFEST_MARK = "LOGS_MANIFEST_SHA256="
+
+
+def _last_marked(text: str, mark: str) -> str | None:
+    """The last line of ``text`` that starts with ``mark``."""
+    return next((line for line in reversed(text.splitlines()) if line.startswith(mark)), None)
+
+
+def failure_logs_command(remote_root: str, data_root: str, pod_root: str, *,
+                         python: str = f"{POD_VENV}/bin/python") -> str:
+    """Pod shell: keep the failed job's own logs as ordinary files, before any reset.
+
+    The job's stdout and stderr (the agent job folder is ``$(dirname "$0")``), the
+    generation CLI's result envelope, and recent engine server logs are copied
+    into ``<run>/failure/``, each capped to its last 2 MiB (``truncated`` lists
+    the capped ones), then given the same digest manifest as outputs. These are
+    the user's own machine's logs: nothing is filtered or redacted. Every step
+    is best effort so log collection can never change the job's exit status.
+    """
+    d = shlex.quote(f"{remote_root}/{FAILURE_DIR}")
+    cap = FAILURE_LOG_CAP_BYTES
+
+    def keep(src: str, name: str) -> str:
+        return (f"if [ -f {src} ]; then tail -c {cap} {src} > {d}/{name}; "
+                f"[ $(wc -c < {src}) -gt {cap} ] && echo {name} >> {d}/truncated; fi")
+
+    jobdir = '"$(dirname "$0")"'
+    parts = [
+        f"mkdir -p {d}",
+        keep(f'{jobdir}/stderr', "stderr"),
+        keep(f'{jobdir}/stdout', "stdout"),
+        keep(shlex.quote(f"{remote_root}/result.json"), "result.json"),
+        # Engine server logs written during this job (path is per engine session).
+        f"n=0; for f in $(find {data_root} {pod_root} /workspace -maxdepth 9 -name comfy.log -mmin -90 "
+        f"2>/dev/null | head -n 3); do n=$((n+1)); {keep('$f', 'engine-$n.log')}; done",
+        f"{manifest_command(f'{remote_root}/{FAILURE_DIR}', python)} | sed 's/^{MANIFEST_MARK}/{FAILURE_MANIFEST_MARK}/'",
+    ]
+    return "( " + "; ".join(parts) + " ) 2>/dev/null || true"
 
 
 def _stamp(timing: Any, name: str, **kw: Any) -> None:
@@ -832,6 +896,7 @@ class RunPodMachine:
             exit_code = record.get("exit_code")
             safe_exit = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else "unknown"
             run.lease.failure_exit_code = safe_exit if type(safe_exit) is int else None
+            run.lease.failure_logs = self._fetch_failure_logs(ops, run, stdout, destination)
             _stamp(timing, "collection_ended_at")
             raise MachineError(f"remote generation failed (exit {safe_exit}; "
                                f"category={diagnostic['category']}; code={diagnostic['code']})")
@@ -856,6 +921,54 @@ class RunPodMachine:
                 "progress": list(run.progress),
                 # The remote detached job's own process evidence (its pid on the pod).
                 "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
+
+    def _fetch_failure_logs(self, ops: Any, run: MachineRun, stdout: str, destination: Path) -> dict[str, Any]:
+        """Bring the failed job's declared logs back, digest-verified, before the reset.
+
+        The logs digest normally sits in the stdout tail already read; when it
+        does not (an oversized tail), one bounded grep reads just that marker
+        line. Never masks the job's failure: any problem is recorded as
+        ``{"unavailable": <exception type>}`` and the original error is raised.
+        """
+        try:
+            line = _last_marked(stdout, LOGS_MANIFEST_MARK)
+            if line is None and getattr(run, "directory", None) and hasattr(ops, "exec"):
+                command = f"grep -a '^{LOGS_MANIFEST_MARK}' {shlex.quote(run.directory)}/stdout | tail -n 1"
+                _code, output, _error = ops.exec(command, 120)
+                line = _last_marked(output, LOGS_MANIFEST_MARK)
+            if line is not None:
+                from astrid.core._shared import run_logs
+
+                local = Path(destination) / "logs"
+                self._fetch_verified(ops, f"{run.remote_root}/out/logs", local, run.scratch,
+                                     line[len(LOGS_MANIFEST_MARK):].strip())
+                return {"files": [{**row, "path": (str(local / row["file"])
+                                                   if not row.get("missing") else None)}
+                                  for row in run_logs.read_index(Path(destination))]}
+        except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
+            return {"unavailable": type(exc).__name__}
+        return self._fetch_legacy_failure_folder(ops, run, stdout, destination)
+
+    def _fetch_legacy_failure_folder(self, ops: Any, run: MachineRun, stdout: str,
+                                     destination: Path) -> dict[str, Any]:
+        """The pre-declared-logs ``failure/`` folder (removed by the log cleanup task)."""
+        line = _last_marked(stdout, FAILURE_MANIFEST_MARK)
+        if line is None:
+            return {"unavailable": "not_reported"}
+        local = Path(destination) / FAILURE_DIR
+        try:
+            files = self._fetch_verified(ops, f"{run.remote_root}/{FAILURE_DIR}", local, run.scratch,
+                                         line[len(FAILURE_MANIFEST_MARK):].strip())
+        except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
+            return {"unavailable": type(exc).__name__}
+        truncated = set()
+        marker = files.get("truncated")
+        if marker:
+            truncated = {row.strip() for row in Path(marker).read_text(encoding="utf-8",
+                                                                     errors="replace").splitlines()}
+        return {"files": [{"name": name, "path": path, "bytes": Path(path).stat().st_size,
+                           "truncated": name in truncated}
+                          for name, path in sorted(files.items()) if name != "truncated"]}
 
     @staticmethod
     def _fetch_verified(ops: Any, remote_dir: str, destination: Path, scratch: Path,

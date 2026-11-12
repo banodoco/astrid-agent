@@ -6247,7 +6247,8 @@ def _publish_busy(path: Path | None, delta: int) -> None:
 class _TaskOutputCapture:
     """Drain child pipes continuously and retain only scrubbed bounded tails."""
 
-    def __init__(self, attempt: Path, secrets: Mapping[str, str], scrub):
+    def __init__(self, attempt: Path, secrets: Mapping[str, str], scrub, output_root: Path | None = None):
+        self._full_paths = {name: output_root / f"job.{name}" for name in ("stdout", "stderr")} if output_root else {}
         self._paths = {name: attempt / filename for name, filename in _TASK_OUTPUT_TAIL_NAMES.items()}
         self._metadata_path = attempt / _TASK_OUTPUT_METADATA_NAME
         self._secrets = tuple(value for value in secrets.values() if isinstance(value, str) and value)
@@ -6298,6 +6299,9 @@ class _TaskOutputCapture:
         self.persist(force=True)
 
     def _receive(self, name: str, chunk: bytes) -> None:
+        if name in self._full_paths:
+            with self._full_paths[name].open("ab") as stream:
+                stream.write(chunk)
         decoded = self._pending[name] + self._decoders[name].decode(chunk)
         safe, pending = self._redact_prefix(decoded, final=False)
         self._append(name, safe)
@@ -9936,6 +9940,33 @@ class GenericPackHost:
             (attempt / "network-evidence.json").write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
             return value
 
+    def _log_outputs(self, output_root: Path, *, warnings: list[str] | None = None) -> list[dict[str, Any]]:
+        """Build staged output descriptors from the collected log index."""
+        try:
+            from astrid.core._shared import run_logs
+
+            if (output_root / "logs.json").exists():
+                run_logs.collect(output_root)
+            outputs = []
+            for row in run_logs.read_index(output_root):
+                if row.get("missing"):
+                    continue
+                name, filename = row["name"], row["file"]
+                if not isinstance(name, str) or not isinstance(filename, str) or Path(filename).name != filename:
+                    raise ValueError("invalid collected log identity")
+                path = output_root / "logs" / filename
+                outputs.append({
+                    "kind": "object", "path": str(path), "role": "log", "output_port": "logs",
+                    "variant_key": name, "name": name,
+                    "media_type": "application/json" if path.suffix == ".json" else "text/plain",
+                    "durability": "durable",
+                })
+            return outputs
+        except Exception as exc:  # noqa: BLE001 - optional log evidence must not block settlement
+            if warnings is not None:
+                warnings.append(f"logs unavailable: {type(exc).__name__}")
+            return []
+
     def _upload_outputs(
         self,
         outputs: list[dict[str, Any]],
@@ -10389,6 +10420,15 @@ class GenericPackHost:
             if render_scope:
                 env["ASTRID_RENDER_INHERIT_PROCESS_GROUP"] = "1"
             launch = popen_owned_group if render_scope else spawn_task_scope
+            from astrid.core._shared import run_logs
+
+            for stream_name in ("stdout", "stderr"):
+                path = output_root / f"job.{stream_name}"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch(exist_ok=True)
+                run_logs.declare(output_root, run_logs.LogDecl(
+                    name=path.name, role=stream_name, path=path.name,
+                ))
             process = launch(
                 _network_sandbox_argv(argv, attempt, broker_endpoint), cwd=str(cwd), env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=inherited_fds,
@@ -10418,7 +10458,7 @@ class GenericPackHost:
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
         })
-        output_capture = _TaskOutputCapture(attempt, stream_secrets, self._scrub_secret_text)
+        output_capture = _TaskOutputCapture(attempt, stream_secrets, self._scrub_secret_text, output_root)
         output_capture.start(process)
         review_snapshot = None
         execution_error = None
@@ -12199,6 +12239,20 @@ class GenericPackHost:
                     raise HostError("deadline terminalization was not accepted by Runtime") from exc
                 deadline_failed = state == "failed"
 
+        def upload_log_outputs(output_root: Path) -> list[dict[str, Any]]:
+            warnings = _terminal.setdefault("evidence_warnings", [])
+            try:
+                logs = self._log_outputs(output_root, warnings=warnings)
+                task_epoch = task_data.get("runtime_epoch")
+                return self._upload_outputs(
+                    logs, project_id=task_data.get("project_id"), run_id=task_data.get("run_id"),
+                    task_id=task_id, attempt_id=attempt_id, lease_id=lease_token, fence=fence,
+                    runtime_epoch=task_epoch if isinstance(task_epoch, int) else None,
+                ) if logs else []
+            except Exception as exc:  # noqa: BLE001 - log uploads are best effort
+                warnings.append(f"logs unavailable: {type(exc).__name__}")
+                return []
+
         def collect_terminal_evidence(status: str, error: BaseException) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             """Harvest and upload verified partial outputs before terminal mutation."""
             upload_started = False
@@ -12267,6 +12321,7 @@ class GenericPackHost:
                     task_id=task_id, attempt_id=attempt_id, lease_id=lease_token,
                     fence=fence, runtime_epoch=task_epoch if isinstance(task_epoch, int) else None,
                 ) if typed else []
+                uploaded.extend(upload_log_outputs(Path(output_root)))
                 result_value: dict[str, Any] = {
                     "status": status,
                     "outcomes": {"execution": {"status": status}},
@@ -12967,6 +13022,7 @@ class GenericPackHost:
                     else None
                 ),
             ) if typed_outputs else []
+            outputs.extend(upload_log_outputs(output_root))
             if capability_id == "wan2gp.generate_video":
                 verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
             # Cancellation can arrive while staged outputs are being read or

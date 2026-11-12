@@ -554,15 +554,53 @@ class RemotePlacement:
         exit_code = record.get("exit_code")
         if exit_code != 0 or (what == "pod reset" and type(exit_code) is not int):
             self._check_deadline(what)
+            log_paths: list[Path] = []
+            safe_what = re.sub(r"[^a-z0-9._-]+", "-", what.lower()).strip("-") or "job"
+            try:
+                from astrid.core._shared import run_logs
+
+                log_root = state.local_out / ".job-logs"
+                log_root.mkdir(parents=True, exist_ok=True)
+                staged: list[tuple[str, str, Path]] = []
+                if directory:
+                    for stream_name, role in (("stdout", "stdout"), ("stderr", "stderr")):
+                        source = f"{directory}/{stream_name}"
+                        destination = log_root / f"{safe_what}.{stream_name}"
+                        ops.get(source, str(destination))
+                        run_logs.declare(
+                            log_root,
+                            run_logs.LogDecl(
+                                name=f"{safe_what}-{stream_name}",
+                                role=role,
+                                path=str(destination.resolve()),
+                            ),
+                        )
+                        staged.append((stream_name, role, destination))
+                rows = run_logs.collect(log_root)
+                by_name = {row.get("name"): row for row in rows}
+                for stream_name, _role, source in staged:
+                    row = by_name.get(f"{safe_what}-{stream_name}")
+                    if not row or row.get("missing"):
+                        raise OSError("collected job log is unavailable")
+                    collected = log_root / "logs" / row["file"]
+                    final = state.local_out / "logs" / f"{safe_what}.{stream_name}"
+                    final.parent.mkdir(parents=True, exist_ok=True)
+                    collected.replace(final)
+                    log_paths.append(final)
+                state.note("logs", "kept", what=what, files=[str(path) for path in log_paths])
+            except Exception as exc:  # noqa: BLE001 - logs must never mask the job failure
+                state.note("logs", "unavailable", error=type(exc).__name__)
             if what == "pod reset":
                 from .pod_reset import reset_failure_reason
                 safe_code = exit_code if type(exit_code) is int and 0 <= exit_code <= 255 else "unknown"
                 safe_job = job_id if re.fullmatch(r"[0-9a-f]{32}", job_id) else "unknown"
                 raise RemotePlacementError(
                     f"pod reset job {safe_job} exited {safe_code}: reset reason: {reset_failure_reason(stdout)}"
+                    + (f" (full logs: {state.local_out / 'logs' / f'{safe_what}.stderr'})" if log_paths else "")
                 )
             raise RemotePlacementError(
                 f"{what} job {job_id} exited {exit_code}: {stderr[-800:]}"
+                + (f" (full logs: {state.local_out / 'logs' / f'{safe_what}.stderr'})" if log_paths else "")
             )
         return stdout
 
