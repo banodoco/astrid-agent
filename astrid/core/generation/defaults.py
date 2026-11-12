@@ -9,12 +9,14 @@ real entry, or an entry without that kind and mode, is refused at ``settings.ref
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from astrid.core.generation import settings
 
 DEFAULTS_POINT = "generation.defaults"
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,9 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
             rows.append({"pack": "generation", "entry": model.id, "kind": model.modality,
                          "modes": set(model.modes)})
     except Exception:
-        pass
+        # Keep discovery best-effort as before, while leaving a diagnostic trail
+        # when a catalog is unavailable or malformed.
+        _logger.exception("Could not discover model catalog entries for generation defaults")
     try:
         from astrid.core.generation import entries as workflow_entries
 
@@ -81,7 +85,7 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
         for row in workflow_entries.action_entries():
             rows.append({"pack": "generation", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
     except Exception:
-        pass
+        _logger.exception("Could not discover workflow and action entries for generation defaults")
     try:
         from astrid.core.extensions.registry import ExtensionRegistry
         from astrid.core.generation import workflows
@@ -90,7 +94,7 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
             pack = row["contribution"].split(".", 1)[0]
             rows.append({"pack": pack, "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
     except Exception:
-        pass
+        _logger.exception("Could not discover contributed workflow entries for generation defaults")
     return rows
 
 

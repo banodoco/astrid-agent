@@ -215,7 +215,11 @@ def registered_machine_kinds() -> tuple[str, ...]:
         from astrid.core.extensions.registry import ExtensionRegistry
 
         names = [item.id.rsplit(".", 1)[-1] for item in ExtensionRegistry().load().contributions(MACHINE_POINT)]
-    except Exception:  # an unreadable registry must not hide the built-in providers
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "machine contribution registry could not be read; using built-in provider kinds"
+        )
         names = []
     return tuple(sorted({*names, *_PROVIDER_FALLBACK}))
 

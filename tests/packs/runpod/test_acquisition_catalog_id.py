@@ -54,6 +54,7 @@ def test_catalog_id_survives_display_label_in_acquisition_and_reconciliation(tmp
                  "imageName": config.worker_image, "machine": {}}
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
     monkeypatch.setattr(runpod_lifecycle, "get_pod", get)
+    monkeypatch.setattr(preparation, "_get_provider_pod", get)
     monkeypatch.setattr(api, "list_pods", lambda key: [inventory])
     monkeypatch.setattr(api, "get_network_volumes", lambda key: [])
     monkeypatch.setattr(graphql, "get_pod", lambda *args: {

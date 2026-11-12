@@ -6,6 +6,7 @@ execution use the same local run path on managed local engines and pods.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,7 @@ def _pinned_locks() -> dict[tuple[str, str], Any]:
         try:
             lock = load_recipe_model_lock(engine, entries.RUNPOD_PLATFORM)
         except Exception:
+            logging.getLogger(__name__).exception('Could not load pinned model lock for engine %s', engine)
             continue
         for model in lock.models:
             rows.setdefault((model.destination, model.revision), model)

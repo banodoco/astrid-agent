@@ -6,7 +6,7 @@ entry: comfyui_engine.py:ENGINE
 recipes:
   - platform: linux-x86_64-cu130
     path: packs/runpod/recipe.linux-cu130.json
-    sha256: "ee758d4550904418bf62ff86a2714d411dfe2aef87dcc21993f010946d942a47"
+    sha256: "6d57d35d8b1ae618220b4a7f2d8205134bba20465f229596e818c55dbfdd0435"
   - platform: windows-x86_64-cu130
     path: packs/vibecomfy/recipe.windows-cu130.json
-    sha256: "117fe824ace5f7c134e0fc3156774ff1ec98302ece2fde46a6a2fade6d693c6f"
+    sha256: "443a201761c6a2a76bab36c7f0f1bf245dce068228766ac47bed101e73d8d77f"

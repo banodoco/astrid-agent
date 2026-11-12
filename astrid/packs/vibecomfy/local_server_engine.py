@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 import stat
 import sys
@@ -71,13 +72,13 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
                     client: Any = None, target_custody: Any = None, prepared_models: Any = None) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
-    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     from vibecomfy.schema.validate import (
         _choice_scope,
         validate_api_against_schema,
         validate_api_link_shapes,
     )
 
+    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
     client = client if client is not None else ComfyTargetClient(ComfyTarget(url, "attached"))
@@ -331,6 +332,7 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
         except WorkflowBundleError:
             if source_format == "scratchpad":
                 raise
+    assert derived is not None  # the scratchpad branch raises if no candidate was emitted
     return load_bundle(derived.python_path, trust=Provenance.USER_CONFIRMED)
 
 
@@ -426,7 +428,6 @@ def run_local_server(
         values["attempt_id"] = attempt_identity
     config = SessionConfig.from_dict(values)
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
-
     from astrid.core.generation.managed_preparation import read_preparation
     prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=url)
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
@@ -559,10 +560,14 @@ def run_local_server(
                 # diagnostic context. cleanup_prompts validates journals
                 # before trusting their prompt IDs, so an unsafe journal must
                 # never replace the original attempt error.
+                logging.getLogger(__name__).exception(
+                    'local_server prompt cleanup failed after attempt error at %s', destination,
+                )
                 exc.add_note(f"local_server prompt cleanup failed: {cleanup_error}")
             if "vibecomfy schema refresh" in str(exc) or getattr(exc, "next_action", None) == "vibecomfy schema refresh":
-                from astrid.core.generation.asset_gaps import align_argv
                 import shlex
+
+                from astrid.core.generation.asset_gaps import align_argv
                 fix = 'Install the missing locked node pack: ' + shlex.join(align_argv())
                 raise ProductionEngineError(str(exc).replace("vibecomfy schema refresh", fix)) from exc
             raise
