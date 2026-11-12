@@ -132,7 +132,7 @@ def provider_failure(exc):
 class ProviderGate:
     """Cross-process account pacing; timestamps are shared wall-clock seconds."""
 
-    def __init__(self, path, *, clock=None, sleep=None, minimum_interval=0.05):
+    def __init__(self, path, *, clock=None, sleep=None, minimum_interval=0.05, alias_path=None):
         import time
         from pathlib import Path
 
@@ -140,6 +140,7 @@ class ProviderGate:
         self.clock = clock or time.time
         self.sleep = sleep or time.sleep
         self.minimum_interval = minimum_interval
+        self.alias_path = alias_path
 
     # Unknown pacing state gets one persisted recovery window. Valid provider
     # Retry-After values are never shortened to this recovery bound.
@@ -194,6 +195,27 @@ class ProviderGate:
         import os
 
         from runtime_protocol import platform
+
+        if self.alias_path is not None:
+            # Keep the alias locked through account state mutation. Binding
+            # takes these locks in the same order, so an operation admitted on
+            # an old credential cannot later publish into an abandoned gate.
+            alias = ProviderGate(self.alias_path, clock=self.clock, sleep=self.sleep,
+                                 minimum_interval=self.minimum_interval)
+
+            def routed(binding):
+                account = binding.get("account", self.path.stem)
+                target = ProviderGate(self.path.parent / (account + ".json"), clock=self.clock,
+                                      sleep=self.sleep, minimum_interval=self.minimum_interval)
+
+                def apply(state):
+                    for key in ("next", "cooldown"):
+                        state[key] = max(state.get(key, 0.), binding.get(key, 0.))
+                    return change(state)
+
+                return target._state(apply, deadline=deadline)
+
+            return alias._state(routed, deadline=deadline)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
@@ -365,14 +387,14 @@ def account_gate(api_key, *, account_ref=None):
                 previous = ProviderGate(root / (current + ".json"))._state(dict)
                 def merge(shared):
                     for key in ("next", "cooldown", "attempt"):
-                        shared[key] = max(shared.get(key, 0), previous.get(key, 0))
+                        shared[key] = max(shared.get(key, 0), previous.get(key, 0), state.get(key, 0))
                 ProviderGate(root / (account + ".json"))._state(merge)
                 state["account"] = account
             return account
         return current
 
     account = alias._state(resolve)
-    return ProviderGate(root / (account + ".json"))
+    return ProviderGate(root / (account + ".json"), alias_path=alias.path)
 
 
 _provider_deadline = ContextVar("provider_deadline", default=None)

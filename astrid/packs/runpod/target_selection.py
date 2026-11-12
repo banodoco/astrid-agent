@@ -36,7 +36,7 @@ from .worker_preparation import (
     _validate_completed_release, write_target_record,
 )
 from . import worker_preparation
-from .provider import parse_rest_pod, provider_budget
+from .provider import account_gate, parse_rest_pod, provider_budget
 
 
 def _exact_volume_id(record):
@@ -721,6 +721,10 @@ class RunPodSelectionOwner:
                 or getattr(config, "gpu_type_id", None) != offer.gpu_type_id
                 or getattr(config, "storage_name", None) or getattr(config, "storage_volumes", ())):
             raise PaidSelectionError("provider configuration differs from the consented exact placement")
+        # _select already owns the journal lock and calls __wrapped__ below.
+        # Bind here, before even volume discovery, rather than relying on the
+        # acquisition decorator that this path intentionally bypasses.
+        account_gate(config.api_key, account_ref=p.provider_account_ref)
         # Restrict lifecycle's launch matrix to the consented target so each
         # journaled attempt can issue at most one create POST.
         config = copy.copy(config)
