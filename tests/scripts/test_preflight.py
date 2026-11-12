@@ -216,6 +216,17 @@ def test_runner_refuses_generate_without_dry_run(tmp_path):
         preflight.Runner(tmp_path)(["astrid", "generate", "image"])
 
 
+def test_catalog_probe_refuses_a_request_builder_that_drops_dry_run(monkeypatch, tmp_path):
+    from astrid.core.model_catalog import requests
+
+    monkeypatch.setattr(requests, "build_generate_argv", lambda *a, **k: ["generate", "image", "--consent", "paid"])
+    entry = SimpleNamespace(id="sample", modality="image", modes={"t2i": SimpleNamespace(requires=())})
+    calls = []
+    with pytest.raises(ValueError, match="--dry-run"):
+        catalog_dry_run(entry, "t2i", tmp_path, invoke=lambda argv: calls.append(argv))
+    assert calls == []
+
+
 @pytest.mark.parametrize("stdout,rc,want", [
     ('{"ok": true}', 0, ""),
     ('{"ok": false}', 0, "{"),
