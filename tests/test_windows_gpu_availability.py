@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,10 +8,7 @@ import pytest
 from astrid.core.execution.generic_host import GenericPackHost, HostError
 from astrid.core.generation import gpu_environment as gpu
 from tests.test_generic_host import FakeRuntime, _write_manifest
-
-# A real, minimal UI workflow graph; the run itself is stubbed below.
-WORKFLOW_FIXTURE = Path(__file__).parent / "fixtures" / "vibecomfy_ir" / "flat.json"
-
+from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401
 
 @pytest.fixture
 def windows_gpu(monkeypatch):
@@ -86,7 +82,7 @@ def _write_attached_comfy_manifest(root):
 
 
 @pytest.mark.parametrize("opted_in", [False, True])
-def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypatch, windows_gpu, opted_in):
+def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypatch, windows_gpu, opted_in, comfy):
     packs = tmp_path / "packs"
     _write_attached_comfy_manifest(packs / "comfy")
     runtime = FakeRuntime()
@@ -104,10 +100,9 @@ def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypat
 
     monkeypatch.setattr(host, "_run_command_definition", run)
     # Exercise settlement with an attached server; command execution is stubbed.
-    workflow = tmp_path / "workflow.json"
-    workflow.write_bytes(WORKFLOW_FIXTURE.read_bytes())
+    workflow = comfy.workflow
     task = {"id": "gpu-test", "capability": "vibecomfy.run", "project_id": "project",
-            "attempt_id": "attempt", "fence": 1, "spec": {"spec": {"inputs": {"workflow": str(workflow), "comfy_url": "http://127.0.0.1:8188"}}}}
+            "attempt_id": "attempt", "fence": 1, "spec": {"spec": {"inputs": {"workflow": str(workflow), "comfy_url": comfy.url}}}}
     runtime.tasks["gpu-test"] = task
     host.run_task(task, lease_token="lease")
     result = runtime.settlements[-1][2]["result"]
@@ -131,7 +126,7 @@ def test_vibecomfy_remains_ready_when_nvidia_detection_is_lost(tmp_path, monkeyp
     assert host.capabilities["vibecomfy.run"].preflight["gpu"]["warning"].startswith("VibeComfy uses your own ComfyUI")
 
 
-def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, windows_gpu):
+def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, windows_gpu, comfy):
     _write_attached_comfy_manifest(tmp_path / "comfy")
     monkeypatch.setenv(gpu.ALLOW_UNQUALIFIED_ENV, "1")
     runtime = FakeRuntime()
@@ -143,10 +138,9 @@ def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, wind
 
     monkeypatch.setattr(host, "_run_command_definition", fail)
     # Exercise settlement with an attached server; command execution is stubbed.
-    workflow = tmp_path / "workflow.json"
-    workflow.write_bytes(WORKFLOW_FIXTURE.read_bytes())
+    workflow = comfy.workflow
     task = {"id": "failed", "capability": "vibecomfy.run", "project_id": "project", "attempt_id": "failed-attempt", "fence": 1,
-            "spec": {"spec": {"inputs": {"workflow": str(workflow), "comfy_url": "http://127.0.0.1:8188"}}}}
+            "spec": {"spec": {"inputs": {"workflow": str(workflow), "comfy_url": comfy.url}}}}
     runtime.tasks["failed"] = task
     with pytest.raises(RuntimeError, match="GPU execution failed"):
         host.run_task(task, lease_token="lease")
