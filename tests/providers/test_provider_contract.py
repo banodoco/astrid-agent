@@ -22,7 +22,7 @@ PROVIDERS = {
     "runpod": [
         (parse_rest_pod, _load("rest-get-pod-default.json")),
         (parse_rest_pod, _load("rest-get-pod-include-network-volume.json")),
-        (parse_rest_list_item, _load("rest-list-pods-include-network-volume.json")[0]),
+        (parse_rest_list_item, _load("rest-list-pods-include-network-volume.json")["pods"][0]),
         (parse_sdk_pod, _load("sdk-graphql-myself-pods.json")["data"]["myself"]["pods"][0]),
     ],
 }
@@ -91,8 +91,9 @@ def test_runpod_read_uses_enriched_exact_rest_and_only_404_is_absence(monkeypatc
     provider = RunPodMachineProvider("test-key")
     assert provider.read("POD_ID").storage_id == "VOLUME_ID"
     assert len(seen) == 1
-    assert seen[0][0].endswith("/v1/pods/POD_ID")
-    assert seen[0][1]["params"] == {"includeNetworkVolume": "true"}
+    assert seen[0][0].endswith("/v2/pods/POD_ID")
+    assert "includeNetworkVolume" not in seen[0][1].get("params", {})
+    assert seen[0][0] == "https://api.runpod.io/v2/pods/POD_ID"
     assert seen[0][1]["headers"] == {"Authorization": "Bearer test-key"}
     status = 404
     assert provider.read("POD_ID") is None
@@ -106,5 +107,5 @@ def test_runpod_read_uses_enriched_exact_rest_and_only_404_is_absence(monkeypatc
                                               ("STARTING", "starting")])
 def test_runpod_status_mapping(status, expected):
     record = _load("rest-get-pod-default.json")
-    record["desiredStatus"] = status
+    record["status"] = status
     assert parse_rest_pod(record).state == expected

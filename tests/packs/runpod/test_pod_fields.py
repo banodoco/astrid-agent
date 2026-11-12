@@ -6,7 +6,7 @@ from astrid.packs.runpod.pod_fields import InvalidPodField, pod_field
 
 
 def test_read_exact_pod_requests_network_volume(monkeypatch: pytest.MonkeyPatch) -> None:
-    """REST GET /v1/pods/{id} omits networkVolume unless includeNetworkVolume=true."""
+    """Exact v2 GET projects native mounts into the compatibility volume alias."""
     import httpx
     from astrid.packs.runpod import worker_preparation as wp
 
@@ -14,13 +14,14 @@ def test_read_exact_pod_requests_network_volume(monkeypatch: pytest.MonkeyPatch)
 
     def fake_get(url, *, headers, timeout, params=None):
         seen["params"] = params
-        return httpx.Response(200, json={"id": "pod-exact", "networkVolume": {"id": "vol-persist"}},
+        return httpx.Response(200, json={"id": "pod-exact", "mounts": {"network": [
+            {"volumeId": "vol-persist", "path": "/workspace"}]}},
                               request=httpx.Request("GET", url))
 
     monkeypatch.setattr(httpx, "get", fake_get)
     status, record = wp.read_exact_pod("test", "pod-exact")
     assert status == 200 and record["networkVolume"]["id"] == "vol-persist"
-    assert seen["params"] == {"includeNetworkVolume": "true"}
+    assert seen["params"] is None or "includeNetworkVolume" not in seen["params"]
 
 
 
