@@ -100,6 +100,21 @@ def _plain(value):
 ENGINE_INSTALL_MIN_FREE_BYTES = 10 * 1024 ** 3
 
 
+def _print_command_output(output) -> None:
+    """After the public error line, the failed command's whole output, for the user who ran it."""
+    if not isinstance(output, dict):
+        return
+    argv = output.get('argv') if isinstance(output.get('argv'), list) else []
+    print(f"--- failed command (exit {output.get('exit_code')}): {' '.join(str(a) for a in argv)}",
+          file=sys.stderr)
+    for stream in ('stdout', 'stderr'):
+        text = output.get(stream) if isinstance(output.get(stream), str) else ''
+        print(f"--- {stream} ---", file=sys.stderr)
+        print(text, end='' if text.endswith('\n') or not text else '\n', file=sys.stderr)
+    if output.get('truncated'):
+        print("--- (output was truncated at the capture limit) ---", file=sys.stderr)
+
+
 def main(argv=None, *, backend_factory=None):
     try:
         args = _parser().parse_args(argv)
@@ -201,6 +216,7 @@ def main(argv=None, *, backend_factory=None):
                           install_command=recovery.install_command, message=recovery.message)
         print(json.dumps({'error': public},
                          sort_keys=True), file=sys.stderr)
+        _print_command_output(getattr(exc, 'command_output', None))
         return 1
     except Exception:  # Avoid leaking transport diagnostics or command arguments.
         print(json.dumps({'error': {'code': 'engine_error', 'step': None}}, sort_keys=True), file=sys.stderr)

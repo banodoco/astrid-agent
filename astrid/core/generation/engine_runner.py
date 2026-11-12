@@ -389,9 +389,14 @@ class _Runner:
         if type(result.exit_code) is not int:
             raise TransportError("invalid command exit status", step_id=self.step_id)
         if check and result.exit_code != 0:
-            # Raw output, commands and arbitrary transport bodies are never public diagnostics.
-            raise CommandFailed(f"engine command failed (exit {result.exit_code}); inspect target log",
-                                step_id=self.step_id)
+            error = CommandFailed(f"engine command failed (exit {result.exit_code})", step_id=self.step_id)
+            # The failed command's whole output belongs to the user running it on their own machine;
+            # the engine CLI writes it after its public error line so the failure is understandable.
+            error.command_output = {"argv": list(argv), "exit_code": result.exit_code,
+                                    "stdout": result.stdout or "", "stderr": result.stderr or "",
+                                    "truncated": bool(getattr(result, "stdout_truncated", False)
+                                                      or getattr(result, "stderr_truncated", False))}
+            raise error
         return result
 
     def sanity(self, command):

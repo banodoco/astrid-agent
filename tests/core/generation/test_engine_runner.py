@@ -2348,3 +2348,20 @@ def test_source_accepts_only_verified_model_link_entries(setup, monkeypatch):
     context.sources[ROOT + "/runtime/ComfyUI"]["dirty"] = "?? stray"
     with pytest.raises(IntegrityError, match="source contains uncommitted content"):
         instance.source(source, readonly=True)
+
+
+def test_a_failed_command_keeps_its_whole_output_on_the_error():
+    from types import SimpleNamespace
+
+    from astrid.core.generation.engine_contracts import CommandFailed
+
+    result = SimpleNamespace(timed_out=False, exit_code=2, job_id=None, stdout="out line\n",
+                             stderr="err line\n", stdout_truncated=False, stderr_truncated=True)
+    owner = runner._Runner.__new__(runner._Runner)
+    owner.deadline, owner.step_id, owner.env = time.monotonic() + 60, "environment:comfy", {}
+    owner.plan = SimpleNamespace(root="/engine")
+    owner.context = SimpleNamespace(run=lambda request: result)
+    with pytest.raises(CommandFailed) as caught:
+        owner.run(("uv", "pip", "install"))
+    assert caught.value.command_output == {"argv": ["uv", "pip", "install"], "exit_code": 2,
+                                           "stdout": "out line\n", "stderr": "err line\n", "truncated": True}

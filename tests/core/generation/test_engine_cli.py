@@ -492,3 +492,22 @@ def test_only_successful_explicit_local_installs_change_registration(monkeypatch
     assert rc == 0 and seen[-1] == other and recorded_engine_root(engine) is None
 
 
+
+
+def test_failed_engine_command_output_follows_the_public_error(capsys):
+    """A failed engine command's whole output is the user's to read, after the public error line."""
+    def fail(**kwargs):
+        error = CommandFailed('engine command failed (exit 2)', step_id='environment:comfy')
+        error.command_output = {'argv': ['uv', 'pip', 'install', '-r', 'support.lock'], 'exit_code': 2,
+                                'stdout': 'Resolved 183 packages\n',
+                                'stderr': 'error: no wheel for comfy-kitchen==0.2.35 on this platform\n',
+                                'truncated': False}
+        raise error
+    rc, out, err = invoke(['install', *BASE], capsys, backend_factory=fail)
+    first, rest = err.split('\n', 1)
+    assert rc == 1 and not out
+    assert json.loads(first)['error'] == {'code': 'command_failed', 'step': 'environment:comfy', 'retryable': False,
+                                          'recovery_handle': None, 'message': 'Engine operation failed.'}
+    assert '--- failed command (exit 2): uv pip install -r support.lock' in rest
+    assert 'Resolved 183 packages' in rest
+    assert 'error: no wheel for comfy-kitchen==0.2.35 on this platform' in rest
