@@ -500,6 +500,11 @@ def run_local_server(
                     artifact_client=AttachedArtifacts(client, legacy_output_directory=output_directory),
                     **({"run_context": context} if context is not None else {}),
                 )
+            except Exception as exc:
+                # Engine boundary: expose the engine's sanitised diagnostic under the
+                # engine-neutral name the shared generation core reads.
+                _expose_engine_diagnostic(exc)
+                raise
             finally:
                 if context is not None:
                     original_error = sys.exc_info()[1]
@@ -563,3 +568,12 @@ def run_local_server(
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _expose_engine_diagnostic(exc: BaseException) -> None:
+    diagnostic = getattr(exc, "comfy_diagnostic", None)
+    if isinstance(diagnostic, dict) and getattr(exc, "engine_diagnostic", None) is None:
+        try:
+            exc.engine_diagnostic = diagnostic
+        except AttributeError:
+            pass

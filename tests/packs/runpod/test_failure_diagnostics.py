@@ -673,7 +673,7 @@ def test_nested_execution_diagnostic_round_trip(tmp_path):
         'node_id': '1', 'node_type': 'KSampler', 'exception_type': 'RuntimeError',
         'exception_message': TTS_PROMPT, 'observed': TTS_PROMPT}]]})
     payload = {'issues': [{'severity': 'error', 'code': 'task_failed', 'details': {
-        'result': {'error': {'code': 'executor_failed', 'comfy_diagnostic': diagnostic}}}}]}
+        'result': {'error': {'code': 'executor_failed', 'engine_diagnostic': diagnostic}}}}]}
     frame = emit(tmp_path, json.dumps(payload).encode(), TTS_GRAPH | {'1': {'class_type': 'KSampler'}})
     assert fd.parse_frame(frame, node_ids={'1'}, node_names={'KSampler'}) == {
         'code': 'comfy_execution_error', 'category': 'execution', 'node_id': '1',
@@ -684,7 +684,7 @@ def test_nested_execution_diagnostic_round_trip(tmp_path):
 def test_unknown_exception_and_private_text_are_withheld():
     diagnostic = {'code': 'comfy_execution_error', 'node_id': '1', 'node_class': 'KSampler',
                   'exception_type': 'PrivateError', 'message': TTS_PROMPT, 'observed': TTS_PROMPT, 'oom': True}
-    result = fd.summarize({'error': {'comfy_diagnostic': diagnostic}}, node_ids={'1'})
+    result = fd.summarize({'error': {'engine_diagnostic': diagnostic}}, node_ids={'1'})
     assert result == {'code': 'comfy_execution_error', 'category': 'execution', 'node_id': '1',
                       'node_class': 'KSampler', 'oom': True}
     assert TTS_PROMPT not in json.dumps(result)
@@ -706,9 +706,17 @@ def test_session_execution_codes_are_known():
 def test_local_job_exception_preserves_execution_diagnostic(monkeypatch, tmp_path, capsys):
     from vibecomfy.runtime.session import _raise_terminal_execution_error
     from astrid.core.generation import cli, local_job
+    from astrid.packs.vibecomfy.local_server_engine import _expose_engine_diagnostic
+
     def fail(*args, **kwargs):
-        _raise_terminal_execution_error({'messages': [['execution_error', {
-            'node_id': '1', 'node_type': 'KSampler', 'exception_type': 'RuntimeError'}]]}, None)
+        # The VibeComfy pack's run boundary exposes the engine diagnostic under the
+        # engine-neutral name before the shared core sees the exception.
+        try:
+            _raise_terminal_execution_error({'messages': [['execution_error', {
+                'node_id': '1', 'node_type': 'KSampler', 'exception_type': 'RuntimeError'}]]}, None)
+        except Exception as exc:
+            _expose_engine_diagnostic(exc)
+            raise
     monkeypatch.setattr(local_job, 'run_job', fail)
     assert cli.main(['cpu-image', '--placement', 'local', '--job', str(tmp_path / 'job.json'),
                      '--out', str(tmp_path / 'out'), '--json']) == 2
@@ -724,3 +732,17 @@ def test_node_class_allowlist_is_scoped_to_engine():
     diagnostic = {'code': 'generation_failed', 'category': 'execution', 'node_class': 'KSampler'}
     assert fd.host_summary(RuntimeError(), diagnostic, engine_id='comfyui')['node_class'] == 'KSampler'
     assert 'node_class' not in fd.host_summary(RuntimeError(), diagnostic, engine_id='other-engine')
+
+
+def test_engine_boundary_exposes_only_the_engine_diagnostic_under_a_neutral_name():
+    from astrid.packs.vibecomfy.local_server_engine import _expose_engine_diagnostic
+
+    class Engine(Exception):
+        comfy_diagnostic = {'code': 'comfy_execution_error', 'node_id': '1'}
+
+    exc = Engine()
+    _expose_engine_diagnostic(exc)
+    assert exc.engine_diagnostic == {'code': 'comfy_execution_error', 'node_id': '1'}
+    plain = RuntimeError('no diagnostic')
+    _expose_engine_diagnostic(plain)
+    assert getattr(plain, 'engine_diagnostic', None) is None

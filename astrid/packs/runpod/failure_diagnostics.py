@@ -199,7 +199,7 @@ def summarize(value, *, node_ids=frozenset(), node_names=frozenset(), engine_id=
         for key in ('engine_code', 'code'):
             candidates.append((depth, item.get(key), local_facts))
         if depth < 12:
-            for key in ('details', 'result', 'error', 'comfy_diagnostic', 'diagnostics', 'issues'):
+            for key in ('details', 'result', 'error', 'engine_diagnostic', 'diagnostics', 'issues'):
                 child = item.get(key)
                 if isinstance(child, Mapping):
                     stack.append((child, depth + 1, facts))
