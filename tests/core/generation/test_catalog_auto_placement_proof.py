@@ -84,8 +84,13 @@ def _input_value(name):
     return "placement proof"
 
 
+@pytest.mark.parametrize("selection", ["--model", "--entry"])
+@pytest.mark.parametrize("placement", [None, "auto", "http://127.0.0.1:8199"],
+                         ids=["default-placement", "auto-placement", "attached-placement"])
 @pytest.mark.parametrize("row", _ROWS, ids=lambda row: f"{row['id']}:{row['mode']}")
-def test_cli_auto_dispatches_each_catalog_mode_by_declared_execution(row, tmp_path, monkeypatch, capsys, record_property):
+def test_cli_auto_dispatches_each_catalog_mode_by_declared_execution(
+    row, selection, placement, tmp_path, monkeypatch, capsys, record_property,
+):
     """Exercise CLI parsing and SDK routing while provider and Comfy effects are intercepted."""
     from astrid.core.generation import cli
     from astrid.core.generation import placement as placements
@@ -129,13 +134,46 @@ def test_cli_auto_dispatches_each_catalog_mode_by_declared_execution(row, tmp_pa
                    if (value := f"{name}={json.dumps(item)}")]
     monkeypatch.setattr("astrid.sdk.generation._resolve_invoke_destination",
                         lambda **kw: (kw.get("out"), "proof-project"))
-    prompt = [] if "prompt" in inputs or entry.modality != "image" else ["placement proof"]
-    argv = [entry.modality, *prompt, "--model", entry.id, "--mode", row["mode"],
+    prompt = ([] if selection == "--entry" or "prompt" in inputs or entry.modality != "image"
+              else ["placement proof"])
+    argv = [entry.modality, *prompt, selection, entry.id, "--mode", row["mode"],
             *[part for assignment in assignments for part in ("--input", assignment)],
+            *(["--placement", placement] if placement is not None else []),
             "--dry-run", "--json"]
 
     code = cli.main(argv)
     stdout = capsys.readouterr().out
+    if selection == "--entry":
+        from astrid.core.generation.entries import describe_entry
+        description = describe_entry(entry.id, row["mode"], registry=registry, _native=True)
+        unknown_inputs = [port["name"] for port in description["inputs"]
+                          if port.get("type") == "unknown" and port["name"] in inputs]
+        if unknown_inputs:
+            assert code == 2, stdout
+            payload = _json_document(stdout)
+            issue = payload["issues"][0]
+            expected = f"entry input {unknown_inputs[0]!r} has no declared scalar type (unknown)"
+            assert issue["code"] == "input_rejected"
+            assert issue["message"] == expected
+            assert issue["details"]["field"] == unknown_inputs[0]
+            assert not captured
+            record_property("entry", entry.id)
+            record_property("mode", row["mode"])
+            record_property("result", "unknown_input_type_refusal")
+            record_property("reason", expected)
+            return
+    if placement == "http://127.0.0.1:8199" and declared != "local":
+        assert code == 2, stdout
+        payload = _json_document(stdout)
+        assert entry.id in payload["issues"][0]["message"]
+        assert "valid placements" in payload["issues"][0]["message"]
+        assert not captured
+        record_property("entry", entry.id)
+        record_property("mode", row["mode"])
+        record_property("execution", declared)
+        record_property("selector", placement)
+        record_property("result", "placement_conflict")
+        return
     if row.get("availability") == "unavailable" and code != 0:
         assert not captured
         payload = _json_document(stdout)
@@ -154,8 +192,9 @@ def test_cli_auto_dispatches_each_catalog_mode_by_declared_execution(row, tmp_pa
     assert code == 0, stdout
     output = _json_document(stdout)
     if declared == "local":
-        assert captured == [("comfy", "local", entry.id)]
-        resolved_path = "comfy:local"
+        expected_kind = "attached" if placement == "http://127.0.0.1:8199" else "local"
+        assert captured == [("comfy", expected_kind, entry.id)]
+        resolved_path = f"comfy:{expected_kind}"
     else:
         assert captured and captured[0][0] == "provider"
         assert captured[0][2].get("execution") == declared
@@ -172,7 +211,8 @@ def test_cli_auto_dispatches_each_catalog_mode_by_declared_execution(row, tmp_pa
 
 
 @pytest.mark.parametrize("selector", ["runpod", "http://127.0.0.1:8199"])
-def test_concrete_placement_conflicts_with_generic_provider_entry(selector, tmp_path, monkeypatch, capsys, record_property):
+@pytest.mark.parametrize("selection", ["--model", "--entry"])
+def test_concrete_placement_conflicts_with_generic_provider_entry(selector, selection, tmp_path, monkeypatch, capsys, record_property):
     import json
     from astrid.core.generation import cli
     from astrid.core.generation import placement
@@ -208,7 +248,7 @@ def test_concrete_placement_conflicts_with_generic_provider_entry(selector, tmp_
         for name in spec.requires
     }
     assignments = [f"{name}={json.dumps(value)}" for name, value in values.items()]
-    code = cli.main([entry.modality, "--model", entry.id, "--mode", mode,
+    code = cli.main([entry.modality, selection, entry.id, "--mode", mode,
                      *[part for assignment in assignments for part in ("--input", assignment)],
                      "--placement", selector, "--dry-run", "--json"])
     output = capsys.readouterr().out

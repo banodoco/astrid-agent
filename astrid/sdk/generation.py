@@ -1985,6 +1985,13 @@ class GenerationFacade:
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
         entry_source = None
+        if entry is None and model is not None:
+            from astrid.core.generation.entries import find_entry
+
+            # Preserve the workflow lookup's user precedence for either selector.
+            manifest = find_entry(model)
+            if manifest is not None and manifest.get('source') == 'user-entry':
+                entry_source = 'workflow'
         if entry is not None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
@@ -1995,8 +2002,8 @@ class GenerationFacade:
             )
             entry_source = description["source"]
             model, mode = entry, description["mode"]
-            if description["source"] == "workflow" and placement is None:
-                placement = "auto"
+        if entry_source == "workflow" and placement is None:
+            placement = "auto"
         if registry is None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root,

@@ -2326,6 +2326,55 @@ def test_video_execution_inference_single_backend_declared_local_target_route(
     ) == "local"
 
 
+def test_video_single_provider_backend_reconstructs_generation_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A single qualified provider backend is inferred and its result reconstructed."""
+    astrid = _import_public_module()
+    sdk = importlib.import_module("astrid.sdk")
+    from astrid.core.generation.availability import model_availability
+
+    registry = sdk._load_model_registry()
+    selected = None
+    for candidate in registry.list_all(include_closed=True):
+        if candidate.modality != "video":
+            continue
+        for mode_name, mode in candidate.modes.items():
+            if len(mode.backends) != 1:
+                continue
+            backend = next(iter(mode.backends))
+            if backend == "local":
+                continue
+            if model_availability(candidate.id, mode_name, backend).get("available") is not True:
+                continue
+            required = set(mode.requires)
+            if not required <= {"prompt"}:
+                continue
+            selected = (candidate, mode_name, backend)
+            break
+        if selected is not None:
+            break
+    assert selected is not None, "expected a qualified single-backend video route"
+    entry, mode_name, backend = selected
+
+    fake_invoke, seen = _make_success_invoke(astrid, tmp_path)
+    monkeypatch.setattr(sdk, "invoke", fake_invoke)
+    result = astrid.generate.video(
+        model=entry.id,
+        mode=mode_name,
+        prompt="test",
+        out=tmp_path,
+        project="demo",
+    )
+
+    assert result.ok is True
+    assert result.model_actual == entry.id
+    assert result.image_paths == [tmp_path / "out.png"]
+    assert seen["kwargs"]["inputs"]["execution"] == backend
+    assert seen["kwargs"]["inputs"]["mode"] == mode_name
+
+
 def test_unknown_model_raises_validation_error(
     tmp_path: Path,
 ) -> None:
