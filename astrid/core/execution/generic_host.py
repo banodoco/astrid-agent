@@ -6247,7 +6247,8 @@ def _publish_busy(path: Path | None, delta: int) -> None:
 class _TaskOutputCapture:
     """Drain child pipes continuously and retain only scrubbed bounded tails."""
 
-    def __init__(self, attempt: Path, secrets: Mapping[str, str], scrub):
+    def __init__(self, attempt: Path, secrets: Mapping[str, str], scrub, output_root: Path | None = None):
+        self._full_paths = {name: output_root / f"job.{name}" for name in ("stdout", "stderr")} if output_root else {}
         self._paths = {name: attempt / filename for name, filename in _TASK_OUTPUT_TAIL_NAMES.items()}
         self._metadata_path = attempt / _TASK_OUTPUT_METADATA_NAME
         self._secrets = tuple(value for value in secrets.values() if isinstance(value, str) and value)
@@ -6298,6 +6299,9 @@ class _TaskOutputCapture:
         self.persist(force=True)
 
     def _receive(self, name: str, chunk: bytes) -> None:
+        if name in self._full_paths:
+            with self._full_paths[name].open("ab") as stream:
+                stream.write(chunk)
         decoded = self._pending[name] + self._decoders[name].decode(chunk)
         safe, pending = self._redact_prefix(decoded, final=False)
         self._append(name, safe)
@@ -10389,6 +10393,15 @@ class GenericPackHost:
             if render_scope:
                 env["ASTRID_RENDER_INHERIT_PROCESS_GROUP"] = "1"
             launch = popen_owned_group if render_scope else spawn_task_scope
+            from astrid.core._shared import run_logs
+
+            for stream_name in ("stdout", "stderr"):
+                path = output_root / f"job.{stream_name}"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch(exist_ok=True)
+                run_logs.declare(output_root, run_logs.LogDecl(
+                    name=path.name, role=stream_name, path=path.name,
+                ))
             process = launch(
                 _network_sandbox_argv(argv, attempt, broker_endpoint), cwd=str(cwd), env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=inherited_fds,
@@ -10418,7 +10431,7 @@ class GenericPackHost:
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
         })
-        output_capture = _TaskOutputCapture(attempt, stream_secrets, self._scrub_secret_text)
+        output_capture = _TaskOutputCapture(attempt, stream_secrets, self._scrub_secret_text, output_root)
         output_capture.start(process)
         review_snapshot = None
         execution_error = None
