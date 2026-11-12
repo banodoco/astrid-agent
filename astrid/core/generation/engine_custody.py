@@ -409,18 +409,63 @@ class LinuxEngineServiceClient:
             self._spawned.wait(timeout=_remaining(deadline))
 
 
+def engine_log_path(root: str, engine: str) -> str:
+    return root + "/runtime/out/sessions/" + engine + "-logs/engine.log"
+
+
 class _Output:
-    def __init__(self, stream, limit):
+    """Drain one child pipe into a bounded ring and, when given, a complete append-only log."""
+
+    def __init__(self, stream, limit, log_path=None):
         self.stream, self.limit = stream, limit
         self.data, self.total = bytearray(), 0
+        self.lock = threading.Lock()
+        self.sink = None
+        self.ended = False
+        if log_path is not None:
+            self.attach_sink(log_path)
         self.thread = threading.Thread(target=self._drain, daemon=True)
         self.thread.start()
 
+    def attach_sink(self, path):
+        with self.lock:
+            if self.ended or self.sink is not None:
+                return
+            try:
+                self.sink = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC, 0o600)
+            except OSError:
+                pass
+
     def _drain(self):
-        while block := self.stream.read(65536):
-            self.total += len(block)
-            self.data.extend(block)
-            del self.data[:max(0, len(self.data) - self.limit)]
+        try:
+            while block := self.stream.read(65536):
+                with self.lock:
+                    self.total += len(block)
+                    self.data.extend(block)
+                    del self.data[:max(0, len(self.data) - self.limit)]
+                    if self.sink is not None:
+                        try:
+                            view = memoryview(block)
+                            while view:
+                                written = os.write(self.sink, view)
+                                if not written:
+                                    raise OSError("sink write made no progress")
+                                view = view[written:]
+                        except OSError:
+                            try:
+                                os.close(self.sink)
+                            except OSError:
+                                pass
+                            self.sink = None
+        finally:
+            with self.lock:
+                self.ended = True
+                if self.sink is not None:
+                    try:
+                        os.close(self.sink)
+                    except OSError:
+                        pass
+                    self.sink = None
 
     def text(self):
         encoded = bytes(self.data).decode("utf-8", errors="replace").encode("utf-8")
@@ -431,7 +476,7 @@ class _Output:
 
 
 class _Owned:
-    def __init__(self, request, *, secrets=()):
+    def __init__(self, request, *, secrets=(), output_log=None):
         from astrid.core.execution.process_group import popen_owned_group
         # The caller's library path is never inherited; request.env (built by
         # engine_child_env) is the only source.
@@ -457,8 +502,8 @@ class _Owned:
         except BaseException as exc:
             self.process = getattr(exc, "process", None)
             raise
-        self.stdout = _Output(self.process.stdout, request.max_output_bytes)
-        self.stderr = _Output(self.process.stderr, request.max_output_bytes)
+        self.stdout = _Output(self.process.stdout, request.max_output_bytes, output_log)
+        self.stderr = _Output(self.process.stderr, request.max_output_bytes, output_log)
 
     def live(self):
         if getattr(self.process, "_astrid_tree_uncertain", None):
@@ -677,14 +722,14 @@ class _Supervisor:
         venv = self.adapter.join(self.root, primary.relative_path)
         return replace(request, env=engine_child_env(venv, request.env))
 
-    def spawn(self, request):
+    def spawn(self, request, *, output_log=None):
         if self.unresolved:
             raise CustodyUnresolved("session retains an unresolved native cleanup obligation")
         # Retain even a failed-launch handle before propagating its error.
         owned = _Owned.__new__(_Owned)
         self.commands.append(owned)
         try:
-            owned.__init__(self.child_request(request), secrets=(self.token,))
+            owned.__init__(self.child_request(request), secrets=(self.token,), output_log=output_log)
         except BaseException as exc:
             if getattr(owned, "process", None) is not None:
                 self.unresolved = True
@@ -891,8 +936,14 @@ class _Supervisor:
                 return self.facts("absent")
             self.launch = payload["launch"]
             source = self.source_identity(deadline, channel)
+            path = engine_log_path(self.root, self.identity["engine"])
+            try:
+                os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            except OSError:
+                pass
             request = _command({**self.launch, "max_output_bytes": 262144}, deadline)
-            self.engine = self.spawn(request)
+            # The engine's complete stdout and stderr are appended here from launch.
+            self.engine = self.spawn(request, output_log=path)
             try:
                 facts = self.health(channel, deadline)
                 self.publish_registry(source)
