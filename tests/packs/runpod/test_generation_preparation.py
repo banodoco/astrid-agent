@@ -371,7 +371,7 @@ def test_retained_unknown_detached_start_retains_exact_job_and_a3_reconciles_bef
     job = record["lease"]["preparation"]["job"]
     assert record["state"] == "cleanup_pending" and job["state"] == "starting"
     assert c.pod.cancelled == [job["id"]]
-    with pytest.raises(Exception, match="no machine: run `astrid machines claim`"):
+    with pytest.raises(Exception, match=r"machine pod-1 has an unresolved preparation: run `astrid machines release pod-1`, then claim again"):
         request, consent = _request_for_job(c, "retry")
         c.adapter.prepare(request, consent)
     assert c.creates == 1 and len(c.pod.job_log) == 1
@@ -382,6 +382,44 @@ def test_retained_unknown_detached_start_retains_exact_job_and_a3_reconciles_bef
     c.host.release()
     assert c.deletes == ["pod-1"]
     assert c.read()["lease"]["preparation"]["job"] == {"id": job["id"], "state": "cancelled"}
+
+
+def test_claimed_preparation_expiring_during_install_refuses_and_releases_exact_pod(retained):
+    c = retained
+    _claim(c)
+    operation_id = c.read()["operation_id"]
+    pod_id = c.read()["pod_id"]
+    paid_expires_at = c.read()["lease"]["paid_expires_at"]
+    paid_limits = c.read()["paid_limits"]
+    request, consent = _request_for_job(c)
+    original = c.placement.prepare_claimed
+
+    def expires_during_install(*args, **kwargs):
+        assert c.clock() < paid_expires_at
+        result = original(*args, **kwargs)
+        # Change the clock directly so the deadline check runs without firing
+        # the fake timer that would independently start release.
+        c.clock.now = paid_expires_at + 1
+        return result
+
+    c.placement.prepare_claimed = expires_during_install
+    with pytest.raises(PreparedWorkerError, match="preparation consumed its paid lifetime"):
+        c.adapter.prepare(request, consent)
+
+    record = c.read()
+    assert record["operation_id"] == operation_id and record["pod_id"] == pod_id == "pod-1"
+    assert record["state"] == "cleanup_pending"
+    assert record["lease"]["preparation"]["state"] == "unresolved"
+    assert record["paid_limits"] == paid_limits
+    assert len(c.pod.job_log) == 1 and "engines install" in c.pod.job_log[0]
+    assert not any("generate " in command for command in c.pod.job_log)
+    assert c.creates == 1 and c.deletes == []
+
+    c.host.release()
+    assert c.deletes == [pod_id]
+    assert c.read()["operation_id"] == operation_id
+    assert c.read()["pod_id"] == pod_id
+    assert c.read()["state"] == "cleanup_complete"
 
 
 def test_retained_install_failure_stays_with_a3_and_does_not_replay(retained):
