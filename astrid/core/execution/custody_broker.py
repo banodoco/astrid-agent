@@ -3410,8 +3410,8 @@ class ProcessCustody:
                 raise CustodyError(message)
             # Nothing was observed or mutated, so this must not poison custody.
             raise CustodyLockBusy(message)
-        transaction = _ObservationTransaction(self, deadline, started)
         try:
+            transaction = _ObservationTransaction(self, deadline, started)
             transaction.check_deadline()
             yield transaction
             transaction.check_deadline()
@@ -3419,7 +3419,8 @@ class ProcessCustody:
             self._uncertain = self._uncertain or error
             raise
         finally:
-            transaction.active = False
+            if transaction is not None:
+                transaction.active = False
             self._lock.release()
 
     def observe_census(self, members: Mapping[int, str], *,
