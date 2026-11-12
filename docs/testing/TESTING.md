@@ -114,8 +114,9 @@ Good: `State` is `Running`.
 
 - The line first prints `Getting Astrid ready. The first time takes a few minutes.`, then
   `Using your workspace at …`, `Downloading Release N`, `Creating your workspace`, `Starting Release N`,
-  `Checking Release N started`, `Open https://astrid.haus`. In a terminal window each slow line shows a small
-  moving zigzag at its end and keeps a ✓ (`done` without Unicode) when it finishes; piped output has the plain lines.
+  `Checking Release N started`, `Open https://astrid.haus`. In a terminal window each slow line has mink
+  tracks in snow running along its end (`⠳ ⠲ ⠢ ⠠`, or `'.` prints without Unicode) and keeps a ✓ (`done` without
+  Unicode) when it finishes; piped output has the plain lines.
   The second run starts with `Getting Astrid ready.` alone.
 - Your default browser opens astrid.haus. If it isn't Chrome or Edge, open https://astrid.haus in Chrome or Edge yourself.
 - The page says **Choose Allow in Chrome** (or Edge). After you allow, it opens the editor by itself. A new workspace

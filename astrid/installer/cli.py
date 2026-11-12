@@ -745,7 +745,7 @@ def main(argv: list[str] | None = None) -> int:
                     recorded = {"data_root": prior["data_root"]}
                 backend.managed_by = managed_by
                 if managed_by == "pinokio":
-                    say.path = None  # Pinokio keeps its own record of this terminal: plain lines
+                    say.tracks = None  # Pinokio keeps its own record of this terminal: plain lines
                 if mode in {"install", "update"} and managed_by != "pinokio" and normalise_completed(backend):
                     # The first run after a finished storage move makes R1 the selected
                     # data root once; from here this is an ordinary direct install.

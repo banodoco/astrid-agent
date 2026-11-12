@@ -23,22 +23,53 @@ class Terminal(io.StringIO):
         return True
 
 
-def test_frames_draw_the_zigzag_then_erase_it_back():
-    assert frames(UNICODE) == [
-        "        ", "▁       ", "▁╱      ", "▁╱▔     ", "▁╱▔╲    ", "▁╱▔╲▁   ",
-        "▁╱▔╲▁╱  ", "▁╱▔╲▁╱▔ ", "▁╱▔╲▁╱▔╲", "▁╱▔╲▁╱▔ ", "▁╱▔╲▁╱  ", "▁╱▔╲▁   ",
-        "▁╱▔╲    ", "▁╱▔     ", "▁╱      ", "▁       ",
-    ]
-    assert frames(UNICODE) == frames(UNICODE)
-    assert [frame.rstrip() for frame in frames(ASCII)][:5] == ["", "_", "_/", "_/-", "_/-\\"]
-    assert all(len(frame) == 8 for frame in frames(UNICODE) + frames(ASCII))
-    assert ASCII.isascii()
+# public/install (App) generates the same frames from the same rule, and
+# scripts/installer/bootstrap.test.mjs pins it to these same literals.
+UNICODE_FRAMES = [
+    "⠳         ⠠",
+    "⠲ ⠳        ",
+    "⠢ ⠲ ⠳      ",
+    "⠠ ⠢ ⠲ ⠳    ",
+    "  ⠠ ⠢ ⠲ ⠳  ",
+    "    ⠠ ⠢ ⠲ ⠳",
+    "      ⠠ ⠢ ⠲",
+    "        ⠠ ⠢",
+]
+ASCII_FRAMES = ["'.        .", "'  '.      ", " . '  '.   ", "    . '  '.", "       . ' "]
 
 
-def test_frames_match_the_bootstrap_shell_copy():
-    # public/install (App) draws the same cycle; keep the two in step.
-    assert UNICODE == "▁╱▔╲▁╱▔╲"
-    assert ASCII == "_/-\\_/-\\"
+def test_frames_are_the_steady_stream_of_mink_tracks_pinned_with_the_shell():
+    assert frames(UNICODE) == UNICODE_FRAMES
+    assert frames(ASCII) == ASCII_FRAMES
+    assert UNICODE.ages == ("\u2833", "\u2832", "\u2822", "\u2820")  # ⠳ ⠲ ⠢ ⠠
+    assert (UNICODE.slots, UNICODE.period, ASCII.slots, ASCII.period) == (6, 8, 4, 5)
+    assert all(frame.isascii() for frame in ASCII_FRAMES)
+    # One fixed width, so the line never jitters, and a cycle that repeats exactly.
+    assert {len(frame) for frame in UNICODE_FRAMES + ASCII_FRAMES} == {11}
+    for tracks in (UNICODE, ASCII):
+        assert [tracks.frame(tick) for tick in range(tracks.period, 3 * tracks.period)] == frames(tracks) * 2
+    assert progress.INTERVAL == 0.19
+
+
+@pytest.mark.parametrize("tracks", [UNICODE, ASCII], ids=["unicode", "ascii"])
+def test_each_run_lays_one_print_a_slot_and_each_print_ages_monotonically(tracks):
+    for start in (0, tracks.period):  # two runs, one after another
+        for slot in range(tracks.slots):
+            seen = [tracks.cell(start + slot + age, slot) for age in range(len(tracks.ages))]
+            assert seen == list(tracks.ages)  # fresh when laid, then one stage a tick
+            assert tracks.cell(start + slot + len(tracks.ages), slot).strip() == ""  # then snow
+        # Behind the head the trail grades from fresh (newest) to faint (oldest).
+        tick = start + tracks.slots - 1
+        trail = [tracks.ages.index(tracks.cell(tick, slot)) for slot in range(tracks.slots)
+                 if tracks.cell(tick, slot).strip()]
+        assert trail == sorted(trail, reverse=True) and trail[-1] == 0
+
+
+@pytest.mark.parametrize("tracks", [UNICODE, ASCII], ids=["unicode", "ascii"])
+def test_the_stream_is_continuous(tracks):
+    # The next mink sets off before the last trail has gone: no blank frame ever.
+    assert all(frame.strip() for frame in frames(tracks))
+    assert tracks.period >= len(tracks.ages)  # never two runs on one slot
 
 
 @pytest.mark.parametrize("environ", [
@@ -78,7 +109,7 @@ def test_bootstrap_hint_applies_only_to_its_relay_pipe(tmp_path):
 def test_non_terminal_output_has_plain_lines_without_frames_or_controls():
     output = io.StringIO()
     say = Progress(output, interval=0.001)
-    assert say.path is None
+    assert say.tracks is None
     say("Using your workspace at /tmp/w.")
     with say.phase("Downloading Release 12"):
         threading.Event().wait(0.05)
@@ -87,7 +118,7 @@ def test_non_terminal_output_has_plain_lines_without_frames_or_controls():
     text = output.getvalue()
     assert text == "Using your workspace at /tmp/w.\nDownloading Release 12\nChecking it\n"
     assert not CONTROL.search(text)
-    assert not any(cell in text for cell in UNICODE + "✓")
+    assert not any(cell in text for cell in "".join(UNICODE.ages) + "✓")
 
 
 def _rendered(text: str) -> list[str]:
@@ -115,14 +146,15 @@ def _rendered(text: str) -> list[str]:
 def test_terminal_phase_animates_and_ends_in_a_clean_checked_line():
     output = Terminal()
     say = Progress(output, interval=0.001)
-    assert say.path == UNICODE
+    assert say.tracks == UNICODE
     with say.phase("Downloading Release 12"):
         threading.Event().wait(0.1)
     say("Open https://astrid.haus")
     text = output.getvalue()
-    assert "▁╱▔╲▁╱▔╲" in text  # it drew the whole zigzag at least once
+    # It drew the stream from tick 0, stepping back over the tracks' 11 cells each tick.
+    assert "Downloading Release 12 " + " " * 11 + "".join("\b" * 11 + frame for frame in UNICODE_FRAMES) in text
     assert _rendered(text) == ["Downloading Release 12 ✓", "Open https://astrid.haus"]
-    assert text.endswith("\rDownloading Release 12 ✓          \nOpen https://astrid.haus\n")
+    assert text.endswith("\rDownloading Release 12 ✓" + " " * 13 + "\nOpen https://astrid.haus\n")
 
 
 def test_closing_rewrites_the_line_over_an_echoed_interrupt():
@@ -131,14 +163,14 @@ def test_closing_rewrites_the_line_over_an_echoed_interrupt():
     with pytest.raises(KeyboardInterrupt):
         with say.phase("Downloading Release 12"):
             threading.Event().wait(0.02)
-            output.write("^C")  # the terminal's echo of Ctrl+C lands mid-zigzag
+            output.write("^C")  # the terminal's echo of Ctrl+C lands mid-tracks
             raise KeyboardInterrupt
     assert _rendered(output.getvalue()) == ["Downloading Release 12"]
 
 
 def test_ascii_terminal_ends_with_done():
     output = Terminal()
-    say = Progress(output, path=ASCII, interval=0.001)
+    say = Progress(output, tracks=ASCII, interval=0.001)
     with say.phase("Stopping Release 1"):
         threading.Event().wait(0.02)
     assert _rendered(output.getvalue()) == ["Stopping Release 1 done"]
@@ -185,7 +217,7 @@ def test_phase_helper_keeps_plain_say_callables():
     with phase(lines.append, "Checking it"):
         lines.append("inside")
     assert lines == ["Checking it", "inside"]
-    assert progress.MARKS[UNICODE] == "✓"
+    assert (UNICODE.mark, ASCII.mark) == ("✓", "done")
 
 
 def test_cli_routes_backend_lines_through_its_progress_but_keeps_injected_sinks(tmp_path):
@@ -265,7 +297,7 @@ def test_a_broken_plain_stream_drops_lines_instead_of_raising():
             raise BrokenPipeError(32, "Broken pipe")
 
     say = Progress(Broken())
-    assert say.path is None
+    assert say.tracks is None
     say("Using your workspace at /tmp/w.")
     with say.phase("Downloading Release 12"):
         pass
