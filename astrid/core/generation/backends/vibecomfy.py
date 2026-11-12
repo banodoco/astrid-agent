@@ -561,6 +561,9 @@ class VibeComfyBackend(BackendAdapter):
             _bind_target_model_roles(wf, backend_spec, plan["roles"])
         if target_schema is not None:
             if align == "trust":
+                # A target schema is only produced in the branch above after
+                # selecting a client; keep that invariant explicit for typing.
+                assert client is not None
                 from astrid.core.generation.target_inventory import (
                     declared_rows,
                     trust_declared_loader_choices,

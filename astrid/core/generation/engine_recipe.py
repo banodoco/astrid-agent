@@ -405,7 +405,7 @@ def _declared_rows() -> list[dict[str, Any]]:
 
 
 def _index_rows() -> list[dict[str, Any]]:
-    rows, seen = [], set()
+    rows, seen = [], set[tuple[str, str]]()
     for item in sorted(_declared_rows(), key=lambda r: (r["engine"], r["platform"])):
         engine, platform = _string(item["engine"], "index.engine"), _string(item["platform"], "index.platform")
         if not _ENGINE.fullmatch(engine) or platform not in _PLATFORMS:
