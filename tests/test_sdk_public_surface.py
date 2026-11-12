@@ -173,6 +173,17 @@ def test_generate_facade_is_lazy_public_surface() -> None:
             setattr(astrid, "sdk", popped["astrid.sdk"])
 
 
+@pytest.mark.parametrize("kind", ["image", "video", "audio"])
+@pytest.mark.parametrize("placement", [None, "auto"])
+def test_generate_facade_rejects_retired_target_keyword(kind, placement) -> None:
+    astrid = _import_public_module()
+
+    with pytest.raises(TypeError, match="use placement="):
+        getattr(astrid.generate, kind)(
+            target="http://127.0.0.1:8123", placement=placement, prompt="one boat",
+        )
+
+
 def test_representative_top_level_submodule_imports_resolve() -> None:
     for module_name in REPRESENTATIVE_SUBMODULES:
         imported = importlib.import_module(module_name)

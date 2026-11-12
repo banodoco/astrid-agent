@@ -59,9 +59,15 @@ def test_non_registry_catalog_entries_use_default_placement(monkeypatch, capsys)
                   "declared_mode": declared_mode, "declared_execution": "local",
                   "resolved_mode": None, "resolved_path": None, "result": None}
         if row["kind"] == "generation":
-            with pytest.raises(SystemExit) as error:
-                cli.main(["generation", "fixture prompt", "--model", row["id"], "--dry-run", "--json"])
-            assert error.value.code == 2
+            before = len(routed)
+            code = cli.main(["generation", "fixture prompt", "--model", row["id"], "--dry-run", "--json"])
+            payload = json.loads(capsys.readouterr().out)
+            assert code == 2 and payload["status"] == "blocked"
+            assert len(payload["issues"]) == 1
+            issue = payload["issues"][0]
+            assert issue["code"] == "input_rejected"
+            assert issue["message"].startswith("argument modality: invalid choice: 'generation'")
+            assert len(routed) == before
             record["result"] = "classification refusal: CLI has no generation media subcommand"
             report.append(record)
             continue

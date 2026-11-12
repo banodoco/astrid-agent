@@ -504,6 +504,8 @@ _EXPLICIT_ONLY_IMAGE_MODES: frozenset[str] = frozenset(
 
 def _reject_retired_generation_inputs(inputs: dict[str, Any]) -> None:
     """Reject removed public spellings instead of silently forwarding them."""
+    if "target" in inputs:
+        raise TypeError("generate.* no longer accepts 'target'; use placement=")
     if "backend" in inputs:
         raise TypeError("generate.* no longer accepts 'backend'; use execution")
 
