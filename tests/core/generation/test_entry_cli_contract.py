@@ -38,6 +38,25 @@ def test_foley_help_and_describe_show_license_without_runtime(monkeypatch, capsy
     assert notice in capsys.readouterr().out
 
 
+def test_describe_positional_catalog_entry_id(capsys, monkeypatch):
+    from astrid import console
+
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('metadata opened Runtime'))
+    assert console.main(['generate', 'describe', 'audio/ace_step_1_5_t2a_song', '--json']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['id'] == 'audio/ace_step_1_5_t2a_song'
+    assert result['mode'] == 'music'
+
+
+def test_describe_unknown_positional_value_reports_path_or_entry(capsys):
+    from astrid import console
+
+    assert console.main(['generate', 'describe', 'unknown-generation-entry-xyz']) == 2
+    error = capsys.readouterr().err
+    assert 'existing workflow path' in error and 'catalog entry ID' in error
+    assert 'Errno' not in error
+
+
 def _description(source="catalog", kind="image", mode="t2i"):
     fields = [{"name": "prompt", "type": "string", "required": True}]
     if mode == "edit":

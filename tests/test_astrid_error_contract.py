@@ -536,6 +536,23 @@ def test_sdk_redacts_provider_keys_and_quoted_values_in_all_coded_fields() -> No
     assert envelope["recovery"] == "Authorization: <redacted>"
 
 
+def test_credential_snapshot_scrub_matches_credential_names_only() -> None:
+    from astrid.core.contracts.errors import redact_credential_data
+
+    result = redact_credential_data({
+        "variant_key": "variant-7", "idempotency_key": "request-9",
+        "api_key": "api-secret", "access_key": "access-secret",
+        "private_key": "private-secret", "token": "token-secret",
+        "password": "password-secret", "RUNPOD_KEY": "provider-secret",
+    })
+    assert result == {
+        "variant_key": "variant-7", "idempotency_key": "request-9",
+        "api_key": "<redacted>", "access_key": "<redacted>",
+        "private_key": "<redacted>", "token": "<redacted>",
+        "password": "<redacted>", "RUNPOD_KEY": "<redacted>",
+    }
+
+
 # Parent coverage retained during the Release-1 + Timeline merge.
 def test_to_envelope_omits_code_and_source_type_when_none() -> None:
     err = AstridError("no extras")
