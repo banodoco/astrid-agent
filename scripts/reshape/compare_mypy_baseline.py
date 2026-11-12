@@ -9,7 +9,6 @@ from typing import Any
 
 from scripts.reshape import count_baseline
 
-BASELINE_PATH = Path("scripts/reshape/baselines/mypy_astrid.json")
 FILE_CODE_BASELINE_PATH = Path("scripts/reshape/baselines/mypy_file_code.json")
 COMMAND = [
     sys.executable,
@@ -60,7 +59,9 @@ def _run() -> dict[str, Any]:
 
 
 def main() -> int:
-    return count_baseline.main("Mypy", BASELINE_PATH, FILE_CODE_BASELINE_PATH, _run)
+    return count_baseline.main(
+        "Mypy", None, FILE_CODE_BASELINE_PATH, _run, compare_total=False
+    )
 
 
 if __name__ == "__main__":
