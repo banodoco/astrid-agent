@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -136,6 +137,9 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     cause: dict[str, Any] = {key: summary[key] for key in
                              ("code", "category", "exception", "node_id", "node_class", "field", "constraint")
                              if key in summary}
+    install_unverified = getattr(failure, "install_unverified", None)
+    if isinstance(install_unverified, str) and re.fullmatch(r"[A-Za-z0-9_.:;=-]{1,256}", install_unverified):
+        cause["install_unverified"] = install_unverified
     marker = getattr(failure, "cause", None)
     if marker in CAUSE_MARKERS:
         cause["cause"] = marker

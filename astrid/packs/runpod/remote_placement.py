@@ -711,6 +711,12 @@ class RemotePlacement:
 
         installation = state.installation
         remaining = min(120, self._remaining() if verification_seconds is None else verification_seconds)
+        verification_deadline = time.monotonic() + remaining
+        if verification_seconds is not None:
+            transport_deadline = getattr(state.claim.ops, "deadline", None)
+            if transport_deadline is not None:
+                verification_deadline = min(verification_deadline, transport_deadline)
+            remaining = max(0, verification_deadline - time.monotonic())
         state.install_unverified = None
         if remaining <= 0:
             state.install_unverified = "status_deadline_exhausted"
@@ -718,7 +724,7 @@ class RemotePlacement:
         command = (f"{POD_VENV}/bin/astrid engines status {installation.engine} "
                    f"--platform {installation.platform} --placement local "
                    f"--root {shlex.quote(installation.root)} --deadline {remaining}")
-        # Failure verification is read-only and bounded by the original paid
+        # Checkpoint verification is read-only and bounded by the original paid
         # lease, independently of the execution timer that the job may exhaust.
         code, stdout, _ = (self._exec(state, command, timeout=120) if verification_seconds is None
                            else state.claim.ops.exec(command, remaining))
@@ -752,9 +758,9 @@ class RemotePlacement:
             finally:
                 path.unlink(missing_ok=True)
         else:
-            # One transport deadline covers status, this fixed-file read and
-            # the later reset. Do not stream an unbounded pod file into a
-            # controller journal or extend the original paid lease.
+            # Status and this fixed-file read share one verification window.
+            # Failure callers also bound transport and reset by that deadline.
+            # Do not stream an unbounded pod file into a controller journal.
             script = ("import base64,os,stat,sys;"
                       "fd=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK);"
                       "s=os.fstat(fd);"
@@ -762,8 +768,9 @@ class RemotePlacement:
                       "data=os.read(fd,1048577);"
                       "len(data)<=1048576 or sys.exit(2);"
                       "print(base64.b64encode(data).decode())")
-            remaining = min(verification_seconds, max(0, state.claim.ops.deadline - time.monotonic()))
+            remaining = max(0, verification_deadline - time.monotonic())
             if remaining <= 0:
+                state.install_unverified = "status_deadline_exhausted"
                 return False
             code, output, _ = state.claim.ops.exec(
                 f"{POD_VENV}/bin/python -c {shlex.quote(script)} {shlex.quote(receipt)}", remaining)
@@ -773,8 +780,10 @@ class RemotePlacement:
             try:
                 data = base64.b64decode(output.strip(), validate=True)
             except (ValueError, binascii.Error):
+                state.install_unverified = "receipt_read_failed"
                 return False
             if len(data) > 1024 * 1024:
+                state.install_unverified = "receipt_read_failed"
                 return False
         saved = engine_runner._parse_receipt(json.loads(data), plan)
         plan = engine_runner.plan_from_receipt(
@@ -785,6 +794,9 @@ class RemotePlacement:
                 or live.requirements_locks != saved.requirements_locks
                 or live.health.object_info_sha256 != saved.health.object_info_sha256):
             raise InstallationReceiptChanged("live installation differs from its canonical receipt")
+        if verification_seconds is not None and time.monotonic() >= verification_deadline:
+            state.install_unverified = "status_deadline_exhausted"
+            return False
         state.installed = {
             "schema": "astrid.runpod.installed-snapshot.v1", "engine": installation.engine,
             "platform": installation.platform, "root": installation.root,

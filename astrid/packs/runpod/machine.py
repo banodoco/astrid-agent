@@ -1013,8 +1013,17 @@ class RunPodMachine:
             previous = dict(preparation["installed"])
             if previous != state.installed or preparation["state"] != "prepared":
                 raise MachineError("retained installation checkpoint changed during generation")
-            if not placement._canonical_installed(state):
-                raise MachineError("completed job has no verified canonical installation")
+            job = {"id": run.job_id, "state": "exited"}
+            if current["lease"].get("job") != job:
+                raise CustodyChanged("retained installation checkpoint job changed during generation")
+            # Execution has finished. Verification gets its own bounded window
+            # inside the original paid lease, without extending the job timer.
+            remaining = current["lease"]["paid_expires_at"] - owner.clock()
+            if not placement._canonical_installed(state, verification_seconds=remaining):
+                why = state.install_unverified or "unclassified"
+                error = MachineError(f"completed job has no verified canonical installation (reason: {why})")
+                error.install_unverified = why
+                raise error
             expected = previous
             if state.installed != previous:
                 try:
@@ -1035,7 +1044,7 @@ class RunPodMachine:
                 if state.installed != expected:
                     raise InstallationUnverified("live installation differs from completed-job attestation")
             # Recheck the same owner, generation and invocation after observation.
-            self._save_installation(owner, run.lease, preparation, {"installed": dict(expected)})
+            self._save_installation(owner, run.lease, preparation, {"installed": dict(expected)}, job=job)
 
     # -- release -------------------------------------------------------------
 
