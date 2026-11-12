@@ -155,6 +155,25 @@ def test_unknown_declared_type_fails_closed():
         entries.validate_inputs(description, {'opaque': 'guess'})
 
 
+@pytest.mark.parametrize('entry_id', ['lava-sr', 'deepfilternet3'])
+def test_audio_enhancement_catalog_inputs_use_typed_action_ports(entry_id):
+    spec = ModelRegistry.load_default().get(entry_id).modes['sfx']
+    description = {'inputs': entries._catalog_inputs('audio', spec, 'sfx')}
+    fields = {row['name']: row for row in description['inputs']}
+    assert set(fields) == set(spec.supports)
+    assert all(row['type'] == 'string' for row in fields.values())
+    assert fields['audio_ref']['required']
+    values = {'audio_ref': 'reference.wav'}
+    if entry_id == 'lava-sr':
+        values.update(audio_format='wav', bitrate='192k')
+    assert entries.validate_inputs(description, values) == values
+    with pytest.raises(entries.MissingRequiredEntryInputsError, match='audio_ref'):
+        entries.validate_inputs(description, {})
+    for name in fields:
+        with pytest.raises(ValueError, match='requires a string'):
+            entries.validate_inputs(description, {**values, name: 7})
+
+
 def test_image_widget_is_a_file_only_for_load_image():
     workflow = VibeWorkflow('image', WorkflowSource('image'))
     workflow.nodes['1'] = VibeNode('1', 'LoadImage', inputs={'image': 'input.png'})
