@@ -488,7 +488,6 @@ def test_native_node_installer_bootstraps_bundled_pip_without_replacing_base(tmp
         repeated = json.loads(prep._native(native_pip_program(), json.dumps({'python_executable': python})).stdout)
         assert repeated['existed'] is True and repeated['installed'] == facts['installed']
         runner = _Runner(plan_install(recipe, root=str(root), placement='local'), prep.context, prep.adapter, prep.deadline)
-        runner.check_environment_identities()
         for step in runner.plan.steps:
             if step.kind in {'source', 'environment'}: runner.execute(step, readonly=True)
     finally:

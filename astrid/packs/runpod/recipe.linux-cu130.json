@@ -113,10 +113,10 @@
       "127.0.0.1",
       "--port",
       "{port}",
-      "--extra-model-paths-config",
-      "{models_config}",
       "--use-ck-attention",
-      "--disable-comfy-compiler"
+      "--disable-comfy-compiler",
+      "--models-directory",
+      "{models_root}"
     ],
     "cwd": "{comfy_root}",
     "env": {

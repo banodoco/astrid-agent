@@ -100,7 +100,9 @@
       "--listen",
       "127.0.0.1",
       "--port",
-      "{port}"
+      "{port}",
+      "--models-directory",
+      "{models_root}"
     ],
     "cwd": "{comfy_root}",
     "env": {

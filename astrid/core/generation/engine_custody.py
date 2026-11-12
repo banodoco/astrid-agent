@@ -33,8 +33,8 @@ from . import engine_recipe as recipes
 from ._engine_python_bootstrap import engine_child_env, engine_process_env
 from .engine_contracts import (
     CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
-    EndpointHealthError, EndpointOwnershipError, EngineError, EngineReinstallRequired, IntegrityError,
-    RecipeValidationError, UnsafePathError, UnsupportedPlatform,
+    EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
+    RecipeValidationError, UnsafePathError, UnsupportedPlatform, effective_models_root,
 )
 from .engine_runner import _json, _object_info_sha256, _root, _sha, helper_manifest
 from .engine_platforms import LinuxPlatformAdapter
@@ -254,13 +254,6 @@ class LinuxEngineServiceClient:
                     raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
                 identity = marker["identity"]
                 if identity != self.identity:
-                    if (set(identity) == set(self.identity)
-                            and all(identity[k] == self.identity[k] for k in ("root", "engine", "platform", "recipe_sha256"))
-                            and isinstance(identity["helper_sha256"], str)
-                            and re.fullmatch(r"[0-9a-f]{64}", identity["helper_sha256"])):
-                        recipe = recipes.load_recipe(self.identity["engine"], self.identity["platform"])
-                        raise EngineReinstallRequired.for_install(engine=recipe.engine, platform=recipe.platform,
-                            root=self.identity["root"], environment=recipe.primary_environment)
                     raise EndpointOwnershipError("supervisor installation identity differs")
             info = _exists(fd, "control.sock")
             if info is not None:
@@ -754,7 +747,7 @@ class _Supervisor:
         self.root = identity["root"]
         self.control = self.root + "/.astrid-engine/session"
         self.adapter = LinuxPlatformAdapter(identity["platform"])
-        # The model directory is the installed receipt's record (a saved volume cache, or <root>/models).
+        # The installed receipt records an explicit model directory or the checkout default.
         request = self.adapter.start_request(recipe, self.root, deadline=time.monotonic() + 1,
                                              models_root=_installed_models_root(self.root, recipe))
         self.launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
@@ -935,12 +928,13 @@ class _Supervisor:
 
     def publish_registry(self, source):
         request, port = self.launch, self.recipe.start.port
+        models_root = effective_models_root(self.root, _installed_models_root(self.root, self.recipe))
         output = request["cwd"] + "/output"
         if "--output-directory" in request["argv"]:
             output = request["argv"][request["argv"].index("--output-directory") + 1]
         config = {"runtime_root": self.root + "/runtime", "cwd": request["cwd"], "port": port,
                   "warm_policy": "never", "base_directory": request["cwd"],
-                  "models_root": self.root + "/models", "models_root_normalized": self.root + "/models",
+                  "models_root": models_root, "models_root_normalized": models_root,
                   "output_directory": output, "locality": "managed_local_server",
                   "server_log_path": self.registry + "/comfy.log"}
         url = f"http://127.0.0.1:{port}"
