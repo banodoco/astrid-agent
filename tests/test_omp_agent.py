@@ -674,3 +674,20 @@ def test_console_engine_dispatch(monkeypatch):
     monkeypatch.setattr(omp_agent, "main", lambda argv: pytest.fail("OMP route"))
     assert console.main(["engines", "status", "--help"]) == 19
     assert seen == [["status", "--help"]]
+
+
+def test_installed_entry_routes_packs_to_the_pack_cli(monkeypatch):
+    """run-astrid execs `python -m astrid.omp_agent`, so `astrid packs add …` must route here too."""
+    from astrid.core.pack import cli as pack_cli
+    seen = []
+    monkeypatch.setattr(pack_cli, "main", lambda argv: seen.append(argv) or 17)
+    command = ["packs", "add", "https://github.com/banodoco/poms_packs", "--revision", "main",
+               "--pack-id", "astrid_motion", "--subpath", "astrid_motion"]
+    assert omp_agent.main(command) == 17
+    assert seen == [command[1:]]
+
+
+def test_installed_runner_execs_the_omp_agent_entry_that_routes_packs():
+    from astrid.installer import launcher
+    import inspect
+    assert '"-m", "astrid.omp_agent"' in inspect.getsource(launcher)

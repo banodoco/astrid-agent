@@ -435,7 +435,7 @@ def test_default_add_text_uses_bundled_content_without_motion(monkeypatch):
     assert tl.clip("Edited").id == clip.id
 
 
-def test_moved_element_recovery_command_reaches_git_transaction(monkeypatch, tmp_path):
+def test_moved_element_recovery_command_forwards_git_install_arguments(monkeypatch, tmp_path):
     import shlex
     from types import SimpleNamespace
     from astrid.core.pack import cli_manage
