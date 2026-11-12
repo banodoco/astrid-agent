@@ -896,7 +896,7 @@ actions:
     conditions: []
     graph: {consumes: [], provides: []}
     isolation: {mode: subprocess, network: false}
-    metadata: {host_target_operation: setup}
+    metadata: {host_target_operation: setup, project_scope: optional}
     invocation:
       kind: command
       command:

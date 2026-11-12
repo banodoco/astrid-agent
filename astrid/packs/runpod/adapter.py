@@ -56,40 +56,86 @@ async def setup_volumes(api_key: str) -> list[dict[str, Any]]:
 
 
 async def setup_datacenters(api_key: str) -> list[str]:
-    """Return datacenter IDs observed in RunPod's complete GPU inventory."""
-    from runpod_lifecycle import probe
-
-    observed = await probe(api_key=api_key, min_memory_gb=0)
+    """Return provider datacenter IDs, including centers with no current stock."""
+    try:
+        centers = await _setup_datacenter_rows(api_key)
+    except Exception:  # noqa: BLE001 - sanitize provider response failures
+        raise RuntimeError("RunPod datacenter catalog is unavailable") from None
     return list(dict.fromkeys(
-        datacenter
-        for item in observed or ()
-        if isinstance(item, dict)
-        for datacenter in item.get("datacenters_available", ())
-        if isinstance(datacenter, str) and datacenter.strip()
+        dc["id"] for dc in centers
+        if isinstance(dc, dict) and isinstance(dc.get("id"), str) and dc["id"].strip()
     ))
+
+
+async def _setup_datacenter_rows(api_key: str) -> list[dict[str, Any]]:
+    # runpod-lifecycle 0.3.1.dev0 has no public raw datacenter query; keep its
+    # private query details behind this single Agent-side compatibility helper.
+    from runpod_lifecycle.availability import _constraints, _fetch_datacenters
+
+    return await _fetch_datacenters(api_key, _constraints(False, 0, None))
+
+
+class _SetupGpuTypes(list[str]):
+    """Catalog choices with optional, non-blocking stock information."""
+
+    stock_missing: tuple[str, ...] = ()
+    availability_fallback: bool = False
+
+
+def _setup_gpu_catalog(api_key: str) -> list[dict[str, Any]]:
+    """Read the provider's GPU catalog through the SDK's existing transport."""
+    from runpod.api.graphql import run_graphql_query
+
+    try:
+        response = run_graphql_query(
+            "query AstridSetupGpuCatalog { gpuTypes { id displayName } }",
+            api_key=api_key,
+        )
+        data = response.get("data") if isinstance(response, dict) else None
+        rows = data.get("gpuTypes") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError
+        return [row for row in rows if isinstance(row, dict)
+                and isinstance(row.get("displayName"), str) and row["displayName"].strip()]
+    except Exception:  # noqa: BLE001 - provider errors may contain secrets
+        raise RuntimeError("RunPod GPU catalog is unavailable; preferences were not saved") from None
 
 
 async def setup_gpu_types(api_key: str, *, datacenter_id: str | None,
                           require_network_volume: bool) -> list[str]:
-    """Return GPU type names currently offered in the selected datacenter."""
-    from runpod_lifecycle import probe
+    """Return GPUs offered in the selected datacenter, with stock as guidance."""
+    rows = _setup_gpu_catalog(api_key)
+    names_by_id = {row["id"]: row["displayName"].strip() for row in rows
+                   if isinstance(row.get("id"), str) and row["id"].strip()}
+    try:
+        centers = await _setup_datacenter_rows(api_key)
+    except Exception:  # noqa: BLE001 - provider errors may contain secrets
+        raise RuntimeError("RunPod datacenter catalog is unavailable; preferences were not saved") from None
 
-    observed = await probe(
-        api_key=api_key,
-        datacenter_ids=[datacenter_id] if datacenter_id else None,
-        min_memory_gb=0,
-    )
-    items = observed
-    names = []
-    for item in items or ():
-        name = item if isinstance(item, str) else getattr(item, "name", None)
-        if isinstance(item, dict):
-            name = item.get("gpu_type") or item.get("display_name") or item.get("displayName") or name
-            if datacenter_id and datacenter_id not in (item.get("datacenters_available") or []):
-                continue
-        if isinstance(name, str) and name.strip():
-            names.append(name.strip())
-    return list(dict.fromkeys(names))
+    selected = [dc for dc in centers if datacenter_id is None or dc.get("id") == datacenter_id]
+    if datacenter_id is not None and not selected:
+        return _SetupGpuTypes()
+    entries_by_center = [dc.get("gpuAvailability") for dc in selected]
+    if any(not isinstance(entries, list) for entries in entries_by_center):
+        raise RuntimeError("RunPod datacenter GPU offerings are unavailable; preferences were not saved")
+    availability_rows = [row for entries in entries_by_center for row in entries]
+    if any(not isinstance(row, dict) or not isinstance(row.get("gpuTypeId"), str)
+           for row in availability_rows):
+        raise RuntimeError("RunPod datacenter GPU offerings are unavailable; preferences were not saved")
+    fallback = not availability_rows
+    offered_ids = set(names_by_id) if fallback else {row["gpuTypeId"] for row in availability_rows}
+    names = list(dict.fromkeys(name for gpu_id, name in names_by_id.items() if gpu_id in offered_ids))
+    result = _SetupGpuTypes(names)
+    result.availability_fallback = fallback
+    if datacenter_id is not None and not fallback:
+        dc_rows = [row for row in availability_rows if row.get("gpuTypeId") in names_by_id]
+        stocked = {names_by_id[row["gpuTypeId"]] for row in dc_rows
+                   if row.get("available") is True or (
+                       row.get("available") is not False
+                       and str(row.get("stockStatus", "")).lower() in {"high", "low", "available"}
+                   )}
+        result.stock_missing = tuple(name for name in names if name not in stocked)
+    return result
 
 
 async def observe_priced_offer(preferences, config) -> RunPodOffer:
