@@ -2388,6 +2388,7 @@ def _inventory_launch_policy(environment: Mapping[str, str], cwd: str) -> dict[s
     import shutil
 
     from astrid.core.pack import source_setup as sources
+    from astrid.core.pack.product_ids import product_pack_ids
     configured = environment.get(sources.SOURCE_STATE_ENV)
     state_home = Path(environment.get('XDG_STATE_HOME', str(Path(environment.get('HOME', str(Path.home()))) / '.local/state')))
     path = Path(configured) if configured else state_home / 'astrid/default/pack-sources.json'
@@ -2402,7 +2403,7 @@ def _inventory_launch_policy(environment: Mapping[str, str], cwd: str) -> dict[s
         raise CustodyError('command inventory state is malformed')
     roots = {}
     for key, value in state.get('active', {}).items():
-        if key in state.get('disabled', []):
+        if key in state.get('disabled', []) or key in product_pack_ids():
             continue
         record = sources._record_from_mapping(value)
         if record.pack_id != key:

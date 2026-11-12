@@ -447,7 +447,8 @@ class Backend:
         # unvalidated service definition still requires an ownership check.
         self._foreground_stop_retired = False
 
-    def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
+    def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False,
+            separate_stderr=False) -> str:
         # Never inherit a developer's Python import path or Runtime connection.
         env = {k: v for k, v in os.environ.items() if k not in {
             "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
@@ -457,10 +458,15 @@ class Backend:
                and not (clean_bun_env and (k.startswith("BUN_") or k == "NODE_OPTIONS"))}
         env.update({"PYTHONIOENCODING": "utf-8"})
         env.update(extra_env or {})
+        # A caller that parses stdout as a machine-readable result keeps stderr
+        # (warnings, log lines) out of it; both still reach the install log.
         result = subprocess.run([str(s) for s in argv], cwd=cwd, env=env, check=False,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE if separate_stderr else subprocess.STDOUT,
                                 encoding="utf-8", errors="replace", timeout=timeout)
         self.diagnostic(result.stdout)
+        if separate_stderr and result.stderr:
+            self.diagnostic(result.stderr)
         if result.returncode:
             raise subprocess.CalledProcessError(result.returncode, [str(argv[0])], output=result.stdout)
         return result.stdout.strip()
@@ -1770,7 +1776,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
     def _run_skills(self, version: Version, argv: list, *, action: str = "sync") -> dict:
         failed = False
         try:
-            output = self.run(argv, extra_env=version.env, timeout=60)
+            output = self.run(argv, extra_env=version.env, timeout=60, separate_stderr=True)
             report = json.loads(output)
             actions = report.get("actions", [])
             destinations = sorted({
