@@ -1658,6 +1658,8 @@ def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: 
         result["checks"]["service"] = "pass"
         selected = journey.selected_tuple(manifest, version)
         result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
+        journey.verify("install", version_path, selected_data, evidence)
+        result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
 
         # 2. The installer's selection record says autostart is off.
         record, selection_digest = read_selection()

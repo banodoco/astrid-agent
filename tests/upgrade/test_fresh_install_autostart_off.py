@@ -70,9 +70,14 @@ def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, stat
                 "served_release_real": 12, "served_release_advertised": 13}
 
     monkeypatch.setattr(jumps.journey, "selected_manifest", lambda *_a, **_k: (app / "manifest.json", manifest))
+    verify_receipt = {"details": {"origin.imports": {"astrid": str(root / "versions/c12/lib/astrid"),
+                                                       "astrid_runtime": str(root / "versions/c12/lib/runtime"),
+                                                       "runtime_protocol": str(root / "versions/c12/lib/protocol"),
+                                                       "astrid_runtime_client": str(root / "versions/c12/lib/client")}}}
     monkeypatch.setattr(jumps.journey, "read_json", lambda path: {"manifest_sha256": "candidate",
                                                                    "artifacts": {}}
-                        if Path(path) == candidate_path else {})
+                        if Path(path) == candidate_path else verify_receipt
+                        if Path(path).name == "verify-install.json" else {})
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *_: manifest)
 
     def build(app_path, evidence_path):
@@ -163,6 +168,7 @@ def test_leg_passes_only_when_all_four_assertions_hold(monkeypatch, tmp_path):
     assert result["capture"]["device_scale_factor"] == 2
     assert result["capture"]["served_release_real"] == 12
     assert result["capture"]["served_release_advertised"] == 13
+    assert result["import_origins"] and result["import_origins"]["astrid"]
     for check in jumps.AUTOSTART_CHECKS:
         assert result["checks"][check] == "pass", check
 
