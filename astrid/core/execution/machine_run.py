@@ -145,7 +145,7 @@ def _report_failure(on_failure: Callable[[Mapping[str, Any]], None] | None, fail
     try:
         on_failure({"failure": failure, "stage": stage, "lease": lease, "run": run,
                     "release_failed": release_failed})
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - failure reporting must not mask the job error
         import sys
         print(f"failure receipt not written ({type(exc).__name__})", file=sys.stderr)
 

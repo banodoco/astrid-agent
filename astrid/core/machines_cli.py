@@ -169,7 +169,7 @@ def _keep(machine_id: str, *, for_duration: str | None, until_release: bool,
         message = str(exc)
         print(json.dumps({"ok": False, "error": message}) if as_json else message)
         return 2
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - report uncertain paid keep outcomes
         if "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
             message = f"keep result is unknown after a timeout; check `astrid machines` before retrying ({exc})"
             print(json.dumps({"ok": False, "error": message, "unknown": True}) if as_json else message)
@@ -279,7 +279,7 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
     except ValueError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}) if as_json else str(exc))
         return 2
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - report uncertain paid claim outcomes
         unknown = isinstance(exc, TimeoutError) or "timeout" in str(exc).lower() or "timed out" in str(exc).lower()
         message = (f"claim result is unknown; check `astrid machines` before retrying ({exc})" if unknown else
                    f"claim failed: {exc}; check `astrid machines` before retrying")
@@ -353,7 +353,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
             api_key = CredentialsScope.resolve_local("runpod", env_var=credential_name).value
             if not api_key:
                 raise ValueError
-        except Exception:
+        except Exception:  # noqa: BLE001 - report credential failures without exposing details
             message = "RunPod credential is missing; run `astrid credential set runpod`"
             print(json.dumps({"ok": False, "error": message}) if as_json else message)
             return 2
@@ -367,7 +367,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
         # Provider failures may include credentials in their exception text.
         try:
             return call(*args)
-        except Exception:
+        except Exception:  # noqa: BLE001 - report inventory failures without exposing credentials
             raise RuntimeError("RunPod inventory failed") from None
 
     try:
@@ -459,7 +459,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
                                                   wait=True, read_managed_outputs=False)
             else:
                 result = setup(validated)
-        except Exception:
+        except Exception:  # noqa: BLE001 - report setup failures without exposing provider details
             # Invocation exceptions can contain credential/provider details. Keep
             # the user-facing failure fixed and sanitized; action result codes
             # below are safe to report when the Runtime returns one.
@@ -490,7 +490,7 @@ def _setup(*, volume: str | None, datacenter: str | None, gpu_types: list[str], 
     except (ValueError, RunPodSetupRequiredError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}) if as_json else str(exc))
         return 2
-    except Exception:
+    except Exception:  # noqa: BLE001 - report setup failures without exposing account details
         message = "RunPod setup could not confirm account inventory or save preferences; check credentials and retry `astrid machines setup`"
         print(json.dumps({"ok": False, "error": message}) if as_json else message)
         return 1

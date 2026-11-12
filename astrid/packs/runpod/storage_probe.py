@@ -201,7 +201,7 @@ def main():
         receipt = storage_probe(request, diagnostic=diagnostic)
         print(json.dumps(receipt, sort_keys=True))
         return 0
-    except Exception:
+    except Exception:  # noqa: BLE001 - report probe failures without exposing sensitive details
         print("pod storage mount/identity/capacity verification failed", file=sys.stderr)
         return 1
 
