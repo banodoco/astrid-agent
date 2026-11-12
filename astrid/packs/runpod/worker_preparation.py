@@ -29,7 +29,8 @@ from astrid.core.generation.engine_contracts import Gate, PlacementRefused
 from astrid.core.util.time import utc_now_iso
 
 from .pod_fields import InvalidPodField, pod_field
-from .provider import account_gate, async_provider_call, provider_budget, provider_call
+from .provider import (ProviderRefused, account_gate, async_provider_call, async_provider_operation,
+                       provider_budget, provider_call)
 
 _SHARED_GATES = {
     "GPU": "hardware", "volume": "storage", "datacenter": "region",
@@ -529,15 +530,32 @@ def confirm_acquired_machine(
     """
     from runpod_lifecycle import graphql as lifecycle_graphql
 
-    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    deadline = None
+
+    def read_machine():
+        nonlocal deadline
+        if deadline is None:
+            # Admission has its own inherited acquisition deadline. Begin the
+            # readiness observation window when the first query can start,
+            # so inventory pacing does not consume the whole polling window.
+            deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        return lifecycle_graphql.get_pod(contract.pod_id, api_key)
+
     machine: Mapping[str, Any] = {}
     while True:
         try:
-            record = lifecycle_graphql.get_pod(contract.pod_id, api_key)
+            record = provider_call(api_key, read_machine)
             candidate = record.get("machine") if isinstance(record, dict) else None
             machine = candidate if isinstance(candidate, dict) else {}
+        except ProviderRefused as exc:
+            raise TargetObservationError(
+                "pod machine observation could not enter the provider account gate",
+                gate="machine", retryable=True, custody="unknown",
+            ) from exc
         except Exception:
             machine = {}
+        if deadline is None:
+            deadline = time.monotonic() + max(0.0, float(timeout_seconds))
         if machine.get("gpuDisplayName") and machine.get("dataCenterId"):
             break
         if time.monotonic() >= deadline:
@@ -545,7 +563,7 @@ def confirm_acquired_machine(
                 f"pod {contract.pod_id!r} machine was not reported by GraphQL before the readiness timeout",
                 gate="machine",
              retryable=True, custody="unknown")
-        time.sleep(_MACHINE_POLL_SECONDS)
+        time.sleep(min(_MACHINE_POLL_SECONDS, max(0., deadline - time.monotonic())))
 
     observed_gpu = machine["gpuDisplayName"]
     observed_dc = machine["dataCenterId"]
@@ -577,7 +595,7 @@ def read_acquired_gpu_count(api_key: str, pod_id: str) -> int:
     from runpod_lifecycle import graphql as lifecycle_graphql
 
     try:
-        record = lifecycle_graphql.get_pod(pod_id, api_key)
+        record = provider_call(api_key, lifecycle_graphql.get_pod, pod_id, api_key)
     except Exception:
         record = None
     count = record.get("gpuCount") if isinstance(record, dict) else None
@@ -640,6 +658,30 @@ def _target_contract(
     )
 
 
+async def _wait_provider_ready(config: Any, pod: Any, timeout: int) -> Any:
+    """Keep lifecycle's worker readiness checks, gating each control-plane poll."""
+    status = getattr(pod, "status", None)
+    if status is None:
+        # Test/transport facades without provider status polling.
+        return await pod.wait_ready(timeout=timeout)
+
+    async def gated_status():
+        from runpod_lifecycle import api, graphql
+
+        # Lifecycle's status() hides errors and tries several transports. Use
+        # one exact observation so a 429 cannot trigger ungated fallbacks or
+        # be reported to the gate as a successful None response.
+        record = await async_provider_call(config.api_key, graphql.get_pod, pod.id, config.api_key)
+        return api._normalize_pod_status(pod.id, record) if isinstance(record, dict) else None
+
+    pod.status = gated_status
+    try:
+        with provider_budget(timeout):
+            return await pod.wait_ready(timeout=timeout)
+    finally:
+        pod.status = status
+
+
 async def _wait_and_observe_target(
     config: Any,
     pod: Any,
@@ -648,7 +690,7 @@ async def _wait_and_observe_target(
     volume: Mapping[str, Any],
     ready_timeout_seconds: int,
 ) -> RunPodTargetObservation:
-    await pod.wait_ready(timeout=ready_timeout_seconds)
+    await _wait_provider_ready(config, pod, ready_timeout_seconds)
     return await observe_and_confirm_acquired_target(
         config.api_key,
         _target_contract(
@@ -1290,7 +1332,7 @@ async def acquire_target(
                     defer_machine=True,
                 ),
             )
-            pod = await get_pod(requested_pod_id, config, name=initial.pod_name)
+            pod = await async_provider_operation(config.api_key, get_pod, requested_pod_id, config, name=initial.pod_name)
             if str(getattr(pod, "id", "")) != requested_pod_id or str(
                 getattr(pod, "name", "")
             ) != initial.pod_name:
@@ -1415,14 +1457,15 @@ async def acquire_target(
             replace_target_record(handle_path, pending, operation_id=operation_id)
             attempt = pending
             try:
-                pod = await launch_when_available(
-                    config,
-                    name=expected_name,
-                    # Zero asks lifecycle for one launch; the bounded loop
-                    # owns timing and persists each POST before it starts.
-                    max_wait_sec=0 if max_create_attempts is not None else window,
-                    retry_interval_sec=retry_interval_seconds,
-                )
+                with provider_budget(max(0., deadline - time.monotonic()) if deadline is not None else window):
+                    pod = await async_provider_operation(
+                        config.api_key, launch_when_available, config,
+                        name=expected_name,
+                        # Zero asks lifecycle for one launch; the bounded loop
+                        # owns timing and persists each POST before it starts.
+                        max_wait_sec=0 if max_create_attempts is not None else window,
+                        retry_interval_sec=retry_interval_seconds,
+                    )
             except AllocationUnknown as exc:
                 unknown = {
                     **attempt,
@@ -1513,7 +1556,7 @@ async def acquire_target(
                 f"expected exact request name {expected_name!r}",
                 gate="identity", retryable=False, custody="exact",
             )
-        await pod.wait_ready(timeout=ready_timeout_seconds)
+        await _wait_provider_ready(config, pod, ready_timeout_seconds)
     except BaseException as exc:
         if isinstance(exc, TargetObservationError):
             exc.custody = _record_custody(allocated)
@@ -1709,7 +1752,7 @@ async def reconcile_target(
             expected_name = initial_observation.pod_name
             bound["name"] = expected_name
             replace_target_record(handle_path, bound, operation_id=operation_id)
-        pod = await get_pod(pod_id, config, name=expected_name)
+        pod = await async_provider_operation(config.api_key, get_pod, pod_id, config, name=expected_name)
         if str(getattr(pod, "id", "")) != pod_id or (
             expected_name is not None
             and str(getattr(pod, "name", "")) != expected_name
@@ -1770,7 +1813,7 @@ def _gpu_type_from_graphql(gpu_id: str, api_key: str) -> dict:
     from runpod.api.graphql import run_graphql_query
 
     query = "query { gpuTypes(input: {id: %s}) { id displayName } }" % json.dumps(gpu_id)
-    response = run_graphql_query(query, api_key=api_key)
+    response = provider_call(api_key, lambda: run_graphql_query(query, api_key=api_key))
     rows = ((response or {}).get("data") or {}).get("gpuTypes") or []
     for row in rows:
         if isinstance(row, dict) and row.get("id") == gpu_id:

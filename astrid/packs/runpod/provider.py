@@ -110,6 +110,22 @@ def provider_failure(exc):
         match = re.match(r"^RunPod pod (?:listing|termination) failed: HTTP (\d{3}):", str(exc))
         if match:
             status = int(match.group(1))
+    # Lifecycle wraps definite capacity/request responses in LaunchFailure.
+    # The typed cause retains the status; a definite 2xx stock-out must not
+    # become a transport failure and throttle a journaled capacity retry.
+    cause = getattr(exc, "__cause__", None)
+    if status is None and cause is not None:
+        response = getattr(cause, "response", None)
+        status = getattr(response, "status_code", getattr(cause, "status_code", None))
+        retry_after = getattr(cause, "retry_after", retry_after)
+        if response is not None:
+            retry_after = getattr(response, "headers", {}).get("Retry-After", retry_after)
+        from runpod_lifecycle.errors import ProviderCapacityUnavailable
+
+        if status != 429 and isinstance(cause, ProviderCapacityUnavailable):
+            # An explicit capacity rejection is stock evidence, including
+            # lifecycle's 503 capacity response, rather than account failure.
+            status = 200
     return status, retry_after
 
 
@@ -188,8 +204,11 @@ class ProviderGate:
         # This inode is never replaced. Every reader and writer locks it,
         # including alias resolution and recovery, before opening state.
         with os.fdopen(fd, "r+") as lock:
+            if deadline is None:
+                deadline = _provider_deadline.get()
             limit = self.clock() + 30. if deadline is None else deadline
             while True:
+                _check_provider_cancelled()
                 try:
                     platform.lock_file(lock.fileno(), blocking=False)
                     break
@@ -241,6 +260,7 @@ class ProviderGate:
 
     def before_call(self, deadline):
         while True:
+            _check_provider_cancelled()
             def admit(state):
                 now = self.clock()
                 delay = max(0., state.get("next", 0.) - now, state.get("cooldown", 0.) - now)
@@ -287,22 +307,39 @@ class ProviderGate:
 
     def call(self, operation, *args, deadline=None, **kwargs):
         cleanup = _provider_cleanup.get()
+        deadline = self.clock() + 30. if deadline is None else deadline
         if not cleanup:
-            self.before_call(self.clock() + 30. if deadline is None else deadline)
+            self.before_call(deadline)
+        _check_provider_cancelled()
         try:
             result = operation(*args, **kwargs)
         except Exception as exc:
             status, retry_after = provider_failure(exc)
-            if not cleanup:
-                if status is not None:
-                    self.after_response(status, retry_after)
-                else:
-                    self.after_error(retry_after)
+            self._account_response(status, retry_after, cleanup=cleanup, deadline=deadline)
             raise
-        status = getattr(result, "status_code", 200)
-        if not cleanup:
-            self.after_response(status, getattr(result, "headers", {}).get("Retry-After"))
+        self._account_response(getattr(result, "status_code", 200),
+                               getattr(result, "headers", {}).get("Retry-After"), cleanup=cleanup, deadline=deadline)
         return result
+
+    def _account_response(self, status, retry_after=None, *, cleanup=False, deadline=None):
+        import logging
+
+        if cleanup:
+            return
+        cancel_token = _provider_cancelled.set(None)
+        deadline_token = _provider_deadline.set(deadline if deadline is not None else _provider_deadline.get())
+        try:
+            if status is None:
+                self.after_error(retry_after)
+            else:
+                self.after_response(status, retry_after)
+        except (OSError, ProviderRefused):
+            # Auxiliary bookkeeping must not change a known create response
+            # into an apparent create failure. The journal owns that response.
+            logging.getLogger(__name__).warning("Provider pacing response could not be persisted")
+        finally:
+            _provider_deadline.reset(deadline_token)
+            _provider_cancelled.reset(cancel_token)
 
 
 def account_gate(api_key, *, account_ref=None):
@@ -340,19 +377,29 @@ def account_gate(api_key, *, account_ref=None):
 
 _provider_deadline = ContextVar("provider_deadline", default=None)
 _provider_cleanup = ContextVar("provider_cleanup", default=False)
+_provider_cancelled = ContextVar("provider_cancelled", default=None)
+
+
+def _check_provider_cancelled():
+    cancelled = _provider_cancelled.get()
+    if cancelled is not None:
+        cancelled()
+
 
 
 @contextmanager
-def provider_budget(seconds, *, cleanup=False):
+def provider_budget(seconds, *, cleanup=False, cancelled=None):
     import time
 
-    existing = _provider_deadline.get()
+    existing = (_provider_deadline.get() if not cleanup or _provider_cleanup.get() else None)
     deadline = time.time() + seconds
     token = _provider_deadline.set(min(existing, deadline) if existing is not None else deadline)
     cleanup_token = _provider_cleanup.set(cleanup or _provider_cleanup.get())
+    cancel_token = _provider_cancelled.set(None if cleanup else cancelled or _provider_cancelled.get())
     try:
         yield
     finally:
+        _provider_cancelled.reset(cancel_token)
         _provider_cleanup.reset(cleanup_token)
         _provider_deadline.reset(token)
 
@@ -369,38 +416,74 @@ def provider_call(api_key, operation, *args, **kwargs):
 
 
 async def async_provider_call(api_key, operation, *args, already_gated=False, **kwargs):
-    """Bound the caller even when lifecycle is still finishing its own polling.
-
-    An overdue operation retains exact resource custody; its late failure still
-    updates the account gate. It must not hold up event-loop executor shutdown.
-    """
+    """Bound the waiter and cancel admission, retaining already-started custody."""
     import asyncio
     from concurrent.futures import Future
     from contextvars import copy_context
-    from threading import Thread
+    from threading import Event, Thread
 
     future = Future()
     context = copy_context()
+    stopped = Event()
+    gate = None
+
+    def execute():
+        nonlocal gate
+        parent_check = _provider_cancelled.get()
+
+        def check():
+            if stopped.is_set():
+                raise asyncio.CancelledError()
+            if parent_check is not None:
+                parent_check()
+
+        _provider_cancelled.set(check)
+        check()
+        if already_gated:
+            return operation(*args, **kwargs)
+        gate = account_gate(api_key)
+        return gate.call(operation, *args, deadline=_provider_deadline.get(), **kwargs)
 
     def run():
         if not future.set_running_or_notify_cancel():
             return
         try:
-            if already_gated:
-                result = context.run(operation, *args, **kwargs)
-            else:
-                result = context.run(provider_call, api_key, operation, *args, **kwargs)
-        except BaseException as exc:  # noqa: BLE001 - forward thread failures to its waiting caller.
+            result = context.run(execute)
+        except BaseException as exc:  # noqa: BLE001 - forward worker cancellation/failures.
             future.set_exception(exc)
         else:
             future.set_result(result)
 
-    Thread(target=run, daemon=True, name="provider-cleanup").start()
+    Thread(target=run, daemon=True, name="provider-call").start()
     try:
         return await asyncio.wait_for(asyncio.wrap_future(future), timeout=provider_remaining_budget())
     except TimeoutError:
-        account_gate(api_key).after_error()
+        stopped.set()
+        if gate is not None and not context.get(_provider_cleanup):
+            # Never resolve an alias or wait for a lock on the event loop after
+            # timeout. Use the already resolved gate and an immediate lock budget.
+            recorded = Future()
+
+            def record_timeout():
+                try:
+                    _provider_deadline.set(gate.clock())
+                    gate._account_response(None)
+                finally:
+                    recorded.set_result(None)
+
+            Thread(target=record_timeout, daemon=True, name="provider-timeout").start()
+            await asyncio.wrap_future(recorded)
         raise
+    except asyncio.CancelledError:
+        stopped.set()
+        raise
+
+
+async def async_provider_operation(api_key, operation, *args, **kwargs):
+    """One admitted lifecycle coroutine; never retry an ambiguous create here."""
+    import asyncio
+
+    return await async_provider_call(api_key, lambda: asyncio.run(operation(*args, **kwargs)))
 
 
 class RunPodMachineProvider:

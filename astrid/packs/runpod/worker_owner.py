@@ -199,7 +199,8 @@ class RunPodLeaseOwner:
             config = self.selection.config_factory(RunPodOffer(
                 record["provider_account_ref"], record["gpu_type"],
                 limits["hourly_usd"], "lease-recovery"))
-            return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay()
+            with provider_budget(0):
+                return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay()
         except Exception:  # noqa: BLE001 - keep durable retry armed on any config failure.
             # Keep durable recovery armed if its journal/config is currently
             # unreadable; the account gate cannot be addressed without a key.

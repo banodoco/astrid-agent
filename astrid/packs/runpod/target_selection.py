@@ -36,7 +36,7 @@ from .worker_preparation import (
     _validate_completed_release, write_target_record,
 )
 from . import worker_preparation
-from .provider import parse_rest_pod
+from .provider import parse_rest_pod, provider_budget
 
 
 def _exact_volume_id(record):
@@ -628,8 +628,14 @@ class RunPodSelectionOwner:
                         offer = await interruptible(observe(), provider_timeout=30.0)
                     rate_limit_failures = 0
                     offer, _ = self.consented_offer(consent, self.clock(), offer=offer)
-                    result = await interruptible(self._select_once(
-                        consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
+                    remaining = (max(0., (_utc(consent.deadline) - self.clock()).total_seconds())
+                                 if consent.deadline is not None else 30.)
+                    if consent.capacity_timeout_seconds is not None:
+                        remaining = min(remaining, max(0., consent.capacity_timeout_seconds -
+                                                       (self.monotonic() - started)))
+                    with provider_budget(remaining, cancelled=check):
+                        result = await interruptible(self._select_once(
+                            consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
                     progress(number, offer, "claimed")
                     return result
                 except OfferObservationError as exc:
