@@ -20,6 +20,7 @@ def paid_controls(tmp_path):
 @pytest.mark.parametrize("entry_id,mode", [
     ("z-image", "i2i"),
     ("hunyuan-foley-local", "sfx"),
+    ("qwen-image-edit", "edit"),
 ])
 def test_fixed_entry_dry_run(entry_id, mode, paid_controls, tmp_path, capsys, monkeypatch):
     from astrid.core.generation import preflight

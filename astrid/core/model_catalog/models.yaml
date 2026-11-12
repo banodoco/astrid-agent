@@ -245,9 +245,6 @@ models:
           - seed
           - count
           - image_ref
-          - size
-          - guidance_scale
-          - steps
         requires:
           - prompt
           - image_ref
@@ -255,6 +252,7 @@ models:
           local:
             template: edit/qwen_image_edit
             template_hash: "sha256:ae87ed4179dd0ff0c87f2fbc44f7c8a58e658ed92af27c40a2d9e8b63aa7c454"
+            param_map: {prompt: prompt, seed: seed, image_ref: image}
           cloud:
             endpoint: fal-ai/qwen-image-edit
           codex:
@@ -264,9 +262,6 @@ models:
               seed: seed
               count: count
               image_ref: image_ref
-              size: size
-              guidance_scale: guidance_scale
-              steps: steps
 
   # =========================================================================
   # qwen-image-edit-2511 — versioned Qwen Image Edit 2511 cloud route
