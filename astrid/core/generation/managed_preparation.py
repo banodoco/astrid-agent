@@ -111,11 +111,10 @@ def native_failure_classes(stdout: str, reason: str) -> tuple[str, ...]:
     if reason != "schema_reconciliation_failed":
         return ()
     try:
-        from importlib.resources import files
-        public = json.loads(files("vibecomfy").joinpath("porting/cache/object_info/index.json").read_text())
+        # VibeComfy owns its object_info cache layout; read class ids through its API only.
+        from vibecomfy.porting.object_info.consume import list_classes
+        public = set(list_classes())
     except (OSError, ValueError, TypeError, ImportError):
-        return ()
-    if not isinstance(public, dict):
         return ()
     prefix = "- workflow contains unresolved class types: "
     for line in stdout[-4096:].splitlines()[-32:]:
@@ -341,14 +340,14 @@ class ManagedEnginePreparation:
             # This client stops only its authenticated supervisor's retained
             # handles and confirms all command/process/output drain before return.
             self.context.service_client.stop_owned(deadline=time.monotonic() + 5)
-        except BaseException:
-            import logging
-            logging.getLogger(__name__).exception(
-                "managed preparation owned-engine stop failed task=%s attempt=%s",
-                self.task, self.attempt,
-            )
+        except BaseException as stop_error:  # noqa: BLE001 - reported through the raised error or fallback; diagnostic at debug, never a user-facing traceback
+            # The fail-safe comes first and never depends on the diagnostic.
             self.uncertain = True
-            raise CustodyUnresolved("managed preparation failed; exact owned engine stop remains unconfirmed") from None
+            import logging
+            logging.getLogger(__name__).debug("managed preparation owned-engine stop failed", exc_info=True)
+            error = CustodyUnresolved("managed preparation failed; exact owned engine stop remains unconfirmed")
+            error.add_note(f"owned engine stop failed: {type(stop_error).__name__}")
+            raise error from None
         self._preparing_engine = False
 
     def _prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
