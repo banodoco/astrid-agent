@@ -424,7 +424,11 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     """Route authored workflows through the same target admission as entries."""
     from astrid.core.generation import entries
 
-    values = _values(parsed)
+    try:
+        values = _values(parsed)
+    except (ValueError, OSError) as exc:
+        from astrid.core.generation.preflight import generation_error
+        raise generation_error(exc, code='input_rejected', details={'field': 'inputs'}) from exc
     from astrid.sdk.generation import _generation_controls
     _generation_controls(engine=parsed.engine, consent=parsed.consent,
                          max_usd=parsed.max_usd, deadline=parsed.deadline)
@@ -432,7 +436,9 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     if path.is_dir():
         path = path / "workflow.py"
     if parsed.replace and not parsed.as_entry:
-        raise ValueError('--replace requires --as-entry')
+        from astrid.core.generation.preflight import generation_error
+        raise generation_error(ValueError('--replace requires --as-entry'),
+                               code='input_rejected', details={'field': 'replace'})
     if parsed.no_run and not parsed.as_entry:
         raise ValueError('--no-run requires --as-entry')
     if parsed.as_entry and parsed.dry_run:
@@ -701,17 +707,18 @@ def _main(argv: list[str]) -> int:
                 if not parsed.no_wait:
                     from .delivery import deliver_generation
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
-    except AstridSDKError as exc:
+    except AstridSDKError as sdk_exc:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
         from astrid.core.generation.preflight import generation_error
-        if is_runpod_placement(parsed.placement) and parsed.offer_digest and "offer or rate changed" in str(exc).lower():
-            exc = ValueError("RunPod offer changed (GPU type or rate; datacenter is also included in the digest). Use the same ordered --gpu values and --datacenter ID in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
+        error: Exception = sdk_exc
+        if is_runpod_placement(parsed.placement) and parsed.offer_digest and "offer or rate changed" in str(sdk_exc).lower():
+            error = ValueError("RunPod offer changed (GPU type or rate; datacenter is also included in the digest). Use the same ordered --gpu values and --datacenter ID in `astrid generate describe` and this command, then review the new offer digest and paid terms.")
         selector = ['--entry', parsed.entry or parsed.model] if parsed.entry or parsed.model else []
-        raise generation_error(exc, fixes=[{
+        raise generation_error(error, fixes=[{
             'argv': ['astrid', 'generate', 'describe', *selector] if selector else
                     ['astrid', 'generate', 'targets', '--placement', parsed.placement],
-            'scope': 'read_only', 'details': {'guidance': getattr(exc, 'fix', None)}}]) from exc
+                    'scope': 'read_only', 'details': {'guidance': getattr(error, 'fix', None)}}]) from error
     if getattr(result, "ok", True) is False:
         from astrid.core.generation.preflight import generation_error
         error = getattr(result, 'error', None) or {
@@ -770,7 +777,7 @@ def _failure_command(parsed) -> int:
     return 0
 
 
-def _kept_failure(before: set[tuple[str, int]]) -> None:
+def _kept_failure(before: set[tuple[str | None, int | None]]) -> None:
     """Read only the bounded owner result after a failed RunPod command."""
     try:
         from astrid.core.machines_cli import _when
@@ -803,7 +810,7 @@ def subcommand_names() -> tuple[str, ...]:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error
-    before = set()
+    before: set[tuple[str | None, int | None]] = set()
     runpod = '--placement' in argv and argv[argv.index('--placement') + 1:][:1] == ['runpod']
     if runpod:
         try:

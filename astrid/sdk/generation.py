@@ -1598,19 +1598,19 @@ class GenerationFacade:
                         registry=registry, candidate=candidate, mode=mode, modality=modality,
                         inputs=inputs, target_client=target_client, backend=backend,
                         retain_source=None if dry_run else retain_source,
-                        defer_target=is_remote_target or is_managed_target, align=align)
+                        defer_target=is_remote_target or (is_managed_target and not dry_run), align=align)
                 else:
                     from types import SimpleNamespace
                     prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
                         backends={"local": SimpleNamespace(template=str(candidate["bundle"]))})})
-                    if not is_remote_target and not is_managed_target:
+                    if not is_remote_target and (not is_managed_target or dry_run):
                         require_generation_target_readiness(prerequisite, mode, target_client)
                     if candidate["kind"] != modality or mode not in candidate["modes"]:
                         raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
                     registry_id = candidate.get("registry_id")
                     if registry_id:
                         catalog_entry = registry.get(registry_id)
-                        if not is_remote_target and not is_managed_target:
+                        if not is_remote_target and (not is_managed_target or dry_run):
                             require_generation_target_readiness(catalog_entry, mode, target_client)
                         workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                             registry=registry, candidate=catalog_entry, mode=mode,

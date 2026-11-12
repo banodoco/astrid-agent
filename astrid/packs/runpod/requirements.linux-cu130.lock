@@ -3502,6 +3502,7 @@ transformers==5.22.1 \
     #   -r /tmp/c-comfy-sources/comfyui/requirements.txt
     #   -r /tmp/c-comfy-sources/comfyui-hunyuanvideo-foley/requirements.txt
     #   -r /tmp/c-comfy-sources/comfyui-qwentts/requirements.txt
+    #   -r astrid/packs/runpod/lock-inputs/requirements.in
 triton==3.6.0 \
     --hash=sha256:0b3a97e8ed304dfa9bd23bb41ca04cdf6b2e617d5e782a8653d616037a5d537d \
     --hash=sha256:10c7f76c6e72d2ef08df639e3d0d30729112f47a56b0c81672edc05ee5116ac9 \

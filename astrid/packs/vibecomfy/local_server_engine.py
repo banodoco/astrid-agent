@@ -511,7 +511,7 @@ def run_local_server(
                 _expose_engine_diagnostic(exc)
                 raise
             finally:
-                if context is not None:
+                if context is not None and prepared is not None:
                     original_error = sys.exc_info()[1]
                     try:
                         _project_native_attempt(context.receipt_path, destination,
@@ -579,6 +579,6 @@ def _expose_engine_diagnostic(exc: BaseException) -> None:
     diagnostic = getattr(exc, "comfy_diagnostic", None)
     if isinstance(diagnostic, dict) and getattr(exc, "engine_diagnostic", None) is None:
         try:
-            exc.engine_diagnostic = diagnostic
+            setattr(exc, "engine_diagnostic", diagnostic)
         except AttributeError:
             pass

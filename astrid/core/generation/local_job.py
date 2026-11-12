@@ -98,5 +98,7 @@ def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | No
             workflow, Path(out), task_identity=task, attempt_identity=attempt,
             workflow_inputs=json.dumps(inputs, sort_keys=True), entry=None,
             align=align or job["align"], **files)
+    if described is None:
+        raise JobFileError(f"entry {entry!r} is not available on this machine")
     return run_named_entry(described, named, inputs, files, Path(out), task=task, attempt=attempt,
                            mode=mode or job.get("mode"), align=align or job["align"])

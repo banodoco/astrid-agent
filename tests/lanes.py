@@ -164,7 +164,7 @@ LANES: dict[str, Lane] = {
     "omp": Lane("manual", "needs an OMP source checkout (ASTRID_OMP_TEST_PACKAGE_ROOT) and Bun; no CI job", _never, default_off=True),
     "pack_build_tools": Lane("manual", "needs Node and a pinned esbuild binary (ASTRID_BUILD_TEST_NODE, ASTRID_BUILD_TEST_ESBUILD) for the pack asset builder; no CI job", _never, default_off=True),
     "gpu": Lane("manual", "needs ComfyUI with model weights on a GPU machine; no CI job", _never, default_off=True),
-    "engine_deps": Lane("manual", "needs the engine lock's Python packages (transformers as pinned in astrid/packs/runpod/requirements.linux-cu130.lock) in the test interpreter; no CI job yet", lambda: importlib.util.find_spec("transformers") is not None, default_off=True),
+    "engine_deps": Lane("manual", "needs the engine lock's transformers and torch (CPU wheels allowed) plus model import dependencies, and ASTRID_QWENTTS_CHECKOUT at the recipe's pin; no CI job yet", lambda: importlib.util.find_spec("transformers") is not None, default_off=True),
 }
 DEFAULT_OFF = tuple(name for name, lane in LANES.items() if lane.default_off)
 DECLARED = re.compile(r"\[declared:([a-z_]+)\]")

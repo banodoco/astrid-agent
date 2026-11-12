@@ -70,6 +70,29 @@ def _pack_inventory(root: Path = ROOT) -> tuple[set[str], set[str]]:
     return pack_names, capability_ids
 
 
+def _core_vocabulary(root: Path = ROOT) -> set[str]:
+    """Read core's declarations without importing runtime modules or their dependencies."""
+    words: set[str] = set()
+    for path, name in (
+        ("astrid/core/generation/placement.py", "BUILTIN_KINDS"),
+        ("astrid/omp_agent.py", "_PACK_ROUTE_BLOCKLIST"),
+    ):
+        tree = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
+        assignment = next(
+            node for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+        )
+        value = assignment.value
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "frozenset" and len(value.args) == 1 and not value.keywords:
+            value = value.args[0]
+        declared = ast.literal_eval(value)
+        if not isinstance(declared, (tuple, list, set, frozenset)) or not all(isinstance(word, str) for word in declared):
+            raise ValueError(f"{path}: {name} must be a collection of strings")
+        words.update(declared)
+    return words
+
+
 def _module_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Import):
         return ",".join(alias.name for alias in node.names)
@@ -117,7 +140,7 @@ def _bare_namespace(path: str, module: str) -> bool:
     return module in {"astrid.packs", "astrid.packs."} and path in PACK_LOADER_MODULES
 
 
-def scan_source(path: str, source: str, pack_names: set[str], capability_ids: set[str]) -> Counter:
+def scan_source(path: str, source: str, pack_names: set[str], capability_ids: set[str], core_vocabulary: set[str]) -> Counter:
     """Return normalized findings with multiplicity; line numbers are deliberately omitted.
 
     Rule (PK-3 guard rule): core-pack names are never findings; another pack's
@@ -142,7 +165,7 @@ def scan_source(path: str, source: str, pack_names: set[str], capability_ids: se
                 findings[(path, "dynamic_pack_import", value)] += 1
             if _is_repo_pack_path(value, pack_names - CORE_PACKS):
                 findings[(path, "repo_pack_path", value)] += 1
-            if value in pack_names and value not in CORE_PACKS:
+            if value in pack_names and value not in CORE_PACKS and value not in core_vocabulary:
                 findings[(path, "pack_name_literal", value)] += 1
     return findings
 
@@ -152,6 +175,7 @@ def collect_findings(root: Path = ROOT) -> Counter:
     root = root.resolve()
     pack_names, capability_ids = _pack_inventory(root)
     findings: Counter = Counter()
+    core_vocabulary = _core_vocabulary(root)
     files: list[Path] = []
     for relative in SCAN_ROOTS:
         scan_root = root / relative
@@ -163,7 +187,7 @@ def collect_findings(root: Path = ROOT) -> Counter:
         files.extend(facade_root.glob("*.py"))
     for source_path in sorted(set(files)):
         relative_path = source_path.relative_to(root).as_posix()
-        findings.update(scan_source(relative_path, source_path.read_text(encoding="utf-8"), pack_names, capability_ids))
+        findings.update(scan_source(relative_path, source_path.read_text(encoding="utf-8"), pack_names, capability_ids, core_vocabulary))
     return findings
 
 

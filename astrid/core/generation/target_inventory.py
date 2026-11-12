@@ -16,7 +16,7 @@ TRUST_ENV = "ASTRID_ALIGN"
 
 # A pod job runs in-process, rather than in a host-launched action child. Keep
 # its validated alignment choice local to that execution context.
-POD_ALIGN = ContextVar("astrid_pod_align", default=None)
+POD_ALIGN: ContextVar[str | None] = ContextVar("astrid_pod_align", default=None)
 POD_STOP = ContextVar("astrid_pod_stop", default=None)
 
 
@@ -52,7 +52,9 @@ def trust_declared_loader_choices(observed: dict[str, Any], workflow: Any) -> di
             continue
         for section in ('required', 'optional'):
             fields = groups.get(section)
-            spec = fields.get(reference['field']) if isinstance(fields, dict) else None
+            if not isinstance(fields, dict):
+                continue
+            spec = fields.get(reference['field'])
             if not isinstance(spec, (list, tuple)) or not spec or not isinstance(spec[0], (list, tuple)):
                 continue
             choices = list(spec[0])
