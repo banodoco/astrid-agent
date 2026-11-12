@@ -151,7 +151,7 @@ def test_file_code_ratchet(current: int, baseline: int, exit_code: int, text: st
 
     row = {"path": "astrid/example.py", "code": "F821"}
     before = [{**row, "count": baseline}] if baseline else []
-    result, message = file_code_verdict([{**row, "count": current}], before)
+    result, message = file_code_verdict([{**row, "count": current}], before, frozenset({"F821"}))
     assert result == exit_code
     assert text in message
     assert f"baseline={baseline} current={current}" in message
@@ -185,7 +185,7 @@ def test_mypy_total_does_not_matter_without_a_pair_regression(
     assert "total" not in output.out.lower() + output.err.lower()
 
 
-def test_mypy_pair_above_baseline_still_fails(
+def test_mypy_blocking_pair_above_baseline_still_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import json
@@ -193,7 +193,7 @@ def test_mypy_pair_above_baseline_still_fails(
     from scripts.reshape import compare_mypy_baseline
 
     baseline = tmp_path / "file_code.json"
-    baseline.write_text(json.dumps([{"path": "a.py", "code": "assignment", "count": 1}]))
+    baseline.write_text(json.dumps([{"path": "a.py", "code": "attr-defined", "count": 1}]))
     monkeypatch.setattr(
         "sys.argv",
         ["compare_mypy_baseline", "--file-code-baseline", str(baseline)],
@@ -202,11 +202,35 @@ def test_mypy_pair_above_baseline_still_fails(
         compare_mypy_baseline,
         "_run",
         lambda: {
-            "file_code_counts": [{"path": "a.py", "code": "assignment", "count": 2}],
+            "file_code_counts": [{"path": "a.py", "code": "attr-defined", "count": 2}],
             "finding_count": 2,
         },
     )
 
     assert compare_mypy_baseline.main() == 1
     output = capsys.readouterr()
-    assert "a.py | assignment: baseline=1 current=2" in output.out
+    assert "a.py | attr-defined: baseline=1 current=2" in output.out
+
+
+def test_nonblocking_pair_increase_is_reported() -> None:
+    from scripts.reshape.count_baseline import BLOCKING_CODES, file_code_verdict
+
+    row = {"path": "a.py", "code": "assignment", "count": 2}
+    result, message = file_code_verdict([row], [{**row, "count": 1}], BLOCKING_CODES["Mypy"])
+    assert result == 0
+    assert "Reported, not blocking:" in message
+    assert "a.py | assignment: baseline=1 current=2" in message
+
+
+def test_ruff_total_increase_still_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from scripts.reshape import compare_ruff_baseline
+
+    total = tmp_path / "total.json"
+    total.write_text(json.dumps({"finding_count": 1}))
+    pairs = tmp_path / "pairs.json"
+    pairs.write_text("[]")
+    monkeypatch.setattr("sys.argv", ["compare_ruff_baseline", "--baseline", str(total), "--file-code-baseline", str(pairs)])
+    monkeypatch.setattr(compare_ruff_baseline, "_run", lambda: {"finding_count": 2, "file_code_counts": []})
+    assert compare_ruff_baseline.main() == 1

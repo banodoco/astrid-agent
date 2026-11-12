@@ -76,6 +76,28 @@ def test_placement_is_frozen_and_unknown_keys_refused():
         Placement.from_mapping({"kind": "local", "policy": {"warm": True}})
 
 
+def test_registry_failure_uses_builtin_kinds_and_debug_diagnostic(monkeypatch, caplog, capsys):
+    import logging
+    from astrid.core.extensions.registry import ExtensionRegistry
+
+    def fail_load(self):
+        raise RuntimeError("registry load failed")
+
+    monkeypatch.setattr(ExtensionRegistry, "load", fail_load)
+    caplog.set_level(logging.DEBUG, logger=placements.__name__)
+
+    assert placements.registered_machine_kinds() == ("runpod",)
+
+    record = next(record for record in caplog.records
+                  if record.name == placements.__name__ and "machine contribution registry" in record.message)
+    assert record.levelno == logging.DEBUG
+    assert record.exc_info is not None
+    assert record.exc_info[1] is not None
+    assert str(record.exc_info[1]) == "registry load failed"
+    assert "RuntimeError: registry load failed" in caplog.text
+    assert "Traceback" not in capsys.readouterr().err
+
+
 def test_attached_requires_endpoint_and_local_forbids_it():
     with pytest.raises(AstridError):
         placements.validate_placement(Placement(kind="attached"), machine_kinds=KINDS, live_leases=lambda k: [])

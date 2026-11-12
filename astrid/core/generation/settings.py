@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -29,6 +30,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
 from astrid.core.contracts.errors import AstridError
+
+_logger = logging.getLogger(__name__)
 
 KEY = "generation"
 DOCUMENT_KEYS = ("placement", "defaults", "machines")
@@ -216,7 +219,8 @@ def read(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapsh
     """Read the document; a missing one is created once from any old TOML Astrid default."""
     try:
         store = current_store(client)
-    except Exception:  # no Runtime reachable: built-ins only, never the TOML again
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback (no Runtime reachable: built-ins only, never the TOML again)
+        _logger.debug("Could not reach the settings store; using built-in generation settings", exc_info=True)
         return Snapshot(empty_document(), 0, "unavailable")
     if store is None:
         return Snapshot(empty_document(), 0, "unavailable")

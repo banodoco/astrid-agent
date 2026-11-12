@@ -245,9 +245,6 @@ models:
           - seed
           - count
           - image_ref
-          - size
-          - guidance_scale
-          - steps
         requires:
           - prompt
           - image_ref
@@ -255,6 +252,7 @@ models:
           local:
             template: edit/qwen_image_edit
             template_hash: "sha256:ae87ed4179dd0ff0c87f2fbc44f7c8a58e658ed92af27c40a2d9e8b63aa7c454"
+            param_map: {prompt: prompt, seed: seed, image_ref: image}
           cloud:
             endpoint: fal-ai/qwen-image-edit
           codex:
@@ -264,9 +262,6 @@ models:
               seed: seed
               count: count
               image_ref: image_ref
-              size: size
-              guidance_scale: guidance_scale
-              steps: steps
 
   # =========================================================================
   # qwen-image-edit-2511 — versioned Qwen Image Edit 2511 cloud route
@@ -651,15 +646,8 @@ models:
   # =========================================================================
   # wan-2.2 — Wan 2.2 A14B (text-to-video + image-to-video + first-last-frame)
   #
-  # Local templates (vibecomfy):
-  #   i2v: video/wan22_i2v_comfy_lightx2v — ComfyUI native WanImageToVideo
-  #        with fp8 high/low diffusion models and Lightx2v 4-step LoRAs.
-  #        unbound_inputs: image, prompt, negative_prompt, seed,
-  #        width, height, num_frames, steps.
-  #        FLAG-003: bare template — no bind_input calls; adapter uses
-  #        unbound_inputs + node-target fallback.
-  #   t2v: ABSENT per FLAG-001 — no local wan-2.2 text-to-video template
-  #        exists, and wan2.1 substitution is forbidden (SD-001).
+  # The unqualified local i2v route is omitted until it can be validated live; the cloud route stays.
+  # No local t2v template exists; wan2.1 substitution is forbidden (SD-001).
   #
   # Cloud endpoints (fal):
   #   t2v: fal-ai/wan/v2.2-a14b/text-to-video/turbo — confirmed.
@@ -711,9 +699,6 @@ models:
           - prompt
           - image_ref
         backends:
-          local:
-            template: video/wan22_i2v_comfy_lightx2v
-            template_hash: "sha256:3ffd22bd1f1b29f15e70e0cd71aa9f9df3992e15e9411b2ab1ad82cb8dd4735b"
           cloud:
             endpoint: fal-ai/wan/v2.2-a14b/image-to-video/turbo
       flf:
@@ -1182,20 +1167,19 @@ models:
   # Local Hunyuan-Foley video-to-audio (SFX). Licence: Tencent Hunyuan
   # Community; it excludes the EU, UK and South Korea. This disclosure is
   # recorded here for onboarding; no region detection is implemented.
-  # Template pin: VibeComfy lane/M-GPU/p1-foley-vibecomfy @ a05864c6 (not yet
-  # on VibeComfy main). Model role names are unverified until the live run.
+  # Uses the live-proven Hunyuan Video Foley template.
   - id: hunyuan-foley-local
     modality: audio
     licence: "Tencent Hunyuan Community; excludes EU, UK, South Korea"
     modes:
       sfx:
-        supports: [video_ref, prompt]
+        supports: [video_ref, prompt, seed]
         requires: [video_ref]
         backends:
           local:
-            template: audio/hunyuan_foley_v2a
-            template_hash: "sha256:ebc8ad89c71f2082c69e7acb892a60b11d61ebf6f6f499f0834cdee10ba247e5"
-            param_map: {video_ref: video, prompt: prompt}
+            template: audio/hunyuan_video_foley
+            template_hash: "sha256:d31fc21886192c3c23565d6a54b2d8444e16e7d63948f5c906fdf35db6e7749e"
+            param_map: {video_ref: video_ref, prompt: prompt, seed: seed}
             model_roles:
               foley: {node_class: HunyuanFoleyModelLoader, input: foley_checkpoint_name, binding: diffusion_model, names: ['hunyuanvideo_foley_xl.pth']}
               vae: {node_class: LoadDACHunyuanVAE, input: vae_name, binding: vae, names: ['hunyuan_foley/vae_128d_48k.pth']}

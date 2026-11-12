@@ -36,7 +36,8 @@ from .worker_preparation import (
     _validate_completed_release, write_target_record,
 )
 from . import worker_preparation
-from .provider import parse_rest_pod
+from .provider import account_gate, parse_rest_pod, provider_budget
+from .pod_watchdog import PodWatchdogError
 
 
 def _exact_volume_id(record):
@@ -77,7 +78,7 @@ DEFAULT_RUNPOD_WORKER_IMAGE = (
 
 
 _OFFER_FAILURES = {
-    "stock_unavailable": ("no machine is in stock right now for the requested GPU and datacenter; this is normal, and generate with --max-hourly-usd waits for one by itself", "capacity", True),
+    "stock_unavailable": ("no machine is in stock right now for the requested GPU and datacenter; this is normal, and `astrid machines claim` waits for one by default", "capacity", True),
     "provider_transport_or_response_unavailable": ("provider transport or response is unavailable; retry offer observation", "inventory", True),
     "provider_authentication_failed": ("provider authentication was rejected; check the configured credential", "identity", False),
     "provider_rate_limited": ("provider rate limit was reached; retry offer observation later", "rate", True),
@@ -91,12 +92,15 @@ class OfferObservationError(PaidSelectionError):
     """Fixed offer diagnostics, independent of provider response/error text."""
 
     def __init__(self, reason: str, *, retry_after: float | None = None):
-        self.reason = reason if isinstance(reason, str) and reason in _OFFER_FAILURES else "observation_failed"
+        reason = reason if isinstance(reason, str) and reason in _OFFER_FAILURES else "observation_failed"
         retry_after = (float(retry_after) if type(retry_after) in (int, float)
                        and math.isfinite(retry_after) and retry_after >= 0 else None)
-        message, gate, retryable = _OFFER_FAILURES[self.reason]
-        super().__init__(f"RunPod offer unavailable (reason={self.reason}): {message}",
+        message, gate, retryable = _OFFER_FAILURES[reason]
+        super().__init__(f"RunPod offer unavailable (reason={reason}): {message}",
                          gate=gate, retryable=retryable, retry_after=retry_after, custody="none")
+        # Set after the base constructor, which derives a generic engine reason
+        # from the message and would otherwise drop this validated offer token.
+        self.reason = reason
         # Receipts name every offer refusal with the user-facing gate "offer".
         self.runpod_gate = "offer"
 
@@ -667,9 +671,22 @@ class RunPodSelectionOwner:
                     else:
                         offer = await interruptible(observe(), provider_timeout=30.0)
                     rate_limit_failures = 0
-                    offer, _ = self.consented_offer(consent, self.clock(), offer=offer)
-                    result = await interruptible(self._select_once(
-                        consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
+                    offer, paid_expiry = self.consented_offer(consent, self.clock(), offer=offer)
+                    if (record is not None and record.get("state") not in
+                            {"cleanup_complete", "capacity_retry_ready", "capacity_exhausted"}
+                            and record.get("paid_limits", {}).get("expires_at")):
+                        paid_expiry = min(paid_expiry, _utc(record["paid_limits"]["expires_at"]))
+                    # This is the acquisition budget, including readiness.
+                    # Each individual provider call keeps its own 30s limit.
+                    remaining = max(0., (paid_expiry - self.clock()).total_seconds())
+                    if remaining <= 0:
+                        raise PaidSelectionError("existing claim lifetime cannot be extended by reuse", gate="lifetime")
+                    if consent.capacity_timeout_seconds is not None:
+                        remaining = min(remaining, max(0., consent.capacity_timeout_seconds -
+                                                       (self.monotonic() - started)))
+                    with provider_budget(remaining, cancelled=check):
+                        result = await interruptible(self._select_once(
+                            consent, lease=lease, lock_held=True, offer=offer, cancelled=check))
                     progress(number, offer, "claimed")
                     return result
                 except OfferObservationError as exc:
@@ -762,6 +779,13 @@ class RunPodSelectionOwner:
                 or getattr(config, "gpu_type_id", None) != offer.gpu_type_id
                 or getattr(config, "storage_name", None) or getattr(config, "storage_volumes", ())):
             raise PaidSelectionError("provider configuration differs from the consented exact placement")
+        # _select already owns the journal lock and calls __wrapped__ below.
+        # Bind here, before even volume discovery, rather than relying on the
+        # acquisition decorator that this path intentionally bypasses.
+        await worker_preparation.async_provider_call(
+            config.api_key, account_gate, config.api_key,
+            account_ref=p.provider_account_ref, already_gated=True,
+        )
         # Restrict lifecycle's launch matrix to the consented target so each
         # journaled attempt can issue at most one create POST.
         config = copy.copy(config)
@@ -940,6 +964,8 @@ class RunPodSelectionOwner:
                             config, handle_path=self.path, attempt=record, volume=volume,
                             ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
                         )
+                except PodWatchdogError:
+                    raise
                 except CapacityExhaustedError:
                     raise
                 except NotReadyTimeout:

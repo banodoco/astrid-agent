@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import logging
 import threading
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,7 +26,11 @@ def _workflow():
             {"id": 1, "type": "SeedImage", "pos": [0, 0], "size": [200, 100],
              "flags": {}, "order": 0, "mode": 0, "inputs": [],
              "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0}],
-             "properties": {"Node name for S&R": "SeedImage"}, "widgets_values": [42, "installed.safetensors"]},
+             "properties": {"Node name for S&R": "SeedImage", "models": [{
+                 "name": "installed.safetensors", "subdir": "checkpoints",
+                 "url": "https://example.invalid/installed.safetensors", "sha256": "0" * 64,
+                 "size_bytes": 1,
+             }]}, "widgets_values": [42, "installed.safetensors"]},
             {"id": 2, "type": "SaveImage", "pos": [300, 0], "size": [200, 100],
              "flags": {}, "order": 1, "mode": 0,
              "inputs": [{"name": "images", "type": "IMAGE", "link": 1}],
@@ -43,7 +48,7 @@ def comfy(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     schema = {
         "SeedImage": {"input": {"required": {"seed": ["INT", {"default": 42}],
-                                               "ckpt_name": [["installed.safetensors"]]}},
+                                               "asset": [["installed.safetensors"]]}},
                       "output": ["IMAGE"], "output_name": ["IMAGE"], "output_node": False},
         "SaveImage": {"input": {"required": {"images": ["IMAGE"], "filename_prefix": ["STRING", {"default": "astrid"}]}},
                       "output": [], "output_node": True},
@@ -52,7 +57,7 @@ def comfy(tmp_path, monkeypatch):
         {"class_type": "LoadImage", "pack": "core", "inputs": {"image": {"type": "STRING", "required": True}},
          "outputs": [{"type": "IMAGE", "name": "IMAGE"}, {"type": "MASK", "name": "MASK"}]},
         {"class_type": "SeedImage", "pack": "test", "inputs": {"seed": {"type": "INT", "required": True},
-         "ckpt_name": {"type": "STRING", "required": True, "choices": ["installed.safetensors"]}},
+         "asset": {"type": "STRING", "required": True, "choices": ["installed.safetensors"]}},
          "outputs": [{"type": "IMAGE", "name": "IMAGE"}]},
         {"class_type": "SaveImage", "pack": "core", "inputs": {
             "images": {"type": "IMAGE", "required": True},
@@ -335,6 +340,42 @@ def test_server_mode_fails_closed_without_managed_result(comfy, tmp_path, monkey
             comfy_url=comfy.url, profile_id="local_server",
         )
     assert not comfy.prompts
+
+
+def test_prompt_cleanup_failure_is_debug_only_and_preserves_attempt_error(
+    comfy, tmp_path, monkeypatch, caplog, capsys,
+):
+    runtime = importlib.import_module("vibecomfy.runtime.run")
+    original_error = RuntimeError("attempt failed first")
+    cleanup_error = RuntimeError("prompt cleanup failed second")
+
+    def fail_attempt(*_args, **_kwargs):
+        raise original_error
+
+    def fail_cleanup(*_args, **_kwargs):
+        raise cleanup_error
+
+    monkeypatch.setattr(runtime, "run_sync", fail_attempt)
+    from astrid.core.generation.backends import vibecomfy_local_server
+    monkeypatch.setattr(vibecomfy_local_server, "cleanup_prompts", fail_cleanup)
+    caplog.set_level(logging.DEBUG, logger=local_server_engine.__name__)
+
+    with pytest.raises(RuntimeError, match="attempt failed first") as raised:
+        production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="task-1",
+            comfy_url=comfy.url, comfy_output_dir=str(comfy.output), profile_id="local_server",
+        )
+
+    assert raised.value is original_error
+    assert any("local_server prompt cleanup failed: prompt cleanup failed second" in note
+               for note in getattr(original_error, "__notes__", []))
+    records = [record for record in caplog.records if record.name == local_server_engine.__name__]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    assert records[0].getMessage().endswith(str(tmp_path / "attempt" / "outputs"))
+    assert "RuntimeError: prompt cleanup failed second" in records[0].exc_text
+    assert "Traceback (most recent call last)" in records[0].exc_text
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize("comfy_url", ["http://192.168.1.9:8188", "http://example.com:8188"])

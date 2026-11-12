@@ -6,6 +6,7 @@ execution use the same local run path on managed local engines and pods.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +63,8 @@ def _pinned_locks() -> dict[tuple[str, str], Any]:
     for engine in dict.fromkeys(("comfyui", *entries.runpod_engines())):
         try:
             lock = load_recipe_model_lock(engine, entries.RUNPOD_PLATFORM)
-        except Exception:
+        except Exception:  # noqa: BLE001 - reported through the raised error or fallback; diagnostic at debug, never a user-facing traceback
+            logging.getLogger(__name__).debug('Could not load pinned model lock for engine %s', engine, exc_info=True)
             continue
         for model in lock.models:
             rows.setdefault((model.destination, model.revision), model)

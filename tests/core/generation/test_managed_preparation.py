@@ -61,6 +61,30 @@ def test_preparation_accepts_only_exact_host_attempt_bytes(preparation, monkeypa
                             execution_identity='execution', inputs={'workflow': source}) == body
 
 
+@pytest.mark.parametrize("receipt_bytes", [None, "{"])
+def test_preparation_keeps_installation_guidance_for_unreadable_receipt(tmp_path, monkeypatch, receipt_bytes):
+    from astrid.core.generation import engine_local_endpoint
+    from astrid.core.generation.engine_local_endpoint import EngineNotInstalled
+
+    root = tmp_path / "engine"
+    monkeypatch.setattr(engine_local_endpoint, "default_engine_root", lambda _engine: str(root))
+    if receipt_bytes is not None:
+        receipt = root / ".astrid-engine" / "install.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(receipt_bytes)
+    workflow = tmp_path / "workflow.json"
+    workflow.write_text("{}")
+    preparation = ManagedEnginePreparation(task="task", attempt="attempt", mode="check",
+        deadline=time.monotonic() + 5, cancelled=lambda: False, scratch=tmp_path / "scratch")
+    try:
+        with pytest.raises(EngineNotInstalled, match="astrid engines install comfyui") as error:
+            preparation.prepare(workflow, execution_identity="execution", inputs={},
+                                canonical_workflow=None, input_digests={})
+        assert error.value.next_action == "astrid engines install comfyui"
+    finally:
+        preparation.close()
+
+
 def test_uncertain_preparation_keeps_lock_and_canonical_staging(tmp_path):
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
     originals = {name: tmp_path / name for name in ('python', 'companion', 'source')}
@@ -77,6 +101,55 @@ def test_uncertain_preparation_keeps_lock_and_canonical_staging(tmp_path):
     prep.uncertain = True
     prep.lock = SimpleNamespace(__exit__=lambda *args: pytest.fail('uncertain lock released'))
     with pytest.raises(CustodyUnresolved): prep.close()
+
+
+def test_preparation_failure_remains_primary_when_owned_stop_is_unconfirmed(tmp_path):
+    preparation = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    original = ValueError("alignment failed")
+    preparation.uncertain = False
+    preparation._prepare = lambda *args, **kwargs: (_ for _ in ()).throw(original)
+    def fail_stop():
+        preparation.uncertain = True
+        raise CustodyUnresolved("owned engine stop is unconfirmed")
+    preparation._stop_preparing_engine = fail_stop
+    try:
+        with pytest.raises(ValueError) as caught:
+            preparation.prepare(tmp_path / "workflow", execution_identity="execution", inputs={},
+                                canonical_workflow=None, input_digests={})
+        assert caught.value is original
+        assert any("owned engine stop is unconfirmed" in note for note in caught.value.__notes__)
+        from astrid.core.generation import managed_preparation
+        assert managed_preparation._UNRESOLVED_CUSTODY[id(preparation)] is preparation
+    finally:
+        from astrid.core.generation import managed_preparation
+        managed_preparation._UNRESOLVED_CUSTODY.pop(id(preparation), None)
+
+
+def test_owned_engine_stop_failure_is_logged_and_reported_as_unconfirmed_custody(monkeypatch, caplog, capsys):
+    import logging
+
+    from astrid.core.generation import managed_preparation
+
+    stop_failure = RuntimeError("injected owned stop failure")
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep._preparing_engine = True
+    prep.uncertain = False
+    service = SimpleNamespace(stop_owned=lambda **_kwargs: None)
+    monkeypatch.setattr(service, 'stop_owned', lambda **_kwargs: (_ for _ in ()).throw(stop_failure))
+    prep.context = SimpleNamespace(service_client=service)
+
+    with caplog.at_level(logging.DEBUG, logger=managed_preparation.__name__):
+        with pytest.raises(CustodyUnresolved) as caught:
+            prep._stop_preparing_engine()
+
+    assert prep.uncertain is True
+    assert prep._preparing_engine is True
+    assert caught.value.code == "custody_unresolved"
+    assert str(caught.value) == "managed preparation failed; exact owned engine stop remains unconfirmed"
+    assert caught.value.__notes__ == ["owned engine stop failed: RuntimeError"]
+    assert "managed preparation owned-engine stop failed" in caplog.text
+    assert "injected owned stop failure" in caplog.text
+    assert not capsys.readouterr().err
 
 
 def test_alignment_failure_keeps_native_stderr_out_of_public_error(tmp_path, caplog):

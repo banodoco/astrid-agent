@@ -15,6 +15,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+# Owner decision, 12 Nov: only these per-file/code increases block Release 13.
+BLOCKING_CODES = {
+    "Ruff": frozenset({"F821", "BLE001"}),
+    "Mypy": frozenset({"name-defined", "attr-defined", "call-arg"}),
+}
+
 
 def verdict(label: str, current: int, baseline: int) -> tuple[int, str]:
     """Return (exit code, message) for a current finding count against its baseline."""
@@ -29,20 +35,25 @@ def verdict(label: str, current: int, baseline: int) -> tuple[int, str]:
     return 0, summary
 
 
-def file_code_verdict(current: list[dict[str, Any]], baseline: list[dict[str, Any]]) -> tuple[int, str]:
+def file_code_verdict(
+    current: list[dict[str, Any]], baseline: list[dict[str, Any]], blocking_codes: frozenset[str]
+) -> tuple[int, str]:
     """Compare counts for every path and code, reporting increases and available reductions."""
     current_counts = {(row["path"], row["code"]): row["count"] for row in current}
     baseline_counts = {(row["path"], row["code"]): row["count"] for row in baseline}
-    increases, decreases = [], []
+    increases, reported, decreases = [], [], []
     for path, code in sorted(current_counts.keys() | baseline_counts.keys()):
         now = current_counts.get((path, code), 0)
         before = baseline_counts.get((path, code), 0)
         row = f"{path} | {code}: baseline={before} current={now}"
         if now > before:
-            increases.append(row)
+            (increases if code in blocking_codes else reported).append(row)
         elif now < before:
             decreases.append(row)
     lines = [f"ERROR: file/code regression: {row}" for row in increases]
+    if reported:
+        lines.append("Reported, not blocking:")
+        lines += [f"  {row}" for row in reported]
     lines += [f"Ratchet down available: {row}" for row in decreases]
     return int(bool(increases)), "\n".join(lines)
 
@@ -91,7 +102,7 @@ def main(
         code, message = verdict(label, int(current["finding_count"]), int(baseline["finding_count"]))
         print(message, file=sys.stderr if code else sys.stdout)
     file_code_exit, file_code_message = file_code_verdict(
-        file_code, json.loads(args.file_code_baseline.read_text())
+        file_code, json.loads(args.file_code_baseline.read_text()), BLOCKING_CODES[label]
     )
     if file_code_message:
         print(file_code_message)
