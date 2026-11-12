@@ -154,6 +154,11 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      target_agent_sha:
+        description: NON-PROOF diagnostic-macos-r1-update only. Full Agent SHA to update to with the Release 12 Runtime (empty = Release 12 Agent 0e1543e0 from App 237b28be's manifest)
+        required: false
+        default: ''
+        type: string
       row:
         description: Run one direct journey row, all nine direct rows, one pinokio-* row, all three R1.1 Pinokio rows, or one named direct row
         required: false
@@ -1555,22 +1560,27 @@ jobs:
   # on macOS, using the default per-user paths, and keep the logs that explain the result.
   # It never feeds the gate; select it with row=diagnostic-macos-r1-update.
   release1_update_diagnostic:
-    name: NON-PROOF release1-then-update (${{ matrix.start }})
+    name: NON-PROOF release1-then-update (${{ matrix.start }}, hivemind ${{ matrix.variant }})
     if: github.event_name == 'workflow_dispatch' && inputs.row == 'diagnostic-macos-r1-update'
     runs-on: macos-15
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        # r0-handoff-by-r1: the frozen R0 install handed off by the Release 1 installer (the
-        # "Astrid Runtime-r1" workspace); r1-fresh: a plain Release 1 install.
-        start: [r0-handoff-by-r1, r1-fresh]
+        # r1-fresh: a plain Release 1 install. (r0-handoff-by-r1, the frozen R0 install handed
+        # off by the Release 1 installer, is still supported by the steps below.)
+        start: [r1-fresh]
+        # The managed Hivemind that Release 1 `astrid login` provisions before authenticating:
+        # as provisioned, with one untracked file in the checkout, or with the checkout removed
+        # while its pack-sources.json registration is kept.
+        variant: [clean, dirty, checkout-deleted]
     defaults:
       run:
         shell: bash
     env:
       R1_APP: dc277284e66438516a7aa4de0a2dc8beae905bab
       R12_APP: 237b28be935af49c23464fa6ca1cf30db67ebaa0
+      TARGET_AGENT_SHA: ${{ inputs.target_agent_sha }}
       BROWSER: /usr/bin/true
     steps:
       - uses: actions/checkout@v4
@@ -1614,6 +1624,27 @@ jobs:
             echo "$f served=$(shasum -a 256 "$E/served-$f" 2>/dev/null | cut -c1-64) r12-app=$(shasum -a 256 "r12-app/public/$f" | cut -c1-64)"
           done | tee "$E/served-compare.txt"
           sw_vers | tee "$E/os.txt"; uname -m | tee -a "$E/os.txt"
+      - name: Select the update target manifest
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/r1-repro"
+          # Default: App 237b28be's Release 12 manifest (byte-identical to the served one, checked above).
+          # Override: the same manifest with only agent.sha replaced, so the bootstrap installs that
+          # Agent commit from GitHub with the Release 12 Runtime and tool pins.
+          python3 - "$E/target-manifest.json" <<'PY'
+          import json, os, re, sys
+          manifest = json.load(open("r12-app/public/install-manifest.json"))
+          sha = os.environ.get("TARGET_AGENT_SHA", "").strip().lower()
+          if sha:
+              if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                  raise SystemExit("target_agent_sha must be a full 40-hex Agent commit")
+              manifest["agent"]["sha"] = sha
+              json.dump(manifest, open(sys.argv[1], "w"), indent=2)
+          else:
+              open(sys.argv[1], "wb").write(open("r12-app/public/install-manifest.json", "rb").read())
+          print("target", manifest["release"], "agent", manifest["agent"]["sha"], "runtime", manifest["runtime"]["sha"],
+                "(override)" if sha else "(Release 12 manifest)")
+          PY
       - name: Start state, frozen R0 install
         if: matrix.start == 'r0-handoff-by-r1'
         run: |
@@ -1641,6 +1672,49 @@ jobs:
           echo "r1_seed_exit=${PIPESTATUS[0]}" | tee -a "$E/exit-codes.txt"
           cp "$HOME/Library/Logs/Astrid Runtime/install.log" "$E/install-after-r1.log" 2>/dev/null || true
           mkdir -p "$E/before-update"
+      - name: Provision the managed Hivemind with Release 1's own code, as `astrid login` does
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/r1-repro"
+          # 7247ea92 astrid/core/auth.py _resolve_auth_cli(provision_if_missing=True): provision(declarations_from_json())
+          # runs before any authentication. Use the installed Release 1 interpreter and its own env.
+          python3 - "$HOME/.local/share/astrid" <<'PY' 2>&1 | tee "$E/hivemind-provision.out"
+          import json, os, subprocess, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          name = (root / "current").read_text().strip()
+          version = json.loads((root / "versions" / name / "version.json").read_text())
+          assert version.get("identity", {}).get("release", 1) == 1 or name.startswith("7247ea92"), name
+          env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
+          env.update(version["env"])
+          code = ("import json; from astrid.core.pack.source_setup import provision, declarations_from_json; "
+                  "print(json.dumps(provision(declarations_from_json()), indent=2, sort_keys=True))")
+          print("provisioning with", version["python"], "from", name, flush=True)
+          raise SystemExit(subprocess.run([version["python"], "-I", "-c", code], env=env, timeout=900).returncode)
+          PY
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          state = json.loads((Path.home() / ".local/state/astrid/default/pack-sources.json").read_text())
+          active = state["active"]["hivemind"]
+          assert Path(active["pack_root"]).is_dir(), active
+          print("pack-sources.json active.hivemind:", json.dumps(active, sort_keys=True))
+          PY
+          ls -la "$HOME/.local/share/astrid/packs/hivemind"
+      - name: Apply the Hivemind variant (${{ matrix.variant }})
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/r1-repro"
+          pack_root=$(python3 -c 'import json,pathlib; print(json.loads((pathlib.Path.home()/".local/state/astrid/default/pack-sources.json").read_text())["active"]["hivemind"]["pack_root"])')
+          case "${{ matrix.variant }}" in
+            clean) ;;
+            dirty) echo "a user's stray note" > "$pack_root/untracked-user-note.txt" ;;
+            checkout-deleted) rm -rf "$pack_root" ;;
+          esac
+          echo "variant=${{ matrix.variant }} pack_root=$pack_root exists=$([ -d "$pack_root" ] && echo yes || echo no)" | tee "$E/hivemind-variant.txt"
+          git -C "$pack_root" status --porcelain --untracked-files=all 2>&1 | tee -a "$E/hivemind-variant.txt" || true
+          python agent/scripts/journey_r1_update_repro.py pack-snapshot "$E/packs-before-update.json"
+          mkdir -p "$E/before-update"
           cp -R "$HOME/Library/Logs/Astrid Runtime" "$E/before-update/logs" 2>/dev/null || true
           ls -la "$HOME/.local/share/astrid" "$HOME/.local/share/astrid/versions" 2>&1 | tee "$E/before-update/program-listing.txt"
           cat "$HOME/.local/share/astrid/current" 2>&1 | tee "$E/before-update/current.txt"
@@ -1648,12 +1722,13 @@ jobs:
         run: |
           set +e -uo pipefail
           E="$RUNNER_TEMP/r1-repro"
-          sh r12-app/public/install --manifest r12-app/public/install-manifest.json --update \
+          sh r12-app/public/install --manifest "$E/target-manifest.json" --update \
             </dev/null 2>&1 | tee "$E/r12-update.out"
           echo "r12_update_exit=${PIPESTATUS[0]}" | tee -a "$E/exit-codes.txt"
           sleep 20
           python agent/scripts/journey_r1_update_repro.py wait-health 60 2>&1 | tee "$E/after-update-health.json" || true
           cat "$HOME/.local/share/astrid/current" 2>&1 | tee "$E/after-update-current.txt"
+          python agent/scripts/journey_r1_update_repro.py pack-snapshot "$E/packs-after-update.json"
       - name: Collect diagnostics (logs, Runtime state, installer records; never credentials)
         if: always()
         run: |
@@ -1678,6 +1753,7 @@ jobs:
             id=$(basename "$v"); mkdir -p "$E/program/versions/$id"
             cp "$v/manifest.json" "$v/version.json" "$E/program/versions/$id/" 2>/dev/null || true
           done
+          cp "$HOME/.local/state/astrid/default/pack-sources.json" "$E/program/pack-sources.json" 2>/dev/null || true
           ls -la "$HOME/Library/LaunchAgents" > "$E/launchagents.txt" 2>&1 || true
           launchctl list 2>&1 | grep -i astrid > "$E/launchctl-list.txt" || true
           ps -axo pid,ppid,etime,stat,comm 2>&1 | grep -i -E 'astrid|python|bun|node' > "$E/processes.txt" || true
@@ -1703,7 +1779,7 @@ jobs:
           set +e -uo pipefail
           E="$RUNNER_TEMP/r1-repro"
           {
-            echo "## NON-PROOF release1-then-update (${{ matrix.start }})"
+            echo "## NON-PROOF release1-then-update (${{ matrix.start }}, hivemind ${{ matrix.variant }})"
             echo '```'; cat "$E/exit-codes.txt" 2>/dev/null; echo '```'
             echo "### R12 update output"; echo '```'; cat "$E/r12-update.out" 2>/dev/null; echo '```'
             echo "### service-pack-host.log (last 200 lines)"; echo '```'
@@ -1711,12 +1787,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "===== exit codes"; cat "$E/exit-codes.txt" 2>/dev/null
           echo "===== service-pack-host.log tail"; tail -n 300 "$E/logs/service-pack-host.log" 2>/dev/null
-          echo "===== key lines"; grep -r -n -i -E "needs repair|cannot load timeline|not_accepting|Traceback|Error:" "$E/logs" 2>/dev/null | head -200
+          echo "===== key lines"; grep -r -n -i -E "needs repair|cannot load timeline|not_accepting|Traceback|Error:" "$E/logs" 2>/dev/null | head -200 || true
       - name: Upload the diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: r1-update-repro-${{ matrix.start }}
+          name: r1-update-repro-${{ matrix.start }}-${{ matrix.variant }}
           path: ${{ runner.temp }}/r1-repro
           retention-days: 14
           if-no-files-found: warn
+      - name: Verdict (PASS only for a clean 1 to 12 update that leaves Hivemind untouched)
+        if: always()
+        run: python agent/scripts/journey_r1_update_repro.py verdict "$RUNNER_TEMP/r1-repro"
