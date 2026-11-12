@@ -1,36 +1,31 @@
-"""ltx-2.3 t2v: the catalog and the pinned template agree on the image requirement.
+"""LTX text-only admission must use an image-free pinned template."""
 
-The pinned template (video/ltx2_3_t2v) is image-conditioned, so the catalog must
-require an image for t2v too. A prompt-only dry run is therefore refused by input
-validation (naming the image), not accepted and later failing at execution.
-"""
-
-import json
-from pathlib import Path
-
-import yaml
-
-from astrid import console
-
-CATALOG = Path(__file__).resolve().parents[3] / "astrid/core/model_catalog/models.yaml"
+from astrid.core.generation import entries
+from astrid.core.generation.backends.vibecomfy import _load_pinned_catalog_workflow
+from astrid.core.model_catalog.registry import ModelRegistry
 
 
 def _ltx_t2v():
-    rows = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))["models"]
-    entry = next(row for row in rows if row["id"] == "ltx-2.3")
-    return entry["modes"]["t2v"]
+    return ModelRegistry.load_default().get('ltx-2.3').modes['t2v']
 
 
-def test_catalog_t2v_requires_the_image_the_template_needs():
+def test_catalog_t2v_requires_only_text_and_has_no_image_branch():
     mode = _ltx_t2v()
-    assert "image_ref" in mode["supports"]
-    assert "image_ref" in mode["requires"]
+    assert mode.requires == ('prompt',)
+    assert 'image_ref' not in mode.supports
+    workflow = _load_pinned_catalog_workflow(mode.backends['local'])
+    assert not any(port.media_semantics == 'image' for port in workflow.inputs.values())
+    api = workflow.compile('api')
+    assert not any(node['class_type'] in {'LoadImage', 'LTXVImgToVideoConditionOnly'}
+                   for node in api.values())
+    assert api['4528']['inputs']['video_latent'] == ['3059', 0]
+    assert api['3059']['class_type'] == 'EmptyLTXVLatentVideo'
 
 
-def test_prompt_only_t2v_dry_run_is_refused_for_the_missing_image(tmp_path, capsys):
-    rc = console.main(["generate", "video", "A quiet street at dusk.", "--entry", "ltx-2.3",
-                       "--mode", "t2v", "--placement", "runpod", "--dry-run", "--json"])
-    assert rc != 0
-    refused = json.loads(capsys.readouterr().out)
-    assert "input_rejected" in json.dumps(refused)
-    assert "image" in json.dumps(refused)
+def test_prompt_only_t2v_is_admitted_by_the_catalog_template():
+    description, values = entries.resolve_entry_inputs(
+        'ltx-2.3', {'prompt': 'A quiet street at dusk.'}, mode='t2v', kind='video',
+    )
+    assert description['mode'] == 't2v'
+    assert values['prompt'] == 'A quiet street at dusk.'
+    assert not {'image', 'image_ref', 'input_image'} & values.keys()
