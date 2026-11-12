@@ -540,15 +540,15 @@ class RunPodSelectionOwner:
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
 
-        def progress(number: int, offer: RunPodOffer | None, result: str) -> None:
+        def progress(number: int, offer: RunPodOffer | None, result: str, note: str | None = None) -> None:
             row = {"attempt": number, "gpu": offer.gpu_type if offer else list(self.preferences.gpu_types),
                    "datacenter": offer.datacenter_id if offer else self.preferences.datacenter_id,
-                   "result": result}
+                   "result": result, **({"note": note} if note else {})}
             if self.progress is not None:
                 self.progress(row)
             else:
-                shown = (f"no stock yet ({result}); still waiting, this is normal"
-                         if result == "stock_unavailable" and consent.wait_for_capacity else result)
+                shown = note or (f"no stock yet ({result}); still waiting, this is normal"
+                                 if result == "stock_unavailable" and consent.wait_for_capacity else result)
                 print(f"RunPod capacity attempt {number}: GPU {row['gpu']}, datacenter {row['datacenter'] or 'eligible'}: {shown}",
                       file=sys.stderr, flush=True)
 
@@ -586,6 +586,7 @@ class RunPodSelectionOwner:
         with nullcontext() if lock_held else target_owner(self.path):
             number = 0
             rate_limit_failures = 0
+            unclear_failures = 0
             pending_offers: list[RunPodOffer] = []
             hook = getattr(self, "wait_hook", None)
             if hook is not None:
@@ -622,12 +623,29 @@ class RunPodSelectionOwner:
                     progress(number, offer, "claimed")
                     return result
                 except OfferObservationError as exc:
-                    progress(number, offer, exc.reason)
-                    if not consent.wait_for_capacity or exc.reason not in {"stock_unavailable", "provider_rate_limited"}:
+                    retryable_unclear = exc.reason in {
+                        "provider_observation_unavailable", "provider_transport_or_response_unavailable",
+                        "observation_failed", "price_unconfirmed",
+                    }
+                    if not consent.wait_for_capacity or exc.reason not in {
+                            "stock_unavailable", "provider_rate_limited", "provider_observation_unavailable",
+                            "provider_transport_or_response_unavailable", "observation_failed", "price_unconfirmed"}:
                         raise
-                    rate_limit_failures = rate_limit_failures + 1 if exc.reason == "provider_rate_limited" else 0
-                    base_delay = min(60.0, 5.0 * 2 ** (rate_limit_failures - 1)) if rate_limit_failures else 5.0
+                    if retryable_unclear:
+                        unclear_failures += 1
+                        if unclear_failures >= 9:
+                            progress(number, offer, exc.reason)
+                            raise
+                        rate_limit_failures = 0
+                        base_delay = min(60.0, 5.0 * 2 ** (unclear_failures - 1))
+                    else:
+                        unclear_failures = 0
+                        rate_limit_failures = rate_limit_failures + 1 if exc.reason == "provider_rate_limited" else 0
+                        base_delay = min(60.0, 5.0 * 2 ** (rate_limit_failures - 1)) if rate_limit_failures else 5.0
                     delay = max(base_delay + random.uniform(0.0, 0.5), exc.retry_after or 0.0)
+                    progress(number, offer, exc.reason,
+                             f"provider observation unclear ({exc.reason}); retrying in {delay:.0f} s"
+                             if retryable_unclear else None)
                 except CapacityExhaustedError:
                     current = self._read()
                     if (current is None or current.get("pod_id") is not None

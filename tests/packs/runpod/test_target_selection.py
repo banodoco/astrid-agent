@@ -687,6 +687,54 @@ def test_capacity_rate_limit_without_metadata_backs_off_and_resets_after_observa
     assert sleeps == [5, 10, 20, 40, 60, 60, 5, 5] and case.creates == 1
 
 
+def test_capacity_wait_retries_unclear_observations_and_resets_after_stock(case, monkeypatch):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    outcomes = iter(["stock_unavailable"] * 3 + ["provider_observation_unavailable"] * 2 + [None])
+    rows = []
+    case.owner.progress = rows.append
+
+    def observe():
+        reason = next(outcomes)
+        if reason is not None:
+            raise selection.OfferObservationError(reason)
+        return case.offer
+
+    case.owner.observe_offer = observe
+    # 5+5+5+5+10 s of waiting needs more than the helper's 30 s capacity window.
+    asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=120)))
+    assert sleeps == [5, 5, 5, 5, 10]
+    assert case.creates == 1
+    assert sum("retrying in" in str(row) for row in rows) == 2
+
+
+def test_capacity_wait_stops_after_nine_consecutive_unclear_observations(case, monkeypatch):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    case.owner.observe_offer = lambda: (_ for _ in ()).throw(
+        selection.OfferObservationError("provider_observation_unavailable"))
+    with pytest.raises(selection.OfferObservationError, match="provider_observation_unavailable"):
+        asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=600)))
+    assert len(sleeps) == 8 and case.creates == 0
+
+
+def test_capacity_wait_unclear_retries_remain_bounded_by_capacity_timeout(case, monkeypatch):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    case.owner.observe_offer = lambda: (_ for _ in ()).throw(
+        selection.OfferObservationError("observation_failed"))
+    with pytest.raises(selection.CapacityWaitTimeout, match="capacity timeout"):
+        asyncio.run(case.owner.select(waiting_grant(case, capacity_timeout_seconds=7)))
+    assert sleeps == [5, 2] and case.creates == 0
+
+
+@pytest.mark.parametrize("wait_for_capacity", [True, False])
+def test_capacity_wait_refuses_authentication_failure_and_no_wait_unclear(case, monkeypatch, wait_for_capacity):
+    sleeps = fake_capacity_clock(case, monkeypatch)
+    reason = "provider_authentication_failed" if wait_for_capacity else "provider_observation_unavailable"
+    case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError(reason))
+    with pytest.raises(selection.OfferObservationError, match=reason):
+        asyncio.run(case.owner.select(waiting_grant(case, wait_for_capacity=wait_for_capacity)))
+    assert sleeps == [] and case.creates == 0
+
+
 def test_waiting_policy_cannot_create_on_different_storage(case):
     config = case.owner.config_factory(case.offer)
     case.owner.config_factory = lambda offer: SimpleNamespace(**{**vars(config), "network_volume_id": "other-volume"})
