@@ -341,12 +341,10 @@ class ManagedEnginePreparation:
             # handles and confirms all command/process/output drain before return.
             self.context.service_client.stop_owned(deadline=time.monotonic() + 5)
         except BaseException as stop_error:  # noqa: BLE001 - reported through the raised error or fallback; diagnostic at debug, never a user-facing traceback
-            import logging
-            logging.getLogger(__name__).debug(
-                "managed preparation owned-engine stop failed task=%s attempt=%s",
-                self.task, self.attempt, exc_info=True,
-            )
+            # The fail-safe comes first and never depends on the diagnostic.
             self.uncertain = True
+            import logging
+            logging.getLogger(__name__).debug("managed preparation owned-engine stop failed", exc_info=True)
             error = CustodyUnresolved("managed preparation failed; exact owned engine stop remains unconfirmed")
             error.add_note(f"owned engine stop failed: {type(stop_error).__name__}")
             raise error from None
