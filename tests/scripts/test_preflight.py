@@ -158,12 +158,17 @@ def test_check_vibe_runs_declared_cases_and_reads_source_ownership(tmp_path):
 
     runner = VibeRunner(logs=tmp_path)
     c = cell("tts", "audio/tts")
+    undeclared = cell("undeclared", "audio/absent")
     pins = {"comfy_core": "core-pin"}
-    assert preflight.check_vibe([c], runner, checkout, Path("/vibe/python"), pins, "pinned") is True
+    assert preflight.check_vibe([c, undeclared], runner, checkout, Path("/vibe/python"), pins, "pinned") is True
     assert c.checks["schema"]["status"] == "UNVERIFIED"
     assert "missing provenance" in c.checks["schema"]["reason"]
     assert c.checks["rebuild"]["status"] == "PASS"
     assert c.sources == ["comfyui-qwentts"]
+    assert undeclared.checks["schema"]["status"] == "UNVERIFIED"
+    assert undeclared.checks["rebuild"]["status"] == "UNVERIFIED"
+    source_query = next(command for command in runner.commands if "-c" in command.command)
+    assert json.loads(source_query.command[-1]) == ["audio/tts"]
     assert json.loads((tmp_path / "pack-identity-commits.json").read_text()) == pins
     executed = next(command for command in runner.commands if "-rA" in command.command)
     assert all(nodeid in executed.command for nodeid in ids)

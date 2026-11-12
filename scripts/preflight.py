@@ -294,7 +294,9 @@ def check_vibe(cells, runner, checkout, python, identities, revision):
         raise RuntimeError("VibeComfy failed outside its test outcomes: " + command.log_path)
     map_vibe_results(cells, selected, results,
                      quarantine(checkout / "tests/quarantine/offline_identity_provenance.txt"), command, identities)
-    templates = sorted({cell.template for cell in cells if cell.template})
+    # A catalog template with no declared VibeComfy case is UNVERIFIED for
+    # that cell; it must not crash source inspection for unrelated cells.
+    templates = sorted({template_parameter(nodeid) for nodeid in selected})
     source_code = (
         "import json; from vibecomfy.registry.ready import workflow_from_ready; "
         "from vibecomfy.custom_node_refs import workflow_lock_entries; "
