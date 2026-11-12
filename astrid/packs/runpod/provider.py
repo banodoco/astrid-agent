@@ -125,31 +125,118 @@ class ProviderGate:
         self.sleep = sleep or time.sleep
         self.minimum_interval = minimum_interval
 
+    # Unknown pacing state gets one persisted recovery window. Valid provider
+    # Retry-After values are never shortened to this recovery bound.
+    RECOVERY_COOLDOWN_SECONDS = 60.0
+
+    @staticmethod
+    def _validate_state(state):
+        import math
+        import re
+
+        if not isinstance(state, dict) or state.keys() - {"next", "cooldown", "attempt", "account"}:
+            raise ValueError("invalid provider gate state")
+        for key in ("next", "cooldown"):
+            value = state.get(key, 0.)
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError("invalid provider gate timestamp")
+        attempt = state.get("attempt", 0)
+        if type(attempt) is not int or attempt < 0:
+            raise ValueError("invalid provider gate attempt")
+        if "account" in state and (not isinstance(state["account"], str)
+                                   or re.fullmatch(r"[0-9a-f]{64}", state["account"]) is None):
+            raise ValueError("invalid provider account alias")
+        return state
+
+    def _replace_state(self, state):
+        import json
+        import os
+        import tempfile
+
+        self._validate_state(state)
+        fd, temporary = tempfile.mkstemp(prefix=self.path.name + ".", suffix=".tmp", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(state, stream, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+            directory = os.open(self.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
     def _state(self, change, *, deadline=None):
         import json
+        import logging
+        import os
 
         from runtime_protocol import platform
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a+", encoding="utf-8") as stream:
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        try:
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            fd = os.open(lock_path, os.O_RDWR)
+        # This inode is never replaced. Every reader and writer locks it,
+        # including alias resolution and recovery, before opening state.
+        with os.fdopen(fd, "r+") as lock:
             limit = self.clock() + 30. if deadline is None else deadline
             while True:
                 try:
-                    platform.lock_file(stream.fileno(), blocking=False)
+                    platform.lock_file(lock.fileno(), blocking=False)
                     break
                 except BlockingIOError:
                     remaining = limit - self.clock()
                     if remaining <= 0:
                         raise ProviderRefused(self.minimum_interval) from None
                     self.sleep(min(0.05, remaining))
-            stream.seek(0)
-            raw = stream.read()
-            state = json.loads(raw) if raw else {}
+            initialized = bool(lock.read(1))
+            recovered = False
+            candidate = None
+            try:
+                candidate = json.loads(self.path.read_text(encoding="utf-8"))
+                state = self._validate_state(candidate)
+            except (OSError, UnicodeError, ValueError):
+                if not initialized and not self.path.exists():
+                    state = {}
+                else:
+                    state = {"cooldown": self.clock() + self.RECOVERY_COOLDOWN_SECONDS, "attempt": 1}
+                    # A bad field must not erase independently valid evidence
+                    # of a longer cooldown or a verified account alias.
+                    if isinstance(candidate, dict):
+                        for key in ("next", "cooldown", "attempt", "account"):
+                            if key not in candidate:
+                                continue
+                            try:
+                                self._validate_state({key: candidate[key]})
+                            except ValueError:
+                                continue
+                            state[key] = (candidate[key] if key == "account" else
+                                          max(state.get(key, 0), candidate[key]))
+                    logging.getLogger(__name__).warning(
+                        "Recovering unreadable provider pacing state; conservative cooldown %.0fs",
+                        self.RECOVERY_COOLDOWN_SECONDS,
+                    )
+                recovered = True
+            previous = dict(state)
             result = change(state)
-            stream.seek(0)
-            stream.truncate()
-            json.dump(state, stream)
-            stream.flush()
+            if recovered or state != previous:
+                self._replace_state(state)
+            if not initialized:
+                # Publish this only after the initial state is durable. Any
+                # contender can finish initialization under the same lock.
+                lock.seek(0)
+                lock.write("1")
+                lock.flush()
+                os.fsync(lock.fileno())
             return result
 
     def before_call(self, deadline):
@@ -199,18 +286,22 @@ class ProviderGate:
                                                       state.get("next", 0.) - self.clock())))
 
     def call(self, operation, *args, deadline=None, **kwargs):
-        self.before_call(self.clock() + 30. if deadline is None else deadline)
+        cleanup = _provider_cleanup.get()
+        if not cleanup:
+            self.before_call(self.clock() + 30. if deadline is None else deadline)
         try:
             result = operation(*args, **kwargs)
         except Exception as exc:
             status, retry_after = provider_failure(exc)
-            if status is not None:
-                self.after_response(status, retry_after)
-            else:
-                self.after_error(retry_after)
+            if not cleanup:
+                if status is not None:
+                    self.after_response(status, retry_after)
+                else:
+                    self.after_error(retry_after)
             raise
         status = getattr(result, "status_code", 200)
-        self.after_response(status, getattr(result, "headers", {}).get("Retry-After"))
+        if not cleanup:
+            self.after_response(status, getattr(result, "headers", {}).get("Retry-After"))
         return result
 
 
@@ -221,6 +312,10 @@ def account_gate(api_key, *, account_ref=None):
 
     root = resolve_runtime_data_root() / "runpod" / "provider-gates"
     credential = hashlib.sha256(api_key.encode()).hexdigest()
+    if _provider_cleanup.get():
+        # Exact cleanup must reach the provider even if aliases/state cannot be
+        # read, repaired, locked or persisted. It never authorizes a create.
+        return ProviderGate(root / (credential + ".json"))
     alias = ProviderGate(root / (credential + ".account.json"))
 
     def resolve(state):
@@ -244,18 +339,21 @@ def account_gate(api_key, *, account_ref=None):
 
 
 _provider_deadline = ContextVar("provider_deadline", default=None)
+_provider_cleanup = ContextVar("provider_cleanup", default=False)
 
 
 @contextmanager
-def provider_budget(seconds):
+def provider_budget(seconds, *, cleanup=False):
     import time
 
     existing = _provider_deadline.get()
     deadline = time.time() + seconds
     token = _provider_deadline.set(min(existing, deadline) if existing is not None else deadline)
+    cleanup_token = _provider_cleanup.set(cleanup or _provider_cleanup.get())
     try:
         yield
     finally:
+        _provider_cleanup.reset(cleanup_token)
         _provider_deadline.reset(token)
 
 

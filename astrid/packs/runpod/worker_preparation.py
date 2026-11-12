@@ -15,7 +15,7 @@ import re
 import stat
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from dataclasses import replace as _dc_replace
 from datetime import datetime, timezone
@@ -29,7 +29,7 @@ from astrid.core.generation.engine_contracts import Gate, PlacementRefused
 from astrid.core.util.time import utc_now_iso
 
 from .pod_fields import InvalidPodField, pod_field
-from .provider import account_gate, async_provider_call, provider_call
+from .provider import account_gate, async_provider_call, provider_budget, provider_call
 
 _SHARED_GATES = {
     "GPU": "hardware", "volume": "storage", "datacenter": "region",
@@ -223,7 +223,8 @@ def _exclusive_target_owner(function: Any) -> Any:
         **kwargs: Any,
     ) -> Any:
         path = handle_path.expanduser()
-        with target_owner(path):
+        cleanup = function.__name__ == "_release_exact_target_after_quiescence"
+        with (provider_budget(30., cleanup=True) if cleanup else nullcontext()), target_owner(path):
             try:
                 current = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:

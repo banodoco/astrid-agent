@@ -734,7 +734,7 @@ class RunPodLeaseOwner:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
             self._release_inflight = True
         try:
-            with provider_budget(EXACT_CLEANUP_SECONDS):
+            with provider_budget(EXACT_CLEANUP_SECONDS, cleanup=True):
                 return self._release(reason=reason)
         except Exception as exc:
             with self.lock:
