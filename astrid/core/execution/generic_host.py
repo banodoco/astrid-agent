@@ -4466,8 +4466,12 @@ def _assert_live_storage_envelope(
     estimate: Mapping[str, int] | None,
     root: Path,
     output_root: Path,
+    *,
+    storage_floor_exempt: bool = False,
 ) -> None:
-    """Guard real volume space, plus hard envelopes for bounded non-render packs."""
+    """Guard volume space without preventing machine observation or cleanup."""
+    if storage_floor_exempt:
+        return
     floor = free_disk_floor_bytes()
     for volume_path in dict.fromkeys((root, output_root)):
         if not volume_path.exists():
@@ -4526,8 +4530,12 @@ def _task_storage_envelope(
     task_data: Mapping[str, Any],
     root: Path,
     staged_outputs: list[Mapping[str, Any]],
+    *,
+    storage_floor_exempt: bool = False,
 ) -> dict[str, int] | None:
     """Measure usage before CAS upload and enforce bounded non-render packs."""
+    if storage_floor_exempt:
+        return None
     _assert_live_storage_envelope(None, root, root / "outputs")
     estimate = _task_storage_estimate(task_data)
     if estimate is None:
@@ -5178,6 +5186,11 @@ class CapabilityRecord:
     @property
     def id(self) -> str:
         return self.definition.id
+
+    @property
+    def storage_floor_exempt(self) -> bool:
+        """Pack-owned cleanup/observation policy, independent of claim lane."""
+        return self.definition.metadata.get("storage_floor_exempt") is True
 
     @property
     def resource_keys(self) -> tuple[str, ...]:
@@ -8532,6 +8545,7 @@ class GenericPackHost:
         cas_param_ports: tuple[str, ...] | list[str] | None = None,
         optional_cas_param_ports: tuple[str, ...] | list[str] | None = None,
         storage_estimate: Mapping[str, int] | None = None,
+        storage_floor_exempt: bool = False,
         input_size_limits: Mapping[str, int] | None = None,
         storage_policy_version: str | None = None,
         continuation_id: str | None = None,
@@ -8918,6 +8932,7 @@ class GenericPackHost:
                 storage_estimate,
                 attempt,
                 attempt / "outputs",
+                storage_floor_exempt=storage_floor_exempt,
             )
 
         cas_names = set(ordered_cas_ports)
@@ -10679,7 +10694,7 @@ class GenericPackHost:
                     output_capture.persist()
                     if output_capture.error:
                         raise HostError(f"capability {record.id!r} output capture failed: {output_capture.error}")
-                    _assert_live_storage_envelope(storage_estimate, attempt, output_root)
+                    _assert_live_storage_envelope(storage_estimate, attempt, output_root, storage_floor_exempt=record.storage_floor_exempt)
                     if cancelled is not None and cancelled():
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {record.id!r} cancelled")
@@ -10797,6 +10812,8 @@ class GenericPackHost:
         """
         if capability_kind not in {"executor", "orchestrator"}:
             raise HostError(f"unsupported capability kind {capability_kind!r}")
+        storage_record = captured_record or self.capabilities.get(capability_id)
+        storage_floor_exempt = storage_record is not None and storage_record.storage_floor_exempt
         attempt_path = Path(attempt).expanduser().resolve()
         attempt_path.mkdir(parents=True, exist_ok=True)
         if definition is not None:
@@ -10973,7 +10990,7 @@ class GenericPackHost:
                     output_capture.persist()
                     if output_capture.error:
                         raise HostError(f"capability {capability_id!r} output capture failed: {output_capture.error}")
-                    _assert_live_storage_envelope(storage_estimate, attempt_path, attempt_path / "outputs")
+                    _assert_live_storage_envelope(storage_estimate, attempt_path, attempt_path / "outputs", storage_floor_exempt=storage_floor_exempt)
                     if cancelled is not None and cancelled():
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {capability_id!r} cancelled")
@@ -12691,6 +12708,7 @@ class GenericPackHost:
                 cas_param_ports=cas_param_ports,
                 optional_cas_param_ports=optional_cas_param_ports,
                 storage_estimate=storage_estimate,
+                storage_floor_exempt=record.storage_floor_exempt,
                 input_size_limits=input_size_limits,
                 storage_policy_version=(
                     str(record.definition.metadata.get("storage_policy_version"))
@@ -12906,7 +12924,7 @@ class GenericPackHost:
                         )
                 except ImageStoragePolicyError as exc:
                     raise HostError(str(exc)) from exc
-            _assert_live_storage_envelope(storage_estimate, root, root / "outputs")
+            _assert_live_storage_envelope(storage_estimate, root, root / "outputs", storage_floor_exempt=record.storage_floor_exempt)
             if cancelled():
                 raise HostCancelled("task cancelled after managed preparation")
             lifetime.assert_deadline()
@@ -13229,7 +13247,8 @@ class GenericPackHost:
                 raise HostError(
                     f"capability {record.id!r} produced no typed settled outputs"
                 )
-            storage_receipt = _task_storage_envelope(task_data, root, typed_outputs)
+            storage_receipt = _task_storage_envelope(task_data, root, typed_outputs,
+                                                     storage_floor_exempt=record.storage_floor_exempt)
             project_id = task_data.get("project_id")
             if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
                 raise HostError("runtime task project_id must be a non-empty string or None")
