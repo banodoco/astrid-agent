@@ -441,6 +441,18 @@ class RemotePlacement:
         state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim,
                           installation=installation, checkpoint=checkpoint)
         try:
+            from .pod_watchdog import IDENTITY_LOG_PATH, IDENTITY_MARK, write_deadline
+            saved = (claim.handle or {}).get("self_stop")
+            write_deadline(claim.ops, saved["deadline"] if saved else time.time() + deadline_seconds,
+                           saved["generation"] if saved else 1)
+            # Keep the first-start report before bootstrap/install can fail or
+            # later engine-log slices exclude the watchdog's earlier line.
+            code, report, _ = self._exec(
+                state, f"grep '^{IDENTITY_MARK}' {shlex.quote(str(IDENTITY_LOG_PATH))} | tail -n 1", timeout=10)
+            if code == 0 and report.startswith(IDENTITY_MARK):
+                log = out / "logs" / "engine.log"
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_text(report, encoding="utf-8")
             if reuse_snapshot is not None:
                 assert self.source_root is not None
                 marker = f"{BOOTSTRAP_ROOT}/{source_digest(self.source_root)}/ok"

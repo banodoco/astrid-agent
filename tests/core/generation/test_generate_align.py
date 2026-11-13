@@ -257,6 +257,31 @@ def test_interrupted_download_resumes_verified_locked_bytes(fake):
     assert report['actions'][0]['resumed_from_bytes'] == 8 and path.read_bytes() == DATA
 
 
+def test_unexpected_fetch_failure_is_debug_logged_and_reported_without_traceback(
+        fake, monkeypatch, caplog, capsys):
+    import logging
+    from types import SimpleNamespace
+    from vibecomfy import fetch
+
+    def fail_download(*_args, **_kwargs):
+        raise RuntimeError('transport adapter exploded')
+
+    monkeypatch.setattr(fetch, 'download', fail_download)
+    caplog.set_level(logging.DEBUG, logger=alignment.__name__)
+
+    result = alignment.main(SimpleNamespace(entry='fake', all=False, apply=True,
+                                            consent=['user_env'], json=True))
+
+    assert result == 1
+    assert 'fetch failed for locked model diffusion_models/fake.safetensors' in caplog.text
+    assert 'RuntimeError: transport adapter exploded' in caplog.text
+    assert 'Traceback (most recent call last)' in caplog.text
+    stderr = capsys.readouterr().err
+    assert 'download failed' in stderr
+    assert 'retry astrid generate align --apply --consent user_env --entry fake' in stderr
+    assert 'Traceback' not in stderr
+
+
 def test_server_ignoring_range_restarts_without_claiming_resume(fake):
     path = fake.target.models_root / fake.model.destination
     part = path.with_name(path.name + '.part')

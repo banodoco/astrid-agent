@@ -1125,7 +1125,7 @@ def test_status_tolerates_only_dynamic_file_choice_drift(setup, node, input_name
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
 
 
-@pytest.mark.parametrize("code", ["PRIVATE_INPUT_SENTINEL", "a" * 10000, None])
+@pytest.mark.parametrize("code", ["PRIVATE_INPUT_SENTINEL", pytest.param("a" * 10000, id="oversized-10000"), None])
 def test_status_failure_does_not_serialize_unrecognized_error_codes(setup, monkeypatch, code):
     install(setup)
     error = IntegrityError("PRIVATE_INPUT_SENTINEL", step_id="/arbitrary/private/path")

@@ -10,6 +10,59 @@ from astrid.core._shared import run_logs
 from tests.test_generic_host import FakeRuntime, _write_manifest
 
 
+@pytest.mark.parametrize('failed', [False, True])
+def test_empty_publication_directory_keeps_terminal_job_logs(tmp_path, failed):
+    path = _write_manifest(tmp_path / 'pack')
+    definition = json.loads(path.read_text())
+    definition['metadata']['output_result_manifest'] = True
+    script = """from pathlib import Path
+import hashlib, json, sys
+out = Path('{out}')
+print('publication stdout', flush=True)
+print('publication stderr', file=sys.stderr, flush=True)
+assert not any(out.iterdir()), 'publication directory must be empty'
+staged = out.parent / 'publication'
+staged.mkdir()
+answer = staged / 'answer.txt'
+answer.write_bytes(b'published')
+(staged / 'manifest.json').write_text(json.dumps({'schema_version':1,'kind':'fixture','inputs':{},'outputs':[{'name':'answer','path':'answer.txt','role':'result','content_hash':'sha256:'+hashlib.sha256(answer.read_bytes()).hexdigest(),'bytes':9}],'created':'t','warnings':[]}))
+out.rmdir()
+staged.replace(out)
+assert {p.name for p in out.iterdir()} == {'answer.txt', 'manifest.json'}
+raise SystemExit(FAILED)
+""".replace('FAILED', repr(int(failed)))
+    definition['command']['argv'] = ['{python_exec}', '-c', script]
+    path.write_text(json.dumps(definition))
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=runtime, attempt_root=tmp_path / 'attempt')
+    host.discover()
+    task = {'task': {'id':'task-1', 'capability':'test.echo', 'project_id':'demo',
+                     'attempt_id':'attempt-1', 'fence':1, 'spec':{'spec':{'inputs':{}}}}}
+    runtime.tasks['task-1'] = task
+    if failed:
+        with pytest.raises(HostError, match='exited 1'):
+            host.run_task(task, lease_token='lease-1')
+        result = runtime.failures[0][3]
+    else:
+        host.run_task(task, lease_token='lease-1')
+        result = runtime.settlements[0][2]
+    rows = result['outputs']
+    assert any(row['name'] == 'answer' for row in rows)
+    logs = {row['variant_key']: row for row in rows if row.get('role') == 'log'}
+    assert set(logs) == {'job.stdout', 'job.stderr'}
+    for name, payload in (('job.stdout', b'publication stdout\n'),
+                          ('job.stderr', b'publication stderr\n')):
+        assert logs[name]['output_port'] == 'logs'
+        assert logs[name]['digest'] == hashlib.sha256(payload).hexdigest()
+    output = next((tmp_path / 'attempt').rglob('outputs'))
+    index = {row['name']: row for row in run_logs.read_index(output)}
+    assert set(index) == set(logs)
+    for name in logs:
+        source = output.parent / '.host-logs' / name
+        assert index[name]['source'] == str(source)
+        assert source.read_bytes() == (output / 'logs' / index[name]['file']).read_bytes()
+
+
 @pytest.mark.parametrize('failed,manifest,logs,upload_failure', [
     (True, False, True, False), (True, True, True, False),
     (True, False, True, True), (True, False, False, False),
@@ -87,14 +140,14 @@ def test_duplicate_log_source_is_a_warning_and_keeps_first_output(tmp_path):
         'logs': [{'name': 'engine', 'role': 'engine', 'file': 'engine.log', 'missing': False,
                   'source': '/remote/job/engine.log'}],
     }))
-    host_logs = output / '.host-logs'
+    host_logs = tmp_path / '.host-logs'
     host_logs.mkdir()
     (output / 'host-engine.log').write_text('host engine')
     run_logs.declare(host_logs, run_logs.LogDecl(
         name='engine', role='engine', path=str((output / 'host-engine.log').resolve())))
 
     warnings = []
-    outputs = GenericPackHost(pack_roots=[])._log_outputs(output, warnings=warnings)
+    outputs = GenericPackHost(pack_roots=[])._log_outputs(output, attempt=tmp_path, warnings=warnings)
 
     assert [item['variant_key'] for item in outputs] == ['engine']
     assert len(warnings) == 1
@@ -110,7 +163,7 @@ def test_distinct_empty_and_identical_logs_remain_distinct_outputs(tmp_path):
         path.write_bytes(payload)
         run_logs.declare(output, run_logs.LogDecl(name=name, role='engine', path=str(path.resolve())))
 
-    outputs = GenericPackHost(pack_roots=[])._log_outputs(output)
+    outputs = GenericPackHost(pack_roots=[])._log_outputs(output, attempt=tmp_path)
     runtime = FakeRuntime()
     runtime.INLINE_SETTLEMENT_OUTPUTS = True
     published = GenericPackHost(pack_roots=[], client=runtime)._upload_outputs(
@@ -134,11 +187,11 @@ def test_collected_logs_are_outside_task_output_and_scratch_caps(tmp_path):
         name='engine', role='engine', path=str((output / 'engine.log').resolve()),
     ))
     (logs / 'huge.log').write_bytes(b'x' * 100)
-    host_logs = output / '.host-logs'
+    host_logs = attempt / '.host-logs'
     host_logs.mkdir()
     (host_logs / 'logs.json').write_bytes(b'x' * 40)
-    (output / 'job.stdout').write_bytes(b'x' * 30)
-    (output / 'job.stderr').write_bytes(b'x' * 30)
+    (host_logs / 'job.stdout').write_bytes(b'x' * 30)
+    (host_logs / 'job.stderr').write_bytes(b'x' * 30)
 
     receipt = _task_storage_envelope(
         {'storage_estimate': {'scratch_bytes': 0, 'output_bytes': 2}},

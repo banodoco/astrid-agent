@@ -1555,6 +1555,22 @@ def test_successful_managed_outputs_have_verified_public_projection(world):
     b.finish()
 
 
+def test_child_bridge_returns_one_product_when_task_has_logs(world):
+    setup(world)
+    b = bridge(world)
+    child = b.dispatch(request(world))
+    claim = world.service.claim_next({"executor_id": "worker", "capability_ids": [CHILD], "runtime_epoch": 1}, idempotency_key="claim-output-logs", identity=world.identity)
+    product, log = b"verified-output", b"task log"
+    world.service.settle_attempt(claim["attempt_id"], {**{k: claim[k] for k in ("lease_id", "fence", "runtime_epoch")},
+        "outputs": [{"name": "logs", "role": "log", "digest": digest(log), "data_base64": base64.b64encode(log).decode()},
+                    {"name": "answer", "digest": digest(product), "data_base64": base64.b64encode(product).decode()}]}, idempotency_key="settle-output-logs", identity=world.identity)
+    assert len(world.service.managed_outputs(child["task_id"])) == 2
+    rows = b.dispatch({"v": 1, "request_id": 2, "op": "outputs", "child_key": "child", "task_id": child["task_id"]})
+    assert len(rows) == 1
+    assert rows[0]["object_id"] == digest(product)
+    b.finish()
+
+
 def _staged_producer_readback(world, monkeypatch, producer_fields):
     """Real staged admission/settlement; override only the readback under test."""
     setup(world, staged=True)
@@ -1741,7 +1757,7 @@ def test_stale_host_claim_identity_cannot_issue_authority(world, field):
     assert not world.service.store.delegated_children(world.task["id"], world.claim["attempt_id"])
 
 
-@pytest.mark.parametrize("frame", [b'{}\n', b'{"v":1,"v":1}\n', b'[]\n', b'{"x":NaN}\n', b'x' * 1048577])
+@pytest.mark.parametrize("frame", [b'{}\n', b'{"v":1,"v":1}\n', b'[]\n', b'{"x":NaN}\n', pytest.param(b'x' * 1048577, id='oversized-1MiB-frame')])
 def test_malformed_channel_is_revoked_without_fallback(world, frame):
     setup(world)
     b = bridge(world)
@@ -3165,11 +3181,14 @@ def test_declared_command_outputs_expand_and_settle_through_normal_host(world):
     task = world.service.task(claim["task_id"])["task"]
     assert task["status"] == "completed" and result
     rows, cursor = world.client.generated.list_managed_outputs(claim["task_id"])
+    rows = [resource(row) for row in rows]
+    assert {row["variant_key"] for row in rows if row.get("role") == "log"} == {"job.stdout", "job.stderr"}
+    rows = [row for row in rows if row.get("output_port") == "report"]
     assert cursor is None and len(rows) == 1
-    row = resource(rows[0])
+    row = rows[0]
     assert row["output_port"] == "report" and row["digest"] == digest(b"host-declared-output")
     assert world.client.get_object(row["digest"][7:]) == b"host-declared-output"
-    assert [(item.get("output_port", item["name"]), item["digest"], item["size"]) for item in task["result"]["outputs"]] == [
+    assert [(item.get("output_port", item["name"]), item["digest"], item["size"]) for item in task["result"]["outputs"] if item.get("role") != "log"] == [
         (row["output_port"], row["digest"], row["size"])]
 
 
@@ -3204,13 +3223,16 @@ def test_declared_command_output_collision_keeps_materialized_input_and_independ
     task = world.service.task(claim["task_id"])["task"]
     assert result and task["status"] == "completed"
     rows, cursor = world.client.generated.list_managed_outputs(claim["task_id"])
+    rows = [resource(row) for row in rows]
+    assert {row["variant_key"] for row in rows if row.get("role") == "log"} == {"job.stdout", "job.stderr"}
+    rows = [row for row in rows if row.get("output_port") == "source"]
     assert cursor is None and len(rows) == 1
-    row = resource(rows[0])
+    row = rows[0]
     assert row["output_port"] == "source" and row["digest"] == digest(b"independent-host-output")
     assert row["digest"] != descriptor["digest"]
     assert world.client.get_object(descriptor["digest"][7:]) == original
     assert world.client.get_object(row["digest"][7:]) == b"independent-host-output"
-    assert [(item.get("output_port", item["name"]), item["digest"], item["size"]) for item in task["result"]["outputs"]] == [
+    assert [(item.get("output_port", item["name"]), item["digest"], item["size"]) for item in task["result"]["outputs"] if item.get("role") != "log"] == [
         (row["output_port"], row["digest"], row["size"])]
 
 
