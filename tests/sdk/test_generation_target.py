@@ -940,3 +940,36 @@ def test_workflow_target_rejects_an_unknown_align(tmp_path):
     with pytest.raises(GenerationInputError, match='align must be one of'):
         GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', placement='http://127.0.0.1:8188',
                                     align='maybe')
+
+
+@pytest.mark.parametrize('picker', [r'FLUX1\ae.safetensors', 'undeclared.safetensors'])
+def test_attached_authored_dry_run_omits_managed_declarations(network, monkeypatch, tmp_path, picker):
+    from astrid.core.generation import entries, managed_preparation
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    workflow = workflow_from_ready('image/z_image_turbo')
+    workflow.set_input('vae', picker)
+    # A target-owned picker needs no managed download declaration.
+    workflow.requirements.models = []
+    workflow.metadata['model_assets'] = []
+    path = tmp_path / 'workflow.py'
+    emit_bundle(workflow, path, {'operation': 'authored'})
+    client, requests = install_target(network, target_info(vaes=(picker,)))
+    attached_without_managed(monkeypatch)
+    judge = Mock(side_effect=AssertionError('attached workflow judged for managed preparation'))
+    monkeypatch.setattr(managed_preparation, 'judge_declarations', judge)
+    monkeypatch.setattr(GenerationFacade, 'workflow', Mock(side_effect=AssertionError('dry-run admitted')))
+
+    monkeypatch.setattr(entries, 'user_entries', lambda: [{
+        'id': 'attached-authored', 'kind': 'image', 'modes': ['t2i'], 'bundle': str(path),
+        'binds': {}, 'defaults': {}, 'needs': [],
+    }])
+    plan = GenerationFacade().image(entry='attached-authored', placement=client.target.url,
+                                    prompt='one boat', dry_run=True)
+
+    judge.assert_not_called()
+    assert plan['entry']['approval']['status'] == 'approved'
+    assert 'requirements' not in plan['entry']
+    assert plan['issues'] == []
+    assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]
