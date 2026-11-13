@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from runpod_lifecycle.https import CHUNK, HttpsPodTransport
 
 from astrid.core.execution.machine_run import MachineJob, MachineRunCancelled, run_on_machine
 from astrid.packs.runpod import machine as rm
@@ -744,12 +745,168 @@ def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
     assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
 
 
-def test_cancel_stops_the_job_checkpoints_it_then_keeps_verified_machine(machine_case):
+def test_cancel_during_shipping_stops_within_one_chunk_and_launches_nothing(machine_case, monkeypatch):
+    from threading import Event
+    import httpx
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    c = machine_case
+    _claim_machine(c)
+    original = c.job()
+    large = original.scratch / "video.bin"
+    large.write_bytes(b"v" * (3 * CHUNK))
+    job = replace(original, inputs={**original.inputs, "source_video": str(large)})
+    abort = Event()
+    uploads, chunks, failures = {}, [], []
+    original_transport = _HttpsOps._transport
+
+    def upload(request):
+        if request.method == "POST" and request.url.path == "/uploads":
+            metadata = json.loads(request.content)
+            upload_id = f"{len(uploads) + 1:032x}"
+            uploads[upload_id] = metadata
+            c.pod.files[metadata["path"]] = b""
+            c.pod.put_log.append(metadata["path"])
+            return httpx.Response(200, json={"id": upload_id, "offset": 0, "complete": False})
+        assert request.method == "PUT"
+        metadata = uploads[request.url.path.rsplit("/", 1)[-1]]
+        path = metadata["path"]
+        assert int(request.url.params["offset"]) == len(c.pod.files[path])
+        c.pod.files[path] += request.content
+        if path.endswith(".bin"):
+            chunks.append(len(request.content))
+            abort.set()  # The first in-flight chunk finishes after force_abort sets its signal.
+        size = len(c.pod.files[path])
+        return httpx.Response(200, json={"offset": size, "complete": size == metadata["size"]})
+
+    def transport(ops):
+        if not armed:
+            return original_transport(ops)
+        remote = HttpsPodTransport("pod1", "x" * 32, base_url="http://localhost")
+        remote.http.close()
+        remote.http = httpx.Client(base_url="http://localhost", transport=httpx.MockTransport(upload))
+        # Use the real chunk upload loop and request hooks; other operations stay on the fake pod.
+        remote.execute_command = c.pod.exec
+        remote.detached_start = c.pod.job_start
+        remote.detached_poll = c.pod.job_poll
+        remote.detached_cancel = c.pod.job_cancel
+        remote.get = c.pod.get
+        return remote
+
+    armed = False
+    jobs_before_shipping = []
+    def claimed(lease):
+        nonlocal armed
+        armed = True
+        jobs_before_shipping.extend(c.pod.job_log)
+
+    monkeypatch.setattr(_HttpsOps, "_transport", transport)
+    with pytest.raises(MachineRunCancelled):
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=abort.is_set,
+                       on_claim=claimed, on_failure=failures.append, sleep=lambda s: None)
+    assert chunks == [CHUNK]
+    assert c.pod.job_log == jobs_before_shipping
+    assert not c.pod.cancelled  # No generation job was posted.
+    assert [kind for kind, _ in c.active] == ["begin", "done"]
+    assert len(failures) == 1 and isinstance(failures[0]["failure"], MachineRunCancelled)
+    assert c.read()["lease"]["state"] == "idle"
+    assert c.read()["lease"]["last_job"]["outcome"] == "cancelled"
+
+
+@pytest.mark.parametrize("lost_ack", [False, True])
+def test_cancel_after_launch_stops_and_checkpoints_before_settlement(machine_case, monkeypatch, lost_ack):
+    from threading import Event
+
+    c = machine_case
+    _claim_machine(c)
+    job = c.job()
+    lease = c.machine.claim(job)
+    abort = Event()
+    original_start = c.pod.job_start
+    posted = []
+    checkpoints = []
+    jobs_before_start = list(c.pod.job_log)
+    original_checkpoint = c.machine._checkpoint
+
+    def checkpoint(current_lease, record):
+        original_checkpoint(current_lease, record)
+        checkpoints.append(dict(record))
+
+    def launch(command, *, job_id):
+        started = original_start(command, job_id=job_id)
+        posted.append(job_id)
+        abort.set()
+        if lost_ack:
+            raise TimeoutError("launch acknowledgement lost after abort")
+        return started
+
+    monkeypatch.setattr(c.pod, "job_start", launch)
+    monkeypatch.setattr(c.machine, "_checkpoint", checkpoint)
+    failure = None
+    try:
+        with pytest.raises(MachineRunCancelled) as caught:
+            c.machine.start(lease, job, cancelled=abort.is_set)
+        failure = caught.value
+        assert len(posted) == 1
+        assert len(c.pod.job_log) == len(jobs_before_start) + 1
+    finally:
+        monkeypatch.setattr(c.pod, "job_start", original_start)
+        c.machine.release(lease, False, failure=failure, stage="start")
+    assert c.pod.cancelled == posted
+    assert {"id": posted[0], "state": "cancelled"} in checkpoints
+    assert len(c.pod.job_log) == len(jobs_before_start) + 2  # Generation, then the mandatory reset.
+    assert "pod_reset reset --run-dir" in c.pod.job_log[-1]
+    assert c.read()["lease"]["state"] == "idle"
+    assert c.read()["lease"]["last_job"]["outcome"] == "cancelled"
+    assert [kind for kind, _ in c.active] == ["begin", "done"]
+
+
+def test_cancel_during_first_poll_stops_before_fetch(machine_case, monkeypatch):
+    from threading import Event
+
+    c = machine_case
+    _claim_machine(c)
+    job = c.job()
+    abort = Event()
+    original_poll = c.pod.job_poll
+    generation = []
+
+    def poll(job_id):
+        record = original_poll(job_id)
+        if not generation and c.read()["lease"].get("job") == {"id": job_id, "state": "running"}:
+            generation.append(job_id)
+            abort.set()
+        return record
+
+    def fetch(*args):
+        pytest.fail("cancelled generation proceeded to fetch")
+
+    monkeypatch.setattr(c.pod, "job_poll", poll)
+    monkeypatch.setattr(c.machine, "fetch", fetch)
+    with pytest.raises(MachineRunCancelled):
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=abort.is_set,
+                       sleep=lambda s: None)
+    assert generation and c.pod.cancelled == generation
+    assert c.read()["lease"]["last_job"]["outcome"] == "cancelled"
+    assert c.read()["lease"]["state"] == "idle"
+
+
+def test_cancel_stops_the_job_checkpoints_it_then_keeps_verified_machine(machine_case, monkeypatch):
     c = machine_case
     _claim_machine(c)
     job = c.job()
     original = c.pod.job_poll
     generation_job = [None]
+    original_start = c.pod.job_start
+
+    def launch(command, *, job_id):
+        if " generate " in command:
+            generation_job[0] = job_id
+        return original_start(command, job_id=job_id)
+
+    # Start can now observe abort before the first poll. Track the exact
+    # generation at launch so its cleanup reset is never mistaken for it.
+    monkeypatch.setattr(c.pod, "job_start", launch)
     def running(job_id):  # the generation job keeps running; preparation jobs finish
         if generation_job[0] is None and c.read()["lease"].get("job", {}).get("id") == job_id:
             generation_job[0] = job_id

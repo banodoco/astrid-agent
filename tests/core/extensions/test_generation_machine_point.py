@@ -36,7 +36,7 @@ def test_registry_resolves_the_runpod_machine_and_checks_the_protocol(registry: 
         assert callable(getattr(machine, name)), name
     params = {n: list(inspect.signature(getattr(machine, n)).parameters) for n in REQUIRED}
     assert params["claim"] == ["job", "cancelled"]
-    assert params["start"] == ["lease", "job"]
+    assert params["start"] == ["lease", "job", "cancelled"]
     assert params["poll"] == ["run"]
     assert params["cancel"] == ["run"]
     assert params["fetch"] == ["run", "destination"]
@@ -145,6 +145,26 @@ def test_a_cancelled_run_stops_the_job_then_releases_cold(tmp_path) -> None:
                        cancelled=lambda: next(polls), sleep=lambda s: None)
     assert [e[0] for e in machine.events] == ["claim", "start", "poll", "cancel", "release"]
     assert machine.released == [False]
+
+
+def test_machine_start_receives_the_same_cancel_callback_as_claim(tmp_path) -> None:
+    received = []
+
+    class CancellableMachine(RentedDirMachine):
+        def claim(self, job, *, cancelled=None):
+            received.append(cancelled)
+            return super().claim(job)
+
+        def start(self, lease, job, *, cancelled=None):
+            received.append(cancelled)
+            return super().start(lease, job)
+
+    callback = lambda: False
+    machine = CancellableMachine()
+    run_on_machine(machine, _job(tmp_path), destination=tmp_path / "outputs",
+                   cancelled=callback, sleep=lambda seconds: None)
+    assert received == [callback, callback]
+    assert machine.released == [True]
 
 
 def test_a_failed_fetch_releases_cold(tmp_path) -> None:
