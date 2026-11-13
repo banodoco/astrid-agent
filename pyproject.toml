@@ -289,6 +289,9 @@ tmp_path_retention_policy = "failed"
 # indefinitely. This is what stops one bad test from hanging CI, the megaplan
 # `finalize` test-baseline capture, or a human's local run for ~an hour.
 #
+# 120s is above every ordinary test (the slowest measured about 90s on hosted CI) even on a loaded machine; the few
+# legitimate slower tests carry an explicit @pytest.mark.timeout(N) beside their measured time. (Was 600s, which let a hang
+# cost ten minutes and a whole shard hours. 120s was chosen so that a hang fails fast; original wording follows:
 # 600s is many times the slowest legitimate test, even on a loaded machine
 # (testing plan R-10: durations never fail a run; only a genuine hang does). Override per-test with @pytest.mark.timeout(N) (the
 # `timeout` marker is registered below); set timeout(0) to disable for a
@@ -304,7 +307,7 @@ tmp_path_retention_policy = "failed"
 # `pytest` process at exit -- which is precisely the failure that wedged the
 # megaplan baseline capture for ~an hour.) A test that legitimately runs longer
 # should raise its own bound with @pytest.mark.timeout(N).
-timeout = 600
+timeout = 120
 # Lanes (testing plan R-2): the default run leaves out the default_off lanes of tests/lanes.py (a Runtime checkout,
 # macOS, the Remotion install, credentials, a GPU, the owner's workstation files); each is run by the CI job named in the registry or by hand.
 # --strict-markers: a lane marker must be one the registry declares.

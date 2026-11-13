@@ -220,6 +220,8 @@ def test_description_projects_qualification_without_gating_user_workflows(monkey
         assert description['fix']
 
 
+# Measured 181 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, capsys, real_runtime):
     from concurrent.futures import ThreadPoolExecutor
     from astrid import console
