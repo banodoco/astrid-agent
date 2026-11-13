@@ -23,7 +23,7 @@ jobs:
   integration:
     name: integration shard ${{ matrix.group }} / 4
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 150
     env:
       # tests/lanes.py: a lane this job provides fails, not skips, when its dependency is missing.
       ASTRID_CI_JOB: lanes-integration
@@ -224,7 +224,7 @@ jobs:
           echo "- RunPod lifecycle: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Integration tests (shard)
-        run: python -m pytest -q -rA -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+        run: python -m pytest -v -rA --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
 
       - name: Save pip cache on main or int branches (C-08)
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-lanes-2.outputs.cache-hit != 'true' }}

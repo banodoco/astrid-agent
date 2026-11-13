@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.installed_smoke
+# Measured 126 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_fresh_wheel_cli(tmp_path: Path) -> None:
     if importlib.util.find_spec("build") is None or importlib.util.find_spec("wheel") is None:
         pytest.skip("wheel build toolchain is absent")

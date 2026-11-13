@@ -109,6 +109,8 @@ def test_assignment_values_and_first_equals():
         entries.merge_input_values({'texture': 0.4}, assignments=['texture=0.5'])
 
 
+# Measured 96 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_cli_sdk_and_mcp_accept_the_same_non_common_bindings(authored, monkeypatch, capsys):
     from astrid import mcp_server
     captured = []

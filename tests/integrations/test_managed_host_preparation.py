@@ -51,7 +51,12 @@ class Handler(BaseHTTPRequestHandler):
   if self.path.startswith('/view?'):
    name=parse_qs(urlsplit(self.path).query)['filename'][0];data=(started.parent/name).read_bytes()
    self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
-  if self.path=='/object_info':return self.send({name:value for name,value in schema.items() if name!='EmptyImage' or not (started.parent/'missing-node').exists()})
+  if self.path=='/object_info':
+   # Like ComfyUI, a loader lists the model files present when object_info is read.
+   folder=started.parent/'models'/'diffusion_models'
+   listed=sorted(path.name for path in folder.iterdir()) if folder.is_dir() else []
+   current={**schema,'UNETLoader':{'input':{'required':{'unet_name':[listed,{}]}},'output':['MODEL'],'output_name':['MODEL'],'output_node':False,'python_module':'nodes'}}
+   return self.send({name:value for name,value in current.items() if name!='EmptyImage' or not (started.parent/'missing-node').exists()})
   if self.path.startswith('/history/'):
    key=self.path.rsplit('/',1)[1];return self.send({key:histories[key]} if key in histories else {})
   if self.path=='/queue':return self.send({'queue_running':[],'queue_pending':[]})
@@ -402,6 +407,21 @@ def test_real_status_and_readiness_use_installed_visibility(managed_install_with
         start['owner_id'], deadline, models_root=receipt.models_root, visibility=start['cuda_visible_devices'])
     assert health['healthy'] and launch['env']['CUDA_VISIBLE_DEVICES'] == '2'
     assert len(started.read_text().splitlines()) == 1
+
+
+def test_installed_status_survives_a_model_landing_in_a_loader_folder(managed_install):
+    """A model a later job downloads changes what the engine's loaders list in object_info, as
+    ComfyUI's do. That is not a change to the installation; a changed node schema still is."""
+    from astrid.core.generation import engine_readiness
+    client, payload, recipe, root, started, bootstrap = managed_install
+    receipt = engine_readiness.canonical_status(root=str(root), deadline=time.monotonic() + 90)
+    assert receipt.status == 'installed', receipt
+    (root / 'models/diffusion_models/landed-after-install.safetensors').write_bytes(b'downloaded by a later job\n')
+    receipt = engine_readiness.canonical_status(root=str(root), deadline=time.monotonic() + 90)
+    assert (receipt.status, receipt.error_code, receipt.failed_step_id) == ('installed', None, None)
+    (root / 'missing-node').write_text('a node class the installation provided is gone')
+    receipt = engine_readiness.canonical_status(root=str(root), deadline=time.monotonic() + 90)
+    assert (receipt.status, receipt.error_code, receipt.failed_step_id) == ('failed', 'integrity_failed', 'receipt-evidence')
 
 
 def test_legacy_local_server_restart_refreshes_the_receipt(managed_install, monkeypatch):

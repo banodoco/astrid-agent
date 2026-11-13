@@ -401,6 +401,25 @@ def test_catalog_dry_run_builds_required_inputs_for_public_cli(tmp_path):
     assert media.read_bytes() == b"test image"
 
 
+def test_check_catalog_reports_managed_ready_template_declaration_error(monkeypatch, tmp_path):
+    from astrid.core.generation import managed_preparation
+    from astrid.core.generation.engine_contracts import IntegrityError
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    def missing_declarations(*_args, **_kwargs):
+        raise IntegrityError("managed model has no declared digest: fixture.safetensors")
+
+    monkeypatch.setattr(managed_preparation, "judge_declarations", missing_declarations)
+    controls_file = tmp_path / "controls.json"
+    controls_file.write_text(json.dumps({"max_usd": 1, "deadline": "2099-01-01T00:00:00Z"}))
+    c = preflight.Cell("z-image", "z-image", "t2i", "image/z_image_turbo", kind="image")
+
+    preflight.check_catalog([c], ModelRegistry.load_default(), FakeRunner(logs=tmp_path), controls_file)
+
+    assert c.checks["catalog"]["status"] == "FAIL"
+    assert "managed model has no declared digest: fixture.safetensors" in c.checks["catalog"]["reason"]
+
+
 def test_check_catalog_requires_stage_controls_and_consumes_exact_values(monkeypatch, tmp_path):
     class Registry:
         def get(self, identifier):

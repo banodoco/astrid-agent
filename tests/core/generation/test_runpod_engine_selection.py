@@ -157,6 +157,8 @@ _CELLS = [pytest.param(slot, target, id=f"{'/'.join(slot)}-{target}",
 
 
 @pytest.mark.parametrize('slot,target', _CELLS)
+# Measured 90 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, image, monkeypatch, request):
     modality, mode = slot
     if target != 'runpod':
@@ -177,6 +179,8 @@ def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, imag
 
 @pytest.mark.parametrize('slot', [s for s in SLOTS if s[1] in {'t2i', 'edit', 'tts', 'music'}],
                          ids=lambda slot: '/'.join(slot))
+# Measured 108 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_dry_run_target_and_engine_equal_live_policy(slot, image, live_machine):
     modality, mode = slot
     plan = dict(_call(modality, mode, image, placement='runpod', dry_run=True))
@@ -194,6 +198,8 @@ def test_dry_run_target_and_engine_equal_live_policy(slot, image, live_machine):
 @pytest.mark.parametrize('slot,engine', [(('audio', 'tts'), 'comfyui'), (('audio', 'music'), 'comfyui'),
                                          (('image', 't2i'), 'comfyui'), (('image', 'edit'), 'comfyui')],
                          ids=lambda value: '/'.join(value) if isinstance(value, tuple) else value)
+# Measured 109 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_runpod_engine_matches_slot_recipe(slot, engine, image, live_machine):
     modality, mode = slot
     plan = dict(_call(modality, mode, image, placement='runpod', dry_run=True))
@@ -262,6 +268,8 @@ def test_local_request_never_reaches_runpod(target, image, monkeypatch):
     assert client.calls == []
 
 
+# Measured 112 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_uncovered_entry_reaches_submission(image, live_machine):
     client = NoPodClient()
     _call('video', 'i2v', image, placement=LIVE_PLACEMENT, client=client, project='demo', wait=False)

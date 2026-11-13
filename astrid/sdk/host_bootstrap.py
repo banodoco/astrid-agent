@@ -1095,6 +1095,22 @@ def _stop_registered_host(state: Mapping[str, Any]) -> None:
         raise PackHostBootstrapError("prior host registration lock is unavailable; retirement blocked") from exc
 
 
+def host_occupancy(pid: int, support_root: Path) -> int | None:
+    """Read the registered process's published active count without changing it."""
+    path = support_root / "generic-host.busy.json"
+    if path.is_symlink():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(record, dict) and type(record.get("pid")) is int and record["pid"] == pid:
+        active = record.get("active")
+        if type(active) is int and active >= 0:
+            return active
+    return None
+
+
 def _host_idle(pid: int, support_root: Path | None = None) -> bool:
     """A host is idle when it executes no task.
 
@@ -1104,12 +1120,9 @@ def _host_idle(pid: int, support_root: Path | None = None) -> bool:
     git preflight) share the host's group and are not work.
     """
     if support_root is not None:
-        try:
-            record = json.loads((support_root / "generic-host.busy.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            record = None
-        if isinstance(record, dict) and record.get("pid") == pid:
-            return int(record.get("active") or 0) == 0
+        active = host_occupancy(pid, support_root)
+        if active is not None:
+            return active == 0
     for check in range(_IDLE_CHECKS):
         if check:
             time.sleep(_IDLE_CHECK_INTERVAL_SECONDS)
