@@ -175,6 +175,32 @@ def test_jobs_ignore_changed_preferences(machine_case, monkeypatch):
     assert c.creates == 1
 
 
+def test_sdk_admission_and_job_need_only_saved_account(machine_case, monkeypatch):
+    """A live claim needs no saved budget, GPU or datacenter choices for a job."""
+    import time
+
+    from astrid.core.generation import placement, settings
+    from astrid.packs.runpod import target_selection
+    from astrid.sdk.generation import _require_claimed_machine
+
+    c = machine_case
+    claim(c)
+    paid = c.read()["paid_limits"]
+    forbid_allocation(c, monkeypatch)
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: {
+        "provider_account_ref": c.prefs.provider_account_ref})
+    monkeypatch.setattr(target_selection, "canonical_claim_path", lambda *args, **kwargs: c.owner.path)
+
+    requested = placement.Placement(kind="runpod", machine="pod-1")
+    assert placement.validate_placement(requested, machine_kinds=("runpod",)) is requested
+    with monkeypatch.context() as sdk_clock:
+        sdk_clock.setattr(time, "time", c.clock)
+        _require_claimed_machine(requested.kind, requested.machine)
+    run(c, job(c))
+    assert c.creates == 1 and c.read()["pod_id"] == "pod-1"
+    assert c.read()["paid_limits"] == paid
+
+
 def test_host_cache_jobs_ignore_changed_preferences(machine_case, monkeypatch):
     from astrid.core.generation import settings
     from astrid.packs.runpod.adapter import TargetProviderBindings

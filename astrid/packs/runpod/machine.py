@@ -1484,12 +1484,16 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def journal_leases(account: str | None = None) -> list[dict[str, Any]]:
-    """Read-only listing from the account's lease journal (no lock, no provider call)."""
-    from .target_selection import canonical_claim_path, read_runpod_preferences
+    """Read-only lease listing; saved settings supply only the account locator."""
+    from astrid.core.generation import settings
+
+    from .target_selection import canonical_claim_path
     from .worker_owner import ended_leases_path
 
     try:
-        account = account or read_runpod_preferences().provider_account_ref
+        account = account or (settings.machine_policy("runpod") or {}).get("provider_account_ref")
+        if not isinstance(account, str) or not account:
+            return []
         path = canonical_claim_path(account)
         record = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
         ended_path = ended_leases_path(path)
