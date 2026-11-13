@@ -95,3 +95,25 @@ def test_non_render_pack_retains_its_bounded_storage_contract(render, monkeypatc
     monkeypatch.setattr("astrid.core.execution.generic_host.shutil.disk_usage", lambda _: SimpleNamespace(free=8 * 1024**3))
     with pytest.raises(StorageEnvelopeError, match="exceed task output limit"):
         _assert_live_storage_envelope(_task_storage_limits(task), root, output)
+
+
+@pytest.mark.parametrize("capability", ["runpod.release", "runpod.status"])
+def test_machine_control_observation_and_release_ignore_host_disk_floor(render, monkeypatch, capability):
+    _, root, _ = render
+    monkeypatch.setattr("astrid.core.execution.generic_host.shutil.disk_usage",
+                        lambda _: SimpleNamespace(free=99_332_096))
+    from pathlib import Path
+    from astrid.core.execution.generic_host import GenericPackHost
+
+    host = GenericPackHost(pack_roots=[Path(__file__).resolve().parents[3] / "astrid/packs/runpod"])
+    host.discover()
+    try:
+        assert {key for key, record in host.capabilities.items() if record.storage_floor_exempt} == {
+            "runpod.release", "runpod.status"}
+        exempt = host.capabilities[capability].storage_floor_exempt
+        assert exempt
+        assert _task_storage_envelope({"capability_id": capability}, root, [], storage_floor_exempt=exempt) is None
+        _assert_live_storage_envelope({"scratch_bytes": 0, "output_bytes": 0}, root, root / "outputs",
+                                      storage_floor_exempt=exempt)
+    finally:
+        host.shutdown()

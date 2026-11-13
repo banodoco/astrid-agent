@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -1889,6 +1890,7 @@ def _claim_cli_case(monkeypatch):
     from tests.packs.runpod.test_pack_actions import raw_preferences
 
     preferences = raw_preferences()
+    monkeypatch.setattr(machines_cli, "_runtime_storage_root", lambda: Path(__file__).parent)
     rows, calls = [], []
     monkeypatch.setattr(machines_cli, "_leases", lambda: rows)
 
@@ -2092,32 +2094,62 @@ def test_machine_claim_waits_for_stock_no_longer_than_its_retention(monkeypatch,
 
 def test_release_during_running_job_cancels_then_releases(machine_case, monkeypatch):
     import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     from astrid.packs.runpod.adapter import TargetProviderBindings
+    from astrid.packs.runpod.worker_owner import RunPodWorkerOwnerError
 
     c = machine_case
     _claim_machine(c)
     cancel = threading.Event()
     polling = threading.Event()
+    checkpointed = threading.Event()
+    settlement_waiting = threading.Event()
+    allow_settlement = threading.Event()
+    settled = threading.Event()
+    drain_waiting = threading.Event()
+    quiesced = threading.Event()
     bindings = TargetProviderBindings(pack_roots=(), holds=None, credentials=None, environ={})
     bindings.provider = c.adapter
-    # The host already supplies this same Event to its cancelled callback.
-    c.machine = rm.MACHINE.for_host(c.adapter, begin=lambda lease: bindings.begin(lease, cancel),
-                                    done=bindings.done)
-    c.host.cancel_running = lambda record: bindings.cancel_running(record)
-    # This fixture's job has no models; catalog scanning is outside the timed job.
-    monkeypatch.setattr(rm, "_job_manifest_rows", lambda *args, **kwargs: ())
-    original_cancel = c.pod.job_cancel
+    running = set()
     order = []
 
-    def stop(job_id):
-        assert cancel.is_set(), "exact remote stop preceded the running attempt's cancel signal"
-        order.append("stop")
-        return original_cancel(job_id)
+    class ProducerDone(threading.Event):
+        def wait(self, timeout=None):
+            drain_waiting.set()
+            return super().wait(timeout)
 
-    monkeypatch.setattr(c.pod, "job_cancel", stop)
-    original_poll = c.pod.job_poll
+    def begin(lease):
+        bindings.begin(lease, cancel)
+        bindings.active["done"] = ProducerDone()
+
+    c.machine = rm.MACHINE.for_host(c.adapter, begin=begin, done=bindings.done)
+
+    def cancel_running(record):
+        bindings.cancel_running(record)
+        assert cancel.is_set()
+        assert checkpointed.wait(timeout=10), "producer did not checkpoint the exact cancellation"
+        assert settlement_waiting.wait(timeout=10), "producer did not reach settlement"
+
+    c.host.cancel_running = cancel_running
+    receipt_builder = c.host.quiesce
+
+    async def drain(record):
+        assert checkpointed.is_set() and settlement_waiting.is_set()
+        assert not bindings.active["done"].is_set()
+        bindings._quiesce(record)
+        quiesced.set()
+        order.append("quiesced")
+        return await receipt_builder(record)
+
+    c.host.quiesce = drain
+    # This fixture's model-free job does not need repository catalog scanning.
+    monkeypatch.setattr(rm, "_job_manifest_rows", lambda *args, **kwargs: ())
     original_start = c.pod.job_start
-    running = set()
+    original_poll = c.pod.job_poll
+    original_cancel = c.pod.job_cancel
+    original_checkpoint = c.machine._checkpoint
+    original_settlement = c.machine.release
 
     def start(command, *, job_id):
         result = original_start(command, job_id=job_id)
@@ -2125,45 +2157,230 @@ def test_release_during_running_job_cancels_then_releases(machine_case, monkeypa
             running.add(job_id)
         return result
 
-    monkeypatch.setattr(c.pod, "job_start", start)
-
     def poll(job_id):
         if job_id in running and not cancel.is_set():
             return {"id": job_id, "state": "running"}
         return original_poll(job_id)
 
+    def stop(job_id):
+        assert cancel.is_set(), "exact remote stop preceded the running attempt's cancel signal"
+        order.append("stop")
+        return original_cancel(job_id)
+
+    def checkpoint(lease, job):
+        original_checkpoint(lease, job)
+        if job["id"] in running and job["state"] == "cancelled":
+            assert c.read()["lease"]["job"] == job
+            order.append("checkpointed")
+            checkpointed.set()
+
+    def settlement(lease, warm, *, reason="task_failed", failure=None, stage="execution"):
+        assert checkpointed.is_set()
+        assert not warm and isinstance(failure, MachineRunCancelled) and stage == "cancel"
+        settlement_waiting.set()
+        assert allow_settlement.wait(timeout=10), "settlement barrier was not released"
+        original_settlement(lease, warm, reason=reason, failure=failure, stage=stage)
+        settled.set()
+
+    monkeypatch.setattr(c.pod, "job_start", start)
     monkeypatch.setattr(c.pod, "job_poll", poll)
-    outcome = {}
+    monkeypatch.setattr(c.pod, "job_cancel", stop)
+    monkeypatch.setattr(c.machine, "_checkpoint", checkpoint)
+    monkeypatch.setattr(c.machine, "release", settlement)
 
     def wait_for_cancel(_seconds):
         polling.set()
         assert cancel.wait(timeout=30), "release did not signal the running attempt"
 
-    def work():
-        job = c.job()
+    job = c.job()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        worker = executor.submit(run_on_machine, c.machine, job, destination=job.scratch / "outputs",
+                                 cancelled=cancel.is_set, sleep=wait_for_cancel)
         try:
-            run_on_machine(c.machine, job, destination=job.scratch / "outputs",
-                           cancelled=cancel.is_set, sleep=wait_for_cancel)
-        except BaseException as exc:
-            outcome["error"] = exc
+            assert polling.wait(timeout=30), "job did not reach polling"
+            before = c.read()
+            assert len(running) == 1
+            job_id = next(iter(running))
+            with pytest.raises(RunPodWorkerOwnerError, match="differs from the requested machine"):
+                c.host.release(expected_machine_id="different-pod")
+            assert not cancel.is_set() and not c.deletes
+            release = executor.submit(c.host.release, expected_machine_id="pod-1")
+            assert drain_waiting.wait(timeout=10), "production quiescence did not wait for the producer"
+            assert checkpointed.is_set() and settlement_waiting.is_set()
+            assert not quiesced.is_set() and not release.done() and not settled.is_set()
+            pending = c.read()
+            assert pending["state"] == "release_pending" and pending["lease"]["state"] == "releasing"
+            assert pending["lease"]["job"] == {"id": job_id, "state": "cancelled"}
+            assert "release_quiescence" not in pending and c.deletes == []
+            allow_settlement.set()
+            with pytest.raises(MachineRunCancelled, match="generation cancelled; the remote job was stopped"):
+                worker.result(timeout=15)
+            result = release.result(timeout=15)
+            assert settled.is_set() and quiesced.is_set() and bindings.active is None
+            assert order[:3] == ["stop", "checkpointed", "quiesced"]
+            saved = c.read()
+            assert saved == result and saved["state"] == "cleanup_complete"
+            assert saved["lease"]["job"] == {"id": job_id, "state": "cancelled"}
+            receipt = saved["release_quiescence"]
+            assert receipt == {
+                "schema": "astrid.runpod.lease-drain.v1", "state": "drained", "admission_closed": True,
+                **{key: before[key] for key in ("operation_id", "pod_id", "provider_account_ref")},
+                **{key: before["lease"][key] for key in
+                   ("owner_epoch", "generation", "invocation_id")},
+            }
+            assert saved["cleanup"]["absence"]["exact_get_status"] == 404
+            assert saved["cleanup"]["absence"]["account_list_succeeded"] is True
+            assert saved["cleanup"]["absence"]["account_list_absent"] is True
+            assert c.deletes == ["pod-1"]
+        finally:
+            cancel.set()
+            allow_settlement.set()
 
-    thread = threading.Thread(target=work)
-    thread.start()
-    try:
-        assert polling.wait(timeout=30), "job did not reach polling"
-        # A foreign machine must neither cancel this job nor release the pod.
-        with pytest.raises(Exception, match="differs from the requested machine"):
-            c.host.release(expected_machine_id="different-pod")
-        assert not cancel.is_set() and not c.deletes
-        result = c.host.release(expected_machine_id="pod-1")
-        order.append("released")
-        assert cancel.is_set() and order[0] == "stop"
-        assert result["state"] == "cleanup_complete"
-        assert result["release_quiescence"]["state"] == "drained"
-        assert result["cleanup"]["absence"]["exact_get_status"] == 404
-        assert c.deletes == ["pod-1"]
-    finally:
-        cancel.set()
-        thread.join(timeout=15)
-    assert not thread.is_alive()
-    assert "error" in outcome
+
+@pytest.mark.parametrize("headroom", [-1, 64 * 1024**2 - 1])
+def test_machine_claim_refuses_runtime_volume_below_release_reserve(tmp_path, monkeypatch, capsys, headroom):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.runtime_cli import RuntimeCLI
+    from tests.packs.runpod.test_pack_actions import raw_preferences
+
+    support = tmp_path / "support"
+    realm = tmp_path / "different-volume" / "realm"
+    realm.mkdir(parents=True)
+    monkeypatch.setattr("astrid.sdk.storage_root.resolve_runtime_data_root", lambda: support)
+    monkeypatch.setattr(RuntimeCLI, "inspect", lambda *args, **kwargs:
+                        SimpleNamespace(ok=True, data={"realm_root": str(realm)}))
+    monkeypatch.setenv("ASTRID_RUNTIME_FREE_DISK_FLOOR_BYTES", str(1024**3))
+    measured, paid_calls = [], []
+
+    def disk_usage(path):
+        measured.append(path)
+        return SimpleNamespace(free=1024**3 + headroom)
+
+    monkeypatch.setattr("shutil.disk_usage", disk_usage)
+
+    def describe(**kwargs):
+        paid_calls.append("quote")
+        return {"waiting_policy": {"preferences": raw_preferences()}}
+
+    def claim(**kwargs):
+        paid_calls.append("create")
+        return SimpleNamespace(ok=False, error="fake create reached")
+
+    assert machines_cli.main(["claim", "--max-usd", "2", "--max-hourly-usd", "2",
+                              "--consent", "paid", "--json"], claim=claim, describe=describe) == 2
+    message = json.loads(capsys.readouterr().out)["error"]
+    assert "free" in message and "Runtime" in message and "release" in message
+    assert "Free disk space" in message
+    assert measured == [realm] and paid_calls == []
+
+
+@pytest.mark.parametrize("refusal_stage", ["admission", "claim", "follow", "admission_exception"])
+def test_machine_release_falls_back_only_for_runtime_low_disk(machine_case, monkeypatch, capsys, refusal_stage):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.packs.runpod import target_selection
+
+    c = machine_case
+    _claim_machine(c)
+    before = c.read()
+    monkeypatch.setattr("shutil.disk_usage", lambda _: SimpleNamespace(free=99_332_096))
+    monkeypatch.setattr(machines_cli, "_leases", lambda: rm.lease_rows(c.host))
+    monkeypatch.setattr(target_selection, "read_runpod_preferences", lambda **kwargs: c.prefs)
+    monkeypatch.setattr(target_selection, "canonical_claim_path", lambda *args, **kwargs: c.host.selection.path)
+    monkeypatch.setattr("astrid.core.execution.machine_run.resolve_machine", lambda kind: rm.MACHINE)
+    error = {"code": "conflict", "details": {"reason": "insufficient_storage"}}
+    task = {"task_id": "release-task", "run_id": "release-run", "capability_id": "runpod.release",
+            "state": "queued", "waiting_reason": "insufficient_storage"}
+    result = SimpleNamespace(ok=False, capability_id="runpod.release", error=error,
+                             kernel_attempt_id=None, raw_result={})
+    if refusal_stage == "claim":
+        # A Runtime claim refusal has no attempt and leaves the task queued.
+        result = SimpleNamespace(ok=True, capability_id="runpod.release", error=None,
+                                 kernel_attempt_id=None, raw_result={"task": task})
+    release = lambda: result
+    cancelled_tasks = []
+    if refusal_stage in {"follow", "admission_exception"}:
+        from contextlib import nullcontext
+        from astrid.sdk import AstridClient
+        from astrid.sdk.generation import GenerationFacade
+        from astrid.sdk.workspace_client import WorkspaceClientError
+
+        def admit(*args, **kwargs):
+            assert kwargs["machine_id"] == "pod-1"
+            if refusal_stage == "admission_exception":
+                raise WorkspaceClientError(409, "conflict", "Runtime storage preflight refused release",
+                                           details={"reason": "insufficient_storage"})
+            return SimpleNamespace(ok=True, capability_id="runpod.release", capability_type="executor",
+                                   native_kind="action", kernel_task_id="release-task", kernel_run_id="release-run",
+                                   kernel_attempt_id=None, error=None, raw_result={}, run_id="release-run")
+
+        def cancel_task(task_id, **kwargs):
+            assert c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
+            cancelled_tasks.append(task_id)
+            return SimpleNamespace(ok=True)
+
+        # Exercise the unchanged SDK follower: its first task read observes a
+        # refused claim, so it must hand off rather than wait for a terminal task.
+        client = SimpleNamespace(tasks=SimpleNamespace(show=lambda _: SimpleNamespace(ok=True, data=task),
+                                                      cancel=cancel_task))
+        monkeypatch.setattr(AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
+        monkeypatch.setattr(GenerationFacade, "release", admit)
+        release = None
+    assert machines_cli.main(["release", "pod-1", "--json"], release=release) == 0
+    assert cancelled_tasks == (["release-task"] if refusal_stage == "follow" else [])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] and payload["machine"]["state"] == "ended"
+    assert "Runtime refused" in captured.err and "low disk" in captured.err
+    assert "released pod pod-1 directly" in captured.err and str(c.host.selection.path) in captured.err
+    saved = c.read()
+    assert saved["state"] == "cleanup_complete" and c.deletes == ["pod-1"] and c.creates == 1
+    assert saved["operation_id"] == before["operation_id"] and saved["pod_id"] == "pod-1"
+    assert saved["release_quiescence"]["state"] == "drained"
+    assert saved["cleanup"]["absence"]["exact_get_status"] == 404
+    assert saved["cleanup"]["absence"]["account_list_absent"] is True
+
+
+@pytest.mark.parametrize("error", [
+    {"code": "conflict", "details": {"reason": "executor_busy"}},
+    {"code": "permission_denied", "details": {"reason": "insufficient_storage"}},
+    {"code": "transport_timeout", "message": "insufficient_storage"},
+])
+def test_machine_release_other_runtime_refusals_do_not_fall_back(machine_case, monkeypatch, capsys, error):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+
+    c = machine_case
+    _claim_machine(c)
+    monkeypatch.setattr(machines_cli, "_leases", lambda: rm.lease_rows(c.host))
+    monkeypatch.setattr("astrid.core.execution.machine_run.resolve_machine",
+                        lambda *_: pytest.fail("non-storage refusal entered direct release"))
+    result = SimpleNamespace(ok=False, capability_id="runpod.release", error=error,
+                             kernel_attempt_id=None, raw_result={})
+    assert machines_cli.main(["release", "pod-1", "--json"], release=lambda: result) == 1
+    assert not json.loads(capsys.readouterr().out)["ok"]
+    assert c.deletes == [] and c.read()["state"] == "claimed"
+
+
+@pytest.mark.parametrize("expiry", ["idle", "paid_deadline"])
+def test_automatic_machine_release_runs_below_runtime_floor(machine_case, monkeypatch, expiry):
+    from types import SimpleNamespace
+    from astrid.sdk import generation
+
+    c = machine_case
+    _claim_machine(c)
+    if expiry == "paid_deadline":
+        c.host.acquire(c.grant)
+    record = c.read()
+    deadline = record["lease"]["idle_expires_at" if expiry == "idle" else "paid_expires_at"]
+    monkeypatch.setattr("shutil.disk_usage", lambda _: SimpleNamespace(free=99_332_096))
+    monkeypatch.setattr(generation, "_runpod_operation",
+                        lambda *args, **kwargs: pytest.fail("automatic release admitted a Runtime task"))
+    c.clock.advance(deadline - c.clock())
+    saved = c.read()
+    assert saved["state"] == "cleanup_complete" and saved["lease"]["ended"] == expiry
+    assert saved["operation_id"] == record["operation_id"] and saved["pod_id"] == "pod-1"
+    assert saved["release_quiescence"]["state"] == "drained"
+    assert saved["cleanup"]["absence"]["exact_get_status"] == 404
+    assert c.deletes == ["pod-1"] and c.creates == 1

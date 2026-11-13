@@ -541,3 +541,70 @@ def test_control_registration_reserves_separate_runtime_capacity(world, real_run
         assert descriptors["cpu.claim-loop"]["required_resource_keys"] == ["cpu"]
     finally:
         host.shutdown()
+
+
+@pytest.mark.parametrize("job_kind", ["claim", "generation"])
+def test_queued_status_cannot_hold_control_slot_ahead_of_release(world, monkeypatch, job_kind):
+    from pathlib import Path
+
+    class StatusClient(LaneClient):
+        def fork_for_host_slot(self):
+            client = StatusClient(self.backend)
+            self.backend.clients.append(client)
+            return client
+
+        @staticmethod
+        def capability(task_id):
+            return {"claim": "runpod.claim", "status": "runpod.status",
+                    "release": "runpod.release"}.get(task_id, "cpu.claim-loop")
+
+    backend = Backend(0)
+    backend.offers = []
+    backend.tasks.append(job_kind)
+    owner_lock = threading.Lock()
+    job_started = threading.Event()
+    finish_job = threading.Event()
+    status_started = threading.Event()
+    release_started = threading.Event()
+
+    def execute(slot, task, **kwargs):
+        assert kwargs.get("_setup_error") is None
+        task_id = task["task"]["id"]
+        if task_id == job_kind:
+            with owner_lock:
+                job_started.set()
+                assert finish_job.wait(timeout=10), "fixture job was not released"
+        elif task_id == "status":
+            status_started.set()
+            with owner_lock:
+                pass
+        else:
+            assert task_id == "release"
+            release_started.set()
+        return {"task_id": task_id}
+
+    monkeypatch.setattr(GenericPackHost, "run_task", execute)
+    runpod = Path(__file__).resolve().parents[3] / "astrid/packs/runpod"
+    host = GenericPackHost(pack_roots=[world, runpod], client=StatusClient(backend), max_concurrency=1)
+    host.discover()
+    thread, outcome = run_thread(host, max_tasks=3)
+    try:
+        assert job_started.wait(timeout=3)
+        with backend.condition:
+            backend.tasks.extend(["status", "release"])
+            backend.condition.notify_all()
+        assert release_started.wait(timeout=3), "queued status blocked the release control lane"
+        assert not finish_job.is_set() and not status_started.is_set()
+        assert host.capabilities["runpod.release"].is_control
+        assert host.capabilities["runpod.release"].resource_keys == ("control",)
+        assert not host.capabilities["runpod.status"].is_control
+        assert host.capabilities["runpod.status"].resource_keys == ("cpu",)
+        finish_job.set()
+        thread.join(timeout=3)
+        assert not thread.is_alive() and "error" not in outcome
+        assert status_started.is_set()
+        assert len(outcome["result"]) == 3
+    finally:
+        finish_job.set()
+        host.shutdown()
+        thread.join(timeout=3)
