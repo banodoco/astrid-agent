@@ -937,9 +937,20 @@ class _OutstandingObserver:
 
 class _HttpsOps:
     def __init__(self, pod_id: str, token: str, *, deadline: float | None = None,
-                 base_url: str | None = None, abort_event: threading.Event | None = None) -> None:
+                 base_url: str | None = None, abort_event: threading.Event | None = None,
+                 cancelled: Callable[[], bool] | None = None) -> None:
         self.pod_id, self.token, self.deadline, self.base_url = pod_id, token, deadline, base_url
         self.abort_event = abort_event
+        self.cancelled = cancelled
+
+    def cancellable(self, cancelled: Callable[[], bool]) -> "_HttpsOps":
+        return type(self)(self.pod_id, self.token, deadline=self.deadline, base_url=self.base_url,
+                          abort_event=self.abort_event, cancelled=cancelled)
+
+    def _check_cancelled(self) -> None:
+        if self.cancelled is not None and self.cancelled():
+            from astrid.core.execution.machine_run import MachineRunCancelled
+            raise MachineRunCancelled("generation cancelled during remote machine work")
 
     def bounded(self, deadline: float, *, abort_event: threading.Event | None = None) -> "_HttpsOps":
         return type(self)(self.pod_id, self.token, deadline=deadline, base_url=self.base_url,
@@ -953,9 +964,22 @@ class _HttpsOps:
                                  **({"base_url": self.base_url} if self.base_url is not None else {}))
 
     def _call_direct(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        self._check_cancelled()
         transport = self._transport()
         try:
-            return getattr(transport, name)(*args, **kwargs)
+            http = getattr(transport, "http", None)
+            if self.cancelled is not None and http is not None:
+                def before_request(request: Any) -> None:
+                    # execute_command's finally must still stop its agent job.
+                    # Detached stop/checkpoint uses the original ops after this scope.
+                    if request.method != "DELETE":
+                        self._check_cancelled()
+                # This public HTTPX hook runs for every upload chunk, command
+                # poll and retry without replacing the transport's custody logic.
+                http.event_hooks["request"].append(before_request)
+            result = getattr(transport, name)(*args, **kwargs)
+            self._check_cancelled()
+            return result
         finally:
             transport.disconnect()
 
