@@ -96,7 +96,9 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
             on_claim(lease)
         if cancelled():
             raise MachineRunCancelled("generation cancelled before the remote job started")
-        run = machine.start(lease, job)
+        start_parameters = inspect.signature(machine.start).parameters
+        run = (machine.start(lease, job, cancelled=cancelled) if "cancelled" in start_parameters
+               else machine.start(lease, job))
         while True:
             stage = "poll"
             if cancelled():
@@ -104,6 +106,10 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
                 machine.cancel(run)
                 raise MachineRunCancelled("generation cancelled; the remote job was stopped")
             status = machine.poll(run)
+            if cancelled():
+                stage = "cancel"
+                machine.cancel(run)
+                raise MachineRunCancelled("generation cancelled; the remote job was stopped")
             state = status.get("state")
             if state == "exited":
                 break

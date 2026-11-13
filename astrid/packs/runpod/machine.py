@@ -29,16 +29,19 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import shlex
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
-from .failure_receipt import checkpoint_refusal
+from .failure_reason import Reason, installation_reason
+from .failure_receipt import checkpoint_refusal, failure_stage, verification_observation
 from .remote_placement import (
     MANIFEST_MARK,
     MANIFEST_NAME,
@@ -53,6 +56,8 @@ from .remote_placement import (
     manifest_command,
     sha256_file,
 )
+
+_logger = logging.getLogger(__name__)
 
 KIND = "runpod"
 POLL_SECONDS = 15.0
@@ -375,7 +380,8 @@ def _user_entry_folder(entry: str | None, entries_dir: Path | None = None) -> Pa
     try:
         from vibecomfy.entries import entries_dir as default_dir
         root = Path(entries_dir) if entries_dir is not None else Path(default_dir())
-    except Exception:
+    except Exception:  # noqa: BLE001 - discovery: any optional entry lookup failure must preserve the fallback
+        _logger.debug("User entry discovery failed; using no entry folder", exc_info=True)
         return None
     for path in sorted(root.glob("*/entry.json")):
         try:
@@ -512,6 +518,8 @@ class MachineLease:
     failure_diagnostic: Mapping[str, Any] | None = None
     failure_exit_code: int | None = None
     failure_logs: Mapping[str, Any] | None = None
+    failure_verification: Mapping[str, Any] | None = None
+    failure_progress_phase: str | None = None
     failure_install_receipt: str | None = None
     expires_at: float | None = None
     cost_usd: float | None = None
@@ -530,6 +538,37 @@ class MachineRun:
     state: str = "running"
     task_id: str | None = None
     attempt_id: str | None = None
+    #: The same host callback used during start, also checked during polling.
+    cancelled: Callable[[], bool] | None = None
+
+
+@contextmanager
+def _cancellable(
+    lease: MachineLease, cancelled: Callable[[], bool] | None,
+) -> Iterator[Callable[[], None]]:
+    """Interrupt work with the host's callback, then restore transport for cleanup."""
+    from astrid.core.execution.machine_run import MachineRunCancelled
+
+    def check_cancelled() -> None:
+        if cancelled is not None and cancelled():
+            raise MachineRunCancelled("generation cancelled during remote machine work")
+
+    original_ops = lease.claim.ops
+    try:
+        check_cancelled()
+        factory = getattr(original_ops, "cancellable", None)
+        if cancelled is not None and factory is not None:
+            lease.claim.ops = factory(cancelled)
+        yield check_cancelled
+        check_cancelled()
+    except BaseException as error:
+        if not isinstance(error, MachineRunCancelled):
+            # A launch may have committed but lost its acknowledgement while
+            # the abort arrived. Release reconciles the durable exact job id.
+            check_cancelled()
+        raise
+    finally:
+        lease.claim.ops = original_ops
 
 
 def _job_manifest_rows(entry: str | None, values: Any, *, mode: str | None = None,
@@ -680,7 +719,8 @@ class RunPodMachine:
                 try:
                     if timing is not None:
                         setattr(timing, "paid_started_at", float(prepared.lease.claim["lease"]["started_at"]))
-                except Exception:
+                except Exception:  # noqa: BLE001 - timing: optional telemetry must never fail preparation
+                    _logger.debug("Could not record the paid start time", exc_info=True)
                     pass
                 # Legacy execution estimates remain timeouts. Without one, use
                 # the claim's remaining lifetime; jobs never extend that expiry.
@@ -696,7 +736,8 @@ class RunPodMachine:
                         journal = owner.selection._read() or {}
                         getattr(exc, "claim_context")["preparation_job"] = bool(
                             ((journal.get("lease") or {}).get("preparation") or {}).get("job"))
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - receipt: metadata failure must not interrupt cleanup or the original error
+                        _logger.debug("Could not annotate the preparation job context", exc_info=True)
                         pass
                     # Only a fully attested preparation can be reused. Failure
                     # before or during installation leaves unknown pod state.
@@ -708,14 +749,18 @@ class RunPodMachine:
                             safe = (not owner.closed and prepared.get("state") in {"prepared", "stale_after_failure"}
                                     and (prepared.get("state") == "stale_after_failure" or isinstance(prepared.get("installed"), dict))
                                     and record.get("pod_id") == acquired[0].claim.get("pod_id"))
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - custody: any unverified preparation must still reach exact release
+                        _logger.debug("Could not verify preparation custody", exc_info=True)
                         safe = False
                     if safe:
                         from .failure_diagnostics import host_summary
                         try:
                             owner.settle(acquired[0], outcome="failed",
-                                         failure=host_summary(exc, stage="preparation"))
-                        except Exception:
+                                         failure=host_summary(exc, stage=(
+                                             failure_stage(exc, phase="claim")[0]
+                                             if prepared.get("state") == "stale_after_failure" else "preparation")))
+                        except Exception:  # noqa: BLE001 - custody: any settlement failure must still release the exact pod
+                            _logger.debug("Preparation settlement failed; releasing the exact pod", exc_info=True)
                             owner.release(reason="preparation_settlement_unverified",
                                           _expected_operation=acquired[0].operation_id,
                                           expected_machine_id=acquired[0].claim.get("pod_id"))
@@ -724,7 +769,8 @@ class RunPodMachine:
                         from .failure_diagnostics import host_summary
                         try:
                             owner.note_failed_job(acquired[0], host_summary(exc, stage="preparation"))
-                        except Exception:
+                        except Exception:  # noqa: BLE001 - custody: diagnostic failure must not prevent exact release
+                            _logger.debug("Could not record the failed preparation", exc_info=True)
                             pass
                         try:
                             owner.release(reason="preparation_unverified",
@@ -758,18 +804,26 @@ class RunPodMachine:
 
     # -- start ---------------------------------------------------------------
 
-    def start(self, lease: MachineLease, job: Any) -> MachineRun:
+    def start(self, lease: MachineLease, job: Any, *,
+              cancelled: Callable[[], bool] | None = None) -> MachineRun:
         """Ship the job directory, checkpoint the job id, then start the pod-side command."""
+        with _cancellable(lease, cancelled) as check_cancelled:
+            return self._start(lease, job, cancelled=cancelled, check_cancelled=check_cancelled)
+
+    def _start(self, lease: MachineLease, job: Any, *, cancelled: Callable[[], bool] | None,
+               check_cancelled: Callable[[], None]) -> MachineRun:
         adapter = self._require()
         placement, state, ops = adapter.placement, lease.state, lease.claim.ops
         run_id = uuid.uuid4().hex
         remote_root = f"{RUNS_ROOT}/{run_id}"
         placement._exec_ok(state, f"mkdir -p {shlex.quote(remote_root + '/in')} {shlex.quote(remote_root + '/out')}",
                            "job directory")
+        check_cancelled()
         staging = Path(job.scratch) / "machine"
         staging.mkdir(parents=True, exist_ok=True)
         shipped: dict[str, Any] = {}
         for name, value in sorted(job.inputs.items()):
+            check_cancelled()
             if name == "entry_inputs":
                 continue  # this controller-side envelope becomes the job's public inputs below
             if name in job.files:
@@ -778,6 +832,7 @@ class RunPodMachine:
                     raise MachineError(f"job input {name!r} is not a regular file")
                 remote = f"{remote_root}/in/{name}{''.join(local.suffixes)[-16:]}"
                 placement._put_checked(state, local, remote)
+                check_cancelled()
                 shipped[name] = remote
             else:
                 shipped[name] = value
@@ -785,8 +840,10 @@ class RunPodMachine:
         if job.entry and job.inputs.get("entry_inputs"):
             from astrid.core.generation.job_inputs import read_archive
             def ship(local):
+                check_cancelled()
                 remote = f"{remote_root}/in/entry-{local.name}"
                 placement._put_checked(state, local, remote)
+                check_cancelled()
                 return remote
             public_inputs = read_archive(Path(str(job.inputs["entry_inputs"])), staging / "entry-inputs", map_file=ship)
         bindings = json.loads(shipped.pop("workflow_inputs", "{}") or "{}")
@@ -800,11 +857,15 @@ class RunPodMachine:
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         from .failure_diagnostics import graph_facts
         lease.node_ids, lease.node_names = graph_facts(job.inputs.get("source"))
+        check_cancelled()
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
+        check_cancelled()
         # The active pack selection and the user entry ship with the job; the
         # pod-side run resolves its entry from them only.
         archive, selection = build_selection(job.entry, staging)
+        check_cancelled()
         placement._put_checked(state, archive, f"{remote_root}/{SELECTION_NAME}")
+        check_cancelled()
         archive.unlink(missing_ok=True)
         lease.state.note("selection", "shipped", packs=[row["pack_id"] for row in selection["packs"]],
                          entries=[row["id"] for row in selection["entries"]])
@@ -813,10 +874,12 @@ class RunPodMachine:
             "run_id": run_id, "task": job.task_id, "attempt": job.attempt_id})
         lease.run_dir = remote_root
         job_id = uuid.uuid4().hex
+        check_cancelled()
         # The exact detached identity is durable before launch; a lost ACK never
         # invents or retries another job, and recover() can cancel this one.
         self._checkpoint(lease, {"id": job_id, "state": "starting"})
         started = ops.job_start(command, job_id=job_id)
+        check_cancelled()
         if started.get("id") != job_id:
             raise MachineError("detached job differs from the checkpointed job custody")
         self._checkpoint(lease, {"id": job_id, "state": "running"})
@@ -824,35 +887,38 @@ class RunPodMachine:
         lease.job_dir = str(started.get("dir") or "") or None
         state.note("job", "started", job_id=job_id)
         return MachineRun(lease, job_id, str(started.get("dir") or ""), remote_root,
-                          Path(job.progress_path), staging, task_id=job.task_id, attempt_id=job.attempt_id)
+                          Path(job.progress_path), staging, task_id=job.task_id, attempt_id=job.attempt_id,
+                          cancelled=cancelled)
 
     # -- poll ----------------------------------------------------------------
 
     def poll(self, run: MachineRun) -> dict[str, Any]:
         """One status read, then copy the job's progress file into the local attempt's."""
-        adapter = self._require()
-        adapter.placement._check_deadline("job poll")
-        record = run.lease.claim.ops.job_poll(run.job_id)
-        progress = self._copy_progress(run)
-        state = record.get("state")
-        timing = getattr(run.lease, "timing", None)
-        if timing is not None and isinstance(progress, Mapping):
-            try:
-                timing.pod_phase(progress.get("phase"))
-            except Exception:
-                pass
-        if state == "exited":
-            _stamp(timing, "job_ended_at", first=True)
-            run.state = "exited"
-        elif state in {"missing", "cancelled"}:
-            run.state = str(state)
-        return {"state": run.state, "exit_code": record.get("exit_code"), "progress": progress}
+        with _cancellable(run.lease, run.cancelled):
+            adapter = self._require()
+            adapter.placement._check_deadline("job poll")
+            record = run.lease.claim.ops.job_poll(run.job_id)
+            progress = self._copy_progress(run)
+            state = record.get("state")
+            timing = getattr(run.lease, "timing", None)
+            if timing is not None and isinstance(progress, Mapping):
+                try:
+                    timing.pod_phase(progress.get("phase"))
+                except Exception:  # noqa: BLE001 - timing: optional telemetry must never fail polling
+                    _logger.debug("Could not record the remote job phase", exc_info=True)
+            if state == "exited":
+                _stamp(timing, "job_ended_at", first=True)
+                run.state = "exited"
+            elif state in {"missing", "cancelled"}:
+                run.state = str(state)
+            return {"state": run.state, "exit_code": record.get("exit_code"), "progress": progress}
 
     def _copy_progress(self, run: MachineRun) -> dict[str, Any] | None:
         landing = run.scratch / ("progress-" + run.job_id + ".json")
         try:
             run.lease.claim.ops.get(f"{run.remote_root}/{PROGRESS_NAME}", landing)
-        except Exception:
+        except Exception:  # noqa: BLE001 - progress: any transfer failure must preserve best-effort polling
+            _logger.debug("Could not copy remote job progress", exc_info=True)
             return None  # the run has not written a phase yet
         try:
             if landing.is_symlink() or landing.stat().st_size > MAX_PROGRESS_BYTES:
@@ -892,6 +958,26 @@ class RunPodMachine:
 
     def fetch(self, run: MachineRun, destination: Path) -> dict[str, Any]:
         """Copy the job's ``out`` directory back, every file against the pod's digest manifest."""
+        try:
+            return self._fetch(run, destination)
+        except Exception as failure:  # noqa: BLE001 - every host refusal keeps its evidence
+            run.lease.failure_progress_phase = next(
+                (row.get("phase") for row in reversed(run.progress) if row.get("phase")), None)
+            if run.lease.failure_verification is None:
+                reason = getattr(failure, "reason", None)
+                run.lease.failure_verification = {
+                    "outcome": "not_observed",
+                    **({"reason": reason.as_dict()} if isinstance(reason, Reason) else {}),
+                }
+            if run.lease.failure_logs is None:
+                try:
+                    run.lease.failure_logs = self._collect_fetch_failure_logs(run, destination)
+                except Exception as log_error:  # noqa: BLE001 - keep the original refusal
+                    run.lease.failure_logs = {"unavailable": type(log_error).__name__}
+            raise
+
+    def _fetch(self, run: MachineRun, destination: Path) -> dict[str, Any]:
+        """Read the completed job and checkpoint its verified output."""
         adapter = self._require()
         placement, state, ops = adapter.placement, run.lease.state, run.lease.claim.ops
         record = ops.job_poll(run.job_id)
@@ -906,7 +992,8 @@ class RunPodMachine:
             command = (f"tail -c {MAX_FRAME_BYTES + 1}" if failed else "cat")
             try:
                 _c, stdout, _e = ops.exec(f"{command} {shlex.quote(run.directory)}/stdout", 120)
-            except Exception:
+            except Exception:  # noqa: BLE001 - diagnostics: any transport failure must retain the job-error translation
+                _logger.debug("Could not read remote job diagnostics", exc_info=True)
                 if failed:
                     raise MachineError("remote failure diagnostic unavailable") from None
                 raise
@@ -943,6 +1030,45 @@ class RunPodMachine:
                 # The remote detached job's own process evidence (its pid on the pod).
                 "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
 
+    def _collect_fetch_failure_logs(self, run: MachineRun, destination: Path) -> dict[str, Any]:
+        """Collect host-refusal evidence before reset, within cancellable paid time."""
+        owner = self._require().lease_owner
+        observer_key = None
+        ops = None
+        try:
+            started = time.monotonic()
+            with owner.lock:
+                current = owner.preparation_claim(run.lease.lease)
+                remaining = current["lease"]["paid_expires_at"] - owner.clock()
+                deadline = started + min(120, remaining)
+                if remaining <= 0:
+                    return {"unavailable": "paid_limit_exhausted"}
+                observer_key, abort_event = owner.begin_failure_observation(
+                    run.lease.lease, run.lease.claim.pod_id)
+            original_ops = run.lease.claim.ops
+            bounded = getattr(original_ops, "bounded", None)
+            if bounded is None:
+                return {"unavailable": "checkpoint_observer_unavailable"}
+            transport_deadline = getattr(original_ops, "deadline", None)
+            if transport_deadline is not None:
+                deadline = min(deadline, transport_deadline)
+            ops = bounded(deadline, abort_event=abort_event)
+            return self._fetch_failure_logs(ops, run, "", destination)
+        except Exception as exc:  # noqa: BLE001 - evidence must never mask the original refusal
+            return {"unavailable": type(exc).__name__}
+        finally:
+            try:
+                unreaped = getattr(ops, "unreaped_child", None)
+                if ops is not None and unreaped is not None:
+                    # If fencing itself fails, release still sees this exact
+                    # handle through the lease's existing observer cleanup.
+                    run.lease.claim.ops = ops
+                    owner.fence_unreaped_observer(run.lease.lease, run.lease.claim.pod_id, unreaped)
+                    run.lease.claim.ops = original_ops
+            finally:
+                if observer_key is not None:
+                    owner.end_failure_observation(observer_key)
+
     def _fetch_failure_logs(self, ops: Any, run: MachineRun, stdout: str, destination: Path) -> dict[str, Any]:
         """Bring the failed job's declared logs back, digest-verified, before the reset.
 
@@ -976,7 +1102,8 @@ class RunPodMachine:
                             run.lease.failure_install_receipt = "sha256:" + str(installation["receipt_sha256"])
                 return {"files": [{**row, "path": (str(local / row["file"])
                                                    if not row.get("missing") else None)} for row in rows]}
-        except Exception as exc:  # noqa: BLE001 - log collection must never mask the job error
+        except Exception as exc:  # noqa: BLE001 - receipt: log collection must never mask the job error
+            _logger.debug("Could not collect failed job logs", exc_info=True)
             return {"unavailable": type(exc).__name__}
         return {"unavailable": "not_reported"}
 
@@ -1087,6 +1214,10 @@ class RunPodMachine:
             try:
                 verified = placement._canonical_installed(
                     state, verification_seconds=max(0, deadline - time.monotonic()))
+                # Release verifies again; keep this observation on this attempt
+                # before that later read can replace install_unverified.
+                run.lease.failure_verification = verification_observation(
+                    None if verified else installation_reason(state.install_unverified or "unclassified"))
             except (RemotePlacementError, EngineError, ValueError, TypeError, KeyError, OSError) as observation_error:
                 why = getattr(observation_error, "install_unverified", None)
                 if why is None:
@@ -1095,7 +1226,9 @@ class RunPodMachine:
                            else "status_deadline_exhausted" if time.monotonic() >= deadline
                            or getattr(transport_reason, "code", None) == "deadline_exceeded"
                            else "checkpoint_observation_failed")
-                raise checkpoint_refusal(observation_error, why)
+                checkpoint_refusal(observation_error, why)
+                run.lease.failure_verification = verification_observation(getattr(observation_error, "reason"))
+                raise
         finally:
             try:
                 unreaped = getattr(run.lease.claim.ops, "unreaped_child", None)
@@ -1137,6 +1270,7 @@ class RunPodMachine:
                                          "checkpoint_attestation_mismatch")
         # Recheck the same owner, generation and invocation after observation.
         if time.monotonic() >= deadline:
+            run.lease.failure_verification = verification_observation(installation_reason("status_deadline_exhausted"))
             raise checkpoint_refusal(MachineError("checkpoint observation deadline expired"),
                                      "status_deadline_exhausted")
         self._save_installation(owner, run.lease, preparation, {"installed": dict(expected)}, job=job)
@@ -1151,7 +1285,8 @@ class RunPodMachine:
         if failure is not None and not lease.released:
             try:
                 observer_key, abort_event = owner.begin_failure_observation(lease.lease, lease.claim.pod_id)
-            except Exception:
+            except Exception:  # noqa: BLE001 - custody: observation setup failure must not prevent exact release
+                _logger.debug("Could not begin failure observation; continuing release", exc_info=True)
                 pass  # _release_impl still fences unsafe custody and reconciles exact release.
         try:
             self._release_impl(lease, warm, reason=reason, failure=failure, stage=stage,
@@ -1186,7 +1321,8 @@ class RunPodMachine:
                     # observation budget as status, receipt and reset.
                     verify_deadline = time.monotonic() + min(FAILURE_VERIFY_SECONDS, remaining)
                     lease.claim.ops = bounded(verify_deadline, abort_event=abort_event)
-            except Exception:
+            except Exception:  # noqa: BLE001 - custody: any observer setup failure must still reach exact release
+                _logger.debug("Could not bound failure observation; continuing exact release", exc_info=True)
                 pass  # Exact release below reconciles any unresolved job.
         # Poll/transport failures can leave a job running. Stop that exact
         # checkpointed job before deciding whether warm reuse is possible.
@@ -1199,7 +1335,8 @@ class RunPodMachine:
                 stopped = lease.claim.ops.job_cancel(pending["id"])
                 if stopped.get("id") == pending["id"] and stopped.get("state") in {"exited", "cancelled"}:
                     self._checkpoint(lease, {"id": pending["id"], "state": stopped["state"]})
-        except Exception:
+        except Exception:  # noqa: BLE001 - custody: any failed stop must still reach unsafe-custody release
+            _logger.debug("Could not confirm the checkpointed job stopped", exc_info=True)
             pass  # Unknown stop is classified unsafe below; exact release reconciles it.
         # Snapshot custody before remote verification, then fence it again before saving.
         rejection = None
@@ -1217,7 +1354,8 @@ class RunPodMachine:
                     rejection = "custody_changed"
                 elif job is not None and job.get("state") not in {"exited", "cancelled"}:
                     rejection = "job_stop_unverified"
-            except Exception:
+            except Exception:  # noqa: BLE001 - custody: any failed snapshot must refuse warm reuse and reach release
+                _logger.debug("Could not verify the preparation custody snapshot", exc_info=True)
                 rejection = "custody_changed"
                 # preparation_claim also refuses an expired lease. Distinguish
                 # that case only when the exact invocation still owns the pod.
@@ -1235,7 +1373,8 @@ class RunPodMachine:
                             and owner.clock() >= info["paid_expires_at"]):
                         paid_expiry = info["paid_expires_at"]
                         rejection = "paid_limit_exhausted"
-                except Exception:  # noqa: BLE001 (unknown custody remains unsafe)
+                except Exception:  # noqa: BLE001 - custody: any failed expiry check must leave unknown custody unsafe
+                    _logger.debug("Could not classify the exact lease expiry", exc_info=True)
                     pass
         if getattr(lease, "unsafe_job_stop", False):
             rejection = "job_stop_unverified"
@@ -1263,7 +1402,8 @@ class RunPodMachine:
                     try:
                         verified = adapter.placement._canonical_installed(
                             lease.state, verification_seconds=remaining)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - custody: any other verification failure must reach the release classifier
+                        _logger.debug("Installation verification raised an error", exc_info=True)
                         from .remote_placement import InstallationReceiptChanged
                         if isinstance(exc, InstallationReceiptChanged):
                             verified = False
@@ -1293,7 +1433,8 @@ class RunPodMachine:
                                                     {"installed": dict(lease.state.installed)}, job=job)
             except CustodyChanged:
                 rejection = "custody_changed"
-            except Exception:
+            except Exception:  # noqa: BLE001 - custody: any verification failure must still reach release or safe settlement
+                _logger.debug("Could not verify the installation after job failure", exc_info=True)
                 if owner.clock() >= paid_expiry:
                     rejection = "paid_limit_exhausted"
                 elif time.monotonic() >= verify_deadline:
@@ -1310,7 +1451,8 @@ class RunPodMachine:
                 self._reset(lease, verify_deadline=verify_deadline, paid_expiry=paid_expiry)
                 if (verify_deadline is not None and time.monotonic() >= verify_deadline) or owner.clock() >= paid_expiry:
                     raise MachineError("failure reset exceeded the original paid limit")
-            except Exception as exc:  # noqa: BLE001 (any failed reset releases the pod)
+            except Exception as exc:  # noqa: BLE001 - custody: any failed reset must release the exact pod
+                _logger.debug("Remote reset failed; releasing the exact pod", exc_info=True)
                 lease.state.note("reset", "failed", error=type(exc).__name__)
                 warm, reason = False, "reset_failed"
         if warm and stale:
@@ -1326,20 +1468,27 @@ class RunPodMachine:
         summary = host_summary(failure, getattr(lease, "failure_diagnostic", None),
                                stage=stage, node_ids=lease.node_ids,
                                node_names=lease.node_names) if failure else None
+        if summary is not None and failure is not None:
+            summary["stage"], _basis = failure_stage(
+                failure, phase=stage, exit_code=lease.failure_exit_code,
+                category=summary.get("category") if lease.failure_diagnostic is not None else None,
+                progress_phase=lease.failure_progress_phase)
         outcome = ("cancelled" if isinstance(failure, MachineRunCancelled) else
                    "failed" if failure else "success")
         if not warm and summary is not None:
             try:
                 owner.note_failed_job(lease.lease, summary, outcome=outcome, node_ids=lease.node_ids,
                                       node_names=lease.node_names)
-            except Exception:
+            except Exception:  # noqa: BLE001 - custody: diagnostic failure must not prevent unsafe release
+                _logger.debug("Could not record the failed job before release", exc_info=True)
                 pass  # Unsafe release still has priority over a diagnostic read/write.
         self._finish(lease.lease)
         if warm:
             try:
                 owner.settle(lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids,
                              node_names=lease.node_names)
-            except Exception:
+            except Exception:  # noqa: BLE001 - custody: any settlement failure must still release the exact pod
+                _logger.debug("Job settlement failed; releasing the exact pod", exc_info=True)
                 if observer_key is not None:
                     owner.end_failure_observation(observer_key)
                 owner.release(reason="settlement_unverified", _expected_operation=lease.lease.operation_id,
@@ -1452,7 +1601,8 @@ def _active_sources() -> tuple[Any, ...]:
     try:
         from astrid.core.pack.source_setup import active_sources
         return tuple(active_sources(verify=False))
-    except Exception:
+    except Exception:  # noqa: BLE001 - discovery: any source lookup failure must preserve the empty-selection fallback
+        _logger.debug("Could not discover active sources; using an empty selection", exc_info=True)
         return ()
 
 
@@ -1482,7 +1632,8 @@ def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
         try:
             from astrid.core.extensions.registry import ExtensionRegistry
             registry = ExtensionRegistry().load()
-        except Exception:
+        except Exception:  # noqa: BLE001 - discovery: any registry failure must preserve the entry fallback checks
+            _logger.debug("Could not load the entry registry; using fallback checks", exc_info=True)
             registry = None
     if registry is not None:
         from astrid.core.generation.workflows import POINT as WORKFLOWS
@@ -1502,7 +1653,8 @@ def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
         try:
             from astrid.core.generation.entries import action_entries
             action_rows = action_entries()
-        except Exception:
+        except Exception:  # noqa: BLE001 - discovery: action discovery can raise arbitrary errors and must preserve its fallback
+            _logger.debug("Could not discover action entries; using an empty list", exc_info=True)
             action_rows = []
     for row in action_rows:
         if row.get("id") == entry and row.get("action"):
@@ -1580,7 +1732,8 @@ def journal_leases(account: str | None = None) -> list[dict[str, Any]]:
         record = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
         ended_path = ended_leases_path(path)
         ended = json.loads(ended_path.read_text(encoding="utf-8")) if ended_path.is_file() else []
-    except Exception:  # no preferences or no journal: no leases
+    except Exception:  # noqa: BLE001 - listing: any settings or journal failure must preserve the empty-lease fallback
+        _logger.debug("Could not read lease settings or journals; listing no leases", exc_info=True)
         return []
     current = [lease_row(record)] if isinstance(record, Mapping) and record.get("pod_id") else []
     seen = {row["lease"] for row in current}

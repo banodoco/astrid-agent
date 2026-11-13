@@ -6,13 +6,19 @@ from contextvars import ContextVar
 from typing import Any
 from urllib.parse import quote
 
+from runpod_lifecycle.rest import collect_pages, normalize_pod
+
 from astrid.core.generation.engine_contracts import PlacementRefused
 from astrid.core.generation.machine_provider import MachineRecord
+
+from .provider_urls import PODS_URL
 
 # Top-level keys recorded for each projection, not the provider's published schema.
 _REST_KEYS = frozenset("""consumerUserId containerDiskInGb costPerHr createdAt desiredStatus env
     gpuCount id imageName lastStartedAt lastStatusChange machine machineId memoryInGb name
-    networkVolume networkVolumeId ports publicIp templateId vcpuCount volumeInGb volumeMountPath""".split())
+    networkVolume networkVolumeId ports publicIp templateId vcpuCount volumeInGb volumeMountPath
+    image status cost disk gpu cpu mounts runtime ssh cloud actions args cmd entrypoint registry
+    dataCenterId cudaVersion template locked startedAt globalNetworking costCenter tags cluster""".split())
 _SDK_KEYS = frozenset("""containerDiskInGb costPerHr desiredStatus dockerArgs dockerId env gpuCount id
     imageName lastStatusChange machine machineId memoryInGb name podType port ports runtime
     uptimeSeconds vcpuCount volumeInGb volumeMountPath""".split())
@@ -21,9 +27,9 @@ _SDK_KEYS = frozenset("""containerDiskInGb costPerHr desiredStatus dockerArgs do
 # Which record keys evidence each MachineRecord field; absent keys mean "not observed".
 _OBSERVES = {
     "name": ("name",), "image": ("imageName", "image"),
-    "storage_id": ("networkVolumeId", "networkVolume"), "storage_mount": ("volumeMountPath",),
-    "gpu_count": ("gpuCount",), "gpu_label": ("machine", "gpu"),
-    "region": ("dataCenterId", "networkVolume"), "hourly_usd": ("costPerHr",),
+    "storage_id": ("networkVolumeId", "networkVolume", "mounts"), "storage_mount": ("volumeMountPath", "mounts"),
+    "gpu_count": ("gpuCount", "gpu", "cpu"), "gpu_label": ("machine", "gpu"),
+    "region": ("dataCenterId", "networkVolume"), "hourly_usd": ("costPerHr", "cost"),
 }
 
 
@@ -35,7 +41,7 @@ def _parse(record: Mapping[str, Any], keys: frozenset[str], *, strict: bool, sdk
         for key, allowed in (("env", {"ASTRID_POD_AGENT_B64", "ASTRID_POD_PORT", "ASTRID_POD_TOKEN", "PUBLIC_KEY"}),
                              ("machine", {"gpuDisplayName"} if sdk else set()),
                              ("networkVolume", {"id", "name", "size", "dataCenterId"}),
-                             ("runtime", {"ports"})):
+                             ("runtime", {"ports", "uptime", "gpus", "cpu", "memory"})):
             value = record.get(key)
             if isinstance(value, Mapping) and value.keys() - allowed:
                 raise ValueError(f"unknown {key} keys: {sorted(value.keys() - allowed)}")
@@ -43,6 +49,10 @@ def _parse(record: Mapping[str, Any], keys: frozenset[str], *, strict: bool, sdk
             for entry in record["env"]:
                 if isinstance(entry, Mapping) and entry.keys() - {"key", "value"}:
                     raise ValueError("unknown environment entry keys")
+    if not sdk:
+        record = normalize_pod(dict(record))
+    if len((record.get("mounts") or {}).get("network", [])) > 1:
+        raise ValueError("ambiguous network volume identity")
     volume_id = record.get("networkVolumeId")
     volume = record.get("networkVolume")
     if volume is not None:
@@ -59,7 +69,7 @@ def _parse(record: Mapping[str, Any], keys: frozenset[str], *, strict: bool, sdk
         raise ValueError("conflicting network volume ids")
     machine = record.get("machine") or {}
     gpu = record.get("gpu") or {}
-    state = {"RUNNING": "running", "EXITED": "gone", "TERMINATED": "gone",
+    state = {"RUNNING": "running", "EXITED": "stopped", "TERMINATED": "gone",
              "STOPPED": "stopped"}.get(record.get("desiredStatus"), "starting")
     observed = {"state"} | {name for name, keys in _OBSERVES.items() if any(key in record for key in keys)}
     return MachineRecord(
@@ -69,6 +79,7 @@ def _parse(record: Mapping[str, Any], keys: frozenset[str], *, strict: bool, sdk
         storage_id=volume_id or nested_id, storage_mount=record.get("volumeMountPath"),
         gpu_count=record.get("gpuCount"),
         gpu_label=(machine.get("gpuDisplayName") if isinstance(machine, Mapping) else None)
+        or record.get("machineType")
         or (gpu.get("displayName") if isinstance(gpu, Mapping) else None),
         region=(machine.get("dataCenterId") if isinstance(machine, Mapping) else None)
         or (volume.get("dataCenterId") if isinstance(volume, Mapping) else None)
@@ -556,12 +567,10 @@ class RunPodMachineProvider:
 
     def read_raw(self, machine_id: str) -> dict[str, Any] | None:
         import httpx
-        from runpod_lifecycle.api import PODS_URL
 
         response = provider_call(self.api_key, httpx.get,
             f"{PODS_URL}/{quote(machine_id, safe='')}",
             headers={"Authorization": f"Bearer {self.api_key}"}, timeout=30,
-            params={"includeNetworkVolume": "true"},
         )
         if response.status_code == 404:
             return None
@@ -570,7 +579,7 @@ class RunPodMachineProvider:
         record = response.json()
         if not isinstance(record, dict) or record.get("id") != machine_id:
             raise ValueError("exact pod GET returned an unverified identity")
-        return record
+        return normalize_pod(record)
 
     def read(self, machine_id: str) -> MachineRecord | None:
         record = self.read_raw(machine_id)
@@ -578,12 +587,13 @@ class RunPodMachineProvider:
 
     def find(self, request_name: str) -> list[MachineRecord]:
         import httpx
-        from runpod_lifecycle.api import PODS_URL
 
-        response = provider_call(self.api_key, httpx.get,PODS_URL, headers={"Authorization": f"Bearer {self.api_key}"},
-                             timeout=30, params={"includeNetworkVolume": "true"})
-        response.raise_for_status()
-        records = response.json()
-        if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
-            raise ValueError("invalid pod list")
+        def fetch(params):
+            response = provider_call(self.api_key, httpx.get, PODS_URL,
+                                     headers={"Authorization": f"Bearer {self.api_key}"},
+                                     timeout=30, params=params)
+            response.raise_for_status()
+            return response.json()
+
+        records = collect_pages(fetch, "pods")
         return [parse_rest_list_item(item) for item in records if item.get("name") == request_name]
