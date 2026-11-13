@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import FrameType
 from typing import Any, NotRequired, TypedDict
@@ -92,6 +93,10 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
                  "workflow": "workflow.json"}
         members = {}
         for name, path in original.items():
+            # A Python workflow's companion and source files are optional; one that exists
+            # must still be a regular file. The workflow itself is always required.
+            if name in {"companion", "source"} and not os.path.lexists(path):
+                continue
             if path.is_symlink() or not path.is_file():
                 raise JobFileError("pod workflow member is not a regular file")
             data = path.read_bytes()
