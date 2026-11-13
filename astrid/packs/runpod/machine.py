@@ -31,13 +31,15 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import shlex
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from .failure_reason import Reason, installation_reason
 from .failure_receipt import checkpoint_refusal, failure_stage, verification_observation
@@ -537,6 +539,37 @@ class MachineRun:
     state: str = "running"
     task_id: str | None = None
     attempt_id: str | None = None
+    #: The same host callback used during start, also checked during polling.
+    cancelled: Callable[[], bool] | None = None
+
+
+@contextmanager
+def _cancellable(
+    lease: MachineLease, cancelled: Callable[[], bool] | None,
+) -> Iterator[Callable[[], None]]:
+    """Interrupt work with the host's callback, then restore transport for cleanup."""
+    from astrid.core.execution.machine_run import MachineRunCancelled
+
+    def check_cancelled() -> None:
+        if cancelled is not None and cancelled():
+            raise MachineRunCancelled("generation cancelled during remote machine work")
+
+    original_ops = lease.claim.ops
+    try:
+        check_cancelled()
+        factory = getattr(original_ops, "cancellable", None)
+        if cancelled is not None and factory is not None:
+            lease.claim.ops = factory(cancelled)
+        yield check_cancelled
+        check_cancelled()
+    except BaseException as error:
+        if not isinstance(error, MachineRunCancelled):
+            # A launch may have committed but lost its acknowledgement while
+            # the abort arrived. Release reconciles the durable exact job id.
+            check_cancelled()
+        raise
+    finally:
+        lease.claim.ops = original_ops
 
 
 def _job_manifest_rows(entry: str | None, values: Any, *, mode: str | None = None,
@@ -592,6 +625,36 @@ class RunPodMachine:
         if self.adapter is None:
             raise MachineError("the runpod machine has no host-owned lease owner")
         return self.adapter
+
+    def release_after_storage_refusal(self, machine_id: str, operation_id: str) -> Path:
+        """Release the exact retained lease after local Runtime storage admission fails.
+
+        The CLI resolves the account's canonical claim journal and hands the
+        request to the owner already holding that account lock. It never opens
+        another provider owner or performs provider calls itself.
+        """
+        from .release_control import request_release
+        from .target_selection import canonical_claim_path, read_runpod_preferences
+        from .worker_preparation import _validate_completed_release
+
+        if (not isinstance(machine_id, str) or not machine_id.strip()
+                or not isinstance(operation_id, str) or not re.fullmatch(r"[0-9a-f]{32}", operation_id)):
+            raise MachineError("storage refusal release requires an exact machine and operation identity")
+        preferences = read_runpod_preferences()
+        path = canonical_claim_path(preferences.provider_account_ref)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(record, dict) or record.get("provider_account_ref") != preferences.provider_account_ref
+                or record.get("operation_id") != operation_id or record.get("pod_id") != machine_id):
+            raise MachineError("current RunPod custody differs from the storage refusal; release refused")
+        response = request_release(path, operation_id, machine_id)
+        completed = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(completed, dict) or completed.get("operation_id") != operation_id
+                or completed.get("pod_id") != machine_id or completed.get("state") != "cleanup_complete"
+                or response.get("operation_id") != operation_id or response.get("pod_id") != machine_id
+                or response.get("state") != "cleanup_complete" or response.get("journal_path") != str(path)):
+            raise MachineError("retained RunPod owner did not confirm the exact completed release")
+        _validate_completed_release(completed)
+        return path
 
     # -- claim ---------------------------------------------------------------
 
@@ -772,18 +835,26 @@ class RunPodMachine:
 
     # -- start ---------------------------------------------------------------
 
-    def start(self, lease: MachineLease, job: Any) -> MachineRun:
+    def start(self, lease: MachineLease, job: Any, *,
+              cancelled: Callable[[], bool] | None = None) -> MachineRun:
         """Ship the job directory, checkpoint the job id, then start the pod-side command."""
+        with _cancellable(lease, cancelled) as check_cancelled:
+            return self._start(lease, job, cancelled=cancelled, check_cancelled=check_cancelled)
+
+    def _start(self, lease: MachineLease, job: Any, *, cancelled: Callable[[], bool] | None,
+               check_cancelled: Callable[[], None]) -> MachineRun:
         adapter = self._require()
         placement, state, ops = adapter.placement, lease.state, lease.claim.ops
         run_id = uuid.uuid4().hex
         remote_root = f"{RUNS_ROOT}/{run_id}"
         placement._exec_ok(state, f"mkdir -p {shlex.quote(remote_root + '/in')} {shlex.quote(remote_root + '/out')}",
                            "job directory")
+        check_cancelled()
         staging = Path(job.scratch) / "machine"
         staging.mkdir(parents=True, exist_ok=True)
         shipped: dict[str, Any] = {}
         for name, value in sorted(job.inputs.items()):
+            check_cancelled()
             if name == "entry_inputs":
                 continue  # this controller-side envelope becomes the job's public inputs below
             if name in job.files:
@@ -792,6 +863,7 @@ class RunPodMachine:
                     raise MachineError(f"job input {name!r} is not a regular file")
                 remote = f"{remote_root}/in/{name}{''.join(local.suffixes)[-16:]}"
                 placement._put_checked(state, local, remote)
+                check_cancelled()
                 shipped[name] = remote
             else:
                 shipped[name] = value
@@ -799,8 +871,10 @@ class RunPodMachine:
         if job.entry and job.inputs.get("entry_inputs"):
             from astrid.core.generation.job_inputs import read_archive
             def ship(local):
+                check_cancelled()
                 remote = f"{remote_root}/in/entry-{local.name}"
                 placement._put_checked(state, local, remote)
+                check_cancelled()
                 return remote
             public_inputs = read_archive(Path(str(job.inputs["entry_inputs"])), staging / "entry-inputs", map_file=ship)
         bindings = json.loads(shipped.pop("workflow_inputs", "{}") or "{}")
@@ -814,11 +888,15 @@ class RunPodMachine:
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         from .failure_diagnostics import graph_facts
         lease.node_ids, lease.node_names = graph_facts(job.inputs.get("source"))
+        check_cancelled()
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
+        check_cancelled()
         # The active pack selection and the user entry ship with the job; the
         # pod-side run resolves its entry from them only.
         archive, selection = build_selection(job.entry, staging)
+        check_cancelled()
         placement._put_checked(state, archive, f"{remote_root}/{SELECTION_NAME}")
+        check_cancelled()
         archive.unlink(missing_ok=True)
         lease.state.note("selection", "shipped", packs=[row["pack_id"] for row in selection["packs"]],
                          entries=[row["id"] for row in selection["entries"]])
@@ -827,10 +905,12 @@ class RunPodMachine:
             "run_id": run_id, "task": job.task_id, "attempt": job.attempt_id})
         lease.run_dir = remote_root
         job_id = uuid.uuid4().hex
+        check_cancelled()
         # The exact detached identity is durable before launch; a lost ACK never
         # invents or retries another job, and recover() can cancel this one.
         self._checkpoint(lease, {"id": job_id, "state": "starting"})
         started = ops.job_start(command, job_id=job_id)
+        check_cancelled()
         if started.get("id") != job_id:
             raise MachineError("detached job differs from the checkpointed job custody")
         self._checkpoint(lease, {"id": job_id, "state": "running"})
@@ -838,30 +918,31 @@ class RunPodMachine:
         lease.job_dir = str(started.get("dir") or "") or None
         state.note("job", "started", job_id=job_id)
         return MachineRun(lease, job_id, str(started.get("dir") or ""), remote_root,
-                          Path(job.progress_path), staging, task_id=job.task_id, attempt_id=job.attempt_id)
+                          Path(job.progress_path), staging, task_id=job.task_id, attempt_id=job.attempt_id,
+                          cancelled=cancelled)
 
     # -- poll ----------------------------------------------------------------
 
     def poll(self, run: MachineRun) -> dict[str, Any]:
         """One status read, then copy the job's progress file into the local attempt's."""
-        adapter = self._require()
-        adapter.placement._check_deadline("job poll")
-        record = run.lease.claim.ops.job_poll(run.job_id)
-        progress = self._copy_progress(run)
-        state = record.get("state")
-        timing = getattr(run.lease, "timing", None)
-        if timing is not None and isinstance(progress, Mapping):
-            try:
-                timing.pod_phase(progress.get("phase"))
-            except Exception:  # noqa: BLE001 - timing: optional telemetry must never fail polling
-                _logger.debug("Could not record the remote job phase", exc_info=True)
-                pass
-        if state == "exited":
-            _stamp(timing, "job_ended_at", first=True)
-            run.state = "exited"
-        elif state in {"missing", "cancelled"}:
-            run.state = str(state)
-        return {"state": run.state, "exit_code": record.get("exit_code"), "progress": progress}
+        with _cancellable(run.lease, run.cancelled):
+            adapter = self._require()
+            adapter.placement._check_deadline("job poll")
+            record = run.lease.claim.ops.job_poll(run.job_id)
+            progress = self._copy_progress(run)
+            state = record.get("state")
+            timing = getattr(run.lease, "timing", None)
+            if timing is not None and isinstance(progress, Mapping):
+                try:
+                    timing.pod_phase(progress.get("phase"))
+                except Exception:  # noqa: BLE001 - timing: optional telemetry must never fail polling
+                    _logger.debug("Could not record the remote job phase", exc_info=True)
+            if state == "exited":
+                _stamp(timing, "job_ended_at", first=True)
+                run.state = "exited"
+            elif state in {"missing", "cancelled"}:
+                run.state = str(state)
+            return {"state": run.state, "exit_code": record.get("exit_code"), "progress": progress}
 
     def _copy_progress(self, run: MachineRun) -> dict[str, Any] | None:
         landing = run.scratch / ("progress-" + run.job_id + ".json")
@@ -1660,6 +1741,7 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
             minutes_left = max(0.0, round((release_at - now) / 60, 1))
     return {"id": record.get("pod_id"), "kind": KIND, "lease": record.get("operation_id"),
             "gpu": record.get("gpu_type"), "state": state,
+            "release_capability_id": "runpod.release",
             "live": live, "idle_timeout_s": lease.get("idle_seconds"),
             "idle_expires_at": lease.get("idle_expires_at") if state == "idle" else None,
             "release_at": release_at, "minutes_left": minutes_left,

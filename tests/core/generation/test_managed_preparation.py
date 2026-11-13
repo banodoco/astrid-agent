@@ -33,6 +33,46 @@ def preparation(tmp_path, monkeypatch):
     return body, source
 
 
+@pytest.mark.parametrize('missing_field', ['sha256', 'size'])
+def test_judge_declarations_reports_every_unpinned_ready_model(tmp_path, monkeypatch, missing_field):
+    import importlib.util
+    from astrid.core.generation.managed_preparation import judge_declarations
+    from vibecomfy.registry.ready import workflow_from_ready
+
+    engine_path = Path(__file__).resolve().parents[3] / (
+        'astrid/packs/vibecomfy/extensions/generation.engine/comfyui_engine.py')
+    spec = importlib.util.spec_from_file_location('managed_preparation_test_engine', engine_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    # Render the shipped ready template, then fill a real public input before
+    # emitting it through judge_declarations' canonical ready-template path.
+    workflow = workflow_from_ready('image/z_image_turbo')
+    workflow.set_input('prompt', 'a small red lighthouse beside a quiet sea')
+    assets = workflow.metadata['model_assets']
+    assert len(assets) > 1
+    model_names = [asset['name'] for asset in assets]
+    engine = module.ComfyUIEngine()
+    requirements = engine.workflow_requirements
+
+    def incomplete_requirements(workflows):
+        manifest = requirements(workflows)
+        for row in manifest['models']:
+            row[missing_field] = None
+        return manifest
+
+    # Keep the rendered workflow byte-for-byte semantically genuine. Inject
+    # incomplete declaration rows at the engine's manifest boundary instead
+    # of corrupting canonical workflow metadata before it is serialized.
+    monkeypatch.setattr(engine, 'workflow_requirements', incomplete_requirements)
+
+    with pytest.raises(IntegrityError, match='no declared digest') as caught:
+        judge_declarations(workflow, tmp_path / 'scratch', engine)
+
+    assert str(caught.value).endswith(', '.join(model_names))
+    assert (tmp_path / 'scratch/canonical/workflow.py').is_file()
+
+
 @pytest.mark.parametrize('change', ['task', 'mode', 'verified', 'manifest-extra', 'partial-inputs', 'relative-models', 'relative-output', 'source-drift'])
 def test_preparation_refuses_other_attempt_or_changed_inputs(preparation, monkeypatch, change):
     body, source = preparation

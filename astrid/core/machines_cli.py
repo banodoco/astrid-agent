@@ -5,8 +5,9 @@
 
 Each row: id (the machine id; RunPod: pod id), kind, gpu, state, release time,
 minutes left, estimated cost so far, hourly rate, end reason. The list reads the
-lease journal only; it never calls the provider and never takes the account lock. Release is an ordinary Runtime
-task served by the retained host, the only owner allowed to stop paid machines.
+lease journal only; it never calls the provider and never takes the account lock.
+Release uses the retained host owner, with a local handoff if Runtime refuses
+the release task for insufficient storage.
 """
 from __future__ import annotations
 
@@ -14,9 +15,12 @@ import argparse
 import json
 import math
 import re
+import shutil
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Sequence
+from pathlib import Path
+from typing import Any, Callable, Mapping, Sequence, cast
 
 
 def _leases() -> list[dict[str, Any]]:
@@ -53,29 +57,171 @@ def render(rows: Sequence[dict[str, Any]]) -> str:
     return "\n".join([*lines, *unprotected, f"{live} live, {len(rows) - live} ended. Cost is estimated spend so far.\nAutomatic release only happens while the owning Astrid host is running."])
 
 
+# One bounded log segment and journal/receipt writes, above Runtime's own floor.
+_RELEASE_STORAGE_MARGIN_BYTES = 64 * 1024**2
+
+
+def _runtime_storage_root() -> Path:
+    from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
+    from astrid.sdk.storage_root import resolve_runtime_data_root
+
+    try:
+        result = RuntimeCLI().inspect(support_root=resolve_runtime_data_root(), timeout=5.0)
+    except (OSError, RuntimeCLIError) as exc:
+        raise ValueError("cannot verify free disk on the Runtime data volume; run `astrid doctor` before claiming a machine") from exc
+    root = result.data.get("realm_root") if result.ok and isinstance(result.data, Mapping) else None
+    if not isinstance(root, str) or not Path(root).is_absolute() or not Path(root).is_dir():
+        raise ValueError("cannot verify free disk on the Runtime data volume; run `astrid doctor` before claiming a machine")
+    return Path(root)
+
+
+def _assert_release_storage_reserve() -> None:
+    from runtime_protocol.storage import free_disk_floor_bytes
+
+    root = _runtime_storage_root()
+    available = int(shutil.disk_usage(root).free)
+    floor = free_disk_floor_bytes()
+    if available < floor + _RELEASE_STORAGE_MARGIN_BYTES:
+        raise ValueError(
+            f"free {available / 1e9:.2f} GB; the Runtime needs {floor / 1024**3:g} GiB free "
+            "plus 64 MiB to run and to release. Free disk space on the Runtime data volume before claiming a machine."
+        )
+
+
+def _storage_admission_refusal(error: Any) -> bool:
+    """Recognize the structured Runtime conflict, including SDK error envelopes."""
+    if not isinstance(error, Mapping):
+        envelope = getattr(error, "to_envelope", None)
+        error = envelope() if callable(envelope) else {
+            "code": getattr(error, "code", None), "details": getattr(error, "details", None),
+        }
+    details = error.get("details")
+    if (error.get("code") == "conflict" and isinstance(details, Mapping)
+            and details.get("reason") == "insufficient_storage"):
+        return True
+    issues = error.get("issues")
+    return isinstance(issues, list) and any(_storage_admission_refusal(issue) for issue in issues)
+
+
+def _storage_claim_refusal(task: Any, capability_id: str | None) -> bool:
+    from astrid.sdk.task_spec import task_executable_spec
+
+    if not isinstance(task, Mapping):
+        return False
+    spec = task_executable_spec(task) or {}
+    capability = task.get("capability_id") or task.get("capability") or spec.get("capability_id")
+    return (capability_id is not None and capability == capability_id and task.get("state", task.get("status")) == "queued"
+            and not task.get("attempt_id") and not task.get("kernel_attempt_id")
+            and task.get("waiting_reason") == "insufficient_storage")
+
+
+def _release_storage_refusal(result: Any, capability_id: str | None) -> bool:
+    if capability_id is None or getattr(result, "capability_id", None) != capability_id or getattr(result, "kernel_attempt_id", None):
+        return False
+    raw = getattr(result, "raw_result", {})
+    task = raw.get("task") if isinstance(raw, Mapping) else None
+    if isinstance(task, Mapping):
+        return _storage_claim_refusal(task, capability_id)
+    return getattr(result, "ok", True) is False and _storage_admission_refusal(getattr(result, "error", None))
+
+
+class _ReleaseStorageRefusal(RuntimeError):
+    def __init__(self, task_id: str | None = None):
+        super().__init__("Runtime refused release for insufficient storage")
+        self.task_id = task_id
+
+
+def _runtime_release(machine_id: str, capability_id: str, direct_release: Callable[[], None]) -> Any:
+    """Observe a refused claim with the existing follower, then stop billing locally."""
+    from astrid.sdk import AstridClient
+    from astrid.sdk.exceptions import AstridSDKError
+    from astrid.sdk.generation import GenerationFacade
+    from astrid.sdk.invocation import _observe_task_invocation
+    from astrid.sdk.workspace_client import WorkspaceClientError
+
+    with AstridClient.open_from_launcher() as client:
+        try:
+            try:
+                result = GenerationFacade().release(engine="comfyui", placement="runpod", machine_id=machine_id,
+                                                    client=client, wait=False)
+            except (WorkspaceClientError, AstridSDKError) as exc:
+                if _storage_admission_refusal(exc):
+                    raise _ReleaseStorageRefusal from exc
+                raise
+            if _release_storage_refusal(result, capability_id):
+                raise _ReleaseStorageRefusal(getattr(result, "kernel_task_id", None))
+            if not getattr(result, "ok", True) or not getattr(result, "kernel_task_id", None):
+                return result
+            task_id, run_id = result.kernel_task_id, result.kernel_run_id or result.run_id
+
+            def observe(task):
+                if task.get("task_id") == task_id and task.get("run_id") == run_id and _storage_claim_refusal(task, capability_id):
+                    raise _ReleaseStorageRefusal(task_id)
+
+            return _observe_task_invocation(
+                client, capability_id=capability_id, capability_type=result.capability_type, native_kind=result.native_kind,
+                task_id=task_id, run_id=run_id, initial_raw_result=result.raw_result,
+                attempt_id=result.kernel_attempt_id or "", wait=True, owner_tick=observe,
+                discover_managed_outputs=False,
+            )
+        except _ReleaseStorageRefusal as refusal:
+            # A further Runtime call must never stand between this refusal and
+            # stopping paid custody. Retire the queued task after exact release.
+            direct_release()
+            if refusal.task_id:
+                _retire_storage_refused_release(client, refusal.task_id)
+            return None
+
+
+def _retire_storage_refused_release(client: Any, task_id: str) -> None:
+    from astrid.sdk.exceptions import AstridSDKError
+    from astrid.sdk.workspace_client import WorkspaceClientError
+
+    try:
+        result = client.tasks.cancel(task_id, idempotency_key=f"release-low-disk-{uuid.uuid4().hex}")
+        if getattr(result, "ok", True) is False:
+            print(f"could not retire queued release task {task_id}; inspect it after release", file=sys.stderr)
+    except (WorkspaceClientError, AstridSDKError, OSError):
+        print(f"could not retire queued release task {task_id}; inspect it after release", file=sys.stderr)
+
+
 def _release(machine_id: str, *, as_json: bool, release: Callable[[], Any] | None) -> int:
     rows = _leases()
     live = [row for row in rows if row.get("live")]
+    machine = next((row for row in live if row.get("id") == machine_id), None)
     ended = next((row for row in rows if row.get("id") == machine_id
                   and row.get("live") is False and row.get("state") == "ended"), None)
-    if machine_id not in {row["id"] for row in live} and ended is not None:
+    if machine is None and ended is not None:
         print(json.dumps({"ok": True, "machine": ended}, sort_keys=True, default=str) if as_json
               else f"already released {machine_id}")
         return 0
-    if machine_id not in {row["id"] for row in live}:
+    if machine is None:
         message = (f"no live machine {machine_id!r}; live machines: "
                    f"{', '.join(row['id'] for row in live) or 'none'}; check current IDs with `astrid machines`")
         print(json.dumps({"ok": False, "error": message}) if as_json else message)
         return 2
-    if release is None:
-        from astrid.sdk.generation import GenerationFacade
+    capability_id = machine.get("release_capability_id")
 
-        def release():
-            from astrid.sdk import AstridClient
-            with AstridClient.open_from_launcher() as client:
-                return GenerationFacade().release(engine="comfyui", placement="runpod", machine_id=machine_id, client=client, wait=True)
-    result = release()
-    ok = bool(getattr(result, "ok", True))
+    def direct_release() -> None:
+        from astrid.core.execution.machine_run import resolve_machine
+
+        owner = resolve_machine(machine["kind"])
+        receipt = owner.release_after_storage_refusal(machine_id, machine["lease"])
+        notice = f"Runtime refused the release task for low disk; released pod {machine_id} directly; receipt at {receipt}"
+        print(notice, file=sys.stderr if as_json else sys.stdout)
+
+    try:
+        if release is None and not isinstance(capability_id, str):
+            raise ValueError("machine contribution did not declare its release capability")
+        result = release() if release is not None else _runtime_release(machine_id, cast(str, capability_id), direct_release)
+        if _release_storage_refusal(result, capability_id):
+            direct_release()
+            result = None
+    except (OSError, RuntimeError, ValueError) as exc:
+        message = f"release of {machine_id} failed: {exc}; check `astrid machines` before retrying"
+        print(json.dumps({"ok": False, "error": message}) if as_json else message)
+        return 1
+    ok = result is None or bool(getattr(result, "ok", True))
     rows = [row for row in _leases() if row.get("id") == machine_id]
     payload = {"ok": ok, "machine": rows[0] if rows else None}
     if not ok:
@@ -241,6 +387,7 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
                               as_json=as_json, input_fn=input_fn,
                               describe=lambda **kwargs: facade.describe(client=client, **kwargs),
                               claim=lambda **kwargs: facade.claim(client=client, **kwargs))
+        _assert_release_storage_reserve()
         description = describe(placement=placement, max_hourly_usd=max_hourly_usd, fresh_claim=True, datacenter=datacenter)
         waiting = description["waiting_policy"]
         preferences = RunPodPreferences.from_mapping(waiting["preferences"])
@@ -277,6 +424,7 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
                 raise ValueError("claim requires paid consent; review the policy and pass --consent paid")
             if input_fn("Claim this paid machine? [y/N]: ").strip().lower() not in {"y", "yes"}:
                 raise ValueError("claim cancelled; paid consent was not given")
+        _assert_release_storage_reserve()
         result = claim(consent=consent, requested_idle_seconds=seconds, placement=placement, datacenter=datacenter, wait=True)
         if not bool(getattr(result, "ok", True)):
             raise RuntimeError(str(getattr(result, "error", None)))
