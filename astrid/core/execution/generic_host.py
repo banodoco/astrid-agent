@@ -2577,6 +2577,9 @@ def _storage_envelope_measurement(
     root = Path(root)
     output_root = Path(output_root)
     output_resolved = output_root.resolve(strict=False)
+    # The same log roots the live guard leaves out: run logs have their own bound and
+    # are not the task's scratch or output.
+    log_roots = _collected_log_roots(output_root, root)
     total_bytes = 0
     output_bytes = 0
     scratch_bytes = 0
@@ -2591,6 +2594,8 @@ def _storage_envelope_measurement(
                 if path.is_symlink() or not path.is_file():
                     continue
                 if path.parent == root and path.name in _TASK_OUTPUT_DIAGNOSTIC_NAMES:
+                    continue
+                if any(path.resolve(strict=False).is_relative_to(log) for log in log_roots):
                     continue
                 size = int(path.stat().st_size)
                 relative = path.relative_to(root).as_posix()

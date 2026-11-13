@@ -23,14 +23,22 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping, cast
 
+from runpod_lifecycle.rest import normalize_pod, normalize_volume
 from runtime_protocol import platform
 
 from astrid.core.generation.engine_contracts import Gate, PlacementRefused
 from astrid.core.util.time import utc_now_iso
 
 from .pod_fields import InvalidPodField, pod_field
-from .provider import (ProviderNotStarted, ProviderRefused, account_gate, async_provider_call, async_provider_operation,
-                       provider_budget, provider_call)
+from .provider import (
+    ProviderNotStarted,
+    ProviderRefused,
+    account_gate,
+    async_provider_call,
+    async_provider_operation,
+    provider_budget,
+    provider_call,
+)
 
 _SHARED_GATES = {
     "GPU": "hardware", "volume": "storage", "datacenter": "region",
@@ -296,7 +304,7 @@ async def resolve_existing_volume(api_key: str, name_or_id: str) -> dict[str, An
         raise TargetObservationError(
             f"existing network volume {name_or_id!r} has no valid provider size",
             gate="inventory", retryable=True, custody="none")
-    return dict(matches[0])
+    return normalize_volume(matches[0])
 
 
 def _text(value: Any) -> str | None:
@@ -362,7 +370,10 @@ def inspect_target_records(
         raise TargetObservationError(
             f"exact pod {contract.pod_id!r} is not uniquely visible in the authenticated account inventory",
             gate="identity", retryable=False, custody="unknown")
-    pod = pod_matches[0]
+    try:
+        pod = normalize_pod(pod_matches[0])
+    except ValueError:
+        raise TargetObservationError("provider pod fields conflict", gate="identity", retryable=False, custody="unknown") from None
 
     pod_name = _required_text(pod, "name", context=f"pod {contract.pod_id}", gate="identity")
     if contract.expected_pod_name and pod_name != contract.expected_pod_name:
@@ -373,7 +384,7 @@ def inspect_target_records(
     desired_status = _required_text(
         pod, "desiredStatus", context=f"pod {contract.pod_id}", gate="status"
     ).upper()
-    if not allow_inactive and desired_status not in {"RUNNING", "PROVISIONING"}:
+    if not allow_inactive and desired_status not in {"RUNNING", "PROVISIONING", "STARTING"}:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} is not attachable (desiredStatus={desired_status!r})",
             gate="status", retryable=False, custody="unknown")
@@ -381,7 +392,7 @@ def inspect_target_records(
     if (
         not allow_inactive
         and actual_status
-        and actual_status.upper() not in {"RUNNING", "PROVISIONING"}
+        and actual_status.upper() not in {"RUNNING", "PROVISIONING", "STARTING"}
     ):
         raise TargetObservationError(
             f"pod {contract.pod_id!r} is not currently attachable (actualStatus={actual_status!r})",
@@ -481,7 +492,7 @@ def inspect_volume_records(
         raise TargetObservationError(
             f"network volume {contract.network_volume_id!r} cannot be confirmed in the authenticated account inventory",
             gate="volume", retryable=False, custody="unknown")
-    volume = volume_matches[0]
+    volume = normalize_volume(volume_matches[0])
     volume_name = _required_text(
         volume, "name", context=f"volume {contract.network_volume_id}", gate="volume"
     )

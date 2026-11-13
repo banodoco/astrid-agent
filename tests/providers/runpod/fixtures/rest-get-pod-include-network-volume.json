@@ -1,37 +1,53 @@
 {
- "consumerUserId": "USER_ID",
- "containerDiskInGb": 200,
- "costPerHr": 1.19,
- "createdAt": "2026-11-12T00:00:00Z",
- "desiredStatus": "RUNNING",
- "env": {
-  "ASTRID_POD_AGENT_B64": "<redacted>",
-  "ASTRID_POD_PORT": "<redacted>",
-  "ASTRID_POD_TOKEN": "<redacted>",
-  "PUBLIC_KEY": "<redacted>"
- },
- "gpuCount": 1,
- "id": "POD_ID",
- "imageName": "runpod/base@sha256:820c605eaaa276de20a0d77993fb0846d54e180efff5de67d46341ed399b5a7f",
- "lastStartedAt": "2026-11-12T00:00:00Z",
- "lastStatusChange": "2026-11-12T00:00:00Z",
- "machine": {},
- "machineId": "MACHINE_ID",
- "memoryInGb": 134,
- "name": "astrid-product-OPERATION",
- "networkVolume": {
+  "id": "POD_ID",
+  "name": "astrid-product-OPERATION",
+  "image": "runpod/base@sha256:820c605eaaa276de20a0d77993fb0846d54e180efff5de67d46341ed399b5a7f",
+  "status": "RUNNING",
+  "cost": 1.19,
+  "disk": 200,
+  "gpu": {
+    "id": "NVIDIA GeForce RTX 4090",
+    "count": 1,
+    "memory": 134,
+    "vcpuCount": 17
+  },
+  "mounts": {
+    "network": [
+      {
+        "volumeId": "VOLUME_ID",
+        "path": "/workspace"
+      }
+    ]
+  },
   "dataCenterId": "EUR-NO-1",
-  "id": "VOLUME_ID",
-  "name": "VOLUME_NAME",
-  "size": 200
- },
- "networkVolumeId": "VOLUME_ID",
- "ports": [
-  "<redacted>"
- ],
- "publicIp": "<redacted>",
- "templateId": "TEMPLATE_ID",
- "vcpuCount": 17,
- "volumeInGb": 0,
- "volumeMountPath": "/workspace"
+  "runtime": null,
+  "ports": [
+    "8000/http"
+  ],
+  "env": {
+    "ASTRID_POD_AGENT_B64": "<redacted>",
+    "ASTRID_POD_PORT": "<redacted>",
+    "ASTRID_POD_TOKEN": "<redacted>",
+    "PUBLIC_KEY": "<redacted>"
+  },
+  "createdAt": "2026-11-12T00:00:00Z",
+  "startedAt": "2026-11-12T00:00:00Z",
+  "cloud": "SECURE",
+  "ssh": {
+    "proxy": null,
+    "direct": null
+  },
+  "template": null,
+  "locked": false,
+  "globalNetworking": {
+    "enabled": false
+  },
+  "cudaVersion": "12.8",
+  "args": "",
+  "registry": null,
+  "actions": [
+    "stop",
+    "restart",
+    "terminate"
+  ]
 }

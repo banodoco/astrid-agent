@@ -101,3 +101,23 @@ def test_archive_maps_only_declared_file_identities(tmp_path):
     values = read_archive(archive, tmp_path / 'pod', map_file=lambda path: seen.append(path) or 'remote/source.txt')
     assert values == {'file': 'remote/source.txt', 'scalar': str(source)}
     assert len(seen) == 1
+
+
+def test_same_inputs_write_byte_identical_archives(tmp_path):
+    """A resumed job rebuilds the archive; its digest is part of the recovery identity."""
+    import hashlib
+    import os
+    request = tmp_path / 'request.json'
+    video = tmp_path / 'source.mp4'
+    request.write_text('{"request": true}')
+    video.write_bytes(b'video')
+    values = {'prompt': 'a cube', 'request': str(request), 'assets': {'source': str(video)}}
+    ports = [{'name': 'request', 'type': 'file'}, {'name': 'assets', 'type': 'file_map'}]
+    first = write_archive(tmp_path / 'first.zip', values, ports)
+    # A later build sees different file times; the archive must not.
+    os.utime(request, (1_000_000_000, 1_000_000_000))
+    os.utime(video, (1_100_000_000, 1_100_000_000))
+    second = write_archive(tmp_path / 'second.zip', values, ports)
+    assert hashlib.sha256(first.read_bytes()).hexdigest() == hashlib.sha256(second.read_bytes()).hexdigest()
+    restored = read_archive(second, tmp_path / 'pod')
+    assert restored['prompt'] == 'a cube'

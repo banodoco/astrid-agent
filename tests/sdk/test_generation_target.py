@@ -230,7 +230,7 @@ def test_explicit_unqualified_entry_uses_coded_refusal(monkeypatch):
 
 @pytest.mark.parametrize('inputs,mode,match', [
     ({'prompt': 'boat'}, 'i2v', 'image_ref'),
-    ({'prompt': 'boat', 'image_ref': 'start.png'}, 'flf', 'Available backends: cloud'),
+    ({'prompt': 'boat', 'image_ref': 'start.png'}, 'flf', 'image_end_ref'),
 ])
 def test_explicit_unqualified_keeps_input_validation_before_probe(monkeypatch, inputs, mode, match, unqualified_video_registry):
     from astrid.sdk.exceptions import CapabilityValidationError, CapabilityMissingInputError
@@ -271,6 +271,61 @@ def test_user_entry_named_like_bundled_wan_is_not_filtered(monkeypatch, explicit
             model=entry['id'] if explicit else None, mode='i2v', modality='video',
             placement='auto', execution=None, inputs={}, dry_run=True)
     probe.assert_called_once()
+
+
+@pytest.mark.parametrize('selector', ['model', 'entry'])
+@pytest.mark.parametrize('placement', [None, 'auto', 'concrete'])
+def test_user_workflow_wins_over_same_id_provider_catalog(
+    network, monkeypatch, tmp_path, selector, placement,
+):
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    import astrid.sdk as sdk
+    from astrid.core.generation import entries, settings
+
+    registry = ModelRegistry.load_default()
+    info = target_info(vaes=('ae.safetensors',))
+    provider = next(entry for entry in registry.list_by_modality('image', include_closed=True)
+                    if 't2i' in entry.modes and 'local' not in entry.modes['t2i'].backends)
+    local = next(entry for entry in registry.list_by_modality('image', include_closed=True)
+                 if 't2i' in entry.modes and 'local' in entry.modes['t2i'].backends
+                 and 'diffusion' in entry.modes['t2i'].backends['local'].model_roles
+                 and any(name in info['UNETLoader']['input']['required']['unet_name'][0]
+                         for name in entry.modes['t2i'].backends['local'].model_roles['diffusion'].names))
+    identifier = 'authored-collision'
+    bundle_path = tmp_path / 'workflow.py'
+    workflow = workflow_from_ready(local.modes['t2i'].backends['local'].template)
+    emit_bundle(workflow, bundle_path, {'operation': 'authored'})
+    manifest = {'id': identifier, 'kind': 'image', 'modes': ['t2i'],
+                'bundle': str(bundle_path), 'binds': {}, 'defaults': {}, 'needs': []}
+    monkeypatch.setattr(entries, 'user_entries', lambda: [manifest])
+    monkeypatch.setattr(entries, 'ready_entries', lambda: [])
+    monkeypatch.setattr(entries, 'action_entries', lambda: [])
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([
+        replace(provider, id=identifier),
+    ]))
+    client, requests = install_target(network, info)
+    attached_without_managed(monkeypatch)
+    monkeypatch.setattr(settings, 'placement_default', lambda *args, **kwargs: {
+        'kind': 'attached', 'endpoint': client.target.url,
+    })
+    provider_dispatch = Mock(side_effect=AssertionError('provider dispatched'))
+    monkeypatch.setattr(GenerationFacade, '_invoke', provider_dispatch)
+
+    result = GenerationFacade().image(
+        **{selector: identifier},
+        **({'placement': client.target.url if placement == 'concrete' else placement}
+           if placement is not None else {}),
+        prompt='one boat', seed=42, dry_run=True, project='demo', out=tmp_path,
+    )
+
+    provider_dispatch.assert_not_called()
+    assert result['entry']['id'] == identifier
+    assert result['entry']['model'] == identifier
+    assert result['entry']['mode'] == 't2i'
+    assert result['entry']['bindings']['seed'] == 42
+    assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]
 
 
 def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(network, monkeypatch, tmp_path):

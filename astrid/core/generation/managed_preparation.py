@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .engine_contracts import EngineRecipe, IntegrityError, SourcePatch
+from .engine_local_endpoint import DEFAULT_ENGINE
 
 PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
 SCHEMA = "astrid.managed-engine-preparation.v1"
@@ -139,7 +140,7 @@ def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def configured_models_root(engine: str = "comfyui", *, root: str | None = None) -> str:
+def configured_models_root(engine: str = DEFAULT_ENGINE, *, root: str | None = None) -> str:
     """Read the installed cache binding without starting or contacting its owner.
 
     No receipt means the proposed default root, not a readiness assertion.
@@ -206,7 +207,7 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
             or set(body["inputs"]) not in ({"workflow"}, {"python", "companion", "source"})
             or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
                    for value in body["inputs"].values())
-            or body["manifest"].get("engine") != "comfyui"
+            or body["manifest"].get("engine") != DEFAULT_ENGINE
             or set(body["manifest"]) - {"engine", "base", "models", "extra", "models_root"}
             or not _valid_root(body["manifest"].get("models_root"))
             or body["mode"] != expected_mode
@@ -300,9 +301,9 @@ class ManagedEnginePreparation:
         self.logs_root = logs_root
         self.on_phase = on_phase
         self.deadline, self.cancelled = deadline, cancelled
-        self.root = default_engine_root("comfyui")
-        self.recipe = load_recipe("comfyui", DEFAULT_PLATFORM)
-        self.context, self.adapter = create_local_backend(engine="comfyui", platform=DEFAULT_PLATFORM,
+        self.root = default_engine_root(DEFAULT_ENGINE)
+        self.recipe = load_recipe(DEFAULT_ENGINE, DEFAULT_PLATFORM)
+        self.context, self.adapter = create_local_backend(engine=DEFAULT_ENGINE, platform=DEFAULT_PLATFORM,
             placement="local", root=self.root, deadline=deadline)
         self.context.service_client.cancelled = cancelled
         self.lock = None
@@ -437,7 +438,7 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed installation evidence differs from its receipt")
         self._runtime_requirements = None
         self._guard_runtime(canonical_workflow, runner, post=False)
-        engine = copy.copy(run_action._engine_for({"engine": "comfyui"}))
+        engine = copy.copy(run_action._engine_for({"engine": DEFAULT_ENGINE}))
         manifest, source_format = judge_declarations(canonical_workflow, self.scratch, engine)
         self._native_generated_scratchpad = source_format == "scratchpad"
         canonical_path = self.scratch / "canonical" / "workflow.py"
@@ -446,7 +447,7 @@ class ManagedEnginePreparation:
         self._canonical_members = {path: hashlib.sha256(path.read_bytes()).hexdigest()
                                    for path in native_members if path.is_file()}
         staged_digests.update(self._canonical_members)
-        manifest = {**manifest, "engine": "comfyui", "models_root": configured_models_root(root=self.root)}
+        manifest = {**manifest, "engine": DEFAULT_ENGINE, "models_root": configured_models_root(root=self.root)}
         self._has_declared_nodes = bool((manifest.get("extra") or {}).get("nodes"))
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
         self.scratch.mkdir(parents=True, exist_ok=True)

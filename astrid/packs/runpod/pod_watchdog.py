@@ -6,7 +6,6 @@ pod process reads provider identity; the host sends source and public bounds.
 from __future__ import annotations
 
 import base64
-import fcntl
 import json
 import math
 import os
@@ -19,6 +18,11 @@ from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+
+try:
+    import fcntl
+except ModuleNotFoundError:  # The host imports this module on every platform; only the pod locks.
+    fcntl = None  # type: ignore[assignment]
 
 DEADLINE_PATH = Path("/root/astrid/pod-watchdog-deadline.json")
 PROGRAM_PATH = Path("/root/astrid/pod-watchdog.py")
@@ -88,10 +92,14 @@ def _identity() -> tuple[str, str]:
     return os.environ["RUNPOD_POD_ID"], os.environ["RUNPOD_API_KEY"]
 
 
-def _request(pod: str, key: str, *, method: str = POD_TERMINATE_METHOD) -> Any:
+def _request(pod: str, key: str, *, method: str = POD_TERMINATE_METHOD,
+             status_callback: Callable[[int], None] | None = None) -> Any:
     url = POD_URL_TEMPLATE.format(pod_id=quote(pod, safe=""))
     request = Request(url, method=method, headers={"Authorization": "Bearer " + key})
     with urlopen(request, timeout=2 if method == "GET" else 10) as response:
+        if status_callback is not None:
+            status = getattr(response, "status", None)
+            status_callback(status if type(status) is int else 0)
         if method == "GET":
             return json.load(response)
         response.read(1)
@@ -102,13 +110,19 @@ def _report_identity() -> str:
     names = [name for name in ("RUNPOD_POD_ID", "RUNPOD_API_KEY")
              if os.environ.get(name, "").strip()]
     authorised = "unknown"
+    probe_status = 0
+
+    def record_status(status: int) -> None:
+        nonlocal probe_status
+        probe_status = status
+
     if len(names) == 2:
         try:
-            report = _request(*_identity(), method="GET")
-            actions = report.get("actions") if isinstance(report, dict) else None
-            if isinstance(actions, list):
-                authorised = "yes" if "terminate" in actions else "no"
+            # V2 actions are state transitions, not bearer-token permissions.
+            # A successful pods:read probe cannot establish pods:write rights.
+            _request(*_identity(), method="GET", status_callback=record_status)
         except HTTPError as exc:
+            probe_status = exc.code
             if exc.code in (401, 403):
                 authorised = "no"
         except (OSError, URLError, ValueError):
@@ -118,7 +132,7 @@ def _report_identity() -> str:
     IDENTITY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with IDENTITY_LOG_PATH.open("a", encoding="utf-8") as log:
         log.write(f"{IDENTITY_MARK}{','.join(names) or 'none'} "
-                  f"termination_authorised={authorised} probe=GET-own-pod-actions"
+                  f"termination_authorised={authorised} probe=GET-own-pod-actions probe_status={probe_status}"
                   + (" watchdog=unavailable custody=host-only" if authorised == "unknown" else "") + "\n")
         log.flush()
         os.fsync(log.fileno())

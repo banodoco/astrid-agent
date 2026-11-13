@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import re
 import secrets
@@ -61,6 +62,8 @@ from .worker_staging import (
     _canonical_digest,
     prepare_worker,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class RunPodWorkerOwnerError(RuntimeError):
@@ -498,14 +501,16 @@ class RunPodLeaseOwner:
                         record = self._read()
                         exact = (captured is not None and record is not None
                                  and (record.get("operation_id"), record.get("pod_id")) == captured)
-                except Exception:
+                except Exception:  # noqa: BLE001 - custody: any failed identity read must refuse to authorize exact release
+                    _logger.debug("Could not verify the failed acquisition identity", exc_info=True)
                     exact = False
                 released = False
                 if exact and not defer_unsafe_release:
                     try:
                         self.release(reason="custody_changed", _expected_operation=captured[0],
                                      expected_machine_id=captured[1])
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - custody: any exact-release failure must preserve pending cleanup and retry
+                        _logger.debug("Exact release failed after acquisition failure; preserving pending cleanup", exc_info=True)
                         pass  # Exact-release failure keeps durable pending custody/retry.
                     try:
                         with self.lock:
@@ -816,20 +821,26 @@ class RunPodLeaseOwner:
     def _check_observer_children(self, record: Mapping[str, Any] | None) -> None:
         """Never resume deletion/replacement while an old local caller lives."""
         had_local_child = bool(self._unreaped_children)
-        still_live = []
-        for child in self._unreaped_children:
-            if child.is_alive():
-                still_live.append(child)
-            else:
-                child.join(timeout=0)
-                child.close()
-        self._unreaped_children = still_live
-        if still_live:
+        try:
+            for child in tuple(self._unreaped_children):
+                if not any(pending is child for pending in self._unreaped_children):
+                    continue
+                if not child.is_alive():
+                    child.join(timeout=0)
+                    # Forget every reference before close: a later reap failure
+                    # must never leave a closed handle for the next retry.
+                    self._unreaped_children = [pending for pending in self._unreaped_children
+                                              if pending is not child]
+                    child.close()
+        finally:
+            if (had_local_child and not self._unreaped_children and record is not None
+                    and record.get("observer_unreaped") is True):
+                self._save(record, record["lease"], observer_unreaped=False)
+        if self._unreaped_children:
             raise AcquisitionUnresolvedError("bounded pod observer still lives; exact custody remains pending")
         if record is not None and record.get("observer_unreaped") is True:
             if not had_local_child:
                 raise AcquisitionUnresolvedError("unreaped observer has no local death proof; exact custody remains pending")
-            self._save(record, record["lease"], observer_unreaped=False)
 
     def fence_unreaped_observer(self, invocation: RunPodLease, pod_id: str, child: Any) -> None:
         """An unkillable local HTTPS caller may still mutate this exact pod."""
@@ -869,8 +880,11 @@ class RunPodLeaseOwner:
             self._abort_failure_observation(current)
             try:
                 self._check_observer_children(current)
-            except AcquisitionUnresolvedError:
-                if current is not None:
+            except Exception as exc:  # noqa: BLE001 - any failed reap must keep exact recovery armed.
+                self.last_error_type = type(exc).__name__
+                if current is not None and not self.closed:
+                    if self.deadline_timer is not None:
+                        self.deadline_timer.cancel()
                     self.deadline_timer = self.timer(self._provider_retry_delay(current), lambda: self._retry_recovery(current["operation_id"]))
                 raise
             if self._release_inflight:
@@ -3156,7 +3170,7 @@ __all__ = [
 
 
 def provider_pod_state(api_key: str, pod_id: str) -> str:
-    """``gone`` when the provider reports the exact pod missing, terminated or exited; else ``live``.
+    """Distinguish an absent pod from an existing stopped container.
 
     An unreadable answer is never absence: only a 404 or a terminal status ends a lease.
     """
@@ -3167,9 +3181,9 @@ def provider_pod_state(api_key: str, pod_id: str) -> str:
         return "gone"
     if status == 200 and isinstance(pod, dict):
         states = {str(pod.get(key) or "").upper() for key in ("desiredStatus", "actualStatus")}
-        if states & {"TERMINATED", "EXITED"}:
+        if states & {"TERMINATED"}:
             return "gone"
-        if states & {"STOPPED"}:
+        if states & {"STOPPED", "EXITED"}:
             return "stopped"
     return "live"
 

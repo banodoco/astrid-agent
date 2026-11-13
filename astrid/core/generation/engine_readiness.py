@@ -723,7 +723,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
     )
 
     _check(deadline)
-    if engine not in {ENGINE, "comfyui"}:
+    if engine != ENGINE:
         raise ReadinessError("unsupported installed engine")
     try:
         root = _root(root, PLATFORM)
@@ -904,7 +904,7 @@ class _Parser(argparse.ArgumentParser):
 def main(argv=None, *, release_root=None):
     parser = _Parser(prog="run.py readiness", description=__doc__.splitlines()[0])
     parser.add_argument("--root", required=True, help="canonical install root")
-    parser.add_argument("--engine", choices=(ENGINE, "comfyui"), default=ENGINE,
+    parser.add_argument("--engine", choices=(ENGINE,), default=ENGINE,
                         help="recipe owning the installed receipt and supervisor")
     parser.add_argument("--release", required=True, help="this verified retained release root")
     parser.add_argument("--profile", required=True, help="private <state>/engine-readiness.json")

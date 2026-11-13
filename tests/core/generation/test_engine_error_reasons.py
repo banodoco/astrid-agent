@@ -43,6 +43,13 @@ def test_install_start_raise_sites_have_declared_fixed_reasons():
                     for text in ('source patch digest mismatch', 'source contains uncommitted content'):
                         assert errors[node.func.id](text).reason == text
                     continue
+                # A message with safe detail (a recipe field or path) names its declared check apart.
+                declared = next((keyword.value for keyword in node.keywords if keyword.arg == 'reason'), None)
+                if declared is not None:
+                    assert isinstance(declared, ast.Constant), (relative, node.lineno)
+                    assert engine_reason(declared.value) == declared.value, (relative, node.lineno)
+                    checked += 1
+                    continue
                 assert isinstance(argument, ast.Constant), (relative, node.lineno)
                 reason = errors[node.func.id](argument.value).reason
                 assert reason == argument.value and reason, (relative, node.lineno)

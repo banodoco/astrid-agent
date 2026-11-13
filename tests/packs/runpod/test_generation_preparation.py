@@ -78,7 +78,10 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         raw["volume"] = None
     c.prefs = RunPodPreferences.from_mapping(raw)
     recipe = engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130")
-    plan = engine_runner.plan_install(recipe, root="/root/astrid/engines/comfyui", placement="local")
+    engine_base = tmp_path / "engines"
+    engine_root = str(engine_base / "comfyui")
+    monkeypatch.setattr(rp, "ENGINE_BASE", str(engine_base))
+    plan = engine_runner.plan_install(recipe, root=engine_root, placement="local")
     compatibility = RunPodLeaseCompatibility(
         "sha256:" + plan.recipe_sha256, "sha256:" + plan.models_lock_sha256,
         _selected_runtime_commit(), next(s for s in recipe.sources if s.name == "vibecomfy").pin.revision,
@@ -158,7 +161,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         return SimpleNamespace(stdout=(" M source" if c.dirty_sources else "")
                                if "status" in argv else revision)
     monkeypatch.setattr(rp, "subprocess", SimpleNamespace(run=git_read))
-    installation = rp.RunPodInstallation(compatibility.as_mapping())
+    installation = rp.RunPodInstallation(compatibility.as_mapping(), root=engine_root)
     provider = _provider(sources)
     placement = _wrapper(provider, sources)
     # Reuse the canonical runner's fake OS/model/environment context. The
