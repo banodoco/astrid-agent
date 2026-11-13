@@ -63,6 +63,8 @@ from .worker_staging import (
     prepare_worker,
 )
 
+_logger = logging.getLogger(__name__)
+
 
 class RunPodWorkerOwnerError(RuntimeError):
     """Exact RunPod preparation or host custody could not be established."""
@@ -495,18 +497,17 @@ class RunPodLeaseOwner:
                         record = self._read()
                         exact = (captured is not None and record is not None
                                  and (record.get("operation_id"), record.get("pod_id")) == captured)
-                except Exception as observation_error:  # noqa: BLE001 - only a validated exact completion receipt can prove release.
-                    logging.getLogger(__name__).debug(
-                        "Could not confirm failed acquisition identity (%s)",
-                        type(observation_error).__name__, exc_info=True)
+                except Exception:  # noqa: BLE001 - custody: any failed identity read must refuse to authorize exact release
+                    _logger.debug("Could not verify the failed acquisition identity", exc_info=True)
                     exact = False
                 released = False
                 if exact and not defer_unsafe_release:
                     try:
                         self.release(reason="custody_changed", _expected_operation=captured[0],
                                      expected_machine_id=captured[1])
-                    except Exception:  # noqa: BLE001 - only a validated exact completion receipt can prove release.
-                        logging.getLogger(__name__).debug("Only a validated exact completion receipt can prove release", exc_info=True)
+                    except Exception:  # noqa: BLE001 - custody: any exact-release failure must preserve pending cleanup and retry
+                        _logger.debug("Exact release failed after acquisition failure; preserving pending cleanup", exc_info=True)
+                        pass  # Exact-release failure keeps durable pending custody/retry.
                     try:
                         with self.lock:
                             completed = self._read()
@@ -3169,7 +3170,7 @@ __all__ = [
 
 
 def provider_pod_state(api_key: str, pod_id: str) -> str:
-    """``gone`` when the provider reports the exact pod missing, terminated or exited; else ``live``.
+    """Distinguish an absent pod from an existing stopped container.
 
     An unreadable answer is never absence: only a 404 or a terminal status ends a lease.
     """
@@ -3180,9 +3181,9 @@ def provider_pod_state(api_key: str, pod_id: str) -> str:
         return "gone"
     if status == 200 and isinstance(pod, dict):
         states = {str(pod.get(key) or "").upper() for key in ("desiredStatus", "actualStatus")}
-        if states & {"TERMINATED", "EXITED"}:
+        if states & {"TERMINATED"}:
             return "gone"
-        if states & {"STOPPED"}:
+        if states & {"STOPPED", "EXITED"}:
             return "stopped"
     return "live"
 

@@ -465,6 +465,8 @@ def _reject_claim_controls(inputs):
 
 def _reject_retired_generation_inputs(inputs: dict[str, Any]) -> None:
     """Reject removed public spellings instead of silently forwarding them."""
+    if "target" in inputs:
+        raise TypeError("generate.* no longer accepts 'target'; use placement=")
     if "backend" in inputs:
         raise TypeError("generate.* no longer accepts 'backend'; use execution")
 
@@ -560,6 +562,8 @@ def _resolve_execution(
     inference_backend_ids = [
         backend_id for backend_id in backend_ids if backend_id != "codex"
     ] or backend_ids
+    if "local" in inference_backend_ids:
+        return "local"
     if len(inference_backend_ids) == 1:
         return inference_backend_ids[0]
 
@@ -1367,8 +1371,8 @@ class GenerationFacade:
     ) -> Any:
         """Bind a catalog template and admit it through the workflow facade.
 
-        Target selection precedes package/runtime prerequisites so an attached
-        server can be used without installing or owning a managed ComfyUI.
+        Qualify candidates before placement discovery. An attached server can
+        be used without installing or owning a managed ComfyUI.
         """
         import json
         from tempfile import TemporaryDirectory
@@ -1383,21 +1387,6 @@ class GenerationFacade:
 
         from astrid.core.generation import placement as placements
 
-        # The one decision site: request -> user default -> built-in, then frozen.
-        resolved_placement = placements.validate_placement(placements.resolve_placement(
-            placements.request_from_selector(placement), client=controls.get('client'),
-            repo=controls.get('project_root')))
-        is_managed_target = resolved_placement.kind == 'local'
-        is_remote_target = resolved_placement.kind not in placements.BUILTIN_KINDS
-        if is_remote_target and not dry_run:
-            _require_claimed_machine(resolved_placement.kind, resolved_placement.machine)
-        placement_policy = (_runpod_placement_policy(engine=None, machine=resolved_placement.machine,
-                                                     consent=controls.get('consent', ()))
-                            if is_remote_target and not dry_run else
-                            {"kind": "local", "device": resolved_placement.device} if is_managed_target else None)
-        runpod_engine = pending_target = None
-        for name in ('engine', 'consent'):
-            controls.pop(name, None)
         requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
         align = _align_mode(requested_align or 'check')
 
@@ -1491,12 +1480,27 @@ class GenerationFacade:
         candidates = qualified
         default_id = (candidates[0][1].id if candidates[0][0] == 'catalog'
                       else candidates[0][1]['id']) if candidates else None
+        # Qualify every candidate before the placement resolver can probe discovery.
+        placement = placements.validate_placement(placements.resolve_placement(
+            placements.request_from_selector(placement), client=controls.get('client'),
+            repo=controls.get('project_root')))
+        is_managed_target = placement.kind == 'local'
+        is_remote_target = placement.kind not in placements.BUILTIN_KINDS
+        if is_remote_target and not dry_run:
+            _require_claimed_machine(placement.kind, placement.machine)
+        placement_policy = (_runpod_placement_policy(engine=None, machine=placement.machine,
+                                                     consent=controls.get('consent', ()))
+                            if is_remote_target and not dry_run else
+                            {"kind": "local", "device": placement.device} if is_managed_target else None)
+        runpod_engine = pending_target = None
+        for name in ('engine', 'consent'):
+            controls.pop(name, None)
         # Managed and remote workflows are frozen from declarations. The host
         # validates that exact selection after alignment and engine readiness.
-        target_client = (None if is_remote_target or is_managed_target else select_generation_target(
-            placements.comfy_selector(resolved_placement), repo=controls.get("project_root"),
+        target_client = (None if is_remote_target else select_generation_target(
+            placements.comfy_selector(placement), repo=controls.get("project_root"),
             entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id') or default_id,
-            mode=mode))
+            mode=mode, defer_managed=is_managed_target))
         backend = VibeComfyBackend(target_client=target_client)
 
         def import_member(path: Path) -> dict[str, Any]:
@@ -1540,6 +1544,8 @@ class GenerationFacade:
                         workflow_entries.find_entry(template) if template else None)
                     pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
                 if source == "catalog":
+                    if is_managed_target and not dry_run:
+                        require_generation_target_readiness(candidate, mode, target_client)
                     workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                         registry=registry, candidate=candidate, mode=mode, modality=modality,
                         inputs=inputs, target_client=target_client, backend=backend,
@@ -1549,14 +1555,14 @@ class GenerationFacade:
                     from types import SimpleNamespace
                     prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
                         backends={"local": SimpleNamespace(template=str(candidate["bundle"]))})})
-                    if not is_remote_target and (not is_managed_target or dry_run):
+                    if not is_remote_target:
                         require_generation_target_readiness(prerequisite, mode, target_client)
                     if candidate["kind"] != modality or mode not in candidate["modes"]:
                         raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
                     registry_id = candidate.get("registry_id")
                     if registry_id:
                         catalog_entry = registry.get(registry_id)
-                        if not is_remote_target and (not is_managed_target or dry_run):
+                        if not is_remote_target:
                             require_generation_target_readiness(catalog_entry, mode, target_client)
                         workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                             registry=registry, candidate=catalog_entry, mode=mode,
@@ -1699,7 +1705,7 @@ class GenerationFacade:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
             # Report the same built graph's requirements that local alignment will judge.
             manifest = workflow_entries.engine_table()['comfyui'].requirements({'workflow': workflow}, effective_values)
-            if resolved_placement.kind == 'local':
+            if placement.kind == 'local':
                 from astrid.core.generation.managed_preparation import configured_models_root
                 manifest = {**manifest, 'models_root': configured_models_root()}
             readiness['entry']['requirements'] = manifest
@@ -1756,7 +1762,7 @@ class GenerationFacade:
                 # The managed client is for preparation and inventory. Passing its
                 # loopback URL as an attached endpoint bypasses managed alignment
                 # and lifecycle ownership in the action.
-                comfy_url=(target_client.target.url if resolved_placement.kind == 'attached' and target_client is not None else None),
+                comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
                 placement_policy=placement_policy,
                 generation_intent={
                     "version": 1, "modality": modality, "partial_success_policy": "reject",
@@ -1904,6 +1910,14 @@ class GenerationFacade:
         kind.check_prompt(model=model, entry=entry, inputs=inputs)
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
+        entry_source = None
+        if entry is None and model is not None:
+            from astrid.core.generation.entries import find_entry
+
+            # Preserve the workflow lookup's user precedence for either selector.
+            manifest = find_entry(model)
+            if manifest is not None and manifest.get('source') == 'user-entry':
+                entry_source = 'workflow'
         if entry is not None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
@@ -1912,20 +1926,56 @@ class GenerationFacade:
                 entry=entry, model=model, mode=mode, modality=modality,
                 inputs=inputs, registry=registry,
             )
+            entry_source = description["source"]
             model, mode = entry, description["mode"]
-            if description["source"] == "workflow" and placement is None:
-                placement = "auto"
-        resolved_mode, explicit_openai = kind.resolve_mode(
-            sdk_module, model=model, mode=mode, execution=execution, inputs=inputs,
-            resume=resume, recovery_path=recovery_path, placement=placement,
-        )
+        if entry_source == "workflow" and placement is None:
+            placement = "auto"
         if registry is None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root,
                 extra_pack_roots=extra_pack_roots,
             )
+        # Engine selects the ComfyUI target resolver; establish that selector
+        # before resolving a catalog execution so provider entries can consume
+        # ``auto`` without it being reintroduced as a target afterward.
         if engine is not None and placement is None:
-            placement = 'auto'
+            placement = "auto"
+        declared_entry = None
+        if model is not None and entry_source != "workflow":
+            try:
+                declared_entry = registry.get(model)
+            except KeyError:
+                pass
+        resolved_mode, explicit_openai = kind.resolve_mode(
+            sdk_module, model=model, mode=mode, execution=execution, inputs=inputs,
+            resume=resume, recovery_path=recovery_path, placement=placement,
+        )
+        # Catalog entries declare their execution in the selected mode. Resolve
+        # that declaration before interpreting placement so provider entries
+        # keep their existing SDK route when placement is omitted or ``auto``.
+        # A concrete placement only applies to the local ComfyUI route.
+        resolved_execution = None
+        if declared_entry is not None:
+            resolved_mode = kind.finish_mode(
+                sdk_module, model=model, model_entry=declared_entry, mode=mode,
+                resolved_mode=resolved_mode, explicit_openai=explicit_openai,
+            )
+            resolved_execution = sdk_module._resolve_execution(
+                declared_entry, resolved_mode, execution, model=model,
+            )
+            if resolved_execution != "local":
+                if placement not in (None, "auto"):
+                    raise CapabilityValidationError(
+                        f"entry {model!r} declares execution {resolved_execution!r}; "
+                        "valid placements: omitted or 'auto'",
+                        details={"entry": model, "execution": resolved_execution,
+                                 "valid_placements": [None, "auto"]},
+                    )
+                execution = resolved_execution
+                placement = None
+            elif placement is None:
+                # Omitted placement and ``auto`` enter the same resolver below.
+                placement = "auto"
         if placement is not None:
             kind.check_target_mode(mode=resolved_mode)
             return self._generate_on_target(
@@ -1951,20 +2001,24 @@ class GenerationFacade:
             )
         if model is None:
             raise CapabilityValidationError("model is required when target is omitted")
-        try:
-            model_entry = registry.get(model)
-        except KeyError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-        resolved_mode = kind.finish_mode(
-            sdk_module, model=model, model_entry=model_entry, mode=mode,
-            resolved_mode=resolved_mode, explicit_openai=explicit_openai,
-        )
-        resolved_execution = sdk_module._resolve_execution(
-            model_entry,
-            resolved_mode,
-            execution,
-            model=model,
-        )
+        model_entry = declared_entry
+        if model_entry is None:
+            try:
+                model_entry = registry.get(model)
+            except KeyError as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+        if resolved_mode is None:
+            resolved_mode = kind.finish_mode(
+                sdk_module, model=model, model_entry=model_entry, mode=mode,
+                resolved_mode=resolved_mode, explicit_openai=explicit_openai,
+            )
+        if resolved_execution is None:
+            resolved_execution = sdk_module._resolve_execution(
+                model_entry,
+                resolved_mode,
+                execution,
+                model=model,
+            )
         from astrid.core.generation.preflight import (
             require_local_generation_readiness,
             validate_generation_request,

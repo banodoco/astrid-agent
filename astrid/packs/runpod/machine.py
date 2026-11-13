@@ -55,6 +55,8 @@ from .remote_placement import (
     sha256_file,
 )
 
+_logger = logging.getLogger(__name__)
+
 KIND = "runpod"
 POLL_SECONDS = 15.0
 PROGRESS_NAME = "progress.json"
@@ -376,9 +378,8 @@ def _user_entry_folder(entry: str | None, entries_dir: Path | None = None) -> Pa
     try:
         from vibecomfy.entries import entries_dir as default_dir
         root = Path(entries_dir) if entries_dir is not None else Path(default_dir())
-    except Exception as exc:  # noqa: BLE001 - entry discovery failure must leave resolution to the normal fallback.
-        logging.getLogger(__name__).debug("entry directory lookup failed (%s)", type(exc).__name__,
-                                               exc_info=True)
+    except Exception:  # noqa: BLE001 - discovery: any optional entry lookup failure must preserve the fallback
+        _logger.debug("User entry discovery failed; using no entry folder", exc_info=True)
         return None
     for path in sorted(root.glob("*/entry.json")):
         try:
@@ -699,10 +700,9 @@ class RunPodMachine:
                         journal = owner.selection._read() or {}
                         context["preparation_job"] = bool(
                             ((journal.get("lease") or {}).get("preparation") or {}).get("job"))
-                    except Exception as context_error:  # noqa: BLE001 - optional metadata or failed preparation must not bypass exact cleanup.
-                        logging.getLogger(__name__).debug(
-                            "Could not read preparation context for job %s (%s)", job.invocation_id,
-                            type(context_error).__name__, exc_info=True)
+                    except Exception:  # noqa: BLE001 - receipt: metadata failure must not interrupt cleanup or the original error
+                        _logger.debug("Could not annotate the preparation job context", exc_info=True)
+                        pass
                     # Only a fully attested preparation can be reused. Failure
                     # before or during installation leaves unknown pod state.
                     self._finish(acquired[0])
@@ -713,20 +713,16 @@ class RunPodMachine:
                             safe = (not owner.closed and preparation.get("state") in {"prepared", "stale_after_failure"}
                                     and (preparation.get("state") == "stale_after_failure" or isinstance(preparation.get("installed"), dict))
                                     and record.get("pod_id") == acquired[0].claim.get("pod_id"))
-                    except Exception as custody_error:  # noqa: BLE001 - optional metadata or failed preparation must not bypass exact cleanup.
-                        logging.getLogger(__name__).debug(
-                            "Could not verify preparation custody for job %s (%s)", job.invocation_id,
-                            type(custody_error).__name__, exc_info=True)
+                    except Exception:  # noqa: BLE001 - custody: any unverified preparation must still reach exact release
+                        _logger.debug("Could not verify preparation custody", exc_info=True)
                         safe = False
                     if safe:
                         from .failure_diagnostics import host_summary
                         try:
                             owner.settle(acquired[0], outcome="failed",
                                          failure=host_summary(exc, stage="preparation"))
-                        except Exception as settlement_error:  # noqa: BLE001 - optional metadata or failed preparation must not bypass exact cleanup.
-                            logging.getLogger(__name__).debug(
-                                "Could not settle failed preparation for job %s; releasing (%s)", job.invocation_id,
-                                type(settlement_error).__name__, exc_info=True)
+                        except Exception:  # noqa: BLE001 - custody: any settlement failure must still release the exact pod
+                            _logger.debug("Preparation settlement failed; releasing the exact pod", exc_info=True)
                             owner.release(reason="preparation_settlement_unverified",
                                           _expected_operation=acquired[0].operation_id,
                                           expected_machine_id=acquired[0].claim.get("pod_id"))
@@ -735,10 +731,9 @@ class RunPodMachine:
                         from .failure_diagnostics import host_summary
                         try:
                             owner.note_failed_job(acquired[0], host_summary(exc, stage="preparation"))
-                        except Exception as note_error:  # noqa: BLE001 - optional metadata or failed preparation must not bypass exact cleanup.
-                            logging.getLogger(__name__).debug(
-                                "Could not record failed preparation for job %s (%s)", job.invocation_id,
-                                type(note_error).__name__, exc_info=True)
+                        except Exception:  # noqa: BLE001 - custody: diagnostic failure must not prevent exact release
+                            _logger.debug("Could not record the failed preparation", exc_info=True)
+                            pass
                         try:
                             owner.release(reason="preparation_unverified",
                                           _expected_operation=acquired[0].operation_id,
@@ -852,9 +847,9 @@ class RunPodMachine:
         if timing is not None and isinstance(progress, Mapping):
             try:
                 timing.pod_phase(progress.get("phase"))
-            except Exception as exc:  # noqa: BLE001 - optional phase timing must not interrupt job polling.
-                logging.getLogger(__name__).debug("pod phase timing update failed (%s)",
-                                                      type(exc).__name__, exc_info=True)
+            except Exception:  # noqa: BLE001 - timing: optional telemetry must never fail polling
+                _logger.debug("Could not record the remote job phase", exc_info=True)
+                pass
         if state == "exited":
             _stamp(timing, "job_ended_at", first=True)
             run.state = "exited"
@@ -866,9 +861,8 @@ class RunPodMachine:
         landing = run.scratch / ("progress-" + run.job_id + ".json")
         try:
             run.lease.claim.ops.get(f"{run.remote_root}/{PROGRESS_NAME}", landing)
-        except Exception as exc:  # noqa: BLE001 - optional progress is allowed to be absent while the job runs.
-            logging.getLogger(__name__).debug("job progress fetch failed (%s)", type(exc).__name__,
-                                                   exc_info=True)
+        except Exception:  # noqa: BLE001 - progress: any transfer failure must preserve best-effort polling
+            _logger.debug("Could not copy remote job progress", exc_info=True)
             return None  # the run has not written a phase yet
         try:
             if landing.is_symlink() or landing.stat().st_size > MAX_PROGRESS_BYTES:
@@ -922,8 +916,8 @@ class RunPodMachine:
             command = (f"tail -c {MAX_FRAME_BYTES + 1}" if failed else "cat")
             try:
                 _c, stdout, _e = ops.exec(f"{command} {shlex.quote(run.directory)}/stdout", 120)
-            except Exception:  # noqa: BLE001 - transport failures must preserve the original error or a bounded diagnostic refusal.
-                logging.getLogger(__name__).debug("Transport failures must preserve the original error or a bounded diagnostic refusal", exc_info=True)
+            except Exception:  # noqa: BLE001 - diagnostics: any transport failure must retain the job-error translation
+                _logger.debug("Could not read remote job diagnostics", exc_info=True)
                 if failed:
                     raise MachineError("remote failure diagnostic unavailable") from None
                 raise
@@ -993,9 +987,8 @@ class RunPodMachine:
                             run.lease.failure_install_receipt = "sha256:" + str(installation["receipt_sha256"])
                 return {"files": [{**row, "path": (str(local / row["file"])
                                                    if not row.get("missing") else None)} for row in rows]}
-        except Exception as exc:  # noqa: BLE001 - log collection must not mask the original job failure.
-            logging.getLogger(__name__).debug("failed job log collection failed (%s)",
-                                                  type(exc).__name__, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - receipt: log collection must never mask the job error
+            _logger.debug("Could not collect failed job logs", exc_info=True)
             return {"unavailable": type(exc).__name__}
         return {"unavailable": "not_reported"}
 
@@ -1170,8 +1163,9 @@ class RunPodMachine:
         if failure is not None and not lease.released:
             try:
                 observer_key, abort_event = owner.begin_failure_observation(lease.lease, lease.claim.pod_id)
-            except Exception:  # noqa: BLE001 - any incomplete release must retain custody and recovery.
-                logging.getLogger(__name__).debug("Any incomplete release must retain custody and recovery", exc_info=True)
+            except Exception:  # noqa: BLE001 - custody: observation setup failure must not prevent exact release
+                _logger.debug("Could not begin failure observation; continuing release", exc_info=True)
+                pass  # _release_impl still fences unsafe custody and reconciles exact release.
         try:
             self._release_impl(lease, warm, reason=reason, failure=failure, stage=stage,
                                abort_event=abort_event, observer_key=observer_key)
@@ -1205,8 +1199,9 @@ class RunPodMachine:
                     # observation budget as status, receipt and reset.
                     verify_deadline = time.monotonic() + min(FAILURE_VERIFY_SECONDS, remaining)
                     lease.claim.ops = bounded(verify_deadline, abort_event=abort_event)
-            except Exception:  # noqa: BLE001 - unverified custody or diagnostics must fall back to exact release.
-                logging.getLogger(__name__).debug("Unverified custody or diagnostics must fall back to exact release", exc_info=True)
+            except Exception:  # noqa: BLE001 - custody: any observer setup failure must still reach exact release
+                _logger.debug("Could not bound failure observation; continuing exact release", exc_info=True)
+                pass  # Exact release below reconciles any unresolved job.
         # Poll/transport failures can leave a job running. Stop that exact
         # checkpointed job before deciding whether warm reuse is possible.
         try:
@@ -1218,8 +1213,9 @@ class RunPodMachine:
                 stopped = lease.claim.ops.job_cancel(pending["id"])
                 if stopped.get("id") == pending["id"] and stopped.get("state") in {"exited", "cancelled"}:
                     self._checkpoint(lease, {"id": pending["id"], "state": stopped["state"]})
-        except Exception:  # noqa: BLE001 - unverified custody or diagnostics must fall back to exact release.
-            logging.getLogger(__name__).debug("Unverified custody or diagnostics must fall back to exact release", exc_info=True)
+        except Exception:  # noqa: BLE001 - custody: any failed stop must still reach unsafe-custody release
+            _logger.debug("Could not confirm the checkpointed job stopped", exc_info=True)
+            pass  # Unknown stop is classified unsafe below; exact release reconciles it.
         # Snapshot custody before remote verification, then fence it again before saving.
         rejection = None
         stale = False
@@ -1236,8 +1232,8 @@ class RunPodMachine:
                     rejection = "custody_changed"
                 elif job is not None and job.get("state") not in {"exited", "cancelled"}:
                     rejection = "job_stop_unverified"
-            except Exception:  # noqa: BLE001 - unverified custody or diagnostics must fall back to exact release.
-                logging.getLogger(__name__).debug("Unverified custody or diagnostics must fall back to exact release", exc_info=True)
+            except Exception:  # noqa: BLE001 - custody: any failed snapshot must refuse warm reuse and reach release
+                _logger.debug("Could not verify the preparation custody snapshot", exc_info=True)
                 rejection = "custody_changed"
                 # preparation_claim also refuses an expired lease. Distinguish
                 # that case only when the exact invocation still owns the pod.
@@ -1255,8 +1251,9 @@ class RunPodMachine:
                             and owner.clock() >= info["paid_expires_at"]):
                         paid_expiry = info["paid_expires_at"]
                         rejection = "paid_limit_exhausted"
-                except Exception:  # noqa: BLE001 - unverified custody or diagnostics must fall back to exact release.
-                    logging.getLogger(__name__).debug("Unverified custody or diagnostics must fall back to exact release", exc_info=True)
+                except Exception:  # noqa: BLE001 - custody: any failed expiry check must leave unknown custody unsafe
+                    _logger.debug("Could not classify the exact lease expiry", exc_info=True)
+                    pass
         if getattr(lease, "unsafe_job_stop", False):
             rejection = "job_stop_unverified"
         if isinstance(failure, CustodyChanged):
@@ -1283,8 +1280,8 @@ class RunPodMachine:
                     try:
                         verified = adapter.placement._canonical_installed(
                             lease.state, verification_seconds=remaining)
-                    except Exception as exc:  # noqa: BLE001 - unverified custody or diagnostics must fall back to exact release.
-                        logging.getLogger(__name__).debug("Unverified custody or diagnostics must fall back to exact release", exc_info=True)
+                    except Exception as exc:  # noqa: BLE001 - custody: any other verification failure must reach the release classifier
+                        _logger.debug("Installation verification raised an error", exc_info=True)
                         from .remote_placement import InstallationReceiptChanged
                         if isinstance(exc, InstallationReceiptChanged):
                             verified = False
@@ -1314,8 +1311,8 @@ class RunPodMachine:
                                                     {"installed": dict(lease.state.installed)}, job=job)
             except CustodyChanged:
                 rejection = "custody_changed"
-            except Exception:  # noqa: BLE001 - unverified custody or diagnostics must fall back to exact release.
-                logging.getLogger(__name__).debug("Unverified custody or diagnostics must fall back to exact release", exc_info=True)
+            except Exception:  # noqa: BLE001 - custody: any verification failure must still reach release or safe settlement
+                _logger.debug("Could not verify the installation after job failure", exc_info=True)
                 if owner.clock() >= paid_expiry:
                     rejection = "paid_limit_exhausted"
                 elif time.monotonic() >= verify_deadline:
@@ -1332,8 +1329,8 @@ class RunPodMachine:
                 self._reset(lease, verify_deadline=verify_deadline, paid_expiry=paid_expiry)
                 if (verify_deadline is not None and time.monotonic() >= verify_deadline) or owner.clock() >= paid_expiry:
                     raise MachineError("failure reset exceeded the original paid limit")
-            except Exception as exc:  # noqa: BLE001 - unverified custody or diagnostics must fall back to exact release.
-                logging.getLogger(__name__).debug("Unverified custody or diagnostics must fall back to exact release", exc_info=True)
+            except Exception as exc:  # noqa: BLE001 - custody: any failed reset must release the exact pod
+                _logger.debug("Remote reset failed; releasing the exact pod", exc_info=True)
                 lease.state.note("reset", "failed", error=type(exc).__name__)
                 warm, reason = False, "reset_failed"
         if warm and stale:
@@ -1355,15 +1352,16 @@ class RunPodMachine:
             try:
                 owner.note_failed_job(lease.lease, summary, outcome=outcome, node_ids=lease.node_ids,
                                       node_names=lease.node_names)
-            except Exception:  # noqa: BLE001 - unverified custody or diagnostics must fall back to exact release.
-                logging.getLogger(__name__).debug("Unverified custody or diagnostics must fall back to exact release", exc_info=True)
+            except Exception:  # noqa: BLE001 - custody: diagnostic failure must not prevent unsafe release
+                _logger.debug("Could not record the failed job before release", exc_info=True)
+                pass  # Unsafe release still has priority over a diagnostic read/write.
         self._finish(lease.lease)
         if warm:
             try:
                 owner.settle(lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids,
                              node_names=lease.node_names)
-            except Exception:  # noqa: BLE001 - unverified custody or diagnostics must fall back to exact release.
-                logging.getLogger(__name__).debug("Unverified custody or diagnostics must fall back to exact release", exc_info=True)
+            except Exception:  # noqa: BLE001 - custody: any settlement failure must still release the exact pod
+                _logger.debug("Job settlement failed; releasing the exact pod", exc_info=True)
                 if observer_key is not None:
                     owner.end_failure_observation(observer_key)
                 owner.release(reason="settlement_unverified", _expected_operation=lease.lease.operation_id,
@@ -1476,9 +1474,8 @@ def _active_sources() -> tuple[Any, ...]:
     try:
         from astrid.core.pack.source_setup import active_sources
         return tuple(active_sources(verify=False))
-    except Exception as exc:  # noqa: BLE001 - unavailable source metadata must not block journal inspection.
-        logging.getLogger(__name__).debug("active source lookup failed (%s)", type(exc).__name__,
-                                               exc_info=True)
+    except Exception:  # noqa: BLE001 - discovery: any source lookup failure must preserve the empty-selection fallback
+        _logger.debug("Could not discover active sources; using an empty selection", exc_info=True)
         return ()
 
 
@@ -1508,9 +1505,8 @@ def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
         try:
             from astrid.core.extensions.registry import ExtensionRegistry
             registry = ExtensionRegistry().load()
-        except Exception as exc:  # noqa: BLE001 - optional entry discovery must fall back to the remaining sources.
-            logging.getLogger(__name__).debug("extension registry lookup failed (%s)",
-                                                  type(exc).__name__, exc_info=True)
+        except Exception:  # noqa: BLE001 - discovery: any registry failure must preserve the entry fallback checks
+            _logger.debug("Could not load the entry registry; using fallback checks", exc_info=True)
             registry = None
     if registry is not None:
         from astrid.core.generation.workflows import POINT as WORKFLOWS
@@ -1530,9 +1526,8 @@ def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
         try:
             from astrid.core.generation.entries import action_entries
             action_rows = action_entries()
-        except Exception as exc:  # noqa: BLE001 - optional entry discovery must fall back to the remaining sources.
-            logging.getLogger(__name__).debug("action entry lookup failed (%s)", type(exc).__name__,
-                                                  exc_info=True)
+        except Exception:  # noqa: BLE001 - discovery: action discovery can raise arbitrary errors and must preserve its fallback
+            _logger.debug("Could not discover action entries; using an empty list", exc_info=True)
             action_rows = []
     for row in action_rows:
         if row.get("id") == entry and row.get("action"):
@@ -1614,9 +1609,8 @@ def journal_leases(account: str | None = None) -> list[dict[str, Any]]:
         record = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
         ended_path = ended_leases_path(path)
         ended = json.loads(ended_path.read_text(encoding="utf-8")) if ended_path.is_file() else []
-    except Exception as exc:  # noqa: BLE001 - an unreadable journal must not break read-only machine listing.
-        logging.getLogger(__name__).debug("lease journal lookup failed (%s)", type(exc).__name__,
-                                              exc_info=True)
+    except Exception:  # noqa: BLE001 - listing: any settings or journal failure must preserve the empty-lease fallback
+        _logger.debug("Could not read lease settings or journals; listing no leases", exc_info=True)
         return []
     current = [lease_row(record)] if isinstance(record, Mapping) and record.get("pod_id") else []
     seen = {row["lease"] for row in current}
