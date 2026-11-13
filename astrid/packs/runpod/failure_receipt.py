@@ -453,3 +453,31 @@ def render(receipt: Mapping[str, Any]) -> str:
 
 __all__ = ["SCHEMA", "STAGES", "build_receipt", "decide_stage", "find_receipt", "record_failure", "recorder", "render",
            "write_receipt"]
+
+
+def kept_failure_details(lease: Any, generation: Any) -> dict[str, str]:
+    """The local receipt's reason and log folder for one failed lease generation, if any.
+
+    Best-effort: optional evidence never masks the job failure.
+    """
+    if lease is None or generation is None:
+        return {}
+    try:
+        for receipt_path in failures_root().glob(f"*/{RECEIPT_NAME}"):
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                identity = receipt.get("identity") or {}
+                if identity.get("lease") != lease or identity.get("generation") != generation:
+                    continue
+                details: dict[str, str] = {}
+                reason = (receipt.get("cause") or {}).get("issue_message")
+                if isinstance(reason, str) and reason:
+                    details["issue_message"] = reason[:ISSUE_MESSAGE_LIMIT]
+                if any(log.get("path") and not log.get("missing") for log in receipt.get("logs", [])):
+                    details["logs_dir"] = str(receipt_path.parent / "logs")
+                return details
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+    except OSError:
+        pass
+    return {}

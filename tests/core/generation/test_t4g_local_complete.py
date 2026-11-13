@@ -10,6 +10,7 @@ import pytest
 
 from astrid.packs.vibecomfy import production_engine
 from astrid.core.generation import cli
+from tests.local_engine_stub import prepared_local_engine
 from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401  (CPU stand-in ComfyUI)
 from tests.integrations.test_managed_host_preparation import managed_install, session, _workflow  # noqa: F401
 
@@ -223,6 +224,7 @@ def test_job_file_inputs_reach_the_run_as_file_arguments(tmp_path, monkeypatch):
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     seen = {}
     monkeypatch.setattr(action, "_run_and_settle", lambda workflow, out, **kw: seen.update(kw) or {})
+    prepared_local_engine(monkeypatch)
     video, assets, workflow = tmp_path / "in" / "source_video.mp4", tmp_path / "in" / "managed_assets.zip", tmp_path / "wf.json"
     video.parent.mkdir()
     for path in (video, assets, workflow):

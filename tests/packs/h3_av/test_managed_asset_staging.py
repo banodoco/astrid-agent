@@ -49,11 +49,81 @@ def test_compiler_archive_stages_to_comfy_input(tmp_path: Path) -> None:
     assert (tmp_path / "run" / "engine-input" / bindings["source_video"]).read_bytes() == b"fixture-video"
 
 
+def _fixture_workflow(tmp_path: Path) -> Path:
+    """Emit a real Python workflow bundle: module plus companion."""
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow import VibeNode, VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import emit_bundle_with_candidate
+
+    workflow = VibeWorkflow("fixture", WorkflowSource("fixture"))
+    workflow.nodes["1"] = VibeNode("1", "FixtureNode", inputs={"seed": 0}, uid="fixture-node")
+    path = tmp_path / "workflow.py"
+    emit_bundle_with_candidate(workflow, path, Provenance.USER_CONFIRMED, None, source_format="scratchpad")
+    return path
+
+
+def _engine_result(engine_output: Path):
+    """The installed engine's reply: one finished output, sealed in its result envelope."""
+    import hashlib
+
+    def run_workflow_result_path(_workflow, destination, **kwargs):
+        root = Path(destination) / "engine-result"
+        output = root / "outputs" / engine_output.name
+        output.parent.mkdir(parents=True)
+        output.write_bytes(engine_output.read_bytes())
+        data = output.read_bytes()
+        envelope = root / "managed-generation-result.json"
+        envelope.write_text(json.dumps({
+            "schema_version": 1,
+            "kind": "managed-generation-result.v1",
+            "inputs": {"values": kwargs["workflow_input_bindings"]},
+            "outputs": [{"producer_output_id": "engine:video:0", "output_port": "video", "ordinal": 0,
+                         "path": f"outputs/{engine_output.name}", "media_type": "video/mp4",
+                         "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}],
+            "created": "2026-09-21T12:00:00Z",
+            "warnings": [],
+            "task_id": kwargs["task_identity"],
+            "attempt_id": kwargs["attempt_identity"],
+            "producer_run_id": "producer-1",
+            "outcomes": {"execution": {"status": "succeeded"}, "retrieval": {"status": "succeeded"},
+                         "verification": {"status": "succeeded"}, "publication": {"status": "not_started"}},
+            "evidence": {"producer": {"engine": {"name": "fixture-engine"}},
+                         "transport": {"location": {"opaque": True}}},
+        }), encoding="utf-8")
+        return SimpleNamespace(outputs=(output,), managed_generation_result_path=envelope,
+                               managed_generation_result=None)
+
+    return run_workflow_result_path
+
+
+def _stand_in_installed_engine(monkeypatch, tmp_path: Path) -> None:
+    import astrid.core.generation.managed_preparation as managed
+
+    class InstalledEngine:
+        root = str(tmp_path / "engine-root")
+        recipe = SimpleNamespace(engine="comfyui")
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def prepare(self, *_args, **_kwargs):
+            return {"endpoint": "http://127.0.0.1:8188"}
+
+        def close(self, **_kwargs):
+            pass
+
+    def prepared_attempt(*, execution_identity=None, **_kwargs):
+        return {"placement": "managed", "alignment": {"mode": "check"}, "manifest": {"models": []},
+                "execution_identity": execution_identity}
+
+    monkeypatch.setattr(managed, "ManagedEnginePreparation", InstalledEngine)
+    monkeypatch.setattr(managed, "read_preparation", prepared_attempt)
+
+
 def test_run_accepts_matching_workflow_and_managed_asset_binding(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    workflow = tmp_path / "workflow.py"
-    workflow.write_text("# fixture\n", encoding="utf-8")
+    workflow = _fixture_workflow(tmp_path)
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
     managed_assets = tmp_path / "managed-assets.zip"
@@ -68,15 +138,15 @@ def test_run_accepts_matching_workflow_and_managed_asset_binding(
     engine_output.write_bytes(b"result")
     preflight = Mock()
     monkeypatch.setattr("astrid.packs.vibecomfy.invocation_preflight.preflight_invocation", preflight)
-    managed_run = Mock(
-        return_value=SimpleNamespace(
-            outputs=(engine_output,), managed_generation_result_path=None
-        )
-    )
+    managed_run = Mock(side_effect=_engine_result(engine_output))
     monkeypatch.setattr(
         "astrid.packs.vibecomfy.production_engine.run_workflow_result_path",
         managed_run,
     )
+
+    # Every local managed run goes through owned preparation; stand in for the
+    # installed engine below that boundary so the run reaches the mocked engine call.
+    _stand_in_installed_engine(monkeypatch, tmp_path)
 
     with local_engine_patch():
         run._run_and_settle(

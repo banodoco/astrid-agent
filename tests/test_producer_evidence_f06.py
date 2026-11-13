@@ -14,7 +14,7 @@ from astrid.core.contracts.managed_generation_result import (  # noqa: E402
     validate_managed_generation_result,
 )
 from astrid.packs.vibecomfy.production_engine import ProductionRunResult  # noqa: E402
-from tests.local_engine_stub import local_engine_patch  # noqa: E402
+from tests.local_engine_stub import local_engine_patch, prepared_local_engine  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -356,6 +356,7 @@ def test_run_failure_retains_original_source_before_conversion_and_preserves_err
     adapter = SimpleNamespace(workflow=execute)
     monkeypatch.setattr("astrid.packs.vibecomfy.workflow_route.WorkflowRunner", lambda **kwargs: adapter)
     spool = tmp_path / "spool"
+    prepared_local_engine(monkeypatch)
     with pytest.raises(type(error)) as raised, local_engine_patch():
         run._run_and_settle(workflow, spool, task_identity="task-1", attempt_identity="attempt-1")
     assert raised.value is error
@@ -464,6 +465,7 @@ def test_returned_terminal_producer_result_never_becomes_successful_settlement(t
     adapter = SimpleNamespace(workflow=lambda *args, **kwargs: production)
     monkeypatch.setattr("astrid.packs.vibecomfy.workflow_route.WorkflowRunner", lambda **kwargs: adapter)
     spool = tmp_path / "spool"
+    prepared_local_engine(monkeypatch)
     with pytest.raises(AstridError) as raised, local_engine_patch():
         run._run_and_settle(tmp_path / "absent.json", spool, task_identity="task-1",
                             attempt_identity="attempt-1")
@@ -519,6 +521,7 @@ def test_failed_producer_receipt_survives_executor_to_safe_remote_frame(tmp_path
     def execute(entry, job_data, out, **kwargs):
         return action._run_and_settle(workflow, Path(out), task_identity='task-1', attempt_identity='attempt-1')
     monkeypatch.setattr(local_job, '_run_job', execute)
+    prepared_local_engine(monkeypatch)
     with local_engine_patch():
         assert cli.main(['workflow', '--placement', 'local', '--job', str(job),
                          '--out', str(tmp_path / 'spool'), '--json']) == 2

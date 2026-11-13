@@ -102,7 +102,8 @@ def pin_object_info() -> dict:
     root = Path(__file__).resolve().parents[1] / "fixtures/h3_cpu"
     closure = json.loads((root / "object_info_h3_runpod_graph_closure.json").read_text())
     overlay = json.loads((root / "object_info_h3_runpod_overlay.json").read_text())
-    return {**closure, **overlay}
+    extras = json.loads((root / "object_info_h3_standin_extras.json").read_text())
+    return {**closure, **overlay, **extras}
 
 
 def receipt_files(receipt: dict) -> list[str]:
