@@ -151,6 +151,32 @@ class RunPodLeaseOwner:
         selection._read()  # Refuse unsafe paths before opening custody.
         self.account = target_owner(selection.path)
         self.account.__enter__()
+        try:
+            from .release_control import ReleaseControlServer
+
+            self.release_control = ReleaseControlServer(
+                selection.path, self.epoch, self._release_from_local_control)
+        except Exception:  # noqa: BLE001 - close account custody on partial listener startup
+            self.account.__exit__(None, None, None)
+            raise
+
+    def _release_from_local_control(self, operation_id: str, pod_id: str) -> Mapping[str, Any]:
+        """Release one exact identity on behalf of the short-lived local CLI."""
+        result = self.release(reason="explicit", _expected_operation=operation_id,
+                             expected_machine_id=pod_id)
+        record = self.selection._read()
+        if (not isinstance(record, dict) or record.get("operation_id") != operation_id
+                or record.get("pod_id") != pod_id or record.get("state") != "cleanup_complete"):
+            raise RunPodWorkerOwnerError("exact local release did not persist completed cleanup")
+        _validate_completed_release(record)
+        if not isinstance(result, Mapping) or result.get("state") != "cleanup_complete":
+            raise RunPodWorkerOwnerError("exact local release did not return its completed receipt")
+        return {
+            "operation_id": operation_id,
+            "pod_id": pod_id,
+            "state": "cleanup_complete",
+            "journal_path": str(self.selection.path),
+        }
 
     def _read(self) -> dict[str, Any] | None:
         if self.closed:
@@ -1116,6 +1142,7 @@ class RunPodLeaseOwner:
                 raise RunPodWorkerOwnerError("wait for the in-progress exact release before closing its owner")
             if not self.closed:
                 self._cancel()
+                self.release_control.close()
                 self.closed = True
                 self.account.__exit__(None, None, None)
 
