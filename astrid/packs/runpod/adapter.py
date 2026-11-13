@@ -389,7 +389,7 @@ def prevalidate_task(policy, inputs, *, scratch):
 
 
 def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, environ, expected_machine_id=None,
-                       fresh_claim=False, job=False):
+                       fresh_claim=False, job=False, cancel_running=None):
     """Construct the retained A3/A4 composition on an explicit host request."""
     from runpod_lifecycle.config import RunPodConfig
 
@@ -434,7 +434,7 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
                 **{key: lease[key] for key in ("owner_epoch", "generation", "invocation_id")}}
 
     owner = RunPodLeaseOwner(selection, holds=holds, quiesce=drain,
-                             service_environ=environ)
+                             service_environ=environ, cancel_running=cancel_running)
     try:
         if fresh_claim:
             owner.start_fresh_claim()
@@ -534,6 +534,7 @@ class TargetProviderBindings:
                 signature = json.dumps([kind, engine, preferences], sort_keys=True, separators=(",", ":"), allow_nan=False)
             provider = build_host_adapter(preferences=preferences, engine=engine,
                                           holds=self.holds, quiesce=self._quiesce,
+                                          cancel_running=self.cancel_running,
                                           credentials=self.credentials, environ=self.environ, **(
                                               {"fresh_claim": True} if fresh_claim else {}), **(
                                               {"job": True} if job else {}), **(
@@ -565,6 +566,18 @@ class TargetProviderBindings:
             active = self.active
             if active is not None and active["key"] == self._key(lease):
                 active["done"].set()
+
+    def cancel_running(self, record):
+        """Signal the existing attempt before exact release starts stopping it."""
+        lease = record["lease"]
+        key = (record["operation_id"], lease["owner_epoch"], lease["generation"], lease["invocation_id"])
+        with self.lock:
+            active = self.active
+            if (active is not None and active["key"] == key
+                    and active["lease"].claim.get("pod_id") == record.get("pod_id")
+                    and active["lease"].claim.get("provider_account_ref") == record.get("provider_account_ref")
+                    and not active["done"].is_set()):
+                active["cancel"].set()
 
     def _quiesce(self, record):
         lease = record["lease"]

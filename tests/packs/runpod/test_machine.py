@@ -2088,3 +2088,82 @@ def test_machine_claim_waits_for_stock_no_longer_than_its_retention(monkeypatch,
     assert payload["unknown"] is False
     assert payload["error"].startswith("no machine came into stock within 20m; nothing was rented.")
     assert "--capacity-timeout" in payload["error"]
+
+
+def test_release_during_running_job_cancels_then_releases(machine_case, monkeypatch):
+    import threading
+    from astrid.packs.runpod.adapter import TargetProviderBindings
+
+    c = machine_case
+    _claim_machine(c)
+    cancel = threading.Event()
+    polling = threading.Event()
+    bindings = TargetProviderBindings(pack_roots=(), holds=None, credentials=None, environ={})
+    bindings.provider = c.adapter
+    # The host already supplies this same Event to its cancelled callback.
+    c.machine = rm.MACHINE.for_host(c.adapter, begin=lambda lease: bindings.begin(lease, cancel),
+                                    done=bindings.done)
+    c.host.cancel_running = lambda record: bindings.cancel_running(record)
+    # This fixture's job has no models; catalog scanning is outside the timed job.
+    monkeypatch.setattr(rm, "_job_manifest_rows", lambda *args, **kwargs: ())
+    original_cancel = c.pod.job_cancel
+    order = []
+
+    def stop(job_id):
+        assert cancel.is_set(), "exact remote stop preceded the running attempt's cancel signal"
+        order.append("stop")
+        return original_cancel(job_id)
+
+    monkeypatch.setattr(c.pod, "job_cancel", stop)
+    original_poll = c.pod.job_poll
+    original_start = c.pod.job_start
+    running = set()
+
+    def start(command, *, job_id):
+        result = original_start(command, job_id=job_id)
+        if " generate " in command:
+            running.add(job_id)
+        return result
+
+    monkeypatch.setattr(c.pod, "job_start", start)
+
+    def poll(job_id):
+        if job_id in running and not cancel.is_set():
+            return {"id": job_id, "state": "running"}
+        return original_poll(job_id)
+
+    monkeypatch.setattr(c.pod, "job_poll", poll)
+    outcome = {}
+
+    def wait_for_cancel(_seconds):
+        polling.set()
+        assert cancel.wait(timeout=30), "release did not signal the running attempt"
+
+    def work():
+        job = c.job()
+        try:
+            run_on_machine(c.machine, job, destination=job.scratch / "outputs",
+                           cancelled=cancel.is_set, sleep=wait_for_cancel)
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    try:
+        assert polling.wait(timeout=30), "job did not reach polling"
+        # A foreign machine must neither cancel this job nor release the pod.
+        with pytest.raises(Exception, match="differs from the requested machine"):
+            c.host.release(expected_machine_id="different-pod")
+        assert not cancel.is_set() and not c.deletes
+        result = c.host.release(expected_machine_id="pod-1")
+        order.append("released")
+        assert cancel.is_set() and order[0] == "stop"
+        assert result["state"] == "cleanup_complete"
+        assert result["release_quiescence"]["state"] == "drained"
+        assert result["cleanup"]["absence"]["exact_get_status"] == 404
+        assert c.deletes == ["pod-1"]
+    finally:
+        cancel.set()
+        thread.join(timeout=15)
+    assert not thread.is_alive()
+    assert "error" in outcome

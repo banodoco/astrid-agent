@@ -875,7 +875,7 @@ actions:
     conditions: []
     graph: {consumes: [], provides: []}
     isolation: {mode: subprocess, network: false}
-    metadata: {host_target_operation: status}
+    metadata: {host_target_operation: status, execution_lane: control}
     invocation:
       kind: command
       command:
@@ -938,7 +938,7 @@ actions:
     conditions: []
     graph: {consumes: [], provides: []}
     isolation: {mode: subprocess, network: false}
-    metadata: {host_target_operation: release}
+    metadata: {host_target_operation: release, execution_lane: control}
     invocation:
       kind: command
       command:

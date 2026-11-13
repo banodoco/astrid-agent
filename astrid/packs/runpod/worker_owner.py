@@ -126,12 +126,14 @@ class RunPodLeaseOwner:
 
     def __init__(self, selection: Any, *, holds: WarmHolds,
                  quiesce: Callable[[Mapping[str, Any]], Any],
+                 cancel_running: Callable[[Mapping[str, Any]], None] | None = None,
                  environ: Mapping[str, str] | None = None,
                  service_environ: Mapping[str, str] | None = None,
                  clock: Callable[[], float] = time.time, timer: Any = _start_timer) -> None:
         if selection.compatibility is None or not callable(quiesce):
             raise RunPodWorkerOwnerError("lease owner requires pinned compatibility and an exact host drain")
         self.selection, self.holds, self.quiesce = selection, holds, quiesce
+        self.cancel_running = cancel_running
         self.clock, self.timer = clock, timer
         self.environ, self.service_environ = environ, service_environ
         self.epoch = secrets.token_hex(16)
@@ -860,6 +862,8 @@ class RunPodLeaseOwner:
         if ((expected_machine_id is None or observed is not None and observed.get("pod_id") == expected_machine_id)
                 and (_expected_operation is None or observed is not None and observed.get("operation_id") == _expected_operation)):
             self._acquisition_cancel.set()
+            if observed is not None and self.cancel_running is not None:
+                self.cancel_running(observed)
             self._abort_failure_observation(observed)
         with self.lock:
             if expected_machine_id is not None:
@@ -886,6 +890,11 @@ class RunPodLeaseOwner:
                 raise AcquisitionUnresolvedError("lease release is already in progress")
             self._release_inflight = True
         try:
+            # Acquisition may have registered an attempt while release waited
+            # for the owner lock. Admission is now fenced; signal outside that
+            # lock so the binding's own lock cannot block owner operations.
+            if current is not None and self.cancel_running is not None:
+                self.cancel_running(current)
             with provider_budget(EXACT_CLEANUP_SECONDS, cleanup=True):
                 return self._release(reason=reason)
         except Exception as exc:

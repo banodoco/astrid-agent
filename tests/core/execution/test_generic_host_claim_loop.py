@@ -429,3 +429,115 @@ def test_slot_discovery_refresh_failure_retries_before_claim(world, monkeypatch)
         assert sorted(backend.claimed) == ["0", "1"]
     finally:
         host.shutdown()
+
+
+class LaneClient(Client):
+    def fork_for_host_slot(self):
+        client = LaneClient(self.backend)
+        self.backend.clients.append(client)
+        return client
+
+    def claim_next(self, **kwargs):
+        backend = self.backend
+        candidates = kwargs["capability_ids"]
+        with backend.condition:
+            backend.offers.append(tuple(candidates))
+            for task_id in backend.tasks:
+                capability = self.capability(task_id)
+                if capability in candidates:
+                    backend.tasks.remove(task_id)
+                    self.attempts["attempt-" + task_id] = task_id
+                    backend.claimed.append(task_id)
+                    backend.condition.notify_all()
+                    return {"task_id": task_id, "lease_id": "lease-" + task_id,
+                            "attempt_id": "attempt-" + task_id, "fence": 1}
+            backend.condition.notify_all()
+        return None
+
+    @staticmethod
+    def capability(task_id):
+        return "cpu.release" if task_id == "release" else "cpu.claim-loop"
+
+    def task(self, task_id):
+        return {"task": {"id": task_id, "capability": self.capability(task_id), "spec": {}}}
+
+
+def control_host(world, backend, monkeypatch):
+    monkeypatch.setattr(generic_host, "_terminate_process_group",
+                        lambda process, **kwargs: setattr(process.state, "killed", True))
+    control = world / "control"
+    control.mkdir()
+    (control / "executor.yaml").write_text(json.dumps({
+        "schema_version": 1, "id": "cpu.release", "name": "Release",
+        "kind": "external", "version": "1.0", "command": {"argv": ["python", "-c", "pass"]},
+        "outputs": [], "metadata": {"adapter_family": "cpu", "execution_lane": "control"},
+    }))
+    backend.offers = []
+    host = GenericPackHost(pack_roots=[world], client=LaneClient(backend), max_concurrency=1)
+    host.discover()
+    return host
+
+
+def test_release_is_claimed_while_the_job_slot_is_busy(world, monkeypatch):
+    backend = Backend(0)
+    backend.tasks.extend(["generation", "release"])
+    host = control_host(world, backend, monkeypatch)
+    thread, outcome = run_thread(host, max_tasks=2)
+    try:
+        backend.wait(lambda: "generation" in backend.claimed)
+        backend.wait(lambda: "release" in backend.claimed)
+        backend.wait(lambda: backend.active == 2)
+        occupancy = host.slot_occupancy()
+        assert {(row["lane"], row["task_id"]) for row in occupancy} == {
+            ("job", "generation"), ("control", "release")}
+        assert all(row["state"] == "running" and row["attempt_id"] for row in occupancy)
+        assert host.capabilities["cpu.release"].resource_keys == ("control",)
+        assert host.capabilities["cpu.claim-loop"].resource_keys == ("cpu",)
+    finally:
+        backend.release.set()
+        host.shutdown()
+        thread.join(timeout=3)
+    assert not thread.is_alive() and "error" not in outcome
+
+
+def test_control_slot_never_claims_a_generation(world, monkeypatch):
+    backend = Backend(3)
+    host = control_host(world, backend, monkeypatch)
+    thread, outcome = run_thread(host)
+    try:
+        backend.wait(lambda: backend.active == 1)
+        backend.wait(lambda: ("cpu.release",) in backend.offers)
+        assert backend.peak == 1 and len(backend.claimed) == 1
+        assert all(offer in {("cpu.claim-loop",), ("cpu.release",)} for offer in backend.offers)
+        assert len(backend.tasks) == 2
+    finally:
+        backend.release.set()
+        host.shutdown()
+        thread.join(timeout=3)
+    assert not thread.is_alive() and "error" not in outcome
+
+
+@pytest.mark.integration
+def test_control_registration_reserves_separate_runtime_capacity(world, real_runtime, monkeypatch):
+    backend = Backend(0)
+    host = control_host(world, backend, monkeypatch)
+    daemon = real_runtime()
+    host.client = RuntimeProtocolClient(daemon.endpoint, daemon.worker_token)
+    accepted = []
+    register = host.client.register_executor
+
+    def record_registration(*args, **kwargs):
+        result = register(*args, **kwargs)
+        accepted.append(kwargs)
+        return result
+
+    monkeypatch.setattr(host.client, "register_executor", record_registration)
+    try:
+        host.register()
+        assert accepted[0]["max_concurrency"] == 2
+        assert accepted[0]["resource_keys"] == ["control", "cpu"]
+        descriptors = {row["capability_id"]: row for row in accepted[0]["capabilities"]}
+        assert descriptors["cpu.release"]["required_resource_keys"] == ["control"]
+        assert descriptors["cpu.claim-loop"]["required_resource_keys"] == ["cpu"]
+    finally:
+        host.shutdown()

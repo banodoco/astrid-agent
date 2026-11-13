@@ -5124,10 +5124,18 @@ class CapabilityRecord:
         return self.definition.id
 
     @property
+    def is_control(self) -> bool:
+        """Only an explicit pack declaration admits work to the control lane."""
+        return self.definition.metadata.get("execution_lane") == "control"
+
+    @property
     def resource_keys(self) -> tuple[str, ...]:
         adapter, error = self._adapter_result()
         if error:
             return ()
+        if self.is_control:
+            # Control must not queue behind an ordinary task's capacity wait.
+            return ("control",)
         metadata = self.definition.metadata
         values = metadata.get("resource_keys", metadata.get("resources", ()))
         if isinstance(values, str):
@@ -6640,6 +6648,12 @@ class GenericPackHost:
         # One task at a time uses this host object's session slot. Parallel
         # serving owns separate host objects; this is not a device scheduler.
         self._session_task_lock = threading.Lock()
+        self._claim_lane: str | None = None
+        self._slot_state_lock = threading.Lock()
+        self._slot_state: dict[str, Any] = {
+            "slot_id": 0, "lane": "job", "state": "idle", "task_id": None,
+            "attempt_id": None, "capability_id": None, "started_at": None,
+        }
 
         self._active_processes: set[subprocess.Popen] = set()
         self._unresolved_task_scopes: list[str] = []
@@ -8147,7 +8161,8 @@ class GenericPackHost:
                 executor_capabilities,
                 key=lambda item: str(item["capability_id"]),
             ),
-            "max_concurrency": self.max_concurrency,
+            "max_concurrency": self.max_concurrency + int(any(
+                record.is_control for record in self.capabilities.values())),
             "resource_keys": all_keys,
             "source_digest": _canonical_digest({key: record.source_digest for key, record in self.capabilities.items()}),
             "dependency_digest": _canonical_digest(dependency_digests),
@@ -13645,6 +13660,25 @@ class GenericPackHost:
             flush=True,
         )
 
+    def slot_occupancy(self) -> tuple[Mapping[str, Any], ...]:
+        """Snapshot retained slots, including claims, execution and cleanup.
+
+        Fields are slot_id, lane (job/control), state (idle/claiming/running),
+        task_id, attempt_id, capability_id and started_at (Unix seconds).
+        A running slot stays occupied until claim_once finishes settlement
+        and cleanup; these are observations, never task authority.
+        """
+        owner = self._handoff_accounting_owner
+        rows: list[Mapping[str, Any]] = []
+        for slot in owner._claim_slots or (owner,):
+            with slot._slot_state_lock:
+                rows.append(dict(slot._slot_state))
+        return tuple(rows)
+
+    def _set_slot_state(self, **fields: Any) -> None:
+        with self._slot_state_lock:
+            self._slot_state.update(fields)
+
     def claim_once(self) -> Mapping[str, Any] | None:
         """Run one claim cycle while publishing host-side quiescence counters."""
         thread_id = threading.get_ident()
@@ -13652,9 +13686,12 @@ class GenericPackHost:
             with self._handoff_condition:
                 if self._handoff_claim_gate_closed or not self._handoff_observation_known:
                     return None
+            self._set_slot_state(state="claiming", started_at=time.time())
             return self._claim_once_impl(thread_id)
         finally:
             self._handoff_leave_attempt(thread_id)
+            self._set_slot_state(state="idle", task_id=None, attempt_id=None,
+                                 capability_id=None, started_at=None)
 
     def _claim_once_impl(self, handoff_thread_id: int) -> Mapping[str, Any] | None:
         """Claim and execute one queued task through the generated boundary."""
@@ -13678,6 +13715,7 @@ class GenericPackHost:
             record.id
             for record in ready_records
             if record.ready and not _is_withdrawn(record)
+            and (self._claim_lane is None or record.is_control == (self._claim_lane == "control"))
         )
         if not capability_ids:
             return None
@@ -13752,6 +13790,7 @@ class GenericPackHost:
         fence = claim_data.get("fence")
         if not lease_id or not attempt_id or fence is None:
             raise HostError("generated claim operation returned incomplete lease identity")
+        self._set_slot_state(state="running", task_id=task_id, attempt_id=attempt_id)
         try:
             # Claim ownership immediately.  All subsequent task decoding and
             # provider preparation runs under this attempt's lease; a preparation
@@ -13788,6 +13827,8 @@ class GenericPackHost:
                     "admitted_at": getattr(task, "admitted_at", None),
                     "created_at": getattr(task, "created_at", None),
                 }
+            self._set_slot_state(capability_id=task_data.get("capability", task_data.get("capability_id")))
+
             def fail_claim_handoff(reason: str) -> None:
                 raise HostError(reason)
 
@@ -14003,7 +14044,10 @@ class GenericPackHost:
     def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
         self._recover_terminal_requests()
-        if not once and self.max_concurrency > 1:
+        if not self.capabilities:
+            self.discover()
+        if not once and (self.max_concurrency > 1 or any(
+                record.is_control for record in self.capabilities.values())):
             return self._run_claim_slots(poll_seconds=poll_seconds, max_tasks=max_tasks)
         results: list[Mapping[str, Any]] = []
         consecutive_claim_failures = 0
@@ -14199,7 +14243,12 @@ class GenericPackHost:
                 return results
             # Do not create more retained sessions than a finite run can use.
             count = min(self.max_concurrency, max_tasks) if max_tasks is not None else self.max_concurrency
-            slots = tuple(self._new_claim_slot() for _ in range(count))
+            control_count = int(any(record.is_control for record in self.capabilities.values()))
+            slots = tuple(self._new_claim_slot() for _ in range(count + control_count))
+            for index, slot in enumerate(slots):
+                lane = "control" if index == count else "job"
+                slot._claim_lane = lane
+                slot._set_slot_state(slot_id=index, lane=lane)
             self._claim_slots = slots
             while not self._shutdown.is_set():
                 now = time.monotonic()
