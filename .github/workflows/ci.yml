@@ -113,9 +113,9 @@ jobs:
     name: unit shard ${{ matrix.group }} / 8 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Shard 7 has a ~35-minute tail after ~15 minutes of tests; 60 minutes cancels healthy runs.
-    # Shards 1 and 6 were cancelled at 120 minutes on 05346e9f at 92% (about a dozen tests ran to the 600 s per-test
-    # timeout); 240 lets them report, and -v names each test as it starts so the slow ones can be found.
-    timeout-minutes: 240
+    # Shards 1 and 6 were cancelled at 120 minutes on 05346e9f at 92%; shard 1 then took 2h03 of pytest on 1e94061c.
+    # With the 120 s per-test timeout a hang fails after 2 minutes, so 180 minutes is a wall, not an allowance.
+    timeout-minutes: 180
     env:
       # The test run's skip registry (tests/lanes.py) reads this: a lane this job provides fails, not skips, when its dependency is missing.
       ASTRID_CI_JOB: unit-shard-${{ matrix.os }}
