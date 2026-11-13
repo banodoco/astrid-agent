@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence, TypeVar
+
+from .failure_reason import Reason, attach_reason, installation_reason
 
 SCHEMA = "astrid.generation.failure-receipt.v1"
 STAGES = ("no_machine", "boot", "install", "model_download", "workflow_validation",
           "execution", "output_collection", "release")
 KEEP_RECEIPTS = 20
+ISSUE_MESSAGE_LIMIT = 1024
 RECEIPT_NAME = "failure-receipt.json"
 #: Pod exit codes the job command itself uses (``machine.generation_command``).
 EXIT_NOT_READY, EXIT_VALIDATION = 75, 3
@@ -39,6 +43,51 @@ _MESSAGES = {
 }
 _FACT_SENTENCES = (("node_id", "node {}"), ("node_class", "class {}"), ("field", "field '{}'"),
                    ("constraint", "({})"))
+
+_CheckpointError = TypeVar("_CheckpointError", bound=BaseException)
+
+
+def checkpoint_message(reason: str) -> str:
+    """One refusal line shared by checkpoint errors and their receipts."""
+    detail = {
+        "checkpoint_attestation_missing": "Changed installation has no matching completed-job attestation",
+        "checkpoint_attestation_mismatch": "Live installation differs from completed-job attestation",
+        "installation_receipt_changed": "Live installation differs from its canonical receipt",
+        "checkpoint_installation_changed": "Retained installation changed during verification",
+        "checkpoint_job_changed": "Retained installation checkpoint job changed during generation",
+        "checkpoint_epoch_changed": "Machine owner epoch changed during verification",
+        "checkpoint_invocation_changed": "Machine invocation changed during verification",
+        "checkpoint_paid_expired": "Machine paid lease expired during verification",
+        "checkpoint_observation_interrupted": "Machine release interrupted installation verification",
+        "status_no_receipt": "Engine status returned no installation receipt",
+        "status_deadline_exhausted": "Installation verification deadline expired",
+        "receipt_read_failed": "Canonical installation receipt could not be read",
+    }.get(reason, "Installation checkpoint refused")
+    if reason == "checkpoint_paid_expired":
+        action = "run astrid machines claim before retrying the generation"
+    elif reason.startswith("checkpoint_") and reason.endswith("changed"):
+        action = "run astrid machines to inspect custody before retrying"
+    else:
+        action = "inspect the installation and retry the generation on a prepared machine"
+    return f"{detail} (reason: {reason}); {action}."
+
+
+def checkpoint_refusal(error: _CheckpointError, reason: str) -> _CheckpointError:
+    """Refuse through the shared reason boundary, keeping the exact custody exception type.
+
+    A reason the error already carries (an earlier transport refusal) is kept;
+    otherwise the checkpoint label becomes its validated ``Reason``. The label
+    itself stays as ``install_unverified``: the detail the message renders.
+    """
+    existing = getattr(error, "reason", None)
+    attach_reason(error, existing if isinstance(existing, Reason) else installation_reason(reason))
+    setattr(error, "install_unverified", reason)
+    line = checkpoint_message(reason)
+    error.args = (line,)
+    from astrid.core.contracts.errors import AstridError
+    if isinstance(error, AstridError):
+        error.cause = error.message = line
+    return error
 
 
 def decide_stage(*, phase: str, claim_context: Mapping[str, Any] | None = None, exit_code: int | None = None,
@@ -74,6 +123,8 @@ def decide_stage(*, phase: str, claim_context: Mapping[str, Any] | None = None, 
 
 def message_for(stage: str, cause: Mapping[str, Any]) -> str:
     """A fixed sentence per stage with only the validated cause facts filled in."""
+    if "install_unverified" in cause:
+        return checkpoint_message(cause["install_unverified"])
     text = _MESSAGES[stage]
     facts = [template.format(cause[name]) for name, template in _FACT_SENTENCES if name in cause]
     if facts:
@@ -108,6 +159,22 @@ def log_order(row: Mapping[str, Any]) -> tuple[int, str]:
             str(row.get("name", "")))
 
 
+def _issue_message(logs: list[Mapping[str, Any]]) -> str | None:
+    """Read the first issue from the collected job output, if available."""
+    try:
+        row = next((row for row in logs if row.get("name") == "generation.stdout"), None)
+        if not row or row.get("missing") or not row.get("path"):
+            return None
+        with Path(row["path"]).open(encoding="utf-8") as stream:
+            payload = json.load(stream)
+        issues = payload.get("issues") if isinstance(payload, dict) else None
+        first = issues[0] if isinstance(issues, list) and issues else None
+        message = first.get("message") if isinstance(first, dict) else None
+        return message[:ISSUE_MESSAGE_LIMIT] if isinstance(message, str) and message else None
+    except Exception:  # noqa: BLE001 - optional evidence must not mask the job failure
+        return None
+
+
 def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, Any] | None,
                   timing: Any) -> dict[str, Any] | None:
     """The receipt body for one failed generation, or ``None`` when none is written (cancelled)."""
@@ -120,7 +187,7 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
         return None  # Cancelled runs write no receipt.
     lease, run = facts.get("lease"), facts.get("run")
     diagnostic = getattr(lease, "failure_diagnostic", None)
-    node_ids = getattr(lease, "node_ids", frozenset()) or frozenset()
+    node_ids: frozenset[str] = getattr(lease, "node_ids", frozenset()) or frozenset()
     phase = facts["stage"]
     summary = host_summary(failure, diagnostic, stage=phase, node_ids=node_ids)
     exit_code = getattr(lease, "failure_exit_code", None)
@@ -145,10 +212,12 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     # Receipts keep the RunPod gate names users already see (GPU, volume,
     # datacenter, ...); PlacementRefused carries them as runpod_gate.
     gate = getattr(failure, "runpod_gate", None) or getattr(failure, "gate", None)
-    from .failure_reason import Reason
     if isinstance(reason, Reason):
         stage, basis = reason.stage, "reason"
         cause["reason"] = reason.as_dict()
+        install_unverified = getattr(failure, "install_unverified", None)
+        if isinstance(install_unverified, str) and re.fullmatch(r"[A-Za-z0-9_.:;=-]{1,256}", install_unverified):
+            cause["install_unverified"] = install_unverified
         cause["code"] = reason.code
         cause["category"] = CODES.get(reason.code, "installation" if reason.stage == "install" else "execution")
     if stage == "no_machine":
@@ -194,6 +263,9 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
         row.setdefault("missing", False)
         row.setdefault("path", None if row["missing"] else row.get("path"))
         logs.append(row)
+    issue_message = _issue_message(logs)
+    if issue_message:
+        cause["issue_message"] = issue_message
     unavailable = (collected or {}).get("unavailable") if isinstance(collected, Mapping) else None
     return {
         "logs": logs, **({"logs_unavailable": unavailable} if unavailable else {}),
@@ -211,7 +283,7 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     }
 
 
-def _collection(stage: str, logs: list[Mapping[str, Any]], unavailable: Any) -> dict[str, Any]:
+def _collection(stage: str, logs: Sequence[Mapping[str, Any]], unavailable: Any) -> dict[str, Any]:
     from astrid.core._shared import run_logs
 
     if stage == "no_machine":

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 # One table of what each generation kind needs at the CLI boundary: its help
 # noun, the SDK keyword that carries its dimensions, whether a video prompt
@@ -56,7 +59,8 @@ def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
         # Same inputs as the facade's own decision: the request, the repo and the client it would get.
         placement = placements.resolve_placement(placements.request_from_selector(target), repo=repo, client=client)
         return _select_generation_target(placements.comfy_selector(placement), repo=repo) is None
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        _logger.debug("Could not settle whether a local generation target is available", exc_info=True)
         return False
 
 
@@ -233,6 +237,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
         command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once, help="Reference image for an edit or image-to-video request.")
+        if modality in {'video', 'audio'}:
+            command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Reference video for video generation or Foley sound effects.')
         command.add_argument("--width", action=_Once, type=int)
         command.add_argument("--height", action=_Once, type=int)
         command.add_argument("--steps", action=_Once, type=int)
@@ -248,7 +254,6 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
         if 'audio_modes' in spec:
-            command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Local video for Foley sound effects.')
             command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
     command = sub.add_parser("describe", help="Describe one entry without checking execution readiness.")
     command.add_argument('workflow', nargs='?')
@@ -777,6 +782,32 @@ def _failure_command(parsed) -> int:
     return 0
 
 
+def _receipt_failure_details(identity: tuple[str | None, int | None]) -> list[str]:
+    """Find local evidence for this lease generation without disturbing the failure."""
+    if identity[0] is None or identity[1] is None:
+        return []
+    try:
+        from astrid.packs.runpod import failure_receipt
+        for receipt_path in failure_receipt.failures_root().glob("*/failure-receipt.json"):
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                ident = receipt.get("identity") or {}
+                if ident.get("lease") != identity[0] or ident.get("generation") != identity[1]:
+                    continue
+                details = []
+                reason = (receipt.get("cause") or {}).get("issue_message")
+                if isinstance(reason, str) and reason:
+                    details.append(f"Reason: {reason[:failure_receipt.ISSUE_MESSAGE_LIMIT]}")
+                if any(log.get("path") and not log.get("missing") for log in receipt.get("logs", [])):
+                    details.append(f"logs: {receipt_path.parent / 'logs'}")
+                return details
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+    except Exception:  # noqa: BLE001 - optional evidence must not mask the job failure
+        _logger.debug("Could not read failure receipt", exc_info=True)
+    return []
+
+
 def _kept_failure(before: set[tuple[str | None, int | None]]) -> None:
     """Read only the bounded owner result after a failed RunPod command."""
     try:
@@ -792,10 +823,13 @@ def _kept_failure(before: set[tuple[str | None, int | None]]) -> None:
             summary = ', '.join(f'{name}={facts[name]}' for name in
                                 ('exception', 'stage', 'code', 'category', 'node_id', 'node_class', 'field', 'constraint')
                                 if name in facts)
+            details = _receipt_failure_details(identity)
             print(f"Failure: {summary or 'unknown'}. machine {row['id']} kept until "
                   f"{_when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
-                  f"reuse it or run `astrid machines release {row['id']}`", file=sys.stderr)
-    except Exception:
+                  f"reuse it or run `astrid machines release {row['id']}`"
+                  + ("; " + "; ".join(details) if details else ""), file=sys.stderr)
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        _logger.debug("Could not read the retained failure context", exc_info=True)
         pass  # Diagnostic reads cannot change settlement or mask the original error.
 
 
@@ -817,7 +851,8 @@ def main(argv: list[str] | None = None) -> int:
             from astrid.packs.runpod.machine import journal_leases
             before = {(row.get('lease'), (row.get('last_job') or {}).get('generation'))
                       for row in journal_leases()}
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+            _logger.debug("Could not snapshot leases before the command", exc_info=True)
             pass
     try:
         scope = nullcontext()
@@ -831,6 +866,13 @@ def main(argv: list[str] | None = None) -> int:
             _kept_failure(before)
         error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:
+            from astrid.core.contracts.errors import AstridError, redact_credential_data
+            from astrid.core.generation.local_job import JobFileError
+            from astrid.sdk.exceptions import AstridSDKError
+            if not isinstance(exc, (AstridError, AstridSDKError, JobFileError, ImportError)):
+                import traceback
+                diagnostic = ''.join(traceback.format_exception(exc, chain=True))
+                print(redact_credential_data(diagnostic), file=sys.stderr, end='')
             print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
             return 2
         raise error from exc

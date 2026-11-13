@@ -413,7 +413,7 @@ def _invoke(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         payload = {"ok": False, "error": payload}
     structured = {**payload, "task_refs": reply.get("details", {}).get("astridTaskRefs", [])}
-    return _text(json.dumps(structured, default=str)[:20000], error=done.returncode != 0 or payload.get("ok") is False,
+    return _text(json.dumps(structured, default=str), error=done.returncode != 0 or payload.get("ok") is False,
                  structured=structured)
 
 
@@ -648,7 +648,7 @@ def build_prompts(*, developer: bool = False, selected_pack_ids=None) -> dict[st
         if fallback in {"astrid", "creative-work"}:
             body += "\n\n" + directory + "\n\n" + capability_index(packs)
         prompts[name] = {"definition": {"name": name, "title": f"Astrid skill: {name}",
-                                        "description": meta.get("description", "")[:1000], "arguments": []},
+                                        "description": meta.get("description", ""), "arguments": []},
                          "text": body.strip()}
 
     return prompts

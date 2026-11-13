@@ -15,7 +15,6 @@ import re
 import shutil
 import sys
 import tempfile
-import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -54,88 +53,6 @@ from .task_spec import task_executable_spec
 _MAX_GENERATION_METADATA_BYTES = 16 * 1024
 _MAX_GENERATION_METADATA_DEPTH = 8
 _INTERNAL_DISPATCH_TOKEN = object()
-
-
-class _RetainedPreparedOwner:
-    """One host-owned monitor for one exact task and binding, including follow."""
-    def __init__(self, monitor, owner=None, execution_request=None):
-        self.monitor, self.owner = monitor, owner
-        self.execution_request = execution_request
-        self.identity = None
-        self.locator = None
-        self.retained = False
-        self.activated = False
-        self.retired = False
-        self._lock = threading.RLock()
-
-    def __call__(self, task):
-        with self._lock:
-            try:
-                self._tick(task)
-            except Exception as exc:
-                error = exc if isinstance(exc, AstridSDKError) else CapabilityInvocationError(_redact_message(str(exc)))
-                error.task_id = task.get('task_id')
-                if error is exc:
-                    raise
-                raise error from exc
-
-    def _tick(self, task):
-        identity = tuple(task.get(key) for key in ('task_id', 'run_id', 'capability_id'))
-        if any(not isinstance(value, str) or not value for value in identity):
-            raise CapabilityInvocationError('prepared owner requires exact task/run/capability identity')
-        if self.locator is not None and self.locator != identity:
-            raise CapabilityInvocationError('prepared owner observed a foreign task/run/capability')
-        if self.execution_request is not None:
-            if task.get('execution_request') != self.execution_request:
-                raise CapabilityInvocationError('prepared owner request differs from admitted RunPod task')
-            binding = task.get('execution_binding')
-            if binding is None and str(task.get('state') or '').casefold() in {'queued', 'pending', 'admitted'}:
-                return  # The retained host will observe the same task's first binding.
-            if (not isinstance(binding, Mapping)
-                    or binding.get('effective_target', binding.get('target')) != self.execution_request['target']):
-                raise CapabilityInvocationError('prepared owner binding differs from the exact RunPod target')
-            identity += (json.dumps(binding, sort_keys=True),)
-        # The audiovisual parent runs on the default target. Its pack monitor verifies
-        # the delegated run child's exact binding once that child appears.
-        if self.identity is not None and self.identity != identity:
-            raise CapabilityInvocationError('prepared owner task or execution binding changed')
-        self.identity = identity
-        if self.execution_request is not None:
-            terminal = str(task.get('state') or task.get('status') or '').casefold() in {
-                'succeeded', 'completed', 'failed', 'cancelled', 'canceled'}
-            if (terminal and self.retired) or (not terminal and self.activated):
-                return
-            self.monitor(task)
-            if terminal:
-                self.retired = True
-            else:
-                self.activated = True
-            return
-        self.monitor(task)
-
-def retain_prepared_owner(client, *, recovery_path, capability_id, monitor,
-                          owner=None, execution_request=None):
-    """F07 host seam: retain the owner on the authenticated client, not a CLI stack."""
-    if client is None or recovery_path is None:
-        raise CapabilityValidationError('prepared generation requires an owner client and recovery_path')
-    owners = getattr(client, '_generation_prepared_owners', None)
-    if owners is None:
-        owners = {}
-        client._generation_prepared_owners = owners
-    key = (str(Path(recovery_path).expanduser().absolute()), capability_id)
-    if key not in owners:
-        owners[key] = _RetainedPreparedOwner(monitor, owner, execution_request)
-    elif (owners[key].monitor is not monitor or owners[key].owner is not owner
-          or owners[key].execution_request != execution_request):
-        raise CapabilityValidationError('prepared recovery path already belongs to another owner')
-    return owners[key]
-
-
-def _prepared_owner_for(client, recovery_path, capability_id):
-    if recovery_path is None:
-        return None
-    return getattr(client, '_generation_prepared_owners', {}).get(
-        (str(Path(recovery_path).expanduser().absolute()), capability_id))
 
 
 def _validate_generation_metadata(value: Any) -> dict[str, Any]:
@@ -3402,8 +3319,16 @@ def _capability_declares_outputs(capability: Any) -> bool:
     return bool(declared)
 
 
-def _runpod_generation_policy(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
+_RUNPOD_CLAIM_CAPABILITY_ID = "runpod.claim"
+
+
+def _runpod_generation_placement(
+    task: Mapping[str, Any], *, allow_direct_spec: bool = False,
+) -> tuple[str, Mapping[str, Any]] | None:
     spec = task_executable_spec(task)
+    if spec is None and allow_direct_spec:
+        # The waiter also accepts admitted tasks carrying the executable spec directly.
+        spec = task.get("spec")
     inputs = spec.get("inputs") if isinstance(spec, Mapping) else None
     policy = inputs.get("placement_policy") if isinstance(inputs, Mapping) else None
     try:
@@ -3412,10 +3337,23 @@ def _runpod_generation_policy(task: Mapping[str, Any]) -> Mapping[str, Any] | No
         return None
     if not isinstance(spec, Mapping) or not isinstance(policy, Mapping) or policy.get("kind") != "runpod":
         return None
-    if spec.get("capability_id") == "runpod.claim":
+    capability_id = spec.get("capability_id")
+    if capability_id not in ("vibecomfy.run", _RUNPOD_CLAIM_CAPABILITY_ID):
+        return None
+    return capability_id, policy
+
+
+def _runpod_generation_policy(
+    task: Mapping[str, Any], *, allow_direct_spec: bool = False,
+) -> Mapping[str, Any] | None:
+    placement = _runpod_generation_placement(task, allow_direct_spec=allow_direct_spec)
+    if placement is None:
+        return None
+    capability_id, policy = placement
+    if capability_id == _RUNPOD_CLAIM_CAPABILITY_ID:
         paid = policy.get("paid_consent")
         return paid if isinstance(paid, Mapping) else None
-    return policy if spec.get("capability_id") == "vibecomfy.run" else None
+    return policy
 
 
 def _wait_for_kernel_task(
@@ -3434,7 +3372,7 @@ def _wait_for_kernel_task(
     latest: dict[str, Any] = dict(initial_task) if isinstance(initial_task, Mapping) else {}
 
     def observed(task):
-        latest.clear()
+        # Keep the admitted spec when a status response contains only mutable fields.
         latest.update(task)
         if owner_tick is not None:
             owner_tick(task)
@@ -3445,14 +3383,14 @@ def _wait_for_kernel_task(
             poll_seconds=poll_seconds, read_managed_outputs=read_managed_outputs,
             expects_outputs=expects_outputs, owner_tick=observed)
     except KeyboardInterrupt as interrupt:
-        policy = _runpod_generation_policy(latest)
+        placement = _runpod_generation_placement(latest, allow_direct_spec=True)
         cancel = getattr(getattr(client, "tasks", None), "cancel", None)
-        if policy is not None and callable(cancel):
+        if placement is not None and callable(cancel):
             try:
                 result = cancel(task_id, idempotency_key=f"runpod-interrupt-{uuid.uuid4().hex}")
                 if getattr(result, "ok", True) is False:
                     interrupt.add_note("RunPod task cancellation was not confirmed; inspect this task before retrying.")
-            except Exception:
+            except Exception:  # noqa: BLE001 - preserve the interrupt when cancellation fails
                 interrupt.add_note("RunPod task cancellation was not confirmed; inspect this task before retrying.")
         raise
 
@@ -3520,7 +3458,7 @@ def _wait_for_kernel_task_loop(
         task = dict(data)
         if owner_tick is not None:
             owner_tick(task)
-        runpod_policy = _runpod_generation_policy(task)
+        runpod_policy = _runpod_generation_policy(task, allow_direct_spec=True)
         if runpod_policy is not None and runpod_policy.get("wait_for_capacity", True) is not False:
             capacity_timeout = runpod_policy.get("capacity_timeout_seconds")
             if capacity_timeout is None and float(timeout_seconds) == 3600.0:
@@ -3719,11 +3657,6 @@ def _observe_task_invocation(
         retained = {}
         client._generation_task_owners = retained
     if owner_tick is not None and initial_ok:
-        if isinstance(owner_tick, _RetainedPreparedOwner):
-            locator = (task_id, run_id, capability_id)
-            if owner_tick.locator is not None and owner_tick.locator != locator:
-                raise CapabilityInvocationError('prepared owner cannot be rebound to another task')
-            owner_tick.locator = locator
         previous = retained.setdefault(task_id, owner_tick)
         if previous is not owner_tick:
             raise CapabilityInvocationError('prepared task already has a different retained owner')
@@ -3825,14 +3758,6 @@ def _observe_task_invocation(
             task = getattr(observed, 'data', observed if isinstance(observed, Mapping) else None)
         if not isinstance(task, Mapping) or task.get('task_id') != task_id or task.get('run_id') != run_id:
             raise CapabilityInvocationError('prepared admission omitted its exact task readback')
-        if isinstance(owner_tick, _RetainedPreparedOwner) and not owner_tick.retained:
-            retain = getattr(owner_tick.owner, 'retain', None)
-            if not callable(retain):
-                retain = getattr(client, 'retain_generation_owner', None)
-            if not callable(retain):
-                raise CapabilityInvocationError('prepared no-wait requires the retained host owner dispatcher')
-            retain(task, owner_tick)
-            owner_tick.retained = True
         owner_tick(task)
     if not wait:
         observed_task = raw_result.get("task")
@@ -4466,11 +4391,6 @@ def invoke(
         raise CapabilityValidationError("read_managed_outputs must be a boolean")
     if resume and recovery_path is None:
         raise CapabilityValidationError("resume requires recovery_path")
-    owner_tick = _prepared_owner_for(client, recovery_path, capability_id)
-    if owner_tick is not None and not wait and not dry_run:
-        if (not callable(getattr(getattr(owner_tick, 'owner', None), 'retain', None))
-                and not callable(getattr(client, 'retain_generation_owner', None))):
-            raise CapabilityPreconditionError('prepared no-wait requires the retained host owner dispatcher')
     if recovery_path is not None and _recovery is None:
         if dry_run:
             raise CapabilityValidationError("recovery is unavailable for dry-run previews")
@@ -4489,7 +4409,7 @@ def invoke(
             with AdmissionReceipt(recovery_path, request=request, client=client, resume=resume) as receipt:
                 if resume:
                     return _resume_receipt_invocation(receipt, client=client, wait=wait,
-                        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds, owner_tick=owner_tick)
+                        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
                 forwarded["_recovery"] = receipt
                 forwarded.pop("capability_id")
                 return invoke(capability_id, **forwarded)
@@ -5112,7 +5032,6 @@ def invoke(
             project=project,
             authority_context=invocation_authority_context,
             manifest_path=mpath,
-            owner_tick=owner_tick,
         )
     except AstridSDKError:
         raise

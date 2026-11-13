@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,75 @@ import pytest
 
 from astrid.core.generation import cli, entries, listing
 from vibecomfy.workflow import VibeNode, VibeWorkflow, WorkflowSource
+
+
+def _assert_debug_exception(caplog, message):
+    record = next(record for record in caplog.records if record.getMessage() == message)
+    assert record.levelno == logging.DEBUG
+    assert record.exc_info is not None
+    assert record.exc_text
+
+
+def test_contributed_entries_root_discovery_failure_is_logged_and_empty(monkeypatch, caplog, capsys):
+    from astrid.core.extensions import scopes
+
+    def fail():
+        raise RuntimeError('roots unavailable')
+
+    monkeypatch.setattr(scopes, 'contribution_roots', fail)
+    caplog.set_level(logging.DEBUG, logger=entries.logger.name)
+    assert entries.contributed_entries() == []
+    _assert_debug_exception(caplog, 'Could not discover workflow contribution roots')
+    assert 'Traceback' not in capsys.readouterr().err
+
+
+def test_contributed_entries_manifest_failure_skips_only_manifest(monkeypatch, tmp_path, caplog, capsys):
+    from astrid.core.extensions import scopes
+
+    pack = tmp_path / 'sample'
+    folder = pack / 'extensions' / 'vibecomfy.workflows'
+    folder.mkdir(parents=True)
+    broken, good = folder / 'broken.yaml', folder / 'good.yaml'
+    broken.write_text('ready_root: ready\n')
+    good.write_text('ready_root: ready\nentries:\n  - id: sample.entry\n    bundle: workflow.py\n')
+    (pack / 'ready').mkdir()
+    monkeypatch.setattr(scopes, 'contribution_roots', lambda: [SimpleNamespace(path=str(tmp_path), scope='user')])
+    original = entries._yaml
+
+    def read_manifest(path):
+        if path == broken:
+            raise OSError('manifest unavailable')
+        return original(path)
+
+    monkeypatch.setattr(entries, '_yaml', read_manifest)
+    caplog.set_level(logging.DEBUG, logger=entries.logger.name)
+    rows = entries.contributed_entries()
+    assert [row['id'] for row in rows] == ['sample.entry']
+    _assert_debug_exception(caplog, f'Could not read workflow contribution manifest {broken}')
+    assert 'Traceback' not in capsys.readouterr().err
+
+
+def test_ready_metadata_failure_keeps_entry_with_fallback(monkeypatch, caplog, capsys):
+    from vibecomfy import resources
+    from vibecomfy.registry import ready
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('workflow metadata unavailable')
+
+    monkeypatch.setattr(ready, 'workflow_from_ready', fail)
+    monkeypatch.setattr(resources, 'template_index', lambda: {'templates': [
+        {'id': 'image/example', 'path': 'example.py'}]})
+    monkeypatch.setattr(resources, 'coverage_manifest', lambda: {'workflows': []})
+    caplog.set_level(logging.DEBUG, logger=entries.logger.name)
+    rows = entries._ready_entries_for('image/example')
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['id'] == 'image/example'
+    assert row['needs'] == [] and row['binds'] == {}
+    assert row['model_assets'] == []
+    assert row['ambiguity'] == 'ready workflow metadata could not be loaded'
+    _assert_debug_exception(caplog, 'Could not load ready workflow metadata for image/example')
+    assert 'Traceback' not in capsys.readouterr().err
 
 
 def test_output_kind_ambiguity():

@@ -163,8 +163,8 @@ def _manifest(uv: str) -> dict[str, Any]:
     if _has_commit(os.environ.get("ASTRID_RUNTIME_CHECKOUT"), runtime_sha):
         runtime["repo"] = str(Path(os.environ["ASTRID_RUNTIME_CHECKOUT"]).resolve())
     vibecomfy: dict[str, str] = {"sha": VIBECOMFY_ENGINE_REVISION}
-    if _has_commit(os.environ.get("VIBECOMFY_SOURCE"), VIBECOMFY_ENGINE_REVISION):
-        vibecomfy["repo"] = str(Path(os.environ["VIBECOMFY_SOURCE"]).resolve())
+    if _has_commit(os.environ.get("ASTRID_VIBECOMFY_CHECKOUT"), VIBECOMFY_ENGINE_REVISION):
+        vibecomfy["repo"] = str(Path(os.environ["ASTRID_VIBECOMFY_CHECKOUT"]).resolve())
     uv_version = subprocess.run([uv, "--version"], check=True, capture_output=True,
                                 text=True, timeout=60).stdout.split()[1]
     manifest: dict[str, Any] = {
@@ -320,7 +320,7 @@ def test_import_origins_are_inside_the_installed_environment(installed, tmp_path
     origins = json.loads(result.stdout)
     purelib, version_root = Path(origins["purelib"]), Path(installed.version.root).resolve()
     assert purelib.is_relative_to(version_root), origins
-    source = os.environ.get("VIBECOMFY_SOURCE")
+    source = os.environ.get("ASTRID_VIBECOMFY_CHECKOUT")
     for name in ("astrid", "vibecomfy"):
         origin = Path(origins[name])
         assert origin.is_relative_to(purelib), f"{name} imported from {origin}, not {purelib}"
