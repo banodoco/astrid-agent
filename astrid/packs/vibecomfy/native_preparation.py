@@ -211,18 +211,11 @@ def native_doctor_program():
     import inspect
 
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
-    from astrid.core.generation.engine_runner import (
-        _DYNAMIC_FILE_CHOICES,
-        _json,
-        _object_info_sha256,
-        _plain,
-        _sha,
-    )
+    from astrid.core.generation.engine_runner import _json, _object_info_sha256, _plain, _sha
 
     header = ("import copy,re,json,hashlib\nfrom dataclasses import fields,is_dataclass\n"
               "from collections.abc import Mapping\n"
-              "from vibecomfy.schema.provider import TargetSchemaProvider as _TargetSchemaProvider\n"
-              f"_DYNAMIC_FILE_CHOICES = frozenset({sorted(_DYNAMIC_FILE_CHOICES)!r})\n")
+              "from vibecomfy.schema.provider import TargetSchemaProvider as _TargetSchemaProvider\n")
     sources = '\n'.join(inspect.getsource(function) for function in
                         (_plain, _json, _sha, _object_info_sha256, TargetSchemaProvider, run_native_doctor))
     return (header + sources + "\nimport sys\nraise SystemExit(run_native_doctor(**json.loads(sys.argv[1]), "
