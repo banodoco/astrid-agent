@@ -32,7 +32,7 @@ def test_pin_refusal_redacts_unvalidated_repository_values():
     "https://127.0.0.1/l.git", "https://git\nhub.com/l.git", "https://github.com/l.git//",
     " https://github.com/l.git", "https://github.com/l.git ", "HTTPS://github.com/l.git",
     "https://github.com/l.git?", "https://github.com/l.git#", "https://github.com:/l.git",
-    "https://github.com/a\\b", "https://github.com/" + "a" * 10000,
+    "https://github.com/a\\b", pytest.param("https://github.com/" + "a" * 10000, id="oversized-10000-repository"),
 ))
 def test_managed_resolution_refusal_handles_malformed_repository(repo):
     canonical = {"repository": "https://github.com/banodoco/runpod-lifecycle.git",
