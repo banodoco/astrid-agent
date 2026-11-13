@@ -1757,7 +1757,7 @@ def test_stale_host_claim_identity_cannot_issue_authority(world, field):
     assert not world.service.store.delegated_children(world.task["id"], world.claim["attempt_id"])
 
 
-@pytest.mark.parametrize("frame", [b'{}\n', b'{"v":1,"v":1}\n', b'[]\n', b'{"x":NaN}\n', b'x' * 1048577])
+@pytest.mark.parametrize("frame", [b'{}\n', b'{"v":1,"v":1}\n', b'[]\n', b'{"x":NaN}\n', pytest.param(b'x' * 1048577, id='oversized-1MiB-frame')])
 def test_malformed_channel_is_revoked_without_fallback(world, frame):
     setup(world)
     b = bridge(world)

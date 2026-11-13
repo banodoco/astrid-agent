@@ -782,6 +782,32 @@ def _failure_command(parsed) -> int:
     return 0
 
 
+def _receipt_failure_details(identity: tuple[str | None, int | None]) -> list[str]:
+    """Find local evidence for this lease generation without disturbing the failure."""
+    if identity[0] is None or identity[1] is None:
+        return []
+    try:
+        from astrid.packs.runpod import failure_receipt
+        for receipt_path in failure_receipt.failures_root().glob("*/failure-receipt.json"):
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                ident = receipt.get("identity") or {}
+                if ident.get("lease") != identity[0] or ident.get("generation") != identity[1]:
+                    continue
+                details = []
+                reason = (receipt.get("cause") or {}).get("issue_message")
+                if isinstance(reason, str) and reason:
+                    details.append(f"Reason: {reason[:failure_receipt.ISSUE_MESSAGE_LIMIT]}")
+                if any(log.get("path") and not log.get("missing") for log in receipt.get("logs", [])):
+                    details.append(f"logs: {receipt_path.parent / 'logs'}")
+                return details
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+    except Exception:  # noqa: BLE001 - optional evidence must not mask the job failure
+        _logger.debug("Could not read failure receipt", exc_info=True)
+    return []
+
+
 def _kept_failure(before: set[tuple[str | None, int | None]]) -> None:
     """Read only the bounded owner result after a failed RunPod command."""
     try:
@@ -797,9 +823,11 @@ def _kept_failure(before: set[tuple[str | None, int | None]]) -> None:
             summary = ', '.join(f'{name}={facts[name]}' for name in
                                 ('exception', 'stage', 'code', 'category', 'node_id', 'node_class', 'field', 'constraint')
                                 if name in facts)
+            details = _receipt_failure_details(identity)
             print(f"Failure: {summary or 'unknown'}. machine {row['id']} kept until "
                   f"{_when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
-                  f"reuse it or run `astrid machines release {row['id']}`", file=sys.stderr)
+                  f"reuse it or run `astrid machines release {row['id']}`"
+                  + ("; " + "; ".join(details) if details else ""), file=sys.stderr)
     except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
         _logger.debug("Could not read the retained failure context", exc_info=True)
         pass  # Diagnostic reads cannot change settlement or mask the original error.
@@ -838,6 +866,13 @@ def main(argv: list[str] | None = None) -> int:
             _kept_failure(before)
         error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:
+            from astrid.core.contracts.errors import AstridError, redact_credential_data
+            from astrid.core.generation.local_job import JobFileError
+            from astrid.sdk.exceptions import AstridSDKError
+            if not isinstance(exc, (AstridError, AstridSDKError, JobFileError, ImportError)):
+                import traceback
+                diagnostic = ''.join(traceback.format_exception(exc, chain=True))
+                print(redact_credential_data(diagnostic), file=sys.stderr, end='')
             print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
             return 2
         raise error from exc

@@ -816,20 +816,26 @@ class RunPodLeaseOwner:
     def _check_observer_children(self, record: Mapping[str, Any] | None) -> None:
         """Never resume deletion/replacement while an old local caller lives."""
         had_local_child = bool(self._unreaped_children)
-        still_live = []
-        for child in self._unreaped_children:
-            if child.is_alive():
-                still_live.append(child)
-            else:
-                child.join(timeout=0)
-                child.close()
-        self._unreaped_children = still_live
-        if still_live:
+        try:
+            for child in tuple(self._unreaped_children):
+                if not any(pending is child for pending in self._unreaped_children):
+                    continue
+                if not child.is_alive():
+                    child.join(timeout=0)
+                    # Forget every reference before close: a later reap failure
+                    # must never leave a closed handle for the next retry.
+                    self._unreaped_children = [pending for pending in self._unreaped_children
+                                              if pending is not child]
+                    child.close()
+        finally:
+            if (had_local_child and not self._unreaped_children and record is not None
+                    and record.get("observer_unreaped") is True):
+                self._save(record, record["lease"], observer_unreaped=False)
+        if self._unreaped_children:
             raise AcquisitionUnresolvedError("bounded pod observer still lives; exact custody remains pending")
         if record is not None and record.get("observer_unreaped") is True:
             if not had_local_child:
                 raise AcquisitionUnresolvedError("unreaped observer has no local death proof; exact custody remains pending")
-            self._save(record, record["lease"], observer_unreaped=False)
 
     def fence_unreaped_observer(self, invocation: RunPodLease, pod_id: str, child: Any) -> None:
         """An unkillable local HTTPS caller may still mutate this exact pod."""
@@ -869,8 +875,11 @@ class RunPodLeaseOwner:
             self._abort_failure_observation(current)
             try:
                 self._check_observer_children(current)
-            except AcquisitionUnresolvedError:
-                if current is not None:
+            except Exception as exc:  # noqa: BLE001 - any failed reap must keep exact recovery armed.
+                self.last_error_type = type(exc).__name__
+                if current is not None and not self.closed:
+                    if self.deadline_timer is not None:
+                        self.deadline_timer.cancel()
                     self.deadline_timer = self.timer(self._provider_retry_delay(current), lambda: self._retry_recovery(current["operation_id"]))
                 raise
             if self._release_inflight:

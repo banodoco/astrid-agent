@@ -84,7 +84,7 @@ def test_remote_logs_are_collectable_by_host_after_machine_is_gone(tmp_path, exi
     # Model the controller's own bounded stream capture. These declarations
     # live beside the fetched pod logs and must be collected with them.
     from astrid.core._shared import run_logs
-    controller_logs = destination / '.host-logs'
+    controller_logs = destination.parent / '.host-logs'
     (controller_logs / 'job.stdout').parent.mkdir(parents=True, exist_ok=True)
     (controller_logs / 'job.stdout').write_text('controller stdout\n')
     (controller_logs / 'job.stderr').write_text('controller stderr\n')
@@ -99,7 +99,7 @@ def test_remote_logs_are_collectable_by_host_after_machine_is_gone(tmp_path, exi
     shutil.rmtree(moved_pod)
     assert not pod.exists() and not moved_pod.exists()
     host = object.__new__(GenericPackHost)
-    descriptors = host._log_outputs(destination)
+    descriptors = host._log_outputs(destination, attempt=destination.parent)
     logs = {row['name']: Path(row['path']).read_text() for row in descriptors}
     assert logs == {
         'engine': 'engine output\n',
