@@ -157,7 +157,8 @@ def host_summary(error, diagnostic=None, *, stage='execution', node_ids=frozense
     if name not in EXCEPTIONS:
         name = 'UnknownError'
     return {'exception': name, 'stage': stage if isinstance(stage, str) and stage in {'claim', 'preparation', 'start', 'poll', 'fetch',
-            'execution', 'reset', 'cancel'} else 'execution', **safe}
+            'execution', 'reset', 'cancel', 'no_machine', 'boot', 'install', 'model_download',
+            'workflow_validation', 'output_collection', 'release'} else 'execution', **safe}
 
 
 def safe_stored_summary(value, *, node_ids=frozenset(), node_names=frozenset(), engine_id='comfyui'):
