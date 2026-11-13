@@ -631,6 +631,22 @@ def test_waiting_policy_refuses_an_offer_outside_its_approved_policy(case, chang
     assert case.creates == 0 and not case.owner.path.exists()
 
 
+def test_hourly_ceiling_refusal_names_gpu_cloud_rate_and_next_action(case):
+    case.owner.preferences = replace(case.prefs, gpu_types=("RTX 5090",))
+    case.offer = replace(case.offer, gpu_type="RTX 5090", hourly_usd=1.39)
+    grant = waiting_grant(
+        case, max_hourly_usd=1.25,
+        policy_digest=selection.policy_consent_digest(case.owner.preferences, 1.25),
+    )
+    with pytest.raises(PaidSelectionError) as caught:
+        asyncio.run(case.owner._select(grant))
+    assert str(caught.value) == (
+        "RTX 5090 secure is $1.39/h, above your hourly ceiling (--max-hourly-usd 1.25). "
+        "Raise --max-hourly-usd to at least 1.39, or choose another GPU."
+    )
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
 def test_capacity_timeout_and_no_wait_make_no_pod_when_stock_is_absent(case, monkeypatch):
     sleeps = fake_capacity_clock(case, monkeypatch)
     calls = []
@@ -798,50 +814,6 @@ def test_delayed_post_does_not_restart_the_paid_clock_at_readiness(case):
     result = asyncio.run(case.owner._select(waiting_grant(case)))
     assert result["paid_limits"]["authorized_at"] == initial.isoformat()
     assert selection._utc(result["paid_limits"]["expires_at"]) == initial + timedelta(hours=1)
-
-
-def test_sdk_policy_consent_binds_saved_preferences_without_an_exact_offer(case, monkeypatch):
-    from astrid.sdk import generation
-
-    monkeypatch.setattr(generation, "_runpod_preferences", lambda client: case.prefs.as_mapping())
-    policy = generation._runpod_placement_policy(
-        {"consent": ("paid",), "max_usd": 1.0, "max_hourly_usd": 1.5,
-         "preparation_seconds": 30, "execution_seconds": 30, "idle_seconds": 60}, engine="comfyui")
-    assert policy["offer_digest"] is None and policy["deadline"] is None
-    assert policy["policy_digest"] == selection.policy_consent_digest(case.prefs, 1.5)
-    assert policy["wait_for_capacity"] is True
-
-
-def test_sdk_job_datacenter_is_copied_into_policy_consent(case, monkeypatch):
-    from astrid.sdk import generation
-
-    saved = case.prefs.as_mapping()
-    monkeypatch.setattr(generation, "_runpod_preferences", lambda client: dict(saved))
-    policy = generation._runpod_placement_policy({
-        "consent": ("paid",), "max_usd": 4.0, "deadline": "2030-01-01T00:00:00+00:00",
-        "preparation_seconds": 1, "execution_seconds": 2, "idle_seconds": 3,
-        "max_hourly_usd": 1.5, "datacenter": "EU-FAKE",
-    }, engine="comfyui")
-
-    assert policy["preferences"]["datacenter_id"] == "EU-FAKE"
-    assert policy["policy_digest"] == selection.policy_consent_digest(
-        RunPodPreferences.from_mapping({**saved, "datacenter_id": "EU-FAKE"}), 1.5)
-    assert saved == case.prefs.as_mapping()
-
-
-def test_sdk_job_datacenter_refuses_conflict_with_saved_volume(case, monkeypatch):
-    from astrid.sdk import generation
-
-    saved = {**case.prefs.as_mapping(), "volume": {
-        "id": "volume-1", "name": "shared", "size_gb": 100, "mount_path": "/workspace"},
-        "datacenter_id": "VOLUME-DC"}
-    monkeypatch.setattr(generation, "_runpod_preferences", lambda client: dict(saved))
-    with pytest.raises(generation.GenerationInputError, match="conflicts with the selected network volume"):
-        generation._runpod_placement_policy({
-            "consent": ("paid",), "max_usd": 4.0, "deadline": "2030-01-01T00:00:00+00:00",
-            "preparation_seconds": 1, "execution_seconds": 2, "idle_seconds": 3,
-            "offer_digest": "sha256:" + "c" * 64, "datacenter": "OTHER-DC",
-        }, engine="comfyui")
 
 
 def test_stockless_description_keeps_policy_disclosure_and_exact_quote_unchanged(case, monkeypatch):

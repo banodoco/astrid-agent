@@ -79,7 +79,7 @@ def test_failed_runpod_command_prints_bounded_kept_machine_summary(monkeypatch, 
                         'failure': {'exception': 'MachineError', 'stage': 'fetch',
                                     'code': 'generation_failed', 'category': 'execution'}}}
     monkeypatch.setattr(machine, 'journal_leases', lambda: [row])
-    cli._kept_failure({('operation-1', 1)})
+    cli._kept_failure({('operation-1', 1)}, kind='runpod')
     message = capsys.readouterr().err
     assert 'Failure: exception=MachineError, stage=fetch, code=generation_failed' in message
     assert 'machine pod-1 kept until ' in message and '(cost so far $0.25)' in message
@@ -264,19 +264,6 @@ def test_explicit_align_is_forwarded_to_the_facade(monkeypatch, align):
     assert calls[0]["align"] == align
 
 
-def test_runpod_gpu_flags_map_to_ordered_per_job_policy_for_generate(monkeypatch, capsys):
-    calls = _facade(monkeypatch)
-
-    assert cli.main(["image", "a dog", "--placement", "runpod",
-                     "--gpu", "RTX 4090", "--gpu", "A40",
-                     "--offer-digest", "sha256:" + "a" * 64]) == 0
-
-    assert calls[0]["placement"] == {
-        "kind": "runpod", "policy": {"gpu_types": ["RTX 4090", "A40"]},
-    }
-    capsys.readouterr()
-
-
 def test_runpod_gpu_flags_map_to_ordered_policy_for_target_describe(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
@@ -292,13 +279,7 @@ def test_runpod_gpu_flags_map_to_ordered_policy_for_target_describe(monkeypatch,
     assert json.loads(capsys.readouterr().out) == {"offer_digest": "digest"}
 
 
-def test_runpod_datacenter_override_reaches_generate_and_describe(monkeypatch, capsys):
-    calls = _facade(monkeypatch)
-    assert cli.main(["image", "a dog", "--placement", "runpod", "--datacenter", "EU-FAKE",
-                     "--offer-digest", "sha256:" + "b" * 64]) == 0
-    assert calls[0]["datacenter"] == "EU-FAKE"
-    capsys.readouterr()
-
+def test_runpod_datacenter_override_reaches_describe(monkeypatch, capsys):
     described = []
     monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
     monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(
@@ -308,70 +289,63 @@ def test_runpod_datacenter_override_reaches_generate_and_describe(monkeypatch, c
     assert json.loads(capsys.readouterr().out) == {"offer_digest": "digest"}
 
 
-def test_runpod_datacenter_requires_runpod_and_disclosed_offer(monkeypatch):
-    calls = _facade(monkeypatch)
-    with pytest.raises(SystemExit):
-        cli.main(["image", "a dog", "--datacenter", "EU-FAKE"])
-    with pytest.raises(SystemExit):
-        cli.main(["describe", "--datacenter", "EU-FAKE"])
-    with pytest.raises(SystemExit):
-        cli.main(["image", "a dog", "--placement", "runpod", "--datacenter", "EU-FAKE"])
-    assert not calls
+@pytest.mark.parametrize("flag_args", [
+    ["--max-usd", "2"], ["--max-hourly-usd", "1.5"], ["--deadline", "2030-01-01T00:00:00Z"],
+    ["--offer-digest", "digest"], ["--preparation-seconds", "60"],
+    ["--execution-seconds", "60"], ["--idle-seconds", "60"],
+    ["--capacity-timeout", "2m"], ["--no-wait-for-capacity"],
+    ["--gpu", "RTX 4090"], ["--datacenter", "EU-FAKE"], ["--consent", "paid"],
+    ["--max-usd=2"], ["--max-hourly-usd=1.5"], ["--deadline=2030-01-01T00:00:00Z"],
+    ["--offer-digest=digest"], ["--preparation-seconds=60"],
+    ["--execution-seconds=60"], ["--idle-seconds=60"],
+    ["--capacity-timeout=2m"], ["--no-wait-for-capacity=true"],
+    ["--gpu=RTX 4090"], ["--datacenter=EU-FAKE"], ["--consent=paid"],
+])
+def test_generate_rejects_claim_controls_with_machine_claim_guidance(monkeypatch, capsys, flag_args):
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('removed option opened Runtime'))
+    monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('removed option reached generation'))
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["image", "a boat", "--placement", "runpod", *flag_args])
+    assert stopped.value.code == 2
+    assert "astrid machines claim" in capsys.readouterr().err
 
 
-def test_runpod_gpu_requires_runpod_target_and_offer_digest(monkeypatch):
-    calls = _facade(monkeypatch)
-    with pytest.raises(SystemExit):
-        cli.main(["image", "a dog", "--gpu", "RTX 4090"])
-    with pytest.raises(SystemExit):
-        cli.main(["image", "a dog", "--placement", "runpod", "--gpu", "RTX 4090"])
-    assert not calls
+def test_runpod_generate_with_live_machine_uses_existing_runpod_target(monkeypatch, capsys):
+    from astrid.core.generation import placement
 
-
-def test_runpod_gpu_offer_mismatch_has_actionable_refusal(monkeypatch):
-    from astrid.core.generation.preflight import GenerationReadinessError
-    from astrid.sdk.exceptions import CapabilityRuntimeError
-
-    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
-
-    def reject(**kwargs):
-        raise CapabilityRuntimeError("offer or rate changed; disclose it and obtain fresh paid consent")
-
-    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=reject))
-    with pytest.raises(GenerationReadinessError) as raised:
-        cli.main(["image", "a dog", "--placement", "runpod", "--gpu", "RTX 4090",
-                  "--offer-digest", "sha256:" + "a" * 64])
-
-    assert "same ordered --gpu values" in str(raised.value)
-    assert "GPU type or rate" in str(raised.value)
-
-
-def test_runpod_generate_without_gpu_keeps_saved_policy_request(monkeypatch, capsys):
+    monkeypatch.setattr(placement, "_runpod_leases", lambda kind: [
+        {"machine": "machine-1", "id": "machine-1", "state": "idle", "live": True, "release_at": 4102444800.0},
+    ])
     calls = _facade(monkeypatch)
 
-    assert cli.main(["image", "a dog", "--placement", "runpod"]) == 0
-
+    assert cli.main(["image", "boat", "--placement", "runpod"]) == 0
     assert calls[0]["placement"] == "runpod"
     capsys.readouterr()
 
 
-def test_runpod_policy_wait_controls_forward_ceiling_and_capacity_timeout(monkeypatch, capsys):
-    calls = _facade(monkeypatch)
-    assert cli.main(["image", "a dog", "--placement", "runpod", "--gpu", "RTX 4090",
-                     "--consent", "paid", "--max-usd", "2", "--max-hourly-usd", "1.5",
-                     "--capacity-timeout", "2m"]) == 0
-    assert calls[0]["max_hourly_usd"] == 1.5
-    assert calls[0]["capacity_timeout_seconds"] == 120
-    assert calls[0]["placement"]["policy"]["gpu_types"] == ["RTX 4090"]
-    assert "offer_digest" not in calls[0] and "deadline" not in calls[0]
-    capsys.readouterr()
+@pytest.mark.parametrize("leases", [
+    [],
+    [{"machine": "machine-1", "id": "machine-1", "state": "claimed", "live": False,
+      "release_at": 4102444800.0}],
+    [{"machine": "machine-1", "id": "machine-1", "state": "releasing", "live": True,
+      "release_at": 4102444800.0}],
+    [{"machine": "machine-1", "id": "machine-1", "state": "idle", "live": True,
+      "release_at": 1.0}],
+])
+@pytest.mark.parametrize("placement_args", [
+    ["--placement", "runpod"], ["--placement=runpod", "--json"],
+])
+def test_runpod_generate_without_machine_refuses_before_opening_runtime(monkeypatch, capsys, leases, placement_args):
+    from astrid.core.generation import placement
 
+    monkeypatch.setattr(placement, "_runpod_leases", lambda kind: leases)
+    monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("no-machine refusal opened Runtime"))
+    monkeypatch.setattr(cli, "_generate_facade", lambda: pytest.fail("no-machine refusal reached facade"))
 
-def test_runpod_no_wait_for_capacity_is_independent_of_async_generation(monkeypatch, capsys):
-    calls = _facade(monkeypatch)
-    assert cli.main(["image", "a dog", "--placement", "runpod", "--no-wait-for-capacity"]) == 0
-    assert calls[0]["wait_for_capacity"] is False and "wait" not in calls[0]
-    capsys.readouterr()
+    assert cli.main(["image", "boat", *placement_args]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "no machine: run `astrid machines claim`\n"
 
 
 def test_describe_discloses_the_hourly_waiting_ceiling(monkeypatch, capsys):
@@ -557,36 +531,39 @@ def test_launch_rejects_duplicate_selector_before_sdk(monkeypatch, capsys):
 
 @pytest.mark.parametrize('mode', ['music', 'tts'])
 def test_audio_cli_forwards_runpod_controls_to_facade(monkeypatch, capsys, mode):
+    from astrid.core.generation import placement
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [
+        {'machine': 'machine-1', 'id': 'machine-1', 'state': 'idle', 'live': True, 'release_at': 4102444800.0},
+    ])
     calls = []
     def invoke(**kwargs):
         calls.append(kwargs)
         return SimpleNamespace(ok=True, kernel_task_id='task-a', to_dict=lambda: {'kernel_task_id': 'task-a'})
     monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(audio=invoke))
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime-client'))
-    assert cli.main(['audio', 'hello', '--mode', mode, '--placement', 'runpod', '--consent', 'paid',
-        '--max-usd', '2', '--deadline', '2099-01-01T00:00:00Z', '--offer-digest', 'offer',
-        '--preparation-seconds', '60', '--execution-seconds', '60', '--idle-seconds', '1800',
+    assert cli.main(['audio', 'hello', '--mode', mode, '--placement', 'runpod',
         '--recovery-path', 'receipt.json', '--resume', '--no-wait', '--json']) == 0
     assert calls == [{'model': None, 'mode': mode, 'placement': 'runpod', 'prompt': 'hello',
-        'dry_run': False, 'client': 'runtime-client', 'wait': False, 'consent': ['paid'],
-        'max_usd': 2.0, 'deadline': '2099-01-01T00:00:00Z', 'offer_digest': 'offer',
-        'preparation_seconds': 60.0, 'execution_seconds': 60.0, 'idle_seconds': 1800.0,
+        'dry_run': False, 'client': 'runtime-client', 'wait': False,
         'recovery_path': 'receipt.json', 'resume': True}]
     assert json.loads(capsys.readouterr().out)['kernel_task_id'] == 'task-a'
 
 
 def test_audio_cli_runpod_sound_effects_admits_like_any_slot(monkeypatch, capsys):
+    from astrid.core.generation import placement
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [
+        {'machine': 'machine-1', 'id': 'machine-1', 'state': 'idle', 'live': True, 'release_at': 4102444800.0},
+    ])
     calls = []
     def invoke(**kwargs):
         calls.append(kwargs)
         return SimpleNamespace(ok=True, kernel_task_id='task-a', to_dict=lambda: {'kernel_task_id': 'task-a'})
     monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(audio=invoke))
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime-client'))
-    assert cli.main(['audio', 'waves', '--mode', 'sfx', '--placement', 'runpod', '--consent', 'paid',
-        '--max-usd', '2', '--deadline', '2099-01-01T00:00:00Z', '--offer-digest', 'offer',
-        '--preparation-seconds', '60', '--execution-seconds', '60', '--idle-seconds', '1800',
+    assert cli.main(['audio', 'waves', '--mode', 'sfx', '--placement', 'runpod',
         '--recovery-path', 'receipt.json', '--no-wait', '--json']) == 0
     assert calls and calls[0]['mode'] == 'sfx' and calls[0]['placement'] == 'runpod'
+    assert calls[0]['recovery_path'] == 'receipt.json'
     assert json.loads(capsys.readouterr().out)['kernel_task_id'] == 'task-a'
 
 
@@ -615,13 +592,13 @@ def test_cli_kind_table_covers_every_generation_kind_and_gates_audio_only_option
     assert cli._KIND_SPEC['video'].get('prompt_only_guard') is True
 
 
-@pytest.mark.parametrize(("option", "value", "expected_placement"), [
-    ("--gpu", "RTX A6000", {"kind": "runpod", "policy": {"gpu_types": ["RTX A6000"]}}),
-    ("--datacenter", "US-TX-3", "runpod"),
-])
-def test_video_cli_runpod_overrides_accept_recovery_path(monkeypatch, capsys, option, value, expected_placement):
+def test_video_cli_runpod_overrides_accept_recovery_path(monkeypatch, capsys):
+    from astrid.core.generation import placement
     from astrid.sdk.generation import _video_resolve_mode
 
+    monkeypatch.setattr(placement, "_runpod_leases", lambda kind: [
+        {"machine": "machine-1", "id": "machine-1", "state": "idle", "live": True, "release_at": 4102444800.0},
+    ])
     calls = []
 
     class SDK:
@@ -638,11 +615,10 @@ def test_video_cli_runpod_overrides_accept_recovery_path(monkeypatch, capsys, op
     monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(video=invoke))
     monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
     argv = ["video", "a moving scene", "--image-ref", "reference.png", "--placement", "runpod",
-            "--recovery-path", "receipt.json", "--max-hourly-usd", "2", "--max-usd", "5",
-            "--consent", "paid", "--no-wait", "--json", option, value]
+            "--recovery-path", "receipt.json", "--no-wait", "--json"]
 
     assert cli.main(argv) == 0
-    assert calls[0]["placement"] == expected_placement
+    assert calls[0]["placement"] == "runpod"
     assert calls[0]["recovery_path"] == "receipt.json"
     assert json.loads(capsys.readouterr().out) == {"kernel_task_id": "video-task"}
 
@@ -656,33 +632,30 @@ def test_video_recovery_refuses_non_runpod_mapped_placement():
                             inputs={}, resume=False, recovery_path="receipt.json",
                             placement={"kind": "local", "policy": {"gpu_types": []}})
 
-
 def test_workflow_runpod_job_choices_reach_facade_and_validate(monkeypatch, capsys):
+    from astrid.core.generation import placement
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [
+        {'machine': 'machine-1', 'id': 'machine-1', 'state': 'idle', 'live': True, 'release_at': 4102444800.0},
+    ])
     calls = []
     monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
         workflow=lambda **kwargs: calls.append(kwargs) or {'ok': True}))
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime-client'))
-    args = ['workflow', 'workflow.json', '--placement', 'runpod', '--gpu', 'RTX 4090',
-            '--gpu', 'A40', '--datacenter', 'EU-FAKE', '--offer-digest', 'digest', '--no-wait']
+    args = ['workflow', 'workflow.json', '--placement', 'runpod', '--input', 'node:5.value=3', '--no-wait']
     assert cli.main(args) == 0
-    assert calls[0]['placement'] == {'kind': 'runpod', 'policy': {'gpu_types': ['RTX 4090', 'A40']}}
-    assert calls[0]['datacenter'] == 'EU-FAKE'
-    assert calls[0]['offer_digest'] == 'digest'
+    assert calls[0]['placement'] == 'runpod'
+    assert calls[0]['inputs'] == {'node:5.value': 3}
+    assert calls[0]['workflow'].name == 'workflow.json'
     capsys.readouterr()
-    for invalid in ([ 'workflow', 'workflow.json', '--gpu', 'A40'],
-                    [ 'workflow', 'workflow.json', '--datacenter', 'EU-FAKE'],
-                    [ 'workflow', 'workflow.json', '--placement', 'runpod', '--gpu', 'A40']):
-        with pytest.raises(SystemExit):
-            cli.main(invalid)
-    assert len(calls) == 1
 
 
-def test_runpod_target_without_consent_suggests_waiting_before_exact_offer(capsys):
-    for args in (['workflow', 'workflow.json', '--placement', 'runpod', '--gpu', 'A40'],
-                 ['image', 'a dog', '--placement', 'runpod', '--gpu', 'A40']):
-        with pytest.raises(SystemExit) as stopped:
-            cli.main(args)
-        assert stopped.value.code == 2
-        err = capsys.readouterr().err
-        assert err.index('--max-hourly-usd <ceiling>') < err.index('--offer-digest')
-        assert 'wait for stock' in err and '--deadline' in err
+def test_workflow_no_run_does_not_require_a_machine(monkeypatch):
+    from astrid.core.generation import placement
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [])
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('authoring opened Runtime'))
+    monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('authoring admitted a job'))
+    saved = []
+    monkeypatch.setattr(cli, '_workflow_command', lambda parsed: saved.append(parsed) or 0)
+    assert cli.main(['workflow', 'workflow.json', '--as-entry', 'example',
+                     '--no-run', '--placement', 'runpod']) == 0
+    assert len(saved) == 1 and saved[0].no_run and saved[0].as_entry == 'example'

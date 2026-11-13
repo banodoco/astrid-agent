@@ -1,4 +1,4 @@
-"""Build catalog generation requests from stage-owned paid controls."""
+"""Build catalog generation requests that use already-claimed machines."""
 
 import json
 from dataclasses import dataclass
@@ -46,8 +46,8 @@ def build_generate_argv(
             args.extend(["--video-ref", value])
         else:
             args.extend(["--input", f"{name}={value}"])
-    args.extend(["--consent", "paid", "--max-usd", str(paid_controls.max_usd),
-                 "--deadline", paid_controls.deadline, "--json"])
+    # Stage spend controls belong to machine claims; generation uses their authority.
+    args.append("--json")
     if dry_run:
         args.append("--dry-run")
     return args

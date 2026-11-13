@@ -122,10 +122,8 @@ def prepare_retained_generation(
         save()
         try:
             claim = connect_claimed_for_preparation(claimed)
-            # Explicit phase estimates remain timeouts. A job without an
-            # estimate is bounded by the existing claim's remaining lifetime.
-            remaining = min(consent.preparation_seconds or float("inf"),
-                            claimed["lease"]["paid_expires_at"] - lease_owner.clock())
+            # The claim bounds the phase; recipe steps keep their own timeouts.
+            remaining = claimed["lease"]["paid_expires_at"] - lease_owner.clock()
             # A saved network volume is pinned by the probe; the install is model-free and align fetches the manifest's rows.
             cache_root = None if preferences.volume_id is None else (
                 f"{preferences.mount_path}/astrid/engines/{installation.engine}/models")

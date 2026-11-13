@@ -49,13 +49,6 @@ import pytest
 # The six slots (tasks.md D2 table). RE-VERIFY after D1/D1b on the merged tree.
 # ---------------------------------------------------------------------------
 
-# RunPod dry-run flags from the earlier rehearsal (tasks.md D2). They exist on
-# every image/video/audio subcommand via _common_options:
-#   --consent  astrid/core/generation/cli.py:9d3bb248:52 (choices user_env, paid; append)
-#   --max-usd  astrid/core/generation/cli.py:9d3bb248:53
-#   --deadline astrid/core/generation/cli.py:9d3bb248:54
-# _runpod_paid_controls requires all three (astrid/sdk/generation.py:9d3bb248:184-196).
-RUNPOD_FLAGS = ("--consent", "paid", "--max-usd", "1", "--deadline", "2099-01-01T00:00:00Z")
 
 # Placeholders substituted with per-test input files (outside the empty cwd).
 IMAGE = "{IMAGE}"
@@ -331,8 +324,6 @@ def slot_argv(slot: Slot, files: dict[str, str], *, placement: str, dry_run: boo
             item = item.replace(placeholder, value)
         args.append(item)
     args += ["--placement", placement]
-    if placement == "runpod":
-        args += list(RUNPOD_FLAGS)
     if dry_run:
         args.append("--dry-run")
     args.append("--json")
@@ -346,7 +337,7 @@ def _extra_argvs(files: dict[str, str], url: str = "http://127.0.0.1:8188") -> l
         ["describe", "--entry", "h3", "--json"],
         ["targets", "--placement", url, "--save", "--json"],
         ["video", "A lighthouse in gentle rain.", "--placement", "auto", "--dry-run", "--json"],
-        ["video", "A lighthouse in gentle rain.", "--placement", "runpod", *RUNPOD_FLAGS, "--dry-run", "--json"],
+        ["video", "A lighthouse in gentle rain.", "--placement", "runpod", "--dry-run", "--json"],
         ["image", "A tiny blue lighthouse.", "--placement", "auto", "--json"],
         ["audio", "--mode", "tts", "--input", "text=The exact authored words.", "--placement", "auto", "--json"],
     ]
@@ -612,7 +603,7 @@ def test_auto_dry_run_resolves_the_slot_default(slot, tmp_path, attached_auto):
 
 @pytest.mark.parametrize("slot", SLOTS, ids=SLOT_IDS)
 def test_runpod_dry_run_resolves_the_slot_default(slot, tmp_path):
-    """Asserted as D1b leaves `--placement runpod --dry-run` (tasks.md D1b, D2). No credential, no pod."""
+    """A dry-run may inspect a claimed machine without renting or claiming one."""
     cli = _cli(tmp_path)
     result = cli.run(*slot_argv(slot, _inputs(tmp_path), placement="runpod"))
     assert result.returncode == 0, _describe(result)
@@ -623,6 +614,17 @@ def test_runpod_dry_run_resolves_the_slot_default(slot, tmp_path):
     _assert_nothing_banned_selected(payload, context=f"{slot.name} runpod")
     assert not _task_ids(payload), f"a dry run admitted a task: {_task_ids(payload)}"
     _assert_cwd_untouched(cli)
+
+
+def test_generate_help_excludes_paid_renting_and_job_override_flags(capsys):
+    from astrid.core.generation.cli import main
+    with pytest.raises(SystemExit) as stopped:
+        main(["image", "--help"])
+    assert stopped.value.code == 0
+    output = capsys.readouterr().out
+    for flag in ("--max-usd", "--deadline", "--gpu", "--datacenter"):
+        assert flag not in output
+    assert "--consent {user_env}" in output
 
 
 def test_list_json_contains_all_six_default_entries(tmp_path):
@@ -651,8 +653,7 @@ def test_describe_each_default_entry(slot, tmp_path):
 @pytest.mark.parametrize("target", ["auto", "runpod"])
 def test_prompt_only_video_refuses_without_substitution(target, tmp_path):
     cli = _cli(tmp_path)
-    flags = list(RUNPOD_FLAGS) if target == "runpod" else []
-    result = cli.run("video", "A lighthouse in gentle rain.", "--placement", target, *flags, "--dry-run", "--json")
+    result = cli.run("video", "A lighthouse in gentle rain.", "--placement", target, "--dry-run", "--json")
     assert result.returncode != 0, _describe(result)
     text = result.stdout + result.stderr
     assert PROMPT_ONLY_VIDEO in text, _describe(result)
