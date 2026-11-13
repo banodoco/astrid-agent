@@ -132,11 +132,12 @@ def test_collected_issue_reaches_receipt_and_failure_line(machine_case, receipts
     assert receipt["cause"]["issue_message"] == reason
     identity = receipt["identity"]
     monkeypatch.setattr(failure_receipt, "failures_root", lambda: receipts)
-    monkeypatch.setattr(rm, "journal_leases", lambda: [{
+    # The pack's lease listing carries the receipt's reason and log folder; the CLI only prints them.
+    monkeypatch.setattr(rm, "journal_leases", lambda: rm.with_failure_details([{
         "id": identity["machine_id"], "lease": identity["lease"], "state": "idle", "live": True,
         "release_at": 1800000600.0, "cost_usd": 0.25,
         "last_job": {"generation": identity["generation"], "outcome": "failed", "failure": {}},
-    }])
+    }]))
     cli._kept_failure(set())
     output = capsys.readouterr().err
     assert f"Reason: {reason}" in output
