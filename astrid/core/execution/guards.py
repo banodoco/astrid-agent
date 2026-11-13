@@ -198,6 +198,7 @@ class ExecutionGuardPolicy:
 
     evidence_cap_bytes: int = GENERATED_EVIDENCE_CAP_BYTES
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS
+    authority_window_seconds: int = 300
     warm_reuse_expected: bool = False
     evidence_budget: EvidenceBudget = field(
         default_factory=EvidenceBudget,
@@ -218,6 +219,8 @@ class ExecutionGuardPolicy:
             raise ValueError("evidence_cap_bytes must be positive")
         if self.deadline_seconds <= 0:
             raise ValueError("deadline_seconds must be positive")
+        if self.authority_window_seconds <= 0:
+            raise ValueError("authority_window_seconds must be positive")
         if type(self.warm_reuse_expected) is not bool:
             raise WarmReuseExpectationError("warm_reuse_expected must be a boolean")
 
