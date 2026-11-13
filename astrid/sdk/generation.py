@@ -1734,7 +1734,14 @@ class GenerationFacade:
                 asset_arguments["managed_assets"] = import_member(archive)
             if is_remote_target and entry_id != 'workflow':
                 from astrid.core.generation.job_inputs import write_archive
-                public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
+                # A requested filename_prefix is bound to the workflow's declared output
+                # (workflow_inputs). The shipped archive carries it only when the entry
+                # declares it as an input; an entry without that port must not refuse it.
+                archive_inputs = {name: value for name, value in inputs.items() if name != 'filename_prefix'}
+                public, public_values = workflow_entries.resolve_entry_inputs(entry_id, archive_inputs, mode=mode)
+                if 'filename_prefix' in inputs and any(
+                        'filename_prefix' in {port['name'], *port.get('aliases', [])} for port in public['inputs']):
+                    public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
                 if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
                     public_values['seed'] = plan['bindings']['seed']
                 archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
