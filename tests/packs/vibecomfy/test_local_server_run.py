@@ -251,7 +251,7 @@ def test_unknown_connected_node_fails_live_preflight_before_staging(comfy, tmp_p
 
 @pytest.mark.parametrize("choices", [[], ["other.safetensors"]])
 def test_missing_model_fails_before_queueing(comfy, tmp_path, choices):
-    comfy.schema["SeedImage"]["input"]["required"]["ckpt_name"] = [choices]
+    comfy.schema["SeedImage"]["input"]["required"]["asset"] = [choices]
     with pytest.raises(production_engine.ProductionEngineError, match="missing models: installed.safetensors.*Missing nodes and models"):
         production_engine.run_workflow_result_path(
             comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="task-1",
