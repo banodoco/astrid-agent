@@ -848,11 +848,11 @@ def _run_and_settle(
     )
 
     from astrid.core.generation.managed_preparation import read_preparation
+    from astrid.packs.vibecomfy.production_engine import workflow_members
     prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=comfy_url,
                                 execution_identity=execution_identity,
-                                inputs=({"python": workflow_path, "companion": workflow_path.with_suffix(".vibe.json"),
-                                         "source": workflow_path.with_name("source.json")}
-                                        if workflow_path.suffix == ".py" else {"workflow": workflow_path}))
+                                inputs={name: path for name, (path, _required)
+                                        in workflow_members(workflow_path).items()})
     engine_local_run = not comfy_url
     # The requirements this run resolved for its entry, recorded in the attempt's producer evidence on every
     # route (align still judges the manifest above, on the local route only).
