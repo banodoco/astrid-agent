@@ -1752,7 +1752,17 @@ class GenerationFacade:
             if approval is not None:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
             # Report the same built graph's requirements that local alignment will judge.
-            manifest = workflow_entries.engine_table()['comfyui'].requirements({'workflow': workflow}, effective_values)
+            from astrid.core.generation.managed_preparation import judge_declarations
+            from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value, load_workflow_path
+            from vibecomfy.workflow_bundle import emit_bundle
+            with TemporaryDirectory(prefix="astrid-dry-declarations-") as scratch:
+                root = Path(scratch)
+                capsule = root / "workflow.py"
+                emit_bundle(workflow, capsule, {"operation": "authored"})
+                loaded = load_workflow_path(capsule, root / "load")
+                canonical = _canonical_bundle_value(loaded.resolved).workflow
+                manifest, _ = judge_declarations(canonical, root / "engine",
+                                                 workflow_entries.engine_table()['comfyui'])
             if placement.kind == 'local':
                 from astrid.core.generation.managed_preparation import configured_models_root
                 manifest = {**manifest, 'models_root': configured_models_root()}
