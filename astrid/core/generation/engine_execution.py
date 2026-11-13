@@ -97,7 +97,7 @@ class LocalLinuxExecutionContext:
 
 def create_local_backend(*, engine, platform, placement, root, deadline):
     if placement != "local":
-        raise UnsupportedPlacement("RunPod execution awaits P2-SELF orchestration")
+        raise UnsupportedPlacement("This machine manages only its own engine; a remote machine prepares its engine when its job starts.")
     _check(deadline)
     from .engine_platforms import platform_adapter
     from .engine_recipe import load_recipe, recipe_digest
