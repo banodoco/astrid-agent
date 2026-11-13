@@ -4,7 +4,7 @@
 # Run from the root of an astrid-agent checkout. Builds <checkout>.env/ next to the checkout (never inside it):
 #   venv (Python 3.13, `-e .[dev]`, the Runtime + client pinned by runtime.lock.json, as CI's scripts/ci_install_runtime.py),
 #   runtime/   = banodoco/astrid-runtime at runtime.lock.json source_commit (ASTRID_RUNTIME_CHECKOUT),
-#   vibecomfy/ = VibeComfy at the checkout's own VIBECOMFY_ENGINE_REVISION (on PYTHONPATH and in VIBECOMFY_SOURCE).
+#   vibecomfy/ = VibeComfy at the checkout's own VIBECOMFY_ENGINE_REVISION (on PYTHONPATH and in ASTRID_VIBECOMFY_CHECKOUT).
 # Needs: uv, git, ffmpeg, network reads to PyPI and GitHub. Any failure here is an ENV error, never a test result.
 set -euo pipefail
 for t in uv git ffmpeg; do command -v "$t" >/dev/null || { echo "ENV: missing tool $t" >&2; exit 3; }; done

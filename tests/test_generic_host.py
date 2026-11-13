@@ -2224,7 +2224,10 @@ def test_structure_pack_members_survive_harvest_cleanup_and_reopen(tmp_path):
         and item["filename"] == "manifest.json"
         for item in outputs
     )
-    assert len({item["digest"] for item in outputs}) == len(outputs)
+    non_log_outputs = [item for item in outputs if item.get("role") != "log"]
+    log_outputs = [item for item in outputs if item.get("role") == "log"]
+    assert len({item["digest"] for item in non_log_outputs}) == len(non_log_outputs)
+    assert len({item["name"] for item in log_outputs}) == len(log_outputs)
     assert not list(tmp_path.glob("astrid-attempt-*"))
 
     # Reopen the returned managed product from its runtime-owned bytes. This
@@ -3272,7 +3275,10 @@ def test_command_host_harvests_result_manifest_media(tmp_path: Path) -> None:
     runtime.tasks["task-collection"] = task
     publishing_host.run_task(task, lease_token="lease-1")
     settled = runtime.settlements[0][2]["outputs"]
-    assert [item["name"] for item in settled] == [
+    product_outputs = [item for item in settled if item.get("role") != "log"]
+    log_outputs = [item for item in settled if item.get("role") == "log"]
+    assert {item["variant_key"] for item in log_outputs} == {"job.stdout", "job.stderr"}
+    assert [item["name"] for item in product_outputs] == [
         "generated_videos",
         "generated_videos",
     ]
@@ -3282,13 +3288,13 @@ def test_command_host_harvests_result_manifest_media(tmp_path: Path) -> None:
             "name", "kind", "filename", "digest", "media_type", "size", "data_base64",
             "role", "is_primary", "ordinal",
         }
-        for item in settled
+        for item in product_outputs
     )
     # Declared ordinals are each row's identity on the port (generated_videos#0, #1);
     # without them the Runtime files both rows under #0.
-    assert [item["ordinal"] for item in settled] == [0, 1]
-    assert [item["filename"] for item in settled] == ["a.mp4", "b.mp4"]
-    assert all("path" not in item and "artifact_type" not in item for item in settled)
+    assert [item["ordinal"] for item in product_outputs] == [0, 1]
+    assert [item["filename"] for item in product_outputs] == ["a.mp4", "b.mp4"]
+    assert all("path" not in item and "artifact_type" not in item for item in product_outputs)
 
 
 def test_command_host_fail_closes_success_without_media(tmp_path: Path) -> None:
@@ -4808,7 +4814,16 @@ def test_native_persistent_capture_failure_contains_known_root_and_scrubs_fake_a
         assert process in host._active_processes and host._unresolved_task_scopes
         assert process._astrid_custody._uncertain is not None and process._astrid_tree_uncertain
         assert attempt.is_dir() and not fake_auth.exists()
-        assert runtime.uploaded_objects == {} and runtime.settlements == []
+        assert runtime.settlements == []
+        assert len(runtime.failures) == 1
+        failure_outputs = runtime.failures[0][3].get("outputs", [])
+        log_rows = [row for row in failure_outputs if row.get("role") == "log"]
+        assert log_rows, "capture failure should retain its declared job log"
+        assert all(row.get("output_port") == "logs" for row in log_rows)
+        uploaded_digests = {row.get("digest") for row in log_rows}
+        assert set(runtime.uploaded_objects) == uploaded_digests
+        assert all(b"never-a-real-credential" not in runtime.uploaded_objects[digest]["data"]
+                   for digest in uploaded_digests)
         # The doubt fails this task only: the host keeps admitting work.
         try:
             host.claim_once()

@@ -78,6 +78,7 @@ def case(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
     monkeypatch.setattr(runpod_lifecycle, "get_pod", get_pod)
+    monkeypatch.setattr("astrid.packs.runpod.worker_preparation._get_provider_pod", get_pod)
     monkeypatch.setattr(api, "list_pods", pods)
     monkeypatch.setattr(api, "get_network_volumes", volumes)
     monkeypatch.setattr(selection, "read_exact_pod", lambda key, pod: (
@@ -844,8 +845,9 @@ def test_stockless_availability_adds_waiting_message_and_keeps_tokens(case):
     assert availability["status"] == "unavailable" and availability["reason"] == "stock_unavailable"
     message = availability["message"]
     assert "no machine is in stock right now" in message.lower() and "this is normal" in message
-    assert "astrid generate" in message and "--placement runpod" in message and "--max-hourly-usd <ceiling>" in message
-    assert "waits for one by itself" in message
+    assert "astrid machines claim" in message and "--max-hourly-usd <ceiling>" in message
+    assert "waits for one by default" in message
+    assert "astrid generate" not in message
 
 
 def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):

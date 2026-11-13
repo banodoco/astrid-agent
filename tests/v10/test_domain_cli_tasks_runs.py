@@ -647,3 +647,17 @@ def test_all_pages_at_cap_succeeds_only_if_last_page_is_terminal() -> None:
     result = all_pages(paged, "P-1", max_pages=2)
     assert result.ok and result.data == [{"id": "1"}, {"id": "2"}]
     assert calls == [None, "last"]
+
+
+def test_output_labels_ignore_logs() -> None:
+    from astrid.core.cli.domain_tasks import _completed_line
+    from astrid.core.cli.list_narrow import primary_output_name
+
+    log = {"role": "log", "filename": "job.stderr"}
+    product = {"role": "result", "filename": "report.txt"}
+    assert primary_output_name({"result": {"outputs": [log, product]}}) == "report.txt"
+    assert primary_output_name({"result": {"outputs": [log]}}) is None
+    assert _completed_line({"outputs": [{"resource": log}, {"resource": product}]}) == (
+        "completed task=- run=- output=report.txt"
+    )
+    assert _completed_line({"outputs": [{"resource": log}]}) == "completed task=- run=- output=-"

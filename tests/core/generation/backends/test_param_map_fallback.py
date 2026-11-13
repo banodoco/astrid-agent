@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 import sys
+import hashlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,6 +22,18 @@ from astrid.core.model_catalog.schema import BackendSpec, ModelEntry, ModeSpec
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _pinned_template_hash(template: str) -> str:
+    """Hash the repository template selected by VibeComfy's ready discovery."""
+    from vibecomfy.registry.ready import (
+        repo_ready_template_discovery,
+        resolve_ready_template,
+    )
+
+    discovery = repo_ready_template_discovery()
+    record = resolve_ready_template(template, discovery)
+    return "sha256:" + hashlib.sha256(Path(record.path).read_bytes()).hexdigest()
 
 
 def _make_fal_entry(
@@ -69,10 +82,7 @@ def _make_vibecomfy_entry(
                 backends={
                     "local": BackendSpec(
                         template=template,
-                        template_hash=(
-                            "sha256:"
-                            "074ef3e2219d2a4ea3c9e1508d96a76ff578883d770b1ffd03ad1b5dd47dc6fc"
-                        ),
+                        template_hash=_pinned_template_hash(template),
                         param_map=param_map if param_map is not None else {},
                     )
                 },

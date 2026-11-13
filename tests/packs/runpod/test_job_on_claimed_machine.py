@@ -308,7 +308,23 @@ def test_missing_claim_preferences_refuses_and_release_reconciles(machine_case, 
     bindings.close()
 
 
-def test_restart_reconciles_active_journal_without_adopting_job(machine_case, monkeypatch):
+@pytest.mark.parametrize(
+    ("state", "lease_state", "missing_pod"),
+    [
+        ("claimed", "active", False),
+        ("claimed", "preparing", False),
+        ("release_pending", "releasing", False),
+        ("cleanup_pending", "releasing", False),
+        ("allocated_unverified", "preparing", False),
+        ("allocation_pending", "preparing", False),
+        ("allocation_unknown", "preparing", False),
+        ("allocation_pending", "preparing", True),
+        ("allocation_unknown", "preparing", True),
+        ("allocation_ready", "preparing", True),
+    ],
+)
+def test_restart_reconciles_interrupted_journal_without_adopting_job(
+        machine_case, monkeypatch, state, lease_state, missing_pod):
     from astrid.core.generation import settings
     from astrid.packs.runpod import target_selection
     from astrid.packs.runpod.worker_preparation import write_target_record
@@ -317,11 +333,16 @@ def test_restart_reconciles_active_journal_without_adopting_job(machine_case, mo
     claim(c)
     monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: c.prefs.as_mapping())
     record = c.read()
-    record["lease"]["state"] = "active"
+    record["state"] = state
+    record["lease"]["state"] = lease_state
+    if missing_pod:
+        # The original provider pod remains discoverable by exact reconciliation.
+        record["pod_id"] = None
     write_target_record(c.owner.path, record)
     monkeypatch.setattr(target_selection, "canonical_claim_path", lambda *args, **kwargs: c.owner.path)
     c.host.close()
     bindings, _ = restart_bindings(c, monkeypatch)
+    forbid_allocation(c, monkeypatch)
     provider = bindings.get(kind="runpod", engine="comfyui",
                             preferences=c.prefs.as_mapping(), job=True)
     assert provider.lease_owner.started
@@ -329,4 +350,99 @@ def test_restart_reconciles_active_journal_without_adopting_job(machine_case, mo
     assert c.read()["state"] == "cleanup_complete"
     assert c.read()["pod_id"] == "pod-1"
     assert c.creates == 1
+    request = job(c)
+    with pytest.raises(Exception) as caught:
+        provider.lease_owner.job_limits(request.invocation_id)
+    assert len(str(caught.value).splitlines()) == 1
+    assert "cleanup_complete" in str(caught.value)
+    assert "astrid machines claim" in str(caught.value)
+    bindings.close()
+
+
+@pytest.mark.parametrize("compatibility_field", [
+    "recipe_digest", "model_lock_digest", "runtime_commit", "vibecomfy_commit",
+])
+def test_restart_reconciles_incompatible_idle_claim_without_adopting(
+        machine_case, monkeypatch, compatibility_field):
+    from astrid.core.generation import settings
+    from astrid.packs.runpod import target_selection
+
+    c = machine_case
+    claim(c)
+    original_record = c.read()
+    paid = original_record["paid_limits"]
+    compatibility = dict(c.owner.compatibility)
+    value = compatibility[compatibility_field]
+    compatibility[compatibility_field] = ("sha256:" + "f" * 64 if value.startswith("sha256:") else "f" * 40)
+    c.owner.compatibility = compatibility
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: c.prefs.as_mapping())
+    monkeypatch.setattr(target_selection, "canonical_claim_path", lambda *args, **kwargs: c.owner.path)
+    c.host.close()
+    bindings, _ = restart_bindings(c, monkeypatch)
+    forbid_allocation(c, monkeypatch)
+
+    provider = bindings.get(kind="runpod", engine="comfyui",
+                            preferences=c.prefs.as_mapping(), job=True)
+    request = job(c)
+    with pytest.raises(Exception) as caught:
+        provider.lease_owner.job_limits(request.invocation_id)
+    assert len(str(caught.value).splitlines()) == 1
+    assert "cleanup_complete" in str(caught.value)
+    assert "astrid machines claim" in str(caught.value)
+    assert c.read()["paid_limits"] == paid
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["pod_id"] == "pod-1"
+    assert c.creates == 1 and c.deletes == ["pod-1"]
+    bindings.close()
+
+
+def test_restart_recovery_failure_keeps_retry_timer_and_exact_custody(machine_case, monkeypatch):
+    from astrid.core.generation import settings
+    from runpod_lifecycle import api
+    from astrid.packs.runpod import target_selection
+    from astrid.packs.runpod.worker_preparation import write_target_record
+
+    c = machine_case
+    claim(c)
+    original_record = c.read()
+    paid = original_record["paid_limits"]
+    paid_expiry = original_record["lease"]["paid_expires_at"]
+    record = dict(original_record)
+    record["lease"] = {**record["lease"], "state": "active"}
+    write_target_record(c.owner.path, record)
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: c.prefs.as_mapping())
+    monkeypatch.setattr(target_selection, "canonical_claim_path", lambda *args, **kwargs: c.owner.path)
+    c.host.close()
+    terminate = api.terminate_pod
+
+    def fail_before_delete(pod_id, key):
+        raise TimeoutError("fake exact delete unavailable")
+
+    monkeypatch.setattr(api, "terminate_pod", fail_before_delete)
+    bindings, _ = restart_bindings(c, monkeypatch)
+    forbid_allocation(c, monkeypatch)
+    provider = bindings.get(kind="runpod", engine="comfyui",
+                            preferences=c.prefs.as_mapping(), job=True)
+    retry = provider.lease_owner.deadline_timer
+    assert retry is not None
+    assert c.read()["state"] == "cleanup_pending"
+    assert c.deletes == [] and c.creates == 1
+    request = job(c)
+    with pytest.raises(Exception) as caught:
+        provider.lease_owner.job_limits(request.invocation_id)
+    assert len(str(caught.value).splitlines()) == 1
+    assert str(caught.value) == (
+        "machine pod-1 has an unresolved preparation: "
+        "run `astrid machines release pod-1`, then claim again"
+    )
+    assert c.read()["paid_limits"] == paid
+    assert c.read()["lease"]["paid_expires_at"] == paid_expiry
+
+    monkeypatch.setattr(api, "terminate_pod", terminate)
+    retry.callback()
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["pod_id"] == "pod-1"
+    assert c.deletes == ["pod-1"] and c.creates == 1
+    assert c.read()["paid_limits"] == paid
+    assert c.read()["lease"]["paid_expires_at"] == paid_expiry
     bindings.close()

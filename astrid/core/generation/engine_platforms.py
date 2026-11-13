@@ -11,11 +11,11 @@ import time
 
 from . import _engine_python_bootstrap as _bootstrap
 from .engine_contracts import (CommandRequest, DeadlineExceeded, RecipeValidationError,
-                               UnsafePathError, UnsupportedPlatform)
+                               UnsafePathError, UnsupportedPlatform, effective_models_root)
 from .engine_runner import _root
 
 _LINUX = frozenset({"linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130"})
-_FIELDS = frozenset({"install_root", "python", "comfy_root", "models_root", "models_config", "host", "port"})
+_FIELDS = frozenset({"install_root", "python", "comfy_root", "models_root", "host", "port"})
 
 
 def _deadline(deadline):
@@ -100,9 +100,9 @@ class LinuxPlatformAdapter:
             comfy = next(s for s in recipe.sources if s.name == "comfyui")
         except StopIteration as exc:
             raise RecipeValidationError("missing primary environment or comfyui source") from exc
+        comfy_root = self.join(root, comfy.relative_path)
         values = {"install_root": root, "python": self.venv_python(self.join(root, primary.relative_path)),
-                  "comfy_root": self.join(root, comfy.relative_path), "models_root": self.join(root, "models") if models_root is None else models_root,
-                  "models_config": self.join(root, "runtime/extra_model_paths.yaml"),
+                  "comfy_root": comfy_root, "models_root": effective_models_root(root, models_root),
                   "host": recipe.start.bind_host, "port": str(recipe.start.port)}
         # The ComfyUI launch is an engine process. The recipe's env is the base and
         # engine_process_env sets PYTHONPYCACHEPREFIX last, so the engine's prefix
@@ -113,11 +113,13 @@ class LinuxPlatformAdapter:
                               _bootstrap.engine_process_env(launch_env, root), deadline)
 
     @contextmanager
-    def local_install_lock(self, root, *, deadline, cancelled=None):
+    def local_install_lock(self, root, *, deadline, cancelled=None, on_contention=None, kind="job"):
         # Import only at the target; no operational Runtime daemon is involved.
         from runtime_protocol import platform
 
         self.validate_root(root)
+        if kind not in {"install", "job"}:
+            raise ValueError("invalid install lock holder kind")
         _deadline(deadline)
         dirs = []
         fd = None
@@ -154,8 +156,27 @@ class LinuxPlatformAdapter:
                 try:
                     platform.lock_file(fd, exclusive=True, blocking=False)
                     locked = True
+                    # Publish immediately after ownership, before any target
+                    # validation or other work can delay contenders.
+                    os.ftruncate(fd, 0)
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    os.write(fd, kind.encode("ascii"))
+                    os.fsync(fd)
                     break
                 except BlockingIOError:
+                    if on_contention is not None:
+                        # Read the classification from the same inode whose
+                        # exclusive lock is currently held by the other owner.
+                        try:
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            holder = os.read(fd, 32).decode("ascii").strip()
+                        except (OSError, UnicodeError):
+                            holder = None
+                        # An owner may be publishing or clearing its kind.
+                        # Keep waiting through that interval; only an explicit
+                        # kind can authorize either contention refusal.
+                        if holder in {"install", "job"}:
+                            on_contention(holder)
                     time.sleep(min(0.05, _deadline(deadline)))
             _deadline(deadline)
             # Refuse replaced directory entries or lock inode before admission.
@@ -176,6 +197,13 @@ class LinuxPlatformAdapter:
         finally:
             try:
                 if locked:
+                    # Clear while still exclusive so a waiter never mistakes a
+                    # released installer record for a live installer.
+                    try:
+                        os.ftruncate(fd, 0)
+                        os.fsync(fd)
+                    except OSError:
+                        pass
                     platform.unlock_file(fd)
             finally:
                 if fd is not None:

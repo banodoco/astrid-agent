@@ -382,7 +382,7 @@ def test_managed_ownership_requires_metadata_and_rejects_wrong_receipt(tmp_path)
     assert not targets.config_path().exists()
 
 
-@pytest.mark.parametrize("invalid", ["array", "symlink", "incomplete"])
+@pytest.mark.parametrize("invalid", ["array", "symlink", "incomplete", "recipe", "models_lock", "source", "steps", "requirements"])
 def test_invalid_managed_receipt_never_grants_ownership(invalid, tmp_path):
     root, receipt = _managed_metadata(tmp_path)
     if invalid == "array":
@@ -391,9 +391,22 @@ def test_invalid_managed_receipt_never_grants_ownership(invalid, tmp_path):
         copied = root / "receipt-copy.json"
         receipt.rename(copied)
         receipt.symlink_to(copied)
-    else:
+    elif invalid == "incomplete":
         raw = json.loads(receipt.read_text())
         raw["status"] = "failed"
+        receipt.write_text(json.dumps(raw))
+    else:
+        raw = json.loads(receipt.read_text())
+        if invalid == "recipe":
+            raw["recipe_sha256"] = "0" * 64
+        elif invalid == "models_lock":
+            raw["models_lock_sha256"] = "0" * 64
+        elif invalid == "source":
+            raw["source_commits"]["comfyui"] = "0" * 40
+        elif invalid == "steps":
+            raw["steps"] = raw["steps"][:-1]
+        else:
+            raw["requirements_locks"] = {}
         receipt.write_text(json.dumps(raw))
     with pytest.raises(targets.TargetConfigError):
         targets.save_target(targets.TargetRecord(owner="astrid"))

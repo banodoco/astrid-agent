@@ -201,7 +201,7 @@ class InvocationResult:
             return f"{head}\n  error: {message}"
         lines = [head]
         rows = [row for row in self.outputs.get("managed_outputs") or []
-                if isinstance(row, Mapping) and row.get("role") != "thumbnail"]
+                if isinstance(row, Mapping) and row.get("role") not in {"thumbnail", "log"}]
         # Port, then ordinal: sprites[0..7] read in order, not in settlement order.
         rows.sort(key=lambda row: (str(row.get("output_port") or ""), int(row.get("ordinal") or 0)))
         for row in rows:
@@ -251,6 +251,7 @@ class InvocationResult:
             (
                 row for row in rows
                 if row.get("output_port") == port
+                and row.get("role") != "log"
                 and (port == "thumbnail" or row.get("role") != "thumbnail")
             ),
             key=lambda row: int(row.get("ordinal") or 0),
@@ -551,6 +552,11 @@ def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
     settled = task.get('result') or raw.get('result')
     settled = settled if isinstance(settled, Mapping) else {}
     refs = {'task_id': task.get('task_id') or result.kernel_task_id}
+    rows = settled.get('outputs')
+    if isinstance(rows, list):
+        refs['logs'] = [deepcopy({key: value for key, value in row.items()
+                                  if key in _MANAGED_OUTPUT_FIELDS or key == 'size_bytes'})
+                        for row in rows if isinstance(row, Mapping) and row.get('role') == 'log']
     manifest_ref = settled.get('manifest_ref')
     if isinstance(manifest_ref, str) and object_ref(manifest_ref):
         refs['manifest_ref'] = manifest_ref

@@ -204,7 +204,9 @@ def test_real_vibecomfy_runtime_requires_explicit_python_consent_and_tracks_flow
         origin_outputs = {
             item["name"]: item for item in origin_task.data["result"]["outputs"]
         }
-        assert set(origin_outputs) == {"python", "companion", "source", "report"}
+        assert set(origin_outputs) == {"python", "companion", "source", "report", "job.stdout", "job.stderr"}
+        assert all(origin_outputs[name]["role"] == "log" and origin_outputs[name]["output_port"] == "logs"
+                   for name in ("job.stdout", "job.stderr"))
         assert client.media.read_bytes(origin_outputs["source"]["digest"]) == source_bytes
         origin_report_bytes = client.media.read_bytes(origin_outputs["report"]["digest"])
         assert "sha256:" + hashlib.sha256(origin_report_bytes).hexdigest() == origin_outputs[
@@ -342,7 +344,9 @@ def test_real_vibecomfy_runtime_requires_explicit_python_consent_and_tracks_flow
         edit_outputs = {
             item["name"]: item for item in edit_task.data["result"]["outputs"]
         }
-        assert set(edit_outputs) == {"python", "companion", "source", "report"}
+        assert set(edit_outputs) == {"python", "companion", "source", "report", "job.stdout", "job.stderr"}
+        assert all(edit_outputs[name]["role"] == "log" and edit_outputs[name]["output_port"] == "logs"
+                   for name in ("job.stdout", "job.stderr"))
         edit_report_bytes = client.media.read_bytes(edit_outputs["report"]["digest"])
         assert "sha256:" + hashlib.sha256(edit_report_bytes).hexdigest() == edit_outputs[
             "report"
@@ -427,7 +431,9 @@ def test_real_vibecomfy_runtime_requires_explicit_python_consent_and_tracks_flow
         validate_outputs = {
             item["name"]: item for item in validate_task.data["result"]["outputs"]
         }
-        assert set(validate_outputs) == {"validation"}
+        assert set(validate_outputs) == {"validation", "job.stdout", "job.stderr"}
+        assert all(validate_outputs[name]["role"] == "log" and validate_outputs[name]["output_port"] == "logs"
+                   for name in ("job.stdout", "job.stderr"))
         validation_bytes = client.media.read_bytes(validate_outputs["validation"]["digest"])
         assert "sha256:" + hashlib.sha256(validation_bytes).hexdigest() == validate_outputs[
             "validation"

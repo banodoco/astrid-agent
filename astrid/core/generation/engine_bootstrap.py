@@ -18,9 +18,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Mapping
 
+from . import engine_recipe
 from .engine_contracts import IntegrityError, RecipeValidationError
 
-_SOURCE_LIMIT = 65536
+# Our own budget, not an external one: the bundle travels in environment variables into a local
+# exec, where Linux caps one string at 131072 bytes (MAX_ARG_STRLEN). 96 KiB leaves headroom under
+# that cap for the recipe-derived closure, which now includes declared source-patch files.
+_SOURCE_LIMIT = 98304
 _ARCHIVE_LIMIT = 524288
 _SPEC_LIMIT = 16384
 _TOTAL_LIMIT = 98304
@@ -32,15 +36,18 @@ _FILES = (
     'astrid/core/generation/engine_local_endpoint.py',
     'astrid/core/generation/engine_runner_target.py', 'astrid/core/generation/model_downloader.py',
     'astrid/core/generation/_engine_python_bootstrap.py',
-    'astrid/packs/vibecomfy/extensions/generation.engine/comfyui.yaml',
-    'astrid/packs/wan2gp/extensions/generation.engine/wan2gp.yaml',
-    'astrid/packs/runpod/recipe.linux-cu130.json', 'astrid/packs/runpod/pins.json',
-    'astrid/packs/runpod/models.lock.json',
-    'astrid/packs/vibecomfy/recipe.windows-cu130.json', 'astrid/packs/vibecomfy/pins.json',
-    'astrid/packs/vibecomfy/models.lock.json',
-    'astrid/packs/wan2gp/recipe.windows-cu128.json', 'astrid/packs/wan2gp/pins.json',
-    'astrid/packs/wan2gp/models.lock.json',
 )
+
+
+def _data_files() -> tuple[str, ...]:
+    paths = set(engine_recipe.declaration_paths())
+    for entry in engine_recipe.load_recipe_index().entries:
+        recipe = engine_recipe.load_recipe(entry.engine, entry.platform)
+        paths.add(entry.recipe.path)
+        paths.update(ref.path for ref in engine_recipe.pin_set_refs(recipe.pins))
+        paths.add(recipe.models_lock.path)
+        paths.update(patch.replacement for patch in recipe.source_patches)
+    return tuple('astrid/' + path for path in sorted(paths))
 
 
 @dataclass(frozen=True)
@@ -89,7 +96,7 @@ def build_cli_bootstrap(argv: tuple[str, ...]) -> CliBootstrap:
     root = Path(__file__).resolve().parents[3]
     try:
         data = {}
-        for name in _FILES:
+        for name in (*_FILES, *_data_files()):
             path = root / name
             if any(part.is_symlink() for part in (path, *path.parents) if part != root.parent):
                 raise IntegrityError('symlink in bootstrap closure')

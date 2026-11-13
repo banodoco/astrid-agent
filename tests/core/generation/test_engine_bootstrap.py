@@ -5,6 +5,7 @@ import json
 import lzma
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -12,7 +13,7 @@ import zipfile
 import pytest
 
 from astrid.core.generation import engine_bootstrap as bootstrap
-from astrid.core.generation.engine_contracts import IntegrityError, RecipeValidationError
+from astrid.core.generation.engine_contracts import IntegrityError, RecipeValidationError, UnsafePathError
 
 ARGV = ('engines', 'install', 'comfyui', '--dry-run', '--root', '/tmp/astrid-plan')
 
@@ -21,7 +22,8 @@ def run(bundle, env=None, loader=None):
     command = list(bundle.command)
     if loader is not None:
         command[-1] = loader
-    return subprocess.run(command, env={'PATH': os.environ['PATH'], **(env or bundle.env)},
+    return subprocess.run(command, env={**{key: os.environ[key] for key in ('PATH', 'TMPDIR')
+                                          if key in os.environ}, **(env or bundle.env)},
                           text=True, capture_output=True, timeout=30)
 
 
@@ -40,6 +42,23 @@ def repack(bundle, archive=None, spec=None):
 
 def unzip(bundle):
     return lzma.decompress(base64.b64decode(bundle.env['ASTRID_ENGINE_SOURCE']))
+
+
+def copy_closure(monkeypatch, tmp_path, *, metadata=True):
+    root = Path(bootstrap.__file__).resolve().parents[3]
+    for name in (*bootstrap._FILES, *bootstrap._data_files()):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / name, target)
+    fake = tmp_path / 'astrid/core/generation/engine_bootstrap.py'
+    fake.write_text('')
+    shutil.copyfile(root / 'astrid/core/generation/_engine_bootstrap_loader.py',
+                    fake.parent / '_engine_bootstrap_loader.py')
+    shutil.copyfile(root / 'pyproject.toml', tmp_path / 'pyproject.toml')
+    if metadata:
+        shutil.copytree(root / 'astrid.egg-info', tmp_path / 'astrid.egg-info')
+    monkeypatch.setattr(bootstrap, '__file__', str(fake))
+    monkeypatch.setattr(bootstrap.engine_recipe, '_ROOT', tmp_path / 'astrid')
 
 
 def test_console_dry_run_and_help_are_isolated_and_exact():
@@ -81,7 +100,7 @@ def test_exact_bytes_determinism_and_identity():
     b = bootstrap.build_cli_bootstrap(ARGV)
     assert a == b
     with zipfile.ZipFile(io.BytesIO(unzip(a))) as z:
-        for name in bootstrap._FILES:
+        for name in (*bootstrap._FILES, *bootstrap._data_files()):
             content = Path(name).read_bytes()
             assert z.read(name) == content
             assert a.files[name] == hashlib.sha256(content).hexdigest()
@@ -89,27 +108,88 @@ def test_exact_bytes_determinism_and_identity():
 
 
 def test_change_and_missing_source(monkeypatch, tmp_path):
-    # Redirect only the explicit closure reads to a disposable tree.
-    root = Path(bootstrap.__file__).resolve().parents[3]
-    for name in bootstrap._FILES:
-        target = tmp_path / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes((root / name).read_bytes())
-    fake = tmp_path / 'astrid/core/generation/engine_bootstrap.py'
-    fake.write_text('')
-    (fake.parent / '_engine_bootstrap_loader.py').write_bytes(Path(bootstrap.__file__).with_name('_engine_bootstrap_loader.py').read_bytes())
-    import shutil
-    shutil.copytree(root / 'astrid.egg-info', tmp_path / 'astrid.egg-info')
-    monkeypatch.setattr(bootstrap, '__file__', str(fake))
+    copy_closure(monkeypatch, tmp_path)
     initial = bootstrap.build_cli_bootstrap(ARGV)
-    for name in ('astrid/core/engine_cli.py', 'astrid/packs/runpod/pins.json'):
+    for name in ('astrid/core/engine_cli.py', bootstrap._data_files()[0]):
         path = tmp_path / name
         original = path.read_bytes()
         path.write_bytes(original + b' ')
         assert bootstrap.build_cli_bootstrap(ARGV).source_sha256 != initial.source_sha256
         path.write_bytes(original)
+    recipe = bootstrap.engine_recipe.load_recipe(ARGV[2], 'linux-x86_64-cu130')
+    pins = tmp_path / 'astrid' / recipe.pins.path
+    original = pins.read_bytes()
+    pins.write_bytes(original + b' ')
+    with pytest.raises(IntegrityError, match='digest mismatch'):
+        bootstrap.build_cli_bootstrap(ARGV)
+    pins.write_bytes(original)
     (tmp_path / bootstrap._FILES[0]).unlink()
     with pytest.raises(IntegrityError):
+        bootstrap.build_cli_bootstrap(ARGV)
+
+
+def test_new_declared_patch_is_bundled(monkeypatch, tmp_path):
+    copy_closure(monkeypatch, tmp_path)
+    entry = next(entry for entry in bootstrap.engine_recipe.load_recipe_index().entries
+                 if entry.engine == ARGV[2] and entry.platform == 'linux-x86_64-cu130')
+    recipe_path = tmp_path / 'astrid' / entry.recipe.path
+    recipe = json.loads(recipe_path.read_bytes())
+    replacement = 'packs/bootstrap-fixture/replacement.txt'
+    content = b'# declared replacement\n'
+    digest = hashlib.sha256(content).hexdigest()
+    target = tmp_path / 'astrid' / replacement
+    target.parent.mkdir(parents=True)
+    target.write_bytes(content)
+    recipe.setdefault('source_patches', []).append({
+        'source': recipe['source_bindings'][0]['name'], 'path': 'extra.py',
+        'sha256_before': '0' * 64, 'sha256_after': digest, 'replacement': replacement,
+    })
+    recipe_path.write_text(json.dumps(recipe))
+    recipe_digest = hashlib.sha256(recipe_path.read_bytes()).hexdigest()
+    for name in bootstrap.engine_recipe.declaration_paths():
+        declaration = tmp_path / 'astrid' / name
+        declaration.write_text(declaration.read_text().replace(entry.recipe.sha256, recipe_digest))
+    bundle = bootstrap.build_cli_bootstrap(ARGV)
+    name = 'astrid/' + replacement
+    assert bundle.files[name] == digest
+    with zipfile.ZipFile(io.BytesIO(unzip(bundle))) as archive:
+        assert archive.read(name) == content
+    result = run(bundle)
+    assert result.returncode == 0, result.stderr
+    target.write_bytes(content + b'changed')
+    with pytest.raises(IntegrityError, match='digest mismatch'):
+        bootstrap.build_cli_bootstrap(ARGV)
+
+
+def test_real_patch_closure_and_source_budget():
+    # The source travels in an environment variable via exec, with no remote caller.
+    # 96 KiB admits the declared patch closure (~84 KiB), below Linux's 128 KiB
+    # per-string limit. The independent 96 KiB aggregate budget still applies.
+    assert bootstrap._SOURCE_LIMIT == 98304
+    bundle = bootstrap.build_cli_bootstrap(ARGV)
+    recipe = bootstrap.engine_recipe.load_recipe(ARGV[2], 'linux-x86_64-cu130')
+    assert recipe.source_patches
+    for patch in recipe.source_patches:
+        assert bundle.files['astrid/' + patch.replacement] == patch.sha256_after
+    source_size = len(bundle.env['ASTRID_ENGINE_SOURCE'])
+    # The closure outgrew the old 64 KiB budget once declared patch files travel with the recipe;
+    # the limit is our own (an env string, under Linux's 131072-byte per-string cap).
+    assert 65536 < source_size <= bootstrap._SOURCE_LIMIT < 131072
+
+
+@pytest.mark.parametrize('parent', [False, True])
+def test_declared_patch_symlinks_refused(monkeypatch, tmp_path, parent):
+    copy_closure(monkeypatch, tmp_path)
+    recipe = bootstrap.engine_recipe.load_recipe(ARGV[2], 'linux-x86_64-cu130')
+    path = tmp_path / 'astrid' / recipe.source_patches[0].replacement
+    if parent:
+        path = path.parent
+    moved = path.with_name(path.name + '-moved')
+    path.rename(moved)
+    path.symlink_to(moved, target_is_directory=parent)
+    # A symlinked patch file is refused by recipe loading (unsafe path); a symlinked
+    # parent directory is refused by the bootstrap's own closure check (integrity).
+    with pytest.raises((IntegrityError, UnsafePathError)):
         bootstrap.build_cli_bootstrap(ARGV)
 
 
@@ -135,7 +215,7 @@ def test_tampering_and_amplification():
     env = dict(b.env)
     env['ASTRID_ENGINE_SOURCE'] = base64.b64encode(lzma.compress(b'x' * 1000000)).decode()
     assert run(b, env).returncode != 0
-    env = dict(b.env); env['ASTRID_ENGINE_SOURCE'] = 'A' * 65540
+    env = dict(b.env); env['ASTRID_ENGINE_SOURCE'] = 'A' * (bootstrap._SOURCE_LIMIT + 4)
     assert run(b, env).returncode != 0
     spec = json.loads(base64.b64decode(b.env['ASTRID_ENGINE_SPEC']))
     spec['files']['astrid/__init__.py'] = '0' * 64
@@ -192,7 +272,6 @@ def test_real_console_execution_refuses_without_a2(tmp_path):
         "    _cli._default_backend = _unexpected\n"
         "    _cli._custody_preflight = _unexpected\n"
         "    _cli.install_engine = _unexpected\n"
-        "    _cli._check_install_identity = _unexpected\n"
         "    raise SystemExit(entries[0].load()())",
     )
     result = run(b, env, loader)
@@ -266,19 +345,9 @@ def test_missing_or_unsupported_distribution_metadata(monkeypatch, tmp_path):
 
 def test_stale_or_missing_local_metadata_refused(monkeypatch, tmp_path):
     import importlib.metadata
-    import shutil
 
     root = Path(bootstrap.__file__).resolve().parents[3]
-    for name in bootstrap._FILES:
-        target = tmp_path / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(root / name, target)
-    fake = tmp_path / 'astrid/core/generation/engine_bootstrap.py'
-    fake.write_text('')
-    shutil.copyfile(root / 'astrid/core/generation/_engine_bootstrap_loader.py',
-                    fake.parent / '_engine_bootstrap_loader.py')
-    shutil.copyfile(root / 'pyproject.toml', tmp_path / 'pyproject.toml')
-    monkeypatch.setattr(bootstrap, '__file__', str(fake))
+    copy_closure(monkeypatch, tmp_path, metadata=False)
     with pytest.raises(IntegrityError):
         bootstrap.build_cli_bootstrap(ARGV)
     shutil.copytree(root / 'astrid.egg-info', tmp_path / 'astrid.egg-info')

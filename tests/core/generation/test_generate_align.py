@@ -206,6 +206,17 @@ def test_apply_reprobes_same_target_and_is_idempotent(fake):
     assert fake.calls == ['probe', 'probe']
 
 
+def test_apply_fetches_subdir_name_into_models_root_with_comfyui_path_set(fake, monkeypatch, tmp_path):
+    """The explicit models root remains authoritative when a ComfyUI checkout is configured."""
+    monkeypatch.setenv('COMFYUI_PATH', str(tmp_path / 'separate-comfyui'))
+    monkeypatch.delenv('VIBECOMFY_MODELS_ROOT', raising=False)
+    report = apply(fake, client=request_bytes([]))
+    expected = fake.target.models_root / fake.model.destination
+    assert report['status'] == 'ready'
+    assert expected.read_bytes() == DATA
+    assert not (tmp_path / 'separate-comfyui' / fake.target.models_root.name / fake.model.destination).exists()
+
+
 def test_hash_mismatch_refuses_publication(fake):
     calls = []
     with pytest.raises(alignment.AlignmentError, match='fake.safetensors.*SHA-256 mismatch'):
@@ -244,6 +255,31 @@ def test_interrupted_download_resumes_verified_locked_bytes(fake):
     report = apply(fake, client=request_bytes(calls))
     assert report['status'] == 'ready' and calls[0][0] == 8
     assert report['actions'][0]['resumed_from_bytes'] == 8 and path.read_bytes() == DATA
+
+
+def test_unexpected_fetch_failure_is_debug_logged_and_reported_without_traceback(
+        fake, monkeypatch, caplog, capsys):
+    import logging
+    from types import SimpleNamespace
+    from vibecomfy import fetch
+
+    def fail_download(*_args, **_kwargs):
+        raise RuntimeError('transport adapter exploded')
+
+    monkeypatch.setattr(fetch, 'download', fail_download)
+    caplog.set_level(logging.DEBUG, logger=alignment.__name__)
+
+    result = alignment.main(SimpleNamespace(entry='fake', all=False, apply=True,
+                                            consent=['user_env'], json=True))
+
+    assert result == 1
+    assert 'fetch failed for locked model diffusion_models/fake.safetensors' in caplog.text
+    assert 'RuntimeError: transport adapter exploded' in caplog.text
+    assert 'Traceback (most recent call last)' in caplog.text
+    stderr = capsys.readouterr().err
+    assert 'download failed' in stderr
+    assert 'retry astrid generate align --apply --consent user_env --entry fake' in stderr
+    assert 'Traceback' not in stderr
 
 
 def test_server_ignoring_range_restarts_without_claiming_resume(fake):
@@ -437,13 +473,16 @@ def test_noneditable_wheel_align_entrypoint_and_module(tmp_path):
 
 def test_selected_managed_receipt_is_offline_and_validates_models_lock(tmp_path, monkeypatch):
     from dataclasses import asdict
-    from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+    from astrid.core.generation.engine_contracts import (
+        DownloadResult, HealthEvidence, InstallReceipt, StepReceipt, effective_models_root,
+    )
     from astrid.core.generation.engine_recipe import load_recipe, load_model_lock
     from astrid.core.generation.engine_runner import plan_install
     root = tmp_path / 'managed'
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     plan = plan_install(recipe, root=str(root), placement='local')
-    models = tuple(DownloadResult(model.name, str(root / 'models' / model.destination), 'skipped',
+    models_root = Path(effective_models_root(str(root), None))
+    models = tuple(DownloadResult(model.name, str(models_root / model.destination), 'skipped',
         model.bytes, model.sha256, True, 0) for model in load_model_lock(recipe.models_lock).models)
     receipt = InstallReceipt('astrid.engine-install.v1', 'cpu-installed', plan.engine, plan.platform,
         plan.placement, plan.root, 'installed', False, plan.recipe_sha256, plan.models_lock_sha256,
@@ -459,13 +498,13 @@ def test_selected_managed_receipt_is_offline_and_validates_models_lock(tmp_path,
     monkeypatch.setattr('astrid.core.generation.engine_local_endpoint.recorded_engine_root', lambda engine: str(root))
     monkeypatch.setattr('urllib.request.urlopen', lambda *a, **kw: pytest.fail('offline selection probed target'))
     target = alignment.selected_target()
-    assert target.root == root and target.models_root == root / 'models'
+    assert target.root == root and target.models_root == root / 'runtime/ComfyUI/models'
     assert target.models_lock_sha256 == plan.models_lock_sha256
     assert target.url == 'http://127.0.0.1:8188'
     assert not target.models_root.exists()
     raw['models_lock_sha256'] = 'e' * 64
     path.write_text(json.dumps(raw))
-    with pytest.raises(IntegrityError, match='receipt identity differs'):
+    with pytest.raises(IntegrityError, match='installed but stale'):
         alignment.selected_target()
 
 

@@ -20,6 +20,15 @@ PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
 _NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor"})
+# A preparation can outlive its Python call when a POST may still be accepted
+# and cleanup cannot prove that its command drained. Keep the actual lock owner
+# alive for this process lifetime; dropping the wrapper must not close the fd.
+_UNRESOLVED_CUSTODY: dict[int, "ManagedEnginePreparation"] = {}
+
+
+def _retain_unresolved(preparation: "ManagedEnginePreparation") -> None:
+    """Keep the owner of an unresolved lock alive until process exit."""
+    _UNRESOLVED_CUSTODY[id(preparation)] = preparation
 
 
 def _recipe_node_patches(recipe: EngineRecipe) -> dict[str, list[SourcePatch]]:
@@ -102,11 +111,10 @@ def native_failure_classes(stdout: str, reason: str) -> tuple[str, ...]:
     if reason != "schema_reconciliation_failed":
         return ()
     try:
-        from importlib.resources import files
-        public = json.loads(files("vibecomfy").joinpath("porting/cache/object_info/index.json").read_text())
+        # VibeComfy owns its object_info cache layout; read class ids through its API only.
+        from vibecomfy.porting.object_info.consume import list_classes
+        public = set(list_classes())
     except (OSError, ValueError, TypeError, ImportError):
-        return ()
-    if not isinstance(public, dict):
         return ()
     prefix = "- workflow contains unresolved class types: "
     for line in stdout[-4096:].splitlines()[-32:]:
@@ -155,7 +163,7 @@ def configured_models_root(engine: str = "comfyui", *, root: str | None = None) 
     recipe = load_recipe(engine, DEFAULT_PLATFORM)
     locator = plan_install(recipe, root=root, placement="local")
     receipt = _parse_receipt(raw, locator)
-    plan = plan_from_receipt(recipe, receipt, root=root, placement="local")
+    plan_from_receipt(recipe, receipt, root=root, placement="local")
     return effective_models_root(root, receipt.models_root)
 
 
@@ -249,7 +257,7 @@ class ManagedEnginePreparation:
     the HTTP worker runs. No worker receives this object or its control socket.
     """
     def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any, scratch: Path,
-                 device: int | None = None, logs_root: Path | None = None):
+                 device: int | None = None, logs_root: Path | None = None, on_phase: Any = None):
         from .engine_execution import create_local_backend
         from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
         from .engine_recipe import load_recipe
@@ -260,6 +268,7 @@ class ManagedEnginePreparation:
         self.scratch = scratch
         # The run root whose logs.json a failed step's whole output is declared in.
         self.logs_root = logs_root
+        self.on_phase = on_phase
         self.deadline, self.cancelled = deadline, cancelled
         self.root = default_engine_root("comfyui")
         self.recipe = load_recipe("comfyui", DEFAULT_PLATFORM)
@@ -267,7 +276,7 @@ class ManagedEnginePreparation:
             placement="local", root=self.root, deadline=deadline)
         self.context.service_client.cancelled = cancelled
         self.lock = None
-        self.report = None
+        self.report: dict[str, Any] | None = None
         self.uncertain = False
         self._preparing_engine = False
 
@@ -281,21 +290,26 @@ class ManagedEnginePreparation:
     def close(self, *, execution_root: Path | None = None, worker_drained: bool = True):
         if not worker_drained:
             self.uncertain = True
-        if not self.uncertain:
-            self._stop_preparing_engine()
-        if not self.uncertain and execution_root is not None and self.report is not None:
-            from .backends.vibecomfy_local_server import cleanup_prompts
-            try:
+        try:
+            if not self.uncertain:
+                self._stop_preparing_engine()
+            if not self.uncertain and execution_root is not None and self.report is not None:
+                from .backends.vibecomfy_local_server import cleanup_prompts
                 cleanup_prompts(self.report["endpoint"], execution_root, confirm=True)
-            except BaseException:
-                self.uncertain = True
-                raise
+        except BaseException:
+            # A failed stop or failed prompt cleanup cannot establish that a
+            # request has drained, regardless of which boundary raised it.
+            self.uncertain = True
+            _retain_unresolved(self)
+            raise
         if self.uncertain:
+            _retain_unresolved(self)
             from .engine_contracts import CustodyUnresolved
             raise CustodyUnresolved("managed preparation retains an unconfirmed command; keep installation fenced")
         if self.lock is not None:
             lock, self.lock = self.lock, None
             lock.__exit__(None, None, None)
+        _UNRESOLVED_CUSTODY.pop(id(self), None)
 
     def prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
         from .engine_contracts import CustodyUnresolved
@@ -306,7 +320,12 @@ class ManagedEnginePreparation:
             if isinstance(error, CustodyUnresolved):
                 self.uncertain = True
             if not self.uncertain:
-                self._stop_preparing_engine()
+                try:
+                    self._stop_preparing_engine()
+                except CustodyUnresolved as stop_error:
+                    error.add_note(f"owned engine cleanup remains unconfirmed: {stop_error}")
+            if self.uncertain:
+                _retain_unresolved(self)
             raise
         # Only the completed report hands the live engine to the attempt. A
         # successful doctor still leaves all remaining preparation under custody.
@@ -321,15 +340,21 @@ class ManagedEnginePreparation:
             # This client stops only its authenticated supervisor's retained
             # handles and confirms all command/process/output drain before return.
             self.context.service_client.stop_owned(deadline=time.monotonic() + 5)
-        except BaseException:
+        except BaseException as stop_error:  # noqa: BLE001 - reported through the raised error or fallback; diagnostic at debug, never a user-facing traceback
+            # The fail-safe comes first and never depends on the diagnostic.
             self.uncertain = True
-            raise CustodyUnresolved("managed preparation failed; exact owned engine stop remains unconfirmed") from None
+            import logging
+            logging.getLogger(__name__).debug("managed preparation owned-engine stop failed", exc_info=True)
+            error = CustodyUnresolved("managed preparation failed; exact owned engine stop remains unconfirmed")
+            error.add_note(f"owned engine stop failed: {type(stop_error).__name__}")
+            raise error from None
         self._preparing_engine = False
 
     def _prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
         from astrid.packs.vibecomfy.actions.run import run as run_action
 
-        from .engine_contracts import IntegrityError
+        from .engine_contracts import IntegrityError, RecipeValidationError
+        from .engine_local_endpoint import EngineNotInstalled
         from .engine_recipe import recipe_digest
         from .engine_runner import (
             _parse_receipt,
@@ -337,6 +362,7 @@ class ManagedEnginePreparation:
             plan_from_receipt,
             plan_install,
             refresh_installed_launch,
+            require_current_receipt,
         )
 
         self.check()
@@ -344,24 +370,36 @@ class ManagedEnginePreparation:
         if workflow.suffix == ".py":
             staged_members += [workflow.with_suffix(".vibe.json"), workflow.with_name("source.json")]
         staged_digests = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in staged_members}
-        lock = self.adapter.local_install_lock(self.root, deadline=self.deadline, cancelled=self.cancelled)
+        receipt_path = str(Path(self.root) / ".astrid-engine/install.json")
+
+        def refuse_while_installing(holder_kind=None):
+            # Never queue behind an installer; ordinary job/preparation
+            # contention can wait for the current owner to finish.
+            if holder_kind == "install":
+                from .engine_contracts import EngineBusy
+                raise EngineBusy("the local engine is being updated; try again when astrid engines install finishes")
+
+        lock = self.adapter.local_install_lock(self.root, deadline=self.deadline, cancelled=self.cancelled,
+                                               on_contention=refuse_while_installing)
         lock.__enter__()
         self.lock = lock
         self.check()
-        receipt_path = str(Path(self.root) / ".astrid-engine/install.json")
-        raw = self.context.read_json(receipt_path, deadline=self.deadline)
+        try:
+            raw = self.context.read_json(receipt_path, deadline=self.deadline)
+        except RecipeValidationError as error:
+            raise EngineNotInstalled(self.recipe.engine, "install receipt unreadable") from error
         locator = plan_install(self.recipe, root=self.root, placement="local")
         receipt = _parse_receipt(raw, locator)
         plan = plan_from_receipt(self.recipe, receipt, root=self.root, placement="local")
         if receipt.status != "installed":
-            raise IntegrityError("managed preparation requires a completed installation")
+            raise EngineNotInstalled(self.recipe.engine, f"install status {receipt.status}, engine not healthy")
+        require_current_receipt(receipt, plan, self.recipe)
         runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
-        # These checks read the saved environment identities; they do not
-        # re-enter the install lock or require the HTTP service to be running.
-        runner.check_environment_identities()
         runner.step_id = "helper-identity"
         if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
             raise IntegrityError("managed engine helper identity differs")
+        # These checks read the saved environment identities; they do not
+        # re-enter the install lock or require the HTTP service to be running.
         for step in plan.steps:
             if step.kind in {"source", "environment"}:
                 runner.execute(step, readonly=True)
@@ -409,12 +447,17 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed CLI workflow requirements differ from the admitted workflow")
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
+        callback = getattr(self, "on_phase", None)
+        if callback is not None:
+            callback("align")
         alignment = engine.align(manifest, self.mode, workflow=canonical_path)
         if alignment.get("status") == "missing":
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
         self.check()
         self._verify_alignment(*self._alignment_verification)
         runner.step_id = "start"
+        if callback is not None:
+            callback("start_engine")
         start_action, start_facts = runner.start(readonly=False)
         self._preparing_engine = True
         self.check()
@@ -426,7 +469,7 @@ class ManagedEnginePreparation:
         self.check()
         health = {"healthy": True, "object_info_sha256": runner.health.object_info_sha256,
                   "required_nodes_present": runner.health.required_nodes_present}
-        self.report = {"schema": SCHEMA, "task_id": self.task, "attempt_id": self.attempt,
+        report: dict[str, Any] = {"schema": SCHEMA, "task_id": self.task, "attempt_id": self.attempt,
             "execution_identity": execution_identity, "inputs": dict(input_digests),
             "manifest": manifest, "manifest_sha256": digest(manifest),
             "installation": {"root": self.root, "receipt_sha256": receipt_sha256,
@@ -434,12 +477,13 @@ class ManagedEnginePreparation:
             "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
             "output_dir": str(Path(self.root) / next(s.relative_path for s in self.recipe.sources if s.name == "comfyui") / "output"),
             "placement": "managed", "mode": self.mode, "alignment": alignment, "health": health}
-        native_preparation = getattr(self, "native_preparation", None)
+        self.report = report
+        native_preparation: dict[str, Any] | None = getattr(self, "native_preparation", None)
         if native_preparation is not None:
-            self.report["native_preparation"] = native_preparation
+            report["native_preparation"] = native_preparation
             if getattr(self, "pip_bootstrap", None) is not None:
                 native_preparation["pip_bootstrap"] = self.pip_bootstrap
-        return self.report
+        return report
 
     def _verify_alignment(self, workflow, runner, staged_digests, manifest, receipt):
         """Attest mutation results before executing the engine, and again after doctor."""
@@ -451,7 +495,6 @@ class ManagedEnginePreparation:
         if self.mode != "trust":
             self._verify_models(manifest)
         self._guard_runtime(workflow, runner, post=True)
-        runner.check_environment_identities()
         for step in runner.plan.steps:
             if step.kind in {"source", "environment"}:
                 runner.execute(step, readonly=True)
@@ -526,13 +569,18 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 raise IntegrityError("managed runtime requirement is not satisfied by the installed base: " + path)
 
     def _native(self, program, *args, step="runtime_inspect"):
-        from .engine_contracts import CommandRequest, DeadlineExceeded, IntegrityError
+        from .engine_contracts import (
+            CommandRequest,
+            DeadlineExceeded,
+            IntegrityError,
+            effective_models_root,
+        )
         self.check()
         primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
         python = self.adapter.venv_python(self.adapter.join(self.root, primary.relative_path))
         comfy = self.adapter.join(self.root, next(s.relative_path for s in self.recipe.sources if s.name == "comfyui"))
         from .engine_custody import _installed_models_root
-        models = _installed_models_root(self.root, self.recipe) or self.adapter.join(self.root, "models")
+        models = effective_models_root(self.root, _installed_models_root(self.root, self.recipe))
         env = {"COMFYUI_PATH": comfy, "VIBECOMFY_MODELS_ROOT": models,
                "VIBECOMFY_CUSTOM_NODES_DIR": comfy + "/custom_nodes", "VIBECOMFY_HEADLESS": "1",
                "VIBECOMFY_COMFY_CONFIGURATION": json.dumps({"runtime_root": self.root + "/runtime",

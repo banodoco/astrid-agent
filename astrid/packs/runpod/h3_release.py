@@ -27,6 +27,7 @@ from astrid.core.generation.engine_recipe import load_recipe, load_recipe_model_
 from astrid.packs.runpod import h3_release_bootstrap as bootstrap
 from astrid.packs.runpod import h3_release_remote as remote
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
+from astrid.packs.runpod.provider_urls import POD_TERMINATE_METHOD, POD_URL_TEMPLATE
 
 _DATA = Path(__file__).parent
 
@@ -410,7 +411,7 @@ class RunPodProvider:
         return pod
 
     def delete(self, pod_id):
-        self.request("DELETE", "pods/" + quote(pod_id, safe=""))
+        self.request(POD_TERMINATE_METHOD, POD_URL_TEMPLATE.format(pod_id=quote(pod_id, safe="")))
 
     def find(self, name):
         pods = self.request("GET", "pods")

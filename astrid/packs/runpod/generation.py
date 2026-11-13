@@ -174,13 +174,15 @@ def prepare_retained_generation(
         except BaseException as exc:
             current = lease_owner._read()
             jobs = (preparation.get("job"), current.get("lease", {}).get("job"))
-            safe = (not isinstance(exc, CustodyChanged) and "claim" in locals()
+            safe = (lease_owner.clock() < claimed["lease"]["paid_expires_at"]
+                    and not isinstance(exc, CustodyChanged) and "claim" in locals()
                     and "custody" in preparation and current.get("state") == "claimed"
                     and current.get("pod_id") == claimed.get("pod_id") == claim.pod_id
                     and all(job is None or job.get("state") in {"exited", "cancelled"} for job in jobs))
             if safe:
                 try:
-                    safe = claim.ops.exec("true", timeout=10)[0] == 0
+                    safe = (claim.ops.exec("true", timeout=10)[0] == 0
+                            and lease_owner.clock() < claimed["lease"]["paid_expires_at"])
                 except Exception:  # noqa: BLE001 (unknown transport cannot prove reachability)
                     safe = False
             if safe:

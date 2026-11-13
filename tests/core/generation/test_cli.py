@@ -3,12 +3,71 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.core.generation import cli
+
+
+def test_local_target_probe_failure_falls_back_to_facade(monkeypatch, caplog, capsys):
+    from astrid.core.generation import engine_local_endpoint
+
+    failure = RuntimeError("probe failed")
+
+    def fail(_engine):
+        raise failure
+
+    monkeypatch.setattr(engine_local_endpoint, "recorded_engine_root", fail)
+    with caplog.at_level(logging.DEBUG, logger=cli.__name__):
+        assert cli._no_generation_target("auto") is False
+
+    record = next(r for r in caplog.records if "Could not settle whether" in r.message)
+    assert record.exc_info[1] is failure
+    assert "RuntimeError: probe failed" in caplog.text
+    assert capsys.readouterr().err == ""
+
+
+def test_retained_failure_diagnostic_failure_is_debug_only(monkeypatch, caplog, capsys):
+    from astrid.packs.runpod import machine
+
+    failure = RuntimeError("journal unavailable")
+
+    def fail():
+        raise failure
+
+    monkeypatch.setattr(machine, "journal_leases", fail)
+    with caplog.at_level(logging.DEBUG, logger=cli.__name__):
+        cli._kept_failure(set())
+
+    record = next(r for r in caplog.records if "Could not read the retained" in r.message)
+    assert record.exc_info[1] is failure
+    assert "RuntimeError: journal unavailable" in caplog.text
+    assert capsys.readouterr().err == ""
+
+
+def test_lease_snapshot_failure_does_not_mask_command_error(monkeypatch, caplog, capsys):
+    from astrid.packs.runpod import machine
+
+    snapshot_failure = RuntimeError("snapshot unavailable")
+    command_failure = ValueError("original command failure")
+
+    def fail_snapshot():
+        raise snapshot_failure
+
+    monkeypatch.setattr(machine, "journal_leases", fail_snapshot)
+    monkeypatch.setattr(cli, "_main", lambda _argv: (_ for _ in ()).throw(command_failure))
+
+    with caplog.at_level(logging.DEBUG, logger=cli.__name__), pytest.raises(Exception) as caught:
+        cli.main(["image", "a dog", "--placement", "runpod"])
+
+    assert caught.value.__cause__ is command_failure
+    record = next(r for r in caplog.records if "Could not snapshot leases" in r.message)
+    assert record.exc_info[1] is snapshot_failure
+    assert "RuntimeError: snapshot unavailable" in caplog.text
+    assert capsys.readouterr().err == ""
 
 
 def test_failed_runpod_command_prints_bounded_kept_machine_summary(monkeypatch, capsys):

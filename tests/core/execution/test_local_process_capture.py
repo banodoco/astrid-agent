@@ -29,7 +29,9 @@ def _run(tmp_path, monkeypatch, code, cancelled=None):
 
 
 def _assert_logs(output, stdout, stderr):
-    declared = {decl.name: (decl.role, path.read_bytes()) for decl, path in run_logs.read_declared(output)}
+    declared = {decl.name: (decl.role, path.read_bytes())
+                for decl, path in run_logs.read_declared(output.parent / '.host-logs')}
+    assert not any(name.startswith('controller.') for name in declared)
     assert declared['job.stdout'] == ('stdout', stdout)
     assert declared['job.stderr'] == ('stderr', stderr)
 

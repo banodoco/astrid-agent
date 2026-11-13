@@ -15,7 +15,9 @@ MAX_BYTES = 16 * 1024**3
 def write_archive(path: Path, values: Mapping[str, Any], ports: list[dict[str, Any]]) -> Path:
     from astrid.core.generation.entries import _input_type
 
-    files, file_inputs, file_maps = {}, {}, {}
+    files: dict[str, Path] = {}
+    file_inputs: dict[str, str] = {}
+    file_maps: dict[str, dict[str, str]] = {}
     inputs = dict(values)
 
     def regular_file(value):
@@ -75,20 +77,34 @@ def read_archive(path: Path, destination: Path, *,
         payload = json.loads(archive.read('inputs.json'))
         if not isinstance(payload, dict) or payload.get('schema') != SCHEMA:
             raise ValueError('entry inputs archive has an invalid manifest')
-        inputs, file_inputs, file_maps = (payload.get(name) for name in ('inputs', 'file_inputs', 'file_maps'))
-        if not all(isinstance(value, dict) for value in (inputs, file_inputs, file_maps)):
+        raw_inputs = payload.get('inputs')
+        raw_file_inputs = payload.get('file_inputs')
+        raw_file_maps = payload.get('file_maps')
+        if (not isinstance(raw_inputs, dict) or not isinstance(raw_file_inputs, dict)
+                or not isinstance(raw_file_maps, dict)):
             raise ValueError('entry inputs archive has an invalid manifest')
-        if any(not isinstance(value, dict) for value in file_maps.values()):
+        if any(not isinstance(value, dict) for value in raw_file_maps.values()):
             raise ValueError('entry inputs archive has an invalid file map')
+        inputs: dict[str, Any] = raw_inputs
+        file_inputs: dict[str, Any] = raw_file_inputs
+        file_maps: dict[str, dict[str, Any]] = raw_file_maps
         keys = [*inputs, *file_inputs, *file_maps]
         if len(keys) != len(set(keys)):
             raise ValueError('entry inputs archive has conflicting public inputs')
-        members = [*file_inputs.values(), *(item for mapping in file_maps.values() for item in mapping.values())]
-        for name in members:
+        members: list[str] = []
+        for name in file_inputs.values():
             if (not isinstance(name, str) or not name.startswith('files/')
                     or len(Path(name).parts) != 2 or '..' in Path(name).parts
                     or name != Path(name).as_posix()):
                 raise ValueError('entry inputs archive has an unsafe file reference')
+            members.append(name)
+        for mapping in file_maps.values():
+            for name in mapping.values():
+                if (not isinstance(name, str) or not name.startswith('files/')
+                        or len(Path(name).parts) != 2 or '..' in Path(name).parts
+                        or name != Path(name).as_posix()):
+                    raise ValueError('entry inputs archive has an unsafe file reference')
+                members.append(name)
         expected = {'inputs.json', *members}
         if set(names) != expected:
             raise ValueError('entry inputs archive contains undeclared members')

@@ -228,7 +228,7 @@ def _scan_discovered_packs(descriptors: list[SkillDescriptor]) -> None:
                 pack_skill,
                 pack.id,
                 strict_frontmatter=strict_frontmatter,
-                sync_name=pack.documentation.get("sync_name"),
+                sync_name=(getattr(pack, "documentation", None) or {}).get("sync_name"),
             )
         ):
             seen_ids.add(pack.id)
@@ -268,7 +268,7 @@ def list_skills(packs_dir: Path | None = None) -> list[SkillDescriptor]:
                 skill_md,
                 pack.id,
                 strict_frontmatter=strict_frontmatter,
-                sync_name=pack.documentation.get("sync_name"),
+                sync_name=(getattr(pack, "documentation", None) or {}).get("sync_name"),
             )
             continue
 

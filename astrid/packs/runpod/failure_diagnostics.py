@@ -25,7 +25,7 @@ CODES = {
     'engine_not_found': 'installation', 'unknown_engine': 'installation',
     'unsupported_platform': 'installation', 'unsupported_placement': 'installation',
     'invalid_recipe': 'installation', 'invalid_model_lock': 'installation',
-    'engine_reinstall_required': 'installation', 'integrity_failed': 'integrity',
+    'integrity_failed': 'integrity',
     'unsafe_path': 'integrity', 'attestation_invalid': 'integrity',
     'endpoint_ownership': 'ownership', 'custody_unresolved': 'ownership',
     'target_unreachable': 'health', 'endpoint_unhealthy': 'health',

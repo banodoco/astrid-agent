@@ -14,6 +14,7 @@ from astrid.core.generation import GENERATION_RESULT_KEY, preflight
 from astrid.core.generation.backends.base import GenerationResult
 from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 from astrid.core.model_catalog.registry import ModelRegistry
+from astrid.core.model_catalog.schema import BackendSpec, ModeSpec, ModelEntry
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.results import InvocationResult
 from tests.core.generation.availability_fixtures import declare_wan_unqualified
@@ -61,6 +62,21 @@ def z_image_only_registry(monkeypatch):
     import astrid.sdk as sdk
     registry = ModelRegistry([ModelRegistry.load_default().get('z-image')])
     monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
+
+
+@pytest.fixture
+def unqualified_video_registry(monkeypatch):
+    import astrid.sdk as sdk
+
+    entry = ModelEntry(id='wan-2.2', modality='video', modes={
+        'i2v': ModeSpec(supports=('prompt', 'image_ref'), requires=('prompt', 'image_ref'),
+                        backends={'local': BackendSpec(template='video/fixture')}),
+        'flf': ModeSpec(supports=('prompt', 'image_ref', 'image_end_ref'),
+                        requires=('prompt', 'image_ref', 'image_end_ref'),
+                        backends={'cloud': BackendSpec(endpoint='fixture/video')}),
+    })
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([entry]))
+    declare_wan_unqualified(monkeypatch)
 
 
 def test_default_missing_on_target_owns_its_failure_without_fallback(network, monkeypatch):
@@ -180,8 +196,7 @@ def test_qualified_first_candidate_is_probed_and_prepared_first(network, monkeyp
 
 
 @pytest.mark.parametrize('target', ['auto', 'managed', 'http://127.0.0.1:8123'])
-def test_explicit_unqualified_catalog_is_refused_without_skipping_or_probe(monkeypatch, target):
-    declare_wan_unqualified(monkeypatch)
+def test_explicit_unqualified_catalog_is_refused_without_skipping_or_probe(monkeypatch, target, unqualified_video_registry):
     probe = Mock(side_effect=AssertionError('explicit unqualified route probed'))
     monkeypatch.setattr(preflight, 'select_generation_target', probe)
     with pytest.raises(AstridError) as caught:
@@ -217,7 +232,7 @@ def test_explicit_unqualified_entry_uses_coded_refusal(monkeypatch):
     ({'prompt': 'boat'}, 'i2v', 'image_ref'),
     ({'prompt': 'boat', 'image_ref': 'start.png'}, 'flf', 'Available backends: cloud'),
 ])
-def test_explicit_unqualified_keeps_input_validation_before_probe(monkeypatch, inputs, mode, match):
+def test_explicit_unqualified_keeps_input_validation_before_probe(monkeypatch, inputs, mode, match, unqualified_video_registry):
     from astrid.sdk.exceptions import CapabilityValidationError, CapabilityMissingInputError
     probe = Mock(side_effect=AssertionError('invalid request probed'))
     monkeypatch.setattr(preflight, 'select_generation_target', probe)

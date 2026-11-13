@@ -6,10 +6,16 @@ execution use the same local run path on managed local engines and pods.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 MODES = ("align", "check", "trust")
+
+
+class _ComfyUIValidationError(ValueError):
+    missing: list[str]
+    unpinned: bool
 
 
 _WORKFLOWS: dict[Any, list[Any]] = {}
@@ -57,7 +63,8 @@ def _pinned_locks() -> dict[tuple[str, str], Any]:
     for engine in dict.fromkeys(("comfyui", *entries.runpod_engines())):
         try:
             lock = load_recipe_model_lock(engine, entries.RUNPOD_PLATFORM)
-        except Exception:
+        except Exception:  # noqa: BLE001 - reported through the raised error or fallback; diagnostic at debug, never a user-facing traceback
+            logging.getLogger(__name__).debug('Could not load pinned model lock for engine %s', engine, exc_info=True)
             continue
         for model in lock.models:
             rows.setdefault((model.destination, model.revision), model)
@@ -137,7 +144,7 @@ class ComfyUIEngine:
 
     def workflow_requirements(self, workflows: Any) -> dict[str, Any]:
         """Requirements of the already selected canonical graph(s), without rebuilding."""
-        models: dict[tuple[str, str], dict[str, Any]] = {}
+        models: dict[tuple[str, str | None], dict[str, Any]] = {}
         nodes: dict[str, dict[str, Any]] = {}
         base = None
         for workflow in workflows:
@@ -171,7 +178,7 @@ class ComfyUIEngine:
         if not isinstance(nodes, list) or not all(
                 isinstance(node, dict) and set(node) == {"repo", "commit"}
                 and all(isinstance(v, str) and v for v in node.values()) for node in nodes):
-            error = ValueError("comfyui extra must be {'nodes': [{'repo': str, 'commit': str}, ...]}")
+            error = _ComfyUIValidationError("comfyui extra must be {'nodes': [{'repo': str, 'commit': str}, ...]}")
             error.unpinned = True  # a custom node ref without its repo or commit, as distinct from a loader failure
             raise error
 
@@ -265,7 +272,7 @@ class ComfyUIEngine:
         else:
             report = self.align(job["manifest"], job.get("mode", "align"), workflow=job.get("workflow"))
             if job.get("refuse_missing") and report.get("status") == "missing":
-                error = ValueError("local engine is missing declared models: " + ", ".join(report["missing"])
+                error = _ComfyUIValidationError("local engine is missing declared models: " + ", ".join(report["missing"])
                                    + "; run: astrid generate align --apply --consent user_env --all")
                 error.missing = report["missing"]
                 raise error

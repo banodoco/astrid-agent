@@ -9,12 +9,14 @@ real entry, or an entry without that kind and mode, is refused at ``settings.ref
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from astrid.core.generation import settings
 
 DEFAULTS_POINT = "generation.defaults"
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -71,8 +73,10 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
         for model in ModelRegistry.load_default().list_all(include_closed=True):
             rows.append({"pack": "generation", "entry": model.id, "kind": model.modality,
                          "modes": set(model.modes)})
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        # Keep discovery best-effort as before, while leaving a diagnostic trail
+        # when a catalog is unavailable or malformed.
+        _logger.debug("Could not discover model catalog entries for generation defaults", exc_info=True)
     try:
         from astrid.core.generation import entries as workflow_entries
 
@@ -80,8 +84,8 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
             rows.append({"pack": "vibecomfy", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
         for row in workflow_entries.action_entries():
             rows.append({"pack": "generation", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        _logger.debug("Could not discover workflow and action entries for generation defaults", exc_info=True)
     try:
         from astrid.core.extensions.registry import ExtensionRegistry
         from astrid.core.generation import workflows
@@ -89,8 +93,8 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
         for row in workflows.workflow_entries(registry or ExtensionRegistry().load()):
             pack = row["contribution"].split(".", 1)[0]
             rows.append({"pack": pack, "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        _logger.debug("Could not discover contributed workflow entries for generation defaults", exc_info=True)
     return rows
 
 
@@ -142,7 +146,7 @@ def ordered_ids(kind: str, mode: str, snapshot: settings.Snapshot | None = None,
     candidates = pack_candidates(registry)
     resolved = resolve(kind, mode, pins=pins, candidates=candidates)
     ids: list[str] = []
-    if resolved.source == "user pin":
+    if resolved.source == "user pin" and resolved.entry is not None:
         ids.append(resolved.entry)
     ids += [c.entry for c in sorted((c for c in candidates if (c.kind, c.mode) == (kind, mode)),
                                     key=lambda c: (-c.priority, c.pack, c.entry)) if c.entry not in ids]

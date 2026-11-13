@@ -143,9 +143,8 @@ def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
 def _add_project_arg(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--project",
-        required=True,
         default=None,
-        help="Owning project id or immutable slug.",
+        help="Owning project id or immutable slug (default: selected project).",
     )
 
 
@@ -315,9 +314,14 @@ def _follow_kwargs(parsed: argparse.Namespace) -> dict[str, Any]:
 def _completed_line(data: Mapping[str, Any]) -> str:
     outputs = data.get("outputs") or []
     label = "-"
-    if outputs and isinstance(outputs[0], Mapping):
-        resource = outputs[0].get("resource")
-        label = outputs[0].get("location") or (resource.get("filename") if isinstance(resource, Mapping) else None) or "-"
+    for output in outputs:
+        if not isinstance(output, Mapping):
+            continue
+        resource = output.get("resource")
+        if isinstance(resource, Mapping) and resource.get("role") == "log":
+            continue
+        label = output.get("location") or (resource.get("filename") if isinstance(resource, Mapping) else None) or "-"
+        break
     return f"completed task={data.get('task_id') or '-'} run={data.get('run_id') or '-'} output={label}"
 
 
@@ -545,13 +549,25 @@ COMMANDS: tuple[CommandSpec, ...] = (
 )
 
 
+class _TasksParser(argparse.ArgumentParser):
+    def parse_args(self, args: Any = None, namespace: Any = None) -> argparse.Namespace:
+        parsed = super().parse_args(args, namespace)
+        if not parsed.project:
+            from astrid.core.cli.current_project import resolve_current_project
+
+            parsed.project = resolve_current_project(parsed)
+            if not parsed.project:
+                self.error("no project selected; run astrid projects select <id> or pass --project")
+        return parsed
+
+
 def build_parser(client: Any) -> argparse.ArgumentParser:
     """Build the ``tasks`` product-family parser stamped with *client*.
 
     Exactly the eight product verbs above are registered; executor lifecycle
     and plan/step verbs are absent by construction.
     """
-    parser = argparse.ArgumentParser(
+    parser = _TasksParser(
         prog="astrid tasks",
         description=(
             "Task create/list/show/cancel/retry/events/follow/logs (product family); "

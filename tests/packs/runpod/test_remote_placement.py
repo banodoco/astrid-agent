@@ -49,6 +49,21 @@ class FakePod:
     # --- agent surface
     def exec(self, command, timeout=600):
         self.exec_log.append(command)
+        if "from astrid.core.gateway.doctor_bundle import redact_log" in command:
+            import shlex
+
+            argv = shlex.split(command)
+            source, destination = argv[-2:]
+            if source not in self.files:
+                return 1, "", "missing"
+            from astrid.core.gateway.doctor_bundle import redact_log
+
+            safe = redact_log(self.files[source].decode("utf-8", errors="replace"))
+            self.files[destination] = safe.encode()
+            return 0, "", ""
+        if command.startswith("rm -f "):
+            self.files.pop(command.split(" ", 2)[2].strip("'"), None)
+            return 0, "", ""
         if "O_NOFOLLOW" in command and "1048577" in command:
             import base64, shlex
             path = shlex.split(command)[-1]
@@ -339,6 +354,45 @@ def test_prepare_claimed_install_is_model_free(tmp_path, sources):
     assert "--model-cache" not in install
     assert not any("fetch" in c or "download" in c for c in claim.ops.job_log)
     assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
+
+
+@pytest.mark.parametrize("config_present", [True, False], ids=["all-artifacts", "missing-config"])
+def test_install_failure_keeps_redacted_artifacts_and_indexes_registry_config(tmp_path, sources, config_present):
+    from astrid.core.generation.engine_custody import engine_log_path
+
+    provider = _provider(sources)
+    claim = provider.claim(rp.ClaimSpec())
+    pod = claim.ops
+    pod.fail_jobs = {"engines install"}
+    # Use the production path helpers and realistic JSON/text secrets. The
+    # absent registry config must still appear as a missing row in the index.
+    root, engine = rp.ENGINE_ROOT, rp.ENGINE_ID
+    registry = f"{root}/runtime/out/sessions/{engine}"
+    pod.files[engine_log_path(root, engine)] = b"Bearer abc-secret\n"
+    pod.files[f"{registry}/daemon.log"] = b"https://user:pass@example.invalid/path\n"
+    pod.files[f"{root}/.astrid-engine/session/session.json"] = b'{"owner_id":"private-owner","state":"ready"}'
+    if config_present:
+        pod.files[f"{registry}/config.json"] = b'{"token":"config-secret"}'
+    # The job directory is allocated by the fake at launch; source paths are
+    # on the shared pod volume and are read by the remote redaction command.
+    with pytest.raises(RemotePlacementError):
+        _wrapper(provider, sources).prepare_claimed(claim, out=tmp_path / "out", deadline_seconds=120)
+
+    index_path = tmp_path / "out/logs/index.json"
+    index = json.loads(index_path.read_text())
+    rows = {row["name"]: row for row in index["logs"]}
+    expected = {f"engine.install.{name}" for name in
+                ("engine-log", "supervisor-log", "session-marker", "registry-config")}
+    assert expected <= rows.keys()
+    config_row = rows["engine.install.registry-config"]
+    assert config_row["missing"] is (not config_present)
+    assert "path" not in config_row
+    files = [path for path in (tmp_path / "out/logs").iterdir() if path.is_file() and path.name != "index.json"]
+    assert len(files) >= (6 if config_present else 5)  # stdout, stderr, and engine artifacts
+    contents = "\n".join(path.read_text() for path in files)
+    assert "<redacted>" in contents
+    assert "abc-secret" not in contents and "user:pass" not in contents and "private-owner" not in contents
+    assert "config-secret" not in contents
 
 
 def test_volume_is_sized_by_the_job_manifest_rows_not_the_model_lock():

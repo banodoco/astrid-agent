@@ -39,6 +39,8 @@ import os
 import re
 import shutil
 import sys
+import threading
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -164,6 +166,7 @@ LANES: dict[str, Lane] = {
     "omp": Lane("manual", "needs an OMP source checkout (ASTRID_OMP_TEST_PACKAGE_ROOT) and Bun; no CI job", _never, default_off=True),
     "pack_build_tools": Lane("manual", "needs Node and a pinned esbuild binary (ASTRID_BUILD_TEST_NODE, ASTRID_BUILD_TEST_ESBUILD) for the pack asset builder; no CI job", _never, default_off=True),
     "gpu": Lane("manual", "needs ComfyUI with model weights on a GPU machine; no CI job", _never, default_off=True),
+    "engine_deps": Lane("manual", "needs the engine lock's transformers and torch (CPU wheels allowed) plus model import dependencies, and ASTRID_QWENTTS_CHECKOUT at the recipe's pin; no CI job yet", lambda: importlib.util.find_spec("transformers") is not None, default_off=True),
 }
 DEFAULT_OFF = tuple(name for name, lane in LANES.items() if lane.default_off)
 DECLARED = re.compile(r"\[declared:([a-z_]+)\]")
@@ -192,6 +195,75 @@ class _FdGuard:
             reporter.write_line(f"ERROR: the test session leaked {end - self.start} file descriptors ({self.start} -> {end})")
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
+
+class _ThreadGuard:
+    _active_session = None
+
+    def __init__(self):
+        self.session = None
+        self.hard_exit = False
+
+    def pytest_sessionstart(self, session):
+        self.session = session
+        main = sys.modules.get("__main__")
+        spec = getattr(main, "__spec__", None)
+        entrypoint = getattr(spec, "name", None) == "pytest.__main__" or Path(
+            getattr(main, "__file__", "") or ""
+        ).name in ("pytest", "py.test")
+        if (os.environ.get("ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS") == "1"
+                and not hasattr(session.config, "workerinput")
+                and "PYTEST_XDIST_WORKER" not in os.environ
+                and "PYTEST_CURRENT_TEST" not in os.environ and entrypoint
+                and _ThreadGuard._active_session is None):
+            _ThreadGuard._active_session = session
+            self.hard_exit = True
+
+    @staticmethod
+    def _report(leaked):
+        frames = sys._current_frames()
+        lines = [f"ERROR: the test session leaked non-daemon threads: {', '.join(thread.name for thread in leaked)}\n"]
+        for thread in leaked:
+            lines.append(f"Thread {thread.name!r}, target={getattr(thread, '_target', None)!r}:\n")
+            frame = frames.get(thread.ident)
+            lines.extend(traceback.format_stack(frame) if frame else ["  stack unavailable\n"])
+        return "".join(lines)
+
+    @staticmethod
+    def _leaked():
+        return [thread for thread in threading.enumerate()
+                if thread is not threading.main_thread() and thread.is_alive() and not thread.daemon]
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_sessionfinish(self, session, exitstatus):
+        leaked = self._leaked()
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if leaked and reporter is not None:
+            reporter.write(self._report(leaked))
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_unconfigure(self, config):
+        if not self.hard_exit:
+            return
+        leaked = self._leaked()
+        if leaked:
+            # Normally _ensure_unconfigure closes this stack after the hook.
+            # Run it here so capture restoration and exception cleanup still happen.
+            config._cleanup_stack.close()
+            leaked = self._leaked()
+        if leaked:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            data = self._report(leaked).encode("utf-8", errors="backslashreplace")
+            while data:
+                data = data[os.write(1, data):]
+            os._exit(int(self.session.exitstatus))
+        _ThreadGuard._active_session = None
+
+
+
+def _bounded_id(nodeid: str, limit: int = 300) -> str:
+    """A node id short enough for a log line; an oversized parametrize id must not stall the CI log stream."""
+    return nodeid if len(nodeid) <= limit else f"{nodeid[:limit]}…(+{len(nodeid) - limit} chars)"
 
 
 def current_job() -> str:
@@ -307,12 +379,12 @@ class _SkipGuard:
         if self.declared:
             terminalreporter.write_sep("-", f"declared skips ({len(self.declared)})")
             for nodeid, name, reason in sorted(self.declared):
-                terminalreporter.write_line(f"SKIPPED [{name}] {nodeid}: {reason}")
+                terminalreporter.write_line(f"SKIPPED [{name}] {_bounded_id(nodeid)}: {reason}")
             no_ci = sorted((nodeid, name) for nodeid, name, _ in self.declared if LANES[name].no_ci)
             if no_ci:
                 terminalreporter.write_sep("-", f"NOT RUN BY ANY CI JOB ({len(no_ci)})")
                 for nodeid, name in no_ci:
-                    terminalreporter.write_line(f"  NO CI {nodeid}: [{name}] {LANES[name].no_ci}")
+                    terminalreporter.write_line(f"  NO CI {_bounded_id(nodeid)}: [{name}] {LANES[name].no_ci}")
         self._report_left_out(terminalreporter)
 
     def _report_left_out(self, terminalreporter) -> None:
@@ -332,7 +404,7 @@ class _SkipGuard:
             tests, modules = by_lane[lane]
             terminalreporter.write_line(f"[{lane}] {lane_runner(lane)}")
             for nodeid in sorted(tests):
-                terminalreporter.write_line(f"  DESELECTED {nodeid}")
+                terminalreporter.write_line(f"  DESELECTED {_bounded_id(nodeid)}")
             for path in sorted(modules):
                 terminalreporter.write_line(f"  NOT IMPORTED {path} (tests not listed; the whole module is in this lane)")
         if self.unmarked:
@@ -465,6 +537,7 @@ def pytest_configure(config):
     for name, lane in LANES.items():
         config.addinivalue_line("markers", f"{name}: {lane.kind} lane: {lane.reason}")
     config.pluginmanager.register(_FdGuard(), "fd-leak-guard")
+    config.pluginmanager.register(_ThreadGuard(), "thread-leak-guard")
     guard = _SkipGuard()
     guard.expression = (config.getoption("markexpr", default="") or "").strip()
     config.pluginmanager.register(guard, "skip-guard")

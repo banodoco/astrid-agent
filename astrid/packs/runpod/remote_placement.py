@@ -37,7 +37,8 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from astrid.core.contracts.errors import AstridError
 
-from .failure_reason import Reason
+from .failure_reason import Reason, attach_reason, installation_reason
+from .failure_receipt import checkpoint_refusal
 from .pod_bootstrap import SCRIPT as POD_BOOTSTRAP_SCRIPT
 
 PLACEMENT = "runpod"
@@ -92,10 +93,8 @@ class PlacementReasonError(RemotePlacementError):
     """A refusal at the structured reason boundary."""
 
     def __init__(self, message: str, *, reason: Reason):
-        if not isinstance(reason, Reason):
-            raise ValueError("a validated reason is required")
         super().__init__(message)
-        self.reason = reason
+        attach_reason(self, reason)
 
 
 class BoundedObserverUnreaped(RemotePlacementError):
@@ -124,7 +123,7 @@ class PodOps(Protocol):
 
     def get(self, remote: str, local: Path) -> None: ...
 
-    def job_start(self, command: str) -> Mapping[str, Any]: ...
+    def job_start(self, command: str, *, job_id: str | None = None) -> Mapping[str, Any]: ...
 
     def job_poll(self, job_id: str) -> Mapping[str, Any]: ...
 
@@ -442,7 +441,20 @@ class RemotePlacement:
         state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim,
                           installation=installation, checkpoint=checkpoint)
         try:
+            from .pod_watchdog import IDENTITY_LOG_PATH, IDENTITY_MARK, write_deadline
+            saved = (claim.handle or {}).get("self_stop")
+            write_deadline(claim.ops, saved["deadline"] if saved else time.time() + deadline_seconds,
+                           saved["generation"] if saved else 1)
+            # Keep the first-start report before bootstrap/install can fail or
+            # later engine-log slices exclude the watchdog's earlier line.
+            code, report, _ = self._exec(
+                state, f"grep '^{IDENTITY_MARK}' {shlex.quote(str(IDENTITY_LOG_PATH))} | tail -n 1", timeout=10)
+            if code == 0 and report.startswith(IDENTITY_MARK):
+                log = out / "logs" / "engine.log"
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_text(report, encoding="utf-8")
             if reuse_snapshot is not None:
+                assert self.source_root is not None
                 marker = f"{BOOTSTRAP_ROOT}/{source_digest(self.source_root)}/ok"
                 code, _, _ = self._exec(state, f"test -f {shlex.quote(marker)}", timeout=60)
                 if code != 0 or not self._canonical_installed(state) or state.installed != reuse_snapshot:
@@ -570,7 +582,10 @@ class RemotePlacement:
                     for stream_name, role in (("stdout", "stdout"), ("stderr", "stderr")):
                         source = f"{directory}/{stream_name}"
                         destination = log_root / f"{safe_what}.{stream_name}"
-                        ops.get(source, str(destination))
+                        try:
+                            ops.get(source, destination)
+                        except Exception:  # noqa: BLE001 - collect the remaining logs
+                            destination.unlink(missing_ok=True)
                         run_logs.declare(
                             log_root,
                             run_logs.LogDecl(
@@ -580,17 +595,66 @@ class RemotePlacement:
                             ),
                         )
                         staged.append((stream_name, role, destination))
+                if what == "engine install":
+                    from astrid.core.generation.engine_custody import engine_log_path
+
+                    installation = state.installation
+                    root = installation.root if installation is not None else ENGINE_ROOT
+                    engine = installation.engine if installation is not None else ENGINE_ID
+                    registry = f"{root}/runtime/out/sessions/{engine}"
+                    sources = (
+                        ("engine-log", engine_log_path(root, engine)),
+                        ("supervisor-log", f"{registry}/daemon.log"),
+                        ("session-marker", f"{root}/.astrid-engine/session/session.json"),
+                        ("registry-config", f"{registry}/config.json"),
+                    )
+                    program = (
+                        "import sys; from pathlib import Path; "
+                        "from astrid.core.gateway.doctor_bundle import redact_log; "
+                        "p=Path(sys.argv[1]); q=Path(sys.argv[2]); "
+                        "q.write_text(redact_log(p.read_text(encoding='utf-8', errors='replace')), encoding='utf-8')"
+                    )
+                    for label, source in sources:
+                        destination = log_root / f"engine.install.{label}.log"
+                        remote_safe = f"/tmp/astrid-{uuid.uuid4().hex}-{label}.redacted"
+                        destination.unlink(missing_ok=True)
+                        try:
+                            code, _, _ = ops.exec(
+                                f"{POD_VENV}/bin/python -c {shlex.quote(program)} "
+                                f"{shlex.quote(source)} {shlex.quote(remote_safe)}", 120)
+                            if code == 0:
+                                ops.get(remote_safe, destination)
+                        except Exception:  # noqa: BLE001 - collect the remaining logs
+                            destination.unlink(missing_ok=True)
+                        finally:
+                            try:
+                                ops.exec(f"rm -f {shlex.quote(remote_safe)}", 120)
+                            except Exception:  # noqa: BLE001 - preserve the job failure
+                                pass
+                        run_logs.declare(log_root, run_logs.LogDecl(
+                            name=f"engine.install.{label}", role="install", path=str(destination.resolve())))
                 rows = run_logs.collect(log_root)
                 by_name = {row.get("name"): row for row in rows}
-                for stream_name, _role, source in staged:
+                for stream_name, _role, _source in staged:
                     row = by_name.get(f"{safe_what}-{stream_name}")
                     if not row or row.get("missing"):
-                        raise OSError("collected job log is unavailable")
+                        continue
                     collected = log_root / "logs" / row["file"]
                     final = state.local_out / "logs" / f"{safe_what}.{stream_name}"
                     final.parent.mkdir(parents=True, exist_ok=True)
                     collected.replace(final)
+                    row["file"] = final.name
                     log_paths.append(final)
+                if what == "engine install":
+                    final_logs = state.local_out / "logs"
+                    final_logs.mkdir(parents=True, exist_ok=True)
+                    for row in rows:
+                        if row.get("name", "").startswith("engine.install.") and not row.get("missing"):
+                            (log_root / "logs" / row["file"]).replace(final_logs / row["file"])
+                    names = {row.get("name") for row in rows}
+                    existing = [row for row in run_logs.read_index(state.local_out) if row.get("name") not in names]
+                    (final_logs / "index.json").write_text(json.dumps(
+                        {"schema": "run-logs.collected.v1", "logs": existing + rows}, sort_keys=True) + "\n")
                 state.note("logs", "kept", what=what, files=[str(path) for path in log_paths])
             except Exception as exc:  # noqa: BLE001 - logs must never mask the job failure
                 state.note("logs", "unavailable", error=type(exc).__name__)
@@ -696,21 +760,24 @@ class RemotePlacement:
         self._run_job(state, command, "engine install")
         if not self._engine_installed_healthy(state):
             reason = getattr(state, "install_unverified", None) or "unclassified"
-            match = re.fullmatch(r"status_exit_(-?\d+)", reason)
-            exit_code = int(match.group(1)) if match and -255 <= int(match.group(1)) <= 255 else None
-            code = ("status_exit" if exit_code is not None else reason if reason in {
-                "status_no_receipt", "status_deadline_exhausted", "receipt_read_failed"}
-                else "status_not_installed")
             raise PlacementReasonError(
                 f"engine install finished but status is not installed and healthy (reason: {reason})",
-                reason=Reason(stage="install", step="verify", gate="install", code=code, exit_code=exit_code))
+                reason=installation_reason(reason))
         state.note("install", "done")
 
     def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:
         from astrid.core.generation import engine_recipe, engine_runner
 
         installation = state.installation
+        assert installation is not None
         remaining = min(120, self._remaining() if verification_seconds is None else verification_seconds)
+        verification_deadline = time.monotonic() + remaining
+        if verification_seconds is not None:
+            assert state.claim is not None
+            transport_deadline = getattr(state.claim.ops, "deadline", None)
+            if transport_deadline is not None:
+                verification_deadline = min(verification_deadline, transport_deadline)
+            remaining = max(0, verification_deadline - time.monotonic())
         state.install_unverified = None
         if remaining <= 0:
             state.install_unverified = "status_deadline_exhausted"
@@ -718,10 +785,13 @@ class RemotePlacement:
         command = (f"{POD_VENV}/bin/astrid engines status {installation.engine} "
                    f"--platform {installation.platform} --placement local "
                    f"--root {shlex.quote(installation.root)} --deadline {remaining}")
-        # Failure verification is read-only and bounded by the original paid
+        # Checkpoint verification is read-only and bounded by the original paid
         # lease, independently of the execution timer that the job may exhaust.
-        code, stdout, _ = (self._exec(state, command, timeout=120) if verification_seconds is None
-                           else state.claim.ops.exec(command, remaining))
+        if verification_seconds is None:
+            code, stdout, _ = self._exec(state, command, timeout=120)
+        else:
+            assert state.claim is not None
+            code, stdout, _ = state.claim.ops.exec(command, remaining)
         if code != 0 or stdout.strip() in {"", "null"}:
             state.install_unverified = (_safe_label(f"status_exit_{code}") if code != 0
                                         else "status_no_receipt")
@@ -741,6 +811,8 @@ class RemotePlacement:
         plan = engine_runner.plan_from_receipt(
             recipe, live,
             root=installation.root, placement="local")
+        engine_runner.require_current_receipt(live, plan, recipe)
+        assert state.claim is not None
         receipt = installation.root + "/.astrid-engine/install.json"
         if verification_seconds is None:
             path = state.local_out / "installed.json"
@@ -752,9 +824,9 @@ class RemotePlacement:
             finally:
                 path.unlink(missing_ok=True)
         else:
-            # One transport deadline covers status, this fixed-file read and
-            # the later reset. Do not stream an unbounded pod file into a
-            # controller journal or extend the original paid lease.
+            # Status and this fixed-file read share one verification window.
+            # Failure callers also bound transport and reset by that deadline.
+            # Do not stream an unbounded pod file into a controller journal.
             script = ("import base64,os,stat,sys;"
                       "fd=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK);"
                       "s=os.fstat(fd);"
@@ -762,8 +834,9 @@ class RemotePlacement:
                       "data=os.read(fd,1048577);"
                       "len(data)<=1048576 or sys.exit(2);"
                       "print(base64.b64encode(data).decode())")
-            remaining = min(verification_seconds, max(0, state.claim.ops.deadline - time.monotonic()))
+            remaining = max(0, verification_deadline - time.monotonic())
             if remaining <= 0:
+                state.install_unverified = "status_deadline_exhausted"
                 return False
             code, output, _ = state.claim.ops.exec(
                 f"{POD_VENV}/bin/python -c {shlex.quote(script)} {shlex.quote(receipt)}", remaining)
@@ -773,18 +846,26 @@ class RemotePlacement:
             try:
                 data = base64.b64decode(output.strip(), validate=True)
             except (ValueError, binascii.Error):
+                state.install_unverified = "receipt_read_failed"
                 return False
             if len(data) > 1024 * 1024:
+                state.install_unverified = "receipt_read_failed"
                 return False
         saved = engine_runner._parse_receipt(json.loads(data), plan)
         plan = engine_runner.plan_from_receipt(
             recipe, saved,
             root=installation.root, placement="local")
+        engine_runner.require_current_receipt(saved, plan, recipe)
         if (saved.status != "installed" or live.receipt_id != saved.receipt_id
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks
                 or live.health.object_info_sha256 != saved.health.object_info_sha256):
-            raise InstallationReceiptChanged("live installation differs from its canonical receipt")
+            state.install_unverified = "installation_receipt_changed"
+            raise checkpoint_refusal(InstallationReceiptChanged("live installation differs from its canonical receipt"),
+                                     state.install_unverified)
+        if verification_seconds is not None and time.monotonic() >= verification_deadline:
+            state.install_unverified = "status_deadline_exhausted"
+            return False
         state.installed = {
             "schema": "astrid.runpod.installed-snapshot.v1", "engine": installation.engine,
             "platform": installation.platform, "root": installation.root,
@@ -880,6 +961,7 @@ class _HttpsOps:
 
     def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Kill a slow-drip caller before it can hold the host's drain forever."""
+        assert self.deadline is not None
         def refuse(code: str, message: str) -> PlacementReasonError:
             return PlacementReasonError(
                 message, reason=Reason(stage="boot", step="provider_contract", gate="provider", code=code)
