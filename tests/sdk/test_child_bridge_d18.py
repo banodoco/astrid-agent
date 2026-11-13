@@ -481,7 +481,8 @@ def test_cancelled_and_strict_output_semantics(tmp_path, isolated, channel):
         call(root, wait=True)
 
 
-@pytest.mark.parametrize("reply", [b"invalid\n", b'{"v":1,"request_id":999,"ok":true,"data":{}}\n', b"x" * (1024 * 1024 + 1)])
+@pytest.mark.parametrize("reply", [b"invalid\n", b'{"v":1,"request_id":999,"ok":true,"data":{}}\n',
+                                     pytest.param(b"x" * (1024 * 1024 + 1), id="oversized-1MiB-reply")])
 def test_invalid_channel_reply_is_bounded_and_revokes(reply):
     local, host = socket.socketpair()
     bridge = bridge_module.ChildBridge(local, io_timeout_seconds=0.2)
