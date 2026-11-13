@@ -69,6 +69,8 @@ _logger = logging.getLogger(__name__)
 class RunPodWorkerOwnerError(RuntimeError):
     """Exact RunPod preparation or host custody could not be established."""
 
+    release_identity: tuple[str, str] | None
+
 
 # The expired paid/verification clock cannot be reused for exact cancellation.
 # This short, separate transport budget only drains already-journaled work;
@@ -231,7 +233,8 @@ class RunPodLeaseOwner:
                 limits["hourly_usd"], "lease-recovery"))
             with provider_budget(0):
                 return account_gate(config.api_key, account_ref=record["provider_account_ref"]).retry_delay()
-        except Exception:  # noqa: BLE001 - keep durable retry armed on any config failure.
+        except Exception:  # noqa: BLE001 - configuration failure must keep the durable retry armed.
+            logging.getLogger(__name__).debug("Configuration failure must keep the durable retry armed", exc_info=True)
             # Keep durable recovery armed if its journal/config is currently
             # unreadable; the account gate cannot be addressed without a key.
             return 1.0
@@ -297,7 +300,8 @@ class RunPodLeaseOwner:
                         and (lease["state"] != "idle" or self.clock() < lease["idle_expires_at"])):
                     return
             self.release(reason=reason, _expected_operation=operation)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - expiry failure must keep exact custody and its retry armed.
+            logging.getLogger(__name__).debug("Expiry failure must keep exact custody and its retry armed", exc_info=True)
             with self.lock:
                 self.last_error_type = type(exc).__name__
                 # A fired deadline timer remains stored in deadline_timer. A
@@ -365,7 +369,8 @@ class RunPodLeaseOwner:
                     return
         try:
             self.recover()
-        except Exception:
+        except Exception:  # noqa: BLE001 - release failure must preserve the owner and its recovery timer.
+            logging.getLogger(__name__).debug("Release failure must preserve the owner and its recovery timer", exc_info=True)
             # release() retains exact custody and arms a retry on failure.
             # Keep that owner alive in the host instead of cancelling its timer.
             if self.deadline_timer is None:
@@ -454,15 +459,17 @@ class RunPodLeaseOwner:
                 if record is not None and record.get("operation_id") == operation:
                     try:
                         self._save(record, {**record["lease"], "release_mechanism": "recovery"})
-                    except Exception as exc:  # noqa: BLE001 - optional metadata must not consume the cleanup retry.
+                    except Exception as exc:  # noqa: BLE001 - metadata or recovery failure must retain durable retry authority.
+                        logging.getLogger(__name__).debug("Metadata or recovery failure must retain durable retry authority", exc_info=True)
                         self.last_error_type = type(exc).__name__
             self.release(reason=reason, _expected_operation=operation)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - metadata or recovery failure must retain durable retry authority.
+            logging.getLogger(__name__).debug("Metadata or recovery failure must retain durable retry authority", exc_info=True)
             self.last_error_type = type(exc).__name__
 
-    def job_limits(self, invocation_id, policy):
+    def job_limits(self, invocation_id, *, consent=()):
         """Read claim authority without provider calls; rechecked on admission."""
-        from .target_selection import ClaimedJob, PaidSelectionError, _number, _utc
+        from .target_selection import ClaimedJob, PaidSelectionError, _utc
 
         with self.lock:
             record = self._read()
@@ -492,21 +499,10 @@ class RunPodLeaseOwner:
             cost = max(0, now - _utc(paid["authorized_at"]).timestamp()) * rate / 3600
             budget = max(0, paid["max_usd"] - cost)
             expires = min(expires, now + budget / rate * 3600)
-            # Legacy durations are estimates only. Zero means no estimate;
-            # the phase then uses the remaining lease lifetime as its timeout.
-            preparation = _number(policy.get("preparation_seconds", 0),
-                                  "preparation seconds", zero=True)
-            execution = _number(policy.get("execution_seconds", 0),
-                                "execution seconds", zero=True)
-            idle = min(lease["idle_seconds"], *(
-                _number(policy.get(name, lease["idle_seconds"]), name, zero=True)
-                for name in ("idle_seconds", "placement_idle_seconds")))
-            limits = ClaimedJob(invocation_id, paid["offer_digest"], budget,
+            limits = ClaimedJob(invocation_id, budget,
                                 datetime.fromtimestamp(expires, timezone.utc).isoformat(),
-                                tuple(value for value in policy.get("consent", ()) if value != "paid"),
-                                preparation, execution, idle, operation_id=record["operation_id"])
-            limits.validate(self.selection._recorded_offer(record), self.selection.preferences,
-                            datetime.fromtimestamp(now, timezone.utc))
+                                lease["idle_seconds"], record["operation_id"], tuple(consent))
+            limits.validate(datetime.fromtimestamp(now, timezone.utc))
             return limits
 
     def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None,
@@ -545,8 +541,8 @@ class RunPodLeaseOwner:
                                     and (completed.get("operation_id"), completed.get("pod_id")) == captured):
                                 _validate_completed_release(completed)
                                 released = True
-                    except Exception:  # noqa: BLE001 - only a validated exact completion receipt proves release.
-                        pass
+                    except Exception:  # noqa: BLE001 - only a validated exact completion receipt can prove release.
+                        logging.getLogger(__name__).debug("Only a validated exact completion receipt can prove release", exc_info=True)
                 error = RunPodWorkerOwnerError(
                     f"RunPod acquisition failed; created pod {captured[1]} was released" if released else
                     "RunPod machine custody could not be verified; exact release or reconciliation required")
@@ -562,10 +558,7 @@ class RunPodLeaseOwner:
         from .worker_preparation import TargetObservationError
         job = isinstance(consent, ClaimedJob)
         if job:
-            current = self.job_limits(consent.invocation_id, {
-                "preparation_seconds": consent.preparation_seconds,
-                "execution_seconds": consent.execution_seconds,
-                "idle_seconds": consent.idle_seconds, "consent": consent.consent})
+            current = self.job_limits(consent.invocation_id, consent=consent.consent)
             if current.operation_id != consent.operation_id:
                 raise RunPodWorkerOwnerError("claimed machine changed before job admission")
             consent = current
@@ -906,7 +899,8 @@ class RunPodLeaseOwner:
             self._abort_failure_observation(current)
             try:
                 self._check_observer_children(current)
-            except Exception as exc:  # noqa: BLE001 - any failed reap must keep exact recovery armed.
+            except Exception as exc:  # noqa: BLE001 - any incomplete release must retain custody and recovery.
+                logging.getLogger(__name__).debug("Any incomplete release must retain custody and recovery", exc_info=True)
                 self.last_error_type = type(exc).__name__
                 if current is not None and not self.closed:
                     if self.deadline_timer is not None:
@@ -919,7 +913,8 @@ class RunPodLeaseOwner:
         try:
             with provider_budget(EXACT_CLEANUP_SECONDS, cleanup=True):
                 return self._release(reason=reason)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any incomplete release must retain custody and recovery.
+            logging.getLogger(__name__).debug("Any incomplete release must retain custody and recovery", exc_info=True)
             with self.lock:
                 self.last_error_type = type(exc).__name__
                 if not self.closed:
@@ -971,7 +966,8 @@ class RunPodLeaseOwner:
                 try:
                     _run_sync(reconcile_target.__wrapped__(config, handle_path=self.selection.path,
                               attempt=record, volume=volume, ready_timeout_seconds=1))
-                except Exception:
+                except Exception:  # noqa: BLE001 - unverified stop or cleanup must retain exact custody.
+                    logging.getLogger(__name__).debug("Unverified stop or cleanup must retain exact custody", exc_info=True)
                     record = self._read()
                     if record is None or not record.get("pod_id"):
                         raise AcquisitionUnresolvedError("original create remains unresolved; no replacement is permitted") from None
@@ -1020,7 +1016,8 @@ class RunPodLeaseOwner:
             ops = exact_cleanup_ops(record)
             try:
                 stopped = ops.job_cancel(job_id)
-            except Exception:
+            except Exception:  # noqa: BLE001 - unverified stop or cleanup must retain exact custody.
+                logging.getLogger(__name__).debug("Unverified stop or cleanup must retain exact custody", exc_info=True)
                 child = getattr(ops, "unreaped_child", None)
                 if child is not None:
                     with self.lock:
@@ -1236,7 +1233,8 @@ class RunPodWarmSessionOwner:
             if authorized > self.clock() or not math.isfinite(expiry):
                 raise ValueError()
             return invocation, expiry, idle
-        except Exception:
+        except Exception:  # noqa: BLE001 - any malformed paid lifetime must fail closed.
+            logging.getLogger(__name__).debug("Any malformed paid lifetime must fail closed", exc_info=True)
             raise RunPodWorkerOwnerError("warm session has no verified paid lifetime") from None
 
     def _warm(self, record: Mapping[str, Any], reference: Any | None = None) -> dict[str, Any]:
@@ -1383,7 +1381,8 @@ class RunPodWarmSessionOwner:
                 current = self._read()
                 if current["state"] == "cleanup_complete":
                     _validate_absence_receipt(current)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - expiry failure must keep exact custody and its retry armed.
+                logging.getLogger(__name__).debug("Expiry failure must keep exact custody and its retry armed", exc_info=True)
                 # Keep only a type; provider/transport messages can hold secrets.
                 self.last_error_type = type(exc).__name__
                 if isinstance(exc, AcquisitionUnresolvedError):
@@ -2768,7 +2767,8 @@ class RunPodRemoteWorkerPreparer:
                                       json.dumps(asdict(selection)), json.dumps(receipt.as_dict())],
                             python=selection.python_executable, timeout_seconds=45,
                         )
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - an unverified supervisor stop must retain custody.
+                        logging.getLogger(__name__).debug("An unverified supervisor stop must retain custody", exc_info=True)
                         raise RunPodWorkerOwnerError("original installation supervisor stop is unresolved") from None
                 else:
                     session_stopped = self.session_owner.stop(selection, receipt)

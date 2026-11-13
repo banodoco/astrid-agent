@@ -66,7 +66,7 @@ def test_emitted_failure_is_bounded_allowlisted_and_redacted(tmp_path, payload, 
     assert len(stdout) < 200
 
 
-@pytest.mark.parametrize('raw', [b'not-json', b'x' * (fd.MAX_RESULT_BYTES + 1), b'[]', b'null'])
+@pytest.mark.parametrize('raw', [b'not-json', pytest.param(b'x' * (fd.MAX_RESULT_BYTES + 1), id='oversized-result'), b'[]', b'null'])
 def test_unreadable_or_invalid_result_has_generic_fallback(tmp_path, raw):
     assert fd.parse_frame(emit(tmp_path, raw)) == fd.fallback()
 
@@ -85,7 +85,7 @@ def test_result_symlink_and_missing_file_are_not_read(tmp_path):
     fd.MARK + json.dumps({'code': 'download_failed', 'category': SENTINEL}),
     fd.MARK + json.dumps({'code': 'download_failed', 'category': 'model', 'message': SENTINEL}),
     (fd.MARK + '{"code":"download_failed","category":"model"}\n') * 2,
-    'x' * (fd.MAX_FRAME_BYTES + 1),
+    pytest.param('x' * (fd.MAX_FRAME_BYTES + 1), id='oversized-frame'),
 ])
 def test_untrusted_frames_never_escape_or_select_unknown_categories(stdout):
     assert fd.parse_frame(stdout) == fd.fallback()

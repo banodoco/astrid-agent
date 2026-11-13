@@ -271,6 +271,8 @@ def test_tts_prompt_without_canonical_text_has_declared_input_hint(monkeypatch, 
         entries.resolve_entry_inputs('fixture', {'prompt': 'hello'}, mode='tts')
 
 
+# Measured 120 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_real_named_tts_sdk_maps_prompt_and_refuses_duplicate_before_target(monkeypatch):
     import astrid.sdk.generation as sdk_generation
     from astrid.sdk.generation import GenerationInputError

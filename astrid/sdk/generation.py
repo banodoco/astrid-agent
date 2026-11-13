@@ -7,6 +7,7 @@ generation method is actually invoked.
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import json
 from contextlib import contextmanager
@@ -226,7 +227,14 @@ def _align_mode(align):
     return align
 
 
-def _generation_controls(*, engine, consent, max_usd, deadline):
+_CLAIM_CONTROLS = frozenset({
+    'max_usd', 'max_hourly_usd', 'deadline', 'offer_digest',
+    'preparation_seconds', 'execution_seconds', 'idle_seconds',
+    'capacity_timeout_seconds', 'wait_for_capacity', 'gpu', 'gpu_types', 'datacenter',
+})
+
+
+def _generation_controls(*, engine, consent):
     from astrid.core.generation.targets import canonical_engine
     if engine is not None:
         try:
@@ -235,39 +243,11 @@ def _generation_controls(*, engine, consent, max_usd, deadline):
             raise GenerationInputError(str(exc)) from exc
         if selected != 'comfyui':
             raise GenerationInputError('Phase 1 target generation supports only comfyui')
-    if max_usd is not None:
-        import math
-        if type(max_usd) not in (float, int) or not math.isfinite(max_usd) or max_usd <= 0:
-            raise GenerationInputError('max_usd must be a finite positive USD cap')
-    if deadline is not None:
-        from datetime import datetime, timedelta
-        try:
-            stamp = datetime.fromisoformat(deadline)
-            if stamp.utcoffset() != timedelta(0):
-                raise ValueError
-        except (TypeError, ValueError):
-            raise GenerationInputError('deadline must be an absolute UTC timestamp') from None
-    if not isinstance(consent, (tuple, list)) or any(scope not in {'user_env', 'paid'} for scope in consent):
-        raise GenerationInputError('consent must contain user_env and/or paid scopes')
+    if not isinstance(consent, (tuple, list)) or any(scope != 'user_env' for scope in consent):
+        raise GenerationInputError('consent must contain only user_env; rent with `astrid machines claim`')
     return {name: value for name, value in
-            (('engine', engine), ('consent', tuple(consent)), ('max_usd', max_usd), ('deadline', deadline))
+            (('engine', engine), ('consent', tuple(consent)))
             if value is not None and value != ()}
-
-
-def _runpod_paid_controls(controls):
-    """Per-call authority only; saved preferences never supply consent/bounds."""
-    from datetime import datetime, timezone
-    from astrid.core.generation.preflight import generation_error
-    consent = tuple(controls.get('consent', ()))
-    cap, deadline = controls.get('max_usd'), controls.get('deadline')
-    _generation_controls(engine=controls.get('engine'), consent=consent,
-                         max_usd=cap, deadline=deadline)
-    policy_wait = controls.get('max_hourly_usd') is not None
-    if ('paid' not in consent or cap is None or (deadline is None and not policy_wait)
-            or deadline is not None and datetime.fromisoformat(deadline) <= datetime.now(timezone.utc)):
-        raise generation_error(ValueError('RunPod requires fresh paid consent, a positive max_usd and an exact-offer deadline or explicit hourly ceiling'),
-                               code='input_rejected', details={'field': 'consent'})
-    return dict(consent=consent, max_usd=cap, deadline=deadline)
 
 
 def _runpod_preferences(client):
@@ -304,44 +284,29 @@ def _runpod_job_preferences(preferences, datacenter):
         raise GenerationInputError(str(exc)) from exc
 
 
-def _runpod_placement_policy(controls, *, engine, machine=None, placement_policy=None):
-    """Snapshot the user's disclosed offer and preferences into the task.
+_NO_MACHINE = 'no machine: run `astrid machines claim`'
 
-    ``machine`` pins the job to one live lease (its machine id); by default the
-    host reuses the warm machine with the same custody, or claims one.
-    """
-    from astrid.packs.runpod.target_selection import policy_consent_digest, RunPodPreferences, _number
 
-    paid = _runpod_paid_controls(controls)
-    names = ("preparation_seconds", "execution_seconds", "idle_seconds")
-    if any(controls.get(name) is None for name in names):
-        raise GenerationInputError("RunPod requires preparation, execution and idle bounds")
-    preferences = _runpod_preferences(controls.get("client"))
-    preferences = _runpod_job_preferences(preferences, controls.get("datacenter"))
-    if placement_policy is not None:
-        if placement_policy.gpu_types:
-            preferences["gpu_types"] = list(placement_policy.gpu_types)
-    ceiling, exact = controls.get("max_hourly_usd"), controls.get("offer_digest")
-    if ceiling is not None and exact is not None:
-        raise GenerationInputError("choose an exact offer digest or a waiting policy hourly ceiling, not both")
-    if ceiling is None and exact is None:
-        raise GenerationInputError("RunPod requires the disclosed offer digest or --max-hourly-usd for policy consent")
-    policy_digest = None
-    if ceiling is not None:
-        ceiling = _number(ceiling, "hourly USD ceiling")
-        policy_digest = policy_consent_digest(RunPodPreferences.from_mapping(preferences), ceiling)
-    capacity_timeout = controls.get("capacity_timeout_seconds")
-    if capacity_timeout is not None:
-        capacity_timeout = _number(capacity_timeout, "capacity timeout seconds")
-    wait_for_capacity = controls.get("wait_for_capacity", True)
-    if type(wait_for_capacity) is not bool:
-        raise GenerationInputError("wait_for_capacity must be a boolean")
-    return {"kind": "runpod", "engine": engine, "preferences": preferences,
-            **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"]),
-            "offer_digest": exact, "policy_digest": policy_digest, "max_hourly_usd": ceiling,
-            "capacity_timeout_seconds": capacity_timeout, "wait_for_capacity": wait_for_capacity,
-            **({"machine": machine} if machine else {}),
-            **({"placement_idle_seconds": placement_policy.idle_timeout_s} if placement_policy is not None else {})}
+def _require_claimed_machine(kind, machine=None):
+    """Read local custody only; the owning host rechecks it before running."""
+    import time
+    from astrid.core.generation.placement import _runpod_leases
+
+    now = time.time()
+    live = [row for row in _runpod_leases(kind)
+            if row.get('live') and row.get('state', 'idle') in {'idle', 'active', 'preparing'}
+            and (row.get('release_at') is None or row['release_at'] > now)]
+    if machine is not None:
+        live = [row for row in live if machine in {row.get('machine'), row.get('id')}]
+    if not live:
+        raise GenerationInputError(_NO_MACHINE)
+
+
+def _runpod_placement_policy(*, engine, machine=None, consent=()):
+    """A job names its engine and an optional existing machine; the claim owns spend."""
+    return {'kind': 'runpod', 'engine': engine,
+            **({'machine': machine} if machine else {}),
+            **({'consent': list(consent)} if consent else {})}
 
 
 def _require_runpod_claim_host(client):
@@ -417,22 +382,9 @@ def _runpod_status(*, client, include_quote, preferences=None, fresh_claim=False
     return dict(status)
 
 
-def _modality_controls(*, engine, consent, max_usd, deadline, offer_digest, preparation_seconds,
-                       execution_seconds, idle_seconds, align, max_hourly_usd=None,
-                       capacity_timeout_seconds=None, wait_for_capacity=True,
-                       datacenter=None) -> dict[str, Any]:
-    """The controls image, video and audio all build from their public keywords."""
-    controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-    controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                    execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-    if datacenter is not None:
-        controls['datacenter'] = datacenter
-    if max_hourly_usd is not None:
-        controls['max_hourly_usd'] = max_hourly_usd
-    if capacity_timeout_seconds is not None:
-        controls['capacity_timeout_seconds'] = capacity_timeout_seconds
-    if wait_for_capacity is not True:
-        controls['wait_for_capacity'] = wait_for_capacity
+def _modality_controls(*, engine, consent, align) -> dict[str, Any]:
+    """The controls image, video and audio build from their public keywords."""
+    controls = _generation_controls(engine=engine, consent=consent)
     if align is not None:
         controls['align'] = _align_mode(align)
     return controls
@@ -500,6 +452,15 @@ def _infer_image_mode(
 _EXPLICIT_ONLY_IMAGE_MODES: frozenset[str] = frozenset(
     {"edit", "inpaint", "outpaint", "upscale"}
 )
+
+
+def _reject_claim_controls(inputs):
+    if not isinstance(inputs, Mapping):
+        return
+    removed = sorted(_CLAIM_CONTROLS.intersection(inputs))
+    if removed:
+        raise GenerationInputError(
+            f"generate no longer accepts {', '.join(removed)}; use `astrid machines claim`")
 
 
 def _reject_retired_generation_inputs(inputs: dict[str, Any]) -> None:
@@ -752,7 +713,7 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
     ), taxonomy_registry=taxonomy))
     preferred = ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512")
     candidates = [entry for entry in registry.list_by_modality("image")
-                  if "t2i" in entry.modes and getattr(entry.modes["t2i"].backends.get("local"), "template", "")]
+                  if "t2i" in entry.modes and _local_template(entry, "t2i")]
     candidates.sort(key=lambda entry: (preferred.index(entry.id) if entry.id in preferred else len(preferred), entry.id))
     if not candidates:
         raise CapabilityValidationError("installed catalog has no local image producer")
@@ -1043,7 +1004,7 @@ class GenerationFacade:
         from astrid.core.generation import targets
         from astrid.core.generation.target_launch import launch_target
 
-        _generation_controls(engine=engine, consent=consent, max_usd=None, deadline=None)
+        _generation_controls(engine=engine, consent=consent)
         from astrid.core.generation.placement import is_runpod_placement
         if is_runpod_placement(placement):
             raise GenerationInputError('launch requires a selected local human ComfyUI')
@@ -1131,7 +1092,7 @@ class GenerationFacade:
                  datacenter=None, fresh_claim=False):
         from astrid.core.generation.entries import describe_entry, describe_workflow
         if placement is not None:
-            _generation_controls(engine=engine, consent=(), max_usd=None, deadline=None)
+            _generation_controls(engine=engine, consent=())
             from astrid.core.generation import placement as placements
             resolved = placements.validate_placement(placements.resolve_placement(
                 placements.request_from_selector(placement), client=client))
@@ -1150,7 +1111,7 @@ class GenerationFacade:
                 "preferences": preferences, "max_hourly_usd": max_hourly_usd,
                 "policy_digest": (policy_consent_digest(RunPodPreferences.from_mapping(preferences), max_hourly_usd)
                                   if max_hourly_usd is not None else None),
-                "paid_consent_required": True,
+                "claim_command": "astrid machines claim",
             }
             return description
         if bool(entry) == bool(workflow):
@@ -1245,16 +1206,6 @@ class GenerationFacade:
         mode: str | None = None,
         engine: str | None = None,
         consent: tuple[str, ...] = (),
-        max_usd: float | None = None,
-        deadline: str | None = None,
-        offer_digest: str | None = None,
-        datacenter: str | None = None,
-        preparation_seconds: float | None = None,
-        execution_seconds: float | None = None,
-        idle_seconds: float | None = None,
-        max_hourly_usd: float | None = None,
-        capacity_timeout_seconds: float | None = None,
-        wait_for_capacity: bool = True,
         placement_policy: Mapping[str, Any] | None = None,
         python: WorkflowFile | None = None,
         companion: WorkflowFile | None = None,
@@ -1298,14 +1249,11 @@ class GenerationFacade:
 
         Omitted domain values stay omitted so the action owns its defaults.
         """
+        controls = _generation_controls(engine=engine, consent=consent)
+        _reject_claim_controls(inputs or {})
         _require_single_declared_output(workflow=workflow, companion=companion)
         if placement is not None:
             from astrid.core.generation.entries import resolve_workflow_inputs
-            controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-            controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                            execution_seconds=execution_seconds, idle_seconds=idle_seconds,
-                            max_hourly_usd=max_hourly_usd, capacity_timeout_seconds=capacity_timeout_seconds,
-                            wait_for_capacity=wait_for_capacity, datacenter=datacenter)
             if align is not None:
                 controls['align'] = _align_mode(align)
             if not isinstance(workflow, (str, Path)) or python is not None or companion is not None:
@@ -1317,7 +1265,7 @@ class GenerationFacade:
                     source_video_widget, managed_assets, entry_inputs, workflow_inputs, comfy_url,
                     comfy_output_dir, generation_intent, placement_policy)):
                 raise GenerationInputError('a target workflow cannot replace explicit prepared binding or managed source controls')
-            source_controls = {'client': client, 'project': project, 'out': out,
+            source_controls: dict[str, Any] = {'client': client, 'project': project, 'out': out,
                                'project_root': project_root}
             with _snapshot_generation_workflow(Path(workflow)) as frozen:
                 from astrid.core.generation.availability import require_bundled_workflow_available
@@ -1408,7 +1356,7 @@ class GenerationFacade:
     def _generate_on_target_impl(
         self,
         *,
-        _job_dirs: list,
+        _job_dirs: builtins.list[Path],
         registry: Any,
         model: str | None,
         mode: str,
@@ -1423,8 +1371,8 @@ class GenerationFacade:
     ) -> Any:
         """Bind a catalog template and admit it through the workflow facade.
 
-        Target selection precedes package/runtime prerequisites so an attached
-        server can be used without installing or owning a managed ComfyUI.
+        Qualify candidates before placement discovery. An attached server can
+        be used without installing or owning a managed ComfyUI.
         """
         import json
         from tempfile import TemporaryDirectory
@@ -1471,6 +1419,7 @@ class GenerationFacade:
             identifier = candidate[1].id if candidate[0] == "catalog" else candidate[1]["id"]
             return (preferred.index(identifier) if identifier in preferred else len(preferred), identifier)
 
+        candidates: builtins.list[tuple[str, Any]]
         if workflow_entry is not None:
             candidates = [("workflow", workflow_entry)]
         elif model is not None:
@@ -1537,16 +1486,14 @@ class GenerationFacade:
             repo=controls.get('project_root')))
         is_managed_target = placement.kind == 'local'
         is_remote_target = placement.kind not in placements.BUILTIN_KINDS
-        if is_remote_target:
-            _runpod_paid_controls(controls)
-        placement_policy = (_runpod_placement_policy(controls, engine=None, machine=placement.machine,
-                                                     placement_policy=placement.policy)
+        if is_remote_target and not dry_run:
+            _require_claimed_machine(placement.kind, placement.machine)
+        placement_policy = (_runpod_placement_policy(engine=None, machine=placement.machine,
+                                                     consent=controls.get('consent', ()))
                             if is_remote_target and not dry_run else
                             {"kind": "local", "device": placement.device} if is_managed_target else None)
         runpod_engine = pending_target = None
-        for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
-                     'execution_seconds', 'idle_seconds', 'max_hourly_usd', 'capacity_timeout_seconds',
-                     'wait_for_capacity', 'datacenter'):
+        for name in ('engine', 'consent'):
             controls.pop(name, None)
         # Managed and remote workflows are frozen from declarations. The host
         # validates that exact selection after alignment and engine readiness.
@@ -1756,22 +1703,23 @@ class GenerationFacade:
                 preview.setdefault('workflow', ready_template)
             if approval is not None:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
-            # Report the same built graph's requirements that local alignment will judge.
-            from astrid.core.generation.managed_preparation import judge_declarations
-            from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value, load_workflow_path
-            from vibecomfy.workflow_bundle import emit_bundle
-            with TemporaryDirectory(prefix="astrid-dry-declarations-") as scratch:
-                root = Path(scratch)
-                capsule = root / "workflow.py"
-                emit_bundle(workflow, capsule, {"operation": "authored"})
-                loaded = load_workflow_path(capsule, root / "load")
-                canonical = _canonical_bundle_value(loaded.resolved).workflow
-                manifest, _ = judge_declarations(canonical, root / "engine",
-                                                 workflow_entries.engine_table()['comfyui'])
-            if placement.kind == 'local':
-                from astrid.core.generation.managed_preparation import configured_models_root
-                manifest = {**manifest, 'models_root': configured_models_root()}
-            readiness['entry']['requirements'] = manifest
+            # Only managed placements run declaration preparation on the execution host.
+            if is_managed_target or is_remote_target:
+                from astrid.core.generation.managed_preparation import judge_declarations
+                from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value, load_workflow_path
+                from vibecomfy.workflow_bundle import emit_bundle
+                with TemporaryDirectory(prefix="astrid-dry-declarations-") as scratch:
+                    root = Path(scratch)
+                    capsule = root / "workflow.py"
+                    emit_bundle(workflow, capsule, {"operation": "authored"})
+                    loaded = load_workflow_path(capsule, root / "load")
+                    canonical = _canonical_bundle_value(loaded.resolved).workflow
+                    manifest, _ = judge_declarations(canonical, root / "engine",
+                                                     workflow_entries.engine_table()['comfyui'])
+                if placement.kind == 'local':
+                    from astrid.core.generation.managed_preparation import configured_models_root
+                    manifest = {**manifest, 'models_root': configured_models_root()}
+                readiness['entry']['requirements'] = manifest
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
@@ -1797,7 +1745,14 @@ class GenerationFacade:
                 asset_arguments["managed_assets"] = import_member(archive)
             if is_remote_target and entry_id != 'workflow':
                 from astrid.core.generation.job_inputs import write_archive
-                public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
+                # A requested filename_prefix is bound to the workflow's declared output
+                # (workflow_inputs). The shipped archive carries it only when the entry
+                # declares it as an input; an entry without that port must not refuse it.
+                archive_inputs = {name: value for name, value in inputs.items() if name != 'filename_prefix'}
+                public, public_values = workflow_entries.resolve_entry_inputs(entry_id, archive_inputs, mode=mode)
+                if 'filename_prefix' in inputs and any(
+                        'filename_prefix' in {port['name'], *port.get('aliases', [])} for port in public['inputs']):
+                    public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
                 if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
                     public_values['seed'] = plan['bindings']['seed']
                 archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
@@ -1904,15 +1859,6 @@ class GenerationFacade:
         execution: str | None = None,
         engine: str | None = None,
         consent: tuple[str, ...] = (),
-        max_usd: float | None = None,
-        deadline: str | None = None,
-        offer_digest: str | None = None,
-        preparation_seconds: float | None = None,
-        execution_seconds: float | None = None,
-        idle_seconds: float | None = None,
-        max_hourly_usd: float | None = None,
-        capacity_timeout_seconds: float | None = None,
-        wait_for_capacity: bool = True,
         wait: bool = True,
         out: Path | str | None = None,
         project: str | None = None,
@@ -1930,7 +1876,6 @@ class GenerationFacade:
         verbose: bool = False,
         argv: tuple[str, ...] = (),
         align: str | None = None,
-        datacenter: str | None = None,
         **inputs: Any,
     ) -> Any:
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
@@ -1950,15 +1895,6 @@ class GenerationFacade:
         execution: str | None = None,
         engine: str | None = None,
         consent: tuple[str, ...] = (),
-        max_usd: float | None = None,
-        deadline: str | None = None,
-        offer_digest: str | None = None,
-        preparation_seconds: float | None = None,
-        execution_seconds: float | None = None,
-        idle_seconds: float | None = None,
-        max_hourly_usd: float | None = None,
-        capacity_timeout_seconds: float | None = None,
-        wait_for_capacity: bool = True,
         wait: bool = True,
         out: Path | str | None = None,
         project: str | None = None,
@@ -1976,20 +1912,15 @@ class GenerationFacade:
         verbose: bool = False,
         argv: tuple[str, ...] = (),
         align: str | None = None,
-        datacenter: str | None = None,
         **inputs: Any,
     ) -> Any:
         kind = _MEDIA_KINDS[modality]
         if kind.retire_inputs_first:
             _reject_retired_generation_inputs(inputs)
+        _reject_claim_controls(inputs)
         inputs = _public_input_values(inputs)
-        controls = _modality_controls(
-            engine=engine, consent=consent, max_usd=max_usd, deadline=deadline,
-            offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-            execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
-            max_hourly_usd=max_hourly_usd, capacity_timeout_seconds=capacity_timeout_seconds,
-            wait_for_capacity=wait_for_capacity, datacenter=datacenter,
-        )
+        _reject_claim_controls(inputs)
+        controls = _modality_controls(engine=engine, consent=consent, align=align)
         if not kind.retire_inputs_first:
             _reject_retired_generation_inputs(inputs)
         inputs.update({name: value for name, value in
@@ -2178,15 +2109,6 @@ class GenerationFacade:
         execution: str | None = None,
         engine: str | None = None,
         consent: tuple[str, ...] = (),
-        max_usd: float | None = None,
-        deadline: str | None = None,
-        offer_digest: str | None = None,
-        preparation_seconds: float | None = None,
-        execution_seconds: float | None = None,
-        idle_seconds: float | None = None,
-        max_hourly_usd: float | None = None,
-        capacity_timeout_seconds: float | None = None,
-        wait_for_capacity: bool = True,
         wait: bool = True,
         request: str | Mapping[str, Any] | None = None,
         asset_map: str | Mapping[str, Any] | None = None,
@@ -2207,7 +2129,6 @@ class GenerationFacade:
         verbose: bool = False,
         argv: tuple[str, ...] = (),
         align: str | None = None,
-        datacenter: str | None = None,
         **inputs: Any,
     ) -> Any:
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
@@ -2224,15 +2145,6 @@ class GenerationFacade:
         execution: str | None = None,
         engine: str | None = None,
         consent: tuple[str, ...] = (),
-        max_usd: float | None = None,
-        deadline: str | None = None,
-        offer_digest: str | None = None,
-        preparation_seconds: float | None = None,
-        execution_seconds: float | None = None,
-        idle_seconds: float | None = None,
-        max_hourly_usd: float | None = None,
-        capacity_timeout_seconds: float | None = None,
-        wait_for_capacity: bool = True,
         wait: bool = True,
         out: Path | str | None = None,
         project: str | None = None,
@@ -2251,7 +2163,6 @@ class GenerationFacade:
         verbose: bool = False,
         argv: tuple[str, ...] = (),
         align: str | None = None,
-        datacenter: str | None = None,
         **inputs: Any,
     ) -> Any:
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
