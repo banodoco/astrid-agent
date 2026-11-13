@@ -92,6 +92,7 @@ def test_waiting_holder_occurs_once_per_line(monkeypatch, capsys):
 
 def test_idle_and_follow_share_the_occupancy_reader(tmp_path, monkeypatch):
     import json
+
     from astrid.sdk import host_bootstrap
     for active in (0, 1):
         (tmp_path / "generic-host.busy.json").write_text(json.dumps({"pid": 123, "active": active}))
