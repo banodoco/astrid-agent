@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 
 SCHEMA = 'astrid.entry-inputs.v1'
 MAX_BYTES = 16 * 1024**3
+_FIXED_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 
 
 def write_archive(path: Path, values: Mapping[str, Any], ports: list[dict[str, Any]]) -> Path:
@@ -56,11 +57,20 @@ def write_archive(path: Path, values: Mapping[str, Any], ports: list[dict[str, A
             file_maps[name] = {key: map_member(item) for key, item in value.items()}
     if sum(source.stat().st_size for source in files.values()) > MAX_BYTES:
         raise ValueError('entry inputs archive is too large')
+    # The same inputs give the same bytes: the archive's digest is part of the
+    # request identity that recovery compares on resume.
+    def entry(name: str) -> zipfile.ZipInfo:
+        info = zipfile.ZipInfo(name, date_time=_FIXED_DATE_TIME)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = (stat.S_IFREG | 0o644) << 16
+        return info
+
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr('inputs.json', json.dumps({'schema': SCHEMA, 'inputs': inputs,
+        archive.writestr(entry('inputs.json'), json.dumps({'schema': SCHEMA, 'inputs': inputs,
                          'file_inputs': file_inputs, 'file_maps': file_maps}, allow_nan=False))
         for name, source in files.items():
-            archive.write(source, name)
+            with source.open('rb') as reader, archive.open(entry(name), 'w', force_zip64=True) as writer:
+                shutil.copyfileobj(reader, writer, 1024 * 1024)
     return path
 
 
