@@ -22,6 +22,16 @@ from tests.packs.runpod.test_warm_session import (  # noqa: F401
 )
 
 
+class ProviderResponse(io.BytesIO):
+    status: int
+
+
+def provider_response(body: bytes, status: int = 200):
+    response = ProviderResponse(body)
+    response.status = status
+    return response
+
+
 def watchdog_module():
     return importlib.import_module("astrid.packs.runpod.pod_watchdog")
 
@@ -89,14 +99,14 @@ def test_termination_retries_with_bounded_backoff_until_accepted(tmp_path, monke
 
     def request(req, timeout):
         methods.append(req.get_method())
-        assert req.full_url == "https://rest.runpod.io/v1/pods/fake-pod"
+        assert req.full_url == "https://api.runpod.io/v2/pods/fake-pod"
         assert req.data is None
         if req.get_method() == "GET":
-            return io.BytesIO(b'{"actions":["terminate"]}')
+            return provider_response(b'{"actions":["terminate"]}')
         assert timeout == 10
         if methods.count("DELETE") <= 8:
             raise URLError("unavailable")
-        return io.BytesIO(b"")
+        return provider_response(b"")
 
     monkeypatch.setattr(module, "urlopen", request)
     module.run(tmp_path / "deadline", 100)
@@ -123,20 +133,61 @@ def test_identity_report_contains_names_only_and_read_only_authorisation(
 
     def request(req, timeout):
         assert req.get_method() == "GET"
-        assert req.full_url == "https://rest.runpod.io/v1/pods/fake-pod"
+        assert req.full_url == "https://api.runpod.io/v2/pods/fake-pod"
         assert timeout == 2
         if isinstance(result, int):
             raise HTTPError(req.full_url, result, "fake-pod-key", {}, None)
-        return io.BytesIO(json.dumps({**result, "env": {"RUNPOD_API_KEY": "fake-pod-key"}}).encode())
+        return provider_response(json.dumps({**result, "env": {"RUNPOD_API_KEY": "fake-pod-key"}}).encode())
 
     monkeypatch.setattr(module, "urlopen", request)
     module._report_identity()
     assert log.read_text() == (
         "pod_watchdog: identity=RUNPOD_POD_ID,RUNPOD_API_KEY "
-        f"termination_authorised={authorised} probe=GET-own-pod-actions"
+        f"termination_authorised={authorised} probe=GET-own-pod-actions "
+        f"probe_status={result if isinstance(result, int) else 200}"
         + (" watchdog=unavailable custody=host-only" if authorised == "unknown" else "") + "\n")
     assert "fake-pod" not in log.read_text()
     assert "fake-pod-key" not in log.read_text()
+
+
+
+@pytest.mark.parametrize(("failure", "status"), [
+    ("malformed-json", 200), ("transport", 0), ("missing-identity", 0),
+])
+def test_identity_probe_records_observed_status_when_unavailable(tmp_path, monkeypatch, failure, status):
+    module = watchdog_module()
+    monkeypatch.setenv("RUNPOD_POD_ID", "fake-pod")
+    monkeypatch.setenv("RUNPOD_API_KEY", "fake-pod-key")
+    log = tmp_path / "engine.log"
+    monkeypatch.setattr(module, "IDENTITY_LOG_PATH", log)
+
+    def request(*args, **kwargs):
+        if failure == "transport":
+            raise URLError("private transport detail")
+        assert failure == "malformed-json"
+        return provider_response(b"private malformed JSON", status=200)
+
+    if failure == "missing-identity":
+        monkeypatch.delenv("RUNPOD_API_KEY")
+    monkeypatch.setattr(module, "urlopen", request)
+    expected = "no" if failure == "missing-identity" else "unknown"
+    assert module._report_identity() == expected
+    line = log.read_text()
+    assert f"probe_status={status}" in line
+    assert "private" not in line
+    if expected == "unknown":
+        assert "watchdog=unavailable custody=host-only" in line
+
+
+def test_identity_probe_does_not_infer_status_from_mocked_body(tmp_path, monkeypatch):
+    module = watchdog_module()
+    monkeypatch.setenv("RUNPOD_POD_ID", "fake-pod")
+    monkeypatch.setenv("RUNPOD_API_KEY", "fake-pod-key")
+    log = tmp_path / "engine.log"
+    monkeypatch.setattr(module, "IDENTITY_LOG_PATH", log)
+    monkeypatch.setattr(module, "_request", lambda *args, **kwargs: {"actions": ["terminate"]})
+    assert module._report_identity() == "yes"
+    assert "probe_status=0" in log.read_text()
 
 
 def test_first_start_identity_line_is_collected_by_host(retained, tmp_path, monkeypatch):
@@ -148,7 +199,7 @@ def test_first_start_identity_line_is_collected_by_host(retained, tmp_path, monk
     monkeypatch.setenv("RUNPOD_POD_ID", "fake-pod")
     monkeypatch.setenv("RUNPOD_API_KEY", "fake-pod-key")
     monkeypatch.setattr(module, "IDENTITY_LOG_PATH", log)
-    monkeypatch.setattr(module, "urlopen", lambda *a, **kw: io.BytesIO(b'{"actions":["terminate"]}'))
+    monkeypatch.setattr(module, "urlopen", lambda *a, **kw: provider_response(b'{"actions":["terminate"]}'))
     # The real first-start path writes its line before acknowledging readiness.
     with monkeypatch.context() as clock:
         clock.setattr(module.time, "time", lambda: 100)
@@ -264,7 +315,7 @@ def test_transported_terminate_template_equals_exact_release_template(monkeypatc
 
     module.write_deadline(SimpleNamespace(exec=execute), 100, 1)
     provider.delete("own/id")
-    assert release_calls == [("DELETE", "https://rest.runpod.io/v1/pods/own%2Fid")]
+    assert release_calls == [("DELETE", "https://api.runpod.io/v2/pods/own%2Fid")]
     assert (requests[0].get_method(), requests[0].full_url) == release_calls[0]
 
 
@@ -363,10 +414,10 @@ def test_startup_authorisation_controls_claim_and_exact_release(
 
     def probe_request(req, **kwargs):
         assert req.get_method() == "GET"
-        assert req.full_url == "https://rest.runpod.io/v1/pods/fake-pod"
+        assert req.full_url == "https://api.runpod.io/v2/pods/fake-pod"
         if isinstance(probe, int):
             raise HTTPError(req.full_url, probe, "fake-pod-key", {}, None)
-        return io.BytesIO(json.dumps(probe).encode())
+        return provider_response(json.dumps(probe).encode())
 
     def spawn(*args, **kwargs):
         try:

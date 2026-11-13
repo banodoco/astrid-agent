@@ -1,6 +1,6 @@
 """Acquisition is confirmed from GraphQL pod.machine, never from REST.
 
-Live pod 65dvlpzs5ejrnk: REST GET /v1/pods/{id} reports ``machine: {}`` (no
+Live pod 65dvlpzs5ejrnk: REST GET /v2/pods/{id} reports ``machine: {}`` (no
 gpuTypeId, no dataCenterId), so confirming from REST always failed a correct
 pod. The datacenter must equal the contract's exactly; the GPU passes only if
 the provider's own gpuTypes catalog displayName for the contract's GPU type id
@@ -48,7 +48,7 @@ def _contract(**overrides):
 
 
 def _rest_pod():
-    # REST GET /v1/pods/{id} (and the inventory record) for the live pod: machine == {}.
+    # REST GET /v2/pods/{id} (and the inventory record) for the live pod: machine == {}.
     return {"id": POD_ID, "name": "astrid-product-op", "desiredStatus": "RUNNING",
             "actualStatus": "RUNNING", "imageName": IMAGE, "machine": {}}
 

@@ -108,3 +108,11 @@ def test_a_manifest_override_that_misses_the_canonical_pin_is_refused(tmp_path, 
 def test_packaged_runtime_lock_is_byte_identical_to_the_root_lock():
     """runtime.lock.json (root) is the single source; the wheel copy may never drift."""
     assert (ROOT / "astrid/resources/runtime.lock.json").read_bytes() == (ROOT / "runtime.lock.json").read_bytes()
+
+
+def test_engine_contribution_recipe_digests_match_the_pinned_files():
+    from astrid.core.generation.engine_recipe import parse_recipe_declarations
+
+    for manifest in PACKS.glob("*/extensions/generation.engine/*.yaml"):
+        for row in parse_recipe_declarations(manifest.read_text(), manifest.stem):
+            assert row["sha256"] == _digest(ROOT / "astrid" / row["path"]), manifest

@@ -3,6 +3,8 @@
 from collections.abc import Mapping
 from typing import Any
 
+from runpod_lifecycle.rest import normalize_pod
+
 
 class InvalidPodField(ValueError):
     """A provider projection contains malformed or contradictory evidence."""
@@ -10,6 +12,12 @@ class InvalidPodField(ValueError):
 
 def pod_field(pod: Mapping[str, Any], field: str) -> Any:
     """Read a canonical field, rejecting malformed or conflicting aliases."""
+    try:
+        pod = normalize_pod(dict(pod))
+    except ValueError:
+        raise InvalidPodField(field) from None
+    if field == "volume" and len((pod.get("mounts") or {}).get("network", [])) > 1:
+        raise InvalidPodField(field)
     aliases = {"image": ("imageName", "image"), "volume": ("networkVolumeId", "networkVolume"),
                "gpu_count": ("gpuCount", "gpu"), "gpu_name": ("machineType", "gpu")}
     keys = aliases.get(field, (field,))
@@ -25,7 +33,7 @@ def pod_field(pod: Mapping[str, Any], field: str) -> Any:
         if key == "gpu" and value is not None:
             if not isinstance(value, Mapping):
                 raise InvalidPodField(field)
-            value = value.get("count" if field == "gpu_count" else "displayName")
+            value = value.get("count") if field == "gpu_count" else value.get("id", value.get("displayName"))
         if field == "gpu_count":
             if value is not None and (type(value) is not int or value < 0):
                 raise InvalidPodField(field)
