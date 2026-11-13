@@ -495,7 +495,7 @@ async def async_provider_call(api_key, operation, *args, already_gated=False, on
         def completed(done):
             try:
                 result = done.result()
-            except BaseException:
+            except BaseException:  # noqa: BLE001 - the pending journal owns uncertain failures
                 return  # The pending journal already owns uncertain failures.
 
             def persist():
@@ -503,7 +503,7 @@ async def async_provider_call(api_key, operation, *args, already_gated=False, on
 
                 try:
                     on_late_result(result)
-                except BaseException:
+                except BaseException:  # noqa: BLE001 - late-result persistence must not raise from the callback
                     logging.getLogger(__name__).error(
                         "Late provider result could not be persisted; allocation requires reconciliation")
 

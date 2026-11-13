@@ -314,9 +314,14 @@ def _follow_kwargs(parsed: argparse.Namespace) -> dict[str, Any]:
 def _completed_line(data: Mapping[str, Any]) -> str:
     outputs = data.get("outputs") or []
     label = "-"
-    if outputs and isinstance(outputs[0], Mapping):
-        resource = outputs[0].get("resource")
-        label = outputs[0].get("location") or (resource.get("filename") if isinstance(resource, Mapping) else None) or "-"
+    for output in outputs:
+        if not isinstance(output, Mapping):
+            continue
+        resource = output.get("resource")
+        if isinstance(resource, Mapping) and resource.get("role") == "log":
+            continue
+        label = output.get("location") or (resource.get("filename") if isinstance(resource, Mapping) else None) or "-"
+        break
     return f"completed task={data.get('task_id') or '-'} run={data.get('run_id') or '-'} output={label}"
 
 

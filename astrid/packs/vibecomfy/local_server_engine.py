@@ -554,14 +554,14 @@ def run_local_server(
         except BaseException as exc:
             try:
                 cleanup_prompts(url, destination)
-            except Exception as cleanup_error:
+            except Exception as cleanup_error:  # noqa: BLE001 - reported through the raised error or fallback; diagnostic at debug, never a user-facing traceback
                 # Preserve the failure that triggered cleanup (especially a
                 # custody refusal) while retaining the cleanup failure as
                 # diagnostic context. cleanup_prompts validates journals
                 # before trusting their prompt IDs, so an unsafe journal must
                 # never replace the original attempt error.
-                logging.getLogger(__name__).exception(
-                    'local_server prompt cleanup failed after attempt error at %s', destination,
+                logging.getLogger(__name__).debug(
+                    'local_server prompt cleanup failed after attempt error at %s', destination, exc_info=True,
                 )
                 exc.add_note(f"local_server prompt cleanup failed: {cleanup_error}")
             if "vibecomfy schema refresh" in str(exc) or getattr(exc, "next_action", None) == "vibecomfy schema refresh":

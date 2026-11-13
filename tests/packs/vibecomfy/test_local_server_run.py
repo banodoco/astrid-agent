@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import logging
 import threading
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -250,7 +251,7 @@ def test_unknown_connected_node_fails_live_preflight_before_staging(comfy, tmp_p
 
 @pytest.mark.parametrize("choices", [[], ["other.safetensors"]])
 def test_missing_model_fails_before_queueing(comfy, tmp_path, choices):
-    comfy.schema["SeedImage"]["input"]["required"]["ckpt_name"] = [choices]
+    comfy.schema["SeedImage"]["input"]["required"]["asset"] = [choices]
     with pytest.raises(production_engine.ProductionEngineError, match="missing models: installed.safetensors.*Missing nodes and models"):
         production_engine.run_workflow_result_path(
             comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="task-1",
@@ -339,6 +340,42 @@ def test_server_mode_fails_closed_without_managed_result(comfy, tmp_path, monkey
             comfy_url=comfy.url, profile_id="local_server",
         )
     assert not comfy.prompts
+
+
+def test_prompt_cleanup_failure_is_debug_only_and_preserves_attempt_error(
+    comfy, tmp_path, monkeypatch, caplog, capsys,
+):
+    runtime = importlib.import_module("vibecomfy.runtime.run")
+    original_error = RuntimeError("attempt failed first")
+    cleanup_error = RuntimeError("prompt cleanup failed second")
+
+    def fail_attempt(*_args, **_kwargs):
+        raise original_error
+
+    def fail_cleanup(*_args, **_kwargs):
+        raise cleanup_error
+
+    monkeypatch.setattr(runtime, "run_sync", fail_attempt)
+    from astrid.core.generation.backends import vibecomfy_local_server
+    monkeypatch.setattr(vibecomfy_local_server, "cleanup_prompts", fail_cleanup)
+    caplog.set_level(logging.DEBUG, logger=local_server_engine.__name__)
+
+    with pytest.raises(RuntimeError, match="attempt failed first") as raised:
+        production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="task-1",
+            comfy_url=comfy.url, comfy_output_dir=str(comfy.output), profile_id="local_server",
+        )
+
+    assert raised.value is original_error
+    assert any("local_server prompt cleanup failed: prompt cleanup failed second" in note
+               for note in getattr(original_error, "__notes__", []))
+    records = [record for record in caplog.records if record.name == local_server_engine.__name__]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    assert records[0].getMessage().endswith(str(tmp_path / "attempt" / "outputs"))
+    assert "RuntimeError: prompt cleanup failed second" in records[0].exc_text
+    assert "Traceback (most recent call last)" in records[0].exc_text
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize("comfy_url", ["http://192.168.1.9:8188", "http://example.com:8188"])

@@ -37,6 +37,7 @@ from astrid.core.execution.process_group import (
 
 from . import engine_recipe as recipes
 from ._engine_python_bootstrap import engine_child_env, engine_process_env
+from ._engine_target_files import _TargetFiles
 from .engine_contracts import (
     CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
     EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
@@ -1114,11 +1115,8 @@ class _Supervisor:
         self.root = identity["root"]
         self.control = self.root + "/.astrid-engine/session"
         self.adapter = LinuxPlatformAdapter(identity["platform"])
-        # The installed receipt records an explicit model directory or the checkout default.
-        request = self.adapter.start_request(recipe, self.root, deadline=time.monotonic() + 1,
-                                             models_root=_installed_models_root(self.root, recipe))
-        self.launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
-        self.base_launch = self.launch
+        self.launch = self.base_launch = None
+        self.models_root = None
         self.engine = None
         self.commands = []  # Retain uncertain handles; never reconstruct them from disk.
         self.stopping = threading.Event()
@@ -1295,7 +1293,7 @@ class _Supervisor:
 
     def publish_registry(self, source):
         request, port = self.launch, self.recipe.start.port
-        models_root = effective_models_root(self.root, _installed_models_root(self.root, self.recipe))
+        models_root = self.models_root
         output = request["cwd"] + "/output"
         if "--output-directory" in request["argv"]:
             output = request["argv"][request["argv"].index("--output-directory") + 1]
@@ -1339,6 +1337,14 @@ class _Supervisor:
     def service(self, operation, payload, deadline, channel):
         if self.unresolved:
             raise CustodyUnresolved("session retains an unresolved native cleanup obligation")
+        if self.engine is None:
+            # The first install helper creates this supervisor before install.json
+            # exists. Bind at admission, once the runner has declared its model
+            # directory, and retain that same binding for the child and registry.
+            self.models_root = effective_models_root(self.root, _installed_models_root(self.root, self.recipe))
+            request = self.adapter.start_request(self.recipe, self.root, deadline=deadline,
+                                                 models_root=self.models_root)
+            self.base_launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
         expected = {"schema", *self.identity, "launch", "owner_id", "timeout_seconds", "poll_interval_seconds"}
         if (not isinstance(payload, dict) or set(payload) != expected or payload["schema"] != _SCHEMA
                 or any(payload[k] != v for k, v in self.identity.items())
@@ -1361,6 +1367,7 @@ class _Supervisor:
             if operation != "start":
                 return self.facts("absent")
             self.launch = payload["launch"]
+            _TargetFiles(self.models_root).ensure_dir(self.models_root, deadline=deadline)
             source = self.source_identity(deadline, channel)
             path = engine_log_path(self.root, self.identity["engine"])
             try:

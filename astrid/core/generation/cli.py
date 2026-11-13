@@ -59,8 +59,8 @@ def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
         # Same inputs as the facade's own decision: the request, the repo and the client it would get.
         placement = placements.resolve_placement(placements.request_from_selector(target), repo=repo, client=client)
         return _select_generation_target(placements.comfy_selector(placement), repo=repo) is None
-    except Exception:
-        _logger.exception("Could not settle whether a local generation target is available")
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        _logger.debug("Could not settle whether a local generation target is available", exc_info=True)
         return False
 
 
@@ -797,11 +797,15 @@ def _kept_failure(before: set[tuple[str | None, int | None]]) -> None:
             summary = ', '.join(f'{name}={facts[name]}' for name in
                                 ('exception', 'stage', 'code', 'category', 'node_id', 'node_class', 'field', 'constraint')
                                 if name in facts)
+            details = [f"Reason: {facts['issue_message']}"] if isinstance(facts.get('issue_message'), str) else []
+            if isinstance(facts.get('logs_dir'), str):
+                details.append(f"logs: {facts['logs_dir']}")
             print(f"Failure: {summary or 'unknown'}. machine {row['id']} kept until "
                   f"{_when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
-                  f"reuse it or run `astrid machines release {row['id']}`", file=sys.stderr)
-    except Exception:
-        _logger.exception("Could not read the retained failure context")
+                  f"reuse it or run `astrid machines release {row['id']}`"
+                  + ("; " + "; ".join(details) if details else ""), file=sys.stderr)
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        _logger.debug("Could not read the retained failure context", exc_info=True)
         pass  # Diagnostic reads cannot change settlement or mask the original error.
 
 
@@ -823,8 +827,8 @@ def main(argv: list[str] | None = None) -> int:
             from astrid.packs.runpod.machine import journal_leases
             before = {(row.get('lease'), (row.get('last_job') or {}).get('generation'))
                       for row in journal_leases()}
-        except Exception:
-            _logger.exception("Could not snapshot leases before the command")
+        except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+            _logger.debug("Could not snapshot leases before the command", exc_info=True)
             pass
     try:
         scope = nullcontext()
@@ -838,6 +842,13 @@ def main(argv: list[str] | None = None) -> int:
             _kept_failure(before)
         error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:
+            from astrid.core.contracts.errors import AstridError, redact_credential_data
+            from astrid.core.generation.local_job import JobFileError
+            from astrid.sdk.exceptions import AstridSDKError
+            if not isinstance(exc, (AstridError, AstridSDKError, JobFileError, ImportError)):
+                import traceback
+                diagnostic = ''.join(traceback.format_exception(exc, chain=True))
+                print(redact_credential_data(diagnostic), file=sys.stderr, end='')
             print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
             return 2
         raise error from exc
