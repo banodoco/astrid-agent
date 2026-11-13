@@ -54,6 +54,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
         _canonical_bundle_value,
         load_workflow_path,
         loaded_workflow_execution_identity,
+        workflow_members,
     )
 
     if threading.current_thread() is not threading.main_thread():
@@ -84,18 +85,15 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
     preparation = None
     closed = False
     try:
-        original = ({"python": workflow, "companion": workflow.with_suffix(".vibe.json"),
-                     "source": workflow.with_name("source.json")}
-                    if workflow.suffix == ".py" else {"workflow": workflow})
         selected = scratch / "selected"
         selected.mkdir()
         names = {"python": "workflow.py", "companion": "workflow.vibe.json", "source": "source.json",
                  "workflow": "workflow.json"}
         members = {}
-        for name, path in original.items():
-            # A Python workflow's companion and source files are optional; one that exists
-            # must still be a regular file. The workflow itself is always required.
-            if name in {"companion", "source"} and not os.path.lexists(path):
+        for name, (path, required) in workflow_members(workflow).items():
+            # Stage exactly the members execution identity binds; an optional one that
+            # exists must still be a regular file.
+            if not required and not os.path.lexists(path):
                 continue
             if path.is_symlink() or not path.is_file():
                 raise JobFileError("pod workflow member is not a regular file")
