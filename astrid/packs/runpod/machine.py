@@ -1585,7 +1585,19 @@ def journal_leases(account: str | None = None) -> list[dict[str, Any]]:
     current = [lease_row(record)] if isinstance(record, Mapping) and record.get("pod_id") else []
     seen = {row["lease"] for row in current}
     # The live (or latest) lease first, then recently ended ones, newest first.
-    return current + [row for row in reversed(ended) if isinstance(row, dict) and row.get("lease") not in seen]
+    return with_failure_details(
+        current + [row for row in reversed(ended) if isinstance(row, dict) and row.get("lease") not in seen])
+
+
+def with_failure_details(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add the local failure receipt's reason and log folder to each failed last job."""
+    from .failure_receipt import kept_failure_details
+
+    for row in rows:
+        last = row.get("last_job")
+        if isinstance(last, dict) and last.get("outcome") == "failed" and isinstance(last.get("failure"), dict):
+            last["failure"] = {**last["failure"], **kept_failure_details(row.get("lease"), last.get("generation"))}
+    return rows
 
 
 def observe_mounts_with(api_key: str) -> Callable[[str, str], Mapping[str, Any]]:
@@ -1602,6 +1614,6 @@ def observe_mounts_with(api_key: str) -> Callable[[str, str], Mapping[str, Any]]
 #: The registered ``generation.machine`` contribution (no host owner until ``for_host``).
 MACHINE = RunPodMachine()
 
-__all__ = ["MACHINE", "journal_leases", "unshipped_entry_reason", "lease_row", "lease_rows", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
+__all__ = ["MACHINE", "journal_leases", "with_failure_details", "unshipped_entry_reason", "lease_row", "lease_rows", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
            "RunPodMachine", "custody_differences", "generation_argv", "machine_custody", "pin_storage",
            "ensure_pod_ready", "generation_command", "pod_state_command", "reset_command"]
