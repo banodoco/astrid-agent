@@ -31,6 +31,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import shlex
 import time
@@ -624,6 +625,36 @@ class RunPodMachine:
         if self.adapter is None:
             raise MachineError("the runpod machine has no host-owned lease owner")
         return self.adapter
+
+    def release_after_storage_refusal(self, machine_id: str, operation_id: str) -> Path:
+        """Release the exact retained lease after local Runtime storage admission fails.
+
+        The CLI resolves the account's canonical claim journal and hands the
+        request to the owner already holding that account lock. It never opens
+        another provider owner or performs provider calls itself.
+        """
+        from .release_control import request_release
+        from .target_selection import canonical_claim_path, read_runpod_preferences
+        from .worker_preparation import _validate_completed_release
+
+        if (not isinstance(machine_id, str) or not machine_id.strip()
+                or not isinstance(operation_id, str) or not re.fullmatch(r"[0-9a-f]{32}", operation_id)):
+            raise MachineError("storage refusal release requires an exact machine and operation identity")
+        preferences = read_runpod_preferences()
+        path = canonical_claim_path(preferences.provider_account_ref)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(record, dict) or record.get("provider_account_ref") != preferences.provider_account_ref
+                or record.get("operation_id") != operation_id or record.get("pod_id") != machine_id):
+            raise MachineError("current RunPod custody differs from the storage refusal; release refused")
+        response = request_release(path, operation_id, machine_id)
+        completed = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(completed, dict) or completed.get("operation_id") != operation_id
+                or completed.get("pod_id") != machine_id or completed.get("state") != "cleanup_complete"
+                or response.get("operation_id") != operation_id or response.get("pod_id") != machine_id
+                or response.get("state") != "cleanup_complete" or response.get("journal_path") != str(path)):
+            raise MachineError("retained RunPod owner did not confirm the exact completed release")
+        _validate_completed_release(completed)
+        return path
 
     # -- claim ---------------------------------------------------------------
 
@@ -1710,6 +1741,7 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
             minutes_left = max(0.0, round((release_at - now) / 60, 1))
     return {"id": record.get("pod_id"), "kind": KIND, "lease": record.get("operation_id"),
             "gpu": record.get("gpu_type"), "state": state,
+            "release_capability_id": "runpod.release",
             "live": live, "idle_timeout_s": lease.get("idle_seconds"),
             "idle_expires_at": lease.get("idle_expires_at") if state == "idle" else None,
             "release_at": release_at, "minutes_left": minutes_left,
