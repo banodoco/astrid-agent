@@ -757,7 +757,7 @@ class RunPodMachine:
                             owner.settle(acquired[0], outcome="failed",
                                          failure=host_summary(exc, stage=(
                                              failure_stage(exc, phase="claim")[0]
-                                             if prepared.get("state") == "stale_after_failure" else "preparation")))
+                                             if preparation.get("state") == "stale_after_failure" else "preparation")))
                         except Exception:  # noqa: BLE001 - custody: any settlement failure must still release the exact pod
                             _logger.debug("Preparation settlement failed; releasing the exact pod", exc_info=True)
                             owner.release(reason="preparation_settlement_unverified",
