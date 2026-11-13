@@ -25,3 +25,23 @@ def test_catalog_entries_with_required_inputs_dry_run_to_admission(cell, tmp_pat
     probe = catalog_dry_run(entry, cell["mode"], tmp_path)
     assert runpod_guard.blocked_attempts[before:] == []
     assert not probe.failure, probe.failure
+
+
+@pytest.mark.parametrize("error", [
+    "managed model has no declared digest: fixture.safetensors",
+    "ready template render failed",
+])
+def test_catalog_dry_run_refuses_invalid_ready_template_declarations(tmp_path, monkeypatch, error):
+    from astrid.core.generation import managed_preparation
+    from astrid.core.generation.engine_contracts import IntegrityError
+
+    def missing_declarations(*_args, **_kwargs):
+        raise IntegrityError(error)
+
+    monkeypatch.setattr(managed_preparation, "judge_declarations", missing_declarations)
+    entry = ModelRegistry.load_default().get("z-image")
+
+    probe = catalog_dry_run(entry, "t2i", tmp_path)
+
+    assert probe.failure
+    assert error in probe.failure

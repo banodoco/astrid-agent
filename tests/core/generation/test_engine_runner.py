@@ -2319,3 +2319,24 @@ def test_a_failed_command_keeps_its_whole_output_on_the_error():
         owner.run(("uv", "pip", "install"))
     assert caught.value.command_output == {"argv": ["uv", "pip", "install"], "exit_code": 2,
                                            "stdout": "out line\n", "stderr": "err line\n", "truncated": True}
+
+
+def test_object_info_digest_is_the_node_schema_not_the_listed_choices():
+    """Choices are what is on disk when object_info is read (models, input files); the schema is not."""
+    from astrid.core.generation.engine_runner import _object_info_sha256
+
+    def schema(models, options, *, sampler_type="COMBO", extra_node=False):
+        value = {
+            "UNETLoader": {"input": {"required": {"unet_name": [models, {}]}}, "output": ["MODEL"]},
+            "KSampler": {"input": {"required": {"sampler_name": [sampler_type, {"options": options}],
+                                                "steps": ["INT", {"default": 20}]}}, "output": ["LATENT"]},
+        }
+        if extra_node:
+            value["SaveImage"] = {"input": {"required": {"images": ["IMAGE"]}}, "output": []}
+        return value
+
+    installed = schema(["a.safetensors"], ["euler"])
+    assert _object_info_sha256(installed) == _object_info_sha256(schema(["a.safetensors", "b.safetensors"], ["euler", "dpm"]))
+    assert installed["UNETLoader"]["input"]["required"]["unet_name"][0] == ["a.safetensors"]  # never altered in place
+    assert _object_info_sha256(installed) != _object_info_sha256(schema(["a.safetensors"], ["euler"], extra_node=True))
+    assert _object_info_sha256(installed) != _object_info_sha256(schema(["a.safetensors"], ["euler"], sampler_type="STRING"))

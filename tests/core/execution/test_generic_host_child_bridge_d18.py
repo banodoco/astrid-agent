@@ -4188,8 +4188,9 @@ def test_f05_incomplete_interactive_conjunction_stays_bounded(world, monkeypatch
     assert check is None
 
 
-@pytest.mark.parametrize("loss", ["cancel", "expiry", "fence", "epoch", "binding", "readback"])
-def test_f05_qualified_child_loses_authority_immediately(world, monkeypatch, loss):
+@pytest.mark.parametrize("loss", ["cancel", "expiry", "fence", "epoch", "binding", "readback", "health_readback",
+                                 "malformed", "forbidden", "retired_route", "stale_metadata"])
+def test_f05_qualified_child_loses_authority_only_on_runtime_verdict(world, monkeypatch, loss):
     from astrid.core.execution._child_bridge import task_resource
     host, parent, pc, child, cc = _f05_runtime_review_pair(world)
     check = _f05_authority(host, child, cc)
@@ -4210,9 +4211,55 @@ def test_f05_qualified_child_loses_authority_immediately(world, monkeypatch, los
             if tid == pc["task_id"]: value["execution_binding"]["status"] = "stale"
             return value
         monkeypatch.setattr(host.client, "task", read)
+    elif loss == "health_readback":
+        monkeypatch.setattr(host.client, "health", lambda: (_ for _ in ()).throw(TimeoutError("health readback lost")))
+    elif loss in {"malformed", "stale_metadata"}:
+        original = host.client.task
+        def read(tid):
+            value = task_resource(original(tid))
+            if loss == "malformed":
+                value["runtime_epoch"] = "1"
+            else:
+                value["lease_expires_at"] = "2000-01-01T00:00:00Z"
+            return value
+        monkeypatch.setattr(host.client, "task", read)
+    elif loss in {"forbidden", "retired_route"}:
+        from astrid_runtime_client import ApiError
+        monkeypatch.setattr(host.client, "task", lambda tid: (_ for _ in ()).throw(
+            ApiError(403 if loss == "forbidden" else 410, loss, "typed Runtime response")))
     else:
         monkeypatch.setattr(host.client, "task", lambda tid: (_ for _ in ()).throw(OSError("readback lost")))
-    with pytest.raises(Exception): check()
+    if loss in {"stale_metadata", "readback", "health_readback", "malformed", "retired_route"}:
+        check()
+        assert callable(check)
+    else:
+        from astrid.core.execution.generic_host import HostLeaseLost
+        with pytest.raises(HostLeaseLost, match="interactive|Runtime"):
+            check()
+
+
+@pytest.mark.parametrize("machine_id", ["different-machine", None, 7])
+def test_f05_typed_placement_change_is_an_authority_verdict(world, monkeypatch, machine_id):
+    from astrid.core.execution._child_bridge import task_resource
+    from astrid.core.execution.generic_host import HostLeaseLost
+
+    host, parent, pc, child, cc = _f05_runtime_review_pair(world)
+    check = _f05_authority(host, child, cc)
+    assert callable(check)
+    original = host.client.task
+
+    def read(tid):
+        value = task_resource(original(tid))
+        if tid == pc["task_id"]:
+            value["execution_binding"]["actual_target"]["id"] = machine_id
+        return value
+
+    monkeypatch.setattr(host.client, "task", read)
+    if isinstance(machine_id, str):
+        with pytest.raises(HostLeaseLost, match="placement changed"):
+            check()
+    else:
+        check()
 
 
 @pytest.mark.parametrize("mode", ["interactive", "absolute_cap", "finite_timeout", "cancel", "evidence", "heartbeat"])
@@ -4226,11 +4273,9 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
     actual_heartbeat = host.client.heartbeat
 
     def heartbeat_for_execution_clock(*args, **kwargs):
-        # Runtime's wall clock does not advance with this synthetic execution
-        # clock. Keep its real fenced RPC, and omit the unrelated wall-clock
-        # expiry from the acknowledgement so a virtual hour is not lease loss.
-        value = resource(actual_heartbeat(*args, **kwargs))
-        return {key: item for key, item in value.items() if key != "lease_expires_at"}
+        # Keep the real fenced receipt. Virtual execution time is independent
+        # of the Runtime's wall clock and its lease metadata.
+        return resource(actual_heartbeat(*args, **kwargs))
 
     monkeypatch.setattr(host.client, "heartbeat", heartbeat_for_execution_clock)
     if mode == "evidence": host.execution_policy = ExecutionGuardPolicy(evidence_cap_bytes=65536)
@@ -4260,15 +4305,9 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
     if mode == "evidence":
         with pytest.raises(HostError, match="evidence cap"):
             host.run_task({"task": task}, lease_token=cc["lease_id"], attempt_id=cc["attempt_id"], fence=cc["fence"])
-    elif mode == "heartbeat":
-        # The adopted lease guard raises after the failed attempt is recorded;
-        # it cannot return a successful cancellation acknowledgement.
-        with pytest.raises(HostError, match="^execution lease lost$"):
-            host.run_task({"task": task}, lease_token=cc["lease_id"], attempt_id=cc["attempt_id"], fence=cc["fence"])
-        assert world.service.task(child["task_id"])["task"]["status"] == "failed"
     else:
         result = host.run_task({"task": task}, lease_token=cc["lease_id"], attempt_id=cc["attempt_id"], fence=cc["fence"])
-        if mode == "interactive":
+        if mode in {"interactive", "heartbeat"}:
             assert checks == [False, False, False]
             assert world.service.task(child["task_id"])["task"]["status"] == "completed"
             payload = world.service.task(child["task_id"])["task"]["result"]
