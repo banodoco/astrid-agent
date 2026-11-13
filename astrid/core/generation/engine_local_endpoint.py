@@ -33,6 +33,8 @@ from .engine_contracts import (
 )
 
 DEFAULT_PLATFORM = "linux-x86_64-cu130"
+# The one managed engine; named once for every default below and its callers.
+DEFAULT_ENGINE = "comfyui"
 RECEIPT_RELATIVE_PATH = ".astrid-engine/install.json"
 # Set (to the engine id) in the environment of a pack host that serves the local placement.
 LOCAL_ENGINE_HOST_ENV = "ASTRID_HOST_LOCAL_ENGINE"
@@ -202,7 +204,7 @@ def _installed_receipt(
 
 
 def local_engine_endpoint(
-    engine: str = "comfyui",
+    engine: str = DEFAULT_ENGINE,
     *,
     platform: str = DEFAULT_PLATFORM,
     root: str | None = None,
@@ -282,9 +284,9 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
             key = (row['subdir'], row['name'])
             previous = inventory.get(key)
             if previous is not None and previous != row:
-                raise IntegrityError('entry declaration conflicts with managed inventory')
+                raise IntegrityError(f'entry declaration conflicts with managed inventory: {model.destination}', reason='entry declaration conflicts with managed inventory')
             if not _matches(path, model, deadline=deadline):
-                raise IntegrityError('declared entry asset failed size/SHA verification')
+                raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}', reason='declared entry asset failed size/SHA verification')
             inventory[key] = row
     if entry_id is not None:
         from astrid.core.model_catalog.registry import ModelRegistry
@@ -316,7 +318,7 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
             if not path.exists():
                 missing.append(model.destination)
             elif not _matches(path, model, deadline=deadline):
-                raise IntegrityError('declared entry asset failed size/SHA verification')
+                raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}', reason='declared entry asset failed size/SHA verification')
         if missing:
             raise EntryAssetsNotReady(entry_id, sorted(set(missing)))
     document = binding.as_dict()
@@ -329,7 +331,7 @@ MODELS_RELATIVE_PATH = "models"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
-def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "comfyui") -> Any:
+def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = DEFAULT_ENGINE) -> Any:
     """The model-root binding attested by an installed engine's receipt.
 
     The inventory is the receipt's verified model lock: one entry (path under ``<root>/models``,
@@ -379,7 +381,7 @@ def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "c
 
 
 def local_model_root_binding(
-    engine: str = "comfyui",
+    engine: str = DEFAULT_ENGINE,
     *,
     platform: str = DEFAULT_PLATFORM,
     root: str | None = None,

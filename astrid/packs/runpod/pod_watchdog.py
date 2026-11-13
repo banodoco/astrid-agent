@@ -6,7 +6,6 @@ pod process reads provider identity; the host sends source and public bounds.
 from __future__ import annotations
 
 import base64
-import fcntl
 import json
 import math
 import os
@@ -19,6 +18,11 @@ from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+
+try:
+    import fcntl
+except ModuleNotFoundError:  # The host imports this module on every platform; only the pod locks.
+    fcntl = None  # type: ignore[assignment]
 
 DEADLINE_PATH = Path("/root/astrid/pod-watchdog-deadline.json")
 PROGRAM_PATH = Path("/root/astrid/pod-watchdog.py")

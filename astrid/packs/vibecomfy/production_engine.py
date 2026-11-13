@@ -158,19 +158,29 @@ def _canonical_bundle_value(resolved: Any) -> Any:
     return bundle
 
 
+def workflow_members(source: Path) -> dict[str, tuple[Path, bool]]:
+    """Name each file of an admitted workflow and whether it is required.
+
+    Declared once: staging and execution identity both read this. A Python
+    workflow is its module and companion; its source evidence is optional.
+    """
+    if source.suffix.lower() != ".py":
+        return {"workflow": (source, True)}
+    return {
+        "python": (source, True),
+        "companion": (source.with_suffix(".vibe.json"), True),
+        "source": (source.with_name("source.json"), False),
+    }
+
+
 def _workflow_content_digest(source: Path) -> str:
     """Bind execution identity to the exact admitted input member bytes."""
-    members = [source]
-    source_evidence_absent = False
-    if source.suffix.lower() == ".py":
-        members.append(source.with_suffix(".vibe.json"))
-        source_evidence = source.with_name("source.json")
-        if source_evidence.exists():
-            members.append(source_evidence)
-        else:
-            source_evidence_absent = True
     digest = hashlib.sha256()
-    for member in members:
+    absent = False
+    for member, required in workflow_members(source).values():
+        if not required and not member.exists():
+            absent = True
+            continue
         try:
             payload = member.read_bytes()
         except OSError as exc:
@@ -179,7 +189,7 @@ def _workflow_content_digest(source: Path) -> str:
             ) from exc
         digest.update(len(payload).to_bytes(8, "big"))
         digest.update(payload)
-    if source_evidence_absent:
+    if absent:
         digest.update(b"\0source.json:absent\0")
     return "sha256:" + digest.hexdigest()
 
