@@ -108,7 +108,7 @@ def decide_stage(*, phase: str, claim_context: Mapping[str, Any] | None = None, 
         if not context.get("acquired"):
             return "no_machine", "controller_step"
         return ("install" if context.get("preparation_job") else "boot"), "controller_step"
-    if digest_mismatch or (phase == "fetch" and exit_code is None and category is None):
+    if digest_mismatch or (phase in {"fetch", "output_collection"} and exit_code is None and category is None):
         return "output_collection", "controller_step"
     if exit_code == EXIT_NOT_READY:
         return "boot", "pod_exit"
@@ -119,6 +119,32 @@ def decide_stage(*, phase: str, claim_context: Mapping[str, Any] | None = None, 
     if progress_phase in _PROGRESS_STAGE:
         return _PROGRESS_STAGE[progress_phase], "progress"
     return "execution", "controller_step"
+
+
+def failure_stage(failure: BaseException, *, phase: str, exit_code: int | None = None,
+                  category: str | None = None, progress_phase: str | None = None) -> tuple[str, str]:
+    """Use the receipt vocabulary for both the receipt and the machine journal."""
+    reason = getattr(failure, "reason", None)
+    if isinstance(reason, Reason):
+        return reason.stage, "reason"
+    from .remote_placement import DigestMismatch
+    context = getattr(failure, "claim_context", None)
+    return decide_stage(phase=phase, claim_context=context if isinstance(context, Mapping) else None,
+                        exit_code=exit_code, category=category, progress_phase=progress_phase,
+                        digest_mismatch=isinstance(failure, DigestMismatch))
+
+
+def verification_observation(reason: Reason | None) -> dict[str, Any]:
+    """Keep only a fixed outcome and validated reason, never the status response."""
+    if reason is None:
+        return {"outcome": "installed"}
+    if reason.code in {"status_deadline_exhausted", "deadline_exceeded"}:
+        outcome = "out_of_time"
+    elif reason.code in {"status_not_installed", "installation_receipt_changed"}:
+        outcome = "not_installed"
+    else:
+        outcome = "unavailable"
+    return {"outcome": outcome, "reason": reason.as_dict()}
 
 
 def message_for(stage: str, cause: Mapping[str, Any]) -> str:
@@ -159,7 +185,7 @@ def log_order(row: Mapping[str, Any]) -> tuple[int, str]:
             str(row.get("name", "")))
 
 
-def _issue_message(logs: list[Mapping[str, Any]]) -> str | None:
+def _issue_message(logs: Sequence[Mapping[str, Any]]) -> str | None:
     """Read the first issue from the collected job output, if available."""
     try:
         row = next((row for row in logs if row.get("name") == "generation.stdout"), None)
@@ -194,12 +220,10 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     progress = list(getattr(run, "progress", None) or [])
     progress_phase = next((row.get("phase") for row in reversed(progress) if isinstance(row, Mapping)
                            and row.get("phase")), None)
-    from .remote_placement import DigestMismatch
-    context = getattr(failure, "claim_context", None)
-    stage, basis = decide_stage(
-        phase=phase, claim_context=context if isinstance(context, Mapping) else None, exit_code=exit_code,
+    stage, basis = failure_stage(
+        failure, phase=phase, exit_code=exit_code,
         category=summary.get("category") if diagnostic is not None else None, progress_phase=progress_phase,
-        digest_mismatch=isinstance(failure, DigestMismatch), release_failed=bool(facts.get("release_failed")))
+    )
     cause: dict[str, Any] = {key: summary[key] for key in
                              ("code", "category", "exception", "node_id", "node_class", "field", "constraint")
                              if key in summary}
@@ -213,7 +237,6 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     # datacenter, ...); PlacementRefused carries them as runpod_gate.
     gate = getattr(failure, "runpod_gate", None) or getattr(failure, "gate", None)
     if isinstance(reason, Reason):
-        stage, basis = reason.stage, "reason"
         cause["reason"] = reason.as_dict()
         install_unverified = getattr(failure, "install_unverified", None)
         if isinstance(install_unverified, str) and re.fullmatch(r"[A-Za-z0-9_.:;=-]{1,256}", install_unverified):
@@ -267,8 +290,16 @@ def build_receipt(facts: Mapping[str, Any], *, job: Any, machine: Mapping[str, A
     if issue_message:
         cause["issue_message"] = issue_message
     unavailable = (collected or {}).get("unavailable") if isinstance(collected, Mapping) else None
+    verification = getattr(lease, "failure_verification", None)
+    if verification is None and isinstance(reason, Reason) and phase in {"fetch", "output_collection"}:
+        verification = {"outcome": "not_observed"}
+    if verification is not None:
+        verification = dict(verification)
+        if isinstance(reason, Reason):
+            verification.setdefault("reason", reason.as_dict())
     return {
         "logs": logs, **({"logs_unavailable": unavailable} if unavailable else {}),
+        **({"verification": verification} if verification is not None else {}),
         "schema": SCHEMA, "receipt_id": uuid.uuid4().hex, "outcome": "failed",
         "stage": stage, "stage_basis": basis, "phase": phase,
         "cause": cause, "message": message_for(stage, cause),

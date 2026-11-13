@@ -25,19 +25,32 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal, Mapping
 
+from runpod_lifecycle.rest import normalize_pod
+
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
 from astrid.core.generation.engine_contracts import next_delay
 from astrid.sdk.storage_root import resolve_runtime_data_root
 
-from .worker_preparation import (
-    AcquisitionUnresolvedError, CapacityExhaustedError, RunPodTargetContract, TargetObservationError,
-    acquire_target, create_target_record_exclusive, observe_exact_target, read_exact_pod,
-    inspect_volume_records, reconcile_target, replace_target_record, resolve_existing_volume, target_owner,
-    _validate_completed_release, write_target_record,
-)
 from . import worker_preparation
-from .provider import account_gate, parse_rest_pod, provider_budget
 from .pod_watchdog import PodWatchdogError
+from .provider import account_gate, parse_rest_pod, provider_budget
+from .worker_preparation import (
+    AcquisitionUnresolvedError,
+    CapacityExhaustedError,
+    RunPodTargetContract,
+    TargetObservationError,
+    _validate_completed_release,
+    acquire_target,
+    create_target_record_exclusive,
+    inspect_volume_records,
+    observe_exact_target,
+    read_exact_pod,
+    reconcile_target,
+    replace_target_record,
+    resolve_existing_volume,
+    target_owner,
+    write_target_record,
+)
 
 
 def _exact_volume_id(record):
@@ -966,6 +979,8 @@ class RunPodSelectionOwner:
                 expires = _utc(limits["expires_at"])
             try:
                 status, exact = await asyncio.to_thread(read_exact_pod, config.api_key, observation.pod_id)
+                if exact is not None:
+                    exact = normalize_pod(exact)
                 if (status != 200 or exact is None
                         or (p.volume_id is not None and exact.get("volumeMountPath") != p.mount_path)
                         or _exact_volume_id(exact) != p.volume_id):
