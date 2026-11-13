@@ -116,7 +116,7 @@ models:
         backends:
           local:
             template: image/z_image_turbo
-            template_hash: "sha256:62df2cd630b7a3b09daea0d9085b26858bf88ecd6d6a1c4d8c94ee41f7fe2bb4"
+            template_hash: "sha256:16302edf435877823f169b730d1f16f31a695fec5474e80a9dbec4db04c95647"
             model_roles:
               diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['z_image_turbo_bf16.safetensors']}
               text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen_3_4b.safetensors']}
@@ -150,7 +150,7 @@ models:
         backends:
           local:
             template: image/z_image_img2img
-            template_hash: "sha256:9052d9ccc728696dfcfc2250cd3ccc1b7f07636fa5b5db18ab851c75da49b085"
+            template_hash: "sha256:1d82ec20255a47a5a57637eb0a06eb3342da66abde405b5dffa45bb17750e555"
             model_roles:
               diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['z_image_turbo_bf16.safetensors']}
               text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen_3_4b.safetensors']}
@@ -251,7 +251,7 @@ models:
         backends:
           local:
             template: edit/qwen_image_edit
-            template_hash: "sha256:8e7690a35d580bef3da5de0d3fa62ddb13dcf7a10fd9f0f0c56bf61713bb3e6b"
+            template_hash: "sha256:ae87ed4179dd0ff0c87f2fbc44f7c8a58e658ed92af27c40a2d9e8b63aa7c454"
             param_map: {prompt: prompt, seed: seed, image_ref: image}
           cloud:
             endpoint: fal-ai/qwen-image-edit
