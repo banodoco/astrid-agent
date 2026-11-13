@@ -35,11 +35,13 @@ import secrets
 import shlex
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
-from .failure_receipt import checkpoint_refusal
+from .failure_reason import Reason, installation_reason
+from .failure_receipt import checkpoint_refusal, failure_stage, verification_observation
 from .remote_placement import (
     MANIFEST_MARK,
     MANIFEST_NAME,
@@ -516,6 +518,8 @@ class MachineLease:
     failure_diagnostic: Mapping[str, Any] | None = None
     failure_exit_code: int | None = None
     failure_logs: Mapping[str, Any] | None = None
+    failure_verification: Mapping[str, Any] | None = None
+    failure_progress_phase: str | None = None
     failure_install_receipt: str | None = None
     expires_at: float | None = None
     cost_usd: float | None = None
@@ -534,6 +538,37 @@ class MachineRun:
     state: str = "running"
     task_id: str | None = None
     attempt_id: str | None = None
+    #: The same host callback used during start, also checked during polling.
+    cancelled: Callable[[], bool] | None = None
+
+
+@contextmanager
+def _cancellable(
+    lease: MachineLease, cancelled: Callable[[], bool] | None,
+) -> Iterator[Callable[[], None]]:
+    """Interrupt work with the host's callback, then restore transport for cleanup."""
+    from astrid.core.execution.machine_run import MachineRunCancelled
+
+    def check_cancelled() -> None:
+        if cancelled is not None and cancelled():
+            raise MachineRunCancelled("generation cancelled during remote machine work")
+
+    original_ops = lease.claim.ops
+    try:
+        check_cancelled()
+        factory = getattr(original_ops, "cancellable", None)
+        if cancelled is not None and factory is not None:
+            lease.claim.ops = factory(cancelled)
+        yield check_cancelled
+        check_cancelled()
+    except BaseException as error:
+        if not isinstance(error, MachineRunCancelled):
+            # A launch may have committed but lost its acknowledgement while
+            # the abort arrived. Release reconciles the durable exact job id.
+            check_cancelled()
+        raise
+    finally:
+        lease.claim.ops = original_ops
 
 
 def _job_manifest_rows(entry: str | None, values: Any, *, mode: str | None = None,
@@ -720,7 +755,9 @@ class RunPodMachine:
                         from .failure_diagnostics import host_summary
                         try:
                             owner.settle(acquired[0], outcome="failed",
-                                         failure=host_summary(exc, stage="preparation"))
+                                         failure=host_summary(exc, stage=(
+                                             failure_stage(exc, phase="claim")[0]
+                                             if prepared.get("state") == "stale_after_failure" else "preparation")))
                         except Exception:  # noqa: BLE001 - custody: any settlement failure must still release the exact pod
                             _logger.debug("Preparation settlement failed; releasing the exact pod", exc_info=True)
                             owner.release(reason="preparation_settlement_unverified",
@@ -766,18 +803,26 @@ class RunPodMachine:
 
     # -- start ---------------------------------------------------------------
 
-    def start(self, lease: MachineLease, job: Any) -> MachineRun:
+    def start(self, lease: MachineLease, job: Any, *,
+              cancelled: Callable[[], bool] | None = None) -> MachineRun:
         """Ship the job directory, checkpoint the job id, then start the pod-side command."""
+        with _cancellable(lease, cancelled) as check_cancelled:
+            return self._start(lease, job, cancelled=cancelled, check_cancelled=check_cancelled)
+
+    def _start(self, lease: MachineLease, job: Any, *, cancelled: Callable[[], bool] | None,
+               check_cancelled: Callable[[], None]) -> MachineRun:
         adapter = self._require()
         placement, state, ops = adapter.placement, lease.state, lease.claim.ops
         run_id = uuid.uuid4().hex
         remote_root = f"{RUNS_ROOT}/{run_id}"
         placement._exec_ok(state, f"mkdir -p {shlex.quote(remote_root + '/in')} {shlex.quote(remote_root + '/out')}",
                            "job directory")
+        check_cancelled()
         staging = Path(job.scratch) / "machine"
         staging.mkdir(parents=True, exist_ok=True)
         shipped: dict[str, Any] = {}
         for name, value in sorted(job.inputs.items()):
+            check_cancelled()
             if name == "entry_inputs":
                 continue  # this controller-side envelope becomes the job's public inputs below
             if name in job.files:
@@ -786,6 +831,7 @@ class RunPodMachine:
                     raise MachineError(f"job input {name!r} is not a regular file")
                 remote = f"{remote_root}/in/{name}{''.join(local.suffixes)[-16:]}"
                 placement._put_checked(state, local, remote)
+                check_cancelled()
                 shipped[name] = remote
             else:
                 shipped[name] = value
@@ -793,8 +839,10 @@ class RunPodMachine:
         if job.entry and job.inputs.get("entry_inputs"):
             from astrid.core.generation.job_inputs import read_archive
             def ship(local):
+                check_cancelled()
                 remote = f"{remote_root}/in/entry-{local.name}"
                 placement._put_checked(state, local, remote)
+                check_cancelled()
                 return remote
             public_inputs = read_archive(Path(str(job.inputs["entry_inputs"])), staging / "entry-inputs", map_file=ship)
         bindings = json.loads(shipped.pop("workflow_inputs", "{}") or "{}")
@@ -808,11 +856,15 @@ class RunPodMachine:
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         from .failure_diagnostics import graph_facts
         lease.node_ids, lease.node_names = graph_facts(job.inputs.get("source"))
+        check_cancelled()
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
+        check_cancelled()
         # The active pack selection and the user entry ship with the job; the
         # pod-side run resolves its entry from them only.
         archive, selection = build_selection(job.entry, staging)
+        check_cancelled()
         placement._put_checked(state, archive, f"{remote_root}/{SELECTION_NAME}")
+        check_cancelled()
         archive.unlink(missing_ok=True)
         lease.state.note("selection", "shipped", packs=[row["pack_id"] for row in selection["packs"]],
                          entries=[row["id"] for row in selection["entries"]])
@@ -821,10 +873,12 @@ class RunPodMachine:
             "run_id": run_id, "task": job.task_id, "attempt": job.attempt_id})
         lease.run_dir = remote_root
         job_id = uuid.uuid4().hex
+        check_cancelled()
         # The exact detached identity is durable before launch; a lost ACK never
         # invents or retries another job, and recover() can cancel this one.
         self._checkpoint(lease, {"id": job_id, "state": "starting"})
         started = ops.job_start(command, job_id=job_id)
+        check_cancelled()
         if started.get("id") != job_id:
             raise MachineError("detached job differs from the checkpointed job custody")
         self._checkpoint(lease, {"id": job_id, "state": "running"})
@@ -832,30 +886,31 @@ class RunPodMachine:
         lease.job_dir = str(started.get("dir") or "") or None
         state.note("job", "started", job_id=job_id)
         return MachineRun(lease, job_id, str(started.get("dir") or ""), remote_root,
-                          Path(job.progress_path), staging, task_id=job.task_id, attempt_id=job.attempt_id)
+                          Path(job.progress_path), staging, task_id=job.task_id, attempt_id=job.attempt_id,
+                          cancelled=cancelled)
 
     # -- poll ----------------------------------------------------------------
 
     def poll(self, run: MachineRun) -> dict[str, Any]:
         """One status read, then copy the job's progress file into the local attempt's."""
-        adapter = self._require()
-        adapter.placement._check_deadline("job poll")
-        record = run.lease.claim.ops.job_poll(run.job_id)
-        progress = self._copy_progress(run)
-        state = record.get("state")
-        timing = getattr(run.lease, "timing", None)
-        if timing is not None and isinstance(progress, Mapping):
-            try:
-                timing.pod_phase(progress.get("phase"))
-            except Exception:  # noqa: BLE001 - timing: optional telemetry must never fail polling
-                _logger.debug("Could not record the remote job phase", exc_info=True)
-                pass
-        if state == "exited":
-            _stamp(timing, "job_ended_at", first=True)
-            run.state = "exited"
-        elif state in {"missing", "cancelled"}:
-            run.state = str(state)
-        return {"state": run.state, "exit_code": record.get("exit_code"), "progress": progress}
+        with _cancellable(run.lease, run.cancelled):
+            adapter = self._require()
+            adapter.placement._check_deadline("job poll")
+            record = run.lease.claim.ops.job_poll(run.job_id)
+            progress = self._copy_progress(run)
+            state = record.get("state")
+            timing = getattr(run.lease, "timing", None)
+            if timing is not None and isinstance(progress, Mapping):
+                try:
+                    timing.pod_phase(progress.get("phase"))
+                except Exception:  # noqa: BLE001 - timing: optional telemetry must never fail polling
+                    _logger.debug("Could not record the remote job phase", exc_info=True)
+            if state == "exited":
+                _stamp(timing, "job_ended_at", first=True)
+                run.state = "exited"
+            elif state in {"missing", "cancelled"}:
+                run.state = str(state)
+            return {"state": run.state, "exit_code": record.get("exit_code"), "progress": progress}
 
     def _copy_progress(self, run: MachineRun) -> dict[str, Any] | None:
         landing = run.scratch / ("progress-" + run.job_id + ".json")
@@ -902,6 +957,26 @@ class RunPodMachine:
 
     def fetch(self, run: MachineRun, destination: Path) -> dict[str, Any]:
         """Copy the job's ``out`` directory back, every file against the pod's digest manifest."""
+        try:
+            return self._fetch(run, destination)
+        except Exception as failure:  # noqa: BLE001 - every host refusal keeps its evidence
+            run.lease.failure_progress_phase = next(
+                (row.get("phase") for row in reversed(run.progress) if row.get("phase")), None)
+            if run.lease.failure_verification is None:
+                reason = getattr(failure, "reason", None)
+                run.lease.failure_verification = {
+                    "outcome": "not_observed",
+                    **({"reason": reason.as_dict()} if isinstance(reason, Reason) else {}),
+                }
+            if run.lease.failure_logs is None:
+                try:
+                    run.lease.failure_logs = self._collect_fetch_failure_logs(run, destination)
+                except Exception as log_error:  # noqa: BLE001 - keep the original refusal
+                    run.lease.failure_logs = {"unavailable": type(log_error).__name__}
+            raise
+
+    def _fetch(self, run: MachineRun, destination: Path) -> dict[str, Any]:
+        """Read the completed job and checkpoint its verified output."""
         adapter = self._require()
         placement, state, ops = adapter.placement, run.lease.state, run.lease.claim.ops
         record = ops.job_poll(run.job_id)
@@ -953,6 +1028,45 @@ class RunPodMachine:
                 "progress": list(run.progress),
                 # The remote detached job's own process evidence (its pid on the pod).
                 "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
+
+    def _collect_fetch_failure_logs(self, run: MachineRun, destination: Path) -> dict[str, Any]:
+        """Collect host-refusal evidence before reset, within cancellable paid time."""
+        owner = self._require().lease_owner
+        observer_key = None
+        ops = None
+        try:
+            started = time.monotonic()
+            with owner.lock:
+                current = owner.preparation_claim(run.lease.lease)
+                remaining = current["lease"]["paid_expires_at"] - owner.clock()
+                deadline = started + min(120, remaining)
+                if remaining <= 0:
+                    return {"unavailable": "paid_limit_exhausted"}
+                observer_key, abort_event = owner.begin_failure_observation(
+                    run.lease.lease, run.lease.claim.pod_id)
+            original_ops = run.lease.claim.ops
+            bounded = getattr(original_ops, "bounded", None)
+            if bounded is None:
+                return {"unavailable": "checkpoint_observer_unavailable"}
+            transport_deadline = getattr(original_ops, "deadline", None)
+            if transport_deadline is not None:
+                deadline = min(deadline, transport_deadline)
+            ops = bounded(deadline, abort_event=abort_event)
+            return self._fetch_failure_logs(ops, run, "", destination)
+        except Exception as exc:  # noqa: BLE001 - evidence must never mask the original refusal
+            return {"unavailable": type(exc).__name__}
+        finally:
+            try:
+                unreaped = getattr(ops, "unreaped_child", None)
+                if ops is not None and unreaped is not None:
+                    # If fencing itself fails, release still sees this exact
+                    # handle through the lease's existing observer cleanup.
+                    run.lease.claim.ops = ops
+                    owner.fence_unreaped_observer(run.lease.lease, run.lease.claim.pod_id, unreaped)
+                    run.lease.claim.ops = original_ops
+            finally:
+                if observer_key is not None:
+                    owner.end_failure_observation(observer_key)
 
     def _fetch_failure_logs(self, ops: Any, run: MachineRun, stdout: str, destination: Path) -> dict[str, Any]:
         """Bring the failed job's declared logs back, digest-verified, before the reset.
@@ -1099,6 +1213,10 @@ class RunPodMachine:
             try:
                 verified = placement._canonical_installed(
                     state, verification_seconds=max(0, deadline - time.monotonic()))
+                # Release verifies again; keep this observation on this attempt
+                # before that later read can replace install_unverified.
+                run.lease.failure_verification = verification_observation(
+                    None if verified else installation_reason(state.install_unverified or "unclassified"))
             except (RemotePlacementError, EngineError, ValueError, TypeError, KeyError, OSError) as observation_error:
                 why = getattr(observation_error, "install_unverified", None)
                 if why is None:
@@ -1107,7 +1225,9 @@ class RunPodMachine:
                            else "status_deadline_exhausted" if time.monotonic() >= deadline
                            or getattr(transport_reason, "code", None) == "deadline_exceeded"
                            else "checkpoint_observation_failed")
-                raise checkpoint_refusal(observation_error, why)
+                checkpoint_refusal(observation_error, why)
+                run.lease.failure_verification = verification_observation(getattr(observation_error, "reason"))
+                raise
         finally:
             try:
                 unreaped = getattr(run.lease.claim.ops, "unreaped_child", None)
@@ -1149,6 +1269,7 @@ class RunPodMachine:
                                          "checkpoint_attestation_mismatch")
         # Recheck the same owner, generation and invocation after observation.
         if time.monotonic() >= deadline:
+            run.lease.failure_verification = verification_observation(installation_reason("status_deadline_exhausted"))
             raise checkpoint_refusal(MachineError("checkpoint observation deadline expired"),
                                      "status_deadline_exhausted")
         self._save_installation(owner, run.lease, preparation, {"installed": dict(expected)}, job=job)
@@ -1346,6 +1467,11 @@ class RunPodMachine:
         summary = host_summary(failure, getattr(lease, "failure_diagnostic", None),
                                stage=stage, node_ids=lease.node_ids,
                                node_names=lease.node_names) if failure else None
+        if summary is not None and failure is not None:
+            summary["stage"], _basis = failure_stage(
+                failure, phase=stage, exit_code=lease.failure_exit_code,
+                category=summary.get("category") if lease.failure_diagnostic is not None else None,
+                progress_phase=lease.failure_progress_phase)
         outcome = ("cancelled" if isinstance(failure, MachineRunCancelled) else
                    "failed" if failure else "success")
         if not warm and summary is not None:
