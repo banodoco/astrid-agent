@@ -326,14 +326,14 @@ def dispatch(operation, payload):
                     if current == patch.sha256_after:
                         continue
                     if operation == "verify-source-patches" or current != patch.sha256_before:
-                        raise IntegrityError('source patch digest mismatch')
+                        raise IntegrityError(f"source patch digest mismatch: {source.name} {patch.path}", reason='source patch digest mismatch')
                     _, replacement = recipes._read_ref(recipes.DataRef(patch.replacement, patch.sha256_after))
                     _atomic(path, replacement)
                     if _hash(path) != patch.sha256_after:
-                        raise IntegrityError('source patch digest mismatch')
+                        raise IntegrityError(f"source patch digest mismatch: {source.name} {patch.path}", reason='source patch digest mismatch')
                     changed = True
                 except OSError as exc:
-                    raise IntegrityError('source patch unavailable') from exc
+                    raise IntegrityError(f"source patch unavailable: {source.name} {patch.path}", reason='source patch unavailable') from exc
             facts = {"changed": changed}
         else:
             allowed = set()

@@ -1,0 +1,8 @@
+{
+  "fixture_file": "object_info_h3_standin_extras.json",
+  "classes": ["ComfyMathExpression", "PreviewAny"],
+  "source_repository": "VibeComfy",
+  "source_revision": "b3f20f33f2ea72e3d1dd491382e6a8754a9f2a57",
+  "source_file": "vibecomfy/porting/cache/object_info/comfy_core@object_info_comfyui_0.24.0.1.json",
+  "source_note": "Rows match those added to the overlay by e625beb11 for the CPU stand-in."
+}
