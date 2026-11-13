@@ -250,6 +250,36 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
     return body
 
 
+def judge_declarations(workflow, scratch, engine):
+    """Render and judge the declarations without consulting installed state."""
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import WorkflowBundleError, emit_bundle_with_candidate, load_bundle
+    from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
+
+    canonical_path = Path(scratch) / "canonical" / "workflow.py"
+    canonical_path.parent.mkdir(parents=True, exist_ok=True)
+    for source_format in ("ready_template", "scratchpad"):
+        try:
+            emitted = emit_bundle_with_candidate(workflow.clone(), canonical_path,
+                Provenance.USER_CONFIRMED, None, source_format=source_format)
+            break
+        except WorkflowBundleError:
+            if source_format == "scratchpad":
+                raise
+    selected = load_bundle(emitted.python_path, trust=Provenance.USER_CONFIRMED)
+    selected.require_canonical_authority("managed engine alignment")
+    if runtime_requirements_from_workflow(selected.workflow) != runtime_requirements_from_workflow(workflow):
+        raise IntegrityError("managed CLI runtime requirements differ from the admitted workflow")
+    manifest = engine.workflow_requirements([workflow])
+    if engine.workflow_requirements([selected.workflow]) != manifest:
+        raise IntegrityError("managed CLI workflow requirements differ from the admitted workflow")
+    missing = [model["name"] for model in manifest["models"]
+               if not model.get("sha256") or model.get("size") is None]
+    if missing:
+        raise IntegrityError("managed model has no declared digest: " + ", ".join(missing))
+    return manifest, source_format
+
+
 class ManagedEnginePreparation:
     """One lock and one supervisor client, retained until the attempt has drained.
 
@@ -407,33 +437,15 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed installation evidence differs from its receipt")
         self._runtime_requirements = None
         self._guard_runtime(canonical_workflow, runner, post=False)
-        from vibecomfy.security.provenance import Provenance
-        from vibecomfy.workflow_bundle import emit_bundle_with_candidate, load_bundle
-        canonical_path = self.scratch / "canonical" / "workflow.py"
-        canonical_path.parent.mkdir(parents=True, exist_ok=True)
-        from vibecomfy.workflow_bundle import WorkflowBundleError
-        for source_format in ("ready_template", "scratchpad"):
-            try:
-                emitted = emit_bundle_with_candidate(canonical_workflow.clone(), canonical_path,
-                    Provenance.USER_CONFIRMED, None, source_format=source_format)
-                break
-            except WorkflowBundleError:
-                if source_format == "scratchpad":
-                    raise
+        engine = copy.copy(run_action._engine_for({"engine": "comfyui"}))
+        manifest, source_format = judge_declarations(canonical_workflow, self.scratch, engine)
         self._native_generated_scratchpad = source_format == "scratchpad"
-        selected = load_bundle(emitted.python_path, trust=Provenance.USER_CONFIRMED)
-        selected.require_canonical_authority("managed engine alignment")
-        # CLI preparation owns only this emitted copy. The admitted source and
-        # the selected workflow remain frozen throughout alignment.
+        canonical_path = self.scratch / "canonical" / "workflow.py"
+        # CLI preparation owns only this emitted copy.
         native_members = list(canonical_path.parent.iterdir())
         self._canonical_members = {path: hashlib.sha256(path.read_bytes()).hexdigest()
                                    for path in native_members if path.is_file()}
         staged_digests.update(self._canonical_members)
-        from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
-        if runtime_requirements_from_workflow(selected.workflow) != runtime_requirements_from_workflow(canonical_workflow):
-            raise IntegrityError("managed CLI runtime requirements differ from the admitted workflow")
-        engine = copy.copy(run_action._engine_for({"engine": "comfyui"}))
-        manifest = engine.workflow_requirements([canonical_workflow])
         manifest = {**manifest, "engine": "comfyui", "models_root": configured_models_root(root=self.root)}
         self._has_declared_nodes = bool((manifest.get("extra") or {}).get("nodes"))
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
@@ -443,8 +455,6 @@ class ManagedEnginePreparation:
         if engine.commands is None:
             engine.commands = commands_type(str(canonical_path), str(lockfile), runner=self._command)
         self.check()
-        if engine.workflow_requirements([selected.workflow]) != engine.workflow_requirements([canonical_workflow]):
-            raise IntegrityError("managed CLI workflow requirements differ from the admitted workflow")
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
         callback = getattr(self, "on_phase", None)
