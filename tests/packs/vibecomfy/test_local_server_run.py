@@ -139,6 +139,30 @@ def comfy(tmp_path, monkeypatch):
         thread.join()
 
 
+def test_installed_custom_node_model_without_placement_converts(comfy):
+    from vibecomfy.porting.import_service import import_workflow_bytes
+
+    workflow = _workflow()
+    workflow["nodes"][0]["properties"].pop("models")
+    # The installed model is exposed by the live schema on the original loader field.
+    comfy.schema["SeedImage"]["input"]["required"]["ckpt_name"] = (
+        comfy.schema["SeedImage"]["input"]["required"].pop("asset")
+    )
+    index_path = Path("node_index.json")
+    index = json.loads(index_path.read_text())
+    inputs = next(node for node in index if node["class_type"] == "SeedImage")["inputs"]
+    inputs["ckpt_name"] = inputs.pop("asset")
+    index_path.write_text(json.dumps(index))
+
+    artifacts = import_workflow_bytes(json.dumps(workflow).encode(), workflow_id="installed-custom")
+    assert artifacts.report["validation"]["structural_and_parity"]["ok"] is True
+    warning = next(issue for issue in artifacts.report["diagnostics"]
+                   if issue["code"] == "filename_only_asset_candidate")
+    assert warning["detail"]["name"] == "installed.safetensors"
+    assert warning["detail"]["subdir"] is None
+    assert warning["detail"]["placement_reason"] == "no known directory for loader class 'SeedImage'"
+
+
 def test_real_server_url_writes_managed_result_and_records_fresh_seed(comfy, tmp_path):
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     seeds = []
@@ -697,8 +721,10 @@ def test_trust_absent_auxiliary_asset_is_unverified_in_every_astrid_record(comfy
     from vibecomfy.workflow_bundle import emit_bundle
     loaded = production_engine.load_workflow_path(comfy.workflow, tmp_path / 'author-trust', comfy_url=comfy.url)
     bundle = production_engine._canonical_bundle_value(loaded.resolved)
-    bundle.workflow.metadata['model_assets'] = [{'name': 'absent-aux.bin', 'subdir': 'auxiliary',
-        'url': 'https://example.invalid/absent-aux.bin', 'sha256': 'a' * 64, 'size_bytes': 123}]
+    asset = {'name': 'absent-aux.bin', 'subdir': 'auxiliary',
+        'url': 'https://example.invalid/absent-aux.bin', 'sha256': 'a' * 64, 'size_bytes': 123}
+    bundle.workflow.metadata['model_assets'] = [dict(asset)]
+    bundle.workflow.requirements.models = [dict(asset)]
     canonical = emit_bundle(bundle.workflow, tmp_path / 'trusted-aux/workflow.py', {'operation': 'authored'})
     monkeypatch.setenv('ASTRID_ALIGN', 'trust')
     destination = tmp_path / 'attempt-aux/outputs'
