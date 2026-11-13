@@ -52,7 +52,7 @@ def _parser():
 
 def _default_backend(*, engine, platform, placement, root, deadline):
     if placement == 'runpod':
-        raise UnsupportedPlacement('RunPod execution awaits W1 (runpod wrapper)')
+        raise UnsupportedPlacement('This machine manages only its own engine; a remote machine prepares its engine when its job starts.')
     from .generation.engine_execution import create_local_backend
     return create_local_backend(engine=engine, platform=platform, placement=placement,
                                 root=root, deadline=deadline)
@@ -168,7 +168,7 @@ def main(argv=None, *, backend_factory=None):
             handle = None
         messages = {
             'unsupported_platform': 'Target platform or local execution is unavailable; A2/A7 integration is pending.',
-            'unsupported_placement': 'RunPod execution awaits W1 (runpod wrapper).',
+            'unsupported_placement': 'This machine manages only its own engine; a remote machine prepares its engine when its job starts.',
             'engine_busy': 'Managed engine is busy; wait for the current operation to finish, then retry.',
             'custody_not_owner_only': 'Engine custody directory must be owner-only. /workspace is FUSE-unsafe; '
                                       'install under a local --root.',

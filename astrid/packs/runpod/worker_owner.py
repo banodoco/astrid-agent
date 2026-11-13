@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import re
 import secrets
@@ -61,6 +62,8 @@ from .worker_staging import (
     _canonical_digest,
     prepare_worker,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class RunPodWorkerOwnerError(RuntimeError):
@@ -498,14 +501,16 @@ class RunPodLeaseOwner:
                         record = self._read()
                         exact = (captured is not None and record is not None
                                  and (record.get("operation_id"), record.get("pod_id")) == captured)
-                except Exception:
+                except Exception:  # noqa: BLE001 - custody: any failed identity read must refuse to authorize exact release
+                    _logger.debug("Could not verify the failed acquisition identity", exc_info=True)
                     exact = False
                 released = False
                 if exact and not defer_unsafe_release:
                     try:
                         self.release(reason="custody_changed", _expected_operation=captured[0],
                                      expected_machine_id=captured[1])
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - custody: any exact-release failure must preserve pending cleanup and retry
+                        _logger.debug("Exact release failed after acquisition failure; preserving pending cleanup", exc_info=True)
                         pass  # Exact-release failure keeps durable pending custody/retry.
                     try:
                         with self.lock:

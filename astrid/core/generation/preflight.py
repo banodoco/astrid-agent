@@ -453,7 +453,7 @@ def check_local_generation_readiness(
             ),
         )
 
-    managed_ready = (
+    managed_ready = not require_managed_runtime or (
         _registered_managed_engine() is not None if not legacy_local
         else _comfyui_runtime_available()
     )
@@ -566,7 +566,7 @@ def _installed_managed_target(entry_id=None):
     return client
 
 
-def _select_generation_target(target: str, *, repo=None, entry_id=None):
+def _select_generation_target(target: str, *, repo=None, entry_id=None, defer_managed=False):
     """Select and probe one Comfy target without changing machine config.
 
     ``None`` selects managed lifecycle; a returned client owns only HTTP I/O.
@@ -589,6 +589,8 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
         selection = resolve_target(target, repo=repo)
         record = selection.record
         if record is None or record.owner == "astrid":
+            if defer_managed:
+                return None
             return _installed_managed_target(**({'entry_id': entry_id} if entry_id is not None else {}))
         if record.endpoint is None:
             raise AstridError(
@@ -632,13 +634,14 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
 
 
 def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGenerationOwner | None = None,
-                             entry_id: str | None = None, mode: str | None = None):
-    """Read/probe the bound target and expose the shared error envelope."""
+                             entry_id: str | None = None, mode: str | None = None,
+                             defer_managed: bool = False):
+    """Probe the bound target, optionally leaving managed binding to the host."""
     try:
         from astrid.core.generation.placement import is_runpod_placement
         if is_runpod_placement(target) and runpod_owner is not None:
             return call_runpod_owner(runpod_owner.validation_target)
-        return _select_generation_target(target, repo=repo,
+        return _select_generation_target(target, repo=repo, defer_managed=defer_managed,
             **({'entry_id': entry_id} if entry_id is not None else {}))
     except AstridError as exc:
         if isinstance(exc, GenerationReadinessError) and exc.code == 'engine_not_found':

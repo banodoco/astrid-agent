@@ -266,7 +266,7 @@ def plan_from_receipt(recipe: EngineRecipe, receipt: InstallReceipt, *, root: Ta
                         models_root=receipt.models_root)
     for field in ("engine", "platform"):
         if getattr(receipt, field) != getattr(plan, field):
-            raise IntegrityError('install receipt identity differs from verified recipe')
+            raise IntegrityError(f"install receipt {field} differs from verified recipe", reason='install receipt identity differs from verified recipe')
     return plan
 
 
@@ -284,7 +284,8 @@ def require_current_receipt(receipt: InstallReceipt, plan: InstallPlan, recipe: 
             or tuple((s.id, s.kind) for s in receipt.steps) != tuple((s.id, s.kind) for s in plan.steps)
             or set(receipt.requirements_locks) != {e.name for e in recipe.environments}
             or receipt.source_commits != {s.name: s.pin.revision for s in recipe.sources}):
-        raise IntegrityError('engine is installed but stale; run astrid engines install again')
+        raise IntegrityError(f"engine {plan.engine} is installed but stale; run `astrid engines install {plan.engine}`",
+                         reason='engine is installed but stale; run astrid engines install again')
 
 
 def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
