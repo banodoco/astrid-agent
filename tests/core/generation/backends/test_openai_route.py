@@ -46,7 +46,8 @@ def test_authenticated_expansion_binds_exact_cardinality_and_original_defaults()
 
 @pytest.mark.parametrize("data", [b"", b"\xff", b"{bad", b"[]", b'[1]', b'{"prompt":"one","prompt":"two"}',
                                   b'{"prompt":"x","n":true}', b'{"prompt":"x","n":11}',
-                                  b'{"prompt":"x","out":"../../file"}', b"x" * (1024 * 1024 + 1)])
+                                  b'{"prompt":"x","out":"../../file"}',
+                                  pytest.param(b"x" * (1024 * 1024 + 1), id="oversized-1MiB-prompt-bytes")])
 def test_invalid_authenticated_prompt_bytes_refuse(data):
     with pytest.raises((ValueError, TypeError)):
         openai.normalize_request({"prompts_file": {"digest": "a" * 64}}, prompt_bytes=data)
@@ -162,7 +163,8 @@ def test_provider_malformed_cardinality_and_decoding_stage_no_outputs(tmp_path, 
     assert not target.exists()
 
 
-@pytest.mark.parametrize("prompt", ["x" * 32_000, "\U0001f30a" * 32_000])
+@pytest.mark.parametrize("prompt", [pytest.param("x" * 32_000, id="oversized-32000-ascii-prompt"),
+                                    pytest.param("\U0001f30a" * 32_000, id="oversized-32000-wave-prompt")])
 def test_manifest_storage_reservation_is_refused_before_provider(prompt):
     jobs = 17 if prompt.isascii() else 4
     data = json.dumps([{"prompt": prompt}] * jobs, ensure_ascii=False).encode()

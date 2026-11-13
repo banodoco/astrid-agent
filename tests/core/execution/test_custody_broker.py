@@ -1985,7 +1985,7 @@ def test_command_diagnostic_decodes_argc_excludes_environment_and_redacts_secret
     assert evidence["environment"] == "EXCLUDED"
 
 
-@pytest.mark.parametrize("packet", [b"", b"x" * (65536 + 1), (257).to_bytes(4, sys.byteorder) + b"x\0", _procargs_packet(["a", "b"])[:10]])
+@pytest.mark.parametrize("packet", [b"", pytest.param(b"x" * (65536 + 1), id="oversized-64KiB-packet"), (257).to_bytes(4, sys.byteorder) + b"x\0", _procargs_packet(["a", "b"])[:10]])
 def test_command_diagnostic_malformed_or_overlimit_args_are_explicit(packet):
     with pytest.raises(custody.CustodyError):
         custody._diagnostic_argv(packet)
