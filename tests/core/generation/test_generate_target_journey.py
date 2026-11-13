@@ -399,7 +399,7 @@ def test_f02_successful_dry_run_keeps_saved_identity_and_does_not_admit(
     monkeypatch.setattr(GenerationFacade, "workflow", forbidden)
     output = tmp_path / "absent-output"
     plan = GenerationFacade().image(
-        prompt="one boat", target=loopback_comfy.url if source == "request" else "auto",
+        prompt="one boat", placement=loopback_comfy.url if source == "request" else "auto",
         out=output, dry_run=True)
     assert plan["target"]["endpoint"] == loopback_comfy.url
     assert config.read_bytes() == original and config.stat().st_mtime_ns == modified

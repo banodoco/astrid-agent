@@ -327,7 +327,13 @@ def _declare_source_video(monkeypatch):
         bundle = production_engine._canonical_bundle_value(loaded.resolved)
         workflow = bundle.workflow.clone()
         node = next(n for n in workflow.nodes.values() if n.class_type == "VHS_LoadVideoFFmpeg")
-        workflow.register_input("source_video", node.id, "video", "", type="COMBO", media_semantics="video")
+        # Rename the existing binding so emission retains one primary per field.
+        existing = workflow.inputs.pop("video")
+        workflow._manual_input_names.discard("video")
+        workflow.register_input(
+            "source_video", node.id, "video", "", type="COMBO",
+            aliases=(*existing.aliases, "video"), media_semantics="video",
+        )
         root = Path(args[1]) / "declared-workflow"
         root.mkdir(parents=True, exist_ok=True)
         derived = emit_bundle_with_candidate(
@@ -371,7 +377,7 @@ def test_continuation_graph_rejects_video_whose_staged_bytes_changed(comfy_video
     output_root = tmp_path / "attempt" / "outputs"
     bindings = action._stage_managed_assets(str(archive), readiness_profile=None, output_root=output_root)
     (output_root / "engine-input" / bindings["source_video"]).write_bytes(b"swapped after verification")
-    with pytest.raises(Exception, match="failed hash verification"):
+    with pytest.raises(ValueError, match="managed video failed hash verification"):
         production_engine.run_workflow_result_path(
             comfy_video.workflow, output_root, task_identity="task-1",
             comfy_url=comfy_video.url, comfy_output_dir=str(comfy_video.output), profile_id="local_server",
