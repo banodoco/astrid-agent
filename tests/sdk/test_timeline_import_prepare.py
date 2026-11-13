@@ -13,8 +13,115 @@ import pytest
 
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline_duplicate import _duplicate, copy_content, id_map
-from astrid.sdk.timeline_import_prepare import _document_id, check_import_manifest, prepare_import
+from astrid.sdk.timeline_import_prepare import _document_id, _normalize_legacy_internal_assets, _retarget_owned_descriptor_scopes, check_import_manifest, prepare_import
 from astrid.sdk.timeline_restructure import is_split
+
+
+def test_legacy_internal_assets_are_reversible_and_registry_is_unchanged():
+    original = {"a": {"media_id": "sha256:" + "a" * 64, "origin": "one"},
+                "b": {"nested": {"arbitrary": [None, False]}}}
+    registry = {"assets": {"a": {"media_id": "sha256:" + "b" * 64, "origin": "different"}}}
+    source = {"shots": {"s": {"internal_timeline": {"assets": copy.deepcopy(original),
+                                                         "registry": copy.deepcopy(registry)}}}}
+    _normalize_legacy_internal_assets(source)
+    result = source["shots"]["s"]["internal_timeline"]
+    assert {entry["id"]: {k: v for k, v in entry.items() if k != "id"}
+            for entry in result["assets"]} == original
+    assert result["registry"] == registry
+
+
+@pytest.mark.parametrize("assets", [{"": {}}, {"a": None}, {"a": 2}, {"a": {"id": "a"}},
+                                     {"a": {"id": "other"}}])
+def test_legacy_internal_assets_refuse_ambiguous_or_invalid_entries(assets):
+    source = {"shots": {"s": {"internal_timeline": {"assets": assets}}}}
+    original = copy.deepcopy(source)
+    with pytest.raises(TimelineEditError):
+        _normalize_legacy_internal_assets(source)
+    assert source == original
+
+
+def test_legacy_asset_key_matching_source_shot_id_is_refused():
+    source = {"shots": {"shot-one": {"internal_timeline": {"assets": {"shot-one": {"type": "image"}}}}}}
+    with pytest.raises(TimelineEditError):
+        _normalize_legacy_internal_assets(source)
+
+
+def test_legacy_assets_normalization_preserves_media_discovery():
+    from astrid.core.timeline.authoring_bundle import authoring_media_inventory
+
+    source = _source_bundle()
+    internal = source["shots"]["A"]["internal_timeline"]
+    # A legacy mirror can differ from the registry without implying a new edit.
+    internal["assets"] = {"P": {"media_id": "sha256:" + "b" * 64, "type": "image"}}
+    before = authoring_media_inventory(source)
+    _normalize_legacy_internal_assets(source)
+    after = authoring_media_inventory(source)
+    selected = lambda report: {row["media_id"] for row in report["media"] if row["selected"]}
+    unresolved = lambda report: {(row["selector"], row["error"]) for row in report["unresolved"]}
+    assert selected(before) == selected(after)
+    assert unresolved(before) == unresolved(after)
+
+
+def test_archive_retargets_only_declared_owned_scopes():
+    source = {"project_id": "old", "shots": {"s": {"payload": {
+        "audio": {"scope": {"project_id": "old", "realm": "retained"},
+                  "source": {"scope": {"project_id": "provenance"}}},
+        "assets": [{"scope": {"project_id": "old", "other": 3}, "object_id": "same"},
+                   {"object_id": "unscoped"}],
+        "opaque": {"project_id": "old"},
+    }}}}
+    _retarget_owned_descriptor_scopes(source, "new")
+    payload = source["shots"]["s"]["payload"]
+    assert payload["audio"]["scope"] == {"project_id": "new", "realm": "retained"}
+    assert payload["audio"]["source"]["scope"]["project_id"] == "provenance"
+    assert payload["assets"] == [{"scope": {"project_id": "new", "other": 3}, "object_id": "same"},
+                                  {"object_id": "unscoped"}]
+    assert payload["opaque"]["project_id"] == "old"
+
+
+def test_archive_refuses_foreign_project_descriptor_scope():
+    source = {"project_id": "old", "shots": {"s": {"payload": {
+        "audio": {"scope": {"project_id": "someone-else"}}
+    }}}}
+    with pytest.raises(TimelineEditError, match="different source project"):
+        _retarget_owned_descriptor_scopes(source, "new")
+
+
+def test_retargeted_archive_descriptors_pass_composition_graph_validation():
+    from astrid.core.timeline.shot_composition import ShotCompositionValidationError, validate_shot_composition
+
+    path = Path(__file__).parents[1] / "fixtures" / "timeline" / "shot_composition.json"
+    graph = json.loads(path.read_text(encoding="utf-8"))
+    target = graph["project"]["project_id"]
+    revision = graph["shot_revisions"][0]
+    payload = {"audio": copy.deepcopy(revision["audio"]), "assets": copy.deepcopy(revision["assets"])}
+    payload["audio"]["scope"]["project_id"] = "source-project"
+    for asset in payload["assets"]:
+        asset["scope"]["project_id"] = "source-project"
+    revision["audio"], revision["assets"] = payload["audio"], payload["assets"]
+    with pytest.raises(ShotCompositionValidationError, match="scope.project_id"):
+        validate_shot_composition(graph)
+    source = {"project_id": "source-project", "shots": {"s": {"payload": payload}}}
+    _retarget_owned_descriptor_scopes(source, target)
+    validate_shot_composition(graph)
+
+
+def test_prepare_import_publishes_target_owned_descriptor_scopes(monkeypatch):
+    source = _source_bundle()
+    payload = source["shots"]["A"]["payload"]
+    payload["audio"] = {"scope": {"project_id": source["project_id"], "realm": "kept"},
+                        "source": {"project_id": "original-provenance"}}
+    payload["assets"] = [{"scope": {"project_id": source["project_id"], "tag": "kept"},
+                          "other": "unchanged"}]
+    original = copy.deepcopy(source)
+    _inventory(monkeypatch, [])
+    result = prepare_import(source, {"format": "astrid.timeline/1", "elements": []}, {},
+                            "target-project", elements=[], timeline_id="target-timeline")
+    copied = result["publication"]["shot_revisions"][0]["payload"]
+    assert copied["audio"]["scope"] == {"project_id": "target-project", "realm": "kept"}
+    assert copied["assets"][0]["scope"] == {"project_id": "target-project", "tag": "kept"}
+    assert copied["audio"]["source"]["project_id"] == "original-provenance"
+    assert source == original
 
 
 def _source_bundle() -> dict:
