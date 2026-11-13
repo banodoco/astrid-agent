@@ -3395,6 +3395,41 @@ def _wait_for_kernel_task(
         raise
 
 
+def _queued_task_holders(task: Mapping[str, Any], *, include_registered: bool = True) -> tuple[list[str], str | None]:
+    """Read holder details or the registered host's cross-process busy count."""
+    holders: list[str] = []
+    for key, value in task.items():
+        if "holder" in key and value:
+            holders.append(f"{key}={value}")
+    details = task.get("waiting_details") or task.get("waiting_reason_details")
+    if isinstance(details, Mapping):
+        holders.extend(f"waiting_details.{key}={value}" for key, value in details.items() if value)
+    if holders or not include_registered:
+        return holders, None
+
+    try:
+        from astrid.sdk import host_bootstrap
+        from astrid.sdk.storage_root import resolve_runtime_data_root
+
+        support_root = resolve_runtime_data_root() / "runtime"
+        state_path = support_root / "generic-host.json"
+        if state_path.is_file() and not state_path.is_symlink():
+            state = host_bootstrap._read_object(state_path)
+            if (isinstance(state, Mapping) and state.get("support_root") == str(support_root)
+                    and host_bootstrap._registered_host_status(state) == "ours"):
+                active = host_bootstrap.host_occupancy(state.get("pid"), support_root)
+                if active is not None and active > 0:
+                    executor = state.get("executor_id")
+                    holders.append(
+                        f"registered_host={executor or 'generic pack host'} active_tasks={active}"
+                    )
+    except Exception:  # noqa: BLE001 - occupancy is a best-effort diagnostic
+        pass
+    if holders:
+        return holders, None
+    return [], "registered host occupancy is unavailable or reports no active task"
+
+
 def _wait_for_kernel_task_loop(
     client: Any,
     *,
@@ -3422,6 +3457,7 @@ def _wait_for_kernel_task_loop(
     effective_timeout = float(timeout_seconds)
     deadline = started + effective_timeout
     previous = None
+    queued_diagnostic_emitted = False
     while True:
         try:
             observed = show(task_id)
@@ -3471,7 +3507,11 @@ def _wait_for_kernel_task_loop(
         now = time.monotonic()
         reason = task.get("waiting_reason") or task.get("blocked_reason")
         signature = (state, reason)
-        if signature != previous or now - last_heartbeat >= 60:
+        queued_diagnostic_due = (
+            state in {"queued", "waiting"} and now - started >= 10
+            and not queued_diagnostic_emitted
+        )
+        if signature != previous or now - last_heartbeat >= 60 or queued_diagnostic_due:
             from astrid.core.cli.task_progress import render_observation_line, task_observation
 
             observation = task_observation(task, kind="progress", followed_for_seconds=now - started,
@@ -3484,13 +3524,13 @@ def _wait_for_kernel_task_loop(
                 root = task.get("realm_root")
                 location = f" under {root}" if isinstance(root, str) and root else " in the Runtime realm"
                 line += f"; free disk space{location}; the Runtime needs at least 1 GiB free"
-            if reason in {"waiting_for_worker", "waiting_for_gpu"}:
-                holders = {key: value for key, value in task.items() if "holder" in key and value}
-                details = task.get("waiting_details") or task.get("waiting_reason_details")
-                if isinstance(details, Mapping):
-                    holders.update({key: value for key, value in details.items() if "holder" in key and value})
-                if holders:
-                    line += "; " + ", ".join(f"{key}={value}" for key, value in holders.items())
+            if queued_diagnostic_due or reason in {"waiting_for_worker", "waiting_for_gpu"}:
+                holders, unavailable = _queued_task_holders(task, include_registered=queued_diagnostic_due)
+                if queued_diagnostic_due or holders:
+                    line += "; current executor occupancy: " + (
+                        ", ".join(holders) if holders else str(unavailable)
+                    )
+                    queued_diagnostic_emitted = True
                 else:
                     line += "; inspect running tasks for the resource holder"
             if now - last_heartbeat >= 60:

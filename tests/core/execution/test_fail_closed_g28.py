@@ -25,6 +25,15 @@ def case(host_case, monkeypatch):
     data["status"] = "running"
     data.setdefault("runtime_epoch", 7)
     original_fail = case.runtime.fail
+    original_heartbeat = case.runtime.heartbeat
+
+    def heartbeat(task_id, lease_token, **kwargs):
+        original_heartbeat(task_id, lease_token, **kwargs)
+        return SimpleNamespace(task_id=task_id, lease_id=lease_token, attempt_id=kwargs["attempt_id"],
+                               fence=kwargs["fence"], runtime_epoch=case.runtime.tasks[task_id]["task"]["runtime_epoch"],
+                               lease_expires_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat())
+
+    monkeypatch.setattr(case.runtime, "heartbeat", heartbeat)
 
     def fail(*args, **kwargs):
         original_fail(*args, **kwargs)
@@ -110,8 +119,19 @@ def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
     else:
         monkeypatch.setattr(case.host, "_run_command_definition", broken)
     started = time.monotonic()
+    if fault == "heartbeat":
+        case.host.run_task(case.task, lease_token="lease-result")
+        assert receipt(case)["status"] == "succeeded"
+        assert not case.runtime.failures
+        return
     with pytest.raises(AttributeError if fault == "normalized_attributes" else (OSError, HostError)):
         case.host.run_task(case.task, lease_token="lease-result")
+    if fault == "failure_rpc":
+        # Publication owns the attempt after an uncertain write; wait for that
+        # owner before asserting that its observer and custody were released.
+        for owner in list(case.host._reconciliation_owners.values()):
+            owner.join(timeout=2)
+        assert not case.host._reconciliation_owners
     assert_failed(case, started)
     assert len(case.runtime.failures) == 1
     binding = case.runtime.failures[0][3]
@@ -267,7 +287,14 @@ def test_cancel_completion_error_propagates_and_retains_pending_evidence(case, m
 
 @pytest.mark.parametrize("loss", ["task_read", "queued", "successor", "fence", "heartbeat", "expired", "resource_expired",
                                 "null_expiry", "invalid_expiry", "naive_expiry"])
-def test_lease_loss_is_failure_with_terminal_receipt(case, monkeypatch, loss):
+def test_lease_observation_ends_work_only_on_runtime_verdict(case, monkeypatch, loss, capsys):
+    categories = {
+        "task_read": "task_read_exception", "queued": "task_state_changed",
+        "successor": "attempt_changed", "fence": "fence_changed",
+        "heartbeat": "heartbeat_exception", "expired": "lease_expired",
+        "resource_expired": "lease_expired", "null_expiry": "lease_metadata_invalid",
+        "invalid_expiry": "lease_metadata_invalid", "naive_expiry": "lease_metadata_invalid",
+    }
     class RuntimeFault(OSError):
         code = "runtime_unavailable"
         request_id = "req-lease-17"
@@ -275,6 +302,9 @@ def test_lease_loss_is_failure_with_terminal_receipt(case, monkeypatch, loss):
         def __init__(self, message):
             super().__init__(message)
             self.message = message
+
+    success = case.host._run_command_definition
+    unknown = loss in {"task_read", "heartbeat", "expired", "resource_expired", "null_expiry", "invalid_expiry", "naive_expiry"}
 
     def execute(*args, **kwargs):
         if loss == "task_read":
@@ -297,6 +327,9 @@ def test_lease_loss_is_failure_with_terminal_receipt(case, monkeypatch, loss):
                     lease_expires_at=lease_expiry))
             else:
                 case.task["task"]["lease_expires_at"] = lease_expiry
+        if unknown:
+            time.sleep(0.12)
+            return success(*args, **kwargs)
         polling_deadline = time.monotonic() + 2
         while case.task["task"]["status"] != "failed" and time.monotonic() < polling_deadline:
             time.sleep(0.01)
@@ -304,18 +337,22 @@ def test_lease_loss_is_failure_with_terminal_receipt(case, monkeypatch, loss):
 
     monkeypatch.setattr(case.host, "_run_command_definition", execute)
     started = time.monotonic()
-    with pytest.raises(HostError, match="lease lost"):
+    if unknown:
         case.host.run_task(case.task, lease_token="lease-result")
-    assert_failed(case, started, code="lease_lost")
-    assert len(case.runtime.failures) == 1
-    categories = {
-        "task_read": "task_read_exception", "queued": "task_state_changed",
-        "successor": "attempt_changed", "fence": "fence_changed",
-        "heartbeat": "heartbeat_exception", "expired": "lease_expired",
-        "resource_expired": "lease_expired", "null_expiry": "lease_metadata_invalid",
-        "invalid_expiry": "lease_metadata_invalid", "naive_expiry": "lease_metadata_invalid",
-    }
-    diagnostic = case.runtime.failures[0][3]["failure_diagnostic"]
+        assert not case.runtime.failures and len(case.runtime.settlements) == 1
+        assert receipt(case)["status"] == "succeeded"
+        log = capsys.readouterr().err
+        assert "do-not-record" not in log and "task read unavailable" not in log
+        lines = [json.loads(line.split("generic host: lease ", 1)[1])
+                 for line in log.splitlines() if "generic host: lease " in line]
+        assert any(line["category"] == categories[loss] for line in lines)
+        diagnostic = receipt(case)["lease_diagnostic"]
+    else:
+        with pytest.raises(HostError, match="lease lost"):
+            case.host.run_task(case.task, lease_token="lease-result")
+        assert_failed(case, started, code="lease_lost")
+        assert len(case.runtime.failures) == 1
+        diagnostic = case.runtime.failures[0][3]["failure_diagnostic"]
     assert diagnostic["category"] == categories[loss]
     assert diagnostic["schema_version"] == 1
     assert diagnostic["observed_at_utc"].endswith("+00:00")
@@ -334,8 +371,9 @@ def test_lease_loss_is_failure_with_terminal_receipt(case, monkeypatch, loss):
         assert "do-not-record" not in json.dumps(diagnostic)
     terminal_diagnostic = receipt(case)["lease_diagnostic"]
     assert terminal_diagnostic == diagnostic
-    assert case.task["task"]["status"] == "failed"
-    assert not case.runtime.settlements
+    if not unknown:
+        assert case.task["task"]["status"] == "failed"
+        assert not case.runtime.settlements
 
 
 def test_lease_loss_keeps_last_successful_heartbeat_receipt(case, monkeypatch):
@@ -344,9 +382,10 @@ def test_lease_loss_keeps_last_successful_heartbeat_receipt(case, monkeypatch):
     original_heartbeat = case.runtime.heartbeat
 
     def heartbeat(*args, **kwargs):
-        original_heartbeat(*args, **kwargs)
         pulsed.set()
-        return SimpleNamespace(lease_expires_at=expiry)
+        result = original_heartbeat(*args, **kwargs)
+        result.lease_expires_at = expiry
+        return result
 
     monkeypatch.setattr(case.runtime, "heartbeat", heartbeat)
 
@@ -365,13 +404,13 @@ def test_lease_loss_keeps_last_successful_heartbeat_receipt(case, monkeypatch):
     assert diagnostic["category"] == "task_state_changed"
     assert datetime.fromisoformat(diagnostic["last_successful_heartbeat_at_utc"]).tzinfo == timezone.utc
     assert diagnostic["last_successful_heartbeat_expiry"] == expiry
-    assert diagnostic["observed"] == {"state": "queued", "attempt_id": "attempt-result", "fence": "3"}
+    assert diagnostic["observed"] == {"state": "queued", "attempt_id": "attempt-result", "fence": "3", "runtime_epoch": "7"}
     assert case.task["task"]["status"] == "failed"
     assert not case.runtime.settlements
 
 
 @pytest.mark.parametrize("read_model", ["mapping", "resource"])
-def test_renewal_requires_semantic_progress_and_never_begins_after_deadline(case, monkeypatch, read_model):
+def test_renewal_reports_only_semantic_progress_and_never_begins_after_deadline(case, monkeypatch, read_model):
     case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=0.5)
     pulses = []
     if read_model == "resource":
@@ -386,13 +425,15 @@ def test_renewal_requires_semantic_progress_and_never_begins_after_deadline(case
         checkpoint.write_text('{"phase":"work","percent":10}')
         time.sleep(0.13)
         stable_count = len(pulses)
-        # Rewriting JSON or changing irrelevant keys must not earn a lease.
+        # Liveness keeps renewing, but an equivalent rewrite earns no progress.
         checkpoint.write_text('{"percent":10,"phase":"work","noise":"new bytes"}')
         time.sleep(0.13)
-        assert len(pulses) == stable_count
+        assert len(pulses) > stable_count
+        assert [progress for _, progress in pulses if progress is not None] == [{"phase": "work", "percent": 10}]
         checkpoint.write_text('{"phase":"work","percent":20}')
         time.sleep(0.13)
-        assert len(pulses) == stable_count + 1
+        assert [progress for _, progress in pulses if progress is not None] == [
+            {"phase": "work", "percent": 10}, {"phase": "work", "percent": 20}]
         time.sleep(0.2)
         assert kwargs["cancelled"]()
         raise HostCancelled("deadline interrupted invocation")
@@ -429,7 +470,6 @@ def test_failure_rpc_uses_claimed_epoch_and_private_bounded_transport():
 @pytest.mark.parametrize("outcome", ["executor", "cancelled", "lease_lost", "lease_expired"])
 def test_real_runtime_fenced_terminal_state_and_result(case, monkeypatch, tmp_path, outcome):
     """Protocol adapter -> RuntimeService -> real attempt/reservation tables."""
-    from runtime_protocol.errors import LeaseError
     from runtime_protocol.service import RuntimeService
     from runtime_protocol.store import RealmStore
 
@@ -489,11 +529,11 @@ def test_real_runtime_fenced_terminal_state_and_result(case, monkeypatch, tmp_pa
                 # A definitive fenced lease error must contain immediately.
                 # Transient transport recovery has separate bounded cases below.
                 if outcome == "lease_lost":
-                    monkeypatch.setattr(case.runtime, "task", lambda *_: (_ for _ in ()).throw(LeaseError("attempt lease has expired")))
+                    from astrid_runtime_client import ApiError
+                    monkeypatch.setattr(case.runtime, "task", lambda *_: (_ for _ in ()).throw(ApiError(409, "lease_fenced", "attempt lease has expired")))
                     assert kwargs["cancelled"]()
                 else:
-                    # Runtime retains this attempt's custody after ordinary
-                    # expiry; unchanged running state/fence is not authority.
+                    # Expiry alone is unknown; a renewal refusal ends work.
                     assert service.task(data["id"])["task"]["status"] == "running"
                     expiry = time.monotonic() + 2
                     while not (case.root / "result.json").exists() and time.monotonic() < expiry:
@@ -597,8 +637,7 @@ def test_heartbeat_contention_cannot_wait_past_the_deadline(case, monkeypatch):
         case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=0.3)
         monkeypatch.setattr(case.runtime, "heartbeat", client.heartbeat)
         started = time.monotonic()
-        with pytest.raises(HostError, match="heartbeat authority is busy"):
-            case.host.run_task(case.task, lease_token="lease-result")
+        case.host.run_task(case.task, lease_token="lease-result")
         assert time.monotonic() - started < 3
         assert_failed(case, started, code="timeout")
         # Releasing the lock after expiry must never send the queued heartbeat.
@@ -779,7 +818,8 @@ def lease_clock(case, monkeypatch):
             clock.heartbeat_fault()
         data["lease_expires_at"] = expiry()
         # Resource responses exercise the generated client's supported shape.
-        return SimpleNamespace(attempt_id="attempt-result", fence=3,
+        return SimpleNamespace(attempt_id="attempt-result", fence=3, runtime_epoch=7,
+                               task_id="task-result", lease_id="lease-result",
                                lease_expires_at=data["lease_expires_at"])
 
     def task(task_id, **_kwargs):
@@ -797,7 +837,11 @@ def lease_clock(case, monkeypatch):
             clock.terminal = _terminal
             _terminal["stage"] = "execution"
             _terminal["progress"] = {"phase": "work", "percent": 10}
-            _terminal["renew_progress"]()
+            try:
+                _terminal["renew_progress"]()
+            except Exception as exc:
+                if not _terminal["lease_transport_fault"]("heartbeat_exception", exc):
+                    raise
             clock.initial_pulses = len(clock.pulses)
             stop = _terminal["pump_stop"]
 
@@ -912,45 +956,91 @@ def test_initial_transport_fault_can_recover_within_acknowledged_claim_validity(
     assert faults == [0.0]
     assert not terminal.get("forced") and not case.runtime.failures
     assert lease_clock.at > 4 * lease_clock.ttl
-    assert terminal["lease_valid_until"] > lease_clock.at
+    assert terminal["lease_diagnostic"]["last_successful_heartbeat_at_utc"] is not None
 
 
 @pytest.mark.parametrize("operation", ["read", "heartbeat"])
-def test_sustained_transport_stops_at_last_acknowledged_expiry(case, lease_clock, operation):
+@pytest.mark.parametrize("verdict", ["runtime", "deadline"])
+def test_sustained_transport_keeps_work_until_runtime_verdict_or_deadline(case, lease_clock, operation, verdict):
+    case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=0.6 if verdict == "deadline" else 10)
+
     def unavailable():
-        if lease_clock.at > 0:
-            raise ConnectionError("private transport detail must not be recorded")
+        if 0 < lease_clock.at < 0.6 or verdict == "deadline":
+            if lease_clock.at > 0:
+                raise ConnectionError("private transport detail must not be recorded")
 
     if operation == "read":
         lease_clock.read_fault = unavailable
     else:
         lease_clock.heartbeat_fault = unavailable
+
+    def tick():
+        if verdict == "runtime" and lease_clock.at >= 0.6:
+            case.task["task"]["fence"] = 4
+
+    lease_clock.tick = tick
     terminal = lease_clock.run()
-    assert terminal["forced"] == "lease_lost" and terminal["cancel_signal"].is_set()
-    assert lease_clock.at == lease_clock.ttl
-    assert all(at < lease_clock.ttl for at, _ in lease_clock.pulses)
+    assert terminal["forced"] == ("timeout" if verdict == "deadline" else "lease_lost")
+    assert terminal["cancel_signal"].is_set()
+    assert 0.6 <= lease_clock.at <= 0.65
+    assert lease_clock.at > lease_clock.ttl
+    assert any(at > lease_clock.ttl for at in lease_clock.reads)
     assert not case.runtime.settlements
-    diagnostic = receipt(case)["lease_diagnostic"]
-    assert diagnostic == case.runtime.failures[0][3]["failure_diagnostic"]
+    diagnostic = terminal["lease_diagnostic"]
     assert diagnostic["last_successful_heartbeat_expiry"] == "2035-01-01T00:00:00.200000+00:00"
     assert "private transport detail" not in json.dumps(diagnostic)
     assert len(json.dumps(diagnostic)) < 1200
+    if verdict == "runtime":
+        assert receipt(case)["lease_diagnostic"] == diagnostic
+        assert case.runtime.failures[0][3]["failure_diagnostic"] == diagnostic
+        assert receipt(case)["error"]["code"] == "lease_lost"
 
 
-def test_heartbeat_acknowledgement_after_prior_expiry_cannot_restore_ownership(case, lease_clock):
-    def late_success():
+def test_committed_but_unacknowledged_heartbeat_does_not_fail_attempt(case, lease_clock):
+    case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=60)
+    committed = []
+
+    def dropped_reply():
         if lease_clock.at > 0:
+            committed.append(lease_clock.at)
+            # Runtime renews before the response disappears for 25 seconds.
+            case.task["task"]["lease_expires_at"] = "2035-01-01T00:05:00+00:00"
+            raise TimeoutError("reply dropped after commit")
+
+    lease_clock.heartbeat_fault = dropped_reply
+
+    def complete(terminal):
+        assert not terminal.get("forced")
+        terminal["completion_call"](case.runtime.settle, "task-result", "lease-result",
+                                    result={}, outputs=[], effect=None,
+                                    attempt_id="attempt-result", fence=3)
+
+    terminal = lease_clock.run(until=24.95, after=complete)
+    assert lease_clock.at == 25
+    assert committed and committed[-1] == 24.95
+    assert not terminal.get("forced") and not terminal["cancel_signal"].is_set()
+    assert not case.runtime.failures
+    assert len(case.runtime.settlements) == 1
+    assert terminal["lease_diagnostic"]["last_successful_heartbeat_expiry"] == "2035-01-01T00:00:00.200000+00:00"
+
+
+def test_heartbeat_acknowledgement_after_prior_expiry_restores_observation(case, lease_clock):
+    delayed = []
+
+    def late_success():
+        if lease_clock.at > 0 and not delayed:
+            delayed.append(lease_clock.at)
             lease_clock.at = 0.25
 
     lease_clock.heartbeat_fault = late_success
     terminal = lease_clock.run()
-    assert terminal["forced"] == "lease_lost"
-    assert len(lease_clock.pulses) == lease_clock.initial_pulses + 1
-    assert terminal["lease_diagnostic"]["last_successful_heartbeat_expiry"] == "2035-01-01T00:00:00.200000+00:00"
-    assert not case.runtime.settlements
+    assert delayed and lease_clock.at > 4 * lease_clock.ttl
+    assert not terminal.get("forced") and not case.runtime.failures
+    assert len(lease_clock.pulses) > lease_clock.initial_pulses + 1
+    assert terminal["lease_diagnostic"]["last_successful_heartbeat_expiry"] == case.task["task"]["lease_expires_at"]
 
 
-@pytest.mark.parametrize("code", ["lease_fenced", "forbidden", "invalid_response"])
+@pytest.mark.parametrize("code", ["lease_fenced", "forbidden"])
 def test_typed_rejection_is_definitive_despite_remaining_validity(case, lease_clock, code):
     class RuntimeRejection(OSError):
         request_id = "req-bounded-lease"
@@ -974,9 +1064,8 @@ def test_typed_rejection_is_definitive_despite_remaining_validity(case, lease_cl
 
 
 
-def test_task_read_cannot_extend_last_acknowledged_lease_validity(case, lease_clock):
+def test_task_read_does_not_replace_last_acknowledged_heartbeat(case, lease_clock):
     def before(_terminal):
-        # A read can observe another renewal, but is not our acknowledged write.
         case.task["task"]["lease_expires_at"] = "2035-01-01T00:00:05+00:00"
 
     def unavailable():
@@ -985,27 +1074,85 @@ def test_task_read_cannot_extend_last_acknowledged_lease_validity(case, lease_cl
 
     lease_clock.heartbeat_fault = unavailable
     terminal = lease_clock.run(before=before)
-    assert terminal["forced"] == "lease_lost"
-    assert lease_clock.at == lease_clock.ttl
-    assert all(at < lease_clock.ttl for at, _ in lease_clock.pulses)
+    assert not terminal.get("forced") and not case.runtime.failures
+    assert lease_clock.at > 4 * lease_clock.ttl
+    assert any(at > lease_clock.ttl for at, _ in lease_clock.pulses)
     assert terminal["lease_diagnostic"]["last_successful_heartbeat_expiry"] == "2035-01-01T00:00:00.200000+00:00"
-    assert not case.runtime.settlements
 
 
-def test_periodic_liveness_requires_an_independent_finite_deadline(case, lease_clock):
+def test_periodic_liveness_keeps_asking_without_inventing_a_deadline(case, lease_clock):
     def before(terminal):
-        # An interactive allowance without an admitted hard bound cannot
-        # become an indefinitely renewable silent workload.
         terminal["lifetime"].authority = lambda: None
         terminal["lifetime"].phase = "execution"
         assert terminal["lifetime"].deadline() is None
 
     terminal = lease_clock.run(before=before)
-    assert terminal["forced"] == "lease_lost"
-    assert lease_clock.at == lease_clock.ttl
-    assert len(lease_clock.pulses) == lease_clock.initial_pulses
-    assert not case.runtime.settlements
+    assert not terminal.get("forced") and not case.runtime.failures
+    assert lease_clock.at > 4 * lease_clock.ttl
+    assert len(lease_clock.pulses) > lease_clock.initial_pulses
 
+
+def test_invalid_runtime_response_is_unknown_and_keeps_polling(case, lease_clock):
+    from astrid_runtime_client import ApiError
+
+    def malformed():
+        if lease_clock.at > 0:
+            raise ApiError(0, "invalid_response", "unreadable response")
+
+    lease_clock.heartbeat_fault = malformed
+    terminal = lease_clock.run()
+    assert not terminal.get("forced") and not case.runtime.failures
+    assert lease_clock.at > 4 * lease_clock.ttl
+    assert terminal["lease_diagnostic"]["runtime_code"] == "invalid_response"
+
+
+def test_lease_verdict_is_logged_with_reason(case, lease_clock, capsys):
+    def unavailable():
+        if 0 < lease_clock.at < 0.4:
+            raise TimeoutError("private transport details")
+
+    lease_clock.read_fault = unavailable
+
+    def tick():
+        if lease_clock.at >= 0.4:
+            case.task["task"]["fence"] = 4
+
+    lease_clock.tick = tick
+    terminal = lease_clock.run()
+    assert terminal["forced"] == "lease_lost"
+    lines = [json.loads(line.split("generic host: lease ", 1)[1])
+             for line in capsys.readouterr().err.splitlines() if "generic host: lease " in line]
+    assert [line["category"] for line in lines if line["verdict"] is None] == ["task_read_exception", "fence_changed"]
+    verdicts = [line for line in lines if line["verdict"]]
+    assert len(verdicts) == 1
+    assert verdicts[0] == {
+        "task_id": "task-result", "attempt_id": "attempt-result", "category": "fence_changed",
+        "last_acknowledged_heartbeat": "2035-01-01T00:00:00+00:00",
+        "elapsed_seconds": 0.4, "verdict": "lease_lost", "runtime_code": None,
+    }
+
+
+def test_heartbeat_requests_declared_authority_window(monkeypatch):
+    from astrid.core.execution.guards import ExecutionGuardPolicy
+
+    client = RuntimeProtocolClient("http://127.0.0.1:1", "test-worker")
+    policy = ExecutionGuardPolicy(authority_window_seconds=120)
+    host = generic_host.GenericPackHost(pack_roots=[], client=client, execution_policy=policy)
+    assert host.execution_policy is client.execution_policy is policy
+    client._attempt_runtime_epochs = {"attempt-result": 7}
+    monkeypatch.setattr(client, "_current_runtime_epoch", lambda **_kwargs: 7)
+    seen = []
+
+    def request(_self, method, path, **kwargs):
+        assert method == "POST" and path == "/v1/attempts/attempt-result/heartbeat"
+        seen.append(json.loads(kwargs["body"]))
+        return 200, {}, json.dumps({"data": {}, "receipt": {}}).encode()
+
+    monkeypatch.setattr(type(client.generated), "_request", request)
+    client.heartbeat("task-result", "lease-result", attempt_id="attempt-result", fence=3)
+    assert seen == [{"lease_id": "lease-result", "fence": 3, "runtime_epoch": 7}]
+    assert generic_host._LEASE_POLL_SECONDS == generic_host._DEFAULT_EXECUTION_POLICY.authority_window_seconds / 60
+    assert client._lifecycle_client().timeout == policy.authority_window_seconds / 150
 
 
 @pytest.mark.parametrize("late_lock", [False, True])
@@ -1108,3 +1255,320 @@ def test_hung_command_is_stopped_and_reaped_by_unchanged_absolute_deadline(case,
     assert waits == [{"timeout": 0}]
     assert set(census) == {900}
     assert not case.runtime.settlements
+
+
+@pytest.mark.parametrize("status,code", [
+    (400, "protocol_error"), (401, "invalid_response"), (403, "invalid_response"),
+    (404, "invalid_response"), (409, "conflict"), (410, "retired_route"), (422, "validation_error"),
+])
+def test_validation_and_route_failures_are_unknown(case, lease_clock, status, code):
+    from astrid_runtime_client import ApiError
+
+    def refused():
+        if lease_clock.at > 0:
+            raise ApiError(status, code, "untrusted transport detail")
+
+    lease_clock.heartbeat_fault = refused
+    terminal = lease_clock.run()
+    assert not terminal.get("forced") and not case.runtime.failures
+    assert lease_clock.at > 4 * lease_clock.ttl
+    assert terminal["lease_diagnostic"]["runtime_code"] == code
+
+
+@pytest.mark.parametrize("field,value", [
+    ("fence", "3"), ("fence", True), ("runtime_epoch", "7"), ("runtime_epoch", None),
+    ("attempt_id", None), ("attempt_id", 3), ("task_id", []), ("lease_id", ""),
+    ("lease_expires_at", None), ("lease_expires_at", "yesterday"),
+])
+def test_malformed_heartbeat_acknowledgement_is_unknown(case, lease_clock, monkeypatch, field, value):
+    original = case.runtime.heartbeat
+
+    def malformed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if lease_clock.at > 0:
+            setattr(result, field, value)
+        return result
+
+    monkeypatch.setattr(case.runtime, "heartbeat", malformed)
+    terminal = lease_clock.run()
+    assert not terminal.get("forced") and not case.runtime.failures
+    assert len(lease_clock.pulses) > lease_clock.initial_pulses + 1
+    assert terminal["lease_diagnostic"]["last_successful_heartbeat_expiry"] == "2035-01-01T00:00:00.200000+00:00"
+    assert terminal["lease_diagnostic"]["category"] == "heartbeat_exception"
+
+
+def test_empty_heartbeat_acknowledgement_never_records_success(case, lease_clock, monkeypatch):
+    monkeypatch.setattr(case.runtime, "heartbeat", lambda *_a, **_k: {})
+    terminal = lease_clock.run()
+    assert not terminal.get("forced")
+    assert terminal["lease_diagnostic"]["last_successful_heartbeat_at_utc"] is None
+    assert terminal["lease_diagnostic"]["category"] == "heartbeat_exception"
+
+
+@pytest.mark.parametrize("field,value", [("fence", 4), ("attempt_id", "successor"), ("runtime_epoch", 8)])
+def test_valid_different_heartbeat_identity_is_a_verdict(case, lease_clock, monkeypatch, field, value):
+    original = case.runtime.heartbeat
+
+    def changed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if lease_clock.at > 0:
+            setattr(result, field, value)
+        return result
+
+    monkeypatch.setattr(case.runtime, "heartbeat", changed)
+    terminal = lease_clock.run()
+    assert terminal["forced"] == "lease_lost"
+    assert terminal["lease_diagnostic"]["category"] == f"heartbeat_{field}_changed"
+
+
+def test_invalid_progress_retries_heartbeat_without_progress(case, lease_clock, monkeypatch, capsys):
+    from astrid_runtime_client import ApiError
+    original = case.runtime.heartbeat
+    rejected = []
+
+    def validate(*args, **kwargs):
+        if kwargs.get("progress", {}).get("percent") == 101:
+            rejected.append(kwargs["progress"])
+            raise ApiError(422, "validation_error", "progress.percent must be between 0 and 100")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(case.runtime, "heartbeat", validate)
+
+    def before(terminal):
+        terminal["progress"] = {"percent": 101}
+
+    terminal = lease_clock.run(before=before)
+    assert rejected == [{"percent": 101}]
+    assert not terminal.get("forced") and not case.runtime.failures
+    assert len(lease_clock.pulses) > 4
+    assert "heartbeat_progress_invalid" in capsys.readouterr().err
+    assert terminal["lease_diagnostic"]["category"] == "observing"
+    assert "runtime_code" not in terminal["lease_diagnostic"]
+
+
+def test_task_epoch_change_is_a_verdict_without_health_or_heartbeat(case, lease_clock):
+    def before(_terminal):
+        case.task["task"]["runtime_epoch"] = 8
+
+    terminal = lease_clock.run(before=before)
+    assert terminal["forced"] == "lease_lost"
+    assert terminal["lease_diagnostic"]["category"] == "runtime_epoch_changed"
+    assert len(lease_clock.pulses) == lease_clock.initial_pulses
+
+
+def test_late_settle_after_runtime_silence_is_a_reasoned_failure(case, lease_clock, monkeypatch, capsys):
+    from astrid_runtime_client import ApiError
+    case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=60)
+    lease_clock.ttl = 30.0
+    sent = []
+
+    def silence():
+        if lease_clock.at > 0:
+            raise TimeoutError("Runtime silent")
+
+    lease_clock.read_fault = lease_clock.heartbeat_fault = silence
+    protocol = RuntimeProtocolClient("http://127.0.0.1:1", "test-worker")
+    protocol._attempt_runtime_epochs = {"attempt-result": 7}
+
+    class Generated:
+        timeout = 30
+        def health(self):
+            raise TimeoutError("health remains silent")
+        def settle_attempt(self, attempt_id, body, **_kwargs):
+            assert lease_clock.at > 30
+            assert attempt_id == "attempt-result"
+            assert body["runtime_epoch"] == 7 and body["fence"] == 3
+            sent.append(body)
+            raise ApiError(409, "lease_fenced", "attempt lease is stale or already settled")
+
+    protocol.generated = Generated()
+    monkeypatch.setattr(case.runtime, "settle", protocol.settle)
+
+    def complete(terminal):
+        terminal["completion_call"](case.runtime.settle, "task-result", "lease-result",
+                                    result={}, outputs=[], effect=None,
+                                    attempt_id="attempt-result", fence=3)
+
+    with pytest.raises(generic_host.HostLeaseLost, match="Runtime refused settle: lease_fenced"):
+        lease_clock.run(until=35, after=complete)
+    assert len(sent) == 1 and not case.runtime.settlements and not case.runtime.failures
+    assert lease_clock.terminal["lease_diagnostic"]["last_successful_heartbeat_expiry"] == "2035-01-01T00:00:30+00:00"
+    assert lease_clock.terminal["status"] == "failed"
+    assert lease_clock.terminal["recorded"] and lease_clock.terminal["retain_spool"]
+    assert receipt(case)["status"] == "failed"
+    assert "lease_fenced" in receipt(case)["error"]["message"]
+    lines = [json.loads(line.split("generic host: lease ", 1)[1])
+             for line in capsys.readouterr().err.splitlines() if "generic host: lease " in line]
+    assert any(line["category"] == "publication_refused" and line["verdict"] == "lease_lost"
+               and line["runtime_code"] == "lease_fenced" for line in lines)
+
+
+@pytest.mark.parametrize("outcome", ["success", "not_found", "lease_fenced", "epoch", "cancel_requested"])
+def test_publication_replays_past_thirty_seconds_until_runtime_disposition(case, monkeypatch, capsys, outcome):
+    from astrid_runtime_client import ApiError
+    original_settle = case.runtime.settle
+    now, attempts = [time.monotonic()], []
+    terminal_seen = []
+    original_impl = case.host._run_task_impl
+
+    def execute(*args, _terminal, **kwargs):
+        terminal_seen.append(_terminal)
+        return original_impl(*args, _terminal=_terminal, **kwargs)
+
+    def settle(*args, **kwargs):
+        attempts.append((now[0], args, kwargs))
+        if len(attempts) < 12:
+            raise TimeoutError("settlement reply unavailable")
+        if outcome == "lease_fenced":
+            raise ApiError(409, "lease_fenced", "attempt fenced")
+        return original_settle(*args, **kwargs)
+
+    original_task = case.runtime.task
+
+    def task(task_id):
+        if len(attempts) >= 11:
+            if outcome == "not_found":
+                raise ApiError(404, "not_found", "task missing")
+            if outcome == "epoch":
+                return {"task": {**case.task["task"], "runtime_epoch": 8}}
+            if outcome == "cancel_requested":
+                return {"task": {**case.task["task"], "status": "cancel_requested"}}
+        return original_task(task_id)
+
+    monkeypatch.setattr(case.host, "_run_task_impl", execute)
+    monkeypatch.setattr(case.runtime, "settle", settle)
+    monkeypatch.setattr(case.runtime, "task", task)
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(generic_host.time, "sleep", lambda delay: now.__setitem__(0, now[0] + delay))
+    with pytest.raises(TimeoutError):
+        case.host.run_task(case.task, lease_token="lease-result")
+    for owner in list(case.host._reconciliation_owners.values()):
+        owner.join(timeout=2)
+    assert not case.host._reconciliation_owners
+    assert now[0] - attempts[0][0] > 30
+    assert all(args == attempts[0][1] and kwargs == attempts[0][2] for _, args, kwargs in attempts)
+    terminal = terminal_seen[0]
+    assert terminal["recorded"]
+    expected = "succeeded" if outcome == "success" else "cancelled" if outcome == "cancel_requested" else "failed"
+    assert receipt(case)["status"] == ("partial" if expected == "failed" else expected)
+    assert terminal["status"] == expected
+    if outcome != "success":
+        assert terminal["retain_spool"] and terminal["settled"] is False
+        assert not case.runtime.settlements
+        log = capsys.readouterr().err
+        if outcome == "cancel_requested":
+            assert log.count('"verdict": "cancelled"') == 1
+        else:
+            assert "Runtime" in receipt(case)["error"]["message"]
+            assert '"verdict": "lease_lost"' in log
+
+
+def test_effective_authority_window_controls_observer_polling(case, lease_clock):
+    case.host.execution_policy = replace(case.host.execution_policy, authority_window_seconds=600)
+    terminal = lease_clock.run(until=0.45)
+    times = [at for at, _ in lease_clock.pulses if at > 0]
+    assert times and times[0] == 0.1
+    assert all(right - left >= 0.099 for left, right in zip(times, times[1:]))
+    assert not terminal.get("forced")
+
+
+def test_expired_metadata_logs_once_per_diagnostic_change(case, lease_clock, monkeypatch, capsys):
+    original = case.runtime.heartbeat
+
+    def heartbeat(*args, **kwargs):
+        result = original(*args, **kwargs)
+        case.task["task"]["lease_expires_at"] = "2000-01-01T00:00:00+00:00"
+        return result
+
+    monkeypatch.setattr(case.runtime, "heartbeat", heartbeat)
+    terminal = lease_clock.run()
+    assert not terminal.get("forced")
+    lines = [json.loads(line.split("generic host: lease ", 1)[1])
+             for line in capsys.readouterr().err.splitlines() if "generic host: lease " in line]
+    assert [line["category"] for line in lines] == ["lease_expired"]
+    assert len(lease_clock.pulses) > 5
+
+
+def test_health_route_absence_is_unknown_in_heartbeat_context(case, lease_clock, monkeypatch):
+    from astrid_runtime_client import ApiError
+    protocol = RuntimeProtocolClient("http://127.0.0.1:1", "test-worker")
+    protocol._attempt_runtime_epochs = {"attempt-result": 7}
+
+    class Generated:
+        def health(self):
+            raise ApiError(404, "not_found", "health route unavailable")
+
+    protocol.generated = Generated()
+    original = case.runtime.heartbeat
+
+    def heartbeat(*args, **kwargs):
+        if lease_clock.at == 0:
+            return original(*args, **kwargs)
+        return protocol.heartbeat(*args, **kwargs)
+
+    monkeypatch.setattr(case.runtime, "heartbeat", heartbeat)
+    terminal = lease_clock.run()
+    assert not terminal.get("forced") and not case.runtime.failures
+    assert terminal["lease_diagnostic"]["runtime_code"] == "not_found"
+
+
+@pytest.mark.parametrize("state", ["cancelled", "failed", "queued"])
+def test_observer_consumes_cleared_runtime_owner(case, lease_clock, state):
+    def before(_terminal):
+        case.task["task"].update(state=state, attempt_id=None, lease_id=None,
+                                 executor_id=None, lease_expires_at=None)
+
+    terminal = lease_clock.run(before=before)
+    assert terminal["forced"] == ("cancelled" if state == "cancelled" else "lease_lost")
+    assert terminal["cancel_signal"].is_set()
+    assert len(lease_clock.pulses) == lease_clock.initial_pulses
+    assert not case.runtime.settlements
+
+
+def test_parent_read_outage_logs_once_across_successful_child_heartbeats(case, lease_clock, capsys):
+    cycles = []
+
+    def before(terminal):
+        def parent_authority():
+            cycles.append(lease_clock.at)
+            terminal["lease_transport_fault"]("interactive_authority_exception", TimeoutError("parent read lost"))
+        lease_clock.tick = lambda: parent_authority() if lease_clock.at in {0.05, 0.10, 0.20} else None
+
+    terminal = lease_clock.run(until=0.20, before=before)
+    assert cycles == [0.05, 0.1, 0.2]
+    assert len(lease_clock.pulses) >= lease_clock.initial_pulses + 3
+    assert not terminal.get("forced")
+    lines = [json.loads(line.split("generic host: lease ", 1)[1])
+             for line in capsys.readouterr().err.splitlines() if "generic host: lease " in line]
+    assert [line["category"] for line in lines] == ["interactive_authority_exception"]
+
+
+@pytest.mark.parametrize("category,verdict", [("observing", None), ("publication_terminal", "cancelled")])
+def test_recovery_and_publication_verdict_clear_old_transport_fields(case, lease_clock, category, verdict):
+    from astrid_runtime_client import ApiError
+
+    def after(terminal):
+        error = ApiError(0, "transport_timeout", "reply lost")
+        error.request_id = "old-request"
+        terminal["lease_transport_fault"]("task_read_exception", error)
+        assert terminal["lease_diagnostic"]["request_id"] == "old-request"
+        terminal["record_lease_diagnostic"](category, verdict=verdict)
+        assert not {"runtime_code", "request_id", "exception_type"} & terminal["lease_diagnostic"].keys()
+
+    lease_clock.run(after=after)
+
+
+def test_fast_cancellation_logs_consumed_verdict_once(case, monkeypatch, capsys):
+    def execute(*args, **kwargs):
+        case.task["task"]["status"] = "cancel_requested"
+        assert kwargs["cancelled"]()
+        assert kwargs["cancelled"]()
+        raise HostCancelled("cancel this invocation")
+
+    monkeypatch.setattr(generic_host, "_LEASE_POLL_SECONDS", 60)
+    monkeypatch.setattr(case.host, "_run_command_definition", execute)
+    result = case.host.run_task(case.task, lease_token="lease-result")
+    assert result["cancelled"] and receipt(case)["status"] == "cancelled"
+    lines = [json.loads(line.split("generic host: lease ", 1)[1])
+             for line in capsys.readouterr().err.splitlines() if "generic host: lease " in line]
+    assert [(line["category"], line.get("verdict")) for line in lines] == [("cancel_requested", "cancelled")]
