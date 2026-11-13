@@ -971,7 +971,7 @@ def _load_handle_and_config(handle_path: Path) -> tuple[dict[str, Any], Any]:
                 f"claimed RunPod pod {pod_id} was not found under the configured account",
                 recovery_command="verify the claim handle and RunPod account, then retry",
             )
-        if status.get("desired_status") not in {"RUNNING", "PROVISIONING"}:
+        if status.get("desired_status") not in {"RUNNING", "PROVISIONING", "STARTING"}:
             raise AstridError(
                 f"claimed RunPod pod {pod_id} is not attachable (status={status.get('desired_status')!r})",
                 recovery_command="wait for the claimed pod to return to RUNNING or reclaim a compatible pod",

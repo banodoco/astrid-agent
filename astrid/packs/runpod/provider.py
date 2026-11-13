@@ -69,7 +69,7 @@ def _parse(record: Mapping[str, Any], keys: frozenset[str], *, strict: bool, sdk
         raise ValueError("conflicting network volume ids")
     machine = record.get("machine") or {}
     gpu = record.get("gpu") or {}
-    state = {"RUNNING": "running", "EXITED": "gone", "TERMINATED": "gone",
+    state = {"RUNNING": "running", "EXITED": "stopped", "TERMINATED": "gone",
              "STOPPED": "stopped"}.get(record.get("desiredStatus"), "starting")
     observed = {"state"} | {name for name, keys in _OBSERVES.items() if any(key in record for key in keys)}
     return MachineRecord(

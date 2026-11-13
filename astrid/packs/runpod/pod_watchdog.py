@@ -114,10 +114,9 @@ def _report_identity() -> str:
 
     if len(names) == 2:
         try:
-            report = _request(*_identity(), method="GET", status_callback=record_status)
-            actions = report.get("actions") if isinstance(report, dict) else None
-            if isinstance(actions, list):
-                authorised = "yes" if "terminate" in actions else "no"
+            # V2 actions are state transitions, not bearer-token permissions.
+            # A successful pods:read probe cannot establish pods:write rights.
+            _request(*_identity(), method="GET", status_callback=record_status)
         except HTTPError as exc:
             probe_status = exc.code
             if exc.code in (401, 403):

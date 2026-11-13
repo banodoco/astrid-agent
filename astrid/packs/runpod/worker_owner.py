@@ -3165,7 +3165,7 @@ __all__ = [
 
 
 def provider_pod_state(api_key: str, pod_id: str) -> str:
-    """``gone`` when the provider reports the exact pod missing, terminated or exited; else ``live``.
+    """Distinguish an absent pod from an existing stopped container.
 
     An unreadable answer is never absence: only a 404 or a terminal status ends a lease.
     """
@@ -3176,9 +3176,9 @@ def provider_pod_state(api_key: str, pod_id: str) -> str:
         return "gone"
     if status == 200 and isinstance(pod, dict):
         states = {str(pod.get(key) or "").upper() for key in ("desiredStatus", "actualStatus")}
-        if states & {"TERMINATED", "EXITED"}:
+        if states & {"TERMINATED"}:
             return "gone"
-        if states & {"STOPPED"}:
+        if states & {"STOPPED", "EXITED"}:
             return "stopped"
     return "live"
 

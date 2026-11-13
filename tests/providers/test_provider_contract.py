@@ -102,7 +102,7 @@ def test_runpod_read_uses_enriched_exact_rest_and_only_404_is_absence(monkeypatc
         provider.read("POD_ID")
 
 
-@pytest.mark.parametrize("status,expected", [("RUNNING", "running"), ("EXITED", "gone"),
+@pytest.mark.parametrize("status,expected", [("RUNNING", "running"), ("EXITED", "stopped"),
                                               ("TERMINATED", "gone"), ("STOPPED", "stopped"),
                                               ("STARTING", "starting")])
 def test_runpod_status_mapping(status, expected):
