@@ -425,7 +425,7 @@ actions:
         state: actions/training_run/last_run.json
       network_policy:
         allowed_protocols: [dns, tcp]
-        allowed_destinations: [api.runpod.io:443, rest.runpod.io:443, graphql.runpod.io:443, runpod.io:443]
+        allowed_destinations: [api.runpod.io:443, graphql.runpod.io:443, runpod.io:443]
         allow_redirects: false
         broker: {host_managed: true, kind: broker, enforced: true, observable: true, route: declared-http-routes, wrapper: astrid-generic-host}
         descendant_enforcement: {kind: broker, validated: true, observable: true, route: declared-http-routes, wrapper: astrid-generic-host}

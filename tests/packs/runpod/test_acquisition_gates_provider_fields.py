@@ -72,8 +72,8 @@ def gate(case, monkeypatch):  # noqa: F811
         "invocation-1", offer.digest(case.prefs), 3.0, "2026-11-01T02:00:00Z", ("paid",), 30, 30, 60)
     fixture = Path(__file__).parents[2] / "providers/runpod/fixtures/rest-get-pod-include-network-volume.json"
     rest = json.loads(fixture.read_text())
-    rest.update(id=POD_ID, networkVolumeId=case.prefs.volume_id)
-    rest["networkVolume"]["id"] = case.prefs.volume_id
+    rest.update(id=POD_ID)
+    rest["mounts"]["network"][0]["volumeId"] = case.prefs.volume_id
     state = SimpleNamespace(case=case, pod=POD_GRAPHQL, gpus=GPU_TYPES, rest=rest)
 
     def run_graphql_query(query, api_key=None):
@@ -171,7 +171,7 @@ def _past_expiry(gate, rate):
 @pytest.mark.parametrize("name", ["volume", "GPU", "datacenter", "rate", "lifetime", "machine"])
 def test_each_failing_gate_names_itself_in_the_error_and_the_journal(gate, name):
     if name == "volume":
-        gate.rest["volumeMountPath"] = "/wrong"
+        gate.rest["mounts"]["network"][0]["path"] = "/wrong"
     elif name == "GPU":
         gate.pod = {"data": {"pod": {"gpuCount": 1, "machine": {"gpuDisplayName": "RTX 4090", "dataCenterId": "EU-RO-1"}}}}
     elif name == "datacenter":
