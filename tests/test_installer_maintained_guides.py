@@ -114,9 +114,8 @@ def test_generation_setup_routes_capability_and_consent():
     for phrase in (
         "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader",
         "uname -m", "NVIDIA", "12 GB", "declared", "Wan2GP", "Plan 12",
-        "managed engine", "RunPod", "own yes", "Never", "chat",
-        '"kind": "runpod"', "--consent paid", "--max-usd", "$2",
-        "machines", "release", "--doctor",
+        "managed engine", "RunPod", "own yes", "Never", "chat", "--doctor",
+        "runpod/docs/SKILL.md#runpod-generation-machines",
     ):
         assert phrase in body, phrase
     assert body.count("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader") == 1
@@ -127,16 +126,23 @@ def test_generation_setup_routes_capability_and_consent():
 
 
 def test_generation_commands_include_platform_launchers_and_paid_bounds():
+    # Rewritten: the RunPod claim walkthrough (its paid bounds, --offer-digest included)
+    # moved to the RunPod skill. Setup keeps the launcher forms and links that skill.
     body = _steps(_skill())[4]
     blocks = FENCE.findall(body)
     assert blocks
-    assert '"$HOME/.local/share/astrid/run-astrid" credential set runpod' in body
-    assert '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" credential set runpod' in body
-    assert '"$env:LOCALAPPDATA\\Astrid\\run-astrid.cmd" credential set runpod' in body
-    for flag in ("--deadline", "--offer-digest", "--preparation-seconds", "--execution-seconds", "--idle-seconds"):
-        assert any(flag in block for block in blocks), flag
-    assert any("generate describe --placement runpod" in block for block in blocks)
-    assert any("engines install comfyui --dry-run" in block for block in blocks)
+    launchers = (
+        '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid"',
+        '"$HOME/.local/share/astrid/run-astrid"',
+        '& "$env:LOCALAPPDATA\\Astrid\\run-astrid.cmd"',
+    )
+    skill = _skill()
+    for launcher in launchers:
+        assert launcher in skill, launcher
+    for command in ("credential set runpod", "machines claim", "--consent paid", "generate describe --placement runpod"):
+        assert command not in body, command
+    assert "engines install comfyui --dry-run" in body
+    assert "generate fetch-models" in body and "--apply PLAN_SHA256" in body
 
 
 def test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallback():
