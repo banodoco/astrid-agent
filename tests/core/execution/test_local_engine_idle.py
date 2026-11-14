@@ -380,7 +380,8 @@ assert history[response["prompt_id"]]["status"]["completed"] is True
     record = idle.status()["release_record"]
     assert record == {"status": "completed", "models_unloaded": True,
                       "vram_total_bytes": 24000, "vram_free_before_bytes": 20000,
-                      "vram_free_after_bytes": 20000}
+                      "vram_free_after_bytes": 20000, "ram_total_bytes": 64000,
+                      "ram_free_before_bytes": 30000, "ram_free_after_bytes": 30000}
     engine_decl, engine_log = next((decl, path) for decl, path in run_logs.read_declared(logs_root)
                                    if decl.name == "engine")
     lines = engine_log.read_bytes()[engine_decl.start:].decode().splitlines()
