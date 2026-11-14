@@ -652,9 +652,15 @@ class TargetProviderBindings:
             provider = self.provider if self.provider is not None and json.loads(self.signature)[0] == policy["kind"] else None
             if provider is not None and json.loads(self.signature)[1] != policy["engine"]:
                 raise ValueError("target operation engine differs from the retained provider owner")
-            # Status without a quote, listing, and release operate on the retained
-            # owner, whose custody may use a per-job override of saved preferences.
-            # A quote still binds the preferences for the offer it discloses.
+            if (provider is not None and operation == "status" and not include_quote
+                    and not fresh_claim and json.loads(self.signature)[2] != policy["preferences"]):
+                raise ValueError(
+                    "target operation preferences differ from the retained provider owner; "
+                    "invoke runpod.setup to replace preferences after releasing any owned lease"
+                )
+            # Plain status binds the saved policy; only setup or a new disclosure
+            # may replace an idle owner. Listing and release retain access to
+            # existing custody even when the saved preferences have changed.
         if provider is None:
             if operation == "keep":
                 raise ValueError("keep requires a running host that owns this machine")
