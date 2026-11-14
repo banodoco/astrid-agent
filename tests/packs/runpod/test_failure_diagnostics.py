@@ -750,3 +750,25 @@ def test_engine_boundary_exposes_only_the_engine_diagnostic_under_a_neutral_name
     plain = RuntimeError('no diagnostic')
     _expose_engine_diagnostic(plain)
     assert getattr(plain, 'engine_diagnostic', None) is None
+
+
+def test_storage_capacity_survives_the_shipped_failure_protocol(tmp_path):
+    payload = {'issues': [{'severity': 'error', 'code': 'insufficient_storage', 'message': SENTINEL,
+                           'details': {'needed_bytes': 13, 'free_bytes': 10, 'body': SENTINEL}}]}
+    expected = {'code': 'insufficient_storage', 'category': 'model', 'needed_bytes': 13, 'free_bytes': 10}
+    assert fd.parse_frame(emit(tmp_path, json.dumps(payload).encode())) == expected
+    assert fd.safe_stored_summary(fd.host_summary(RuntimeError(), expected)) == {
+        'exception': 'RuntimeError', 'stage': 'execution', **expected}
+
+
+@pytest.mark.parametrize('bad', [True, -1, 2**63, '13', SENTINEL, None])
+def test_storage_capacity_rejects_non_numeric_or_unbounded_facts(bad):
+    frame = fd.MARK + json.dumps({'code': 'insufficient_storage', 'category': 'model',
+                                 'needed_bytes': bad, 'free_bytes': 10}) + '\n'
+    assert fd.parse_frame(frame) == {'code': 'insufficient_storage', 'category': 'model', 'free_bytes': 10}
+
+
+def test_unknown_storage_reason_is_not_a_capacity_refusal(tmp_path):
+    payload = {'issues': [{'severity': 'error', 'code': 'storage_capacity_unavailable', 'message': SENTINEL}]}
+    assert fd.parse_frame(emit(tmp_path, json.dumps(payload).encode())) == {
+        'code': 'generation_failed', 'category': 'execution'}

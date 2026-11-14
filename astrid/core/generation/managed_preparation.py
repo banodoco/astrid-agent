@@ -474,6 +474,8 @@ class ManagedEnginePreparation:
         self.check()
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
+        if self.mode == "align":
+            self._preflight_model_storage(manifest)
         callback = getattr(self, "on_phase", None)
         if callback is not None:
             callback("align")
@@ -536,12 +538,56 @@ class ManagedEnginePreparation:
         for model in manifest["models"]:
             self.check()
             path = str(Path(manifest["models_root"]) / model["subdir"] / model["name"])
-            fact = files.file_fact(path, hash_bytes=True, deadline=self.deadline)
+            fact = files.file_fact(path, hash_bytes=True, deadline=self.deadline, check=self.check)
             expected = str(model.get("sha256") or "").removeprefix("sha256:")
             if (not fact.exists or not fact.regular or fact.symlink
                     or fact.bytes != model["size"] or not re.fullmatch(r"[0-9a-f]{64}", expected)
                     or fact.sha256 != expected):
                 raise IntegrityError("managed model bytes differ from the declared digest: " + model["name"])
+
+    def _preflight_model_storage(self, manifest):
+        """Budget native VibeComfy fetch's full writes; that path ignores `.part`."""
+        from ._engine_target_files import _TargetFiles
+        from .model_storage import STORAGE_WARNING, ModelStorageInsufficient, available_model_bytes, declare_storage_inventory
+
+        root = Path(manifest["models_root"])
+        files = _TargetFiles(str(root))
+        demand, candidates = {}, []
+        for model in manifest["models"]:
+            self.check()
+            path = root / model["subdir"] / model["name"]
+            fact = files.file_fact(str(path), hash_bytes=False, deadline=self.deadline)
+            present = fact.exists and fact.regular and not fact.symlink and fact.bytes == model["size"]
+            candidates.append((model, path, present))
+        if all(present for _, _, present in candidates):
+            # align does not fetch when every file has the expected size. Its
+            # existing post-alignment digest verification still runs; avoid an
+            # extra full-volume hash pass when no download is planned.
+            return
+        for model, path, present in candidates:
+            self.check()
+            if present:
+                fact = files.file_fact(str(path), hash_bytes=True, deadline=self.deadline, check=self.check)
+                if fact.sha256 == str(model["sha256"]).removeprefix("sha256:"):
+                    continue
+            directory = path.parent.resolve(strict=False)
+            demand[directory] = demand.get(directory, 0) + model["size"]
+        if demand:
+            warn = False
+            for directory, needed in demand.items():
+                free, unknown = available_model_bytes(directory, deadline=self.deadline, check=self.check)
+                warn |= unknown
+                if free is not None and needed > free:
+                    logs_root = getattr(self, "logs_root", None)
+                    if logs_root is not None:
+                        try:
+                            declare_storage_inventory(logs_root, root, deadline=self.deadline, cancelled=self.cancelled)
+                        except (OSError, ValueError):
+                            pass  # Diagnostics must never replace the measured refusal.
+                    raise ModelStorageInsufficient(needed, free, getattr(self, "task", "<task>"))
+            if warn:
+                from types import SimpleNamespace
+                self._keep_step_output("storage", SimpleNamespace(stdout="", stderr=STORAGE_WARNING + "\n"))
 
     def _guard_runtime(self, workflow, runner, *, post):
         """Refuse changes to the receipt-owned base before native synchronization."""

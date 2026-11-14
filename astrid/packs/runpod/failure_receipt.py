@@ -156,7 +156,9 @@ def message_for(stage: str, cause: Mapping[str, Any]) -> str:
     if facts:
         text = text.rstrip(".") + ": " + ", ".join(facts) + "."
     if stage == "model_download" and cause.get("code") == "deadline_exceeded":
-        text = text.rstrip(".") + "; rerun to resume the download."
+        # Native fetch restarts an interrupted model; it does not resume (deferred.md).
+        text = (text.rstrip(".") + "; rerun to retry preparation; "
+                "completed model files are kept and verified; interrupted models download again from the start.")
     return text
 
 
