@@ -4,8 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import threading
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -131,8 +133,6 @@ def http_worker(session, tmp_path, monkeypatch):  # noqa: F811
 
     monkeypatch.setattr(host, "_run_task_impl", execute)
     monkeypatch.setattr(host, "_write_task_result", lambda terminal: None)
-    from unittest.mock import Mock
-    from types import SimpleNamespace
     host.client = SimpleNamespace(fail=Mock(), settle=Mock())
     try:
         yield host, idle, timers, root, attempts
@@ -189,6 +189,7 @@ def test_release_flag_during_spawned_http_prompt_preserves_output(http_worker):
     host, idle, timers, root, attempts = http_worker
     assert run(host)["status"] == "succeeded"
     (root / "prompt-running").unlink()
+    (root / "history-published").unlink()
     for gate in ("pause-queue", "pause-prompt"):
         (root / gate).touch()
     expiry = threading.Thread(target=timers.fire)
@@ -198,7 +199,7 @@ def test_release_flag_during_spawned_http_prompt_preserves_output(http_worker):
     def job():
         try:
             results.append(run(host, task("arrived-during-release")))
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - relay child failures to the test thread
             errors.append(exc)
 
     worker = threading.Thread(target=job)
@@ -214,6 +215,7 @@ def test_release_flag_during_spawned_http_prompt_preserves_output(http_worker):
         assert (root / "release-posts").read_text().splitlines() == ["/api/free"]
         assert worker.is_alive() and not errors
         assert not (root / "flags-applied").exists(), "free only sets flags during execution"
+        assert not (root / "history-published").exists()
         (root / "finish-prompt").touch()
         worker.join(15)
         assert not worker.is_alive() and not errors, errors
