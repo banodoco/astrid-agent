@@ -986,6 +986,12 @@ class _HttpsOps:
     def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Kill a slow-drip caller before it can hold the host's drain forever."""
         assert self.deadline is not None
+        deadline = self.deadline
+        if name == "execute_command":
+            # Include transport startup in the requested command timeout.
+            timeout = args[1] if len(args) > 1 else kwargs.get("timeout", 600)
+            deadline = min(deadline, time.monotonic() + timeout)
+
         def refuse(code: str, message: str) -> PlacementReasonError:
             return PlacementReasonError(
                 message, reason=Reason(stage="boot", step="provider_contract", gate="provider", code=code)
@@ -993,7 +999,7 @@ class _HttpsOps:
 
         if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
             raise RemotePlacementError("unsupported bounded pod operation")
-        remaining = self.deadline - time.monotonic()
+        remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
         if self.abort_event is not None and self.abort_event.is_set():
@@ -1001,7 +1007,7 @@ class _HttpsOps:
         context = multiprocessing.get_context("spawn")
         recv, send = context.Pipe(duplex=False)
         child = context.Process(target=_bounded_https_call_child,
-                                args=(send, self.pod_id, self.token, self.deadline, self.base_url, name, args, kwargs))
+                                args=(send, self.pod_id, self.token, deadline, self.base_url, name, args, kwargs))
         child.daemon = True
         started = False
         watchdog = None
@@ -1009,7 +1015,7 @@ class _HttpsOps:
         stop_watchdog = threading.Event()
         # Reserve child termination and reaping inside the same absolute
         # transport deadline; HTTP response time never consumes that reserve.
-        request_deadline = self.deadline - min(0.35, remaining / 2)
+        request_deadline = deadline - min(0.35, remaining / 2)
         try:
             child.start()
             started = True
@@ -1061,7 +1067,7 @@ class _HttpsOps:
             raw = received["raw"]
             if self.abort_event is not None and self.abort_event.is_set():
                 raise refuse("custody_unresolved", "bounded pod operation was interrupted")
-            if time.monotonic() >= self.deadline:
+            if time.monotonic() >= deadline:
                 raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
             payload = json.loads(raw)
             if not isinstance(payload, dict) or set(payload) != {"ok", "value"} or payload["ok"] is not True:
@@ -1080,17 +1086,17 @@ class _HttpsOps:
         finally:
             stop_watchdog.set()
             if watchdog is not None:
-                watchdog.join(timeout=min(0.05, max(0, self.deadline - time.monotonic())))
+                watchdog.join(timeout=min(0.05, max(0, deadline - time.monotonic())))
             if started:
-                child.join(timeout=min(0.02, max(0, self.deadline - time.monotonic())))
+                child.join(timeout=min(0.02, max(0, deadline - time.monotonic())))
                 if child.is_alive():
                     try:
                         child.kill()
                     except (OSError, ValueError):
                         pass  # The composite handle below keeps custody pending.
-                    child.join(timeout=min(0.25, max(0, self.deadline - time.monotonic())))
+                    child.join(timeout=min(0.25, max(0, deadline - time.monotonic())))
             if reader is not None:
-                reader.join(timeout=min(0.03, max(0, self.deadline - time.monotonic())))
+                reader.join(timeout=min(0.03, max(0, deadline - time.monotonic())))
             if started and (child.is_alive() or reader is not None and reader.is_alive()
                             or watchdog is not None and watchdog.is_alive()):
                 self.unreaped_child = _OutstandingObserver(child, reader, watchdog, recv, send)
