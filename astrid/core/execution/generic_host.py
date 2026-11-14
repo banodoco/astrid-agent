@@ -14337,6 +14337,8 @@ class GenericPackHost:
                             ceding = True
                             # The sidecar owns reconciliation; preserve the
                             # original request and receipt, including corrupt bytes.
+                            if not receipt_path.exists() and not receipt_path.is_symlink():
+                                write_json_atomic(receipt_path, {"warnings": [message]})
                             print(f"generic host terminal publication ceded for {task_id}: {reason}", file=sys.stderr, flush=True)
                         uncertain = True
                         try:
