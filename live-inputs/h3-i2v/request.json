@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "prompt": "Animate the supplied image with a gentle camera push. Quiet ambience, no speech or music.",
+  "duration": "5/24",
+  "media": [
+    {
+      "id": "first_frame",
+      "asset": "first-frame.png",
+      "role": "reference",
+      "modality": "image"
+    }
+  ],
+  "settings": {
+    "steps": 1,
+    "seed": 42
+  }
+}
