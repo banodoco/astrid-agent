@@ -317,18 +317,27 @@ def test_pending_target_does_not_check_controller_lock():
     assert entries.target_schema(entry, None, None, engine='comfyui') is None
 
 
-def test_h3_resolves_to_its_engine_through_the_same_helper(live_machine, monkeypatch):
+def test_h3_resolves_to_its_engine_through_the_same_helper(live_machine, monkeypatch, tmp_path):
     """H3 pins its Ref2V LoRA in its own graph; the comfyui lock supplies the rest."""
+    from PIL import Image
+
+    reference = tmp_path / 'look.png'
+    Image.new('RGB', (16, 16), (32, 64, 128)).save(reference)
+    request, assets = tmp_path / 'r.json', tmp_path / 'a.json'
+    request.write_text(json.dumps({'version': 2, 'prompt': 'Animate <Picture 1>.', 'duration': 1,
+        'media': [{'id': 'look', 'asset': 'look.png', 'role': 'reference', 'modality': 'image'}],
+        'settings': {}}))
+    assets.write_text(json.dumps({'look.png': str(reference)}))
     h3 = entries.find_entry('h3')
     assert entries.runpod_engine(h3) == 'comfyui'
     chosen = []
     real = entries.runpod_engine
     monkeypatch.setattr(entries, 'runpod_engine', lambda entry: chosen.append(entry['id']) or real(entry))
     client = NoPodClient()
-    GenerationFacade().video(entry='h3', placement=LIVE_PLACEMENT, client=client,
-                             inputs={'request': 'r.json', 'asset_map': 'a.json'})
+    GenerationFacade().video(entry='h3', placement=LIVE_PLACEMENT, client=client, project='demo', wait=False,
+                             inputs={'request': str(request), 'asset_map': str(assets)})
     assert chosen == ['h3']
-    assert [capability for capability, _ in client.calls] == ['h3_av.transform']
-    assert client.calls[0][1]['inputs']['placement_policy']['engine'] == 'comfyui'
+    assert [capability for capability, _ in client.calls] == ['vibecomfy.run']
+    assert json.loads(client.calls[0][1]['inputs']['placement_policy'])['engine'] == 'comfyui'
 
 
