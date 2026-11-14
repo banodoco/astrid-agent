@@ -10,6 +10,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+from astrid.core.execution import phase_timing
 from astrid.core.generation import cli_shared
 
 _logger = logging.getLogger(__name__)
@@ -364,6 +365,7 @@ def _defaults_text(payload):
 
 def _defaults_command(parsed):
     generate = _generate_facade()
+    phase_timing.cli_stamp("runtime")
     with _open_client() as client:
         if parsed.defaults_action == 'set':
             payload = generate.set_default(parsed.kind, parsed.mode, parsed.entry, pack=parsed.pack, client=client)
@@ -377,6 +379,7 @@ def _defaults_command(parsed):
 
 def _settings_command(parsed):
     from astrid.core.generation import settings
+    phase_timing.cli_stamp("runtime")
     with _open_client() as client:
         if parsed.settings_action == 'checkout':
             result = settings.checkout(parsed.file, client)
@@ -453,6 +456,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     if parsed.dry_run:
         result = generate()
     else:
+        phase_timing.cli_stamp("runtime")
         with _open_client() as client:
             result = generate(client)
             if not parsed.no_wait:
@@ -463,7 +467,13 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
         raise generation_error(getattr(result, 'error', None) or ValueError('Workflow generation failed.'),
                                task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
+    if not parsed.dry_run and not parsed.no_wait:
+        phase_timing.attach_cli(payload)
     print(json.dumps(payload, indent=2, sort_keys=True))
+    if not parsed.json and not parsed.dry_run and not parsed.no_wait:
+        line = phase_timing.summary(payload.get("timing")) if isinstance(payload, dict) else ""
+        if line:
+            print(line)
     return 0
 
 
@@ -491,6 +501,8 @@ def _job_command(argv: list[str]) -> int:
     except JobInputError as exc:
         parser.error(str(exc))
     write_progress('done')
+    if isinstance(result, dict) and result.get("timing") is not None:
+        phase_timing.attach_cli(result)
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     return 0
 
@@ -529,6 +541,7 @@ def _main(argv: list[str]) -> int:
     if parsed.modality == 'failure':
         return _failure_command(parsed)
     if parsed.modality == 'release':
+        phase_timing.cli_stamp("runtime")
         with _open_client() as client:
             result = _generate_facade().release(engine=parsed.engine, placement=parsed.placement,
                                                client=client, wait=not parsed.no_wait)
@@ -549,6 +562,7 @@ def _main(argv: list[str]) -> int:
             if parsed.entry is not None or parsed.workflow is not None:
                 parser.error('target describe cannot also select an entry or workflow')
             placement = cli_shared._gpu_placement(parsed.placement, parsed.gpu, parser)
+            phase_timing.cli_stamp("runtime")
             with _open_client() as client:
                 description = _generate_facade().describe(placement=placement, engine=parsed.engine, client=client,
                     **({"datacenter": parsed.datacenter} if parsed.datacenter is not None else {}),
@@ -651,6 +665,7 @@ def _main(argv: list[str]) -> int:
             result = generate(**kwargs)
         else:
             try:
+                phase_timing.cli_stamp("runtime")
                 client_scope = _open_client()
             except AstridSDKError:
                 if not is_runpod_placement(parsed.placement) and _no_generation_target(parsed.placement, repo=kwargs.get('project_root'), client=None):
@@ -664,6 +679,7 @@ def _main(argv: list[str]) -> int:
                     from .delivery import deliver_generation
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
     except AstridSDKError as sdk_exc:
+        phase_timing.cli_host({"timing": getattr(sdk_exc, "timing", None)})
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
         from astrid.core.generation.preflight import generation_error
@@ -679,6 +695,8 @@ def _main(argv: list[str]) -> int:
             'code': 'generation_failed', 'message': 'Generation did not succeed.'}
         raise generation_error(error, task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
+    if not parsed.dry_run and not parsed.no_wait:
+        phase_timing.attach_cli(payload)
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:
@@ -690,6 +708,10 @@ def _main(argv: list[str]) -> int:
             print(path)
         if payload.get("run_dir"):
             print(f"run: {payload['run_dir']}")
+    if not parsed.json and not parsed.dry_run and isinstance(payload, dict):
+        line = phase_timing.summary(payload.get("timing"))
+        if line:
+            print(line)
     return 0
 
 
@@ -762,7 +784,7 @@ def subcommand_names() -> tuple[str, ...]:
     return ()
 
 
-def main(argv: list[str] | None = None) -> int:
+def _timed_main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error
     from astrid.sdk.generation import _NO_MACHINE
@@ -800,13 +822,31 @@ def main(argv: list[str] | None = None) -> int:
                 import traceback
                 diagnostic = ''.join(traceback.format_exception(exc, chain=True))
                 print(redact_credential_data(diagnostic), file=sys.stderr, end='')
-            print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
+            envelope = error.to_envelope()
+            phase_timing.cli_host({"timing": getattr(exc, "timing", None)})
+            phase_timing.attach_cli(envelope)
+            print(json.dumps(envelope, indent=2, sort_keys=True))
             return 2
+        envelope = {}
+        phase_timing.attach_cli(envelope)
+        line = phase_timing.summary(envelope.get("timing"))
+        if line and (phase_timing._ACTIVE_CLI.get().host is not None
+                     or "runtime" in phase_timing._ACTIVE_CLI.get().stamps):
+            print(line, file=sys.stderr)
         raise error from exc
     except BaseException:
         if runpod:
             _kept_failure(before, kind=kind)
         raise
+
+
+def main(argv: list[str] | None = None) -> int:
+    timing = phase_timing.CliTiming()
+    token = phase_timing._ACTIVE_CLI.set(timing)
+    try:
+        return _timed_main(argv)
+    finally:
+        phase_timing._ACTIVE_CLI.reset(token)
 
 
 if __name__ == "__main__":

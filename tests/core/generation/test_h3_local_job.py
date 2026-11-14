@@ -69,8 +69,8 @@ def test_job_runs_h3_build_and_after_outputs_once_each(tmp_path, monkeypatch, pr
         assert kwargs["manifest"]["engine"] == "comfyui"
         if prepared:
             assert json.loads(kwargs["workflow_inputs"])["seed"] == 987
-            from vibecomfy.workflow_bundle import load_bundle
             from vibecomfy.security.provenance import Provenance
+            from vibecomfy.workflow_bundle import load_bundle
             built = load_bundle(workflow, trust=Provenance.USER_CONFIRMED).workflow
             assert built.inputs["seed"].value == 987
         assert Path(sealed["job_dir_during_run"], "h3", "build-state.json").is_file()  # build ran first
@@ -106,3 +106,27 @@ def test_job_runs_h3_build_and_after_outputs_once_each(tmp_path, monkeypatch, pr
     assert preparations == ["prepare", "close"]
     assert sealed["composed"] != sealed["raw"]
     assert not Path(sealed["job_dir_during_run"]).exists()  # removed when the job ends
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_pod_local_job_has_host_v2_timing_on_success_and_failure(tmp_path, monkeypatch, failed):
+    from astrid.core.generation import local_job
+
+    path = tmp_path / "job.json"
+    path.write_text(json.dumps({"schema": local_job.SCHEMA, "inputs": {}, "align": "check"}))
+
+    def execute(*args, **kwargs):
+        if failed:
+            raise ValueError("fixture job failed")
+        return {"ok": True}
+
+    monkeypatch.setattr(local_job, "_run_job", execute)
+    if failed:
+        with pytest.raises(ValueError) as caught:
+            local_job.run_job("h3", path, tmp_path / "out")
+        timing = caught.value.timing
+    else:
+        timing = local_job.run_job("h3", path, tmp_path / "out")["timing"]
+    assert timing["schema"] == "astrid.generation.timing.v2"
+    assert timing["host"]["total"]["seconds"] >= 0
+    assert "unaccounted" in timing["host"]

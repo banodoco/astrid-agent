@@ -59,6 +59,7 @@ from runtime_protocol.dirfd import filesystem as os
 from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
+from astrid.core.execution import phase_timing
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
 from astrid.core.execution.platform_helpers import (
     PROCESS_CONTROL_SUPPORT_ENV,
@@ -7345,6 +7346,7 @@ class GenericPackHost:
         attempt's, which the heartbeat already sends) -> fetch into
         ``outputs`` -> release, warm only on success. Harvest is unchanged.
         """
+        from contextlib import suppress
         from types import SimpleNamespace
 
         from astrid.core.execution import phase_timing
@@ -7371,13 +7373,14 @@ class GenericPackHost:
         machine = resolve_machine(policy["kind"]).for_host(
             provider, begin=lambda lease: target_context.begin(lease, cancel_signal),
             done=target_context.done)
-        timing = phase_timing.PhaseTiming() if is_runpod else None
+        timing = phase_timing.PhaseTiming(generation=terminal.get("generation_timing")) if is_runpod else None
         job = MachineJob(
             entry=entry, mode=metadata.get("mode"), policy=policy,
             inputs={name: value for name, value in inputs.items() if value is not None},
             invocation_id=f"{task_id}:{attempt_id}:{fence}", task_id=str(task_id), attempt_id=str(attempt_id),
             scratch=root, progress_path=root / ".astrid-progress.json",
             align=_machine_align_mode(task_data), timing=timing,
+            generation_timing=terminal.get("generation_timing"),
         )
         def claimed(lease):
             # Which machine runs this attempt, recorded as soon as it is claimed (failures keep it too).
@@ -7394,6 +7397,8 @@ class GenericPackHost:
         finally:
             # Success and failure both carry the one timing block (release is done by now).
             phase_timing.attach(terminal.get("machine"), timing)
+            with suppress(Exception):
+                terminal["generation_timing"].read_job(output_root)
         terminal["machine"] = {**terminal.get("machine", {}), "manifest_sha256": fetched.get("manifest_sha256"),
                                "files": sorted(fetched.get("files", {})), "process_id": fetched.get("process_id")}
         return SimpleNamespace(payload={}, output_root=output_root, process_id=fetched.get("process_id"),
@@ -11335,6 +11340,7 @@ class GenericPackHost:
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
+        phase_timing.attach_host(receipt, terminal.get("generation_timing"))
         if terminal.get("machine") is not None:
             receipt["machine"] = dict(terminal["machine"])
         if terminal.get("managed_engine_preparation") is not None:
@@ -11366,7 +11372,9 @@ class GenericPackHost:
         keep_attempt: bool = False,
         provider_route_grant: str | None = None,
         _setup_error: BaseException | None = None,
+        _generation_timing: Any = None,
     ) -> Mapping[str, Any]:
+        generation_timing = _generation_timing or phase_timing.GenerationTiming()
         owns_attempt = False
         busy_published = False
         thread_id = threading.get_ident()
@@ -11380,6 +11388,7 @@ class GenericPackHost:
         completion_lock = threading.RLock()
         terminal: dict[str, Any] = {
             "task": dict(data), "attempt_id": exact_attempt, "lifetime": lifetime,
+            "generation_timing": generation_timing,
             "pump_stop": stop, "cancel_signal": abort, "stage": "admission",
             "completion_lock": completion_lock,
             "lease_diagnostic": {
@@ -11401,6 +11410,9 @@ class GenericPackHost:
                 if terminal.get("recorded"):
                     return terminal.get("completion")
             if operation in (self.client.settle, self.client.fail):
+                result_payload = dict(kwargs.get("result") or {})
+                phase_timing.attach_host(result_payload, generation_timing)
+                kwargs["result"] = result_payload
                 # Freeze the call once: reconciliation must never rerun the
                 # producer or rebuild outputs from a changing spool.
                 if isinstance(self.client, RuntimeProtocolClient):
@@ -12745,6 +12757,7 @@ class GenericPackHost:
                 if isinstance(raw_optional_cas_param_ports, (list, tuple))
                 else None
             )
+            phase_timing.transition(_terminal.get("generation_timing"), "preparation")
             _terminal["stage"] = "materialize_inputs"
             inputs = self._materialize_inputs(
                 spec,
@@ -12838,7 +12851,8 @@ class GenericPackHost:
                 from astrid.core.generation.engine_custody import declare_engine_log
                 from astrid.core.generation.job_evidence import JobEvidence
                 with suppress(Exception):
-                    job_evidence = JobEvidence(_host_log_root(root), engine_preparation)
+                    job_evidence = JobEvidence(_host_log_root(root), engine_preparation,
+                                               generation=_terminal.get("generation_timing"))
                     engine_preparation.evidence_start = job_evidence.begin
                     engine_preparation.evidence_waiting = job_evidence.waiting
                 if job_evidence is None:
@@ -13104,6 +13118,8 @@ class GenericPackHost:
                 with suppress(Exception):
                     if job_evidence is not None:
                         job_evidence.start_execution()
+                if machine_policy is None:
+                    phase_timing.transition(_terminal.get("generation_timing"), "execution")
                 _terminal["stage"] = "execution"
                 render_child_pending = True
                 if capability_id != "wan2gp.generate_video":
@@ -13218,6 +13234,9 @@ class GenericPackHost:
                 with suppress(Exception):
                     if job_evidence is not None:
                         job_evidence.start_collect()
+                # Failure also leaves producer execution here; evidence harvest
+                # belongs to collection even when no local JobEvidence exists.
+                phase_timing.transition(_terminal.get("generation_timing"), "collection")
             render_child_pending = False
             _terminal["output_root"] = output_root
             _terminal["payload"] = getattr(result, "payload", {}) or {}
@@ -13488,6 +13507,7 @@ class GenericPackHost:
             settled = True
             _terminal.pop("evidence_pending", None)
             _terminal.pop("publication_pending", None)
+            phase_timing.attach_host(payload, _terminal.get("generation_timing"))
             _terminal.update(settled=True, settlement=settlement, effect=effect)
             return settlement
         except HostCancelled:
@@ -13926,6 +13946,7 @@ class GenericPackHost:
 
     def _execute_claimed_task(self, claim: Any, *, delegated_child: bool = False) -> Mapping[str, Any] | None:
         """Validate and execute the canonical immutable claim handoff."""
+        generation_timing = phase_timing.GenerationTiming()
         claim_data = dict(claim) if isinstance(claim, Mapping) else {
             "attempt_id": getattr(claim, "attempt_id", None),
             "task_id": getattr(claim, "task_id", None),
@@ -14085,6 +14106,7 @@ class GenericPackHost:
             return self.run_task(
                 {"task": claimed_task}, lease_token=lease_id,
                 attempt_id=attempt_id, fence=int(fence), _setup_error=exc,
+                _generation_timing=generation_timing,
             )
         if self._shutdown.is_set():
             try:
@@ -14092,6 +14114,7 @@ class GenericPackHost:
                     {"task": task_data}, lease_token=lease_id,
                     attempt_id=attempt_id, fence=int(fence),
                     _setup_error=HostCancelled("host shutdown before execution"),
+                    _generation_timing=generation_timing,
                 )
             except HostCancelled:
                 return None
@@ -14101,6 +14124,7 @@ class GenericPackHost:
             attempt_id=attempt_id,
             fence=int(fence),
             provider_route_grant=provider_route_grant,
+            _generation_timing=generation_timing,
         )
 
     def _recover_terminal_requests(self) -> None:

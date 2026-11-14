@@ -15,9 +15,9 @@ import pytest
 from astrid.core._shared import run_logs
 from astrid.core.generation import engine_custody, managed_preparation
 from astrid.core.generation.job_evidence import JobEvidence
-from tests.test_generic_host_result_json import host_case  # noqa: F401
 from astrid.packs.vibecomfy import local_job, production_engine
 from tests.sdk.test_release_generation_client import _FakeComfy
+from tests.test_generic_host_result_json import host_case  # noqa: F401
 
 
 @pytest.fixture
@@ -219,6 +219,7 @@ def test_local_job_retains_engine_log_when_evidence_construction_fails(tmp_path,
 @pytest.fixture
 def managed_host_job(host_case, tmp_path, monkeypatch):
     from dataclasses import replace
+
     from astrid.core.execution import generic_host
 
     case = host_case
@@ -311,6 +312,14 @@ def test_failed_task_survives_log_upload_failure(managed_host_job, monkeypatch, 
     expected = {"status": "failed", "host_failure": {"code": "preparation_failed", "message": str(error)}}
     if branch == "failed-evidence":
         expected["outcomes"] = {"execution": {"status": "failed"}}
+    timing = failure["result"]["timing"]
+    assert timing["schema"] == "astrid.generation.timing.v2"
+    assert "cli" not in timing
+    host = timing["host"]
+    assert host["total"]["seconds"] >= 0
+    assert sum(row["seconds"] or 0 for row in host["phases"].values()) + host["unaccounted"]["raw_seconds"] == pytest.approx(host["total"]["seconds"])
+    assert json.loads((case.root / "result.json").read_text())["timing"] == timing
+    expected["timing"] = timing
     assert failure["result"] == expected
     receipt = json.loads((case.root / "result.json").read_text())
     assert receipt["status"] == "failed"
@@ -472,3 +481,43 @@ def test_engine_phase_includes_readiness_health_time(monkeypatch):
     assert prep._time_engine(runner.check_health) == ("skipped", {"healthy": True})
     assert prep.engine_start_seconds == 5.0
     assert prep.engine_reused is False
+
+
+def test_job_run_intervals_use_only_the_pods_monotonic_clock(tmp_path, monkeypatch):
+    import astrid.core.generation.job_evidence as module
+    now = [10.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(JobEvidence, "_vram", lambda *args: None)
+    preparation = SimpleNamespace(root=str(tmp_path / "engine"), recipe=SimpleNamespace(
+        engine="comfyui", start=SimpleNamespace(port=1)), engine_reused=True)
+    evidence = JobEvidence(tmp_path / "out", preparation)
+    evidence.waiting()
+    now[0] = 12.0
+    evidence.begin()
+    evidence.start_execution()
+    now[0] = 15.0
+    evidence.start_collect()
+    now[0] = 16.0
+    evidence.finish()
+    record = json.loads((evidence.out / "job-run.json").read_text())
+    assert record["phases"]["queue_wait"] == 2.0
+    assert record["phases"]["execute"] == 3.0
+    assert record["phases"]["collect"] == 1.0
+    assert record["engine_reused"] is True
+
+
+def test_job_evidence_stamp_failure_keeps_the_run_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(JobEvidence, "_vram", lambda *args: None)
+    preparation = SimpleNamespace(root=str(tmp_path / "engine"), recipe=SimpleNamespace(
+        engine="comfyui", start=SimpleNamespace(port=1)))
+    evidence = JobEvidence(tmp_path / "out", preparation)
+
+    def broken(*args, **kwargs):
+        raise OSError("clock unavailable")
+
+    monkeypatch.setattr(evidence.timing, "stamp", broken)
+    evidence.waiting()
+    evidence.start_execution()
+    evidence.start_collect()
+    evidence.finish()
+    assert json.loads((evidence.out / "job-run.json").read_text())["schema"] == "astrid.job-run.v1"

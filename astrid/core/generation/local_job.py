@@ -9,6 +9,7 @@ the one local run path with the job's ``align``. Progress goes to
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -52,9 +53,12 @@ def read_job(path: str | Path) -> dict[str, Any]:
 def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | None = None,
             align: str | None = None) -> dict[str, Any]:
     """Run with this job's validated trust choice scoped to the execution."""
+    from astrid.core.execution import phase_timing
+
     from .model_storage import DECLARED_VOLUME, DeclaredVolume
     from .target_inventory import POD_ALIGN
 
+    timing = phase_timing.GenerationTiming()
     job = read_job(job_path)
     if align is not None and align not in ALIGN_MODES:
         raise JobFileError(f"align must be one of {', '.join(ALIGN_MODES)}")
@@ -63,7 +67,16 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     storage_token = DECLARED_VOLUME.set(
         DeclaredVolume(Path(volume["mount_path"]), volume["size_gb"]) if volume is not None else None)
     try:
-        return _run_job(entry, job, out, mode=mode, align=align)
+        phase_timing.transition(timing, "execution")
+        result = _run_job(entry, job, out, mode=mode, align=align)
+        phase_timing.attach_host(result, timing, output_root=Path(out))
+        return result
+    except Exception as exc:  # noqa: BLE001 - attach telemetry without changing the failure
+        block = {}
+        phase_timing.attach_host(block, timing, output_root=Path(out))
+        with suppress(Exception):
+            exc.timing = block.get("timing")
+        raise
     finally:
         DECLARED_VOLUME.reset(storage_token)
         POD_ALIGN.reset(token)

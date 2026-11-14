@@ -101,3 +101,18 @@ def test_runtime_unprefixed_cas_refs_keep_their_original_identity():
     assert result.result_manifest['object_id'] == 'c' * 64
     assert result.source_ref == fixture.source
     assert result.effective_settings_ref == fixture.settings
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_projection_preserves_host_timing_on_results_and_errors(ok):
+    fixture = terminal(ok=ok)
+    timing = {"schema": "astrid.generation.timing.v2", "host": {"total": {"seconds": 3.0}}}
+    fixture.result.raw_result["task"]["result"]["timing"] = timing
+    if not ok:
+        with pytest.raises(Exception) as caught:
+            _reconstruct_generation_result(fixture.result)
+        assert caught.value.timing == timing
+    else:
+        result = _reconstruct_generation_result(fixture.result)
+        assert result.to_dict()["timing"] == timing
+        assert GenerationResult.from_dict(result.to_dict()).timing == timing
