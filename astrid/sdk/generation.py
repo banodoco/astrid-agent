@@ -588,6 +588,7 @@ def _resolve_invoke_destination(
     project: str | None,
     project_root: str | Path | None,
     client: Any | None = None,
+    dry_run: bool = False,
 ) -> tuple[Path | str | None, str | None]:
     del project_root  # project roots discover packs; they never select ownership.
     import sys
@@ -597,6 +598,7 @@ def _resolve_invoke_destination(
         FIRST_PROJECT_SLUG,
         format_first_project_notice,
         format_project_required_guidance,
+        format_project_listing,
         selected_project,
     )
 
@@ -610,28 +612,51 @@ def _resolve_invoke_destination(
 
         projects = getattr(client, "projects", None)
         if all(callable(getattr(projects, name, None)) for name in ("list", "create", "select")):
+            def _starter(rows):
+                return next((
+                    row for row in rows
+                    if isinstance(row, dict)
+                    and (row.get("name") == FIRST_PROJECT_NAME or row.get("slug") == FIRST_PROJECT_SLUG)
+                ), None)
+
+            def _refusal(rows):
+                message = format_project_required_guidance(operation="generation")
+                listing = format_project_listing(rows)
+                return f"{message}\n{listing}" if listing else message
+
             rows = paged_rows(projects.list)
             if rows is None:
                 raise CapabilityPreconditionError(
                     format_project_required_guidance(operation="generation")
                 )
-            first = next((
-                row for row in rows
-                if isinstance(row, dict)
-                and (row.get("name") == FIRST_PROJECT_NAME or row.get("slug") == FIRST_PROJECT_SLUG)
-            ), None)
-            created = first is None
-            if first is None:
-                made = projects.create(slug=FIRST_PROJECT_SLUG, name=FIRST_PROJECT_NAME)
-                if not made.ok:
-                    raise CapabilityPreconditionError(made.error.message)
-                first = made.data.get("project", made.data) if isinstance(made.data, dict) else {}
-            ref = first.get("slug") or first.get("project_id") or first.get("id") or FIRST_PROJECT_SLUG
-            chosen = projects.select(ref)
-            if not chosen.ok:
-                raise CapabilityPreconditionError(chosen.error.message)
-            selected = first.get("project_id") or first.get("id") or ref
-            print(format_first_project_notice(created=created), file=sys.stderr)
+            first = _starter(rows)
+            if dry_run:
+                # A dry run names a project it would use but never creates or selects one.
+                if first is None:
+                    raise CapabilityPreconditionError(_refusal(rows))
+                selected = first.get("project_id") or first.get("id") or first.get("slug")
+            elif first is None and rows:
+                # Other projects exist and none is selected: a person chooses, Astrid does not.
+                raise CapabilityPreconditionError(_refusal(rows))
+            else:
+                created = first is None
+                if first is None:
+                    made = projects.create(slug=FIRST_PROJECT_SLUG, name=FIRST_PROJECT_NAME)
+                    if made.ok:
+                        first = made.data.get("project", made.data) if isinstance(made.data, dict) else {}
+                    else:
+                        # Another generation may have created the starter first: adopt it.
+                        relisted = paged_rows(projects.list)
+                        first = _starter(relisted) if relisted is not None else None
+                        if first is None:
+                            raise CapabilityPreconditionError(made.error.message)
+                        created = False
+                ref = first.get("slug") or first.get("project_id") or first.get("id") or FIRST_PROJECT_SLUG
+                chosen = projects.select(ref)
+                if not chosen.ok:
+                    raise CapabilityPreconditionError(chosen.error.message)
+                selected = first.get("project_id") or first.get("id") or ref
+                print(format_first_project_notice(created=created), file=sys.stderr)
     if selected is None:
         raise CapabilityPreconditionError(
             format_project_required_guidance(operation="generation")
@@ -960,6 +985,7 @@ def _speech_invoke(facade: Any, *, inputs: dict[str, Any], client: Any, out: Any
         out=out,
         project=project,
         project_root=project_root,
+        dry_run=dry_run,
     )
     result = facade._invoke(
         "generation.generate_speech",
@@ -1377,7 +1403,7 @@ class GenerationFacade:
             }.items() if value is not None
         }
         invoke_out, invoke_project = _resolve_invoke_destination(
-            client=client, out=out, project=project, project_root=project_root,
+            client=client, out=out, project=project, project_root=project_root, dry_run=dry_run,
         )
         sdk_module = importlib.import_module(self.sdk_module_name)
         invoke_result = client.invoke_result if client is not None else sdk_module.invoke_result
@@ -2144,6 +2170,7 @@ class GenerationFacade:
             out=out,
             project=project,
             project_root=project_root,
+            dry_run=dry_run,
         )
         result = self._invoke(
             kind.capability,
