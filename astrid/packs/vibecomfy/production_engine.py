@@ -216,6 +216,20 @@ def _ui_workflow_identity(workflow: Mapping[str, Any], source_bytes: bytes) -> s
     return hashlib.sha256(source_bytes).hexdigest()
 
 
+def _is_saved_ui_workflow(workflow_path: str | Path) -> bool:
+    """A person's own saved ComfyUI UI JSON (not a canonical bundle, template or .py workflow)."""
+    source = Path(workflow_path).expanduser()
+    if source.suffix.lower() == ".py":
+        return False
+    try:
+        raw = json.loads(source.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    canonical = isinstance(raw, Mapping) and isinstance(raw.get("template_id"), str) and isinstance(
+        raw.get("bindings"), Mapping)
+    return isinstance(raw, Mapping) and not canonical
+
+
 def _canonicalize_ui_workflow(
     source: Path,
     raw_workflow: Mapping[str, Any],
@@ -786,7 +800,8 @@ def run_workflow_path(
     if profile_id == "local_server":
         bundle = _canonical_bundle_value(resolved)
         from astrid.core.generation.entries import prepare_execution_bindings
-        run_inputs = prepare_execution_bindings(bundle.workflow, run_inputs)
+        run_inputs = prepare_execution_bindings(bundle.workflow, run_inputs,
+                                                saved_ui=_is_saved_ui_workflow(workflow_path))
     global _LAST_PRODUCTION_RESULT
     _LAST_PRODUCTION_RESULT = None
     profile_kwargs: dict[str, Any] = {}

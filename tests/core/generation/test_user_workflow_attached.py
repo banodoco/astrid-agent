@@ -6,7 +6,6 @@ send nothing but GETs.
 """
 from __future__ import annotations
 
-import copy
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,8 +18,8 @@ from astrid.core.generation import cli
 
 CUSTOM_SEED = ["INT", {"default": 0, "min": 0, "max": 2**32, "control_after_generate": True}]
 
-# Stock ComfyUI shape: the control option sits on the INT widget, and the saved UI
-# keeps its value ("fixed") as the widget value that follows the seed.
+# Only the stock ComfyUI shape is tested: the frontend always writes the control value
+# after a seed widget, so a person's saved workflow has that shape against a stock server.
 OBJECT_INFO_STOCK = {
     "CheckpointLoaderSimple": {
         "input": {"required": {"ckpt_name": [["tiny-cpu-test.safetensors"]]}},
@@ -42,8 +41,9 @@ OBJECT_INFO_STOCK = {
         "category": "image", "name": "SaveImage"},
 }
 
-def _ui_workflow(sampler_widgets: list) -> dict:
-    """A saved ComfyUI UI workflow; the sampler widgets are the seed shape under test."""
+
+def _ui_workflow(control: str = "fixed") -> dict:
+    """A saved ComfyUI UI workflow; the stock frontend stores seed 7 followed by its control value."""
     return {
         "last_node_id": 3, "last_link_id": 2, "version": 0.4,
         "nodes": [
@@ -59,7 +59,7 @@ def _ui_workflow(sampler_widgets: list) -> dict:
              "inputs": [{"name": "model", "type": "MODEL", "link": 1}],
              "outputs": [{"name": "LATENT", "type": "LATENT", "links": [2], "slot_index": 0}],
              "properties": {"Node name for S&R": "AstridCustomSampler"},
-             "widgets_values": list(sampler_widgets)},
+             "widgets_values": [7, control, 4, 1.0]},
             {"id": 3, "type": "SaveImage", "pos": [700, 0], "size": [300, 100], "flags": {},
              "order": 2, "mode": 0,
              "inputs": [{"name": "images", "type": "IMAGE", "link": 2}],
@@ -68,11 +68,6 @@ def _ui_workflow(sampler_widgets: list) -> dict:
         ],
         "links": [[1, 1, 0, 2, 0, "MODEL"], [2, 2, 0, 3, 0, "IMAGE"]],
     }
-
-
-# The two seed shapes a saved UI workflow comes in: the stock frontend keeps the
-# control_after_generate value ("fixed") after seed; older exports have only seed.
-SEED_SHAPES = {"control-widget": [7, "fixed", 4, 1.0], "seed-only": [7, 4, 1.0]}
 
 
 class _Fake:
@@ -142,18 +137,24 @@ class _Fake:
         return {path for _, path in self.requests}
 
 
-@pytest.fixture(params=sorted(SEED_SHAPES))
-def fake_comfy(request):
-    fake = _Fake(OBJECT_INFO_STOCK, _ui_workflow(SEED_SHAPES[request.param])).start()
+def _serve(tmp_path: Path, control: str = "fixed"):
+    fake = _Fake(OBJECT_INFO_STOCK, _ui_workflow(control)).start()
+    path = tmp_path / "my_portrait_custom.json"
+    path.write_text(json.dumps(fake.workflow), encoding="utf-8")
+    return fake, path
+
+
+@pytest.fixture
+def fake_comfy(tmp_path):
+    fake, path = _serve(tmp_path)
+    fake.saved = path
     yield fake
     fake.stop()
 
 
 @pytest.fixture
-def saved_workflow(tmp_path, fake_comfy) -> Path:
-    path = tmp_path / "my_portrait_custom.json"
-    path.write_text(json.dumps(fake_comfy.workflow), encoding="utf-8")
-    return path
+def saved_workflow(fake_comfy) -> Path:
+    return fake_comfy.saved
 
 
 @pytest.fixture(autouse=True)
@@ -182,22 +183,51 @@ def test_workflow_dry_run_admits_saved_ui_workflow(fake_comfy, saved_workflow, c
     assert fake_comfy.methods() == {"GET"}
 
 
-def test_queued_prompt_keeps_saved_seed_and_custom_node(fake_comfy, saved_workflow, tmp_path):
+def _queue(fake_comfy, workflow_path: Path, out: Path, bindings=None) -> None:
     from astrid.packs.vibecomfy import production_engine
 
     # A real run queues one prompt. The fake has no /history, so the run may end
-    # with an error after the POST; the queued body is what this test checks.
+    # with an error after the POST; the queued body is what these tests check.
     try:
-        production_engine.run_workflow_path(saved_workflow, tmp_path / "out", task_identity="task-p4-4",
-                                            comfy_url=fake_comfy.url)
+        production_engine.run_workflow_path(workflow_path, out, task_identity="task-p4-4",
+                                            comfy_url=fake_comfy.url, workflow_input_bindings=bindings)
     except Exception:  # noqa: BLE001 - only the request that reached the fake matters here
         pass
 
-    assert len(fake_comfy.prompts) == 1, fake_comfy.requests
-    prompt = fake_comfy.prompts[0]["prompt"]
+
+def _custom_inputs(prompt: dict) -> dict:
     custom = [node for node in prompt.values() if node["class_type"] == "AstridCustomSampler"]
     assert len(custom) == 1, prompt
-    assert custom[0]["inputs"]["seed"] == 7
-    assert custom[0]["inputs"]["steps"] == 4
-    assert [path for method, path in fake_comfy.requests if method == "POST"][:1] == ["/prompt"]
-    assert {method for method, _ in fake_comfy.requests} <= {"GET", "POST"}
+    return custom[0]["inputs"]
+
+
+@pytest.mark.parametrize("control", ["fixed", "randomize"])
+def test_queued_prompt_keeps_saved_seed_and_custom_node(control, tmp_path):
+    # P4.4 rule: a fixed saved seed runs as saved; randomize keeps Astrid's fresh seed.
+    fake, path = _serve(tmp_path, control)
+    try:
+        runs = 2 if control == "randomize" else 1
+        for run in range(runs):
+            _queue(fake, path, tmp_path / f"out{run}")
+        assert len(fake.prompts) == runs, fake.requests
+        assert {m for m, _ in fake.requests} <= {"GET", "POST"}
+        assert [p for m, p in fake.requests if m == "POST"][:1] == ["/prompt"]
+        inputs = _custom_inputs(fake.prompts[0]["prompt"])
+        assert inputs["steps"] == 4 and inputs["cfg"] == 1.0
+        seeds = [_custom_inputs(prompt["prompt"])["seed"] for prompt in fake.prompts]
+        if control == "fixed":
+            assert seeds == [7]
+        else:
+            assert all(type(seed) is int and 0 <= seed < 2**32 for seed in seeds), seeds
+            assert seeds[0] != seeds[1], seeds
+    finally:
+        fake.stop()
+
+
+def test_explicit_seed_input_wins_over_saved_fixed_seed(tmp_path):
+    fake, path = _serve(tmp_path, "fixed")
+    try:
+        _queue(fake, path, tmp_path / "out", bindings={"seed": 99})
+        assert _custom_inputs(fake.prompts[0]["prompt"])["seed"] == 99
+    finally:
+        fake.stop()
