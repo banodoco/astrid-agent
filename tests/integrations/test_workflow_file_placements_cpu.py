@@ -19,6 +19,9 @@ from tests.integrations.test_runpod_slot_path_cpu import TARGET_KINDS, _assert_r
 
 pytestmark = pytest.mark.integration
 
+# cause f96644329; ruling: machines 11:35 Sat
+# _drive's managed branch uses the shared _pinned_source.managed_cpu_engine.
+
 # The built-in image t2i default (priority 30): its ready template is a workflow file, and the
 # CPU fakes already carry its classes, models and object_info.
 DEFAULT_ENTRY = "qwen-image-2.1-turbo"

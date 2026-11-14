@@ -9273,7 +9273,9 @@ class GenericPackHost:
         producer = payload["evidence"]["producer"]
         transport = payload["evidence"]["transport"]
         if preparation is not None:
-            producer["alignment"] = preparation["alignment"]
+            from astrid.core.generation.producer_result import public_alignment_evidence
+
+            producer["alignment"] = public_alignment_evidence(preparation["alignment"])
             transport["placement"] = "managed"
         # The bundle loader uses a fixed sibling basename. Restore the
         # admitted source identity only after checking it against the bytes

@@ -12,7 +12,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import re
 import socket
 import threading
 from pathlib import Path
@@ -33,6 +32,12 @@ from tests.integrations.test_remote_machine_cpu import MachineProviderHTTP, clai
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 
 from tests.helpers.generation_defaults import default_entries
+from tests.integrations._pinned_source import (
+    attached_comfy as _attached_comfy,
+    managed_cpu_engine as _managed_local_engine,
+    read_peer_events,
+    write_peer_inventory,
+)
 SLOT_DEFAULTS = default_entries()
 pytestmark = pytest.mark.integration
 
@@ -116,115 +121,6 @@ class SlotPod(MachineProviderHTTP):
             self._outputs[kind] = _media(kind, None)
         return (("cpu.wav", self._outputs[kind], "audio/wav") if kind == "audio"
                 else ("cpu.mp4", self._outputs[kind], "video/mp4"))
-
-
-@contextlib.contextmanager
-def _attached_comfy(comfy, port=0):
-    """A human-attached ComfyUI on loopback: the stand-in pod's ComfyUI behind a real socket."""
-    import http.server
-    from urllib.parse import parse_qs, urlsplit
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def _send(self, status, data, mime="application/json"):
-            body = data if isinstance(data, bytes) else json.dumps(data).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_GET(self):
-            url = urlsplit(self.path)
-            if url.path == "/object_info":
-                return self._send(200, comfy.object_info())
-            if url.path == "/system_stats":
-                return self._send(200, {"system": {"os": "linux"}})
-            if url.path == "/queue":
-                return self._send(200, {"queue_running": [], "queue_pending": []})
-            if url.path.startswith("/history"):
-                tail = url.path.partition("/history/")[2]
-                history = getattr(comfy, "history", {})
-                return self._send(200, {tail: history[tail]} if tail in history else {} if tail else history)
-            if url.path == "/view":
-                name = parse_qs(url.query)["filename"][0]
-                comfy.views.append(name)
-                data, mime = comfy.outputs[name]
-                return self._send(200, data, mime)
-            self._send(404, {})
-
-        def do_POST(self):
-            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            if self.path == "/prompt":
-                status, payload = comfy.submit(json.loads(body))
-                return self._send(status, payload)
-            if self.path in ("/queue", "/interrupt", "/free"):
-                return self._send(200, {})
-            if self.path == "/upload/image":
-                subfolder = re.search(rb'name="subfolder"\r\n\r\n([^\r]*)\r\n', body)
-                name = re.search(rb'name="image"; filename="([^"]+)"', body)
-                saved = name[1].decode()
-                comfy.uploads[saved] = body
-                comfy.input_files.add(f"{subfolder[1].decode()}/{saved}" if subfolder and subfolder[1] else saved)
-                return self._send(200, {"name": saved, "subfolder": subfolder[1].decode() if subfolder else "",
-                                        "type": "input"})
-            self._send(404, {})
-
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}"
-    finally:
-        server.shutdown()
-
-
-@contextlib.contextmanager
-def _managed_local_engine(provider, tmp_path, monkeypatch):
-    """A registered managed ComfyUI install on this machine: a receipt under a recorded root, with the stand-in
-    pod's ComfyUI listening where the recipe starts it. Only the install-health probe is a double."""
-    import json as _json
-    from astrid.core.generation import engine_recipe, engine_runner, entries
-    from astrid.core.generation.engine_local_endpoint import DEFAULT_PLATFORM, record_engine_root
-    # What the machine's installs list, read before the home directory moves to the test's.
-    files = [p for engine in dict.fromkeys(("comfyui", *entries.runpod_engines()))
-             for p in receipt_files(provider._receipt_for(engine))]
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    root = str(tmp_path / "managed" / "engines" / "comfyui")
-    receipt = provider._install_receipt("comfyui", root)
-    path = Path(root) / ".astrid-engine" / "install.json"
-    path.parent.mkdir(parents=True, mode=0o700)  # the installer keeps .astrid-engine private to its owner
-    path.write_text(_json.dumps(receipt))
-    record_engine_root("comfyui", root)
-    provider.comfy.installed_files = lambda: files
-    plan = engine_runner.plan_install(engine_recipe.load_recipe("comfyui", DEFAULT_PLATFORM), root=root, placement="local")
-    monkeypatch.setattr(engine_runner, "engine_status",
-                        lambda engine, **kwargs: engine_runner._parse_receipt(_json.loads(path.read_text()), plan))
-    # The install holds every model a ready entry declares. The CPU harness keeps sparse placeholder files and answers
-    # the byte-hash readers from the declarations, as the pod's stand-in does (real weights are Plan 34's).
-    from astrid.core.generation import model_downloader, model_root
-    from astrid.core.generation.asset_gaps import declared_model_specs
-    sizes = {}
-    declared = [(m["path"].split("/models/", 1)[-1], m["bytes"], m["sha256"].removeprefix("sha256:"))
-                for engine in dict.fromkeys(("comfyui", *entries.runpod_engines()))
-                for m in provider._receipt_for(engine)["models"]]
-    for entry in entries.ready_entries():
-        declared += [(m.destination, m.bytes, m.sha256) for m in
-                     declared_model_specs(entry.get("model_assets", []), require_complete=False)]
-    for destination, size, sha in declared:
-        file = Path(root) / "models" / destination.removeprefix("models/")
-        file.parent.mkdir(parents=True, exist_ok=True)
-        with file.open("wb") as handle:
-            handle.truncate(size)  # sparse: the declared size, no bytes
-        sizes[str(file)] = (size, sha)
-    real_digest, real_sha = model_downloader._digest, model_root._file_sha256
-    monkeypatch.setattr(model_downloader, "_digest", lambda path, **kw: sizes.get(str(path)) or real_digest(path, **kw))
-    monkeypatch.setattr(model_root, "_file_sha256", lambda path: "sha256:" + sizes[str(path)][1] if str(path) in sizes else real_sha(path))
-    port = engine_recipe.load_recipe("comfyui", DEFAULT_PLATFORM).start.port
-    with _attached_comfy(provider.comfy, port) as url:
-        yield url
 
 
 @contextlib.contextmanager
@@ -331,6 +227,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     worker.start()
     try:
         with contextlib.ExitStack() as stack:
+            managed_records = None
             if target_kind == "runpod":
                 setup = client.invoke_result("runpod.setup", kind="action", project=None,
                     inputs={"placement_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": preferences})},
@@ -348,7 +245,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
                 url = stack.enter_context(_attached_comfy(provider.comfy))
                 controls = dict(placement=url, client=client, project=project_id, wait=True)
             else:
-                stack.enter_context(_managed_local_engine(provider, tmp_path, monkeypatch))
+                managed_records = stack.enter_context(_managed_local_engine(provider, tmp_path, monkeypatch))
                 controls = dict(placement="managed", client=client, project=project_id, wait=True)
             if trusted_inventory:
                 # Trust exercises execution with unverified declarations, rather than real weights.
@@ -363,7 +260,11 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
                         declared.extend((reference['value'], reference['subdir'] + '/' + reference['value']))
                 installed = provider.comfy.installed_files
                 provider.comfy.installed_files = lambda: [*installed(), *declared]
+                if managed_records is not None:
+                    write_peer_inventory(provider, managed_records)
             result = call(GenerationFacade(), controls, tmp_path)
+            if managed_records is not None:
+                read_peer_events(provider, managed_records)
             yield client, project_id, provider, result
     finally:
         (tmp_path / "provider-http-events.json").write_text(json.dumps(
@@ -534,9 +435,12 @@ CAPABILITIES = [("image", "t2i"), ("image", "edit"), ("audio", "tts"), ("audio",
 # These are inventory/weight limitations, rather than unfinished placement work.
 _RED = {
     # The CPU fixture does not establish these models as ready on local targets.
-    (("audio", "tts"), "local-managed"): ("CapabilityRuntimeError", "workflow-local model verification failed for config.json: sha256 mismatch", "Plan 34"),
-    (("audio", "sfx"), "local-managed"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34"),
-    (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "Plan 34: local inventory"),
+    # cause fdf67eb45; ruling: machines 11:35 Sat
+    # Managed selection is deferred; the same byte/inventory refusals now
+    # come from the host's canonical preparation rather than SDK readiness.
+    (("audio", "tts"), "local-managed"): ("CapabilityRuntimeError", "managed model bytes differ from the declared digest: config.json", "Plan 34"),
+    (("audio", "sfx"), "local-managed"): ("CapabilityRuntimeError", "managed model bytes differ from the declared digest: config.json", "Plan 34"),
+    (("video", "i2v"), "local-managed"): ("CapabilityRuntimeError", "MiniMaxH3AudioVAECompatibility", "Plan 34: local inventory"),
     (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "Plan 34: local inventory"),
     (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34: local inventory"),
     # h3 declares the kind's plain inputs (5fe9ed7a0): a prompt plus an image now resolves to h3 on local and attached targets
