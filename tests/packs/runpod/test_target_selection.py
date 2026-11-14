@@ -18,7 +18,7 @@ from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError, t
 
 
 @pytest.fixture
-def case(tmp_path, monkeypatch):
+def case(tmp_path, monkeypatch, pod_watchdog_transport):
     import runpod_lifecycle
     from runpod_lifecycle import api
 
@@ -74,7 +74,7 @@ def case(tmp_path, monkeypatch):
                                worker_image=prefs.image, volume_mount_path=prefs.mount_path,
                                network_volume_id=selected.volume_id,
                                data_center_id=offer.datacenter_id or selected.datacenter_id,
-                               gpu_type_id=offer.gpu_type_id)
+                               gpu_type_id=offer.gpu_type_id, https_token=pod_watchdog_transport)
 
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
     monkeypatch.setattr(runpod_lifecycle, "get_pod", get_pod)
@@ -305,6 +305,7 @@ def test_bounded_capacity_retries_use_real_lifecycle_and_fake_provider(case, mon
         volume_mount_path=case.prefs.mount_path, network_volume_id=case.prefs.volume_id,
         data_center_id=offer.datacenter_id or case.prefs.datacenter_id, gpu_type_id=offer.gpu_type_id,
         ram_tiers_enabled=True, attach_only=True,
+        transport="https", https_token="test-only-" + "x" * 40,
     )
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", lifecycle.launch_when_available)
     monkeypatch.setattr(lifecycle, "find_gpu_type", lambda *args: {"id": "gpu-1"})
