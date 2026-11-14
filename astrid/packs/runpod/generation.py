@@ -161,6 +161,9 @@ def prepare_retained_generation(
                 deadline_seconds=remaining, installation=installation,
                 checkpoint=lambda job: save(job=dict(job)),
                 reuse_snapshot=previous["installed"] if reuse else None,
+                # Only a pinned volume carries the engine environment snapshot.
+                volume=({"mount_path": preferences.mount_path, "size_gb": claimed.get("network_volume_size_gb")}
+                        if storage.get("mode") == "volume" else None),
             )
             if pod_ready:
                 # The pod's one Runtime: ready as left by the last reset, or reset now.

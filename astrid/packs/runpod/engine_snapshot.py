@@ -53,9 +53,12 @@ _READ = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 _CREATE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 _LOCKISH = re.compile(r"(\.lock|\.flock|\.owner)$|^owner")
 _MANIFEST_LIMIT = 1024 * 1024
+_COMFY_MUTABLE = frozenset({"output", "input", "temp", "user"})
+# Pure bytecode cache: a file the running engine replaces or removes mid-publish is omitted.
+_CACHE_PREFIX = ".astrid-engine/pycache/"
 
 
-class Skip(Exception):
+class SnapshotSkip(Exception):
     def __init__(self, reason, **facts):
         assert reason in REASONS
         super().__init__(reason)
@@ -101,7 +104,7 @@ class _Clock:
 
     def check(self):
         if time.monotonic() >= self.end:
-            raise Skip("deadline_exceeded")
+            raise SnapshotSkip("deadline_exceeded")
 
     def phase(self, name, started):
         self.durations[name] = round(time.monotonic() - started, 3)
@@ -221,6 +224,10 @@ def _root_included(rel):
     if rel == ".astrid-engine":
         return None
     if parts[0] == "runtime":
+        # ComfyUI's mutable data dirs (job outputs, uploads, temp, user state) are per-pod
+        # user data, git-ignored by the checkout, and written by a running job: never snapshotted.
+        if len(parts) >= 3 and parts[1] == "ComfyUI" and parts[2] in _COMFY_MUTABLE:
+            return False
         return len(parts) == 1 or parts[1] != "uv-cache"
     if parts[0] != ".astrid-engine" or len(parts) < 2 or parts[1] not in ("environments", "pycache"):
         return False
@@ -247,7 +254,7 @@ def _walk(base, include, allowed, clock):
                 target = os.readlink(entry.name, dir_fd=fd)
                 resolved = _lexical(os.path.dirname(os.path.join(base, rel)), target)
                 if not any(_within(resolved, a) for a in allowed):
-                    raise Skip("unsafe_tree")
+                    raise SnapshotSkip("unsafe_tree")
                 entries.append((rel, info, target))
             elif stat.S_ISDIR(mode):
                 if wanted:
@@ -260,7 +267,7 @@ def _walk(base, include, allowed, clock):
             elif stat.S_ISREG(mode):
                 entries.append((rel, info, None))
             else:
-                raise Skip("unsafe_tree")
+                raise SnapshotSkip("unsafe_tree")
 
     fd = os.open(base, _DIR)
     try:
@@ -309,20 +316,27 @@ def _write_tar(base, entries, path, clock):
                     else:
                         member.type, member.size = tarfile.REGTYPE, info.st_size
                         parts = rel.split("/")
+                        cache = rel.startswith(_CACHE_PREFIX)
                         parent = _open_dir(base_fd, parts[:-1])
                         try:
                             fd = os.open(parts[-1], _READ, dir_fd=parent)
+                        except FileNotFoundError:
+                            if cache:
+                                continue
+                            raise SnapshotSkip("tree_changed") from None
                         finally:
                             os.close(parent)
                         with os.fdopen(fd, "rb") as source:
                             now = os.fstat(source.fileno())
                             if (now.st_ino, now.st_size, now.st_mtime_ns) != (info.st_ino, info.st_size, info.st_mtime_ns):
-                                raise Skip("tree_changed")
+                                if cache:
+                                    continue
+                                raise SnapshotSkip("tree_changed")
                             try:
                                 tar.addfile(member, source)
                             except OSError as exc:
                                 if "end of data" in str(exc):
-                                    raise Skip("tree_changed") from None
+                                    raise SnapshotSkip("tree_changed") from None
                                 raise
                         total += info.st_size
                     members += 1
@@ -355,7 +369,7 @@ def _python_dir(root, venv):
     if _within(directory, root) or not os.path.isdir(directory):
         return None
     if os.path.realpath(directory) != directory:
-        raise Skip("unsafe_tree")  # a symlinked managed Python would not restore at its recorded path
+        raise SnapshotSkip("unsafe_tree")  # a symlinked managed Python would not restore at its recorded path
     return directory
 
 
@@ -379,10 +393,10 @@ def publish(args, described, identity, clock):
     root, cache = args.root, args.cache
     receipt = _read_json(os.path.join(root, ".astrid-engine", "install.json"), 4 * 1024 * 1024)
     if receipt is None or receipt.get("status") != "installed":
-        raise Skip("not_installed")
+        raise SnapshotSkip("not_installed")
     directory = os.path.join(cache, identity)
     if _valid_manifests(directory, identity, root):
-        raise Skip("already_published")
+        raise SnapshotSkip("already_published")
     started = time.monotonic()
     python = _python_dir(root, described["venv"])
     allowed = [root] + ([python] if python else [])
@@ -392,7 +406,7 @@ def publish(args, described, identity, clock):
     free = _free_bytes(cache, args.mount, args.volume_size_gb, clock)
     clock.phase("estimate", started)
     if free < estimate * SPACE_MARGIN:
-        raise Skip("insufficient_space", estimate_bytes=estimate, free_bytes=free)
+        raise SnapshotSkip("insufficient_space", estimate_bytes=estimate, free_bytes=free)
     os.makedirs(directory, exist_ok=True)
     name = uuid.uuid4().hex
     written = []
@@ -408,7 +422,7 @@ def publish(args, described, identity, clock):
         clock.phase("write_python", started)
         started = time.monotonic()
         if _valid_manifests(directory, identity, root):
-            raise Skip("lost_race")
+            raise SnapshotSkip("lost_race")
         manifest = {**described["inputs"], "schema": SCHEMA, "identity": identity, "pins": described["pins"],
                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                     "archives": archives}
@@ -458,11 +472,11 @@ def _extract(tar_path, staging, destination, allowed, entry, include, clock):
                 while reader.read(1 << 20):
                     pass
             except (tarfile.TarError, EOFError, UnicodeError):
-                raise Skip("corrupt_archive") from None
+                raise SnapshotSkip("corrupt_archive") from None
         if reader.sha.hexdigest() != entry["sha256"] or reader.size != entry["size"]:
-            raise Skip("digest_mismatch")
+            raise SnapshotSkip("digest_mismatch")
         if (members, total) != (entry["members"], entry["bytes"]):
-            raise Skip("count_mismatch")
+            raise SnapshotSkip("count_mismatch")
         for parts, mode in sorted(directories, key=lambda d: -len(d[0])):
             fd = _open_dir(staging_fd, parts)
             try:
@@ -481,34 +495,34 @@ def _member(tar, member, staging_fd, destination, allowed, include, directories)
     if (not name or name.startswith("/") or "\x00" in name or any(p in ("", ".", "..") for p in parts)
             or not include(name) or not (member.isreg() or member.isdir() or member.issym())
             or member.type == tarfile.LNKTYPE):
-        raise Skip("unsafe_member")
+        raise SnapshotSkip("unsafe_member")
     if member.issym():
         resolved = _lexical(os.path.dirname(os.path.join(destination, name)), member.linkname)
         if not member.linkname or not any(_within(resolved, a) for a in allowed):
-            raise Skip("unsafe_member")
+            raise SnapshotSkip("unsafe_member")
     try:
         parent = _open_dir(staging_fd, parts[:-1])
     except OSError:
-        raise Skip("unsafe_member") from None  # missing parent, or a parent that is a symlink
+        raise SnapshotSkip("unsafe_member") from None  # missing parent, or a parent that is a symlink
     try:
         if member.isdir():
             try:
                 os.mkdir(parts[-1], 0o700, dir_fd=parent)
             except FileExistsError:
                 if not stat.S_ISDIR(os.stat(parts[-1], dir_fd=parent, follow_symlinks=False).st_mode):
-                    raise Skip("unsafe_member") from None
+                    raise SnapshotSkip("unsafe_member") from None
             directories.append((parts, (stat.S_IMODE(member.mode) & 0o755) | 0o700))
             return 0
         if member.issym():
             try:
                 os.symlink(member.linkname, parts[-1], dir_fd=parent)
             except FileExistsError:
-                raise Skip("unsafe_member") from None
+                raise SnapshotSkip("unsafe_member") from None
             return 0
         try:
             fd = os.open(parts[-1], _CREATE, 0o600, dir_fd=parent)
         except OSError:
-            raise Skip("unsafe_member") from None
+            raise SnapshotSkip("unsafe_member") from None
         with os.fdopen(fd, "wb") as out:
             source = tar.extractfile(member)
             shutil.copyfileobj(source, out, 1 << 20)
@@ -525,7 +539,7 @@ def _require_single_links(base):
         for name in names:
             info = os.lstat(os.path.join(current, name))
             if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
-                raise Skip("unsafe_member")
+                raise SnapshotSkip("unsafe_member")
 
 
 def _only_empty_dirs(path):
@@ -538,7 +552,7 @@ def _only_empty_dirs(path):
 def _place_root(staging, root):
     if os.path.lexists(root):
         if os.path.islink(root) or not os.path.isdir(root) or not _only_empty_dirs(root):
-            raise Skip("partial_content")
+            raise SnapshotSkip("partial_content")
         for current, dirs, names in os.walk(root, topdown=False):
             os.rmdir(current)
     os.rename(staging, root)
@@ -546,7 +560,7 @@ def _place_root(staging, root):
         _chmod_dir(path)
         info = os.lstat(path)
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-            raise Skip("unsafe_root")
+            raise SnapshotSkip("unsafe_root")
 
 
 def _chmod_dir(path):
@@ -562,14 +576,14 @@ def restore(args, described, identity, clock):
     started = time.monotonic()
     if os.path.lexists(os.path.join(root, ".astrid-engine", "install.json")) or \
             os.path.lexists(os.path.join(root, "runtime")):
-        raise Skip("partial_content")
+        raise SnapshotSkip("partial_content")
     if os.path.lexists(root) and (os.path.islink(root) or not _only_empty_dirs(root)):
-        raise Skip("partial_content")
+        raise SnapshotSkip("partial_content")
     directory = os.path.join(args.cache, identity)
     found = _valid_manifests(directory, identity, root)
     clock.phase("manifest_check", started)
     if not found:
-        raise Skip("no_snapshot")
+        raise SnapshotSkip("no_snapshot")
     name, manifest = max(found, key=lambda item: (item[1]["created_at"], item[0]))
     archives = manifest["archives"]
     python = archives.get("python")
@@ -702,12 +716,12 @@ def main(argv=None):
             identity = identity_of(described["inputs"])
         except Exception:  # noqa: BLE001 - any recipe failure is one fixed reason, never its text
             if args.command in ("restore", "publish"):
-                raise Skip("identity_unavailable") from None
+                raise SnapshotSkip("identity_unavailable") from None
             described, identity = None, None  # housekeeping never needs the current identity
         result["identity"] = identity
         handler = {"restore": restore, "publish": publish, "report": report, "prune": prune}[args.command]
         result.update(handler(args, described, identity, clock))
-    except Skip as skip:
+    except SnapshotSkip as skip:
         result.update(skip.facts, action="skipped", reason=skip.reason)
     except OSError:
         result.update(action="skipped", reason="io_error")

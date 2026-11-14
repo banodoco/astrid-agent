@@ -49,6 +49,7 @@ from .remote_placement import (
     POD_VENV,
     RESULT_MARK,
     RUNS_ROOT,
+    SNAPSHOT_PUBLISH_WAIT_SECONDS,
     Claim,
     DigestMismatch,
     RemotePlacement,
@@ -1511,6 +1512,15 @@ class RunPodMachine:
                 warm, reason = False, "reset_failed"
         if warm and stale:
             self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"})
+        # The last point on this pod before it stops (or settles warm): bounded wait for this
+        # run's detached snapshot publish, then report. Never blocks past its bound or fails release.
+        settle = getattr(adapter.placement, "settle_engine_snapshot", None)
+        if settle is not None and rejection not in {"engine_unreachable", "paid_limit_exhausted"}:
+            try:
+                settle(lease.state, wait_seconds=0 if warm else SNAPSHOT_PUBLISH_WAIT_SECONDS,
+                       budget_seconds=None if paid_expiry is None else paid_expiry - owner.clock())
+            except Exception:  # noqa: BLE001 - snapshot bookkeeping must never fail release
+                _logger.debug("Engine snapshot settlement failed; continuing release", exc_info=True)
         unreaped = getattr(lease.claim.ops, "unreaped_child", None)
         if unreaped is not None:
             owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)

@@ -455,3 +455,70 @@ def test_module_entry_point(tmp_path):
     assert proc.returncode == 0, proc.stderr
     line = proc.stdout.strip().splitlines()[-1]
     assert json.loads(line.split("=", 1)[1])["action"] == "reported"
+
+
+def test_comfy_mutable_data_dirs_are_never_snapshotted(world):
+    """Job outputs, uploads, temp and user state are per-pod user data: never on the volume."""
+    w = world
+    comfy = w.root / "runtime" / "ComfyUI"
+    for name in ("output", "input", "temp", "user"):
+        (comfy / name).mkdir()
+        (comfy / name / "private.bin").write_bytes(b"user data")
+    (comfy / "custom_nodes").mkdir()
+    (comfy / "custom_nodes" / "node.py").write_text("NODE = 1\n")
+    assert run(w, "publish")["action"] == "published"
+    with tarfile.open(snapshot_dir(w) / (manifest_path(w).name.split(".")[0] + ".root.tar")) as tar:
+        names = tar.getnames()
+    assert "runtime/ComfyUI/custom_nodes/node.py" in names
+    assert not [n for n in names if n.split("/")[2:3] and n.split("/")[2] in {"output", "input", "temp", "user"}
+                and n.startswith("runtime/ComfyUI/")]
+    # A forged tar carrying job output is refused on restore.
+    wipe(w)
+    for path in snapshot_dir(w).iterdir():
+        path.unlink()
+    _forge(w, [(_member("runtime", tarfile.DIRTYPE), None), (_member("runtime/ComfyUI", tarfile.DIRTYPE), None),
+               (_member("runtime/ComfyUI/output", tarfile.DIRTYPE), None),
+               (_member("runtime/ComfyUI/output/x.png"), b"x")])
+    assert run(w, "restore")["reason"] == "unsafe_member"
+
+
+def test_pycache_replaced_during_publish_is_omitted_not_fatal(world, monkeypatch):
+    """The running engine may rewrite or drop bytecode mid-publish; it is cache, so it is left out."""
+    w = world
+    (w.root / ".astrid-engine" / "pycache" / "gone.pyc").write_bytes(b"old")
+    walk = es._walk
+
+    def racing_walk(*args, **kwargs):
+        entries = walk(*args, **kwargs)
+        pyc = w.root / ".astrid-engine" / "pycache"
+        if not (pyc / "gone.pyc").exists():
+            return entries  # race once, on the root walk only
+        (pyc / "gone.pyc").unlink()                     # removed after the walk
+        replacement = pyc / "m.pyc.new"
+        replacement.write_bytes(b"new bytecode")
+        os.replace(replacement, pyc / "m.pyc")          # atomically replaced after the walk
+        return entries
+
+    monkeypatch.setattr(es, "_walk", racing_walk)
+    published = run(w, "publish")
+    assert published["action"] == "published", published
+    with tarfile.open(snapshot_dir(w) / (manifest_path(w).name.split(".")[0] + ".root.tar")) as tar:
+        names = tar.getnames()
+    assert ".astrid-engine/pycache/gone.pyc" not in names and ".astrid-engine/pycache/m.pyc" not in names
+    wipe(w)
+    assert run(w, "restore")["action"] == "restored"
+
+
+def test_environment_file_changed_during_publish_fails_closed(world, monkeypatch):
+    w = world
+    walk = es._walk
+
+    def racing_walk(*args, **kwargs):
+        entries = walk(*args, **kwargs)
+        (w.root / "runtime" / "ComfyUI" / "main.py").write_text("print('changed while publishing')\n")
+        return entries
+
+    monkeypatch.setattr(es, "_walk", racing_walk)
+    result = run(w, "publish")
+    assert (result["action"], result["reason"]) == ("skipped", "tree_changed")
+    assert not list(w.cache.rglob("*.tar")) and not list(w.cache.rglob("*.partial"))

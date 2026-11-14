@@ -96,7 +96,11 @@ def exception_subclass_names(pack_root):
 # Deliberately excluded: these are exceptions raised only by infrastructure
 # paths and are represented with the generic failure label in user receipts.
 # Keep this empty unless a concrete, reviewed exception requires exclusion.
-EXCEPTION_NAME_EXCLUSIONS = {}
+EXCEPTION_NAME_EXCLUSIONS = {
+    # Pod-side control flow in engine_snapshot.py: caught inside its own CLI and reported
+    # only as a fixed-vocabulary reason; never raised on the host or into a receipt.
+    "SnapshotSkip": "engine_snapshot pod-side skip signal",
+}
 
 
 def test_every_runpod_exception_name_is_receipt_safe_or_explicitly_excluded():

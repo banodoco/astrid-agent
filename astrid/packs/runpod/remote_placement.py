@@ -65,6 +65,14 @@ MANIFEST_NAME = "wrapper-manifest.json"
 MANIFEST_MARK = "WRAPPER_MANIFEST_SHA256="
 RESULT_MARK = "WRAPPER_RESULT_JSON="
 FIXED_OUTPUTS = ("08-final-receipt.json", "operation-state.json")
+# Engine environment snapshot on the pinned network volume (engine_snapshot.py). The engine root
+# stays on container disk; restore copies the inert environment back and the install re-verifies.
+SNAPSHOT_MARK = "ENGINE_SNAPSHOT_JSON="
+SNAPSHOT_RESTORE_SECONDS = 900
+SNAPSHOT_PUBLISH_WAIT_SECONDS = 180
+SNAPSHOT_REPORT_SECONDS = 60
+SNAPSHOT_PUBLISH_LOG = f"{BOOTSTRAP_ROOT}/engine-snapshot-publish.log"
+SNAPSHOT_PUBLISH_PID = f"{BOOTSTRAP_ROOT}/engine-snapshot-publish.pid"
 SOURCE_DIRS = (
     "src/astrid-runtime",
     "src/runpod-lifecycle",
@@ -364,6 +372,9 @@ class RemoteRun:
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None
     installed: Mapping[str, Any] | None = None
     install_unverified: str | None = None
+    # The pinned network volume ({"mount_path", "size_gb"}); None means no volume for this run.
+    volume: Mapping[str, Any] | None = None
+    snapshot_publish_pid: int | None = None
 
     @property
     def remote_in(self) -> str:
@@ -423,7 +434,8 @@ class RemotePlacement:
     def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float,
                         installation: RunPodInstallation | None = None,
                         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
-                        reuse_snapshot: Mapping[str, Any] | None = None) -> RemoteRun:
+                        reuse_snapshot: Mapping[str, Any] | None = None,
+                        volume: Mapping[str, Any] | None = None) -> RemoteRun:
         """Bootstrap/install an exact existing claim for ordinary prepared work.
 
         Claim/admission/release stay with their existing journal and Runtime
@@ -441,7 +453,7 @@ class RemotePlacement:
         if (installation is None) != (checkpoint is None):
             raise RemotePlacementError("retained installation requires its lease checkpoint")
         state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim,
-                          installation=installation, checkpoint=checkpoint)
+                          installation=installation, checkpoint=checkpoint, volume=volume)
         try:
             from .pod_watchdog import IDENTITY_LOG_PATH, IDENTITY_MARK, write_deadline
             saved = (claim.handle or {}).get("self_stop")
@@ -756,8 +768,10 @@ class RemotePlacement:
         return isinstance(health, Mapping) and health.get("status") == "healthy"
 
     def _install(self, state: RemoteRun) -> None:
+        self._restore_engine_snapshot(state)
         if self._engine_installed_healthy(state):
             state.note("install", "skipped")
+            self._start_snapshot_publish(state)
             return
         installation = state.installation
         models = (f" --models-root {shlex.quote(installation.models_root)}"
@@ -777,6 +791,142 @@ class RemotePlacement:
                 f"engine install finished but status is not installed and healthy (reason: {reason})",
                 reason=installation_reason(reason))
         state.note("install", "done")
+        self._start_snapshot_publish(state)
+
+    # -- engine environment snapshot (never on the failure path) -----------
+
+    def _snapshot_command(self, state: RemoteRun, action: str) -> str | None:
+        """The fixed module command, or None when no pinned volume serves the canonical root."""
+        volume, installation = state.volume, state.installation
+        mount = volume.get("mount_path") if isinstance(volume, Mapping) else None
+        if (not isinstance(mount, str) or not mount.startswith("/")
+                or installation is not None and installation.root != ENGINE_ROOT):
+            return None
+        engine = installation.engine if installation is not None else ENGINE_ID
+        platform = installation.platform if installation is not None else RunPodInstallation.platform
+        return (f"{POD_VENV}/bin/python -I -m astrid.packs.runpod.engine_snapshot {action} "
+                f"--root {shlex.quote(ENGINE_ROOT)} "
+                f"--cache {shlex.quote(f'{mount}/astrid/engine-envs/{engine}')} "
+                f"--engine {shlex.quote(engine)} --platform {shlex.quote(platform)}")
+
+    @staticmethod
+    def _snapshot_result(stdout: str) -> dict[str, Any] | None:
+        lines = [line for line in (stdout or "").splitlines() if line.startswith(SNAPSHOT_MARK)]
+        try:
+            result = json.loads(lines[-1][len(SNAPSHOT_MARK):]) if lines else None
+        except ValueError:
+            return None
+        if not isinstance(result, dict) or not isinstance(result.get("action"), str):
+            return None
+        durations = result.get("durations")
+        result["durations"] = ({_safe_label(k): float(v) for k, v in durations.items()
+                                if type(v) in (int, float) and math.isfinite(v)}
+                               if isinstance(durations, Mapping) else {})
+        return result
+
+    def _restore_engine_snapshot(self, state: RemoteRun) -> None:
+        """Restore the volume's environment snapshot onto an empty container-disk root.
+
+        Advisory only: every failure is noted as skipped and today's install runs unchanged.
+        """
+        command = self._snapshot_command(state, "restore")
+        if command is None:
+            return
+        try:
+            for relative, reason in ((".astrid-engine/install.json", "receipt_present"),
+                                     ("runtime", "runtime_present")):
+                code, _o, _e = self._exec(state, f"test -e {shlex.quote(f'{ENGINE_ROOT}/{relative}')}",
+                                          timeout=30)
+                if code == 0:
+                    state.note("engine_snapshot_restore", "skipped", reason=reason)
+                    return
+            bound = int(min(SNAPSHOT_RESTORE_SECONDS, self._remaining()))
+            code, stdout, _e = self._exec(state, f"{command} --deadline {bound}", timeout=bound + 30)
+        except Exception:  # noqa: BLE001 - restore is advisory; the install below decides
+            state.note("engine_snapshot_restore", "skipped", reason="restore_failed")
+            return
+        result = self._snapshot_result(stdout) if code == 0 else None
+        if result is None:
+            state.note("engine_snapshot_restore", "skipped",
+                       reason="restore_exit_nonzero" if code != 0 else "restore_output_unparsable")
+            return
+        state.note("engine_snapshot_restore", _safe_label(result["action"]),
+                   reason=_safe_label(result.get("reason", "none")), durations=result["durations"])
+
+    def _start_snapshot_publish(self, state: RemoteRun) -> None:
+        """Start publish detached on the pod; the module dedupes an existing snapshot."""
+        command = self._snapshot_command(state, "publish")
+        if command is None:
+            return
+        size, mount = (state.volume or {}).get("size_gb"), (state.volume or {}).get("mount_path")
+        if type(size) is int and size > 0:
+            command += f" --mount {shlex.quote(mount)} --volume-size-gb {size}"
+        launch = (f"mkdir -p {shlex.quote(BOOTSTRAP_ROOT)} && "
+                  f"nohup setsid {command} > {shlex.quote(SNAPSHOT_PUBLISH_LOG)} 2>&1 < /dev/null & "
+                  f"echo $! > {shlex.quote(SNAPSHOT_PUBLISH_PID)}; cat {shlex.quote(SNAPSHOT_PUBLISH_PID)}")
+        try:
+            code, stdout, _e = self._exec(state, launch, timeout=30)
+            pid = int(stdout.strip().splitlines()[-1]) if code == 0 and stdout.strip() else 0
+        except Exception:  # noqa: BLE001 - publish is off the critical path
+            pid = 0
+        if pid <= 0:
+            state.note("engine_snapshot_publish", "skipped", reason="publish_start_failed")
+            return
+        state.snapshot_publish_pid = pid
+        state.note("engine_snapshot_publish", "started", pid=pid)
+
+    def settle_engine_snapshot(self, state: RemoteRun, *, wait_seconds: float = SNAPSHOT_PUBLISH_WAIT_SECONDS,
+                               budget_seconds: float | None = None) -> None:
+        """Before the pod stops: wait (bounded) for this run's publish, then report and prune partials.
+
+        Never raises; an unfinished publish has no manifest, so it is invisible to restore.
+        """
+        pid = getattr(state, "snapshot_publish_pid", None)
+        if type(pid) is not int or pid <= 0 or getattr(state, "claim", None) is None:
+            return
+        state.snapshot_publish_pid = None
+        try:
+            ops = state.claim.ops
+            budget = math.inf if budget_seconds is None else max(0.0, budget_seconds)
+            started = self._clock()
+            alive = (f"s=$(sed 's/.*) //' /proc/{pid}/stat 2>/dev/null | cut -c1); "
+                     f"[ -n \"$s\" ] && [ \"$s\" != Z ] && grep -q engine_snapshot /proc/{pid}/cmdline")
+            wait = int(max(0.0, min(wait_seconds, budget)))
+            if wait <= 0:
+                # A warm pod keeps running; publish finishes there and a later report counts it.
+                if ops.exec(alive, 10)[0] == 0:
+                    state.note("engine_snapshot_publish", "still_running", pid=pid)
+                    return
+            else:
+                # One bounded exec waits on the pod: each exec is a job record, so never poll from here.
+                code, _o, _e = ops.exec(
+                    f"i=0; while {{ {alive}; }} && [ $i -lt {wait} ]; do sleep 1; i=$((i+1)); done; "
+                    f"{{ {alive}; }} && exit 3; exit 0", wait + 15)
+                if code != 0:
+                    state.note("engine_snapshot_publish", "publish_unfinished", pid=pid)
+            left = budget - (self._clock() - started)
+            command = self._snapshot_command(state, "report")
+            if command is None or left <= 1:
+                return
+            bound = int(min(SNAPSHOT_REPORT_SECONDS, left))
+            code, stdout, _e = ops.exec(f"{command} --deadline {max(1, bound - 5)}", bound)
+            result = self._snapshot_result(stdout) if code == 0 else None
+            if result is None:
+                state.note("engine_snapshot_report", "skipped", reason="report_failed")
+                return
+
+            def count(value: Any) -> int:
+                return value if type(value) is int and value >= 0 else len(value) if isinstance(
+                    value, (list, dict)) else 0
+
+            total = result.get("total_bytes")
+            state.note("engine_snapshot_report", _safe_label(result["action"]),
+                       reason=_safe_label(result.get("reason", "none")),
+                       total_bytes=total if type(total) is int and total >= 0 else 0,
+                       identities=count(result.get("identities")), partials=count(result.get("partials")),
+                       durations=result["durations"])
+        except Exception:  # noqa: BLE001 - release must never block or fail on the snapshot
+            state.note("engine_snapshot_report", "skipped", reason="report_failed")
 
     def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:
         from astrid.core.generation import engine_recipe, engine_runner
