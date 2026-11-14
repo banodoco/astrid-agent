@@ -54,6 +54,7 @@ def attached_url():
     classes = set().union(*(_slot_classes(slot) for slot in CPU_SLOTS))
     pod = SlotPod.__new__(SlotPod)  # receipts only: no provider HTTP
     pod.receipts, pod.schema = {}, pin_object_info()
+    pod.volume = None
     files = []
     for engine in dict.fromkeys(("comfyui", *entries.runpod_engines())):
         files += receipt_files(pod._receipt_for(engine))
