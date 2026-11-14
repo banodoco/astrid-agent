@@ -187,7 +187,7 @@ def test_unavailable_store_uses_builtin_settings_and_logs_debug(monkeypatch, cap
 
 
 @pytest.mark.parametrize('enabled', [True, False])
-def test_model_opt_out_round_trips_through_settings_checkout(tmp_path, generation_settings_store, enabled):
+def test_model_verification_choice_round_trips_through_settings_checkout(tmp_path, generation_settings_store, enabled):
     path = tmp_path / 'settings.json'
     settings.checkout(path)
     content = json.loads(path.read_text())
@@ -199,7 +199,7 @@ def test_model_opt_out_round_trips_through_settings_checkout(tmp_path, generatio
 
 
 @pytest.mark.parametrize('value', [None, 'true', 1, [], {'unexpected': True}])
-def test_model_opt_out_rejects_non_boolean_or_unknown_settings(value):
+def test_model_verification_rejects_non_boolean_or_unknown_settings(value):
     models = value if isinstance(value, (dict, list)) or value is None else {'trust_unchanged': value}
     with pytest.raises(AstridError) as caught:
         settings.validate_document({'models': models})
@@ -212,3 +212,38 @@ def test_model_opt_out_rejects_non_boolean_or_unknown_settings(value):
     else:
         assert str(caught.value) == 'models.trust_unchanged must be a boolean'
         assert caught.value.field == 'models.trust_unchanged'
+
+
+@pytest.mark.parametrize('content, expected', [
+    (None, True), ({}, True), ({'models': {}}, True),
+    ({'models': {'trust_unchanged': True}}, True),
+    ({'models': {'trust_unchanged': False}}, False),
+    ({'models': {'trust_unchanged': 'true'}}, False),
+    ({'models': {'trust_unchanged': 1}}, False),
+    ({'models': None}, False), ({'unknown': True}, False),
+])
+def test_model_verification_defaults_and_explicit_modes(generation_settings_store, content, expected):
+    generation_settings_store.documents['generation'] = (content, 1 if content is not None else 0)
+    assert settings.model_trust_unchanged() is expected
+
+
+@pytest.mark.parametrize('failure', [OSError('unreadable'), RuntimeError('unavailable')])
+def test_unreadable_model_verification_settings_force_full_hashing(monkeypatch, generation_settings_store, failure):
+    def unreadable(key):
+        raise failure
+
+    monkeypatch.setattr(generation_settings_store, 'get_user_app_state', unreadable)
+    assert settings.model_trust_unchanged() is False
+
+
+def test_unavailable_model_verification_store_forces_full_hashing(monkeypatch):
+    monkeypatch.setattr(settings, '_store_factory', lambda: None)
+    assert settings.model_trust_unchanged() is False
+
+
+def test_model_verification_counter_defaults_to_trusting_unchanged_files():
+    from astrid.core.generation.model_verification import ModelVerification
+
+    assert ModelVerification().report() == {'trust_unchanged': True, 'hashed': 0, 'skipped': 0}
+    for enabled in (True, False):
+        assert ModelVerification(enabled).report() == {'trust_unchanged': enabled, 'hashed': 0, 'skipped': 0}

@@ -4,12 +4,16 @@ Like the VibeComfy witness memo, a witness is valid only while the file's stat
 identity is unchanged. These records persist that result between preparations;
 callers still enforce the declared size, file kind and digest themselves.
 
-Fresh checksums are the default. The explicit operator opt-out is
-``models.trust_unchanged: true`` in the Runtime's user ``generation`` settings document,
+Trusting unchanged files after a full verification is the default. Opt in to fresh
+checksums on every job with ``models.trust_unchanged: false`` in the Runtime's user
+``generation`` settings document,
 editable with ``astrid generate settings checkout --file FILE`` and
-``astrid generate settings checkin FILE``. "Skip re-checking model files that haven't changed since they were verified: faster warm jobs; trusts file metadata, not a fresh checksum."
-Absent, false or unreadable settings never enable reuse. One preparation snapshots the choice;
-its model_verification step log counts full hashes and skips across all model checks.
+``astrid generate settings checkin FILE``. The default trusts file metadata, not a
+fresh checksum. Absent settings use the default (trust unchanged); an explicit false
+forces full hashing. Settings that are present but invalid or unreadable fail closed
+to full hashing, the safe direction for integrity. A file without a matching record
+is always fully hashed. One preparation snapshots the choice; its model_verification
+step log counts full hashes and skips across all model checks.
 
 Model verification records optimize re-verification for trusted writers on reliable storage
 metadata. They are not tamper-proof evidence against code running as the engine's user (ComfyUI
@@ -38,7 +42,7 @@ def _signature(info: os.stat_result) -> list[int]:
 
 @dataclass
 class ModelVerification:
-    trust_unchanged: bool = False
+    trust_unchanged: bool = True
     hashed: int = 0
     skipped: int = 0
 

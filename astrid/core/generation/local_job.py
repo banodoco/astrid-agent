@@ -72,7 +72,7 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
         DeclaredVolume(Path(volume["mount_path"]), volume["size_gb"]) if volume is not None else None)
     projected = job.get("generation_settings")
     policy = settings.using_model_trust_unchanged(
-        projected["models"]["trust_unchanged"] if projected is not None else False)
+        projected["models"]["trust_unchanged"] if projected is not None else True)
     try:
         with policy:
             return _run_job(entry, job, out, mode=mode, align=align)

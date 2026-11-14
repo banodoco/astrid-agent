@@ -490,12 +490,14 @@ def test_restart_recovery_failure_keeps_retry_timer_and_exact_custody(machine_ca
     bindings.close()
 
 
-@pytest.mark.parametrize('choice', ['absent', False, True, 'unreadable'])
+@pytest.mark.parametrize('choice', ['absent', False, True, 'invalid', 'unreadable'])
 def test_job_projects_current_model_verification_setting(machine_case, monkeypatch, generation_settings_store, choice):
     c = machine_case
     claim(c)
     if choice in (True, False):
         generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': choice}}, 1)
+    elif choice == 'invalid':
+        generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': 'true'}}, 1)
     elif choice == 'unreadable':
         def unreadable(key):
             raise OSError('settings store unreadable')
@@ -503,4 +505,4 @@ def test_job_projects_current_model_verification_setting(machine_case, monkeypat
     request = job(c)
     run(c, request)
     body = json.loads((request.scratch / 'machine/job.json').read_text())
-    assert body['generation_settings'] == {'models': {'trust_unchanged': choice is True}}
+    assert body['generation_settings'] == {'models': {'trust_unchanged': choice is True or choice == 'absent'}}

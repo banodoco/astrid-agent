@@ -65,8 +65,10 @@ A saved image is kept; `--image name@sha256:DIGEST` explicitly replaces it.
 `setup --show` prints sanitized preferences and their Runtime data root and
 realm. The authoritative settings are `machines.runpod` in the Runtime's
 per-user `generation` app-state document, not a project config file.
-Opt out with `"models": {"trust_unchanged": true}` in that same document (`python3 -m astrid generate settings checkout --file "$WORK/generation.json"`, edit, then `python3 -m astrid generate settings checkin "$WORK/generation.json"`): "Skip re-checking model files that haven't changed since they were verified: faster warm jobs; trusts file metadata, not a fresh checksum." Default: full re-verification; the controller carries this choice into each pod job.
-With it on, a file counts as unchanged when its size, timestamps and inode match the verified record; another process running as you could make a record match, and a network volume remounted on another pod may match by metadata alone. Set it back to false to re-check every file on the next preparation.
+The default shape is `"models": {"trust_unchanged": true}`; the controller carries this choice into each pod job.
+Opt in to full per-job re-verification with `"models": {"trust_unchanged": false}` in that same document (`python3 -m astrid generate settings checkout --file "$WORK/generation.json"`, edit, then `python3 -m astrid generate settings checkin "$WORK/generation.json"`).
+The default skips re-checking model files that haven't changed since they were verified: faster warm jobs; trusts file metadata, not a fresh checksum.
+With it on, a file counts as unchanged when its size, timestamps and inode match the verified record; another process running as you could make a record match, and a network volume remounted on another pod may match by metadata alone. Set it to false to re-check every file on the next preparation.
 
 To replace preferences while a machine is held, release that machine using
 its original policy and confirm cleanup first. Setup refuses unresolved

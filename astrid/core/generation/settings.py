@@ -275,18 +275,18 @@ def using_model_trust_unchanged(value: bool) -> Iterator[None]:
 
 
 def model_trust_unchanged(client: Any = None) -> bool:
-    """Only a positively read true opts out of fresh model checksums."""
+    """Trust unchanged models by default; false or unreadable settings force full hashes."""
     projected = _model_policy.get()
     if projected is not None:
         return projected is True
     try:
         snapshot = read(client)
     except (OSError, RuntimeError, ValueError, TypeError, LookupError, AttributeError):
-        # Optional opt-out unavailable: retain full verification, never manufacture consent.
-        _logger.debug("Could not read model verification opt-out; using full verification", exc_info=True)
+        # Invalid or unreadable settings fail closed to full verification.
+        _logger.debug("Could not read model verification setting; using full verification", exc_info=True)
         return False
     return (snapshot.source == "runtime"
-            and snapshot.content.get("models", {}).get("trust_unchanged", False) is True)
+            and snapshot.content.get("models", {}).get("trust_unchanged", True) is True)
 
 
 # -- checkout / checkin ---------------------------------------------------------------------------

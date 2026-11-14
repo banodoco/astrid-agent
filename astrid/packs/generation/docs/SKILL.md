@@ -152,9 +152,10 @@ python3 -m astrid generate settings checkout --file "$WORK/generation.json"
 python3 -m astrid generate settings checkin "$WORK/generation.json"
 ```
 
-The shape is `{"placement": {...}, "defaults": {"<kind>.<mode>": {"pack": "...", "entry": "..."}}, "machines": {"runpod": {...}}, "models": {"trust_unchanged": false}}`.
-Opt out of fresh model checksums by checking out the document, setting `"models": {"trust_unchanged": true}`, and checking it back in with the commands above: "Skip re-checking model files that haven't changed since they were verified: faster warm jobs; trusts file metadata, not a fresh checksum." Default: full re-verification; set it to `false` to restore that.
-With it on, a file counts as unchanged when its size, timestamps and inode match the verified record; another process running as you could make a record match, and a network volume remounted on another pod may match by metadata alone. Set it back to false to re-check every file on the next preparation.
+The default shape is `{"placement": {...}, "defaults": {"<kind>.<mode>": {"pack": "...", "entry": "..."}}, "machines": {"runpod": {...}}, "models": {"trust_unchanged": true}}`.
+Opt in to full per-job re-verification by checking out the document, setting `"models": {"trust_unchanged": false}`, and checking it back in with the commands above.
+The default skips re-checking model files that haven't changed since they were verified: faster warm jobs; trusts file metadata, not a fresh checksum.
+With it on, a file counts as unchanged when its size, timestamps and inode match the verified record; another process running as you could make a record match, and a network volume remounted on another pod may match by metadata alone. Set it to false to re-check every file on the next preparation.
 A stale checkin is refused with both versions shown; check out again and merge.
 Secrets are never stored there: the RunPod credential is a name, and the key lives
 in the environment.

@@ -413,7 +413,7 @@ def test_run_scoped_prefix_survives_public_input_compilation():
 
 
 @pytest.mark.parametrize('enabled', [True, False])
-def test_machine_job_carries_model_opt_out_without_reading_pod_store(tmp_path, monkeypatch, enabled):
+def test_machine_job_carries_model_verification_choice_without_reading_pod_store(tmp_path, monkeypatch, enabled):
     import json
 
     from astrid.core.generation import local_job, settings
@@ -430,7 +430,7 @@ def test_machine_job_carries_model_opt_out_without_reading_pod_store(tmp_path, m
 
 
 @pytest.mark.parametrize('value', [None, {}, {'models': {}}, {'models': {'trust_unchanged': 'true'}}])
-def test_machine_job_rejects_malformed_model_opt_out(tmp_path, value):
+def test_machine_job_rejects_malformed_model_verification_choice(tmp_path, value):
     import json
 
     from astrid.core.generation import local_job
@@ -443,14 +443,14 @@ def test_machine_job_rejects_malformed_model_opt_out(tmp_path, value):
 
 
 @pytest.mark.parametrize('projection', ['omitted', False, True])
-def test_machine_job_hashing_requires_controller_projection(tmp_path, monkeypatch, generation_settings_store, projection):
+def test_machine_job_hashing_uses_projection_or_default(tmp_path, monkeypatch, generation_settings_store, projection):
     import json
 
     from astrid.core.generation import local_job
     from tests.core.generation.test_model_verification_record import make_model, preparation
 
-    # The pod's own store says true, and there is already a valid verification record.
-    generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': True}}, 1)
+    # The pod's own store says false, and there is already a valid verification record.
+    generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': False}}, 1)
     model = make_model(tmp_path, monkeypatch)
     model.verify()
     assert model.reads
@@ -475,7 +475,7 @@ def test_machine_job_hashing_requires_controller_projection(tmp_path, monkeypatc
     monkeypatch.setattr(generation_settings_store, 'get_user_app_state', pod_store)
     monkeypatch.setattr(local_job, '_run_job', verify_job)
     report = local_job.run_job('workflow', path, tmp_path / 'out')
-    if projection is True:
+    if projection is not False:
         assert model.reads == []
         assert report == {'trust_unchanged': True, 'hashed': 0, 'skipped': 1}
     else:

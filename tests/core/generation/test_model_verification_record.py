@@ -22,9 +22,9 @@ fetch_volume = test_managed_preparation.fetch_volume
 
 
 @pytest.fixture(autouse=True)
-def model_verification_opt_in(generation_settings_store):
-    # Cache-specific regressions exercise the explicit operator opt-out.
-    generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': True}}, 1)
+def model_verification_default(generation_settings_store):
+    # Record regressions exercise the default reuse policy with the key absent.
+    generation_settings_store.documents['generation'] = ({}, 1)
 
 
 def preparation(root):
@@ -358,24 +358,51 @@ def test_constructor_failure_is_a_cache_miss(model, monkeypatch, error):
     assert model.reads
 
 
-@pytest.mark.parametrize('choice', ['absent', False, 'unreadable'])
-def test_full_reverification_without_positive_opt_in(model, generation_settings_store, monkeypatch, choice):
-    if choice == 'absent':
+@pytest.mark.parametrize('choice', ['missing-document', 'absent', 'empty-models', True, False,
+                                  'invalid', 'invalid-models', 'unreadable', 'unavailable'])
+def test_model_verification_policy_with_matching_record(model, generation_settings_store, monkeypatch, choice):
+    if choice == 'missing-document':
+        generation_settings_store.documents.pop('generation', None)
+    elif choice == 'absent':
         generation_settings_store.documents['generation'] = ({}, 1)
-    elif choice is False:
-        generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': False}}, 1)
-    else:
+    elif choice == 'empty-models':
+        generation_settings_store.documents['generation'] = ({'models': {}}, 1)
+    elif type(choice) is bool:
+        generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': choice}}, 1)
+    elif choice == 'invalid':
+        generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': 'true'}}, 1)
+    elif choice == 'invalid-models':
+        generation_settings_store.documents['generation'] = ({'models': None}, 1)
+    elif choice == 'unavailable':
+        from astrid.core.generation import settings
+        monkeypatch.setattr(settings, '_store_factory', lambda: None)
+    elif choice == 'unreadable':
         def unreadable(key):
             raise OSError('settings store unreadable')
         monkeypatch.setattr(generation_settings_store, 'get_user_app_state', unreadable)
     model.verify()
     assert model.reads and record(model).exists()
     model.reads.clear()
-    preparation(model.root)._verify_models(model.manifest)
-    assert model.reads  # a valid record never opts the operator out on its own
+    prep = preparation(model.root)
+    prep._verify_models(model.manifest)
+    if choice is True or choice in ('missing-document', 'absent', 'empty-models'):
+        assert model.reads == []
+        assert prep._model_verification.report() == {'trust_unchanged': True, 'hashed': 0, 'skipped': 1}
+    else:
+        assert model.reads
+        assert prep._model_verification.report() == {'trust_unchanged': False, 'hashed': 1, 'skipped': 0}
 
 
-def test_preparation_reads_opt_in_once_and_logs_hash_skip_counts(model, generation_settings_store, monkeypatch):
+def test_default_without_record_hashes_fully_and_writes_record(model, generation_settings_store):
+    generation_settings_store.documents.pop('generation', None)
+    assert not list((model.root / '.astrid-engine/model-verification').glob('*.json'))
+    model.verify()
+    assert model.reads
+    assert json.loads(record(model).read_text())['sha256'] == model.row['sha256']
+    assert model.prep._model_verification.report() == {'trust_unchanged': True, 'hashed': 1, 'skipped': 0}
+
+
+def test_preparation_reads_policy_once_and_logs_hash_skip_counts(model, generation_settings_store, monkeypatch):
     original = generation_settings_store.get_user_app_state
     reads = []
 

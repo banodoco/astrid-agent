@@ -981,15 +981,20 @@ def test_fetch_storage_preflight_other_network_filesystem_uses_statvfs(fetch_vol
     _assert_storage_warning(c)
 
 
-def test_fetch_storage_preflight_valid_quota_survives_unavailable_statvfs(fetch_volume):
+@pytest.mark.parametrize('choice', [None, True, False])
+def test_fetch_storage_preflight_valid_quota_survives_unavailable_statvfs(
+    fetch_volume, generation_settings_store, choice,
+):
     c = fetch_volume
+    if choice is not None:
+        generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': choice}}, 1)
     c.state.fs_unavailable = True
     c.fetch()
     assert c.native == ['fetch'] and c.quota_calls
     declared = {row['name']: row for row in json.loads((c.prep.logs_root / 'logs.json').read_text())['logs']}
     assert set(declared) == {'preparation.model_verification.stdout', 'preparation.model_verification.stderr'}
     assert json.loads(Path(declared['preparation.model_verification.stdout']['path']).read_text()) == {
-        'trust_unchanged': False, 'hashed': 1, 'skipped': 0}
+        'trust_unchanged': choice is not False, 'hashed': 1, 'skipped': 0}
     assert Path(declared['preparation.model_verification.stderr']['path']).read_text() == ''
 
 

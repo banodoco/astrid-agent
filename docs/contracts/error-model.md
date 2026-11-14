@@ -90,6 +90,10 @@ or report the failure.
 - Audit integrity failures fail closed by default. Any corruption-tolerant or
   verification-skipping path must be explicit, operator-chosen, and documented
   as an opt-out.
+  Exception (owner ruling, 14 Nov 2026): model-file digest verification reuses a
+  prior full verification when the file's stat identity is unchanged by default;
+  full per-job re-verification is the explicit opt-in `models.trust_unchanged: false`.
+  A file without a matching record is always fully hashed.
 - `assert` is not runtime validation. Python strips asserts under `-O`, so
   operator-facing validation and runtime invariants must raise explicit
   exceptions instead.
