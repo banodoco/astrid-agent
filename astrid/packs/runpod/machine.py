@@ -1513,9 +1513,10 @@ class RunPodMachine:
         if warm and stale:
             self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"})
         # The last point on this pod before it stops (or settles warm): bounded wait for this
-        # run's detached snapshot publish, then report. Never blocks past its bound or fails release.
+        # run's detached snapshot publish, then report. Success path only: a failed job's release
+        # never waits on it (an unfinished publish has no manifest and is invisible).
         settle = getattr(adapter.placement, "settle_engine_snapshot", None)
-        if settle is not None and rejection not in {"engine_unreachable", "paid_limit_exhausted"}:
+        if settle is not None and failure is None and rejection is None:
             try:
                 settle(lease.state, wait_seconds=0 if warm else SNAPSHOT_PUBLISH_WAIT_SECONDS,
                        budget_seconds=None if paid_expiry is None else paid_expiry - owner.clock())

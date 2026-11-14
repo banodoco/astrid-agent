@@ -12,6 +12,7 @@ import shlex
 
 import pytest
 
+from astrid.packs.runpod import machine as rm
 from astrid.packs.runpod import remote_placement as rp
 from astrid.packs.runpod.remote_placement import Claim, Limits, RemotePlacement, RunPodInstallation
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401
@@ -230,7 +231,8 @@ def test_release_waits_for_publish_then_reports_totals(tmp_path, sources):
     pod.alive = [0, 0, 0]  # still running for three checks, then exited
     placement.settle_engine_snapshot(state)
     # Exactly one bounded on-pod wait (each exec is a job record: never poll from the host).
-    assert pod.waits == [rp.SNAPSHOT_PUBLISH_WAIT_SECONDS] and len(
+    assert pod.waits == [rp.SNAPSHOT_PUBLISH_WAIT_SECONDS - rp.SNAPSHOT_REPORT_MIN_SECONDS
+                         - rp.SNAPSHOT_SLACK_SECONDS] and len(
         [c for c in pod.exec_log if "/proc/4242" in c]) == 1
     assert not _notes(state, "engine_snapshot_publish")[1:]
     report = pod.exec_log[_index(pod.exec_log, "engine_snapshot report")]
@@ -249,8 +251,7 @@ def test_release_wait_is_bounded_and_leaves_publish_unfinished(tmp_path, sources
     placement, state, pod = _prepare(tmp_path, sources)
     pod.alive = [0] * 10_000  # never exits
     placement.settle_engine_snapshot(state)
-    assert rp.SNAPSHOT_PUBLISH_WAIT_SECONDS == 180 and pod.waits == [180]
-    assert max(pod.timeouts) <= rp.SNAPSHOT_PUBLISH_WAIT_SECONDS + 15
+    assert rp.SNAPSHOT_PUBLISH_WAIT_SECONDS == 180 and pod.waits == [160]
     assert _notes(state, "engine_snapshot_publish")[-1]["status"] == "publish_unfinished"
     # The release continues: report still runs and its totals are noted.
     assert _notes(state, "engine_snapshot_report")[0]["status"] == "reported"
@@ -266,7 +267,7 @@ def test_warm_settle_does_not_wait_and_paid_budget_bounds_the_wait(tmp_path, sou
     placement, state, pod = _prepare(tmp_path, sources)
     pod.alive = [0] * 100
     placement.settle_engine_snapshot(state, budget_seconds=12)
-    assert pod.waits == [12]
+    assert pod.waits == [0]
     assert _notes(state, "engine_snapshot_publish")[-1]["status"] == "publish_unfinished"
 
 
@@ -306,3 +307,61 @@ def test_machine_release_settles_snapshot_before_stop_and_without_waiting_when_w
     c.machine.release(cold, False)
     assert c.deletes == ["pod-1"]
     assert calls == [(0, True, []), (rp.SNAPSHOT_PUBLISH_WAIT_SECONDS, True, [])]
+
+
+class _ExecClock:
+    """Charges every pod exec its full transport timeout: the worst case a release can see."""
+
+    def __init__(self, pod, clock):
+        self.pod, self.clock, self.charged = pod, clock, []
+        inner = pod.exec
+
+        def exec_(command, timeout=600):
+            self.charged.append(timeout)
+            self.clock.now += timeout
+            return inner(command, timeout)
+
+        pod.exec = exec_
+
+
+@pytest.mark.parametrize("alive", [[0] * 10_000, [0, 0, 0]])
+def test_release_settlement_is_one_bound_including_report(tmp_path, sources, alive):
+    """R4: wait + report + transport slack together stay within SNAPSHOT_PUBLISH_WAIT_SECONDS."""
+    clock = Clock()
+    placement, state, pod = _prepare(tmp_path, sources, clock=clock)
+    pod.alive = alive
+    charged = _ExecClock(pod, clock)
+    start = clock.now
+    placement.settle_engine_snapshot(state)
+    assert clock.now - start <= rp.SNAPSHOT_PUBLISH_WAIT_SECONDS == 180
+    assert sum(charged.charged) <= 180
+    assert _notes(state, "engine_snapshot_report")  # the report still fits inside the bound
+
+
+def test_release_skips_report_when_under_ten_seconds_remain(tmp_path, sources):
+    clock = Clock()
+    placement, state, pod = _prepare(tmp_path, sources, clock=clock)
+    pod.alive = [0] * 10_000
+    charged = _ExecClock(pod, clock)
+    placement.settle_engine_snapshot(state, budget_seconds=15)
+    assert not any("engine_snapshot report" in command for command in pod.exec_log)
+    assert sum(charged.charged) <= 15
+
+
+@pytest.mark.parametrize("failure", ["job", "digest"])
+def test_failed_job_release_never_settles_snapshot(machine_case, monkeypatch, failure):
+    """R3: settlement runs on the success path only; a failed job's release never waits on publish."""
+    from tests.packs.runpod.test_machine import _claim_machine
+
+    c = machine_case
+    _claim_machine(c)
+    calls = []
+    monkeypatch.setattr(c.placement, "settle_engine_snapshot",
+                        lambda state, **kw: calls.append(kw))
+    lease = c.machine.claim(c.job())
+    error = rm.MachineError("job failed") if failure == "job" else rp.DigestMismatch("digest")
+    try:
+        c.machine.release(lease, False, failure=error)
+    except Exception:  # noqa: BLE001 - classification may surface; only the wait matters here
+        pass
+    assert calls == []

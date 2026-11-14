@@ -71,6 +71,8 @@ SNAPSHOT_MARK = "ENGINE_SNAPSHOT_JSON="
 SNAPSHOT_RESTORE_SECONDS = 900
 SNAPSHOT_PUBLISH_WAIT_SECONDS = 180
 SNAPSHOT_REPORT_SECONDS = 60
+SNAPSHOT_REPORT_MIN_SECONDS = 10
+SNAPSHOT_SLACK_SECONDS = 10
 SNAPSHOT_PUBLISH_LOG = f"{BOOTSTRAP_ROOT}/engine-snapshot-publish.log"
 SNAPSHOT_PUBLISH_PID = f"{BOOTSTRAP_ROOT}/engine-snapshot-publish.pid"
 SOURCE_DIRS = (
@@ -891,22 +893,25 @@ class RemotePlacement:
             started = self._clock()
             alive = (f"s=$(sed 's/.*) //' /proc/{pid}/stat 2>/dev/null | cut -c1); "
                      f"[ -n \"$s\" ] && [ \"$s\" != Z ] && grep -q engine_snapshot /proc/{pid}/cmdline")
-            wait = int(max(0.0, min(wait_seconds, budget)))
-            if wait <= 0:
+            # One bound for the whole settlement: wait + report, transport slack included.
+            total = min(SNAPSHOT_PUBLISH_WAIT_SECONDS, budget)
+            if wait_seconds <= 0:
                 # A warm pod keeps running; publish finishes there and a later report counts it.
                 if ops.exec(alive, 10)[0] == 0:
                     state.note("engine_snapshot_publish", "still_running", pid=pid)
                     return
             else:
                 # One bounded exec waits on the pod: each exec is a job record, so never poll from here.
+                # Reserve the report's minimum plus transport slack out of the same bound.
+                wait = int(max(0.0, min(wait_seconds, total) - SNAPSHOT_REPORT_MIN_SECONDS - SNAPSHOT_SLACK_SECONDS))
                 code, _o, _e = ops.exec(
                     f"i=0; while {{ {alive}; }} && [ $i -lt {wait} ]; do sleep 1; i=$((i+1)); done; "
-                    f"{{ {alive}; }} && exit 3; exit 0", wait + 15)
+                    f"{{ {alive}; }} && exit 3; exit 0", wait + SNAPSHOT_SLACK_SECONDS)
                 if code != 0:
                     state.note("engine_snapshot_publish", "publish_unfinished", pid=pid)
-            left = budget - (self._clock() - started)
+            left = total - (self._clock() - started)
             command = self._snapshot_command(state, "report")
-            if command is None or left <= 1:
+            if command is None or left < SNAPSHOT_REPORT_MIN_SECONDS:
                 return
             bound = int(min(SNAPSHOT_REPORT_SECONDS, left))
             code, stdout, _e = ops.exec(f"{command} --deadline {max(1, bound - 5)}", bound)
@@ -919,10 +924,10 @@ class RemotePlacement:
                 return value if type(value) is int and value >= 0 else len(value) if isinstance(
                     value, (list, dict)) else 0
 
-            total = result.get("total_bytes")
+            size = result.get("total_bytes")
             state.note("engine_snapshot_report", _safe_label(result["action"]),
                        reason=_safe_label(result.get("reason", "none")),
-                       total_bytes=total if type(total) is int and total >= 0 else 0,
+                       total_bytes=size if type(size) is int and size >= 0 else 0,
                        identities=count(result.get("identities")), partials=count(result.get("partials")),
                        durations=result["durations"])
         except Exception:  # noqa: BLE001 - release must never block or fail on the snapshot

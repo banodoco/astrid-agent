@@ -14,6 +14,12 @@ a symlink and never trusts tar owners or modes, so a damaged archive cannot writ
 staging tree. A separate isolation boundary (another UID or a sandbox) would be needed to make
 the volume tamper-evident.
 
+Privacy: the snapshot persists on the user's own network volume past the pod. ComfyUI's per-pod
+data dirs (output, input, temp, user) are never included, but ``runtime/**`` otherwise copies the
+checkouts whole, so a custom node that writes credentials or stray results inside its own
+directory would carry them onto the volume. A later step should snapshot only git-tracked files
+plus the venv for checkouts.
+
 CLI: ``python -I -m astrid.packs.runpod.engine_snapshot {restore|publish|report|prune} --root ROOT
 --cache CACHE --engine ENGINE --platform PLATFORM [--deadline S] [--volume-size-gb N --mount M]
 [--identity ID [--confirm]]``. Each run prints one final ``ENGINE_SNAPSHOT_JSON=<json>`` line and
@@ -122,6 +128,39 @@ def _lexical(link_dir, target):
     return os.path.normpath(target if target.startswith("/") else os.path.join(link_dir, target))
 
 
+def _link_safe(destination, rel, target, links, allowed):
+    """A symlink target is safe when it lands inside ``allowed`` and resolution cannot be redirected.
+
+    Lexical normalisation alone is not enough: with ``a -> /x`` in the archive, ``b -> a/../..``
+    normalises inside yet resolves through ``a``. So walk the unnormalised components: a ``..``
+    after passing through another symlink of this archive, or after entering the other
+    destination (whose links this archive cannot see), is refused. A link traversed without a
+    later ``..`` stays inside, because that link's own target is held to this same rule.
+    """
+    if not target or "\x00" in target:
+        return False
+    path = target if target.startswith("/") else os.path.join(os.path.dirname(os.path.join(destination, rel)), target)
+    current, redirected = [], False
+    for part in path.split("/")[1:]:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if redirected:
+                return False
+            if current:
+                current.pop()
+            continue
+        current.append(part)
+        here = "/" + "/".join(current)
+        if _within(here, destination):
+            if here != destination and here[len(destination.rstrip("/")) + 1:] in links:
+                redirected = True
+        elif any(_within(here, other) for other in allowed):
+            redirected = True
+    resolved = "/" + "/".join(current)
+    return any(_within(resolved, a) for a in allowed)
+
+
 def _open_dir(base_fd, parts):
     fd = os.dup(base_fd)
     try:
@@ -186,6 +225,25 @@ def _archive_ok(directory, name, kind, entry):
     return stat.S_ISREG(info.st_mode) and (info.st_size, info.st_mtime_ns) == (entry["size"], entry["mtime_ns"])
 
 
+def _python_destination_ok(destination, root, manifest):
+    """Absolute, normalised, disjoint from the engine root, and named as uv names a managed Python."""
+    if (not isinstance(destination, str) or not destination.startswith("/")
+            or os.path.normpath(destination) != destination or destination == "/"):
+        return False
+    if root is not None and (_within(destination, root) or _within(root, destination)):
+        return False
+    return _managed_python_name(os.path.basename(destination), manifest)
+
+
+def _managed_python_name(name, inputs):
+    versions = inputs.get("python_versions") if isinstance(inputs, dict) else None
+    machine = inputs.get("machine") if isinstance(inputs, dict) else None
+    if not isinstance(versions, dict) or not isinstance(machine, str):
+        return False
+    return any(isinstance(v, str) and re.fullmatch(rf"cpython-{re.escape(v)}-linux-{re.escape(machine)}-gnu", name)
+               for v in versions.values())
+
+
 def _valid_manifests(directory, identity, root=None):
     """(name, manifest) pairs whose identity, schema and recorded tar stats all still hold."""
     found = []
@@ -208,7 +266,10 @@ def _valid_manifests(directory, identity, root=None):
             continue
         if not _archive_ok(directory, match[1], "root", archives.get("root")):
             continue
-        if archives.get("python") is not None and not _archive_ok(directory, match[1], "python", archives["python"]):
+        if archives.get("python") is not None and (
+                not _archive_ok(directory, match[1], "python", archives["python"])
+                or not _python_destination_ok(archives["python"]["destination"],
+                                              archives["root"]["destination"], manifest)):
             continue
         if root is not None and archives["root"]["destination"] != root:
             continue
@@ -252,8 +313,9 @@ def _walk(base, include, allowed, clock):
             mode = info.st_mode
             if stat.S_ISLNK(mode):
                 target = os.readlink(entry.name, dir_fd=fd)
-                resolved = _lexical(os.path.dirname(os.path.join(base, rel)), target)
-                if not any(_within(resolved, a) for a in allowed):
+                resolved = os.path.realpath(os.path.join(base, rel))
+                if (not _link_safe(base, rel, target, set(), allowed)
+                        or not any(_within(resolved, os.path.realpath(a)) for a in allowed)):
                     raise SnapshotSkip("unsafe_tree")
                 entries.append((rel, info, target))
             elif stat.S_ISDIR(mode):
@@ -278,7 +340,11 @@ def _walk(base, include, allowed, clock):
 
 
 def _estimate(entries):
-    return sum(512 + (-(-e[1].st_size // 512) * 512 if stat.S_ISREG(e[1].st_mode) else 0) for e in entries)
+    """Tar bytes: a 512-byte header per member, 1536 more for a PAX long name or link, padded data."""
+    def one(rel, info, link):
+        header = 512 + (1536 if len(rel.encode()) > 100 or (link and len(link.encode()) > 100) else 0)
+        return header + (-(-info.st_size // 512) * 512 if stat.S_ISREG(info.st_mode) else 0)
+    return sum(one(*entry) for entry in entries)
 
 
 class _HashingWriter:
@@ -399,6 +465,8 @@ def publish(args, described, identity, clock):
         raise SnapshotSkip("already_published")
     started = time.monotonic()
     python = _python_dir(root, described["venv"])
+    if python is not None and not _python_destination_ok(python, root, described["inputs"]):
+        raise SnapshotSkip("unsafe_tree")  # restore would refuse this destination; publish nothing
     allowed = [root] + ([python] if python else [])
     root_entries = _walk(root, _root_included, allowed, clock)
     python_entries = _walk(python, lambda rel: True, allowed, clock) if python else []
@@ -459,7 +527,7 @@ class _HashingReader:
 def _extract(tar_path, staging, destination, allowed, entry, include, clock):
     """Stream-extract one archive into ``staging`` with this module's own member filter."""
     staging_fd = os.open(staging, _DIR)
-    directories, members, total = [], 0, 0
+    directories, links, members, total = [], [], 0, 0
     try:
         with open(tar_path, "rb") as raw:
             reader = _HashingReader(raw)
@@ -468,7 +536,7 @@ def _extract(tar_path, staging, destination, allowed, entry, include, clock):
                     for member in tar:
                         clock.check()
                         members += 1
-                        total += _member(tar, member, staging_fd, destination, allowed, include, directories)
+                        total += _member(tar, member, staging_fd, destination, allowed, include, directories, links)
                 while reader.read(1 << 20):
                     pass
             except (tarfile.TarError, EOFError, UnicodeError):
@@ -477,6 +545,20 @@ def _extract(tar_path, staging, destination, allowed, entry, include, clock):
             raise SnapshotSkip("digest_mismatch")
         if (members, total) != (entry["members"], entry["bytes"]):
             raise SnapshotSkip("count_mismatch")
+        # Links are judged against the archive's complete link set, then created last, so no
+        # member is ever written through a link and no link order can hide a redirect.
+        names = {"/".join(parts) for parts, _target in links}
+        for parts, target in links:
+            if not _link_safe(destination, "/".join(parts), target, names, allowed):
+                raise SnapshotSkip("unsafe_member")
+        for parts, target in links:
+            parent = _open_dir(staging_fd, parts[:-1])
+            try:
+                os.symlink(target, parts[-1], dir_fd=parent)
+            except OSError:
+                raise SnapshotSkip("unsafe_member") from None
+            finally:
+                os.close(parent)
         for parts, mode in sorted(directories, key=lambda d: -len(d[0])):
             fd = _open_dir(staging_fd, parts)
             try:
@@ -489,35 +571,33 @@ def _extract(tar_path, staging, destination, allowed, entry, include, clock):
     return members, reader.size
 
 
-def _member(tar, member, staging_fd, destination, allowed, include, directories):
-    name = member.name.rstrip("/") if member.isdir() else member.name
+_FILE_TYPES = (tarfile.REGTYPE, tarfile.AREGTYPE)  # not CONTTYPE, GNU sparse or any other "regular"
+
+
+def _member(tar, member, staging_fd, destination, allowed, include, directories, links):
+    kind = member.type
+    name = member.name.rstrip("/") if kind == tarfile.DIRTYPE else member.name
     parts = name.split("/")
     if (not name or name.startswith("/") or "\x00" in name or any(p in ("", ".", "..") for p in parts)
-            or not include(name) or not (member.isreg() or member.isdir() or member.issym())
-            or member.type == tarfile.LNKTYPE):
+            or not include(name) or kind not in (*_FILE_TYPES, tarfile.DIRTYPE, tarfile.SYMTYPE)):
         raise SnapshotSkip("unsafe_member")
-    if member.issym():
-        resolved = _lexical(os.path.dirname(os.path.join(destination, name)), member.linkname)
-        if not member.linkname or not any(_within(resolved, a) for a in allowed):
+    if kind == tarfile.SYMTYPE:
+        if not member.linkname or "/".join(parts) in {"/".join(p) for p, _t in links}:
             raise SnapshotSkip("unsafe_member")
+        links.append((parts, member.linkname))
+        return 0
     try:
         parent = _open_dir(staging_fd, parts[:-1])
     except OSError:
         raise SnapshotSkip("unsafe_member") from None  # missing parent, or a parent that is a symlink
     try:
-        if member.isdir():
+        if kind == tarfile.DIRTYPE:
             try:
                 os.mkdir(parts[-1], 0o700, dir_fd=parent)
             except FileExistsError:
                 if not stat.S_ISDIR(os.stat(parts[-1], dir_fd=parent, follow_symlinks=False).st_mode):
                     raise SnapshotSkip("unsafe_member") from None
             directories.append((parts, (stat.S_IMODE(member.mode) & 0o755) | 0o700))
-            return 0
-        if member.issym():
-            try:
-                os.symlink(member.linkname, parts[-1], dir_fd=parent)
-            except FileExistsError:
-                raise SnapshotSkip("unsafe_member") from None
             return 0
         try:
             fd = os.open(parts[-1], _CREATE, 0o600, dir_fd=parent)

@@ -522,3 +522,98 @@ def test_environment_file_changed_during_publish_fails_closed(world, monkeypatch
     result = run(w, "publish")
     assert (result["action"], result["reason"]) == ("skipped", "tree_changed")
     assert not list(w.cache.rglob("*.tar")) and not list(w.cache.rglob("*.partial"))
+
+
+def _forge_python(w, destination, members):
+    """A root tar (one dir) plus a python tar with a chosen destination, both matching their manifest."""
+    _forge(w, [(_member("runtime", tarfile.DIRTYPE), None)])
+    path = manifest_path(w)
+    name = path.name.split(".")[0]
+    tar_path = snapshot_dir(w) / f"{name}.python.tar"
+    count = total = 0
+    with tarfile.open(tar_path, "w", format=tarfile.PAX_FORMAT) as tar:
+        for info, data in members:
+            count += 1
+            if data is not None:
+                info.size = len(data)
+                total += len(data)
+            tar.addfile(info, io.BytesIO(data) if data is not None else None)
+    st = tar_path.stat()
+    rewrite_manifest(path, lambda m: m["archives"].update(python={
+        "sha256": hashlib.sha256(tar_path.read_bytes()).hexdigest(), "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns, "members": count, "bytes": total, "destination": str(destination)}))
+
+
+@pytest.mark.parametrize("order", ["link_first", "link_last"])
+def test_chained_symlink_redirect_is_refused(world, order):
+    """R1: b -> a/../.. normalises inside the root but resolves through a -> root to the root's grandparent."""
+    w = world
+    wipe(w)
+    a = (_member("runtime/a", tarfile.SYMTYPE, linkname=str(w.root)), None)
+    b = (_member("runtime/b", tarfile.SYMTYPE, linkname="a/../.."), None)
+    links = [a, b] if order == "link_first" else [b, a]
+    _forge(w, [(_member("runtime", tarfile.DIRTYPE), None), *links])
+    result = run(w, "restore")
+    assert (result["action"], result["reason"]) == ("skipped", "unsafe_member"), result
+    assert not w.root.exists() and not list(w.root.parent.glob("*.restore-*"))
+
+
+def test_plain_relative_links_and_links_to_links_still_restore(world):
+    w = world
+    wipe(w)
+    _forge(w, [(_member("runtime", tarfile.DIRTYPE), None), (_member("runtime/lib", tarfile.DIRTYPE), None),
+               (_member("runtime/lib/real.so"), b"so"),
+               (_member("runtime/lib64", tarfile.SYMTYPE, linkname="lib"), None),
+               (_member("runtime/lib/alias.so", tarfile.SYMTYPE, linkname="real.so"), None),
+               (_member("runtime/lib/alias2.so", tarfile.SYMTYPE, linkname="alias.so"), None)])
+    assert run(w, "restore")["action"] == "restored"
+    assert (w.root / "runtime" / "lib64" / "alias2.so").read_bytes() == b"so"
+
+
+@pytest.mark.parametrize("kind", [tarfile.CONTTYPE, tarfile.GNUTYPE_SPARSE])
+def test_only_plain_regular_file_types_are_accepted(world, kind):
+    """R1: isreg() admits CONTTYPE and GNU sparse; restore accepts REGTYPE/AREGTYPE only."""
+    w = world
+    wipe(w)
+    _forge(w, [(_member("runtime", tarfile.DIRTYPE), None), (_member("runtime/f", kind), b"x")])
+    result = run(w, "restore")
+    assert result["reason"] in {"unsafe_member", "corrupt_archive"}, result
+    assert not w.root.exists()
+
+
+@pytest.mark.parametrize("where", ["control_dir", "root_itself", "foreign_name", "relative"])
+def test_python_destination_is_pinned_outside_root(world, where):
+    """R2: a manifest-chosen python destination can never inject custody state into the root."""
+    w = world
+    wipe(w)
+    destination = {"control_dir": str(w.root / ".astrid-engine"), "root_itself": str(w.root),
+                   "foreign_name": str(w.tmp / "managed" / "evil"),
+                   "relative": "managed/cpython-3.12.10-linux-x86_64-gnu"}[where]
+    _forge_python(w, destination, [(_member("install.json"), b'{"status": "installed"}'),
+                                   (_member("session", tarfile.DIRTYPE), None)])
+    result = run(w, "restore")
+    assert (result["action"], result["reason"]) == ("skipped", "no_snapshot"), result
+    assert not w.root.exists()
+    assert not (w.tmp / "managed" / "evil").exists()
+
+
+def test_failed_restore_never_removes_a_preexisting_python(world):
+    w = world
+    wipe(w, python=False)
+    marker = w.py / "bin" / "python3"
+    _forge_python(w, w.py, [(_member("bin", tarfile.DIRTYPE), None)])
+    rewrite_manifest(manifest_path(w), lambda m: m["archives"]["root"].update(members=99))  # root fails
+    assert run(w, "restore")["reason"] == "count_mismatch"
+    assert marker.exists()
+
+
+def test_space_estimate_counts_tar_headers_and_long_names(world):
+    w = world
+    deep = w.root / "runtime" / "venv" / "lib" / ("d" * 120)
+    deep.mkdir(parents=True)
+    for i in range(200):
+        (deep / f"f{i}").write_bytes(b"")
+    entries = es._walk(str(w.root), es._root_included, [str(w.root), str(w.py)], es._Clock(60))
+    longs = [e for e in entries if len(e[0].encode()) > 100]
+    assert len(longs) >= 200
+    assert es._estimate(entries) >= 512 * len(entries) + 1536 * len(longs)
