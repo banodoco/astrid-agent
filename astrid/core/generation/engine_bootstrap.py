@@ -22,12 +22,15 @@ from . import engine_recipe
 from .engine_contracts import IntegrityError, RecipeValidationError
 
 # Our own budget, not an external one: the bundle travels in environment variables into a local
-# exec, where Linux caps one string at 131072 bytes (MAX_ARG_STRLEN). 96 KiB leaves headroom under
-# that cap for the recipe-derived closure, which now includes declared source-patch files.
-_SOURCE_LIMIT = 98304
+# exec, where Linux caps one string at 131072 bytes (MAX_ARG_STRLEN). The recipe-derived closure
+# includes the declared source-patch files; with the Release 13 transformers 5 TTS patches it
+# encodes to ~103 KiB. 120 KiB keeps the source variable (name, '=', NUL included) under that
+# cap; the aggregate of both variables and the loader command is bounded separately at 136 KiB.
+# The loader (_engine_bootstrap_loader.py) enforces the same two numbers.
+_SOURCE_LIMIT = 122880
 _ARCHIVE_LIMIT = 524288
 _SPEC_LIMIT = 16384
-_TOTAL_LIMIT = 98304
+_TOTAL_LIMIT = 139264
 _FILES = (
     'astrid/__init__.py', 'astrid/version.py', 'astrid/console.py',
     'astrid/core/__init__.py', 'astrid/core/engine_cli.py',
