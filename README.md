@@ -27,31 +27,11 @@ Ask your agent: set up my generation with the astrid-setup skill.
 
 ### Set it up yourself
 
-Follow the [manual setup guide](docs/getting-started.md). You can also follow
-the setup guide at [docs/setup/SKILL.md](docs/setup/SKILL.md). Its step 1
-shows the setup choices before anything is installed. Read the installer
-before you run it.
-
-The recommended setup starts Astrid at sign-in, adds the `astrid` terminal
-command, installs Astrid skills, and leaves skill copies off. Each choice has a
-flag: `--autostart on|off`, `--command on|off`, `--skills on|off`, and
-`--skill-copies on|off`. On a fresh install, Astrid asks for your consent once,
-unless you have already given it. After consent, run one installer command
-with your approved values. If you're updating or repairing an existing
-install, your saved choices stay as they are.
-An existing install needs no second consent question.
-
-macOS or Linux (Terminal):
-
-```sh
-curl -fsSL https://astrid.haus/install | sh
-```
-
-Windows (PowerShell; support is in beta):
-
-```powershell
-irm https://astrid.haus/install.ps1 | iex
-```
+Follow the [manual setup guide](docs/getting-started.md), or the setup guide at
+[docs/setup/SKILL.md](docs/setup/SKILL.md), which shows your setup choices before
+anything is installed. Read the installer before you run it. On a fresh install,
+Astrid asks for your consent once, unless you have already approved it. An existing
+install needs no second consent question.
 
 Then use the app at **[astrid.haus](https://astrid.haus)** (recommended). Astrid Runtime runs locally and keeps your projects and media on your computer. You do **not** need to clone `astrid-app` to use Astrid; that repository is for contributors who want to modify the editor. You can also [run the editor from source](docs/getting-started.md#run-everything-on-your-computer).
 
