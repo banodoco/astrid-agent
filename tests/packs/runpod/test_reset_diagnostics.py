@@ -160,3 +160,18 @@ def test_reset_cli_hides_unclassified_raw_exception(tmp_path, monkeypatch, capsy
     output = capsys.readouterr()
     assert json.loads(output.out) == {"reset": "failed", "reason": "unknown"}
     assert SECRET not in output.out + output.err and output.err == ""
+
+
+def test_incomplete_reset_poll_cannot_confirm_success(monkeypatch):
+    ops = SimpleNamespace(
+        job_start=lambda command, job_id: {"id": job_id, "dir": "/jobs/exact"},
+        job_poll=lambda job: {"state": "exited", "exit_code": 0},
+        exec=lambda *a: (0, '{"reset":"ok"}', ""),
+    )
+    runner = machine.RunPodMachine()
+    checkpoints = []
+    monkeypatch.setattr(runner, "_checkpoint", lambda lease, job: checkpoints.append(job))
+    lease = SimpleNamespace(claim=SimpleNamespace(ops=ops), run_dir="/runs/exact", job_dir="/jobs/previous")
+    with pytest.raises(machine.MachineError, match=r"pod reset failed \(exit 0\): unknown"):
+        runner._reset(lease)
+    assert [job["state"] for job in checkpoints] == ["starting", "running"]
