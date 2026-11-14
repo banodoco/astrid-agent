@@ -79,7 +79,9 @@ Multiple images without a purpose retain this reference behavior.
 `edit` and `continue` still require a source.
 
 Bare `image_ref` and new source-free native-v2 requests with exactly one image
-and no purpose default to `first_frame`. To request this explicitly, use
+and no purpose default to `first_frame`: the image now becomes the first frame,
+`purpose: reference` (or `appearance`) keeps the old look-only behaviour, and a
+native-v2 `role: reference` alone does **not** opt out. To request this explicitly, use
 `{"asset": "first.png", "purpose": "first_frame"}` in v1 `references`, or add
 `"purpose": "first_frame"` to a v2 image reference. The locked
 `MiniMaxH3CustomKeyframesMasked` node resizes the still to 1024×576 with crop
