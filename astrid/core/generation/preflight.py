@@ -91,7 +91,9 @@ def readiness_envelope(*, entry=None, target=None, issues=(), fixes=()) -> Readi
     """Project observations once; unknown version facts do not become issues."""
     from copy import deepcopy
     issues = [{**issue, 'details': deepcopy(issue.get('details', {}))} for issue in issues]
-    fixes = [{**fix, 'argv': list(fix['argv']), 'details': deepcopy(fix.get('details', {}))}
+    # An attached target's fix names what the person does on their own ComfyUI; it has no argv to run.
+    fixes = [{**fix, **({'argv': list(fix['argv'])} if 'argv' in fix else {}),
+              'details': deepcopy(fix.get('details', {}))}
              for fix in fixes]
     status = ('blocked' if any(issue['severity'] == 'error' for issue in issues) else
               'ready_with_warnings' if issues else 'ready')
@@ -112,7 +114,8 @@ class GenerationReadinessError(AstridError, ValueError):
         issue = self.readiness['issues'][0]
         fix = self.readiness['fixes'][0] if self.readiness['fixes'] else None
         import shlex
-        recovery = shlex.join(fix['argv']) if fix else None
+        # An attached fix is a person's action on their own ComfyUI, not a command to run.
+        recovery = shlex.join(fix['argv']) if fix and 'argv' in fix else None
         if issue['code'] == 'generation_route_unqualified':
             recovery = issue['details'].get('fix') or recovery
         super().__init__(issue['message'], code=issue['code'],
@@ -653,6 +656,10 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
                     _gpu_guidance(), _gpu_guidance(mode))}
                                       for issue in envelope['issues']]
             raise GenerationReadinessError(envelope) from exc
+        if isinstance(exc, GenerationReadinessError) and any(
+                fix.get('scope') == 'attached_target' for fix in exc.readiness.get('fixes', [])):
+            # Attached advice names the person's own ComfyUI; re-wrapping it would add align, which writes to the managed engine.
+            raise
         if isinstance(exc, GenerationReadinessError) and entry_id and all(
                 issue['code'] in {'missing_model', 'missing_node_pack'} for issue in exc.readiness['issues']):
             from .asset_gaps import asset_readiness

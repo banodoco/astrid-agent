@@ -722,8 +722,10 @@ def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
                                 if spec and role in spec.model_roles
                                 and spec.model_roles[role].node_class not in object_info})
         if missing_nodes:
-            from astrid.core.generation.asset_gaps import asset_readiness
+            from astrid.core.generation.asset_gaps import asset_readiness, attached_asset_readiness
             from astrid.core.generation.preflight import GenerationReadinessError
+            if client.target.kind == 'attached':
+                raise GenerationReadinessError(attached_asset_readiness(model_id, nodes=missing_nodes))
             raise GenerationReadinessError(asset_readiness(model_id, nodes=missing_nodes))
         alternatives = []
         for candidate in registry.list_all():
