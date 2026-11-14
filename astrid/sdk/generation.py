@@ -518,7 +518,12 @@ def _resolve_invoke_destination(
     client: Any | None = None,
 ) -> tuple[Path | str | None, str | None]:
     del project_root  # project roots discover packs; they never select ownership.
+    import sys
+
     from astrid.core.project.guidance import (
+        FIRST_PROJECT_NAME,
+        FIRST_PROJECT_SLUG,
+        format_first_project_notice,
         format_project_required_guidance,
         selected_project,
     )
@@ -528,6 +533,29 @@ def _resolve_invoke_destination(
         from astrid.sdk.invocation import _runtime_selected_project
 
         selected = _runtime_selected_project(client) if client is not None else _runtime_selected_project()
+    if selected is None and client is not None:
+        from astrid.sdk.pagination import paged_rows
+
+        projects = getattr(client, "projects", None)
+        if all(callable(getattr(projects, name, None)) for name in ("list", "create", "select")):
+            rows = paged_rows(projects.list)
+            if rows is None:
+                raise CapabilityPreconditionError(
+                    format_project_required_guidance(operation="generation")
+                )
+            first = next((row for row in rows if isinstance(row, dict) and row.get("name") == FIRST_PROJECT_NAME), None)
+            created = first is None
+            if first is None:
+                made = projects.create(slug=FIRST_PROJECT_SLUG, name=FIRST_PROJECT_NAME)
+                if not made.ok:
+                    raise CapabilityPreconditionError(made.error.message)
+                first = made.data.get("project", made.data) if isinstance(made.data, dict) else {}
+            ref = first.get("slug") or first.get("project_id") or first.get("id") or FIRST_PROJECT_SLUG
+            chosen = projects.select(ref)
+            if not chosen.ok:
+                raise CapabilityPreconditionError(chosen.error.message)
+            selected = first.get("project_id") or first.get("id") or ref
+            print(format_first_project_notice(created=created), file=sys.stderr)
     if selected is None:
         raise CapabilityPreconditionError(
             format_project_required_guidance(operation="generation")
