@@ -48,6 +48,12 @@ def format_project_required_guidance(*, operation: str) -> str:
     )
 
 
+def format_first_project_dry_run_notice() -> str:
+    """One-line notice a dry run prints when a real run would create the starter project."""
+
+    return f'Dry run: a real generation would create and select project "{FIRST_PROJECT_NAME}".'
+
+
 def format_project_listing(rows) -> str:
     """One line naming up to five existing projects and the command that selects one."""
 
@@ -68,6 +74,7 @@ def format_project_listing(rows) -> str:
 __all__ = [
     "FIRST_PROJECT_NAME",
     "FIRST_PROJECT_SLUG",
+    "format_first_project_dry_run_notice",
     "format_first_project_notice",
     "format_project_listing",
     "format_project_required_guidance",

@@ -596,6 +596,7 @@ def _resolve_invoke_destination(
     from astrid.core.project.guidance import (
         FIRST_PROJECT_NAME,
         FIRST_PROJECT_SLUG,
+        format_first_project_dry_run_notice,
         format_first_project_notice,
         format_project_required_guidance,
         format_project_listing,
@@ -631,9 +632,13 @@ def _resolve_invoke_destination(
                 )
             first = _starter(rows)
             if dry_run:
-                # A dry run names a project it would use but never creates or selects one.
-                if first is None:
+                # A dry run never creates or selects a project. An empty workspace is
+                # not an error for a dry run: it says what a real run would create.
+                if first is None and rows:
                     raise CapabilityPreconditionError(_refusal(rows))
+                if first is None:
+                    print(format_first_project_dry_run_notice(), file=sys.stderr)
+                    return out, None
                 selected = first.get("project_id") or first.get("id") or first.get("slug")
             elif first is None and rows:
                 # Other projects exist and none is selected: a person chooses, Astrid does not.

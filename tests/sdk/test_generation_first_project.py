@@ -249,18 +249,22 @@ def test_failed_create_without_a_starter_still_raises(capsys):
     assert projects.selects == []
 
 
-def test_dry_run_in_empty_workspace_creates_and_selects_nothing(capsys):
+def test_dry_run_in_empty_workspace_succeeds_creates_nothing_and_says_what_a_run_would_do(capsys):
     projects = _FakeProjects()
     client = _client(projects)
 
-    with pytest.raises(CapabilityPreconditionError, match="project is required for generation"):
-        _resolve_invoke_destination(
-            out=None, project=None, project_root=None, client=client, dry_run=True,
-        )
+    out, selected = _resolve_invoke_destination(
+        out="results", project=None, project_root=None, client=client, dry_run=True,
+    )
 
+    assert (out, selected) == ("results", None)
     assert projects.rows == [] and projects.created == []
-    assert projects.selects == []
-    assert capsys.readouterr().err == ""
+    assert projects.selects == [] and projects.selected is None
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines() == [
+        'Dry run: a real generation would create and select project "My first project".'
+    ]
 
 
 def test_dry_run_reads_an_existing_starter_without_selecting_it(capsys):
