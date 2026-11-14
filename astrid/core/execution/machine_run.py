@@ -67,7 +67,7 @@ def resolve_machine(kind: str, registry: Any | None = None) -> Any:
 
 
 def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
-                   cancelled: Callable[[], bool], poll_seconds: float = 15.0,
+                   cancelled: Callable[[], bool], poll_seconds: float = 5.0,
                    sleep: Callable[[float], None] = time.sleep,
                    on_claim: Callable[[Any], None] | None = None,
                    on_failure: Callable[[Mapping[str, Any]], None] | None = None) -> Mapping[str, Any]:
@@ -99,6 +99,7 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
         start_parameters = inspect.signature(machine.start).parameters
         run = (machine.start(lease, job, cancelled=cancelled) if "cancelled" in start_parameters
                else machine.start(lease, job))
+        delay = min(1.0, poll_seconds)
         while True:
             stage = "poll"
             if cancelled():
@@ -115,7 +116,8 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
                 break
             if state in {"cancelled", "missing"}:
                 raise MachineRunError(f"remote job is {state}")
-            sleep(poll_seconds)
+            sleep(delay)
+            delay = min(delay * 1.5, poll_seconds)
         stage = "fetch"
         fetched = machine.fetch(run, destination)
         success = True

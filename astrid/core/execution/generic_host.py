@@ -7389,7 +7389,7 @@ class GenericPackHost:
 
         try:
             fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
-                                     poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 15.0),
+                                     poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 5.0),
                                      on_claim=claimed, on_failure=failed)
         finally:
             # Success and failure both carry the one timing block (release is done by now).
