@@ -533,7 +533,7 @@ _RED = {
     (("audio", "sfx"), "local-managed"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34"),
     (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "Plan 34: local inventory"),
     (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "Plan 34: local inventory"),
-    (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34: local inventory"),
+    (("audio", "sfx"), "attached"): ("GenerationReadinessError", "Missing model hunyuanvideo_foley_xl.pth", "Plan 34: local inventory"),
     (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "Plan 34: local inventory"),
 }
 
