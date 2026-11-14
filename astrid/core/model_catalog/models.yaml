@@ -819,7 +819,7 @@ models:
         backends:
           local:
             template: video/ltx2_3_runexx_first_last_frame
-            template_hash: "sha256:7b12ccf13569fa74a726267bbf15104ed1d2f6bcc095fa4d72524bfd9ff1b8be"
+            template_hash: "sha256:74019142182b684558178d0d1e8849df0f3d1887d2e03e1cc8dff5702682f1f4"
   # =========================================================================
   # ltx-2.3-pro — LTX-2.3 pro endpoints (cloud-only t2v + i2v)
   # =========================================================================
