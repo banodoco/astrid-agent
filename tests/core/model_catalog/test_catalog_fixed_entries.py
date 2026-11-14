@@ -87,7 +87,7 @@ def test_ltx_required_inputs_dry_run(mode, required, paid_controls, tmp_path, ca
             path = tmp_path / f"{name}.png"
             path.write_bytes(b"test image")
             inputs[name] = str(path)
-    args = build_generate_argv(entry, mode, inputs, "runpod", paid_controls, dry_run=True)
+    args = build_generate_argv(entry, mode, inputs, "runpod", dry_run=True)
     before = len(runpod_guard.blocked_attempts)
     rc = console.main(args)
     output = json.loads(capsys.readouterr().out)
