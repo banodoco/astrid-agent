@@ -100,13 +100,21 @@ def test_squatted_private_base_refuses_startup(host_case, tmp_path, monkeypatch,
         squat.symlink_to(target, target_is_directory=True)
     _success_boundary(case, monkeypatch)
     monkeypatch.setattr(case.host, "claim_once", lambda: case.host.run_task(case.task, lease_token="lease-result"))
-    with pytest.raises(HostError) as error:
+    if damage == "mode":
+        # Owned spool permissions are repaired; root/ancestor faults still refuse.
         _bounded_run(case.host, lambda: case.host.run(once=True))
-    assert str(squat) in str(error.value)
-    assert "remove" in str(error.value).lower() or "repair" in str(error.value).lower()
-    assert not case.runtime.settlements
-    with pytest.raises(HostError):
-        case.host._allocate_attempt_root("next", "next")
+        assert len(case.runtime.settlements) == 1
+        assert squat.stat().st_mode & 0o7777 == 0o700
+        assert squat.stat().st_uid == os.getuid()
+        assert case.host._allocate_attempt_root("next", "next").parent == squat
+    else:
+        with pytest.raises(HostError) as error:
+            _bounded_run(case.host, lambda: case.host.run(once=True))
+        assert str(squat) in str(error.value)
+        assert "remove" in str(error.value).lower() or "repair" in str(error.value).lower()
+        assert not case.runtime.settlements
+        with pytest.raises(HostError):
+            case.host._allocate_attempt_root("next", "next")
     assert not hasattr(case.host, "_fallback_attempt_base")
 
 
@@ -454,13 +462,28 @@ def test_default_base_refuses_unsafe_directory(tmp_path, monkeypatch, capsys, da
         base.symlink_to(moved, target_is_directory=True)
     else:
         _foreign_lstat(monkeypatch, base)
-    with pytest.raises(HostError, match="private.*attempt base"):
-        host._ensure_private_attempt_directory(base)
-    with pytest.raises(HostError, match=str(base)):
+    if damage == "mode":
+        identity = host._ensure_private_attempt_directory(base)
+        metadata = base.stat()
+        assert identity == (metadata.st_dev, metadata.st_ino)
+        assert metadata.st_mode & 0o7777 == 0o700
+        assert metadata.st_uid == os.getuid()
+        # Exercise repair through each real entry point as well as the helper.
+        base.chmod(0o755)
         if use == "allocate":
-            host._allocate_attempt_root("next", "next")
+            assert host._allocate_attempt_root("next", "next").parent == base
         else:
             host._recover_terminal_requests()
+        assert base.stat().st_mode & 0o7777 == 0o700
+        assert base.stat().st_uid == os.getuid()
+    else:
+        with pytest.raises(HostError, match="private.*attempt base"):
+            host._ensure_private_attempt_directory(base)
+        with pytest.raises(HostError, match=str(base)):
+            if use == "allocate":
+                host._allocate_attempt_root("next", "next")
+            else:
+                host._recover_terminal_requests()
     assert not hasattr(host, "_fallback_attempt_base")
 
 
