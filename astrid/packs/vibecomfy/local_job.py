@@ -148,7 +148,8 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
             report = preparation.prepare(workflow, execution_identity=identity, inputs=members,
                                          canonical_workflow=canonical, input_digests=digests)
         except DeadlineExceeded as exc:
-            exc.message = "managed preparation deadline exceeded; rerun to resume the download"
+            exc.message = ("managed preparation deadline exceeded; rerun to retry preparation; "
+                           "completed model files are kept and verified; interrupted models download again from the start")
             exc.args = (exc.message,)
             raise
         if any(path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digests[name]
