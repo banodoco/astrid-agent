@@ -522,7 +522,7 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
               "execution_request": {"type": "object", "description": "Optional target-aware execution request."}},
              ["capability_id", "project"], kind="invoke"),
         tool("comfy_scan",
-             "Find the user's running ComfyUI (vibecomfy local scan): URL, output folder, saved "
+             "Find the user's running ComfyUI (astrid generate scan): URL, output folder, saved "
              "workflows, Manager, its Python. Read-only.",
              {"ports": {"type": "string", "description": "Comma-separated ports (default 8188,8000)."}},
              [], kind="comfy_scan"),

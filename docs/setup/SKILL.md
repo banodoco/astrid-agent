@@ -26,12 +26,29 @@ one for the user's OS:
 - macOS: `"$HOME/.local/share/astrid/run-astrid"`
 - Windows PowerShell: `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd"`
 
-A Pinokio-managed install keeps its launcher at a different root. Pinokio's
-home is `~/pinokio` unless the scan's `pinokio.home` names another. If the
-launcher is there, use it in place of the one above for every command:
+A Pinokio-managed install keeps its launcher in its Pinokio app folder. Pinokio's
+home is `$HOME/pinokio` (Windows: `$env:USERPROFILE\pinokio`) unless the scan's
+`pinokio.home` names another. Set `PINOKIO_HOME` to that home, then find the
+launcher with the command below. Pinokio chooses the app folder's name, so it can
+hold spaces or quotes. Never assume a name, and quote every path:
 
-- Pinokio, macOS and Linux: `"$HOME/pinokio"/api/*/app/astrid/run-astrid`
-- Pinokio, Windows PowerShell: `"$env:USERPROFILE\pinokio\api\*\app\astrid\run-astrid.cmd"`
+- Pinokio, macOS and Linux: `"$PINOKIO_HOME"/api/*/app/astrid/run`
+- Pinokio, Windows PowerShell: `"$env:PINOKIO_HOME\api\*\app\astrid\run.cmd"`
+
+A launcher counts as Pinokio's only when the `install.json` beside it (in the
+same `app/astrid` folder) has `"owner": "haus.astrid.runtime"` and
+`"managed_by": "pinokio"`. Pinokio writes that record at install. The command
+prints the launcher of each match, so use the one it prints.
+
+```sh
+for dir in "$PINOKIO_HOME"/api/*/app/astrid; do
+  if [ -f "$dir/run" ] \
+    && grep -Eq '"owner"[[:space:]]*:[[:space:]]*"haus.astrid.runtime"' "$dir/install.json" \
+    && grep -Eq '"managed_by"[[:space:]]*:[[:space:]]*"pinokio"' "$dir/install.json"; then
+    printf '%s\n' "$dir/run"
+  fi
+done
+```
 
 ## 0. Work out the entry route
 
@@ -42,7 +59,8 @@ Take the first route that fits, and only that one:
    Ask: "Install with these choices, or change one?"
    If they keep them, run the brief's command exactly as given. If they change
    one, go to step 1. Then follow step 2's success and failure rules.
-2. **Pinokio install**: there is a launcher at the Pinokio path (Launcher paths).
+2. **Pinokio install**: there is a launcher at the Pinokio path (Launcher paths), and its
+   `install.json` marks it as managed by Pinokio.
    Pinokio manages this install and its data. Never run the installer for it,
    and do not offer a second install. It is updated and repaired from the
    Pinokio app. Use that launcher for every command, and go to step 3.

@@ -651,25 +651,42 @@ def _launcher_line(label: str) -> str:
     return re.search(r"`([^`]+)`", line).group(1)
 
 
+_PINOKIO_APP = "Astrid O'Malley"
+
+
+def _fake_pinokio_install(home: Path) -> Path:
+    """One Pinokio-managed install under a Pinokio home that is not ~/pinokio."""
+    install = home / "api" / _PINOKIO_APP / "app" / "astrid"
+    install.mkdir(parents=True)
+    (install / "install.json").write_text(json.dumps(
+        {"owner": "haus.astrid.runtime", "managed_by": "pinokio"}, indent=2))
+    launcher = install / "run"
+    launcher.write_text('#!/bin/sh\necho stub-launcher "$@"\n')
+    launcher.chmod(0o755)
+    return launcher
+
+
+def _pinokio_detect_command() -> str:
+    return next(block for block in re.findall(r"```[^\n]*\n(.*?)\n```", _SETUP.read_text(), re.S)
+                if "managed_by" in block)
+
+
 def test_route_zero_detects_a_pinokio_install_before_a_fresh_install(tmp_path):
     step = _setup_step_0()
     routes = _route_texts(step)
     names = list(routes)
     assert names.index("Pinokio install") < names.index("Fresh install"), names
-    # Only the Pinokio launcher exists: the standard path is absent, the Pinokio path resolves.
-    home = tmp_path / "home"
-    pinokio_launcher = home / "pinokio" / "api" / "astrid-pinokio" / "app" / "astrid" / "run-astrid"
-    pinokio_launcher.parent.mkdir(parents=True)
-    pinokio_launcher.write_text("#!/bin/sh\n")
-    env = {**os.environ, "HOME": str(home), "XDG_DATA_HOME": str(home / ".local" / "share")}
+    home = tmp_path / "Pinokio Home"
+    launcher = _fake_pinokio_install(home)
+    env = {**os.environ, "HOME": str(tmp_path / "home"), "XDG_DATA_HOME": str(tmp_path / "data"),
+           "PINOKIO_HOME": str(home)}
     standard = subprocess.run(f"ls {_launcher_line('Linux:')}", shell=True, env=env, text=True,
                               capture_output=True)
     assert standard.returncode != 0
-    pinokio = subprocess.run(f"ls {_launcher_line('Pinokio, macOS and Linux:')}", shell=True, env=env,
-                             text=True, capture_output=True)
-    assert pinokio.returncode == 0, pinokio.stderr
-    assert pinokio.stdout.strip() == str(pinokio_launcher)
-    # That state selects the Pinokio route, and that route offers no install command.
+    detect = subprocess.run(_pinokio_detect_command(), shell=True, env=env, text=True,
+                            capture_output=True)
+    assert detect.returncode == 0, detect.stderr
+    assert detect.stdout.strip() == str(launcher)
     route = routes["Pinokio install"]
     assert "launcher at the Pinokio path" in route
     assert "Never run the installer" in route
@@ -678,11 +695,29 @@ def test_route_zero_detects_a_pinokio_install_before_a_fresh_install(tmp_path):
     assert "no launcher at either path" in routes["Fresh install"]
 
 
+def test_pinokio_launcher_resolved_from_the_skill_runs_with_its_arguments(tmp_path):
+    home = tmp_path / "Pinokio Home"
+    _fake_pinokio_install(home)
+    env = {**os.environ, "HOME": str(tmp_path / "home"), "PINOKIO_HOME": str(home)}
+    detect = subprocess.run(_pinokio_detect_command(), shell=True, env=env, text=True,
+                            capture_output=True)
+    assert detect.returncode == 0, detect.stderr
+    resolved = detect.stdout.strip()
+    assert resolved.endswith(f"/api/{_PINOKIO_APP}/app/astrid/run"), resolved
+    run = subprocess.run(f"{shlex.quote(resolved)} status", shell=True, env=env, text=True,
+                         capture_output=True)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "stub-launcher status"
+
+
 def test_launcher_paths_list_the_pinokio_launcher_for_each_os():
     paths = _setup_launcher_paths()
-    assert _launcher_line("Pinokio, macOS and Linux:").endswith('/api/*/app/astrid/run-astrid')
-    assert _launcher_line("Pinokio, Windows PowerShell:").endswith('\\app\\astrid\\run-astrid.cmd"')
+    assert _launcher_line("Pinokio, macOS and Linux:") == '"$PINOKIO_HOME"/api/*/app/astrid/run'
+    assert _launcher_line("Pinokio, Windows PowerShell:").endswith('\\app\\astrid\\run.cmd"')
     assert "pinokio.home" in paths
+    assert "managed_by" in paths and "install.json" in paths
+    assert "run-astrid" not in "".join(_launcher_line(label) for label in (
+        "Pinokio, macOS and Linux:", "Pinokio, Windows PowerShell:"))
 
 
 def test_generation_defaults_undo_is_the_restore_command_defaults_set_prints():

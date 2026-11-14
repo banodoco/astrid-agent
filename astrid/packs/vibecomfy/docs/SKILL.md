@@ -91,9 +91,20 @@ Match the request to a saved workflow name from `workflows`. One clear match:
 use it and say which. Several plausible ones: ask with the short list. None:
 show the list.
 
-Fetch it read-only into a scratch folder of your own (`$WORK` below), e.g.
-`curl -s "http://127.0.0.1:8188/userdata/workflows%2Fportrait_flux.json" -o "$WORK/portrait_flux.json"`,
-or copy it from `<base>/user/default/workflows/`. Never write into their
+Make a scratch folder of your own first (`$WORK` below), then fetch into it
+read-only:
+
+```powershell
+$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))
+curl.exe -fsS "http://127.0.0.1:8188/userdata/workflows%2Fportrait_flux.json" -o "$WORK\portrait_flux.json"
+```
+
+```sh
+WORK=$(mktemp -d)
+curl -fsS "http://127.0.0.1:8188/userdata/workflows%2Fportrait_flux.json" -o "$WORK/portrait_flux.json"
+```
+
+Or copy it from `<base>/user/default/workflows/`. Never write into their
 ComfyUI folders.
 
 Read the JSON yourself before running, and check the inputs you pass land on
@@ -223,16 +234,16 @@ defaults, local versus cloud) only when the user asks, or offer once and save
 on yes. Store saved workflow names, not absolute workflow paths. Never store
 secrets, tokens or API keys.
 
-The settings document is edited as a file, the same way as preferences:
+Save the placement with `settings set placement`, and undo it with
+`settings unset placement`:
 
 ```sh
-python3 -m astrid generate settings checkout --file "$WORK/generation.json"
-python3 -m astrid generate settings checkin "$WORK/generation.json"
+python3 -m astrid generate settings set placement URL
+python3 -m astrid generate settings unset placement
 ```
 
-A conflict is refused with both versions shown; check out again and merge.
-The shape is `{"placement": {"kind": "attached", "endpoint": "http://127.0.0.1:8188"},
-"defaults": {...}}`, and the generation skill's Set up section explains each key.
+`URL` is the attached ComfyUI endpoint, e.g. `http://127.0.0.1:8188`. The
+generation skill's Set up section explains the other keys.
 
 ## Workflow authoring
 

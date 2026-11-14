@@ -529,7 +529,8 @@ def test_local_server_failure_has_runnable_discovery_hint(tmp_path, monkeypatch,
 
     error = capsys.readouterr().err
     assert "missing nodes: MissingNode" in error
-    assert "recovery: python3 -m astrid.packs.vibecomfy.local scan" in error
+    # R4.1: the runnable hint on an installed Astrid is the launcher's generate scan
+    assert "recovery: astrid generate scan" in error
     assert "astrid executors" not in error
 
 
