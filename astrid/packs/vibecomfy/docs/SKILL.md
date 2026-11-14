@@ -43,12 +43,13 @@ before installing anything.
 ### Find their ComfyUI
 
 If the generation settings already name a ComfyUI address, check it with one
-scan. Otherwise discover. Both use the same read-only helper, run with Astrid's
-Python (the one that runs `python3 -m astrid`):
+scan. Otherwise discover. Both use the same read-only command, through the
+launcher (its path is in the setup skill's Launcher paths; the blocks show
+the Linux one):
 
 ```sh
-python3 -m astrid.packs.vibecomfy.local scan                 # ports 8188 and 8000
-python3 -m astrid.packs.vibecomfy.local scan --ports 8188    # health-check a saved address
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json                # ports 8188 and 8000
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --ports 8188 --json   # health-check a saved address
 ```
 
 It reads `/system_stats`, `/internal/folder_paths` (model folders and
