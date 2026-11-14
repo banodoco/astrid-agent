@@ -549,7 +549,7 @@ class ManagedEnginePreparation:
         from types import SimpleNamespace
 
         self._keep_step_output("model_verification", SimpleNamespace(
-            stdout=json.dumps(self._model_verification.report(), sort_keys=True) + "\n", stderr=""))
+            stdout=self._model_verification.as_stdout(), stderr=""))
 
     def _model_fact(self, path, models_root, expected):
         from .model_verification import model_file_fact

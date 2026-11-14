@@ -994,8 +994,26 @@ def test_fetch_storage_preflight_valid_quota_survives_unavailable_statvfs(
     declared = {row['name']: row for row in json.loads((c.prep.logs_root / 'logs.json').read_text())['logs']}
     assert set(declared) == {'preparation.model_verification.stdout', 'preparation.model_verification.stderr'}
     assert json.loads(Path(declared['preparation.model_verification.stdout']['path']).read_text()) == {
-        'trust_unchanged': choice is not False, 'hashed': 1, 'skipped': 0}
+        'trust_unchanged': choice is not False, 'hashed': 1, 'skipped': 0,
+        'files': [{'path': 'checkpoints/have.bin',
+                   'outcome': 'hashed_opt_in' if choice is False else 'hashed_new'}]}
     assert Path(declared['preparation.model_verification.stderr']['path']).read_text() == ''
+
+
+def test_fetch_preflight_accepts_real_vibecomfy_receipt(fetch_volume, generation_settings_store):
+    from vibecomfy.fetch import verify
+
+    c = fetch_volume
+    generation_settings_store.documents['generation'] = ({}, 1)
+    # Local fixture bytes only: use the pinned writer to prove format compatibility.
+    verify({'name': c.have.name, 'sha256': c.rows[0]['sha256'], 'size_bytes': c.have.stat().st_size},
+           c.have, root=c.models, force=True)
+    c.fetch()
+    assert c.native == ['fetch']
+    value = json.loads((c.prep.logs_root / '.preparation-logs/model_verification.stdout.log').read_text())
+    assert value == {'trust_unchanged': True, 'hashed': 0, 'skipped': 1,
+                     'files': [{'path': 'checkpoints/have.bin', 'outcome': 'trusted_vibecomfy_receipt'}]}
+    assert len(list((c.models / '.astrid/model-verification').glob('*.json'))) == 1
 
 
 @pytest.fixture
@@ -1059,6 +1077,8 @@ def test_storage_inventory_never_deletes_volume_content(inventory_pod):
     c = inventory_pod
     (c.models / 'retained.bin').write_bytes(b'retained version')
     (c.models / 'checkpoints/need.bin.part').write_bytes(b'partial')
+    # Include the now volume-local witness in the unchanged-content snapshot.
+    c.prep._model_fact(str(c.have), str(c.models), c.rows[0]['sha256'])
     before = {str(p): p.read_bytes() for p in c.models.rglob('*') if p.is_file()}
     with pytest.raises(IntegrityError):
         c.fetch()

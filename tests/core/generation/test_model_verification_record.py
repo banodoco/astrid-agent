@@ -76,9 +76,248 @@ def warm(model):
 
 
 def record(model):
-    records = list((model.root / '.astrid-engine/model-verification').glob('*.json'))
+    records = list((model.path.parent / '.astrid/model-verification').glob('*.json'))
     assert len(records) == 1
     return records[0]
+
+
+def vibecomfy_receipt(model):
+    """Write the exact receipt format produced by pinned VibeComfy.verify()."""
+    canonical = str(model.path.resolve())
+    key = hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+    path = model.path.parent / '.vibecomfy/model-verification' / f'{key}.json'
+    info = model.path.stat()
+    value = {'schema_version': 1, 'path': canonical,
+             'expected_sha256': model.row['sha256'], 'actual_sha256': model.row['sha256'],
+             'expected_size_bytes': info.st_size,
+             'stat': {'dev': info.st_dev, 'inode': info.st_ino, 'size': info.st_size,
+                      'mtime_ns': info.st_mtime_ns}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value))
+    return path, value
+
+
+def test_vibecomfy_receipt_supplies_first_witness(model):
+    vibecomfy_receipt(model)
+    model.verify()
+    assert model.reads == []
+    assert model.prep._model_verification.skipped == 1
+    assert model.prep._model_verification.hashed == 0
+    files = list((model.path.parent / '.astrid/model-verification').glob('*.json'))
+    assert len(files) == 1
+    value = json.loads(files[0].read_text())
+    info = model.path.stat()
+    assert value == {'schema': 'astrid.model-verification.v3', 'path': model.path.name,
+                     'stat': [info.st_size, info.st_mtime_ns, info.st_ino],
+                     'declared_sha256': model.row['sha256'], 'sha256': model.row['sha256']}
+    assert model.prep._model_verification.files == [
+        {'path': model.path.name, 'outcome': 'trusted_vibecomfy_receipt'}]
+
+
+def test_vibecomfy_receipt_accepts_dev_only_difference(model):
+    path, value = vibecomfy_receipt(model)
+    value['stat']['dev'] += 1
+    path.write_text(json.dumps(value))
+    model.verify()
+    assert model.reads == []
+    assert model.prep._model_verification.skipped == 1
+
+
+@pytest.mark.parametrize('damage', ['schema_version', 'path', 'expected_sha256', 'actual_sha256',
+                                    'inode', 'size', 'mtime_ns', 'json', 'symlink', 'unreadable'])
+def test_vibecomfy_receipt_refusal_hashes_fully(model, monkeypatch, damage):
+    path, value = vibecomfy_receipt(model)
+    if damage == 'json':
+        path.write_text('{')
+    elif damage == 'symlink':
+        real = path.with_suffix('.real')
+        path.rename(real)
+        path.symlink_to(real.name)
+        with pytest.raises(UnsafePathError, match='unsafe or inaccessible target path'):
+            target._TargetFiles(str(model.path.parent)).read_json(str(path), deadline=model.prep.deadline)
+    elif damage == 'unreadable':
+        original = target._TargetFiles.read_json
+
+        def unreadable(self, candidate, **kwargs):
+            if candidate == str(path):
+                raise PermissionError('optional receipt unreadable')
+            return original(self, candidate, **kwargs)
+
+        monkeypatch.setattr(target._TargetFiles, 'read_json', unreadable)
+    else:
+        if damage in ('inode', 'size', 'mtime_ns'):
+            value['stat'][damage] += 1
+        elif damage == 'schema_version':
+            value[damage] = 2
+        elif damage == 'path':
+            value[damage] += '.foreign'
+        else:
+            value[damage] = '0' * 64
+        path.write_text(json.dumps(value))
+    model.verify()
+    assert model.reads
+    assert model.prep._model_verification.hashed == 1
+    assert model.prep._model_verification.files == [
+        {'path': model.path.name, 'outcome': 'hashed_changed'}]
+
+
+def test_vibecomfy_receipt_ignored_when_full_hashing_requested(model, generation_settings_store):
+    vibecomfy_receipt(model)
+    generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': False}}, 1)
+    model.verify()
+    assert model.reads
+    assert model.prep._model_verification.hashed == 1
+    assert model.prep._model_verification.skipped == 0
+    assert model.prep._model_verification.files == [
+        {'path': model.path.name, 'outcome': 'hashed_opt_in'}]
+
+
+def test_fresh_pod_reuses_models_volume_record_despite_new_device(model, monkeypatch):
+    model.verify()
+    assert model.prep._model_verification.hashed == 1
+    model.reads.clear()
+    current = model.path.stat()
+    real_stat, real_fstat = os.stat, os.fstat
+
+    def remounted(info):
+        if (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino):
+            return info
+        values = {name: getattr(info, name) for name in
+                  ('st_mode', 'st_nlink', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+        values['st_dev'] += 1
+        return SimpleNamespace(**values)
+
+    monkeypatch.setattr(target.os, 'stat', lambda *a, **kw: remounted(real_stat(*a, **kw)))
+    monkeypatch.setattr(target.os, 'fstat', lambda fd: remounted(real_fstat(fd)))
+    new_root = model.root.with_name('new-pod-engine')
+    new_root.mkdir()
+    prep = preparation(new_root)
+    prep._verify_models(model.manifest)
+    assert prep._model_verification.hashed == 0
+    assert model.reads == []
+    assert prep._model_verification.files == [{'path': model.path.name, 'outcome': 'trusted_record'}]
+
+
+def test_record_survives_models_prefix_move(tmp_path, monkeypatch):
+    original_read = os.read
+    model = make_model(tmp_path, monkeypatch, 'wéight.bin')
+    model.verify()
+    models = model.path.parent
+    moved = tmp_path / 'new-mount' / 'models'
+    moved.parent.mkdir()
+    models.rename(moved)
+    # The fixture's byte spy refers to the old prefix; counters prove no hashing.
+    monkeypatch.setattr(target.os, 'read', original_read)
+    prep = preparation(tmp_path / 'new-engine')
+    prep._verify_models({**model.manifest, 'models_root': str(moved)})
+    assert prep._model_verification.hashed == 0
+    assert prep._model_verification.files == [{'path': model.path.name, 'outcome': 'trusted_record'}]
+    key = hashlib.sha256(model.path.name.encode('utf-8')).hexdigest()
+    assert (moved / '.astrid/model-verification' / f'{key}.json').exists()
+
+
+def test_relative_path_record_cannot_witness_another_path(model):
+    from astrid.core.generation.model_verification import _VerificationRecord
+
+    model.verify()
+    witness = _VerificationRecord(model.root, model.path.parent,
+                                  model.path.with_name('other.bin'), model.row['sha256'], model.prep.deadline)
+    # Even an identical stat cannot make the witness for weight.bin apply here.
+    assert witness.lookup(model.path.stat()) is None
+
+
+def test_relative_path_escape_uses_existing_refusal(model):
+    from astrid.core.generation.model_verification import model_file_fact
+
+    outside = model.root / 'outside.bin'
+    outside.write_bytes(b'weights')
+    with pytest.raises(UnsafePathError, match='unsafe target path'):
+        model_file_fact(str(model.path.parent / '..' / 'engine' / outside.name),
+                        root=model.root, models_root=str(model.path.parent),
+                        declared_sha256=model.row['sha256'], deadline=model.prep.deadline, check=lambda: None)
+
+
+def test_stdout_lists_all_five_outcomes_in_check_order(model):
+    from astrid.core.generation.model_verification import ModelVerification, model_file_fact
+
+    verification = ModelVerification()
+
+    def check():
+        return model_file_fact(str(model.path), root=model.root, models_root=str(model.path.parent),
+                               declared_sha256=model.row['sha256'], deadline=model.prep.deadline,
+                               check=lambda: None, verification=verification)
+
+    check()
+    check()
+    record(model).unlink()
+    receipt, _ = vibecomfy_receipt(model)
+    check()
+    receipt.unlink()
+    info = model.path.stat()
+    os.utime(model.path, ns=(info.st_atime_ns, info.st_mtime_ns + 1))
+    check()
+    verification.trust_unchanged = False
+    check()
+    assert json.loads(verification.as_stdout()) == {
+        'trust_unchanged': False, 'hashed': 3, 'skipped': 2,
+        'files': [{'path': model.path.name, 'outcome': outcome} for outcome in
+                  ('hashed_new', 'trusted_record', 'trusted_vibecomfy_receipt', 'hashed_changed', 'hashed_opt_in')]}
+
+
+def test_receipt_promotes_after_mismatching_astrid_record(model):
+    model.verify()
+    saved = record(model)
+    value = json.loads(saved.read_text())
+    value['declared_sha256'] = '0' * 64
+    saved.write_text(json.dumps(value))
+    vibecomfy_receipt(model)
+    model.reads.clear()
+    model.verify()
+    assert model.reads == []
+    assert model.prep._model_verification.files[-1]['outcome'] == 'trusted_vibecomfy_receipt'
+    assert json.loads(saved.read_text())['declared_sha256'] == model.row['sha256']
+    model.verify()
+    assert model.prep._model_verification.files[-1]['outcome'] == 'trusted_record'
+
+
+def test_receipt_promotion_write_failure_remains_optional(model, monkeypatch):
+    vibecomfy_receipt(model)
+
+    def unwritable(*args, **kwargs):
+        raise PermissionError('optional record unavailable')
+
+    monkeypatch.setattr(target._TargetFiles, 'write_json_atomic', unwritable)
+    model.verify()
+    assert model.reads == []
+    assert model.prep._model_verification.hashed == 0
+    assert model.prep._model_verification.skipped == 1
+
+
+def test_receipt_expected_digest_is_case_insensitive_and_size_metadata_optional(model):
+    path, value = vibecomfy_receipt(model)
+    value['expected_sha256'] = value['expected_sha256'].upper()
+    del value['expected_size_bytes']
+    path.write_text(json.dumps(value))
+    model.verify()
+    assert model.reads == []
+    assert model.prep._model_verification.skipped == 1
+
+
+def test_v2_engine_record_is_ignored_and_left_in_place(model):
+    info = model.path.stat()
+    value = {'schema': 'astrid.model-verification.v2', 'root': str(model.root.resolve()),
+             'models_root': str(model.path.parent.resolve()), 'path': str(model.path.resolve()),
+             'stat': [info.st_dev, info.st_size, info.st_mtime_ns, info.st_ino, info.st_ctime_ns],
+             'declared_sha256': model.row['sha256'], 'sha256': model.row['sha256']}
+    key = hashlib.sha256(os.fsencode(str(model.path.resolve()))).hexdigest()
+    old = model.root / '.astrid-engine/model-verification' / f'{key}.json'
+    old.parent.mkdir()
+    old.write_text(json.dumps(value))
+    model.verify()
+    assert model.reads
+    assert model.prep._model_verification.files == [{'path': model.path.name, 'outcome': 'hashed_new'}]
+    assert json.loads(old.read_text()) == value
+    assert json.loads(record(model).read_text())['schema'] == 'astrid.model-verification.v3'
 
 
 def test_second_preparation_reads_no_model_bytes(fetch_volume, monkeypatch):
@@ -129,7 +368,7 @@ def test_second_preparation_reads_no_model_bytes(fetch_volume, monkeypatch):
 
 
 @pytest.mark.parametrize('field', ['st_size', 'st_mtime_ns', 'st_ino', 'st_ctime_ns'])
-def test_each_stat_key_field_invalidates_record(model, monkeypatch, field):
+def test_each_stat_field_obeys_record_key(model, monkeypatch, field):
     warm(model)
     original = os.fstat
     before = model.path.stat()
@@ -161,7 +400,11 @@ def test_each_stat_key_field_invalidates_record(model, monkeypatch, field):
             model.verify()
     else:
         model.verify()
-    assert model.reads
+    if field == 'st_ctime_ns':
+        # Schema v3 deliberately trusts through ctime changes between checks.
+        assert model.reads == []
+    else:
+        assert model.reads
 
 
 def test_replaced_inode_rehashes_even_with_same_size_and_mtime(model):
@@ -174,6 +417,8 @@ def test_replaced_inode_rehashes_even_with_same_size_and_mtime(model):
     assert model.path.stat().st_ino != before.st_ino
     model.verify()
     assert model.reads
+    assert model.prep._model_verification.files[-1] == {
+        'path': model.path.name, 'outcome': 'hashed_changed'}
 
 
 def test_declared_digest_change_rehashes_and_refuses(model):
@@ -241,7 +486,7 @@ def test_first_mismatch_never_writes_verification_record(model):
     with pytest.raises(IntegrityError, match='managed model bytes differ from the declared digest: weight.bin'):
         model.verify()
     assert model.reads
-    assert not list((model.root / '.astrid-engine/model-verification').glob('*.json'))
+    assert not list((model.path.parent / '.astrid/model-verification').glob('*.json'))
 
 
 def test_unwritable_record_still_checks_model_bytes(model, monkeypatch):
@@ -286,7 +531,7 @@ def test_symlink_model_keeps_existing_integrity_refusal(model):
 
 
 
-def test_changed_device_rehashes_different_bytes_at_same_path(model, monkeypatch):
+def test_changed_device_rehashes_different_bytes_at_same_path(model, monkeypatch, generation_settings_store):
     # Adapted from review2/correctness_probes.py's different-device probe.
     warm(model)
     old = model.path.stat()
@@ -310,22 +555,30 @@ def test_changed_device_rehashes_different_bytes_at_same_path(model, monkeypatch
         str(model.path), hash_bytes=True, deadline=model.prep.deadline)
     assert fact.sha256 != model.row['sha256']
     model.reads.clear()
+    model.verify()
+    assert model.reads == []
+    assert model.prep._model_verification.files[-1]['outcome'] == 'trusted_record'
+    # The approved metadata key omits dev and ctime. A caller requiring byte
+    # integrity despite identical key fields selects full hashing explicitly.
+    generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': False}}, 1)
+    model.prep = preparation(model.root)
     with pytest.raises(IntegrityError, match='managed model bytes differ from the declared digest: weight.bin'):
-        model.verify()
+        model.prep._verify_models(model.manifest)
     assert model.reads
 
 
-def test_v1_record_is_a_miss(model):
+@pytest.mark.parametrize('schema', ['astrid.model-verification.v1', 'astrid.model-verification.v2'])
+def test_prior_schema_record_is_a_miss(model, schema):
     warm(model)
     saved = record(model)
     info = model.path.stat()
     value = json.loads(saved.read_text())
-    value.update(schema='astrid.model-verification.v1',
+    value.update(schema=schema,
                  stat=[info.st_size, info.st_mtime_ns, info.st_ino, info.st_ctime_ns])
     saved.write_text(json.dumps(value))
     model.verify()
     assert model.reads
-    assert json.loads(saved.read_text())['schema'] == 'astrid.model-verification.v2'
+    assert json.loads(saved.read_text())['schema'] == 'astrid.model-verification.v3'
 
 
 def test_non_utf8_filename_hashes_then_reuses(tmp_path, monkeypatch):
@@ -338,7 +591,7 @@ def test_non_utf8_filename_hashes_then_reuses(tmp_path, monkeypatch):
         pytest.skip('filesystem does not support this filename')
     assert os.fsencode(m.path.name) == b'weight-\xff.bin'
     warm(m)
-    assert json.loads(record(m).read_text())['path'] == str(m.path.resolve())
+    assert json.loads(record(m).read_text())['path'] == m.path.name
 
 
 @pytest.mark.parametrize('error', [OSError('cache unavailable'), RuntimeError('unresolvable path'),
@@ -395,7 +648,7 @@ def test_model_verification_policy_with_matching_record(model, generation_settin
 
 def test_default_without_record_hashes_fully_and_writes_record(model, generation_settings_store):
     generation_settings_store.documents.pop('generation', None)
-    assert not list((model.root / '.astrid-engine/model-verification').glob('*.json'))
+    assert not list((model.path.parent / '.astrid/model-verification').glob('*.json'))
     model.verify()
     assert model.reads
     assert json.loads(record(model).read_text())['sha256'] == model.row['sha256']
@@ -420,6 +673,9 @@ def test_preparation_reads_policy_once_and_logs_hash_skip_counts(model, generati
     assert model.reads == []
     assert reads == ['generation']
     log = model.prep.logs_root / '.preparation-logs/model_verification.stdout.log'
-    assert json.loads(log.read_text()) == {'trust_unchanged': True, 'hashed': 1, 'skipped': 1}
+    assert json.loads(log.read_text()) == {
+        'trust_unchanged': True, 'hashed': 1, 'skipped': 1,
+        'files': [{'path': model.path.name, 'outcome': 'hashed_new'},
+                  {'path': model.path.name, 'outcome': 'trusted_record'}]}
     preparation(model.root)._verify_models(model.manifest)
     assert model.reads and reads == ['generation', 'generation']
