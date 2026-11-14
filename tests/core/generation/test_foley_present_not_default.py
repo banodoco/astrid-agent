@@ -48,3 +48,26 @@ def test_foley_requires_explicit_selection_before_qualification(monkeypatch, sou
             placement='auto', execution=None, inputs={'video_ref': 'clip.mp4'}, dry_run=True)
     assert qualify.call_count == int(explicit)
     probe.assert_called_once()
+
+
+def test_pack_declared_foley_template_is_considered_even_with_catalog_owner(monkeypatch):
+    from astrid.core.generation import availability, entries, preflight
+
+    manifest = {'id': 'audio/hunyuan_video_foley', 'kind': 'audio', 'modes': ['sfx'],
+                'registry_id': 'hunyuan-foley-local'}
+    monkeypatch.setattr(entries, 'user_entries', lambda: [])
+    monkeypatch.setattr(entries, 'ready_entries', lambda: [manifest])
+    qualify = Mock()
+    monkeypatch.setattr(availability, 'require_entry_available', qualify)
+
+    class Probed(Exception):
+        pass
+
+    probe = Mock(side_effect=Probed)
+    monkeypatch.setattr(preflight, 'select_generation_target', probe)
+    with pytest.raises(Probed):
+        GenerationFacade()._generate_on_target(registry=ModelRegistry([]), model=None,
+            mode='sfx', modality='audio', placement='auto', execution=None,
+            inputs={'video_ref': 'clip.mp4'}, dry_run=True)
+    qualify.assert_called_once_with(manifest | {'source': 'ready-template'}, 'sfx')
+    assert probe.call_args.kwargs['entry_id'] == manifest['id']
