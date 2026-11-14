@@ -1057,7 +1057,7 @@ def _verify_connected_child(channel, owned, port, deadline, check):
         time.sleep(min(0.01, _remaining(deadline)))
 
 
-def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
+def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None, empty_ok=False):
     """Bound the whole HTTP exchange, including slow headers and body reads."""
     with socket.socket() as channel:
         channel.settimeout(min(1.0, _remaining(deadline)))
@@ -1089,7 +1089,10 @@ def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
                 raise ValueError("engine HTTP headers exceed limit")
         raw, body = bytes(data).split(b"\r\n\r\n", 1)
         lines = raw.decode("ascii").split("\r\n")
-        if lines[0].split(" ")[:2] not in (["HTTP/1.1", "200"], ["HTTP/1.0", "200"]):
+        status = lines[0].split(" ")[:2]
+        if not (status in (["HTTP/1.1", "200"], ["HTTP/1.0", "200"]) or
+                (empty_ok and len(status) == 2 and status[0] in ("HTTP/1.0", "HTTP/1.1")
+                 and len(status[1]) == 3 and status[1].isdigit() and 200 <= int(status[1]) < 300)):
             raise ValueError("engine HTTP status is not 200")
         headers = {}
         for line in lines[1:]:
@@ -1099,7 +1102,7 @@ def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
                 raise ValueError("ambiguous engine HTTP headers")
             headers[key] = value.strip()
         length = headers.get("content-length", "")
-        if (not length.isascii() or not length.isdigit() or not 0 < int(length) <= limit
+        if (not length.isascii() or not length.isdigit() or not (0 <= int(length) <= limit if empty_ok else 0 < int(length) <= limit)
                 or "transfer-encoding" in headers or "content-encoding" in headers):
             raise ValueError("unsupported engine HTTP framing")
         length = int(length)
@@ -1108,6 +1111,8 @@ def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
             body.extend(receive())
         if len(body) != length:
             raise ValueError("oversized engine HTTP body")
+        if empty_ok and not body:
+            return {}
         value = _decode(bytes(body).decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("engine health must be a JSON object")
@@ -1418,9 +1423,9 @@ class _Supervisor:
             raise EndpointOwnershipError("live engine custody is required")
         engine = self.engine
         check = lambda: self.check(channel, deadline)
-        def request(path, payload=None):
+        def request(path, payload=None, *, empty_ok=False):
             return _get_json(self.recipe.start.port, path, 1024 * 1024, deadline, check,
-                             owned=engine, payload=payload)
+                             owned=engine, payload=payload, empty_ok=empty_ok)
         def vram(stats):
             devices = stats.get("devices")
             if not isinstance(devices, list) or not devices or not isinstance(devices[0], dict):
@@ -1441,8 +1446,10 @@ class _Supervisor:
             # submissions bypass self.work, so these are not atomic. Pinned
             # ComfyUI 6bfaacc6 server.py:1195-1203 sets flags only; main.py:
             # 386-399 applies them after execution, never during a prompt.
-            free = request("/api/free", {"unload_models": True, "free_memory": True})
-            unloaded = free.get("models_unloaded") is True
+            # A successful response accepts the flags; main.py:386-399 applies
+            # them at the next prompt boundary, not necessarily by this reply.
+            request("/api/free", {"unload_models": True, "free_memory": True}, empty_ok=True)
+            unloaded = True
         except (OSError, ValueError):
             unloaded = False
         _, after = vram(request("/system_stats"))

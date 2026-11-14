@@ -88,7 +88,7 @@ class Handler(BaseHTTPRequestHandler):
     flags.update(body)
     with (root / 'release-posts').open('a') as stream: stream.write(self.path + '\n')
    # Stock ComfyUI acknowledges the flag; it does not report an unload result.
-   return self.send({})
+   self.send_response(200); self.send_header('Content-Length', '0'); self.end_headers(); return
   if self.path == '/prompt':
    key = uuid.uuid4().hex
    with lock: running.append(key)

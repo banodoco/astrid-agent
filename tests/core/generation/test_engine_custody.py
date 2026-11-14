@@ -42,7 +42,7 @@ class Handler(BaseHTTPRequestHandler):
    if mode.read_text()=='freefails':
     self.send_response(500);self.end_headers();return
    with (started.parent/'release-posts').open('a') as f: f.write(self.path+'\n')
-   data=json.dumps({'models_unloaded':True}).encode()
+   data=json.dumps({'models_unloaded':True}).encode() if mode.read_text()=='freejson' else b''
    self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
   prompt_id=request['client_id']
   with (started.parent/'prompts').open('a') as f: f.write(prompt_id+'\n')
@@ -51,6 +51,8 @@ class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args): pass
  def do_GET(self):
   setting=mode.read_text()
+  if setting in ('emptyqueue','emptystats') and self.path=={'emptyqueue':'/queue','emptystats':'/system_stats'}[setting]:
+   self.send_response(200);self.send_header('Content-Length','0');self.end_headers();return
   if setting=='slow': time.sleep(30)
   if setting=='releasewait' and self.path=='/queue':
    (started.parent/'queue-entered').write_text('yes')
@@ -1921,6 +1923,28 @@ def test_release_runs_in_live_supervisor_against_owned_child(session, monkeypatc
     assert result["released"] and result["models_unloaded"] and result["queue_idle"]
     assert result["vram_total_bytes"] == 24000 and result["vram_free_after_bytes"] == 20000
     assert (root / "release-posts").read_text().splitlines() == ["/api/free", "/api/free"]
+
+
+@pytest.mark.parametrize("setting", ["freejson", "freeempty"])
+def test_release_accepts_successful_free_reply(session, setting):
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    mode.write_text(setting)
+    result = client.release_owned(deadline=time.monotonic() + 8)
+    assert result["status"] == "completed" and result["models_unloaded"] is True
+    record = json.loads(Path(custody.engine_log_path(str(root), recipe.engine)).read_text().splitlines()[-1])
+    assert record == result
+
+
+@pytest.mark.parametrize("setting", ["emptyqueue", "emptystats"])
+def test_release_rejects_empty_health_reply(session, setting):
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    mode.write_text(setting)
+    path = "/queue" if setting == "emptyqueue" else "/system_stats"
+    with pytest.raises(ValueError):
+        custody._get_json(recipe.start.port, path, 1024, time.monotonic() + 8, lambda: None)
+    assert not (root / "release-posts").exists()
 
 
 def test_stale_registration_foreign_listener_receives_no_release(session, monkeypatch):
