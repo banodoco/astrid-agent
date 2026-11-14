@@ -41,17 +41,20 @@ effective settings and only connected model assets. We do not download LoRA
 weights as part of request preparation or claim inference quality from this
 candidate.
 
-Source-free use needs no timeline media. Source-backed use accepts one bounded
-video timeline at frame zero with explicit video edit permissions. The current
-preparation probes the timeline container for an audio stream; the composer
+For Character Swap, source-free use needs no timeline media. Source-backed use
+accepts one bounded video timeline at frame zero with explicit video edit
+permissions. The current preparation probes the timeline container for an audio stream; the composer
 preserves source audio where it exists and uses generated audio for uncovered
 intervals. Explicit audio preservation requires a source audio stream. The
-composer applies temporal full-frame video permissions and whole-stream audio
-intervals. Regional
-spatial masks, channel-specific audio edits, continuation, audio-only timelines,
-and separate timeline audio or image anchors fail before execution. Runtime raw
-publication and local candidate verification remain separate from final managed
-publication; a passing compile or helper test does not establish that final
+composer applies temporal video permissions, including resolved image masks,
+and whole-stream audio intervals. Character Swap accepts full-frame masks or
+resolved image-mask assets; rectangle/polygon geometry masks, channel-specific
+audio edits, continuation, audio-only timelines, and separate timeline audio or
+image anchors fail before execution. These are Character Swap limits. Ordinary
+source-backed edits admit regional `mask_asset` requests through the native
+masked-edit route; ordinary edits cannot regenerate audio and keep source audio.
+Runtime raw publication and local candidate verification remain separate from
+final managed publication; a passing compile or helper test does not establish that final
 publication was accepted.
 
 The request.v2 schema has no `operation` field. It requires `version: 2`, a
@@ -78,8 +81,10 @@ simultaneous conditioning inputs, not successive segments or implicit
 keyframes. `edit` and `continue` still require a source.
 
 The compiler targets the packaged native Seitanism MiniMax H3 AV continuation
-graph and LanPaint source-backed edit graph, plus the opt-in native-v2 Character
-Swap graph. It fails closed when a request asks for a graph or composition
+graph, the native `H3V2VGranularFractionalDenoise` spatial/temporal mask route
+for ordinary source-backed edits, and the opt-in native-v2 Character Swap graph.
+The LanPaint helper remains in `shared/compile.py` but is not on the active
+edit dispatch. It fails closed when a request asks for a graph or composition
 feature the selected route cannot represent.
 Runtime admission and RunPod lifecycle remain Astrid/VibeComfy
 responsibilities.

@@ -28,6 +28,7 @@ import re
 import shlex
 import subprocess
 import tarfile
+import tempfile
 import threading
 import time
 import uuid
@@ -60,7 +61,7 @@ POD_VENV = "/opt/astrid"
 INSTALL_DEADLINE_SECONDS = 14400
 DEFAULT_MAX_SPEND_EUR = 10.0
 DEFAULT_DEADLINE_SECONDS = 6 * 3600
-POLL_SECONDS = 15.0
+POLL_SECONDS = 5.0
 MANIFEST_NAME = "wrapper-manifest.json"
 MANIFEST_MARK = "WRAPPER_MANIFEST_SHA256="
 RESULT_MARK = "WRAPPER_RESULT_JSON="
@@ -253,11 +254,22 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+_SOURCE_DIGEST_MEMO: dict[Path, tuple[str, str]] = {}
+
+
 def source_digest(source_root: Path) -> str:
-    """Same digest the pack's bootstrap payload computes over the four source dirs."""
-    lines: list[tuple[bytes, str]] = []
+    """Same digest the pack's bootstrap payload computes over the four source dirs.
+
+    A memo skips content hashing while every file's (relative path, size, mtime_ns,
+    inode) is unchanged. Like model verification records, it trusts same-user file
+    metadata: an edit that preserves all four would reuse the old digest, so the pod
+    could skip a bootstrap whose archive differs. The archive itself is always built
+    from the current files.
+    """
+    source_root = Path(source_root).resolve()
+    files: list[tuple[bytes, Path, int, int, int]] = []
     for directory in SOURCE_DIRS:
-        base = Path(source_root) / directory
+        base = source_root / directory
         if base.is_symlink() or not base.is_dir():
             raise RemotePlacementError(f"bootstrap source dir is missing: {directory}")
         for dirpath, dirnames, filenames in os.walk(base):
@@ -268,11 +280,52 @@ def source_digest(source_root: Path) -> str:
                 if name.endswith(".pyc"):
                     continue
                 full = Path(dirpath) / name
-                rel = full.relative_to(source_root).as_posix()
-                lines.append((rel.encode(), sha256_file(full)))
-    lines.sort(key=lambda item: item[0])
-    listing = "".join(f"{digest}  {rel.decode()}\n" for rel, digest in lines)
-    return hashlib.sha256(listing.encode()).hexdigest()[:16]
+                stat = full.stat()
+                files.append((full.relative_to(source_root).as_posix().encode(), full,
+                              stat.st_size, stat.st_mtime_ns, stat.st_ino))
+    files.sort(key=lambda item: item[0])
+    fingerprint = hashlib.sha256(json.dumps(
+        [(os.fsdecode(rel), size, mtime, ino) for rel, _, size, mtime, ino in files],
+        ensure_ascii=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    cache_path = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "astrid" / "source-digest-memo.json"
+    memo = _SOURCE_DIGEST_MEMO.get(source_root)
+    if memo is None:
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            entry = data[str(source_root)]
+            if isinstance(entry, dict) and isinstance(entry.get("fingerprint"), str) and re.fullmatch(
+                r"[0-9a-f]{16}", entry.get("digest", "")
+            ):
+                memo = (entry["fingerprint"], entry["digest"])
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            pass
+    if memo is not None and memo[0] == fingerprint:
+        _SOURCE_DIGEST_MEMO[source_root] = memo
+        return memo[1]
+    listing = "".join(f"{sha256_file(full)}  {rel.decode()}\n" for rel, full, *_ in files)
+    digest = hashlib.sha256(listing.encode()).hexdigest()[:16]
+    _SOURCE_DIGEST_MEMO[source_root] = (fingerprint, digest)
+    try:
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        data[str(source_root)] = {"fingerprint": fingerprint, "digest": digest}
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                json.dump(data, stream)
+                stream.flush()
+                os.replace(temporary, cache_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+    except OSError:
+        pass  # A cache failure must not prevent computing the digest.
+    return digest
 
 
 def pod_source_manifest(source_root: Path, pins: Mapping[str, tuple[str, str]] | None = None) -> bytes:
@@ -553,6 +606,7 @@ class RemotePlacement:
             started = ops.job_start(command)
         job_id = str(started["id"])
         state.job_id = job_id
+        delay = min(1.0, self.limits.poll_seconds)
         while True:
             self._check_deadline(what)
             record = ops.job_poll(job_id)
@@ -560,7 +614,10 @@ class RemotePlacement:
                 break
             if record.get("state") in ("missing", "cancelled"):
                 raise RemotePlacementError(f"{what} job {job_id} is {record.get('state')}")
-            self._sleep(self.limits.poll_seconds)
+            self._check_deadline(what)
+            remaining = max(0.0, self._deadline_at - self._clock()) if self._deadline_at is not None else delay
+            self._sleep(min(delay, remaining))
+            delay = min(delay * 1.5, self.limits.poll_seconds)
         state.job_id = None
         if state.checkpoint is not None:
             state.checkpoint({"id": job_id, "state": "exited"})
