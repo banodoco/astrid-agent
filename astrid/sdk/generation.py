@@ -1484,14 +1484,14 @@ class GenerationFacade:
                     raise CapabilityValidationError(str(exc)) from exc
         else:
             candidates = [("catalog", entry) for entry in registry.list_by_modality(modality)
-                          if entry.id not in _EXPLICIT_ONLY_ENTRIES
+                          if (entry.id not in _EXPLICIT_ONLY_ENTRIES or entry.id in preferred)
                           and mode in entry.modes and _local_template(entry, mode)]
             candidates += [("workflow", entry) for entry in
                            [*({**entry, 'source': 'user-entry'} for entry in workflow_entries.user_entries()),
                             *({**entry, 'source': 'ready-template'} for entry in workflow_entries.ready_entries())]
                            if entry["kind"] == modality and mode in entry["modes"]
-                           and entry["id"] not in _EXPLICIT_ONLY_ENTRIES
-                           and not entry.get("registry_id")]
+                           and (entry["id"] not in _EXPLICIT_ONLY_ENTRIES or entry["id"] in preferred)
+                           and (not entry.get("registry_id") or entry["id"] in preferred)]
             if pinned is not None and not any(
                     (c[1].id if c[0] == "catalog" else c[1]["id"]) == pinned for c in candidates):
                 found = workflow_entries.find_entry(pinned)
