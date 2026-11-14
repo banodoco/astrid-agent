@@ -203,6 +203,49 @@ def test_failed_exact_release_keeps_custody_unresolved_until_recovery(
     assert c.creates == 1
 
 
+@pytest.mark.parametrize("cleanup", ["failed", "incomplete", "deferred", "complete"])
+def test_claim_failure_receipt_preserves_allocated_machine_and_verified_cleanup(
+        small_lease, monkeypatch, tmp_path, cleanup):
+    from runpod_lifecycle import api
+
+    from astrid.packs.runpod import failure_receipt
+    from astrid.packs.runpod.adapter import TargetProviderBindings
+
+    c = small_lease
+    owner = c.fresh()
+    root = tmp_path / "failure-receipts"
+    monkeypatch.setattr(failure_receipt, "failures_root", lambda: root)
+
+    def refuse_confirmation(*args, **kwargs):
+        raise preparation.TargetObservationError("private-provider-detail", gate="GPU")
+
+    def fail_delete(*args, **kwargs):
+        raise TimeoutError("private-delete-detail")
+
+    monkeypatch.setattr(preparation, "confirm_acquired_machine", refuse_confirmation)
+    bindings = TargetProviderBindings(pack_roots=(), holds=None, credentials=None, environ={})
+    failed = bindings.claim_failure_recorder(
+        task_id="claim-task", attempt_id="claim-attempt", invocation_id=c.grant.invocation_id)
+    with monkeypatch.context() as blocked:
+        if cleanup == "failed":
+            blocked.setattr(api, "terminate_pod", fail_delete)
+        elif cleanup == "incomplete":
+            blocked.setattr(owner, "release", lambda **kwargs: c.read())
+        with pytest.raises(RunPodWorkerOwnerError) as caught:
+            owner.acquire(c.grant, defer_unsafe_release=cleanup == "deferred")
+        failed(caught.value)
+
+    receipt = json.loads((root / "claim-task" / "failure-receipt.json").read_text())
+    assert receipt["identity"]["machine_id"] == "pod-1"
+    assert receipt["identity"]["lease"] == c.read()["operation_id"]
+    assert receipt["identity"]["task_id"] == "claim-task"
+    assert receipt["identity"]["attempt_id"] == "claim-attempt"
+    assert receipt["stage"] == "boot"
+    assert receipt["machine"]["after"] == ("released" if cleanup == "complete" else "unknown")
+    assert "private-" not in json.dumps(receipt)
+    owner.release()
+
+
 def _attempt2_journal():
     """The live journal shape: ephemeral, EU-RO-1, drained lease, stuck cleanup_pending."""
     lease = {"schema": "astrid.runpod.lease.v1", "state": "releasing", "release_reason": "recovery",

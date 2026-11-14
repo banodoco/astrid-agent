@@ -7314,6 +7314,16 @@ class GenericPackHost:
 
     def _run_machine_job(self, record, task_data, policy, target_context, inputs, *, root, output_root,
                          cancelled, cancel_signal, task_id, attempt_id, fence, terminal):
+        from astrid.core.pack.discovery import pack_discovery_scope
+
+        with pack_discovery_scope():
+            return self._run_machine_job_in_scope(
+                record, task_data, policy, target_context, inputs, root=root, output_root=output_root,
+                cancelled=cancelled, cancel_signal=cancel_signal, task_id=task_id,
+                attempt_id=attempt_id, fence=fence, terminal=terminal)
+
+    def _run_machine_job_in_scope(self, record, task_data, policy, target_context, inputs, *, root, output_root,
+                                  cancelled, cancel_signal, task_id, attempt_id, fence, terminal):
         """Run the admitted generation on a ``generation.machine`` and land its outputs here.
 
         claim -> start -> poll (the remote progress file is copied into this
@@ -12660,6 +12670,7 @@ class GenericPackHost:
         assert_managed_input_identity = None
         target_context = machine_policy = None
         target_operation_result = None
+        claim_failure_recorder: Callable[[BaseException], None] | None = None
         try:
             session_hold = self._hold_session_slot()
             # Admission readback is bounded transport work under the lease pump.
@@ -12754,8 +12765,14 @@ class GenericPackHost:
                     include_quote = inputs.get("include_quote", False)
                     if type(include_quote) is not bool:
                         raise HostError("target quote selection must be boolean")
+                    recorder_factory = getattr(target_context, "claim_failure_recorder", None)
+                    if target_operation == "claim" and callable(recorder_factory):
+                        claim_failure_recorder = recorder_factory(
+                            task_id=str(task_id), attempt_id=str(attempt_id),
+                            invocation_id=f"{task_id}:{attempt_id}:{fence}")
                     target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote, **(
                         {"cancelled": cancelled} if policy.get("kind") == "runpod" and target_operation == "claim" else {}))
+                    claim_failure_recorder = None
                     inputs.pop("include_quote", None)
                 elif target_context is not None:
                     # A rented placement is a generation.machine: the whole local
@@ -13423,6 +13440,8 @@ class GenericPackHost:
             cancelled_attempt = True
             return {"task_id": task_id, "status": "cancelled", "cancelled": True}
         except BaseException as exc:
+            if claim_failure_recorder is not None:
+                claim_failure_recorder(exc)
             _terminal.setdefault("error", exc)
             if _terminal.get("disposition") == "authority_refused":
                 raise

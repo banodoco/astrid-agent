@@ -633,6 +633,10 @@ class RunPodMachine:
             raise MachineError("the runpod machine has no host-owned lease owner")
         return self.adapter
 
+    def entry_refusal(self, entry: str | None) -> str | None:
+        """Check local shipping declarations without an owner or provider call."""
+        return unshipped_entry_reason(entry)
+
     def release_after_storage_refusal(self, machine_id: str, operation_id: str) -> Path:
         """Release the exact retained lease after local Runtime storage admission fails.
 
@@ -749,7 +753,8 @@ class RunPodMachine:
                 prepared = prepare_retained_generation(
                     request, consent=consent, lease_owner=owner, placement=adapter.placement,
                     installation=adapter.installation, validate=adapter.validate,
-                    requested_idle_seconds=consent.idle_seconds, on_acquired=on_acquired,
+                    requested_idle_seconds=min(policy.get("idle_timeout_s", consent.idle_seconds),
+                                               consent.idle_seconds), on_acquired=on_acquired,
                     entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
                     manifest_rows=manifest_rows,
                     **({"cancelled": cancelled} if cancelled is not None else {}),

@@ -78,6 +78,48 @@ def test_job_without_consent_runs_on_claim_and_never_allocates(machine_case, mon
     assert c.read()["paid_limits"] == paid
 
 
+@pytest.mark.parametrize("source", ["omitted", "request", "configured", "typed"])
+def test_sdk_default_length_explicit_hold_shortens_a_longer_claim(machine_case, monkeypatch, source):
+    from astrid.core.generation import placement, settings
+    from astrid.sdk.generation import GenerationFacade
+    from astrid.sdk.results import InvocationResult
+    from tests.sdk.test_generation_target import storage_client
+
+    c = machine_case
+    c.grant = replace(c.grant, idle_seconds=3600)
+    claim(c)
+    paid = c.read()["paid_limits"]
+    monkeypatch.setattr(placement, "_runpod_leases", lambda kind: [
+        {"machine": "pod-1", "id": "pod-1", "live": True}])
+    monkeypatch.setattr(settings, "placement_default", lambda *args, **kwargs: (
+        {"kind": "runpod", "policy": {"idle_timeout_s": 1800}} if source == "configured" else {}))
+    selector = {"kind": "runpod"}
+    if source == "request":
+        selector["policy"] = {"idle_timeout_s": 1800}
+    elif source == "typed":
+        selector = placement.Placement(kind="runpod", policy=placement.PlacementPolicy(idle_timeout_s=1800))
+    client, _ = storage_client()
+    submitted = []
+
+    def invoke(capability, **kwargs):
+        submitted.append(json.loads(kwargs["inputs"]["placement_policy"]))
+        return InvocationResult(capability, "executor", "command", True,
+                                kernel_task_id="hold-task", raw_result={"state": "queued"})
+
+    client.invoke_result = invoke
+    result = GenerationFacade().image(entry="cpu-image", placement=selector, client=client,
+                                      project="demo", wait=False)
+    assert result.ok, result.to_dict()
+    request = replace(job(c), policy=submitted[0])
+    run(c, request)
+    expected = 3600 if source == "omitted" else 1800
+    assert c.read()["lease"]["idle_seconds"] == expected
+    assert c.read()["lease"]["idle_expires_at"] == min(c.clock() + expected,
+                                                      c.read()["lease"]["paid_expires_at"])
+    assert c.read()["paid_limits"] == paid
+    assert c.creates == 1
+
+
 @pytest.mark.parametrize("field", [
     "preferences", "offer_digest", "max_usd", "deadline", "preparation_seconds",
     "execution_seconds", "idle_seconds", "placement_idle_seconds", "policy_digest",
