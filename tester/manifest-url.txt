@@ -1,0 +1,2 @@
+https://raw.githubusercontent.com/banodoco/astrid-dev/c6e7dfb1475676d31e4a8641a676f6c580ff6440/tester/install-manifest.json
+a921b7dce8f96c0f00d942a32f973be091f92e44

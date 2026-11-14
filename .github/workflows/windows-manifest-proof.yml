@@ -1,0 +1,82 @@
+name: Windows manifest proof
+
+# Tester run before publish: install from a chosen manifest with the App's public install line,
+# check the installed Agent SHA, make a doctor bundle, uninstall with data, check nothing is left.
+# tester/manifest-url.txt: line 1 = manifest URL, line 2 = expected agent SHA (40 hex).
+on:
+  push:
+    branches: ["windows/tester-*"]
+  workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: Install manifest URL (defaults to line 1 of tester/manifest-url.txt)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  manifest-proof:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the manifest and the expected Agent SHA
+        env:
+          INPUT_MANIFEST_URL: ${{ inputs.manifest_url }}
+        run: |
+          $lines = @(Get-Content tester/manifest-url.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          $url = if ([string]::IsNullOrWhiteSpace($env:INPUT_MANIFEST_URL)) { $lines[0] } else { $env:INPUT_MANIFEST_URL.Trim() }
+          $sha = $lines[1]
+          if ($url -notmatch '^https://') { throw "manifest URL must be https: $url" }
+          if ($sha -notmatch '^[0-9a-f]{40}$') { throw "line 2 of tester/manifest-url.txt must be a full lowercase SHA" }
+          "ASTRID_INSTALL_MANIFEST_URL=$url" >> $env:GITHUB_ENV
+          "EXPECTED_AGENT_SHA=$sha" >> $env:GITHUB_ENV
+          "- Manifest: $url`n- Expected Agent: $sha" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Install with the App's public install line
+        run: |
+          $env:BROWSER = 'cmd.exe /c rem %s'   # suppress the website open; no operator here
+          & ([scriptblock]::Create((Invoke-RestMethod https://astrid.haus/install.ps1))) --yes
+
+      - name: The current version's manifest names the expected Agent SHA
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA 'Astrid'
+          $current = (Get-Content -Raw (Join-Path $root 'current')).Trim()
+          $manifest = Get-Content -Raw (Join-Path $root "versions\$current\manifest.json") | ConvertFrom-Json
+          "- Installed version $current, agent.sha $($manifest.agent.sha)" >> $env:GITHUB_STEP_SUMMARY
+          if ($manifest.agent.sha -ne $env:EXPECTED_AGENT_SHA) {
+            throw "installed agent.sha $($manifest.agent.sha) != expected $env:EXPECTED_AGENT_SHA"
+          }
+
+      - name: doctor --bundle succeeds
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'astrid-doctor.zip'
+          & (Join-Path $env:LOCALAPPDATA 'Astrid\astrid.cmd') doctor --bundle $zip
+          if ($LASTEXITCODE) { throw "doctor --bundle exited $LASTEXITCODE" }
+          if (-not (Test-Path $zip)) { throw "doctor did not write $zip" }
+
+      - name: Uninstall with --delete-data
+        if: always()
+        run: |
+          & ([scriptblock]::Create((Invoke-RestMethod https://astrid.haus/install.ps1))) --uninstall --delete-data --yes
+
+      - name: Install folders and the Scheduled Task are gone
+        run: |
+          $left = @('Astrid', 'Astrid Runtime', 'Astrid Installer') |
+            ForEach-Object { Join-Path $env:LOCALAPPDATA $_ } | Where-Object { Test-Path -LiteralPath $_ }
+          $task = Get-ScheduledTask | Where-Object { $_.TaskName -eq 'Astrid Runtime' -and $_.TaskPath -eq '\' }
+          if ($left) { throw "left behind: $($left -join ', ')" }
+          if ($task) { throw "Scheduled Task \Astrid Runtime still registered" }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-manifest-proof
+          path: ${{ runner.temp }}/astrid-doctor.zip
+          if-no-files-found: warn
