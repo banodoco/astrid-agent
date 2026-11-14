@@ -112,6 +112,12 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
 
     work = _state_dir(out)
     work.mkdir(parents=True, exist_ok=True)
+    if _given(inputs, files, "request"):
+        document = request_module.load_request_document(_path(inputs, files, "request"))
+        asset_map = _file_map(inputs, files)
+    else:
+        document, asset_map = _plain_request(inputs, files, facts)
+    request = request_module.normalize_request(document)
     run_logs = facts.run_logs
     for name, relative in {
         "h3.preparation": "preparation.json",
@@ -121,12 +127,6 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
         "h3.verification": "verify.json",
     }.items():
         run_logs.declare(work.parent, run_logs.LogDecl(name, "run", str(Path("h3") / relative)))
-    if _given(inputs, files, "request"):
-        document = request_module.load_request_document(_path(inputs, files, "request"))
-        asset_map = _file_map(inputs, files)
-    else:
-        document, asset_map = _plain_request(inputs, files, facts)
-    request = request_module.normalize_request(document)
     paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan")
     _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
