@@ -1508,9 +1508,8 @@ class GenerationFacade:
                         raise GenerationInputError(reason) from None
                 raise
         placement_policy = (_runpod_placement_policy(engine=None, machine=placement.machine,
-                            consent=controls.get('consent', ()), idle_timeout_s=(
-                                placement.policy.idle_timeout_s if placement.policy.idle_timeout_s
-                                != placements.PlacementPolicy.idle_timeout_s else None))
+                            consent=controls.get('consent', ()),
+                            idle_timeout_s=placement.policy.requested_idle_timeout_s)
                             if is_remote_target and not dry_run else
                             {"kind": "local", "device": placement.device} if is_managed_target else None)
         runpod_engine = pending_target = None
