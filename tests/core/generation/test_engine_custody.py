@@ -999,7 +999,7 @@ def test_two_full_h3_runtime_runs_reuse_owned_native_service(cpu_h3_install, tmp
     from PIL import Image
     from contextlib import contextmanager
     from astrid.core import action_cli
-    from tests.core.test_action_cli_clip_rehearsal import _last_json_document, _probe
+    from tests.helpers.action_cli_output import _last_json_document, _probe
     from tests.helpers.h3_native_engine import observe_requests
 
     client, payload, recipe, root, started, bootstrap = cpu_h3_install
