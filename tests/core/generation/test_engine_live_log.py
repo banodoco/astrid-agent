@@ -89,6 +89,9 @@ def test_launch_request_log_captures_early_exit(tmp_path):
     supervisor.token = 'owner'
     supervisor.valid_launch = lambda launch: True
     supervisor.source_identity = lambda deadline, channel: ('revision', 'digest')
+    # 13b4bf569 binds the launch at admission through the platform adapter.
+    supervisor.adapter = SimpleNamespace(start_request=lambda recipe, root, *, deadline, models_root: SimpleNamespace(
+        argv=(sys.executable,), cwd='/', env={}))
     def spawn(request, *, output_log=None):
         p = child("import sys; sys.stdout.write('startup failure\\n'); sys.stderr.write('details\\n'); sys.exit(1)")
         # As _Owned does: the launch names the complete log its output is appended to.
