@@ -688,7 +688,8 @@ def _attached_model_placements(client: ComfyTargetClient, spec: Any,
         paths = folders.get(key) if key else None
         if isinstance(paths, str):
             paths = [paths]
-        folder = next((path for path in paths or () if isinstance(path, str) and path), None)
+        from astrid.core.generation.asset_gaps import canonical_folder
+        folder = canonical_folder(paths, key)
         matches = list(failures[role] or ())
         if len(matches) > 1:
             # Ambiguous: the matching files are present; the user keeps exactly one of them.

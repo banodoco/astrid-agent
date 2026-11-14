@@ -268,6 +268,12 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument('--apply', action='store_true')
     command.add_argument('--consent', action='append', choices=('user_env',), default=[])
     command.add_argument('--json', action='store_true')
+    command = sub.add_parser('fetch-models', help='Show, then download on confirmation, the models an entry lacks on your own ComfyUI.')
+    command.add_argument('entry')
+    command.add_argument('mode')
+    command.add_argument('--comfy-url', required=True)
+    command.add_argument('--apply', metavar='PLAN_SHA256', help='Download exactly the plan with this digest.')
+    command.add_argument('--json', action='store_true')
     command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
     command.add_argument('--placement', action=_Once, default='auto')
     command.add_argument('--engine', action=_Once, default='comfyui')
@@ -515,6 +521,9 @@ def _main(argv: list[str]) -> int:
     if parsed.modality == 'align':
         from astrid.core.generation.asset_alignment import main as align_main
         return align_main(parsed)
+    if parsed.modality == 'fetch-models':
+        from astrid.core.generation.asset_gaps import main as fetch_models_main
+        return fetch_models_main(parsed)
     if parsed.modality == 'targets':
         return _targets_command(parsed)
     if parsed.modality == 'defaults':
