@@ -269,8 +269,10 @@ def test_an_existing_file_is_never_overwritten(comfy, models, file_server):
     existing.write_bytes(b"the person's own file")
     with pytest.raises(AttachedDownloadRefused) as caught:
         _apply(comfy, file_server, plan["plan_sha256"])
-    assert caught.value.code == "file_exists"
+    # R4.9: a local file the server does not list changes the plan, so apply refuses before any write; the publish-time file_exists refusal is covered by test_without_hard_links_an_existing_file_is_never_overwritten
+    assert caught.value.code == "plan_changed"
     assert existing.read_bytes() == b"the person's own file"
+    assert _files(root) == ["vae/ae.safetensors"]  # nothing else was written in that folder
     assert file_server.requested == []
 
 
@@ -384,3 +386,56 @@ def test_the_plan_records_whether_each_folder_takes_hard_links(comfy, models, fi
     _no_hard_links(monkeypatch)
     assert all(f["hard_links"] is False for f in _plan(comfy, file_server)["files"])
     assert _files(root) == []  # the probe file is removed again
+
+
+def test_a_server_file_the_local_folder_lacks_refuses_that_folder(comfy, models, file_server):
+    root, _ = models
+    comfy.info["VAELoader"]["input"]["required"]["vae_name"] = [["other_vae.safetensors"]]
+    plan = _plan(comfy, file_server)
+    vae = next(m for m in plan["manual"] if m["role"] == "vae")
+    assert "isn't the one on this computer" in vae["reason"]
+    assert "ae.safetensors" not in [f["file"] for f in plan["files"]]
+    assert sorted(f["file"] for f in plan["files"]) == ["qwen_3_4b.safetensors", "z_image_turbo_bf16.safetensors"]
+    assert _files(root) == []
+
+
+def test_a_local_model_file_the_server_does_not_list_refuses_that_folder(comfy, models, file_server):
+    root, _ = models
+    (root / "vae" / "stray.safetensors").write_bytes(b"stray")
+    plan = _plan(comfy, file_server)
+    vae = next(m for m in plan["manual"] if m["role"] == "vae")
+    assert "isn't the one on this computer" in vae["reason"]
+    assert "ae.safetensors" not in [f["file"] for f in plan["files"]]
+    assert _files(root) == ["vae/stray.safetensors"]
+
+
+def test_matching_folder_listings_across_legacy_and_canonical_folders_plan_normally(comfy, models, file_server):
+    root, _ = models
+    (root / "unet" / "shared.safetensors").write_bytes(b"shared")  # legacy folder, same name the server lists
+    comfy.info["UNETLoader"]["input"]["required"]["unet_name"] = [["shared.safetensors"]]
+    plan = _plan(comfy, file_server)
+    assert not [m for m in plan["manual"] if "isn't the one" in m.get("reason", "")]
+    assert sorted(f["file"] for f in plan["files"]) == ["ae.safetensors", "qwen_3_4b.safetensors",
+                                                        "z_image_turbo_bf16.safetensors"]
+
+
+def test_empty_listings_and_a_stray_non_model_file_plan_normally(comfy, models, file_server):
+    root, _ = models
+    (root / "vae" / "notes.txt").write_text("not a model")
+    plan = _plan(comfy, file_server)
+    assert not [m for m in plan["manual"] if "isn't the one" in m.get("reason", "")]
+    assert "ae.safetensors" in [f["file"] for f in plan["files"]]
+
+
+def test_a_file_that_appears_before_the_hard_link_is_never_overwritten(comfy, models, file_server):
+    root, _ = models
+    plan = _plan(comfy, file_server)  # hard links work here: publish takes the os.link path
+    item = next(f for f in plan["files"] if f["file"] == "ae.safetensors")
+    assert item["hard_links"] is True
+    existing = root / "vae" / "ae.safetensors"
+    existing.write_bytes(b"appeared while downloading")
+    with pytest.raises(AttachedDownloadRefused) as caught:
+        _fetch_into_folder(item, _http())
+    assert caught.value.code == "file_exists"
+    assert existing.read_bytes() == b"appeared while downloading"
+    assert _files(root) == ["vae/ae.safetensors"]  # the staged download is cleaned up
