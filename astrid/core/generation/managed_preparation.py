@@ -537,14 +537,14 @@ class ManagedEnginePreparation:
         self.check()
 
     def _verify_models(self, manifest):
-        from ._engine_target_files import _TargetFiles
         from .engine_contracts import IntegrityError
-        files = _TargetFiles(manifest["models_root"])
+        from .model_verification import model_file_fact
         for model in manifest["models"]:
             self.check()
             path = str(Path(manifest["models_root"]) / model["subdir"] / model["name"])
-            fact = files.file_fact(path, hash_bytes=True, deadline=self.deadline, check=self.check)
             expected = str(model.get("sha256") or "").removeprefix("sha256:")
+            fact = model_file_fact(path, root=self.root, models_root=manifest["models_root"],
+                                   declared_sha256=expected, deadline=self.deadline, check=self.check)
             if (not fact.exists or not fact.regular or fact.symlink
                     or fact.bytes != model["size"] or not re.fullmatch(r"[0-9a-f]{64}", expected)
                     or fact.sha256 != expected):
@@ -560,6 +560,7 @@ class ManagedEnginePreparation:
             available_model_bytes,
             measure_declared_volume,
         )
+        from .model_verification import model_file_fact
 
         root = Path(manifest["models_root"])
         self._storage_models_root = root
@@ -579,8 +580,10 @@ class ManagedEnginePreparation:
         for model, path, present in candidates:
             self.check()
             if present:
-                fact = files.file_fact(str(path), hash_bytes=True, deadline=self.deadline, check=self.check)
-                if fact.sha256 == str(model["sha256"]).removeprefix("sha256:"):
+                expected = str(model["sha256"]).removeprefix("sha256:")
+                fact = model_file_fact(str(path), root=self.root, models_root=str(root),
+                                       declared_sha256=expected, deadline=self.deadline, check=self.check)
+                if fact.sha256 == expected:
                     continue
             directory = path.parent.resolve(strict=False)
             demand[directory] = demand.get(directory, 0) + model["size"]

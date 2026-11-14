@@ -11,8 +11,8 @@ import os
 import secrets
 import stat
 import time
-from contextlib import contextmanager
 from collections.abc import Mapping
+from contextlib import contextmanager
 
 from .engine_contracts import DeadlineExceeded, FileFact, RecipeValidationError, UnsafePathError
 
@@ -86,7 +86,7 @@ class _TargetFiles:
             raise UnsafePathError("target is not a singly linked regular file")
         return info
 
-    def file_fact(self, path, *, hash_bytes, deadline, check=None):
+    def file_fact(self, path, *, hash_bytes, deadline, check=None, verification=None):
         parts = self._relative(path)
         if type(hash_bytes) is not bool:
             raise RecipeValidationError("hash selection must be boolean")
@@ -102,8 +102,9 @@ class _TargetFiles:
                     before = self._regular(fd)
                     if (before.st_dev, before.st_ino) != (info.st_dev, info.st_ino):
                         raise UnsafePathError("target changed during inspection")
-                    digest = None
-                    if hash_bytes:
+                    digest = (verification.lookup(before)
+                              if hash_bytes and verification is not None else None)
+                    if hash_bytes and digest is None:
                         h = hashlib.sha256()
                         count = 0
                         while True:
@@ -120,6 +121,13 @@ class _TargetFiles:
                                 != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
                             raise UnsafePathError("target changed during inspection")
                         digest = h.hexdigest()
+                        if verification is not None:
+                            verification.remember(before, digest)
+                    if hash_bytes and verification is not None:
+                        after = self._regular(fd)
+                        if ((before.st_size, before.st_mtime_ns, before.st_ino, before.st_ctime_ns)
+                                != (after.st_size, after.st_mtime_ns, after.st_ino, after.st_ctime_ns)):
+                            raise UnsafePathError("target changed during inspection")
                     _check(deadline)
                     if check is not None:
                         check()
