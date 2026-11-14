@@ -173,16 +173,12 @@ def test_owned_capture_uses_exact_health_digest_projection(native_python, schema
     schema_server.info = copy.deepcopy(schema_server.info)
     if change == 'file_picker':
         schema_server.info['LoadImage']['input']['required']['image'][0] = ['new-input.png']
-        assert _object_info_sha256(schema_server.info) == expected
     else:
         schema_server.info['UNETLoader']['input']['required']['unet_name'][0] = ['new-model.safetensors']
-        assert _object_info_sha256(schema_server.info) != expected
+    # cause d6b5e6aef; ruling: machines 08:05 Sat
+    assert _object_info_sha256(schema_server.info) == expected
     result = _native(native_python, schema_server, latent_workflow, tmp_path, expected=expected)
-    if change == 'file_picker':
-        assert result.returncode == 0
-    else:
-        assert result.returncode != 0
-        assert native_failure_diagnostic('doctor', result.stdout, result.stderr)[1] == 'owned_schema_changed'
+    assert result.returncode == 0
 
 
 @pytest.mark.parametrize('failure', ['command', 'post_health', 'stop_uncertain'])

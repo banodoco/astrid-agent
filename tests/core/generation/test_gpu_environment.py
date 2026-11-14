@@ -323,17 +323,28 @@ def test_solver_version_must_match_before_environment_creation(tmp_path, monkeyp
     assert not Path(plan["root"]).exists()
 
 
-@pytest.mark.parametrize("content", [None, "{not json", "null", "{}", '["comfy_wrap.run", 3]'])
+@pytest.mark.parametrize("content", [None, "{not json", "null", "{}", '["fixture_gpu.run", 3]'])
 def test_a_missing_or_malformed_vibecomfy_gpu_declaration_means_no_aliases_and_never_raises(content, tmp_path, monkeypatch):
     packs = tmp_path / "packs"
     (packs / "vibecomfy").mkdir(parents=True)
     if content is not None:
         (packs / "vibecomfy" / "gpu-capabilities.json").write_text(content, encoding="utf-8")
     monkeypatch.setattr(gpu, "_PACKS", packs)
-    assert gpu.gpu_pack("comfy_wrap.run") is None
+    assert gpu.gpu_pack("fixture_gpu.run") is None
     assert gpu.gpu_pack("unrelated.action") is None
     assert gpu.gpu_pack("vibecomfy.run") == "vibecomfy"
 
 
-def test_the_shipped_vibecomfy_gpu_declaration_routes_comfy_wrap_run():
-    assert gpu.gpu_pack("comfy_wrap.run") == "vibecomfy"
+def test_the_shipped_vibecomfy_gpu_declaration_has_no_aliases():
+    # cause a45dd06c4; ruling: machines 07:44 UTC Sat
+    assert json.loads((gpu._PACKS / "vibecomfy/gpu-capabilities.json").read_text()) == []
+    assert gpu.gpu_pack("vibecomfy.run") == "vibecomfy"
+
+
+def test_a_valid_vibecomfy_gpu_declaration_routes_its_alias(tmp_path, monkeypatch):
+    packs = tmp_path / "packs"
+    (packs / "vibecomfy").mkdir(parents=True)
+    (packs / "vibecomfy/gpu-capabilities.json").write_text('["fixture_gpu.run"]')
+    monkeypatch.setattr(gpu, "_PACKS", packs)
+    assert gpu.gpu_pack("fixture_gpu.run") == "vibecomfy"
+    assert gpu.gpu_pack("unrelated.action") is None
