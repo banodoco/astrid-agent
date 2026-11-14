@@ -597,7 +597,7 @@ def test_media_list_forwards_all_exact_filters(capsys) -> None:
         "media",
         [
             "list", "--project", "demo", "--kind", "video", "--model", "X",
-            "--target", "runpod", "--tag", "hero", "--json",
+            "--placement", "runpod", "--tag", "hero", "--json",
         ],
         client=client,
     )
@@ -611,6 +611,14 @@ def test_media_list_forwards_all_exact_filters(capsys) -> None:
     assert json.loads(capsys.readouterr().out)["data"] == [
         {"id": "M-1", "project_id": "P-1"}
     ]
+
+
+def test_media_list_rejects_target() -> None:
+    client = _FakeClient()
+    with pytest.raises(SystemExit) as excinfo:
+        _run("media", ["list", "--project", "demo", "--target", "runpod"], client=client)
+    assert excinfo.value.code == 2
+    assert client.calls == []
 
 
 def test_media_show_is_one_sdk_call(capsys) -> None:
