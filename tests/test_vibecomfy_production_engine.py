@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.local_engine_stub import local_engine_patch
+from tests.local_engine_stub import LOCAL_ENGINE_URL, local_engine_patch
 import hashlib
 import importlib
 import json
@@ -236,8 +236,51 @@ def test_run_executor_verifies_checkout_readiness_pair_and_selects_profile(
     readiness_bytes = json.dumps({"engine_identity": {}}).encode("utf-8")
     readiness.write_bytes(readiness_bytes)
     readiness_hash = "sha256:" + hashlib.sha256(readiness_bytes).hexdigest()
-    managed_run = Mock(return_value=(engine_output,))
+
+    def produce_managed_result(*args, **kwargs):
+        _fixture_envelope, payload = _managed_result_fixture(tmp_path)
+        payload["outputs"] = [{
+            "producer_output_id": "vibecomfy:image:0",
+            "output_port": "image",
+            "ordinal": 0,
+            "path": engine_output.relative_to(output_root).as_posix(),
+            "media_type": "image/png",
+            "bytes": engine_output.stat().st_size,
+            "sha256": hashlib.sha256(engine_output.read_bytes()).hexdigest(),
+        }]
+        payload["attempt_id"] = kwargs["attempt_identity"]
+        envelope = output_root / "managed-generation-result.json"
+        envelope.write_text(json.dumps(payload), encoding="utf-8")
+        production_engine._LAST_PRODUCTION_RESULT = production_engine.ProductionRunResult(
+            outputs=(engine_output,),
+            managed_generation_result_path=envelope,
+            managed_generation_result=payload,
+        )
+        return (engine_output,)
+
+    managed_run = Mock(side_effect=produce_managed_result)
     monkeypatch.setattr(production_engine, "run_workflow_path", managed_run)
+
+    # Stand in for owned preparation while retaining the real producer dispatch and settlement.
+    import astrid.core.generation.managed_preparation as managed_preparation
+    from astrid.packs.vibecomfy import local_job
+
+    def run_owned_action(workflow_path, out, *, task_identity, attempt_identity, align,
+                         expected_execution_identity=None, **kwargs):
+        return run._run_and_settle(
+            workflow_path, out, task_identity=task_identity, attempt_identity=attempt_identity,
+            align=align, execution_identity=expected_execution_identity or "-",
+            comfy_url=LOCAL_ENGINE_URL, **kwargs,
+        )
+
+    def read_preparation(*, endpoint, execution_identity=None, **_kwargs):
+        if endpoint != LOCAL_ENGINE_URL:
+            return None
+        return {"placement": "managed", "alignment": {"mode": "check"},
+                "manifest": {"models": []}, "execution_identity": execution_identity}
+
+    monkeypatch.setattr(local_job, "run_owned_action", run_owned_action)
+    monkeypatch.setattr(managed_preparation, "read_preparation", read_preparation)
 
     with local_engine_patch():
         run._run_and_settle(

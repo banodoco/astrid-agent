@@ -1141,7 +1141,7 @@ def test_edit_batch_is_atomic_when_any_leaf_operation_is_invalid(tmp_path: Path)
 
 
 _T9_CHILD_PROGRAM = r'''
-import json, os, sys
+import hashlib, json, os, sys
 from pathlib import Path
 from astrid.packs.vibecomfy import production_engine
 from astrid.packs.vibecomfy.actions.run import run
@@ -1150,13 +1150,39 @@ def ordinary(workflow, destination, **kwargs):
     root = Path(destination); root.mkdir(parents=True, exist_ok=True)
     output = root / "ordinary.bin"; output.write_bytes(b"ordinary adapter result")
     Path(os.environ["T9_TEST_PRODUCTION_CALLED"]).write_text(json.dumps(kwargs))
-    return production_engine.ProductionRunResult(outputs=(output,))
+    envelope = root / "managed-generation-result.json"
+    envelope.write_text(json.dumps({
+        "schema_version": 1, "kind": "managed-generation-result.v1",
+        "task_id": kwargs["task_identity"], "attempt_id": kwargs["attempt_identity"],
+        "producer_run_id": "ordinary-adapter", "created": "2026-11-14T00:00:00Z",
+        "inputs": {}, "warnings": [],
+        "outputs": [{"producer_output_id": "ordinary:0", "output_port": "ordinary",
+                      "ordinal": 0, "path": output.name, "media_type": "application/octet-stream",
+                      "bytes": output.stat().st_size,
+                      "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}],
+        "outcomes": {"execution": {"status": "succeeded"}, "retrieval": {"status": "succeeded"},
+                     "verification": {"status": "succeeded"}, "publication": {"status": "not_started"}},
+        "evidence": {"producer": {}, "transport": {}},
+    }), encoding="utf-8")
+    return production_engine.ProductionRunResult(
+        outputs=(output,), managed_generation_result_path=envelope)
 
 production_engine.run_workflow_result_path = ordinary
-from types import SimpleNamespace
-from astrid.core.generation import engine_local_endpoint
-engine_local_endpoint.local_engine_endpoint = lambda *a, **k: SimpleNamespace(
-    endpoint=SimpleNamespace(url="http://127.0.0.1:8188"), comfy_output_dir="", model_root_binding=None)
+# Preparation stand-in: leave the production execution and managed-result settlement real.
+from astrid.core.generation import managed_preparation
+from astrid.packs.vibecomfy import local_job
+def run_owned_action(workflow, out, *, task_identity, attempt_identity, align,
+                     expected_execution_identity=None, **kwargs):
+    return run._run_and_settle(workflow, out, task_identity=task_identity,
+        attempt_identity=attempt_identity, align=align,
+        execution_identity=expected_execution_identity or "-",
+        comfy_url="http://127.0.0.1:8188", **kwargs)
+def read_preparation(*, endpoint, execution_identity=None, **kwargs):
+    if endpoint != "http://127.0.0.1:8188": return None
+    return {"placement": "managed", "alignment": {"mode": "check"},
+            "manifest": {"models": []}, "execution_identity": execution_identity}
+local_job.run_owned_action = run_owned_action
+managed_preparation.read_preparation = read_preparation
 raise SystemExit(run.main(sys.argv[1:]))
 '''
 
