@@ -86,7 +86,8 @@ def test_default_missing_on_target_owns_its_failure_without_fallback(network, mo
         GenerationFacade().image(placement=client.target.url, prompt='one boat', dry_run=True)
     assert caught.value.code == 'missing_model'
     assert caught.value.to_envelope()['entry']['id'] == 'qwen-image-2.1-turbo'
-    assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]
+    # R4.L: P4.6b (62b47709) reads the ComfyUI folder list once per refusal to place missing models.
+    assert requests == [('GET', '/system_stats'), ('GET', '/object_info'), ('GET', '/internal/folder_paths')]
 
 
 @pytest.mark.parametrize('blocked_ids', [
