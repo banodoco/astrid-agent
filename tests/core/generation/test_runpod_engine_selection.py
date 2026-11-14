@@ -40,8 +40,11 @@ SLOTS = sorted({*SLOT_DEFAULTS, ('video', 'i2v')})
 
 @pytest.fixture
 def image(tmp_path):
+    from PIL import Image
+
     path = tmp_path / 'start.png'
-    path.write_bytes(b'\x89PNG\r\n\x1a\n')
+    # H3 planning decodes the reference; use a real still at its output canvas size.
+    Image.new('RGB', (1024, 576)).save(path, format='PNG')
     return path
 
 
