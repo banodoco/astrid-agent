@@ -207,42 +207,37 @@ def test_typed_local_generation_rejects_before_invoke_and_output_staging(
     assert not out.exists()
 
 
-def test_typed_local_generation_admits_when_structural_runtime_is_ready(
+def test_typed_local_generation_returns_success_from_target(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # c5f05bcdf: the typed local request takes the ComfyUI target path; with a registered managed
-    # engine its structural readiness admits, and the request proceeds to workflow preparation.
+    # c5f05bcdf routes typed local requests through the ComfyUI target boundary.
+    # A successful target result must return through the public facade.
     import astrid
     import astrid.sdk as sdk
     import astrid.sdk.generation as generation
-    from astrid.core.generation import preflight
+    from astrid.core.generation.backends.base import GenerationResult
 
-    monkeypatch.setattr(preflight, "_registered_managed_engine",
-                        lambda: {"owner": "astrid", "endpoint": "http://127.0.0.1:8188", "root": str(tmp_path)})
     monkeypatch.setattr(sdk, "invoke", lambda *_a, **_k: pytest.fail("the target path never uses SDK invoke"))
 
-    class Admitted(Exception):
-        pass
+    admitted = []
 
-    prepared = []
+    def generate_on_target(_self: Any, **kwargs: Any) -> GenerationResult:
+        admitted.append((kwargs["model"], kwargs["mode"], kwargs["placement"], kwargs["execution"]))
+        return GenerationResult(run_dir=tmp_path)
 
-    def prepare(**kwargs: Any) -> Any:
-        prepared.append((kwargs["candidate"].id, kwargs["mode"]))
-        raise Admitted
+    monkeypatch.setattr(generation.GenerationFacade, "_generate_on_target", generate_on_target)
+    result = astrid.generate.image(
+        model="z-image",
+        mode="t2i",
+        execution="local",
+        project="demo",
+        out=tmp_path,
+        prompt="a red paper boat",
+    )
 
-    monkeypatch.setattr(generation, "_prepare_catalog_target_workflow", prepare)
-    with pytest.raises(Admitted):
-        astrid.generate.image(
-            model="z-image",
-            mode="t2i",
-            execution="local",
-            project="demo",
-            out=tmp_path,
-            prompt="a red paper boat",
-        )
-
-    assert prepared == [("z-image", "t2i")]
+    assert result.ok is True
+    assert admitted == [("z-image", "t2i", "auto", "local")]
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
