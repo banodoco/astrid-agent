@@ -82,7 +82,8 @@ class LocalEngineIdle:
         try:
             record = supervisor.release_owned(deadline=time.monotonic() + 10.0)
             status = record.get("status") if isinstance(record, dict) else "failed"
-            warning = None if status == "completed" else f"release returned {status}"
+            reason = record.get("reason") if isinstance(record, dict) else None
+            warning = None if status == "completed" else f"release returned {status}" + (f": {reason}" if reason else "")
         except Exception as exc:  # noqa: BLE001 - idle release must never fail a task
             record, status, warning = None, "failed", str(exc)
         if warning:

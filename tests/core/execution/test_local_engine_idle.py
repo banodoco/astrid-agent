@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -295,6 +296,33 @@ def test_engine_queue_busy_consumes_deadline_until_next_task_end(world, session,
     idle.retain(client)
     timers.fire()
     assert (root / "release-posts").read_text().splitlines() == ["/api/free"]
+
+
+@pytest.mark.linux_native
+def test_retained_client_cannot_release_successor_incarnation(world, session, caplog):  # noqa: F811
+    host, idle, timers, _ = world
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    run(host)
+    idle.retain(client)
+    client.stop_owned(deadline=time.monotonic() + 8)
+    successor = type(client)(**client.identity)
+    try:
+        _call(successor, payload)
+        with caplog.at_level(logging.WARNING):
+            timers.fire()
+        assert not (root / "release-posts").exists(), "stale retention must not free a successor's models"
+        assert idle.status()["last_release"] == "skipped"
+        assert "incarnation" in idle.status()["warning"]
+        assert "incarnation" in caplog.text
+        assert timers.live() is None, "a refused release consumes its deadline"
+        # A preparation against the successor can arm a new, valid release.
+        run(host, task("successor-job"))
+        idle.retain(successor)
+        timers.fire()
+        assert (root / "release-posts").read_text().splitlines() == ["/api/free"]
+    finally:
+        successor.stop_owned(deadline=time.monotonic() + 8)
 
 
 @pytest.mark.linux_native

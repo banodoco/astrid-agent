@@ -268,7 +268,7 @@ _ENGINE_REASONS = frozenset({
     'status context does not match requested target',
     'step dependencies have not passed',
     'supervisor did not confirm command cleanup before the response deadline',
-    'supervisor incarnation changed during cancellation',
+    'supervisor incarnation changed',
     'supervisor installation identity differs',
     'supervisor launch uncertain; explicit recovery required',
     'supervisor marker changed; explicit recovery required',

@@ -222,6 +222,9 @@ class LinuxEngineServiceClient:
             raise RecipeValidationError("invalid installation identity")
         self.control = root + "/.astrid-engine/session"
         self._spawned = None
+        # Set only by a successful preparation/service response, never by a
+        # later idle reconnect to the same installation's successor.
+        self._prepared_peer = None
         self.cancelled: Callable[[], bool] | None = None
 
     @classmethod
@@ -474,11 +477,11 @@ class LinuxEngineServiceClient:
                 if channel is None:
                     return None
                 with channel:
-                    if cancelled is not None or expected_peer is not None:
+                    if cancelled is not None or expected_peer is not None or operation in {"probe", "start", "health"}:
                         peer = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
                         incarnation = (*peer, _vibe_birth(peer[0]))
                         if expected_peer is not None and incarnation != expected_peer:
-                            raise CustodyUnresolved("supervisor incarnation changed during cancellation")
+                            raise CustodyUnresolved("supervisor incarnation changed")
                         if peer[1] != os.getuid():
                             raise CustodyUnresolved("supervisor peer has a different user")
                     if cancelled is not None and cancelled():
@@ -521,6 +524,8 @@ class LinuxEngineServiceClient:
                     error.reason = reason
                     error.cleanup_failure = cause
                     raise error
+                if operation in {"probe", "start", "health"}:
+                    self._prepared_peer = incarnation
                 return response["result"]
         except (CustodyUnresolved, EndpointOwnershipError, UnsafePathError) as exc:
             if not hasattr(exc, "custody_details"):
@@ -556,7 +561,15 @@ class LinuxEngineServiceClient:
                              "env": dict(request.env), "max_output_bytes": request.max_output_bytes}, request.deadline, **({"cancelled": self.cancelled} if self.cancelled is not None else {})))
 
     def release_owned(self, *, deadline):
-        return self._request("release", {}, deadline, start=False)
+        """Release only the supervisor incarnation that prepared this client."""
+        if self._prepared_peer is None:
+            return {"status": "skipped", "reason": "no prepared supervisor incarnation"}
+        try:
+            return self._request("release", {}, deadline, start=False,
+                                 expected_peer=self._prepared_peer)
+        except CustodyUnresolved as exc:
+            # A stale timer must neither adopt nor free a replacement owner.
+            return {"status": "skipped", "reason": exc.reason or str(exc)}
 
     def _live_owner(self):
         owner = type(self).for_stop(**{key: self.identity[key] for key in ("root", "engine", "platform")})
