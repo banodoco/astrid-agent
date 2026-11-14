@@ -2267,3 +2267,18 @@ except DeadlineExceeded:
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+@pytest.mark.parametrize("system, expected", [
+    ({"ram_total": 100, "ram_free": 40}, {"ram_total_bytes": 100, "ram_free_before_bytes": 40, "ram_free_after_bytes": 40}),
+    ({"ram_total": True, "ram_free": "bad"}, {}),
+    (None, {}),
+])
+def test_release_records_optional_host_ram(tmp_path, monkeypatch, system, expected):
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "owner")
+    supervisor.engine = object()
+    monkeypatch.setattr(supervisor, "check", lambda *args: None)
+    stats = {"system": system, "devices": [{"vram_total": 200, "vram_free": 100}]}
+    monkeypatch.setattr(custody, "_get_json", lambda port, path, *args, **kwargs: stats if path == "/system_stats" else {"queue_running": [], "queue_pending": []})
+    result = supervisor.release({}, time.monotonic() + 5, None)
+    assert {key: value for key, value in result.items() if key.startswith("ram_")} == expected

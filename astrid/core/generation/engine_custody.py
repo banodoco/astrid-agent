@@ -1434,7 +1434,8 @@ class _Supervisor:
             if type(total) is not int or type(free) is not int:
                 raise ValueError("managed ComfyUI reported malformed VRAM")
             return total, free
-        total, before = vram(request("/system_stats"))
+        before_stats = request("/system_stats")
+        total, before = vram(before_stats)
         queue = request("/queue")
         running, pending = queue.get("queue_running"), queue.get("queue_pending")
         if not isinstance(running, list) or not isinstance(pending, list):
@@ -1452,10 +1453,20 @@ class _Supervisor:
             unloaded = True
         except (OSError, ValueError):
             unloaded = False
-        _, after = vram(request("/system_stats"))
+        after_stats = request("/system_stats")
+        _, after = vram(after_stats)
         result = {"status": "completed" if unloaded else "failed", "models_unloaded": unloaded,
                   "vram_total_bytes": total, "vram_free_before_bytes": before,
                   "vram_free_after_bytes": after}
+        # Host-wide free RAM, not the ComfyUI process's memory: /free frees
+        # models from GPU memory and releases their cached memory.
+        for stats, source, target in ((before_stats, "ram_total", "ram_total_bytes"),
+                                      (before_stats, "ram_free", "ram_free_before_bytes"),
+                                      (after_stats, "ram_free", "ram_free_after_bytes")):
+            system = stats.get("system")
+            value = system.get(source) if isinstance(system, dict) else None
+            if type(value) is int:
+                result[target] = value
         # The same append-only engine log is declared by the preparing run.
         # Retain the native release evidence even when idle fires after settle.
         try:
