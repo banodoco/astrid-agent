@@ -151,6 +151,11 @@ jobs:
       - name: Ruff baseline gate
         run: make ruff
 
+      # Mypy checks the project only with the YAML stubs, and with a NumPy whose bundled stubs parse under the configured
+      # Python 3.11 target; unpinned, the latest NumPy stubs make mypy stop before it checks anything.
+      - name: Install mypy stubs and the NumPy that mypy can parse
+        run: python -m pip install types-PyYAML 'numpy<2.4'
+
       - name: Mypy baseline gate
         run: make mypy
 
