@@ -365,9 +365,9 @@ def set_placement(url: str, client: Any = None) -> dict[str, Any]:
 
 
 def unset_placement(client: Any = None) -> dict[str, Any]:
-    """Remove ``kind``, ``endpoint`` and ``device`` (all belong to the place); ``policy`` stays."""
+    """Remove ``kind``, ``endpoint``, ``device``, ``machine`` and ``engine`` (all belong to the place); ``policy`` stays."""
     return _change_placement(client, lambda current: {k: v for k, v in current.items()
-                                                      if k not in ("kind", "endpoint", "device")})
+                                                      if k not in ("kind", "endpoint", "device", "machine", "engine")})
 
 
 __all__ = ["KEY", "Snapshot", "checkin", "checkout", "current_store", "empty_document", "machine_policy",
