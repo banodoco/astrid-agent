@@ -133,13 +133,13 @@
             "--model": {
               "required": false
             },
+            "--placement": {
+              "required": false
+            },
             "--project": {
               "required": true
             },
             "--tag": {
-              "required": false
-            },
-            "--target": {
               "required": false
             }
           },
