@@ -713,7 +713,7 @@ def test_h3_facade_passes_its_after_outputs_job_and_the_hook_composes_the_candid
 
 def _video_source_av(path, seconds=2.4, size="1024x576"):
     import subprocess
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c=blue:s={size}:r=24",
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c=blue:s={size}:r=24:d={seconds}",
                "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}"]
     if seconds == 2.4:
         command += ["-frames:v", "57"]
