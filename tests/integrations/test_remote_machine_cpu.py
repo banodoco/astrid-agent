@@ -11,6 +11,7 @@ reuse; cancel mid-poll; a bad mount mapping that fails before install.
 """
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import io
@@ -125,6 +126,7 @@ class MachineProviderHTTP:
 
     def _new_pod_state(self):
         self.pod_state, self.active_job, self.template = "absent", None, False
+        self.watchdog_publications = []
 
     def kinds(self, *names):
         return [c for c in self.commands if any(name in c for name in names)]
@@ -196,6 +198,33 @@ class MachineProviderHTTP:
 
     def command(self, command):
         self.commands.append(command)
+        if command.startswith("python3 -c ") and "__pod_watchdog__" in command:
+            # Claim publishes the watchdog before preparation. Its bounded
+            # transport runs in a spawned process and reaches this same peer.
+            loader = ast.parse(shlex.split(command)[2])
+            call = loader.body[-1].value
+            assert isinstance(call, ast.Call) and ast.unparse(call.func) == "scope['main']"
+            operation, deadline, generation = ast.literal_eval(call.args[0])
+            record = json.loads(self.claim_path.read_text())
+            assert operation == "publish"
+            assert deadline == record["self_stop"]["deadline"]
+            assert generation == record["self_stop"]["generation"]
+            if self.watchdog_publications:
+                previous_deadline, previous_generation = self.watchdog_publications[-1]
+                assert (generation > previous_generation
+                        or (generation == previous_generation and deadline == previous_deadline))
+            self.watchdog_publications.append((deadline, generation))
+            return 0, ""
+        if command == "true":
+            return 0, ""  # the claim's authenticated readiness probe
+        if command.startswith("grep '^pod_watchdog: identity=' "):
+            from astrid.packs.runpod.pod_watchdog import IDENTITY_LOG_PATH, IDENTITY_MARK
+
+            assert shlex.split(command) == ["grep", "^" + IDENTITY_MARK, str(IDENTITY_LOG_PATH),
+                                            "|", "tail", "-n", "1"]
+            lines = self.files.get(str(IDENTITY_LOG_PATH), b"").decode().splitlines()
+            reports = [line for line in lines if line.startswith(IDENTITY_MARK)]
+            return 0, reports[-1] + "\n" if reports else ""
         if command.startswith("test -f "):
             return (0 if shlex.split(command)[2] in self.files else 1), ""
         if "base64 -d" in command and '"$d/command.sh"' in command:
@@ -502,6 +531,60 @@ class MachineProviderHTTP:
         raise AssertionError((method, host, path))
 
 
+def serve_pod_agent(provider, monkeypatch):
+    """Expose the existing HTTP double to the claim's spawned transport too."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def handle_request(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            response = provider.handle(httpx.Request(
+                self.command, f"https://{provider.pod_id}-8000.proxy.runpod.net{self.path}",
+                headers=dict(self.headers), content=body))
+            data = response.read()
+            self.send_response(response.status_code)
+            self.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        do_GET = do_POST = do_PUT = do_DELETE = handle_request
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    initialize = remote_placement._HttpsOps.__init__
+
+    def loopback(ops, pod_id, token, **kwargs):
+        if kwargs.get("base_url") is None:
+            kwargs["base_url"] = f"http://127.0.0.1:{server.server_port}"
+        initialize(ops, pod_id, token, **kwargs)
+
+    monkeypatch.setattr(remote_placement._HttpsOps, "__init__", loopback)
+    return server
+
+
+def claim_machine(client, *, placement="runpod", idle_seconds=1800, wait_for_capacity=True):
+    """Rent through the real claim action before submitting a generation job."""
+    from astrid.packs.runpod.target_selection import PaidRunConsent
+
+    facade = GenerationFacade()
+    quote = facade.describe(placement=placement, client=client, max_hourly_usd=1, fresh_claim=True)
+    consent = PaidRunConsent(
+        invocation_id=f"cpu-claim-{time.time_ns()}", offer_digest=None,
+        max_usd=1.5, deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        consent=("paid",), preparation_seconds=0, execution_seconds=0, idle_seconds=idle_seconds,
+        policy_digest=quote["waiting_policy"]["policy_digest"], max_hourly_usd=1,
+        wait_for_capacity=wait_for_capacity)
+    result = facade.claim(consent=consent, requested_idle_seconds=idle_seconds,
+                          placement=placement, client=client, wait=True)
+    if not result.ok:
+        raise RuntimeError(str(result.error))
+    return result
+
+
 @pytest.fixture
 def journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
     """Runtime, host and the provider fake; yields a small driver for one account."""
@@ -572,8 +655,9 @@ def journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
         monkeypatch.setattr(httpx.Client, "send", http_send)
         monkeypatch.setattr(requests.Session, "send", requests_send)
         monkeypatch.setattr(socket.socket, "connect", local_connect)
+        state["agent_server"] = serve_pod_agent(provider, monkeypatch)
 
-        daemon = real_runtime()
+        daemon = real_runtime(support_root=tmp_path / "machine" / "runtime")
         owner = WorkspaceClient(daemon.endpoint, daemon.token)
         client = AstridClient(remote=RemoteAstridClient(owner))
         project = client.projects.create(name="CPU machine", slug="cpu-machine", idempotency_key="project")
@@ -599,14 +683,14 @@ def journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
         assert setup.ok, setup.to_dict()
         return state
 
-    def image(*, wait=True, invocation=None, placement="runpod", idle_seconds=1800):
+    def claim(*, placement="runpod", idle_seconds=1800, wait_for_capacity=True):
+        return claim_machine(state["client"], placement=placement, idle_seconds=idle_seconds,
+                             wait_for_capacity=wait_for_capacity)
+
+    def image(*, wait=True, invocation=None, placement="runpod"):
         client = state["client"]
-        quote = GenerationFacade().describe(placement=placement, client=client)
         return GenerationFacade().image(entry="cpu-image", placement=placement, client=client,
-            project=state["project"], consent=("paid",), max_usd=1.5,
-            deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-            idle_seconds=idle_seconds, wait=wait)
+            project=state["project"], wait=wait)
 
     def record():
         return json.loads(state["claim_path"].read_text())
@@ -617,7 +701,8 @@ def journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
         return record()
 
     driver = type("Journey", (), {})()
-    driver.start, driver.image, driver.record, driver.release, driver.state = start, image, record, release, state
+    driver.start, driver.claim, driver.image = start, claim, image
+    driver.record, driver.release, driver.state = record, release, state
     driver.tmp = tmp_path
     try:
         yield driver
@@ -632,6 +717,9 @@ def journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
             assert not state["worker"].is_alive()
             state["host"].shutdown()
             state["daemon"].stop()
+        if "agent_server" in state:
+            state["agent_server"].shutdown()
+            state["agent_server"].server_close()
 
 
 def _released(provider, record):
@@ -651,6 +739,7 @@ def _machines_json(capsys):
 def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     j = journey
     s = j.start()
+    j.claim()
     provider = s["provider"]
     first = j.image()
     assert first.ok, first.to_dict()
@@ -715,6 +804,7 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
 def test_resolved_runpod_policy_controls_the_claim_and_warm_hold(journey):
     j = journey
     state = j.start(gpu_types=["gpu-exact"])
+    j.claim(placement={"kind": "runpod", "policy": {"gpu_types": ["CPU fixture GPU"]}})
     result = j.image(placement={"kind": "runpod", "policy": {
         "gpu_types": ["CPU fixture GPU"], "idle_timeout_s": 0}})
     assert result.ok, result.to_dict()
@@ -730,7 +820,8 @@ def test_paid_idle_bound_caps_placement_and_reports_effective_timeout(journey, p
     from astrid.sdk.generation import _runpod_operation
     j = journey
     state = j.start()
-    result = j.image(placement=placement, idle_seconds=30)
+    j.claim(placement=placement, idle_seconds=30)
+    result = j.image(placement=placement)
     assert result.ok, result.to_dict()
     lease = j.record()["lease"]
     assert lease["idle_seconds"] == 30
@@ -753,6 +844,7 @@ def test_overridden_gpu_lease_remains_manageable_with_saved_preferences(journey)
     from astrid.sdk.generation import _runpod_operation
     j = journey
     state = j.start(gpu_types=["gpu-exact"])
+    j.claim(placement={"kind": "runpod", "policy": {"gpu_types": ["CPU fixture GPU"]}})
     result = j.image(placement={"kind": "runpod", "policy": {
         "gpu_types": ["CPU fixture GPU"], "idle_timeout_s": 300}})
     assert result.ok, result.to_dict()
@@ -767,6 +859,7 @@ def test_a_failed_reset_releases_the_pod_instead_of_settling_it(journey):
     """T5f: the outputs are delivered, but a pod whose reset failed is never left warm."""
     j = journey
     s = j.start()
+    j.claim()
     provider = s["provider"]
     provider.fail_reset = True  # the release-time reset (the claim's template reset still succeeds)
     first = j.image()
@@ -784,6 +877,7 @@ def test_a_failed_reset_releases_the_pod_instead_of_settling_it(journey):
 def test_a_custody_change_refuses_warm_reuse(journey):
     j = journey
     s = j.start(volume=VOLUME)
+    j.claim()
     provider = s["provider"]
     first = j.image()
     assert first.ok, first.to_dict()
@@ -805,6 +899,7 @@ def test_a_custody_change_refuses_warm_reuse(journey):
 def test_cancel_mid_poll_stops_the_job_then_releases(journey):
     j = journey
     s = j.start()
+    j.claim()
     provider, client = s["provider"], s["client"]
     started = j.image(wait=False)
     task_id = started.kernel_task_id
@@ -829,6 +924,7 @@ def test_cancel_mid_poll_stops_the_job_then_releases(journey):
 def test_a_bad_mount_mapping_fails_before_install_and_releases(journey):
     j = journey
     s = j.start(volume=VOLUME)
+    j.claim()
     provider = s["provider"]
     provider.mount_path = "/mnt/elsewhere"  # the provider maps the volume somewhere else
     with pytest.raises(Exception, match="mount mapping refused before install"):
@@ -842,12 +938,14 @@ def test_a_killed_pod_ends_its_lease_and_the_next_default_job_claims_fresh(journ
     """T5d: liveness before reuse; provider_terminated; a pinned job is refused; astrid machines lists both."""
     j = journey
     s = j.start()
+    j.claim()
     provider = s["provider"]
     first = j.image()
     assert first.ok, first.to_dict()
     assert j.record()["lease"]["state"] == "idle" and provider.deploys == 1
     assert [row["id"] for row in _machines_json(capsys) if row["live"]] == [POD]
     provider.kill_pod()
+    j.claim()
     second = j.image()
     assert second.ok, second.to_dict()
     assert provider.deploys == 2, "the dead machine was not replaced"
@@ -860,16 +958,10 @@ def test_a_killed_pod_ends_its_lease_and_the_next_default_job_claims_fresh(journ
     # A job pinned to the dead machine is refused with the reason and the live leases.
     with pytest.raises(Exception, match=rf"no live runpod lease for machine '{POD}' \(ended: provider_terminated\); live leases: {POD}2"):
         GenerationFacade().image(entry="cpu-image", placement={"kind": "runpod", "machine": POD},
-            client=s["client"], project=s["project"], consent=("paid",), max_usd=1.5,
-            deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
-            preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+            client=s["client"], project=s["project"], wait=True)
     # Pinned to the live one, it runs warm there.
     pinned = GenerationFacade().image(entry="cpu-image", placement={"kind": "runpod", "machine": f"{POD}2"},
-        client=s["client"], project=s["project"], consent=("paid",), max_usd=1.5,
-        deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-        offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
-        preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+        client=s["client"], project=s["project"], wait=True)
     assert pinned.ok and provider.deploys == 2
     _released(provider, j.release())
     rows = {row["id"]: row for row in _machines_json(capsys)}
@@ -964,14 +1056,12 @@ def test_an_installed_pack_entry_and_an_as_entry_user_entry_run_on_the_machine(j
     import_as_entry(bundle, "asentry-look")
     assert (Path(entries_dir()) / "asentry-look" / "entry.json").is_file()
     s = j.start()
+    j.claim()
     provider = s["provider"]
     provider.expect_entry = None
     for entry in ("studio-look", "asentry-look", "cpu-image"):
         result = GenerationFacade().image(entry=entry, placement="runpod", client=s["client"],
-            project=s["project"], consent=("paid",), max_usd=1.5,
-            deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
-            preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+            project=s["project"], wait=True)
         assert result.ok, (entry, result.to_dict())
     assert [job["entry"] for job in provider.generations] == ["studio-look", "asentry-look", "cpu-image"]
     assert provider.deploys == 1  # one warm machine served all three
@@ -998,10 +1088,7 @@ def test_an_entry_from_a_pack_outside_the_active_selection_is_refused_before_the
     provider = s["provider"]
     with pytest.raises(Exception, match=r"loose-look.*outside the active pack selection"):
         GenerationFacade().image(entry="loose-look", placement="runpod", client=s["client"],
-            project=s["project"], consent=("paid",), max_usd=1.5,
-            deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
-            preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+            project=s["project"], wait=True)
     assert provider.deploys == 0 and not s["claim_path"].exists()
     assert not [e for e in provider.events if e[0] == "graphql" and "podFindAndDeployOnDemand" in e[1]]
 
@@ -1010,14 +1097,12 @@ def test_a_workflow_file_job_runs_on_the_machine_without_a_named_entry(journey):
     """T5g: a one-off workflow file (describe_workflow id 'workflow') is a bundle-only job."""
     j = journey
     s = j.start()
+    j.claim()
     provider = s["provider"]
     provider.expect_entry = None
     bundle = j.tmp / "entries" / "cpu-image" / "workflow.py"
     result = GenerationFacade().workflow(workflow=bundle, placement="runpod", client=s["client"],
-        project=s["project"], consent=("paid",), max_usd=1.5,
-        deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-        offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
-        preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+        project=s["project"], wait=True)
     assert result.ok, result.to_dict()
     (job,) = provider.generations
     assert job["entry"] is None and set(job["execution"]) >= {"python", "companion", "source"}
@@ -1039,6 +1124,7 @@ def test_machine_cli_release_binds_requested_id_through_runtime_to_owner(journey
 
     j = journey
     state = j.start()
+    j.claim()
     result = j.image()
     assert result.ok, result.to_dict()
     current = j.record()
@@ -1075,6 +1161,7 @@ def test_machine_cli_keep_then_release_uses_the_retained_owner(journey, monkeypa
 
     j = journey
     state = j.start()
+    j.claim()
     result = j.image()
     assert result.ok, result.to_dict()
     current = j.record()
@@ -1134,10 +1221,7 @@ def test_machine_cli_claim_then_generate_reuses_pod_and_paid_expiry(journey, mon
     assert claimed["machine"]["release_at"] == before["lease"]["idle_expires_at"]
     assert state["provider"].deploys == 1 and not state["provider"].generations
     result = GenerationFacade().image(entry="cpu-image", placement="runpod", client=state["client"],
-        project=state["project"], consent=("paid",), max_usd=1.5,
-        deadline=(datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
-        offer_digest=GenerationFacade().describe(placement="runpod", client=state["client"])["offer_digest"],
-        preparation_seconds=120, execution_seconds=60, idle_seconds=120, wait=True)
+        project=state["project"], wait=True)
     assert result.ok, result.to_dict()
     after = j.record()
     assert after["pod_id"] == before["pod_id"] and state["provider"].deploys == 1
@@ -1149,6 +1233,7 @@ def test_machine_cli_claim_then_generate_reuses_pod_and_paid_expiry(journey, mon
 def test_machine_claim_quote_after_owner_loss_refuses_without_releasing_custody(journey):
     j = journey
     state = j.start()
+    j.claim()
     result = j.image()
     assert result.ok, result.to_dict()
     bindings = state["host"]._target_bindings
@@ -1192,6 +1277,7 @@ def _timing_ok(block):
 def test_a_successful_job_carries_the_phase_timing_block_and_no_receipt(journey):
     j = journey
     s = j.start()
+    j.claim()
     first = j.image()
     assert first.ok, first.to_dict()
     machine = s["client"].tasks.show(first.task_id).data["result"]["machine"]
@@ -1204,6 +1290,7 @@ def test_a_successful_job_carries_the_phase_timing_block_and_no_receipt(journey)
 def test_an_execution_failure_writes_a_receipt_and_both_records_carry_timing(journey):
     j = journey
     s = j.start()
+    j.claim()
     s["provider"].job_failure = (1, (FRAME + json.dumps({"code": "generation_failed", "category": "execution"}) + "\n").encode())
     with pytest.raises(Exception):
         j.image()
@@ -1217,6 +1304,7 @@ def test_an_execution_failure_writes_a_receipt_and_both_records_carry_timing(jou
 def test_a_pod_validation_exit_writes_a_workflow_validation_receipt(journey):
     j = journey
     s = j.start()
+    j.claim()
     s["provider"].job_failure = (3, b"")
     with pytest.raises(Exception):
         j.image()
@@ -1228,6 +1316,7 @@ def test_a_pod_validation_exit_writes_a_workflow_validation_receipt(journey):
 def test_a_manifest_digest_mismatch_writes_an_output_collection_receipt(journey):
     j = journey
     s = j.start()
+    j.claim()
     s["provider"].corrupt_manifest = True
     with pytest.raises(Exception):
         j.image()
@@ -1240,14 +1329,9 @@ def test_a_manifest_digest_mismatch_writes_an_output_collection_receipt(journey)
 def test_no_stock_writes_a_no_machine_receipt(journey):
     j = journey
     s = j.start()
-    client = s["client"]
-    quote = GenerationFacade().describe(placement="runpod", client=client)
     s["provider"].no_stock = True
     with pytest.raises(Exception):
-        GenerationFacade().image(entry="cpu-image", placement="runpod", client=client, project=s["project"],
-            consent=("paid",), max_usd=1.5, deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-            idle_seconds=1800, wait=True, wait_for_capacity=False)
+        j.claim(wait_for_capacity=False)
     receipt = _newest_receipt()
     assert receipt["stage"] == "no_machine" and receipt["collection"]["state"] == "local_only"
     assert receipt["identity"]["machine_id"] is None
@@ -1258,6 +1342,7 @@ def test_generate_failure_prints_the_journey_receipt(journey, capsys):
 
     j = journey
     s = j.start()
+    j.claim()
     s["provider"].job_failure = (1, (FRAME + json.dumps({"code": "generation_failed", "category": "execution"}) + "\n").encode())
     with pytest.raises(Exception):
         j.image()

@@ -16,7 +16,7 @@ from astrid.sdk.generation import GenerationFacade
 from astrid.core.execution.machine_run import MachineJob
 from astrid.core.generation.local_job import run_job
 from astrid.packs.runpod import machine
-from tests.core.generation.test_runpod_engine_selection import LIVE, NoPodClient, preferences  # noqa: F401
+from tests.core.generation.test_runpod_engine_selection import NoPodClient, live_machine  # noqa: F401
 from tests.integrations.test_dry_run_equals_live_run import Recorder, _built, _graph
 from tests.integrations.test_remote_machine_job_seam_cpu import FileTransport, LeaseOwner
 from tests.integrations.test_managed_host_preparation import managed_install, session  # noqa: F401
@@ -80,7 +80,7 @@ class CaptureClient(NoPodClient):
 
 
 @pytest.mark.parametrize('cell', [*SLOTS, ('video', 'h3')], ids=lambda cell: '/'.join(cell))
-def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences, pinned_managed_install):
+def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, live_machine, pinned_managed_install):
     recorder = Recorder(monkeypatch)
     client = CaptureClient()
     facade = GenerationFacade()
@@ -110,7 +110,7 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, preferences, p
     else:
         values['mode'] = mode
     method = {'image': facade.image, 'audio': facade.audio, 'video': facade.video}[modality]
-    args = dict(placement='runpod', align='trust', client=client, project='demo', **LIVE, **values)
+    args = dict(placement='runpod', align='trust', client=client, project='demo', **values)
     dry = method(**args, dry_run=True)
     dry_graph, dry_bindings, workflow = _built(recorder.take())
     seed = dry['entry']['bindings'].get('seed')

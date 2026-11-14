@@ -622,6 +622,7 @@ class RunPodLeaseOwner:
                     self._paid_consent_ids.add(consent.invocation_id)
                 self._machine_identity = (claimed["operation_id"], claimed["pod_id"])
             except BaseException as exc:
+                setattr(exc, "claim_context", {"acquired": acquired, "preparation_job": False})
                 current = self.selection._read()
                 if isinstance(exc, PodWatchdogError) and current is not None and current.get("pod_id"):
                     self.release(reason="watchdog_unavailable", _expected_operation=current["operation_id"],

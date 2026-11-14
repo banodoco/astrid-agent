@@ -26,6 +26,8 @@ from .exceptions import (
 from .results import _reconstruct_generation_result
 
 if TYPE_CHECKING:
+    from astrid.core.generation.placement import Placement
+
     from .execution_request import ExecutionRequest
     from .results import InvocationResult
 
@@ -302,11 +304,12 @@ def _require_claimed_machine(kind, machine=None):
         raise GenerationInputError(_NO_MACHINE)
 
 
-def _runpod_placement_policy(*, engine, machine=None, consent=()):
-    """A job names its engine and an optional existing machine; the claim owns spend."""
+def _runpod_placement_policy(*, engine, machine=None, consent=(), idle_timeout_s=None):
+    """A job may shorten its warm hold; the claim owns its paid bounds."""
     return {'kind': 'runpod', 'engine': engine,
             **({'machine': machine} if machine else {}),
-            **({'consent': list(consent)} if consent else {})}
+            **({'consent': list(consent)} if consent else {}),
+            **({'idle_timeout_s': idle_timeout_s} if idle_timeout_s is not None else {})}
 
 
 def _require_runpod_claim_host(client):
@@ -1361,7 +1364,7 @@ class GenerationFacade:
         model: str | None,
         mode: str,
         modality: str,
-        placement: str,
+        placement: str | Mapping[str, Any] | Placement | None,
         execution: str | None,
         inputs: dict[str, Any],
         dry_run: bool,
@@ -1489,7 +1492,9 @@ class GenerationFacade:
         if is_remote_target and not dry_run:
             _require_claimed_machine(placement.kind, placement.machine)
         placement_policy = (_runpod_placement_policy(engine=None, machine=placement.machine,
-                                                     consent=controls.get('consent', ()))
+                            consent=controls.get('consent', ()), idle_timeout_s=(
+                                placement.policy.idle_timeout_s if placement.policy.idle_timeout_s
+                                != placements.PlacementPolicy.idle_timeout_s else None))
                             if is_remote_target and not dry_run else
                             {"kind": "local", "device": placement.device} if is_managed_target else None)
         runpod_engine = pending_target = None

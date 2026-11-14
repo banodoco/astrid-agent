@@ -742,7 +742,8 @@ class RunPodMachine:
                 prepared = prepare_retained_generation(
                     request, consent=consent, lease_owner=owner, placement=adapter.placement,
                     installation=adapter.installation, validate=adapter.validate,
-                    requested_idle_seconds=consent.idle_seconds, on_acquired=on_acquired,
+                    requested_idle_seconds=min(policy.get("idle_timeout_s", consent.idle_seconds),
+                                               consent.idle_seconds), on_acquired=on_acquired,
                     entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
                     manifest_rows=manifest_rows,
                     **({"cancelled": cancelled} if cancelled is not None else {}),
