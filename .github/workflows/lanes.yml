@@ -30,6 +30,7 @@ jobs:
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
       ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
       ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
+      ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/comfyui-checkout
       ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/astrid-pinokio
     strategy:
       fail-fast: false
@@ -222,6 +223,36 @@ jobs:
           checked_out="$(git -C "$ASTRID_TEST_LIFECYCLE_CHECKOUT" rev-parse HEAD)"
           test "$checked_out" = "$LIFECYCLE_REVISION"
           echo "- RunPod lifecycle: $checked_out" >> "$GITHUB_STEP_SUMMARY"
+
+      # The pinned-source fixture (tests/integrations/_pinned_source.py) needs a real ComfyUI checkout at the engine pin,
+      # because the integrity check verifies the genuine commit; it reads ASTRID_TEST_COMFY_SOURCE, so no test needs network.
+      - name: Read the pinned ComfyUI revision
+        id: comfyui-pin
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["comfyui"]
+          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
+          print(f"revision={source['revision']}")
+          PY
+
+      - name: Check out the pinned ComfyUI (test fixtures)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.comfyui-pin.outputs.repository }}
+          ref: ${{ steps.comfyui-pin.outputs.revision }}
+          path: comfyui-checkout
+
+      - name: Record ComfyUI checkout
+        shell: bash
+        env:
+          COMFYUI_REVISION: ${{ steps.comfyui-pin.outputs.revision }}
+        run: |
+          set -euo pipefail
+          checked_out="$(git -C "$ASTRID_TEST_COMFY_SOURCE" rev-parse HEAD)"
+          test "$checked_out" = "$COMFYUI_REVISION"
+          echo "- ComfyUI: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Integration tests (shard)
         run: python -m pytest -v -rA --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
