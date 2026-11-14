@@ -6811,7 +6811,8 @@ class GenericPackHost:
         self._claim_loop_lock = threading.Lock()
 
     @staticmethod
-    def _check_attempt_directory(path: Path, metadata: os.stat_result, *, private: bool) -> None:
+    def _check_attempt_directory(path: Path, metadata: os.stat_result, *, private: bool,
+                                 require_private_mode: bool = True) -> None:
         reason = None
         if not stat.S_ISDIR(metadata.st_mode):
             reason = "not a non-symlink directory"
@@ -6821,7 +6822,7 @@ class GenericPackHost:
         elif private:
             if metadata.st_uid != os.getuid():
                 reason = f"owner uid {metadata.st_uid}, expected {os.getuid()}"
-            elif stat.S_IMODE(metadata.st_mode) != 0o700:
+            elif require_private_mode and stat.S_IMODE(metadata.st_mode) != 0o700:
                 reason = f"mode {stat.S_IMODE(metadata.st_mode):04o}, expected 0700"
         elif metadata.st_uid not in {0, os.getuid()}:
             reason = f"ancestor owner uid {metadata.st_uid}, expected root or {os.getuid()}"
@@ -6837,6 +6838,7 @@ class GenericPackHost:
         """Validate the descriptors actually traversed; keep the final one open."""
         current = Path(base.anchor)
         descriptor = None
+        traversed = []
         try:
             if not base.is_absolute() or ".." in base.parts:
                 raise HostError(f"private default attempt base refused at {base}: expected an absolute path "
@@ -6861,17 +6863,41 @@ class GenericPackHost:
                     except FileExistsError:
                         pass
                 metadata = current.lstat()
-                GenericPackHost._check_attempt_directory(current, metadata, private=private or created)
+                # Existing spool components may need repair after a restore.
+                # Ownership and type still gate opening; permissions can only
+                # be tightened on the descriptor after its identity is checked.
+                tighten = private and create and not created
+                GenericPackHost._check_attempt_directory(
+                    current, metadata, private=private or created, require_private_mode=not tighten)
                 if descriptor is not None:
                     child = os.open(part, flags, dir_fd=descriptor)
                     os.close(descriptor)
                     descriptor = child
                     opened = os.fstat(descriptor)
-                    GenericPackHost._check_attempt_directory(current, opened, private=private or created)
+                    GenericPackHost._check_attempt_directory(
+                        current, opened, private=private or created, require_private_mode=not tighten)
                     if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
                         raise HostError(f"private default attempt base refused at {current}: swapped identity; "
                                         "remove the replacement path and restart")
+                    if tighten and stat.S_IMODE(opened.st_mode) != 0o700:
+                        os.fchmod(descriptor, 0o700)
+                        repaired = os.fstat(descriptor)
+                        GenericPackHost._check_attempt_directory(current, repaired, private=True)
+                        after = current.lstat()
+                        if ((repaired.st_dev, repaired.st_ino) != (opened.st_dev, opened.st_ino)
+                                or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)):
+                            raise HostError(f"private default attempt base refused at {current}: swapped identity; "
+                                            "remove the replacement path and restart")
+                        opened = repaired
                     metadata = opened
+                    traversed.append((current, (opened.st_dev, opened.st_ino)))
+            # A replaced ancestor can point back into the same moved tree,
+            # preserving the leaf inode. Recheck every traversed component.
+            for path, identity in traversed:
+                after = path.lstat()
+                if (after.st_dev, after.st_ino) != identity:
+                    raise HostError(f"private default attempt base refused at {path}: swapped identity; "
+                                    "remove the replacement path and restart")
             yield descriptor, metadata
         except OSError as exc:
             raise HostError(f"private default attempt base refused at {current}: {exc}; "
@@ -6895,7 +6921,9 @@ class GenericPackHost:
             if private is None:
                 private = resolve_xdg_runtime_root() or Path.home() / ".cache" / "astrid"
             base = private / "attempts" / digest
-            identity = self._ensure_private_attempt_directory(base, private_root=private)
+            # The selected data/runtime/cache root can serve other consumers.
+            # Only the spool directories below it belong exclusively to us.
+            identity = self._ensure_private_attempt_directory(base, private_root=private / "attempts")
         except (OSError, ValueError) as exc:
             raise HostError(f"private default attempt base refused: {exc}; "
                             "repair the configured private state path before restarting") from exc
@@ -6926,7 +6954,7 @@ class GenericPackHost:
         if self.attempt_root is None:
             base = self._default_attempt_base()
             expected = self._private_attempt_base_identity[1]
-            with self._open_attempt_directory(base, private_root=base.parent.parent) as (descriptor, metadata):
+            with self._open_attempt_directory(base, private_root=base.parent) as (descriptor, metadata):
                 if (metadata.st_dev, metadata.st_ino) != expected:
                     raise HostError(f"private default attempt base refused at {base}: swapped identity; "
                                     "remove the replacement path and restart")
