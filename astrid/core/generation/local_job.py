@@ -9,7 +9,6 @@ the one local run path with the job's ``align``. Progress goes to
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -72,8 +71,8 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     storage_token = DECLARED_VOLUME.set(
         DeclaredVolume(Path(volume["mount_path"]), volume["size_gb"]) if volume is not None else None)
     projected = job.get("generation_settings")
-    policy = (settings.using_model_trust_unchanged(projected["models"]["trust_unchanged"])
-              if projected is not None else nullcontext())
+    policy = settings.using_model_trust_unchanged(
+        projected["models"]["trust_unchanged"] if projected is not None else False)
     try:
         with policy:
             return _run_job(entry, job, out, mode=mode, align=align)

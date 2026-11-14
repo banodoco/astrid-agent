@@ -545,6 +545,7 @@ class ManagedEnginePreparation:
         self._log_model_verification()
 
     def _log_model_verification(self):
+        """Best-effort per-preparation log, omitted when no logs root is available."""
         from types import SimpleNamespace
 
         self._keep_step_output("model_verification", SimpleNamespace(

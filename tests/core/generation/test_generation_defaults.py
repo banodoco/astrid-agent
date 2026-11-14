@@ -203,4 +203,12 @@ def test_model_opt_out_rejects_non_boolean_or_unknown_settings(value):
     models = value if isinstance(value, (dict, list)) or value is None else {'trust_unchanged': value}
     with pytest.raises(AstridError) as caught:
         settings.validate_document({'models': models})
-    assert caught.value.field.startswith('models')
+    if isinstance(models, dict) and 'unexpected' in models:
+        assert str(caught.value) == 'models only supports trust_unchanged'
+        assert caught.value.field == 'models'
+    elif not isinstance(models, dict):
+        assert str(caught.value) == 'models must be an object'
+        assert caught.value.field == 'models'
+    else:
+        assert str(caught.value) == 'models.trust_unchanged must be a boolean'
+        assert caught.value.field == 'models.trust_unchanged'

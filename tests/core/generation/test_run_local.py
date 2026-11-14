@@ -440,3 +440,45 @@ def test_machine_job_rejects_malformed_model_opt_out(tmp_path, value):
                                 'generation_settings': value}))
     with pytest.raises(local_job.JobFileError, match='generation settings'):
         local_job.read_job(path)
+
+
+@pytest.mark.parametrize('projection', ['omitted', False, True])
+def test_machine_job_hashing_requires_controller_projection(tmp_path, monkeypatch, generation_settings_store, projection):
+    import json
+
+    from astrid.core.generation import local_job
+    from tests.core.generation.test_model_verification_record import make_model, preparation
+
+    # The pod's own store says true, and there is already a valid verification record.
+    generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': True}}, 1)
+    model = make_model(tmp_path, monkeypatch)
+    model.verify()
+    assert model.reads
+    model.reads.clear()
+    body = {'schema': local_job.SCHEMA, 'align': 'check', 'inputs': {}}
+    if projection != 'omitted':
+        body['generation_settings'] = {'models': {'trust_unchanged': projection}}
+    path = tmp_path / 'job.json'
+    path.write_text(json.dumps(body))
+    store_reads = []
+    original = generation_settings_store.get_user_app_state
+
+    def pod_store(key):
+        store_reads.append(key)
+        return original(key)
+
+    def verify_job(*args, **kwargs):
+        prep = preparation(model.root)
+        prep._verify_models(model.manifest)
+        return prep._model_verification.report()
+
+    monkeypatch.setattr(generation_settings_store, 'get_user_app_state', pod_store)
+    monkeypatch.setattr(local_job, '_run_job', verify_job)
+    report = local_job.run_job('workflow', path, tmp_path / 'out')
+    if projection is True:
+        assert model.reads == []
+        assert report == {'trust_unchanged': True, 'hashed': 0, 'skipped': 1}
+    else:
+        assert model.reads
+        assert report == {'trust_unchanged': False, 'hashed': 1, 'skipped': 0}
+    assert store_reads == []
