@@ -63,10 +63,43 @@ jobs:
     name: fast checks
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Read the pinned Runtime commit
+        id: runtime-pin
+        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the Runtime (test fixtures)
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.runtime-pin.outputs.commit }}
+          path: astrid-runtime
+
+      - name: Read the pinned RunPod lifecycle revision
+        id: lifecycle-pin
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
+          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
+          print(f"revision={source['revision']}")
+          PY
+
+      - name: Check out the pinned RunPod lifecycle (test fixtures)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.lifecycle-pin.outputs.repository }}
+          ref: ${{ steps.lifecycle-pin.outputs.revision }}
+          path: runpod-lifecycle-checkout
 
       - name: Restore pip cache (C-08)
         id: c08-agent-ci-4
@@ -89,6 +122,28 @@ jobs:
 
       - name: Install the pinned Runtime and client
         run: python scripts/ci_install_runtime.py
+
+      # The collection gate imports every test module in the same environment the shards use, so it needs the pinned
+      # VibeComfy checkout; without it every module that imports vibecomfy reports a collection error that is only this job.
+      - name: Read the pinned VibeComfy revision
+        id: vibecomfy-pin
+        run: |
+          rev="$(python3 scripts/vibecomfy_pin.py)"
+          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
+            exit 1
+          fi
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Check out VibeComfy at the pinned engine revision
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
+          path: vibecomfy-checkout
+
+      - name: Install VibeComfy
+        run: python -m pip install -e ./vibecomfy-checkout
 
       # Repo structure is gated in the default lane by a shrink-only baseline
       # (tests/reshape/test_compare_baselines.py; scripts/reshape/baselines/structure_astrid.json).
