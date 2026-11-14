@@ -11,6 +11,12 @@ computer through Astrid Runtime.
 
 If an agent is doing the setup, have it follow the onboarding skill at
 `docs/setup/SKILL.md`, which shows these choices and lets you change them.
+To give your agent only that skill first (no Astrid, no Runtime), run one of
+these. It asks which harness you use (Claude Code, Codex or Hermes) and copies
+the skill into that harness's skills folder.
+
+- macOS or Linux: `python3 -c 'import urllib.request; exec(urllib.request.urlopen("https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py").read())'`
+- Windows PowerShell: `python -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py').read())"`
 
 Open Terminal on macOS or Linux, or PowerShell on Windows. Read the installer
 before running it. It keeps your existing workspace and credentials. Ask for

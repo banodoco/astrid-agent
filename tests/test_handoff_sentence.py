@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "astrid/packs/setup/docs/SKILL.md"
 MIRROR = ROOT / "docs/setup/SKILL.md"
 README = ROOT / "README.md"
-QUOTED = re.compile(r"^\*(Ask your agent: [^*\n]+)\*$", re.M)
+QUOTED = re.compile(r"^\*(Next: [^*\n]+)\*$", re.M)
 
 
 def _quoted_sentences(path: Path) -> list[str]:
@@ -29,12 +29,12 @@ def _banner() -> str:
 
 def test_setup_skill_quotes_the_sentence_exactly_once():
     assert _quoted_sentences(SKILL) == [SENTENCE]
-    assert SKILL.read_text(encoding="utf-8").count("Ask your agent:") == 1
+    assert SKILL.read_text(encoding="utf-8").count("Next:") == 1
 
 
 def test_public_mirror_quotes_the_same_sentence_once():
     assert _quoted_sentences(MIRROR) == [SENTENCE]
-    assert MIRROR.read_text(encoding="utf-8").count("Ask your agent:") == 1
+    assert MIRROR.read_text(encoding="utf-8").count("Next:") == 1
 
 
 def test_installer_success_line_is_the_sentence_after_the_first_line():

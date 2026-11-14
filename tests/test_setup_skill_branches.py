@@ -123,7 +123,7 @@ def test_setup_engine_fenced_command_reaches_real_parser_through_fake_launcher(t
     )
     launcher.chmod(0o755)
     root = tmp_path / "engine"
-    command = _guide_command("engines install comfyui --dry-run")
+    command = _guide_command("engines install comfyui --dry-run", _GENERATION)
     env = {**os.environ, "XDG_DATA_HOME": str(data), "ASTRID_ENGINE_ROOT": str(root),
            "PYTHONPATH": str(_SETUP.parents[2])}
     result = subprocess.run(command, shell=True, cwd=_SETUP.parents[2], env=env,
@@ -148,7 +148,7 @@ def test_nvidia_fenced_command_and_csv_cross_the_12_decimal_gb_boundary(tmp_path
         f"echo 'Synthetic GPU, {memory_mib} MiB'\n"
     )
     smi.chmod(0o755)
-    command = _guide_command("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader")
+    command = _guide_command("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader", _GENERATION)
     result = subprocess.run(command, shell=True, env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
                             text=True, capture_output=True, timeout=5)
     assert result.returncode == 0
@@ -292,29 +292,29 @@ def test_runpod_lease_guide_commands_parse_without_provider_access(monkeypatch, 
 
 
 def test_install_and_paid_run_commands_are_locally_gated_by_the_guide():
-    markdown = _SETUP.read_text()
+    # P4.7.1: the managed-engine install moved to the generation skill's Placement; its gate moved with it.
     gates = [
-        ("curl -fsSL https://astrid.haus/install | sh -s -- --yes",
-         "Run one install command for the user's OS, after consent"),
-        ("https://astrid.haus/install.ps1))) --yes",
-         "Run one install command for the user's OS, after consent"),
-        ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui',
-         "Run the following Linux command only on its own yes", True),
-        ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement',
+        (_SETUP, "curl -fsSL https://astrid.haus/install | sh -s -- --yes",
+         "After consent, run the line for the user's OS"),
+        (_SETUP, "https://astrid.haus/install.ps1))) --yes",
+         "After consent, run the line for the user's OS"),
+        (_GENERATION, '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui',
+         "Run this only after its own yes", True),
+        (_SETUP, '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement',
          "On that yes, save the connection"),
-        ('--apply PLAN_SHA256', "On the person's one yes"),
+        (_SETUP, '--apply PLAN_SHA256', "On that yes, rerun with the plan's digest"),
     ]
     for gate in gates:
-        command, wording, *exact = gate
-        _assert_command_has_local_gate(markdown, command, wording, exact_line=bool(exact))
+        document, command, wording, *exact = gate
+        _assert_command_has_local_gate(document.read_text(), command, wording, exact_line=bool(exact))
 
 
 def test_sensitive_command_gate_assertion_fails_when_yes_wording_is_removed():
-    markdown = _SETUP.read_text()
+    markdown = _GENERATION.read_text()
     command = '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui'
-    gate = "Run the following Linux command only on its own yes"
+    gate = "Run this only after its own yes"
     _assert_command_has_local_gate(markdown, command, gate, exact_line=True)
-    without_gate = markdown.replace(gate, "Run the following Linux command", 1)
+    without_gate = markdown.replace(gate, "Run this", 1)
     with pytest.raises(AssertionError, match="does not govern"):
         _assert_command_has_local_gate(without_gate, command, gate, exact_line=True)
 
@@ -547,7 +547,7 @@ def test_generation_defaults_fetch_saved_workflow_read_only_then_pins_it(
     assert next(row for row in rows if row["slot"] == "image.t2i")["entry"] == "portrait_saved"
 
 
-_HANDOFF = "Ask your agent: set up my generation with the astrid-setup skill."
+_HANDOFF = "Next: set up generation with the astrid-setup skill."
 _LAUNCHER_FORMS = (
     '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid"',
     '"$HOME/.local/share/astrid/run-astrid"',
@@ -745,7 +745,12 @@ def test_generation_steps_3_and_6_save_and_undo_a_placement_with_settings_set_an
 
 
 def test_work_folder_is_defined_before_first_use_and_windows_fetch_uses_curl_exe():
-    for document in (_GENERATION, _SETUP_SOURCE):
+    # P4.7.1 (c8): setup's saved-workflow fetch moved to the generation skill; setup links it
+    # and uses no work folder, so the rule applies where the fetch now lives.
+    setup = _SETUP_SOURCE.read_text()
+    assert "$WORK" not in setup and "userdata/workflows" not in setup
+    assert "astrid/packs/generation/docs/SKILL.md#set-up-my-generation" in setup
+    for document in (_GENERATION,):
         text = document.read_text()
         assert "WORK=$(mktemp -d)" in text, document
         assert "$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))" in text, document
