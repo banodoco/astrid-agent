@@ -1667,7 +1667,10 @@ class GenerationFacade:
                         or getattr(exc, "code", None) in {"COMFY_TARGET_NOT_READY", "engine_not_found"}):
                     # A preferred default owns its failure. Never silently
                     # replace it with another model after preparation fails.
-                    if isinstance(exc, AstridError):
+                    # Pack-owned errors cannot import Astrid; their structured
+                    # carrier has the same stable code/field contract. Preserve
+                    # it instead of flattening it through the string classifier.
+                    if isinstance(exc, AstridError) or callable(getattr(exc, "astrid_error_fields", None)):
                         raise generation_error(exc) from exc
                     if isinstance(exc, CapabilityValidationError):
                         raise

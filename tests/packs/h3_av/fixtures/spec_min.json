@@ -32,7 +32,8 @@
           "id": "look",
           "asset": "look.png",
           "role": "reference",
-          "modality": "image"
+          "modality": "image",
+          "purpose": "appearance"
         }
       ],
       "duration": 5

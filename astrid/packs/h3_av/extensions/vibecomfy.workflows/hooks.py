@@ -70,7 +70,8 @@ def _given(inputs: Mapping[str, Any], files: Mapping[str, Any], name: str) -> An
 def _plain_request(inputs: Mapping[str, Any], files: Mapping[str, Any], facts: Any) -> tuple[dict[str, Any], dict[str, str]]:
     """The request.v1 document and asset map for the kind's plain inputs (a prompt and one media file).
 
-    An image is the one reference of a source-free generation. A video is regenerated over its whole
+    An image protects the encoded latent at frame 0 of a source-free generation;
+    decoded pixels still depend on the VAE and output encoding. A video is regenerated over its whole
     picture and length, keeping its audio. Anything finer (masks, continuation, more references) is a
     request document.
     """
@@ -85,7 +86,7 @@ def _plain_request(inputs: Mapping[str, Any], files: Mapping[str, Any], facts: A
         frames = 120 if raw_frames is None else int(raw_frames)
         return ({**base, "operation": "generate", "output": {"duration": frames / 24},
                  "changes": {"video": [], "audio": []},
-                 "references": [{"asset": "image_ref", "purpose": "appearance"}]}, {"image_ref": str(image)})
+                 "references": [{"asset": "image_ref", "purpose": "first_frame"}]}, {"image_ref": str(image)})
     if (inputs or {}).get("frames") is not None:
         raise ValueError("h3 frames is only supported with image_ref; video_ref uses its full source length")
     duration = int(facts.measure_source_av(video)["video_frames"]) / 24

@@ -10,7 +10,7 @@ from copy import deepcopy
 from fractions import Fraction
 from typing import Any, Mapping
 
-from .request import H3Request, H3RequestError, _nonblank, _number, _object, _unknown
+from .request import H3Request, H3RequestError, _nonblank, _number, _object, _unknown, validate_image_positions
 
 FPS = Fraction(24, 1)
 SAMPLE_RATE = 48000
@@ -349,7 +349,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     for index, raw_item in enumerate(media_raw):
         path = f"media[{index}]"
         item = _object(raw_item, path) or {}
-        _unknown(item, {"id", "asset", "role", "modality", "at", "range", "edit", "audio", "hard", "latent_pin"}, path)
+        _unknown(item, {"id", "asset", "role", "modality", "at", "range", "edit", "audio", "hard", "latent_pin", "purpose", "position"}, path)
         role = item.get("role")
         if role not in _ROLES: raise H3RequestError(f"{path}.role must be timeline or reference")
         asset, inspected = _asset(item.get("asset"), f"{path}.asset", asset_modalities)
@@ -363,6 +363,17 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         if modality is not None: occurrence["modality"] = modality
         else: occurrence["inspection"] = "deferred"
         if role == "reference":
+            if "purpose" in item:
+                purpose = item["purpose"]
+                if purpose not in {"appearance", "reference", "first_frame", "keyframe"}:
+                    raise H3RequestError(
+                        f"{path}.purpose must be appearance, reference, first_frame or keyframe",
+                        code="h3.keyframe.unsupported", field=f"{path}.purpose",
+                        fix="Use keyframe with an integer position for a guide, first_frame for latent protection at zero, or reference for look conditioning",
+                    )
+                occurrence["purpose"] = purpose
+            if "position" in item:
+                occurrence["position"] = item["position"]
             if any(key in item for key in ("at", "edit", "hard", "latent_pin")): raise H3RequestError(f"{path} reference entries cannot contain placement or edit fields")
             if modality in {"image", "video", "audio"}:
                 reference_counts[modality] += 1
@@ -376,6 +387,12 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 if modality != "video": raise H3RequestError(f"{path}.range is unsupported for {modality or 'unresolved'} references")
                 occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", FPS)
         else:
+            if "purpose" in item or "position" in item:
+                raise H3RequestError(
+                    f"{path}: purpose and position apply only to source-free image references",
+                    code="h3.keyframe.unsupported", field=path,
+                    fix="Declare a source-free image reference, or use timeline at/edit fields",
+                )
             if "at" not in item: raise H3RequestError(f"{path}.at is required for timeline media")
             at, at_frame = _at(item["at"], f"{path}.at")
             occurrence.update({"at": at, "resolved_at": {"unit": "frames", "value": at_frame}, "hard": item.get("hard", False), "edit": []})
@@ -450,6 +467,20 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     _ticks(duration_fraction, FPS, "duration")
     settings = _settings(raw.get("settings", {}))
     _validate_character_swap_media(settings, occurrences, continuation)
+    _validate_image_purposes(occurrences, duration_fraction, continuation=continuation, adapter="adapter" in settings,
+                             default_first_frame=True)
+    # Picture tags name only images entering reference conditioning. Anchors and
+    # guides have their own routes and must not consume a look-reference ordinal.
+    if any(item.get("purpose") in {"first_frame", "keyframe"} for item in occurrences):
+        picture = 0
+        for item in occurrences:
+            if item["role"] != "reference" or item.get("modality") != "image":
+                continue
+            if item.get("purpose") in {"first_frame", "keyframe"}:
+                item.pop("model_tag", None)
+            else:
+                picture += 1
+                item["model_tag"] = f"<Picture {picture}>"
     value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1, "model_tags": {item["occurrence_id"]: item["model_tag"] for item in occurrences if "model_tag" in item}}
     encoded = json.dumps(json_times(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return H3Request(value=value, digest=hashlib.sha256(encoded).hexdigest())
@@ -465,8 +496,24 @@ def read_prepared_request(raw: Mapping[str, Any], expected_digest: Any, *, requi
     if request.digest != expected_digest: raise H3RequestError("prepared request digest does not match its normalized request")
     if request.value.get("version") == 2:
         effective_settings(request)
+        _validate_image_purposes(request.value["media"], _fraction(request.value["duration"], "duration"),
+                                 continuation=request.value.get("continuation", False),
+                                 adapter="adapter" in request.value["settings"], default_first_frame=False)
     if require_normalized_v2 and request.value.get("version") != 2: raise H3RequestError("prepared v2 request is missing normalized derived fields")
     return request
+
+
+def _validate_image_purposes(media, duration, *, continuation, adapter, default_first_frame):
+    source_free = not continuation and not adapter and all(item["role"] == "reference" for item in media)
+    # Only new, unsealed single-image i2v requests gain the new default. Explicit
+    # look references, multi-reference jobs and sealed older requests retain
+    # their existing look-conditioning semantics.
+    if (default_first_frame and source_free and len(media) == 1
+            and media[0].get("modality") == "image" and "purpose" not in media[0]
+            and "position" not in media[0]):
+        media[0]["purpose"] = "first_frame"
+    validate_image_positions(media, frames=_ticks(duration, FPS, "duration"), source_free=source_free,
+                             paths=[f"media[{index}]" for index in range(len(media))])
 
 
 def branch_for(request: H3Request) -> str:

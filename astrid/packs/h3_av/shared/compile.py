@@ -890,7 +890,11 @@ def _compile_native_v2(
             "output": {"duration": request.value["duration"]},
             "content": {"prompt": request.value["prompt"]},
             "changes": {"video": [], "audio": []},
-            "references": [{"asset": item["asset"], "purpose": "appearance"} for item in references],
+            "references": [
+                {"asset": item["asset"], "purpose": item.get("purpose", "appearance"),
+                 **({"position": item["position"]} if "position" in item else {})}
+                for item in references
+            ],
             "overrides": {
                 "model": settings["model"],
                 "steps": settings["steps"],
@@ -1109,6 +1113,7 @@ def _compile_generation(
         sampler=settings["sampler"], guidance=settings["guidance"],
         scheduler=scheduler, turbo_enabled=turbo_enabled,
         adapter_strength=adapter_strength,
+        image_roles=references,
     )
     if len(graph.outputs) != 1 or graph.outputs[0].expected_cardinality != "one":
         raise CompilationError("generation adapter must expose exactly one output")
@@ -1131,6 +1136,15 @@ def _compile_generation(
             "internal_outputs": []},
         "validation": "CPU structural; live GPU acceptance pending",
     }
+    timed = [item for item in references if item["purpose"] in {"first_frame", "keyframe"}]
+    if timed:
+        capabilities["reference_binding"] = "explicit look references and timed image roles"
+        capabilities["image_roles"] = references
+        if any(item["purpose"] == "first_frame" for item in timed):
+            capabilities["first_frame"] = {
+                "position": 0, "preservation": "encoded video latent; zero denoise mask",
+                "crop": "disabled", "decoded_pixels": "not guaranteed identical",
+            }
     extra_manifest = None
     if native_v2_branch is not None:
         capabilities.update({"operation": "transform", "native_v2_branch": native_v2_branch})
@@ -1144,7 +1158,12 @@ def _compile_generation(
         request=request, destination=destination, resource_root=resource,
         workflow_inputs=workflow_inputs, asset_bindings=bindings,
         capabilities=capabilities,
-        limitations=["image references only; no timed keyframes or source-free masks", "single pass, up to 362 frames at 24 fps"],
+        limitations=[
+            "image references and timed image guides only; no source-free masks",
+            "first_frame preserves the encoded latent at frame 0; identical decoded pixels are not guaranteed",
+            "keyframe conditions its requested frame without pixel preservation",
+            "single pass, up to 362 frames at 24 fps",
+        ] if timed else ["image references only; no source-free masks", "single pass, up to 362 frames at 24 fps"],
         profile_id=profile_id,
         extra_manifest=extra_manifest,
     )

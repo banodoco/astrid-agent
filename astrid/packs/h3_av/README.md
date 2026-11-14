@@ -57,7 +57,7 @@ publication was accepted.
 The request.v2 schema has no `operation` field. It requires `version: 2`, a
 non-empty `prompt`, a `media` list, and `settings`; optional fields include
 `duration` and `continuation`. For example, a source-free request with one
-image reference is:
+explicit look reference is:
 
 ```json
 {
@@ -65,7 +65,7 @@ image reference is:
   "prompt": "A paper kite drifting over a quiet field.",
   "duration": 5,
   "media": [
-    {"id": "look", "asset": "look.png", "role": "reference", "modality": "image"}
+    {"id": "look", "asset": "look.png", "role": "reference", "modality": "image", "purpose": "reference"}
   ],
   "settings": {}
 }
@@ -73,9 +73,33 @@ image reference is:
 
 Each asset-map key must exactly equal the corresponding reference's `asset`
 value, including its spelling and path. `shared/generation.py` builds one
-sampling graph from the existing H3 reference node family. Images are
-simultaneous conditioning inputs, not successive segments or implicit
-keyframes. `edit` and `continue` still require a source.
+sampling graph from the locked H3 node family. Explicit `purpose: reference`
+(or `appearance`) keeps ordered look conditioning through Picture 1..N.
+Multiple images without a purpose retain this reference behavior.
+`edit` and `continue` still require a source.
+
+Bare `image_ref` and new source-free native-v2 requests with exactly one image
+and no purpose default to `first_frame`. To request this explicitly, use
+`{"asset": "first.png", "purpose": "first_frame"}` in v1 `references`, or add
+`"purpose": "first_frame"` to a v2 image reference. The locked
+`MiniMaxH3CustomKeyframesMasked` node resizes the still to 1024×576 with crop
+disabled, encodes it with the video VAE, writes its latent at frame 0, and sets
+that video step's denoise mask to zero before sampling. Audio remains generated.
+This preserves the encoded latent at frame 0; it does **not** guarantee identical
+decoded pixels or identical pixels after H.264 encoding. Existing sealed v2
+requests retain their recorded reference semantics.
+
+For guide conditioning at another frame, use
+`{"asset": "pose.png", "purpose": "keyframe", "position": 17}` in v1
+`references`, or the same purpose/position on a v2 image reference.
+`MiniMaxH3AddGuide` conditions the zero-based `position`; it does not preserve
+pixels. Positions must be integers within the requested output frame count,
+before internal H3 tail rounding. The last integer position is supported;
+negative positions and symbolic `last` are refused with `h3.keyframe.position`.
+Only one `first_frame` is supported, at position zero. Timed image purposes are
+source-free only; incompatible roles or operations fail with
+`h3.keyframe.unsupported`. Look references, guide images and the protected
+first-frame image share the existing nine-image limit.
 
 The compiler targets the packaged native Seitanism MiniMax H3 AV continuation
 graph and LanPaint source-backed edit graph, plus the opt-in native-v2 Character
@@ -102,7 +126,7 @@ timeline. It supports 5..362 requested frames at 24 fps; native H3 lengths round
 up to `5 + 17*k`. A 15-second request samples 362 frames, validates raw AV
 coverage, and trims to exactly 360 frames and 15 seconds of audio. It does not
 silently reduce duration or chain clips. For ordinary source-free generation,
-video/audio references, timed keyframes, and source-free masks are not implemented
+video/audio references and source-free masks are not implemented
 and fail closed. Character Swap is the separate native-v2 exception for one typed
 video and one image reference. The default canvas is 1024×576; `guidance` uses
 the existing Turbo LoRA strength convention.

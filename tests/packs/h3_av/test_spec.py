@@ -27,10 +27,13 @@ CASES = json.loads((Path(__file__).parent / "fixtures/spec_min.json").read_text(
 
 # Generated with the original normalizers read with git show from Agent base
 # 1784da3e903cbe2943039e0c2c9f95cab9827e7d, before adding the canonical view.
+# The source-free v2 fixture now declares appearance explicitly: a bare single
+# image selects frame-zero latent protection. Its request digest changes with
+# that discriminator; the original reference graph is covered byte-for-byte.
 LEGACY_DIGESTS = {
     "source_free_generate": (
         "de3ab4d9992d03c5b5005fa6134810f878a8f2e9d259d08d6e8e0f08f9bb4b12",
-        "cf04863d1a24e127553eb718b6c456e55368c60fb9795dbc6b110cc3758bda0b",
+        "c285471735bebeea5412494ddd0d52474c98b09590f1671b3adf4a046fea0c93",
     ),
     "source_backed_regenerate": (
         "c5017b87fe2a1fba981c067cfe3d57b70824f7f9268a3cd094e27aa257d3919e",
@@ -42,8 +45,9 @@ LEGACY_DIGESTS = {
     ),
 }
 SCHEMA_DIGESTS = {
-    1: "3eb17c74f0c9788f4077896603c7918918aa62cf321dc26e394c31e4aca65403",
-    2: "ee22c452912dfe56c29b101dc7c6facd5a16508d352a791a23d1cf375c7b136e",
+    # Both versioned contracts now expose first_frame and positioned keyframe images.
+    1: "5d27e446693f54e187fb3bdbef384e99f739f86c9f5b393bc4004c8ace4576f9",
+    2: "a602bea4dc218ed365f6ee2b219c49d35985d0f740187f1a8f76f98bfd6f926d",
 }
 
 

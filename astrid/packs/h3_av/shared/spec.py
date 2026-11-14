@@ -32,6 +32,8 @@ class Source:
 class Reference:
     name: str
     asset: str
+    purpose: str = "appearance"
+    position: int | None = None
 
 
 @dataclass(frozen=True)
@@ -368,7 +370,8 @@ def _normalize_spec(
 
     generation_timing(spec.duration)  # Existing single-window bound; no splitting.
     media = [
-        {"id": name, "asset": ref.asset, "role": "reference", "modality": "image"}
+        {"id": name, "asset": ref.asset, "role": "reference", "modality": "image",
+         "purpose": ref.purpose, **({"position": ref.position} if ref.position is not None else {})}
         for name, ref in refs.items()
     ]
     if spec.source is not None:
@@ -483,7 +486,9 @@ def _from_v2(request: H3Request) -> H3Spec:
             )
         name = f"ref-{len(refs) + 1}"
         names[item["occurrence_id"]] = name
-        refs.append(Reference(name, item["asset"]))
+        purpose = item.get("purpose", "appearance")
+        refs.append(Reference(name, item["asset"], "appearance" if purpose == "reference" else purpose,
+                              item.get("position")))
     source = None
     ops = []
     regions: list[Region] = []
@@ -578,14 +583,16 @@ def canonical_spec(
         )
         refs = []
         for ref in value["references"]:
-            if ref["purpose"] != "appearance":
+            if ref["purpose"] not in {"appearance", "reference", "first_frame", "keyframe"}:
                 _fail(
                     "unsupported_reference",
-                    "Only appearance image references are equivalent",
+                    "Only look references, first-frame latents and timed image guides are equivalent",
                     "references",
-                    "Use untimed appearance references",
+                    "Use appearance, reference, first_frame or keyframe image purposes",
                 )
-            refs.append(Reference(f"ref-{len(refs) + 1}", ref["asset"]))
+            refs.append(Reference(f"ref-{len(refs) + 1}", ref["asset"],
+                                  "appearance" if ref["purpose"] == "reference" else ref["purpose"],
+                                  ref.get("position")))
         regions: list[Region] = []
         ops = []
         for stream in ("video", "audio"):

@@ -57,7 +57,7 @@ class H3Request:
 
 _OPERATIONS = {"edit", "continue", "generate"}
 _ACTIONS = {"generate", "preserve"}
-_PURPOSES = {"appearance", "motion", "pose", "keyframe", "audio", "style"}
+_PURPOSES = {"appearance", "reference", "motion", "pose", "keyframe", "first_frame", "audio", "style"}
 _STEMS = {"mix", "voice", "effects", "music"}
 _OVERRIDES = {"model", "steps", "seed", "sampler", "guidance"}
 
@@ -202,6 +202,48 @@ def _audio_change(value: Any, index: int) -> dict[str, Any]:
     return result
 
 
+def validate_image_positions(
+    references: list[dict[str, Any]], *, frames: int, source_free: bool,
+    paths: list[str] | None = None,
+) -> None:
+    """Bound guide positions to the requested clip, before H3 tail rounding.
+
+    first_frame protects the encoded latent at zero; keyframe only conditions
+    its declared frame. Neither contract promises identical decoded pixels.
+    """
+    anchors = 0
+    for index, item in enumerate(references):
+        path = paths[index] if paths else f"references[{index}]"
+        purpose = item.get("purpose")
+        timed = purpose in {"first_frame", "keyframe"}
+        if not timed and "position" not in item and purpose != "last_frame":
+            continue
+        if (not source_free or not timed
+                or item.get("modality", "image") != "image"):
+            raise H3RequestError(
+                f"{path}: timed image purposes are supported only for source-free image generation",
+                code="h3.keyframe.unsupported", field=path,
+                fix="Use source-free first_frame or keyframe with an integer position; for look conditioning use reference without position",
+            )
+        if purpose == "first_frame":
+            anchors += 1
+            position = item.get("position", 0)
+            if anchors > 1 or type(position) is not int or position != 0:
+                raise H3RequestError(
+                    f"{path}: first_frame supports exactly one protected latent at frame 0",
+                    code="h3.keyframe.unsupported", field=path,
+                    fix="Declare one first_frame image at position 0; use keyframe for other guide positions",
+                )
+        else:
+            position = item.get("position")
+            if type(position) is not int or not 0 <= position < frames:
+                raise H3RequestError(
+                    f"{path}.position must be an integer in 0..{frames - 1}; timed keyframes condition that frame",
+                    code="h3.keyframe.position", field=f"{path}.position",
+                    fix=f"Set position to an integer in 0..{frames - 1} (zero-based, within the requested clip)",
+                )
+
+
 def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
     if not isinstance(raw, Mapping):
         raise H3RequestError("request must be an object")
@@ -250,15 +292,20 @@ def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
     references_raw = raw.get("references", [])
     if not isinstance(references_raw, list):
         raise H3RequestError("references must be an array")
-    references: list[dict[str, str]] = []
+    references: list[dict[str, Any]] = []
     for index, value in enumerate(references_raw):
         path = f"references[{index}]"
         item = _object(value, path) or {}
-        _unknown(item, {"asset", "purpose"}, path)
+        _unknown(item, {"asset", "purpose", "position"}, path)
         purpose = item.get("purpose")
+        if purpose == "last_frame":
+            validate_image_positions([item], frames=0, source_free=False, paths=[path])
         if purpose not in _PURPOSES:
             raise H3RequestError(f"{path}.purpose must be one of {sorted(_PURPOSES)}")
-        references.append({"asset": _nonblank(item.get("asset"), f"{path}.asset"), "purpose": purpose})
+        reference = {"asset": _nonblank(item.get("asset"), f"{path}.asset"), "purpose": purpose}
+        if "position" in item:
+            reference["position"] = item["position"]
+        references.append(reference)
 
     if operation == "generate":
         from .generation import IMAGE_REFERENCE_CAPACITY, generation_timing
@@ -266,15 +313,18 @@ def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
         if "duration" not in output:
             raise H3RequestError("output.duration is required for generate")
         try:
-            generation_timing(output["duration"])
+            timing = generation_timing(output["duration"])
         except ValueError as exc:
             raise H3RequestError(str(exc)) from exc
         if changes["video"] or changes["audio"]:
             raise H3RequestError("generate creates the full audiovisual timeline; changes/masks require a source-backed operation")
         if not 1 <= len(references) <= IMAGE_REFERENCE_CAPACITY:
             raise H3RequestError("generate requires one to nine image references")
-        if any(item["purpose"] in {"audio", "keyframe"} for item in references):
-            raise H3RequestError("generate supports image guidance, not audio references or timed keyframes")
+        if any(item["purpose"] == "audio" for item in references):
+            raise H3RequestError("generate supports image guidance, not audio references")
+        validate_image_positions(references, frames=timing["requested_frames"], source_free=True)
+    else:
+        validate_image_positions(references, frames=0, source_free=False)
 
     overrides_raw = _object(raw.get("overrides", {}), "overrides") or {}
     _unknown(overrides_raw, _OVERRIDES, "overrides")
