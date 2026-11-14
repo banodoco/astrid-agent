@@ -2074,6 +2074,7 @@ def test_machine_claim_real_parser_discloses_gpu_storage_and_fresh_policy_consen
 
 def test_machine_claim_prompt_and_default_retention_and_one_attempt(monkeypatch, capsys):
     cli, saved, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
     prompts = []
     assert cli.main(["claim", "--max-usd", "2", "--no-wait-for-capacity"],
                     claim=claim, describe=describe,
