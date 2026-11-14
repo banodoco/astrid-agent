@@ -144,7 +144,7 @@ disclosed idle retention.
 For example, after approval of these illustrative limits:
 
 ```sh
-astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --for 30m --consent paid
+astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --deadline 2027-12-31T23:59:59Z --for 30m --consent paid
 astrid generate image "A studio portrait" --placement runpod
 ```
 
@@ -176,7 +176,7 @@ and asks for paid consent; `--consent paid` is the explicit unattended form.
 For example, after approving the displayed terms:
 
 ```sh
-astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --max-hourly-usd 1 --max-usd 3 --for 30m --consent paid
+astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --max-hourly-usd 1 --max-usd 3 --deadline 2027-12-31T23:59:59Z --for 30m --consent paid
 astrid machines
 astrid machines --json
 ```
