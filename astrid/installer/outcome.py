@@ -42,7 +42,7 @@ PUBLIC_INSTALL_LINE_WINDOWS = "& ([scriptblock]::Create((irm https://astrid.haus
 # The hand-off sentence. The setup skill owns the words (astrid/packs/setup/docs/SKILL.md);
 # this is the one copy in Agent code. scripts/render_readme.py imports it, and
 # tests/test_handoff_sentence.py asserts it equals the skill's sentence.
-HANDOFF_SENTENCE = "Ask your agent: set up my generation with the astrid-setup skill."
+HANDOFF_SENTENCE = "Next: set up generation with the astrid-setup skill."
 
 
 def _repair_next() -> str:

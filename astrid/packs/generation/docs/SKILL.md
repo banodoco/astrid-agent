@@ -79,8 +79,7 @@ The blocks show the Linux path. In a source checkout with no launcher, use
    the `restore:` command its `defaults set` printed. Say which changes were
    made and which were not.
 
-A ComfyUI that is not running is a finding, not an error: say so, and ask the user
-to start it.
+If their ComfyUI is not running, say so, and ask the user to start it.
 
 ## Generate
 
@@ -140,6 +139,38 @@ user's yes:
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL --apply PLAN_SHA256
 ```
+
+**No local GPU or ComfyUI?** On Linux or Windows, run this once. On macOS, run
+`uname -m` instead:
+
+```sh
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+```
+
+A capable Linux or Windows computer has one NVIDIA GPU with at least 12 GB of
+VRAM, or meets the declared requirement of the default generation, if there is
+one. Do not add memory across GPUs. Report what you found, and say if capability
+is unconfirmed. Then offer one of these, each on its own yes:
+
+**Astrid's managed engine** (`local`), on a capable computer where it is
+available. Check the plan first. This installs nothing:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui --dry-run
+```
+
+Run this only after its own yes. It installs a new ComfyUI on this computer and
+leaves the user's own one alone:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui
+```
+
+**RunPod** rents a GPU and costs money: hand over to the
+[RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines)
+(installed name: `runpod`), and never ask for a key in chat.
+
+The user can say no to both and set up generation later.
 
 **Warm models.** A model that has loaded stays in memory between jobs, so the
 next job that needs it starts without reloading. ComfyUI frees a loaded model

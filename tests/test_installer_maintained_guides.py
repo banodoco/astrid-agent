@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = "docs/setup/SKILL.md"
 PLAIN_UNIX_LINE = "curl -fsSL https://astrid.haus/install | sh"
 FULL_UNIX_LINE = "curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies off"
-FRESH_LABEL = "for a fresh install, or after the choices step only"
+FRESH_LABEL = "for a fresh install, after step 1"
 BANNER_ENDING = "Confirm that astrid.haus shows Connected, then help me begin at https://astrid.haus."
 FENCE = re.compile(r"^```[^\n]*\n(.*?)^```", re.M | re.S)
 ISO_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z")
@@ -112,16 +112,37 @@ def test_install_journey_hands_over_to_generation():
     assert "coming" not in text.lower()
 
 
+def _generation_placement() -> str:
+    # The generation skill's "## Placement" section, which owns the no-GPU route (P4.7.1, c1).
+    text = (ROOT / "astrid/packs/generation/docs/SKILL.md").read_text(encoding="utf-8")
+    start = text.index("## Placement\n")
+    return text[start:text.index("\n## ", start + 1)]
+
+
 def test_generation_setup_routes_capability_and_consent():
+    # P4.7.1: the capability check and engine offer moved to the generation skill's Placement
+    # (c1); setup step 4 keeps a one-line link. The Wan2GP "planned (Plan 12)" line is gone (c9).
     body = " ".join(_steps(_skill())[4].split())
     for phrase in (
-        "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader",
-        "uname -m", "NVIDIA", "12 GB", "declared", "Wan2GP", "Plan 12",
-        "managed engine", "RunPod", "own yes", "Never", "chat", "--doctor",
+        "No local GPU or ComfyUI?", "astrid/packs/generation/docs/SKILL.md#placement",
+        "managed engine", "RunPod", "Never", "--doctor",
         "runpod/docs/SKILL.md#runpod-generation-machines",
     ):
         assert phrase in body, phrase
-    assert body.count("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader") == 1
+    assert "nvidia-smi" not in body
+    assert "Plan 12" not in _skill()
+    placement = " ".join(_generation_placement().split())
+    for phrase in (
+        "No local GPU or ComfyUI?",
+        "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader",
+        "uname -m", "NVIDIA", "12 GB", "declared",
+        "managed engine", "RunPod", "own yes", "never ask for a key in chat",
+        "runpod/docs/SKILL.md#runpod-generation-machines",
+    ):
+        assert phrase in placement, phrase
+    assert placement.count("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader") == 1
+    generation = (ROOT / "astrid/packs/generation/docs/SKILL.md").read_text(encoding="utf-8")
+    assert "Wan2GP" in generation[generation.index("## Set up my generation"):generation.index("## Generate")]
     core = (ROOT / "astrid/packs/_core/docs/SKILL.md").read_text(encoding="utf-8")
     row = next(line for line in core.splitlines() if line.startswith("| Set up my generation:"))
     assert "https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md#4-set-up-generation" in row
@@ -150,7 +171,7 @@ def test_generation_commands_include_platform_launchers_and_paid_bounds():
         assert launcher in skill, launcher
     for command in ("credential set runpod", "machines claim", "--consent paid", "generate describe --placement runpod"):
         assert command not in body, command
-    assert "engines install comfyui --dry-run" in body
+    assert "engines install comfyui --dry-run" in _generation_placement()  # P4.7.1 (c1)
     assert "generate fetch-models" in body and "--apply PLAN_SHA256" in body
 
     # Every guide the installer ships or the MCP surface serves: build_prompts() serves each
@@ -282,7 +303,7 @@ def test_existing_install_route_keeps_saved_choices_and_passes_no_choice_flags()
     route = _routes()["Existing install"]
     assert "Your saved setup choices stay as they are. Tell me if you want to change one." in route
     assert "step 1" not in route, route
-    assert "`--yes` is not needed" in route, route
+    assert "no `--yes`" in route, route
     for command in EXISTING_INSTALL_COMMANDS:
         assert f"`{command}`" in route, command
     for flag in CHOICE_FLAG_NAMES:
@@ -295,7 +316,7 @@ def test_app_brief_route_shows_the_brief_values_and_runs_its_command_as_given():
     assert "Show those values back" in route, route
     assert "Install with these choices, or change one?" in route, route
     assert "run the brief's command exactly as given" in route, route
-    assert "Then follow step 2's success and failure rules." in route, route
+    assert "Then check the result as in step 2." in route, route
 
 
 def test_success_first_lines_start_with_a_quoted_prefix_in_step_2():
@@ -316,7 +337,7 @@ def test_step_2_labels_the_full_flag_command_for_fresh_install_only():
 def test_step_1_keeps_the_brief_values_and_applies_a_changed_choice_alone():
     # R1.5
     body = _steps(_skill())[1]
-    assert "brief's values" in body
+    assert "keep the brief's other values" in body
     assert "unchanged" not in body
 
 
@@ -359,14 +380,14 @@ def test_setup_choices_recommend_current_settings():
     assert "Recommend Astrid defaults." in routes["Fresh install"]
     existing = routes["Existing install"]
     assert 'Recommend "keep your current settings".' in existing
-    assert "Do not guess saved choices." in existing
-    assert "Do not show the choices list." in existing
+    # P4.7.1 (c3): "Do not guess" and "Do not show" restated this promise; it now says it once.
+    assert "Keep the saved choices and say so:" in existing
     choices = " ".join(_steps(_skill())[1].split())
-    assert "If there is an App brief, recommend keeping the brief's values." in choices
-    assert "For a fresh install without an App brief, recommend Astrid defaults." in choices
+    # P4.7.1 (c4): step 1 no longer repeats the routes' recommendations, which are asserted above.
+    assert "recommend" not in choices.lower(), choices
     assert "Astrid defaults are:" in choices
     install = " ".join(_steps(_skill())[2].split())
-    assert "Use the approved values from step 1 for every choice." in install
+    assert "After consent, run the line for the user's OS with the values from step 1." in install
     banner_line = (
         "Before you install, show me the setup choices, recommending my current "
         "settings, and let me change them."
