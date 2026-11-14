@@ -96,9 +96,10 @@ class NoPodClient:
                                 kernel_task_id='task-a', raw_result={'state': 'queued'})
 
 
-def test_managed_preview_and_live_freeze_declarations_with_installed_alternate(monkeypatch):
+def test_managed_preview_and_live_freeze_declarations_with_installed_alternate(monkeypatch, tmp_path):
     from astrid.core.generation import preflight
     from astrid.core.generation.backends.comfy_target import _resolve_roles
+    from astrid.core.generation.engine_local_endpoint import record_engine_root
     from astrid.core.model_catalog.registry import ModelRegistry
 
     # The target has only the second declared VAE choice. Managed selection
@@ -111,11 +112,15 @@ def test_managed_preview_and_live_freeze_declarations_with_installed_alternate(m
     resolved, failures = _resolve_roles(SimpleNamespace(model_roles={'vae': declaration}), alternate.object_info())
     assert resolved == {'vae': r'FLUX1\ae.safetensors'} and not failures
     selections = []
-    monkeypatch.setattr(preflight, 'select_generation_target',
+    # Keep real managed deferral: the installed client must never be bound
+    # while preparing declarations. Admission only needs the registered root.
+    record_engine_root('comfyui', str(tmp_path / 'engine'))
+    monkeypatch.setattr(preflight, '_installed_managed_target',
                         lambda *args, **kwargs: selections.append(alternate) or alternate)
     graphs = []
     prepare = generation._prepare_catalog_target_workflow
     def capture(**kwargs):
+        assert kwargs['target_client'] is None
         result = prepare(**kwargs)
         graphs.append(result[0].compile('api'))
         return result
