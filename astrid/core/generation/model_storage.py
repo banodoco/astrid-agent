@@ -14,6 +14,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from .engine_contracts import IntegrityError, UnsafePathError
@@ -36,6 +37,22 @@ class ModelStorageInsufficient(IntegrityError):
     def __init__(self, needed: int, free: int, task: str = "<task>"):
         super().__init__(storage_refusal_message(needed, free, task), step_id="fetch")
         self.details = {"needed_bytes": needed, "free_bytes": free}
+
+
+@dataclass(frozen=True)
+class StorageCapacity:
+    """A measured budget and precisely the destination directories it covers."""
+
+    scope: tuple[str, int | Path]
+    parents: frozenset[Path]
+    free_bytes: int
+
+
+@dataclass(frozen=True)
+class _QuotaRow:
+    current: int
+    soft: int | None
+    hard: int | None
 
 
 def _unescape(value: str) -> str:
@@ -61,7 +78,7 @@ def _mount(path: Path, content: str) -> tuple[Path, str, str]:
     return selected[0]
 
 
-def _quota_rows(text: str) -> dict[str, tuple[int, tuple[int, ...]]]:
+def _quota_rows(text: str) -> dict[str, _QuotaRow]:
     """Parse mfsgetquota -n's exact-number table; format drift is not unlimited."""
     rows = {}
     for line in text.splitlines():
@@ -73,13 +90,15 @@ def _quota_rows(text: str) -> dict[str, tuple[int, tuple[int, ...]]]:
                 or any(value != "-" and (not value.isascii() or not value.isdigit())
                        for value in (fields[2], fields[4]))):
             raise ValueError("invalid quota evidence")
-        rows[fields[0]] = (int(fields[1]), tuple(int(value) for value in (fields[2], fields[4]) if value != "-"))
+        rows[fields[0]] = _QuotaRow(int(fields[1]),
+                                  int(fields[2]) if fields[2] != "-" else None,
+                                  int(fields[4]) if fields[4] != "-" else None)
     if set(rows) != {"inodes", "length", "size", "realsize"}:
         raise ValueError("incomplete quota evidence")
     return rows
 
 
-def _quota(path: Path, *, deadline: float) -> dict[str, tuple[int, tuple[int, ...]]]:
+def _quota(path: Path, *, deadline: float) -> dict[str, _QuotaRow]:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise ValueError("quota deadline exhausted")
@@ -92,21 +111,24 @@ def _quota(path: Path, *, deadline: float) -> dict[str, tuple[int, tuple[int, ..
 
 
 def available_model_bytes(parents: Iterable[Path], *, deadline: float,
-                          check: Callable[[], None]) -> tuple[int | None, bool]:
-    """Return measured available bytes and whether proceeding needs a warning.
+                          check: Callable[[], None]) -> tuple[tuple[StorageCapacity, ...], bool]:
+    """Return scoped measurements and whether proceeding needs a warning.
 
-    Valid logical-byte quotas bound statvfs. Missing tools, unknown policies,
-    malformed reports and unsupported backends fall back to statvfs. Either
-    source can independently establish capacity; neither source being available
-    means unknown capacity, not zero. The caller warns only when proceeding.
+    A filesystem budget covers only destinations on that device; a hard-byte
+    quota covers destinations beneath that quota on its mounted filesystem.
+    Soft quotas never refuse, irrespective of grace. Unavailable observations
+    are unknown, not zero; other measured budgets remain independently usable.
     """
     try:
         content = Path("/proc/self/mountinfo").read_text()
     except (OSError, ValueError):
         content = None
-    available, scopes = [], set()
+    requested = set(parents)
+    filesystem_targets: dict[int, set[Path]] = {}
+    filesystem_free: dict[int, list[int]] = {}
+    scopes: dict[Path, set[Path]] = {}
     quota_unknown = content is None
-    for parent in parents:
+    for parent in sorted(requested):
         check()
         try:
             probe = parent
@@ -114,12 +136,14 @@ def available_model_bytes(parents: Iterable[Path], *, deadline: float,
                 probe = probe.parent
             if not probe.is_dir() or any(path.is_symlink() for path in (probe, *probe.parents)):
                 raise UnsafePathError("unsafe target path")
+            device = probe.stat().st_dev
         except OSError:
             quota_unknown = True
             continue
+        filesystem_targets.setdefault(device, set()).add(parent)
         try:
             space = os.statvfs(probe)
-            available.append(max(0, space.f_bavail * space.f_frsize))
+            filesystem_free.setdefault(device, []).append(max(0, space.f_bavail * space.f_frsize))
         except (OSError, ValueError):
             pass  # A native quota report may still establish capacity.
         if content is None:
@@ -130,10 +154,12 @@ def available_model_bytes(parents: Iterable[Path], *, deadline: float,
             quota_unknown = True
             continue
         if filesystem in {"fuse.mfs", "fuse.moosefs", "mfs"} or source.startswith("mfs#"):
-            scopes.add(mount)
-            scopes.update(path for path in (probe, *probe.parents) if mount in path.parents)
+            for scope in (mount, *(path for path in (probe, *probe.parents) if mount in path.parents)):
+                scopes.setdefault(scope, set()).add(parent)
         elif filesystem.startswith("fuse") or filesystem in _NETWORK_FILESYSTEMS:
             quota_unknown = True
+    available = [StorageCapacity(("filesystem", device), frozenset(filesystem_targets[device]), min(values))
+                 for device, values in sorted(filesystem_free.items())]
     constrained = False
     for scope in sorted(scopes):
         check()
@@ -142,18 +168,24 @@ def available_model_bytes(parents: Iterable[Path], *, deadline: float,
         except (OSError, ValueError, subprocess.SubprocessError):
             quota_unknown = True
             continue
-        for kind, (current, limits) in rows.items():
+        for kind, row in rows.items():
             if kind == "length":
-                available.extend(max(0, limit - current) for limit in limits)
-                constrained |= bool(limits)
-            elif limits:
+                if row.hard is not None:
+                    available.append(StorageCapacity(("quota", scope), frozenset(scopes[scope]),
+                                                     max(0, row.hard - row.current)))
+                    constrained = True
+            elif row.soft is not None or row.hard is not None:
                 # Inode/chunk/replica limits require other accounting. They
                 # cannot turn unknown payload capacity into a refusal.
                 quota_unknown = True
     if scopes and not constrained:
         quota_unknown = True
-    return (min(available) if available else None), quota_unknown or not available
+    measured = {parent for capacity in available for parent in capacity.parents}
+    return tuple(available), quota_unknown or bool(requested - measured)
 
+
+
+_INVENTORY_CUSTODY: dict[int, subprocess.Popen[bytes]] = {}
 
 
 def _inventory_command(argv: list[str], *, deadline: float, cancelled: Callable[[], bool],
@@ -167,6 +199,7 @@ def _inventory_command(argv: list[str], *, deadline: float, cancelled: Callable[
     retained: list[tuple[int, str]] = []
     output, pending = bytearray(), b""
     interrupted = False
+    unreaped = cleanup_unconfirmed = False
 
     def line(raw: bytes) -> None:
         if top is None:
@@ -203,21 +236,40 @@ def _inventory_command(argv: list[str], *, deadline: float, cancelled: Callable[
         if pending:
             line(pending)
     finally:
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        # A reaped leader does not establish that its inherited stdout or
+        # process group drained. The new session still belongs to this command.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            cleanup_unconfirmed = True
         try:
             process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            interrupted = True
+        except (OSError, subprocess.TimeoutExpired):
+            unreaped = True
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            cleanup_unconfirmed = True
+        else:
+            # A non-child descendant (including an unreaped zombie) cannot be
+            # waited here. Keep its group custody and report the uncertainty.
+            cleanup_unconfirmed = True
+        if unreaped or cleanup_unconfirmed:
+            _INVENTORY_CUSTODY[process.pid] = process
         if process.stdout is not None:
             process.stdout.close()
     text = ("".join(f"{size}\t{path}\n" for size, path in sorted(retained, reverse=True))
             if top is not None else output.decode("utf-8", errors="replace"))
     if interrupted or process.returncode != 0:
         text += "could not gather complete listing: timeout, cancellation, or command failure\n"
+    if unreaped:
+        text += f"could not reap inventory command (pid {process.pid}); cleanup unconfirmed; custody retained\n"
+    if cleanup_unconfirmed:
+        text += f"inventory process group {process.pid} cleanup unconfirmed; custody retained\n"
     return text
 
 

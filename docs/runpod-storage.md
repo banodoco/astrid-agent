@@ -122,11 +122,40 @@ cleanup and execution-timeout test assertions remain unchanged. The one-hour
 preparation limit also remains unchanged.
 
 For MooseFS, preparation queries `mfsgetquota -n` at the mount and every
-visible existing ancestor of each destination directory. Usable bytes are
-the minimum of filesystem `f_bavail * f_frsize` and every soft/hard logical
-length quota minus its current usage, clamped at zero. The old storage probe
-uses only `statvfs`; that can describe the cluster rather than a subtree quota.
-Nominal provider size minus `du` is not used as quota authority.
+visible existing ancestor of each destination directory. Each observation
+retains its scope: filesystem `f_bavail * f_frsize` covers destinations on
+that device, and a quota covers destinations beneath that subtree on its
+mount. Only those destinations' missing bytes are summed against that
+observation. Common filesystem and ancestor quotas still sum their shared
+demand. A refusal reports the failing scope's needed/free numbers.
+
+The manager's round-7 ruling for the **P1 soft-quota false refusal** is that
+a soft limit never refuses, regardless of grace. Soft and hard fields are
+parsed separately; only the hard logical-length limit minus current usage,
+clamped at zero, supplies quota headroom. The previous `without_grace` test
+actually used default grace. It now declares zero grace and expects admission
+below the hard limit; a 24-hour-grace regression also distinguishes soft198
+from hard1000 versus hard198 at usage190. This explicitly supersedes the
+earlier soft-limit expectation. The old storage probe uses only `statvfs`;
+that can describe the cluster rather than a subtree quota. Nominal provider
+size minus `du` is not used as quota authority.
+
+The round-7 URL/revision finding remains a known missed refusal under the
+manager's ruling. Native VibeComfy can redownload a digest-valid file when
+its source receipt's requested URL/revision changes. Its exact decision is
+inline in `fetch.download`; no read-only callable exposes the complete
+decision. `read_resolution_receipt` returning `None` also covers absent
+receipts where SHA verification permits reuse, so it is not a download
+decision. Preparation keeps its digest credit rather than duplicating
+native policy. A corrected reuse API and its native integration are separate
+work owned by the manager.
+
+Hashing checks cancellation before every 1 MiB read and before returning,
+while retaining the existing deadline and file-identity checks. A single
+blocked filesystem read is not preempted by this callback. Inventory cleanup
+signals its owned process group even after leader exit; unreaped commands or
+unconfirmed groups remain retained in process custody and are explicitly
+reported in the declared inventory log.
 
 The optional native query supports logical-length quotas. Missing tools,
 failed or malformed reports, no visible byte quota, other network backends,

@@ -793,11 +793,108 @@ def test_fetch_storage_preflight_falls_back_for_unaccounted_quota_dimensions(fet
 
 def test_fetch_storage_preflight_respects_soft_limit_without_grace(fetch_volume):
     c = fetch_volume
+    c.state.free = 810  # usage190, hard1000; only the soft limit has eight bytes left.
     c.state.transform = lambda text, _path: text.replace(
+        'soft quota grace period: default', 'soft quota grace period: 0').replace(
         'length   | 190 | - | - |', 'length   | 190 | 198 | 95.96 |')
+    c.fetch()
+    assert c.native == ['fetch']
+
+
+@pytest.mark.parametrize('hard,refused', [(1000, False), (198, True)])
+def test_fetch_storage_preflight_only_hard_quota_can_refuse(fetch_volume, hard, refused):
+    c = fetch_volume
+    c.state.free = hard - 190
+    c.state.transform = lambda text, _path: text.replace(
+        'soft quota grace period: default', 'soft quota grace period: 24h').replace(
+        'length   | 190 | - | - |', 'length   | 190 | 198 | 95.96 |')
+    if refused:
+        with pytest.raises(IntegrityError) as caught:
+            c.fetch()
+        assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
+        assert c.native == []
+    else:
+        c.fetch()
+        assert c.native == ['fetch']
+
+
+@pytest.mark.parametrize('first_size,refused', [(4, False), (5, True)])
+def test_fetch_storage_preflight_keeps_destination_quota_scopes(fetch_volume, first_size, refused):
+    c = fetch_volume
+    c.have.unlink()
+    first, second = c.models / 'first', c.models / 'second'
+    first.mkdir()
+    second.mkdir()
+    c.rows[0].update(subdir='first', size=first_size,
+                     sha256=hashlib.sha256(b'x' * first_size).hexdigest())
+    c.rows[1]['subdir'] = 'second'
+    c.state.free = 100
+    headroom = {str(first): 4, str(second): 9}
+    c.state.transform = lambda text, path: text.replace('| 290 |', f'| {190 + headroom.get(path, 100)} |')
+    if refused:
+        with pytest.raises(IntegrityError) as caught:
+            c.fetch()
+        assert caught.value.details == {'needed_bytes': 5, 'free_bytes': 4}
+        assert '5 bytes needed, 4 bytes free' in str(caught.value)
+        assert c.native == []
+    else:
+        c.fetch()
+        assert c.native == ['fetch']
+    assert {str(first), str(second)} <= {argv[-1] for argv in c.quota_calls}
+
+
+@pytest.mark.parametrize('separate,unavailable,refused', [(True, False, False), (False, False, True), (True, True, False)])
+def test_fetch_storage_preflight_keeps_filesystem_scopes(fetch_volume, monkeypatch, separate, unavailable, refused):
+    import os
+
+    c = fetch_volume
+    c.have.unlink()
+    first, second = c.models / 'first', c.models / 'second'
+    first.mkdir()
+    second.mkdir()
+    c.rows[0]['subdir'], c.rows[1]['subdir'] = 'first', 'second'
+    c.state.mountinfo = c.state.mountinfo.replace('fuse.mfs mfs#host:9421', 'ext4 /dev/fake')
+    original_stat = Path.stat
+
+    def stat(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        if separate and path in {first, second}:
+            fields = list(info)
+            fields[2] = 101 if path == first else 102
+            return os.stat_result(fields)
+        return info
+
+    monkeypatch.setattr(Path, 'stat', stat)
+    def space(path):
+        if unavailable and path == second:
+            raise OSError('PRIVATE_PROVIDER_BODY')
+        return SimpleNamespace(f_bavail=({first: 4, second: 9}[path] if separate else 12), f_frsize=1)
+
+    monkeypatch.setattr(os, 'statvfs', space)
+    if refused:
+        with pytest.raises(IntegrityError) as caught:
+            c.fetch()
+        assert caught.value.details == {'needed_bytes': 13, 'free_bytes': 12}
+        assert c.native == []
+    else:
+        c.fetch()
+        assert c.native == ['fetch']
+        if unavailable:
+            _assert_storage_warning(c)
+
+
+def test_fetch_storage_preflight_sums_shared_ancestor_quota(fetch_volume):
+    c = fetch_volume
+    c.have.unlink()
+    first, second = c.models / 'first', c.models / 'second'
+    first.mkdir()
+    second.mkdir()
+    c.rows[0]['subdir'], c.rows[1]['subdir'] = 'first', 'second'
+    c.state.free = 100
+    c.state.transform = lambda text, path: text.replace('| 290 |', '| 202 |') if path == str(c.models) else text
     with pytest.raises(IntegrityError) as caught:
         c.fetch()
-    assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
+    assert caught.value.details == {'needed_bytes': 13, 'free_bytes': 12}
     assert c.native == []
 
 

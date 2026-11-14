@@ -86,7 +86,7 @@ class _TargetFiles:
             raise UnsafePathError("target is not a singly linked regular file")
         return info
 
-    def file_fact(self, path, *, hash_bytes, deadline):
+    def file_fact(self, path, *, hash_bytes, deadline, check=None):
         parts = self._relative(path)
         if type(hash_bytes) is not bool:
             raise RecipeValidationError("hash selection must be boolean")
@@ -108,6 +108,8 @@ class _TargetFiles:
                         count = 0
                         while True:
                             _check(deadline)
+                            if check is not None:
+                                check()
                             block = os.read(fd, 1024 * 1024)
                             if not block:
                                 break
@@ -119,6 +121,8 @@ class _TargetFiles:
                             raise UnsafePathError("target changed during inspection")
                         digest = h.hexdigest()
                     _check(deadline)
+                    if check is not None:
+                        check()
                     return FileFact(True, True, False, before.st_size, digest)
                 finally:
                     os.close(fd)

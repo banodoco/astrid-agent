@@ -538,7 +538,7 @@ class ManagedEnginePreparation:
         for model in manifest["models"]:
             self.check()
             path = str(Path(manifest["models_root"]) / model["subdir"] / model["name"])
-            fact = files.file_fact(path, hash_bytes=True, deadline=self.deadline)
+            fact = files.file_fact(path, hash_bytes=True, deadline=self.deadline, check=self.check)
             expected = str(model.get("sha256") or "").removeprefix("sha256:")
             if (not fact.exists or not fact.regular or fact.symlink
                     or fact.bytes != model["size"] or not re.fullmatch(r"[0-9a-f]{64}", expected)
@@ -552,7 +552,7 @@ class ManagedEnginePreparation:
 
         root = Path(manifest["models_root"])
         files = _TargetFiles(str(root))
-        needed, parents, candidates = 0, set(), []
+        demand, candidates = {}, []
         for model in manifest["models"]:
             self.check()
             path = root / model["subdir"] / model["name"]
@@ -567,21 +567,22 @@ class ManagedEnginePreparation:
         for model, path, present in candidates:
             self.check()
             if present:
-                fact = files.file_fact(str(path), hash_bytes=True, deadline=self.deadline)
+                fact = files.file_fact(str(path), hash_bytes=True, deadline=self.deadline, check=self.check)
                 if fact.sha256 == str(model["sha256"]).removeprefix("sha256:"):
                     continue
-            needed += model["size"]
-            parents.add(path.parent)
-        if needed:
-            free, warn = available_model_bytes(parents, deadline=self.deadline, check=self.check)
-            if free is not None and needed > free:
-                logs_root = getattr(self, "logs_root", None)
-                if logs_root is not None:
-                    try:
-                        declare_storage_inventory(logs_root, root, deadline=self.deadline, cancelled=self.cancelled)
-                    except (OSError, ValueError):
-                        pass  # Diagnostics must never replace the measured refusal.
-                raise ModelStorageInsufficient(needed, free, getattr(self, "task", "<task>"))
+            demand[path.parent] = demand.get(path.parent, 0) + model["size"]
+        if demand:
+            capacities, warn = available_model_bytes(demand, deadline=self.deadline, check=self.check)
+            for capacity in capacities:
+                needed = sum(demand[parent] for parent in capacity.parents)
+                if needed > capacity.free_bytes:
+                    logs_root = getattr(self, "logs_root", None)
+                    if logs_root is not None:
+                        try:
+                            declare_storage_inventory(logs_root, root, deadline=self.deadline, cancelled=self.cancelled)
+                        except (OSError, ValueError):
+                            pass  # Diagnostics must never replace the measured refusal.
+                    raise ModelStorageInsufficient(needed, capacity.free_bytes, getattr(self, "task", "<task>"))
             if warn:
                 from types import SimpleNamespace
                 self._keep_step_output("storage", SimpleNamespace(stdout="", stderr=STORAGE_WARNING + "\n"))
