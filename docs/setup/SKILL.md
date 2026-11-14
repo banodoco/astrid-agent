@@ -273,7 +273,7 @@ checkin, checkout again. Merge the changes before retrying checkin.
 Report whether the placement change succeeded. Return to the generation handoff
 for defaults and undo.
 
-Before each paid generation, obtain the current offer without claiming a pod.
+Before claiming a paid machine, obtain the current offer without claiming a pod.
 On Linux:
 
 ```sh
@@ -294,28 +294,32 @@ On Windows:
 
 Success is exit 0 with an offer and `offer_digest`; otherwise use `--doctor`.
 Disclose the account, offer, rate, image, optional volume, estimated cost,
-preparation, execution and idle times, cap and absolute UTC deadline. Explain
-that the next command starts a paid generation with those limits. The user can
-decline before any pod is claimed. Obtain a fresh paid consent for that exact
-offer and bounds. Changed prices or offers need another yes. Suggest a $2 cap
-within the saved ceiling. Substitute the approved entry, input file, digest,
-future UTC deadline and time bounds below. Validate the entry and inputs first.
+spend cap, idle retention and absolute UTC deadline. Explain that claim rents
+a machine and the following generation uses it within the claim's limits.
+The user can decline before any pod is claimed. Obtain a fresh paid consent for that exact offer and bounds.
+The claim discloses the current policy and hourly ceiling; changed prices or
+terms need another yes. Suggest a $2 cap within the saved ceiling. Substitute
+the approved entry, input file and future UTC deadline below. Validate the
+entry and inputs first. Claim must succeed before running generate.
 Linux:
 
 ```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --offer-digest OFFER_DIGEST --preparation-seconds PREPARATION_SECONDS --execution-seconds EXECUTION_SECONDS --idle-seconds IDLE_SECONDS --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" machines claim --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --for 30m --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod --json
 ```
 
 macOS:
 
 ```sh
-"$HOME/.local/share/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --offer-digest OFFER_DIGEST --preparation-seconds PREPARATION_SECONDS --execution-seconds EXECUTION_SECONDS --idle-seconds IDLE_SECONDS --json
+"$HOME/.local/share/astrid/run-astrid" machines claim --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --for 30m --json
+"$HOME/.local/share/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod --json
 ```
 
 Windows:
 
 ```powershell
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate image --entry ENTRY --inputs-json C:\absolute\path\inputs.json --placement runpod --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --offer-digest OFFER_DIGEST --preparation-seconds PREPARATION_SECONDS --execution-seconds EXECUTION_SECONDS --idle-seconds IDLE_SECONDS --json
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" machines claim --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --for 30m --json
+& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate image --entry ENTRY --inputs-json C:\absolute\path\inputs.json --placement runpod --json
 ```
 
 Success requires a successful generation result and delivered artifact, not
@@ -352,7 +356,7 @@ When the user asks to set up RunPod, use the complete
 [RunPod machine skill](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/runpod/docs/SKILL.md#runpod-generation-machines)
 (installed name: `runpod`). It covers the credential prompt, `astrid machines
 setup`, saved GPU/storage choices and `setup --show`. Setup saves preferences;
-a paid claim or generation requires separate consent. Do not launch RunPod
+a paid claim requires separate consent, and generation uses that claim. Do not launch RunPod
 setup or a paid test automatically.
 
 ## Run everything on this computer

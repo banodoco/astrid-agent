@@ -18,6 +18,8 @@ def test_pod_cancellation_latches_until_preparation_drains(tmp_path, monkeypatch
     events = []
 
     class Preparation:
+        # The engine identity a run declares its engine-log slice from (8e9a3c3c5).
+        root, recipe = str(tmp_path / 'engine'), SimpleNamespace(engine='comfyui')
         def __init__(self, **kwargs):
             self.cancelled = kwargs['cancelled']
         def prepare(self, path, **kwargs):
@@ -83,6 +85,8 @@ def test_pod_preparation_failure_never_executes_and_closes(tmp_path, monkeypatch
     calls = []
 
     class Preparation:
+        # The engine identity a run declares its engine-log slice from (8e9a3c3c5).
+        root, recipe = str(tmp_path / 'engine'), SimpleNamespace(engine='comfyui')
         def __init__(self, **kwargs): pass
         def prepare(self, *args, **kwargs):
             calls.append('prepare')
@@ -110,6 +114,8 @@ def test_execution_failure_closes_preparation_and_removes_scratch(tmp_path, monk
     workflow.with_name('source.json').write_text('{}')
     events = []
     class Preparation:
+        # The engine identity a run declares its engine-log slice from (8e9a3c3c5).
+        root, recipe = str(tmp_path / 'engine'), SimpleNamespace(engine='comfyui')
         def __init__(self, **kwargs):
             events.append('opened')
         def prepare(self, *args, **kwargs):

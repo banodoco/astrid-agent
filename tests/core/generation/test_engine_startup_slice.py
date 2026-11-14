@@ -34,6 +34,10 @@ def _supervisor(tmp_path, healthy):
     supervisor.source_identity = lambda deadline, channel: ("revision", "digest")
     supervisor.launch = {"argv": [sys.executable], "cwd": "/", "env": {}}
     supervisor.base_launch = supervisor.launch
+    # The supervisor binds its launch at admission from the platform adapter (13b4bf569);
+    # this adapter yields the same fixed launch the payload asks for.
+    supervisor.adapter = SimpleNamespace(start_request=lambda recipe, root, *, deadline, models_root: SimpleNamespace(
+        argv=tuple(supervisor.launch["argv"]), cwd=supervisor.launch["cwd"], env=dict(supervisor.launch["env"])))
 
     def spawn(request, *, output_log=None):
         process = _child("import sys; sys.stdout.write('startup import error\\n'); sys.stdin.readline()")

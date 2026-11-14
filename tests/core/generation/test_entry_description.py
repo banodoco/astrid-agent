@@ -18,7 +18,7 @@ def test_shipped_foley_description_preserves_explicit_sfx_video_and_license(tmp_
         {'prompt': 'gravel footsteps', 'video_ref': str(video)}, mode='sfx', kind='audio')
     assert description['kind'] == 'audio' and description['modes'] == ['sfx']
     assert description['mode'] == 'sfx'
-    assert description['license_notice'] == 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.'
+    assert 'license_notice' not in description
     assert {row['name']: row['type'] for row in description['inputs']}['video_ref'] == 'file'
     assert values == {'prompt': 'gravel footsteps', 'video_ref': str(video)}
     native = entries.describe_entry(identifier, mode='sfx', _native=True)

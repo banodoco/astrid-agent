@@ -86,8 +86,8 @@ A placement is where a generation runs. Three kinds:
   The download runs only on the user's yes; setup never starts it.
 - **`attached`**: the user's own ComfyUI at a loopback address, given as the endpoint.
   Astrid never starts or stops it. Pass the address as `--placement http://127.0.0.1:8188`.
-- **`runpod`**: a rented RunPod GPU. Pass `--placement runpod`; it needs paid consent
-  (`--consent paid`), see below.
+- **`runpod`**: a rented RunPod GPU. Pass `--placement runpod`; it uses an already claimed
+  machine. Approve paid limits with `astrid machines claim` first, see below.
 
 Resolution, the same for every call: the request, then the user's default
 placement, then the built-in default (`local`). `--placement auto` means "use the
@@ -107,7 +107,8 @@ A workflow file runs without any pack or entry:
 ```sh
 python3 -m astrid generate workflow FILE --placement local --inputs-json INPUTS.json
 python3 -m astrid generate workflow FILE --placement http://127.0.0.1:8188 --inputs-json INPUTS.json
-python3 -m astrid generate workflow FILE --placement runpod --consent paid --inputs-json INPUTS.json
+python3 -m astrid machines claim --max-usd 2 --for 30m --consent paid
+python3 -m astrid generate workflow FILE --placement runpod --inputs-json INPUTS.json
 ```
 
 `INPUTS.json` is a JSON object of the workflow's declared inputs. List them with
@@ -165,8 +166,9 @@ and the complete claim/keep/release workflow, use the
 asks to configure RunPod; a missing preference refuses and never launches
 setup automatically.
 
-Each generation needs fresh paid consent. A compatible retained machine is
-reused within its existing paid limit; reuse cannot extend that limit.
+Each machine claim needs fresh paid consent. Generation uses a compatible
+already-claimed machine within its existing paid limit; reuse cannot extend
+that limit.
 `astrid machines` shows the scheduled release time, minutes left, estimated
 cost and hourly rate. `astrid machines keep` authorizes a separate bounded
 extension, and `astrid machines release ID` ends the machine. Automatic

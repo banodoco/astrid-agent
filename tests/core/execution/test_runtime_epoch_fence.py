@@ -8,10 +8,12 @@ from astrid.core.execution.generic_host import HostError, RuntimeProtocolClient
 class _Generated:
     def __init__(self) -> None:
         self.epochs = [3]
+        self.health_reads = 0
         self.heartbeats: list[dict[str, object]] = []
         self.settlements: list[dict[str, object]] = []
 
     def health(self):
+        self.health_reads += 1
         return {"runtime_epoch": self.epochs[-1]}
 
     def claim_task(self, **kwargs):
@@ -76,11 +78,16 @@ def test_successful_settlement_keeps_claim_epoch_after_health_refresh() -> None:
 
     client.generated.epochs.append(4)
     assert client.health()["runtime_epoch"] == 4
-    with pytest.raises(HostError, match="epoch changed after claim"):
-        client.settle(
-            "task-1", "lease-1", attempt_id="attempt-1", fence=2,
-            result={"status": "completed"}, outputs=[], effect=None,
-        )
-    assert client.generated.settlements == []
+    health_reads = client.generated.health_reads
+    assert client.settle(
+        "task-1", "lease-1", attempt_id="attempt-1", fence=2,
+        result={"status": "completed"}, outputs=[], effect=None,
+    ) == {"ok": True}
+    assert client.generated.settlements == [{
+        "attempt_id": "attempt-1", "lease_id": "lease-1", "fence": 2,
+        "result": {"status": "completed"}, "outputs": [], "effect": None,
+        "runtime_epoch": 3, "idempotency_key": "settle-attempt-1-2",
+    }]
+    assert client.generated.health_reads == health_reads
     assert client._attempt_runtime_epochs == {"attempt-1": 3}
     assert client._runtime_epoch == 4

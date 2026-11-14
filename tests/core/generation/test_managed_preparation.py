@@ -33,6 +33,22 @@ def preparation(tmp_path, monkeypatch):
     return body, source
 
 
+def test_preparation_engine_copies_table_entry_and_refuses_missing(monkeypatch):
+    from astrid.core.contracts.errors import AstridValueError
+    from astrid.core.generation import entries
+    from astrid.core.generation.managed_preparation import _preparation_engine
+
+    shared = SimpleNamespace(commands=None)
+    monkeypatch.setattr(entries, 'engine_table', lambda: {'comfyui': shared})
+    assert _preparation_engine('comfyui') is not shared
+    assert _preparation_engine(None) is not shared
+    for name, expected in [('unknown', 'unknown'), (None, 'comfyui')]:
+        monkeypatch.setattr(entries, 'engine_table', lambda: {})
+        with pytest.raises(AstridValueError) as caught:
+            _preparation_engine(name)
+        assert str(caught.value) == f"no generation.engine contribution for {expected!r}"
+
+
 @pytest.mark.parametrize('missing_field', ['sha256', 'size'])
 def test_judge_declarations_reports_every_unpinned_ready_model(tmp_path, monkeypatch, missing_field):
     import importlib.util

@@ -4,7 +4,7 @@ import json
 
 from astrid import console
 from astrid.core.model_catalog.registry import ModelRegistry
-from astrid.core.model_catalog.requests import PaidControls, build_generate_argv
+from astrid.core.model_catalog.requests import PaidControls, build_claim_argv, build_generate_argv
 from tests import runpod_guard
 
 
@@ -16,8 +16,8 @@ def test_catalog_request_parity_and_required_inputs(tmp_path):
     for entry in ModelRegistry.load_default().list_all():
         for mode, spec in entry.modes.items():
             inputs = {name: f"value-{name}" for name in spec.requires}
-            live = build_generate_argv(entry, mode, inputs, "runpod", controls)
-            dry = build_generate_argv(entry, mode, inputs, "runpod", controls, dry_run=True)
+            live = build_generate_argv(entry, mode, inputs, "runpod")
+            dry = build_generate_argv(entry, mode, inputs, "runpod", dry_run=True)
             assert dry.count("--dry-run") == 1
             assert [arg for arg in dry if arg != "--dry-run"] == live
             assert live[:2] == ["generate", entry.modality]
@@ -29,8 +29,11 @@ def test_catalog_request_parity_and_required_inputs(tmp_path):
                                "video_ref": ("--video-ref", inputs[name])}.get(
                                    name, ("--input", f"{name}={inputs[name]}"))
                 assert live[live.index(flag) + 1] == value or (flag == "--input" and value in live)
-            assert live[-7:] == ["--consent", "paid", "--max-usd", "2.5", "--deadline",
-                                  "2099-01-01T00:00:00Z", "--json"]
+            claim = build_claim_argv(controls)
+            assert claim == ["machines", "claim", "--consent", "paid", "--max-usd", "2.5", "--deadline",
+                             "2099-01-01T00:00:00Z", "--json"]
+            assert live[-1:] == ["--json"]
+            assert not {"--consent", "--max-usd", "--deadline", "--allow-paid", "--until-release"}.intersection(live)
 
 
 def test_paid_catalog_dry_run_attempts_no_runpod_request(tmp_path, monkeypatch, capsys):
@@ -41,8 +44,7 @@ def test_paid_catalog_dry_run_attempts_no_runpod_request(tmp_path, monkeypatch, 
     path = tmp_path / "stage.json"
     path.write_text(json.dumps({"max_usd": 2, "deadline": "2099-01-01T00:00:00Z"}))
     entry = next(e for e in ModelRegistry.load_default().list_all() if e.id == "z-image")
-    args = build_generate_argv(entry, "t2i", {"prompt": "A clear test scene"}, "runpod",
-                               PaidControls.from_json(path), dry_run=True)
+    args = build_generate_argv(entry, "t2i", {"prompt": "A clear test scene"}, "runpod", dry_run=True)
     before = len(runpod_guard.blocked_attempts)
     rc = console.main(args)
     output = json.loads(capsys.readouterr().out)

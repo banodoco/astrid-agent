@@ -26,6 +26,8 @@ from .exceptions import (
 from .results import _reconstruct_generation_result
 
 if TYPE_CHECKING:
+    from astrid.core.generation.placement import Placement
+
     from .execution_request import ExecutionRequest
     from .results import InvocationResult
 
@@ -302,11 +304,12 @@ def _require_claimed_machine(kind, machine=None):
         raise GenerationInputError(_NO_MACHINE)
 
 
-def _runpod_placement_policy(*, engine, machine=None, consent=()):
-    """A job names its engine and an optional existing machine; the claim owns spend."""
+def _runpod_placement_policy(*, engine, machine=None, consent=(), idle_timeout_s=None):
+    """A job may shorten its warm hold; the claim owns its paid bounds."""
     return {'kind': 'runpod', 'engine': engine,
             **({'machine': machine} if machine else {}),
-            **({'consent': list(consent)} if consent else {})}
+            **({'consent': list(consent)} if consent else {}),
+            **({'idle_timeout_s': idle_timeout_s} if idle_timeout_s is not None else {})}
 
 
 def _require_runpod_claim_host(client):
@@ -396,8 +399,10 @@ def _generation_boundary(method):
     def call(*args, **kwargs):
         from astrid.core.generation.preflight import generation_error
         from astrid.core.contracts.errors import AstridError
+        from astrid.core.pack.discovery import pack_discovery_scope
         try:
-            result = method(*args, **kwargs)
+            with pack_discovery_scope():
+                result = method(*args, **kwargs)
         except AstridSDKError as exc:
             if not callable(getattr(exc, 'to_envelope', None)):
                 canonical = generation_error(exc)
@@ -1361,7 +1366,7 @@ class GenerationFacade:
         model: str | None,
         mode: str,
         modality: str,
-        placement: str,
+        placement: str | Mapping[str, Any] | Placement | None,
         execution: str | None,
         inputs: dict[str, Any],
         dry_run: bool,
@@ -1487,9 +1492,24 @@ class GenerationFacade:
         is_managed_target = placement.kind == 'local'
         is_remote_target = placement.kind not in placements.BUILTIN_KINDS
         if is_remote_target and not dry_run:
-            _require_claimed_machine(placement.kind, placement.machine)
+            try:
+                _require_claimed_machine(placement.kind, placement.machine)
+            except GenerationInputError:
+                # Keep local entry admission ahead of the missing-machine
+                # refusal, just as the owning host does before attaching a job.
+                entry_id = workflow_entry.get('id') if workflow_entry is not None else model
+                if entry_id is not None:
+                    from astrid.core.execution.machine_run import resolve_machine
+
+                    machine = resolve_machine(placement.kind)
+                    entry_refusal = getattr(machine, 'entry_refusal', None)
+                    reason = entry_refusal(entry_id) if callable(entry_refusal) else None
+                    if reason is not None:
+                        raise GenerationInputError(reason) from None
+                raise
         placement_policy = (_runpod_placement_policy(engine=None, machine=placement.machine,
-                                                     consent=controls.get('consent', ()))
+                            consent=controls.get('consent', ()),
+                            idle_timeout_s=placement.policy.requested_idle_timeout_s)
                             if is_remote_target and not dry_run else
                             {"kind": "local", "device": placement.device} if is_managed_target else None)
         runpod_engine = pending_target = None

@@ -174,7 +174,7 @@ def test_task130_unsupported_action_entry_fails_before_invoke(monkeypatch):
 
 
 @pytest.mark.parametrize('kwargs', [
-    {'engine': 'wan2gp'}, {'target': 'runpod'}, {'consent': 'user_env'},
+    {'engine': 'wan2gp'}, {'placement': 'runpod'}, {'consent': 'user_env'},
     {'consent': ('standing_grant',)},
 ])
 def test_launch_rejects_invalid_controls_before_selection(monkeypatch, kwargs):

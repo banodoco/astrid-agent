@@ -50,6 +50,33 @@ def user_entry(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def prepared(tmp_path, monkeypatch):
+    """Stand in for the owned engine preparation a local job runs first (47e77a513); record its custody."""
+    import contextlib
+    from types import SimpleNamespace
+    from astrid.core.generation import managed_preparation
+    events = []
+
+    class Preparation:
+        root, recipe = str(tmp_path / "engine"), SimpleNamespace(engine="comfyui")
+
+        def __init__(self, **kwargs):
+            pass
+
+        def prepare(self, workflow, **kwargs):
+            events.append("prepare")
+            return {"endpoint": "http://127.0.0.1:8188"}
+
+        def close(self, *, execution_root, worker_drained):
+            assert worker_drained
+            events.append("close")
+
+    monkeypatch.setattr(managed_preparation, "ManagedEnginePreparation", Preparation)
+    monkeypatch.setattr(managed_preparation, "preparation_scope", lambda report: contextlib.nullcontext())
+    return events
+
+
+@pytest.fixture
 def ready(monkeypatch):
     seen = []
     monkeypatch.setattr("astrid.core.generation.preflight.require_generation_target_readiness",
@@ -57,16 +84,17 @@ def ready(monkeypatch):
     return seen
 
 
-def test_job_applies_entry_binds_and_defaults_like_the_facade(user_entry, ready, tmp_path, monkeypatch):
+def test_job_applies_entry_binds_and_defaults_like_the_facade(user_entry, ready, prepared, tmp_path, monkeypatch):
     runs = []
     monkeypatch.setattr(RUN, lambda workflow, out, **kwargs: runs.append(kwargs) or {"outputs": []})
     assert _run_cli(tmp_path, user_entry, {"label": "supplied"}) == 0
     assert json.loads(runs[0]["workflow_inputs"]) == {"prefix": "supplied"}  # bind: label -> prefix
     assert _run_cli(tmp_path, user_entry, {}) == 0
     assert json.loads(runs[1]["workflow_inputs"]) == {"prefix": "from-default"}  # the entry's default
+    assert prepared == ["prepare", "close"] * 2  # each job prepares and releases the engine once
 
 
-def test_job_runs_readiness_and_target_schema_on_the_machine(user_entry, ready, tmp_path, monkeypatch):
+def test_job_runs_readiness_and_target_schema_on_the_machine(user_entry, ready, prepared, tmp_path, monkeypatch):
     runs, schema = [], []
     monkeypatch.setattr(RUN, lambda workflow, out, **kwargs: runs.append(kwargs) or {"outputs": []})
     real = entries.target_schema
@@ -81,8 +109,10 @@ def test_job_runs_readiness_and_target_schema_on_the_machine(user_entry, ready, 
         raise AstridError("engine not ready", code="COMFY_TARGET_NOT_READY", field="target")
 
     monkeypatch.setattr("astrid.core.generation.preflight.require_generation_target_readiness", refuse)
-    with pytest.raises(ValueError, match="engine not ready"):  # --json errors surface as the readiness error
+    # e724eb501: the job command re-raises a typed AstridError for the structured JSON renderer.
+    with pytest.raises(AstridError, match="engine not ready") as caught:
         _run_cli(tmp_path, user_entry, {})
+    assert caught.value.code == "COMFY_TARGET_NOT_READY"
     assert len(runs) == 1
 
     # An entry that needs review is refused by target_schema, before the run.

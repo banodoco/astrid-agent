@@ -304,7 +304,9 @@ def _build_source_archive(source_root: Path, destination: Path,
     # verifier reads git state. Only bytecode is dropped. Every member is root-owned so the
     # archive is deterministic and extracts safely as root regardless of the local owner.
     manifest = pod_source_manifest(source_root, pins)
-    with tarfile.open(destination, "w:gz") as archive:
+    # Bootstrap runs inside the paid preparation window. Large source trees
+    # need fast compression, rather than gzip's default level 9.
+    with tarfile.open(destination, "w:gz", compresslevel=1) as archive:
         for directory in SOURCE_DIRS:
             archive.add(
                 Path(source_root) / directory,

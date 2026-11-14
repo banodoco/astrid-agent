@@ -140,7 +140,9 @@ def _tools_for_parsers(parsers) -> dict[str, dict[str, Any]]:
                     schema["description"] = "The file's text (written to a private temporary file for Astrid)."
                 # Paired flags share a dest (--wait/--detach): the first one names it.
                 properties.setdefault(action.dest, schema)
-                if action.required or (not action.option_strings and action.nargs not in ("?", "*")):
+                # MCP task calls name their project explicitly; CLI selection is local state.
+                if (action.required or (path[0] == "tasks" and action.dest == "project")
+                        or (not action.option_strings and action.nargs not in ("?", "*"))):
                     required.append(action.dest)
             description = summary or leaf.description or f"astrid-tools {' '.join(path)}"
             tools[_tool_name(path)] = {
@@ -557,7 +559,13 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              {"document": document,
               "idempotency_key": {"type": "string", "description": "A new unique key for this publication."}},
              ["document", "idempotency_key"], kind="timeline_document", command="publish"),
-    ]), **_generation_tools(), **_engine_install_tools()}
+    ]), **_generation_tools(), **_engine_install_tools(), **_machine_tools()}
+
+
+def _machine_tools():
+    from astrid.core.machines_cli import _parser
+
+    return _tools_for_parsers({'machines': _parser()})
 
 
 def _engine_install_tools():

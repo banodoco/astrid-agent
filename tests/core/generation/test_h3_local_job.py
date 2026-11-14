@@ -2,17 +2,20 @@
 
 The pod-side job file for entry ``h3`` goes through ``local_job.run_job``: build runs once (CPU), the run
 action's ``after_outputs`` seam runs the hook once on the generated output, and what is sealed is the
-composed and verified candidate, not the raw output. Only the ComfyUI submit is stood in for.
+composed and verified candidate, not the raw output. Only the ComfyUI submit and the owned engine's
+preparation (47e77a513: a pod run prepares the installed engine under custody first) are stood in for.
 """
+import contextlib
 import hashlib
 import importlib
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from astrid.core.generation import entries
+from astrid.core.generation import entries, managed_preparation
 from astrid.core.generation.local_job import run_job
 
 REQUEST = Path(__file__).resolve().parents[2] / "fixtures" / "h3_cpu" / "request.v2.json"
@@ -52,7 +55,15 @@ def test_job_runs_h3_build_and_after_outputs_once_each(tmp_path, monkeypatch, pr
     def settle(workflow, out, **kwargs):
         """The run action's seam: the hook sees the generated output before it is sealed."""
         sealed["job_dir_during_run"] = json.loads(kwargs["after_outputs_job"])["job_dir"]
-        assert Path(workflow).is_relative_to(sealed["job_dir_during_run"])
+        # 260ee2304: a pod run executes a frozen copy of the job's built workflow, staged in its
+        # preparation scratch beside the output, never the job directory's mutable file.
+        frozen = Path(workflow)
+        assert frozen.name == "workflow.py" and frozen.parent.name == "selected"
+        assert frozen.parent.parent.name.startswith("astrid-pod-preparation-")
+        assert frozen.parent.parent.parent == tmp_path
+        built = {hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path in Path(sealed["job_dir_during_run"]).rglob("workflow.py")}
+        assert hashlib.sha256(frozen.read_bytes()).hexdigest() in built
         assert kwargs["manifest"]["engine"] == "comfyui"
         if prepared:
             assert json.loads(kwargs["workflow_inputs"])["seed"] == 987
@@ -68,8 +79,28 @@ def test_job_runs_h3_build_and_after_outputs_once_each(tmp_path, monkeypatch, pr
         sealed["composed"] = hashlib.sha256(composed.read_bytes()).hexdigest()
         return {}
 
+    preparations = []
+
+    class Preparation:
+        """The owned engine preparation, prepared and closed exactly once around the run."""
+        root, recipe = str(tmp_path / "engine"), SimpleNamespace(engine="comfyui")
+
+        def __init__(self, **kwargs):
+            assert kwargs["mode"] == "check"
+
+        def prepare(self, workflow, **kwargs):
+            preparations.append("prepare")
+            return {"endpoint": "http://127.0.0.1:8188"}
+
+        def close(self, *, execution_root, worker_drained):
+            assert worker_drained
+            preparations.append("close")
+
+    monkeypatch.setattr(managed_preparation, "ManagedEnginePreparation", Preparation)
+    monkeypatch.setattr(managed_preparation, "preparation_scope", lambda report: contextlib.nullcontext())
     monkeypatch.setattr(action, "_run_and_settle", settle)
     run_job("h3", job, tmp_path / "out")
     assert builds == [1] and hooks == [1]
+    assert preparations == ["prepare", "close"]
     assert sealed["composed"] != sealed["raw"]
     assert not Path(sealed["job_dir_during_run"]).exists()  # removed when the job ends

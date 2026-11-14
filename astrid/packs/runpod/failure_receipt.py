@@ -155,6 +155,8 @@ def message_for(stage: str, cause: Mapping[str, Any]) -> str:
     facts = [template.format(cause[name]) for name, template in _FACT_SENTENCES if name in cause]
     if facts:
         text = text.rstrip(".") + ": " + ", ".join(facts) + "."
+    if stage == "model_download" and cause.get("code") == "deadline_exceeded":
+        text = text.rstrip(".") + "; rerun to resume the download."
     return text
 
 

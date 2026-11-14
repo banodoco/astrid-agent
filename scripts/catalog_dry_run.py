@@ -71,24 +71,18 @@ def required_value(name: str, directory: Path, port=None) -> str:
     return "test-value"
 
 
-def catalog_dry_run(entry, mode: str, directory: Path, *, controls=None,
+def catalog_dry_run(entry, mode: str, directory: Path, *,
                     invoke: Callable | None = None) -> DryRun:
     """Admit one catalog entry/mode through console.main, with required inputs."""
-    from astrid.core.model_catalog.requests import PaidControls, build_generate_argv
+    from astrid.core.model_catalog.requests import build_generate_argv
 
     if invoke is None:
         from astrid import console
         invoke = console.main
     spec = entry.modes[mode]
-    # Synthetic controls satisfy request validation, never live authority.
-    # The request builder owns their CLI representation; dry-run is mandatory.
-    if controls is None:
-        controls_path = directory / "dry-run-controls.json"
-        controls_path.write_text(json.dumps({"max_usd": 2, "deadline": "2099-01-01T00:00:00Z"}), encoding="utf-8")
-        controls = PaidControls.from_json(controls_path)
     fields = getattr(entry, "input_fields", {})
     inputs = {name: required_value(name, directory, fields.get(name)) for name in spec.requires}
-    argv = build_generate_argv(entry, mode, inputs, "runpod", controls, dry_run=True)
+    argv = build_generate_argv(entry, mode, inputs, "runpod", dry_run=True)
     if argv[:1] != ["generate"] or "--dry-run" not in argv:
         raise ValueError("catalog preflight only permits generate --dry-run")
     stdout, stderr = io.StringIO(), io.StringIO()
