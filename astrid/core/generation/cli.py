@@ -300,6 +300,11 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     out.add_argument('--file', required=True)
     back = actions.add_parser('checkin', help='Save an edited checkout; a stale one is refused.')
     back.add_argument('file')
+    one = actions.add_parser('set', help='Save one setting; placement takes a ComfyUI URL.')
+    one.add_argument('key', choices=('placement',))
+    one.add_argument('value')
+    gone = actions.add_parser('unset', help='Remove one setting; placement goes back to the built-in default.')
+    gone.add_argument('key', choices=('placement',))
     command = sub.add_parser('release', help='Admit release through the current host owner.')
     command.add_argument('--engine', required=True)
     command.add_argument('--placement', required=True)
@@ -380,6 +385,10 @@ def _settings_command(parsed):
     with _open_client() as client:
         if parsed.settings_action == 'checkout':
             result = settings.checkout(parsed.file, client)
+        elif parsed.settings_action == 'set':
+            result = settings.set_placement(parsed.value, client)
+        elif parsed.settings_action == 'unset':
+            result = settings.unset_placement(client)
         else:
             result = settings.checkin(parsed.file, client)
     print(json.dumps(result, indent=2, sort_keys=True))

@@ -324,6 +324,25 @@ def set_machine_policy(machine: str, policy: Mapping[str, Any], client: Any = No
                   legacy_path=legacy_path)
 
 
+def set_placement(url: str, client: Any = None) -> dict[str, Any]:
+    """Save one attached ComfyUI endpoint as the placement default; the URL must pass ``normalize_target``."""
+    from astrid.core.generation import targets
+
+    try:
+        endpoint = targets.normalize_target({"endpoint": url}).endpoint
+    except (targets.TargetConfigError, ValueError) as exc:
+        raise refuse(str(exc), key="placement.endpoint", code="generation_settings_invalid") from exc
+    snapshot = update(lambda document: document.__setitem__("placement", {"kind": "attached", "endpoint": endpoint}),
+                      client)
+    return {"version": snapshot.version, "placement": snapshot.content["placement"]}
+
+
+def unset_placement(client: Any = None) -> dict[str, Any]:
+    """Remove the saved placement; the next resolution falls back to the built-in placement."""
+    snapshot = update(lambda document: document.__setitem__("placement", {}), client)
+    return {"version": snapshot.version, "placement": snapshot.content["placement"]}
+
+
 __all__ = ["KEY", "Snapshot", "checkin", "checkout", "current_store", "empty_document", "machine_policy",
-           "placement_default", "read", "refuse", "set_machine_policy", "set_store_factory", "update", "using",
-           "validate_document", "validate_pin"]
+           "placement_default", "read", "refuse", "set_machine_policy", "set_placement", "set_store_factory",
+           "unset_placement", "update", "using", "validate_document", "validate_pin"]
