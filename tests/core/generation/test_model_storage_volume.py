@@ -56,9 +56,19 @@ def test_claimed_volume_counts_whole_mount_before_native_fetch(fetch_volume, tmp
     needed = 8192
     c.rows[1]['size'] = needed
     remaining = 4096 if refused else needed
-    adjustment = 10 * 2**30 - allocated(mount) - remaining
     original_scandir = os.scandir
     scanned = []
+
+    def adjustment():
+        # Size the fake volume when the check reads it: whatever the job has written
+        # by then (the models-volume verification record included) is real usage,
+        # and exactly `remaining` bytes stay free. The walk under test is patched,
+        # so measure with the real scandir.
+        patched, os.scandir = os.scandir, original_scandir
+        try:
+            return 10 * 2**30 - allocated(mount) - remaining
+        finally:
+            os.scandir = patched
 
     class Entry:
         def __init__(self, entry):
@@ -69,7 +79,7 @@ def test_claimed_volume_counts_whole_mount_before_native_fetch(fetch_volume, tmp
             info = self._entry.stat(follow_symlinks=follow_symlinks)
             if self.name == old.name:
                 return SimpleNamespace(st_dev=info.st_dev, st_ino=info.st_ino,
-                    st_mode=info.st_mode, st_blocks=info.st_blocks + adjustment // 512)
+                    st_mode=info.st_mode, st_blocks=info.st_blocks + adjustment() // 512)
             return info
 
     class Scan:
