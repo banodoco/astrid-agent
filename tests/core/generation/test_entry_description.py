@@ -220,7 +220,7 @@ def build():
 
 
 def test_h3_declared_inputs_describe_and_resolve_without_execution(monkeypatch):
-    """h3 is a vibecomfy.workflows contribution: request is a file, asset_map a file_map."""
+    """h3 declares both request-document and plain-input ports without executing its bundle."""
     monkeypatch.setattr(entries, 'target_schema', lambda *a, **k: pytest.fail('probe during entry discovery'))
     monkeypatch.setattr(entries, '_load_entry_workflow', lambda *a, **k: pytest.fail('bundle loaded for declared inputs'))
     description = entries.describe_entry('h3', _native=True)
@@ -228,11 +228,17 @@ def test_h3_declared_inputs_describe_and_resolve_without_execution(monkeypatch):
     assert description['mode'] is None and description['modes'] == ['i2v', 'v2v', 'video-edit']
     description = entries.describe_entry('h3', mode='v2v', _native=True)
     ports = {row['name']: row for row in description['inputs']}
+    # h3 declares the kind's plain inputs (5fe9ed7a0): either input form is optional per port.
     assert [(n, p['type'], p['required']) for n, p in ports.items()] == [
-        ('request', 'file', True), ('asset_map', 'file_map', True)]
+        ('request', 'file', False), ('asset_map', 'file_map', False),
+        ('prompt', 'string', False), ('image_ref', 'file', False),
+        ('video_ref', 'file', False), ('frames', 'integer', False),
+        ('seed', 'integer', False), ('steps', 'integer', False)]
     values = {'request': '/tmp/request.json', 'asset_map': {'source': '/tmp/source.mp4'}}
     assert entries.resolve_entry_inputs('h3', values, mode='v2v')[1] == values
+    plain = {'prompt': 'p', 'video_ref': '/tmp/source.mp4'}
+    assert entries.resolve_entry_inputs('h3', plain, mode='v2v')[1] == plain
     with pytest.raises(ValueError, match='nonempty map'):
         entries.resolve_entry_inputs('h3', {**values, 'asset_map': '/tmp/assets.json'}, mode='v2v')
     with pytest.raises(ValueError, match='unsupported entry inputs'):
-        entries.resolve_entry_inputs('h3', {**values, 'prompt': 'p'}, mode='v2v')
+        entries.resolve_entry_inputs('h3', {**values, 'undeclared': 'p'}, mode='v2v')
