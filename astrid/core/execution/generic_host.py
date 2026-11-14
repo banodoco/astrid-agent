@@ -7355,11 +7355,9 @@ class GenericPackHost:
             # Which machine runs this attempt, recorded as soon as it is claimed (failures keep it too).
             terminal["machine"] = dict(machine.describe(lease))
 
-        # One local failure receipt per failed machine job, written after release.
-        failed = None
-        if is_runpod:
-            from astrid.packs.runpod.failure_receipt import recorder
-            failed = recorder(job, lambda: terminal.get("machine"), timing)
+        # The registered machine owns its optional failure receipt.
+        recorder = getattr(machine, "failure_recorder", None)
+        failed = recorder(job, lambda: terminal.get("machine"), timing) if callable(recorder) else None
 
         try:
             fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
@@ -9892,10 +9890,11 @@ class GenericPackHost:
         env.pop(TRUST_ENV, None)  # only the host's own admission reaches a child
         if record.id == "vibecomfy.run" and align in ("align", "trust"):
             env[TRUST_ENV] = align  # the child's align mode; local_server_engine reads only "trust"
-        from astrid.core.generation.managed_preparation import PREPARATION_ENV
-        env.pop(PREPARATION_ENV, None)
+        from astrid.core.generation.engine_contracts import MANAGED_ENGINE_PREPARATION_ENV
+
+        env.pop(MANAGED_ENGINE_PREPARATION_ENV, None)
         if record.id == "vibecomfy.run" and managed_preparation is not None:
-            env[PREPARATION_ENV] = json.dumps(managed_preparation, sort_keys=True, separators=(",", ":"))
+            env[MANAGED_ENGINE_PREPARATION_ENV] = json.dumps(managed_preparation, sort_keys=True, separators=(",", ":"))
         env.pop("ASTRID_GENERATION_ENTRY", None)
         if record.id == "vibecomfy.run" and generation_entry:
             env["ASTRID_GENERATION_ENTRY"] = str(generation_entry)
@@ -10694,7 +10693,7 @@ class GenericPackHost:
                     output_capture.persist()
                     if output_capture.error:
                         raise HostError(f"capability {record.id!r} output capture failed: {output_capture.error}")
-                    _assert_live_storage_envelope(storage_estimate, attempt, output_root, storage_floor_exempt=record.storage_floor_exempt)
+                    _assert_live_storage_envelope(storage_estimate, attempt, output_root, storage_floor_exempt=getattr(record, "storage_floor_exempt", False))
                     if cancelled is not None and cancelled():
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {record.id!r} cancelled")
@@ -10813,7 +10812,7 @@ class GenericPackHost:
         if capability_kind not in {"executor", "orchestrator"}:
             raise HostError(f"unsupported capability kind {capability_kind!r}")
         storage_record = captured_record or self.capabilities.get(capability_id)
-        storage_floor_exempt = storage_record is not None and storage_record.storage_floor_exempt
+        storage_floor_exempt = storage_record is not None and getattr(storage_record, "storage_floor_exempt", False)
         attempt_path = Path(attempt).expanduser().resolve()
         attempt_path.mkdir(parents=True, exist_ok=True)
         if definition is not None:
@@ -12708,7 +12707,7 @@ class GenericPackHost:
                 cas_param_ports=cas_param_ports,
                 optional_cas_param_ports=optional_cas_param_ports,
                 storage_estimate=storage_estimate,
-                storage_floor_exempt=record.storage_floor_exempt,
+                storage_floor_exempt=getattr(record, "storage_floor_exempt", False),
                 input_size_limits=input_size_limits,
                 storage_policy_version=(
                     str(record.definition.metadata.get("storage_policy_version"))
@@ -12924,7 +12923,7 @@ class GenericPackHost:
                         )
                 except ImageStoragePolicyError as exc:
                     raise HostError(str(exc)) from exc
-            _assert_live_storage_envelope(storage_estimate, root, root / "outputs", storage_floor_exempt=record.storage_floor_exempt)
+            _assert_live_storage_envelope(storage_estimate, root, root / "outputs", storage_floor_exempt=getattr(record, "storage_floor_exempt", False))
             if cancelled():
                 raise HostCancelled("task cancelled after managed preparation")
             lifetime.assert_deadline()
@@ -13248,7 +13247,7 @@ class GenericPackHost:
                     f"capability {record.id!r} produced no typed settled outputs"
                 )
             storage_receipt = _task_storage_envelope(task_data, root, typed_outputs,
-                                                     storage_floor_exempt=record.storage_floor_exempt)
+                                                     storage_floor_exempt=getattr(record, "storage_floor_exempt", False))
             project_id = task_data.get("project_id")
             if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
                 raise HostError("runtime task project_id must be a non-empty string or None")

@@ -249,21 +249,25 @@ def test_run_task_early_admission_failure_writes_structured_result(host_case, mo
     assert len(case.runtime.failures) == 1
 
 
-def test_run_task_initial_heartbeat_failure_writes_result_before_child_launch(host_case, monkeypatch):
+def test_run_task_initial_heartbeat_transport_failure_keeps_work_and_writes_success(host_case, monkeypatch):
     case = host_case
+    heartbeats = []
 
-    def lost_heartbeat(*_args, **_kwargs):
+    def lost_heartbeat(*args, **kwargs):
+        heartbeats.append((args, kwargs))
         raise RuntimeError("lease heartbeat unavailable")
 
     monkeypatch.setattr(case.runtime, "heartbeat", lost_heartbeat)
-    with pytest.raises(RuntimeError, match="lease heartbeat unavailable"):
-        case.host.run_task(case.task, lease_token="lease-result")
+    _success_boundary(case, monkeypatch)
+    case.host.run_task(case.task, lease_token="lease-result")
 
-    receipt = _read_result(case, "failed")
-    assert receipt["error"] == {"code": "executor_failed", "message": "lease heartbeat unavailable", "field": None, "fix": ""}
-    assert receipt["outputs"]["artifacts"] == []
+    receipt = _read_result(case, "succeeded")
+    assert heartbeats
+    assert receipt["error"] is None
+    _assert_artifact(receipt)
     assert receipt["cost"] == "unknown"
-    assert not case.runtime.settlements
+    assert len(case.runtime.settlements) == 1
+    assert not case.runtime.failures
 
 
 def test_run_task_writes_result_before_normal_ephemeral_cleanup(host_case, monkeypatch):

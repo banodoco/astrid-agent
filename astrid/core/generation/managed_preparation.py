@@ -14,10 +14,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
-from .engine_contracts import EngineRecipe, IntegrityError, SourcePatch
+from .engine_contracts import (
+    MANAGED_ENGINE_PREPARATION_ENV as PREPARATION_ENV,
+)
+from .engine_contracts import (
+    EngineRecipe,
+    IntegrityError,
+    SourcePatch,
+)
 from .engine_local_endpoint import DEFAULT_ENGINE
 
-PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
 _NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor"})

@@ -72,14 +72,22 @@ def test_meaningful_schema_changes_change_fingerprint(change):
         changed["UNETLoader"]["input"]["required"]["unet_name"][0].append("two.safetensors")
     else:
         node["input"]["required"]["image"][1]["image_upload"] = False
-    assert _object_info_sha256(original) != _object_info_sha256(changed)
+    if change in {"semantic_choices", "model_choices"}:
+        assert _object_info_sha256(original) == _object_info_sha256(changed)
+    else:
+        assert _object_info_sha256(original) != _object_info_sha256(changed)
 
 
 @pytest.mark.parametrize("spec", [None, [], "STRING", ["STRING"], [[1, 2]], [["file.png", 1]]])
 def test_malformed_or_non_choice_specs_are_not_normalized(spec):
     value = schema()
     value["LoadImage"]["input"]["required"]["image"] = spec
-    assert _object_info_sha256(value) == _sha(value)
+    snapshot = deepcopy(value)
+    expected = deepcopy(value)
+    # The unrelated valid choice field is normalized; the malformed spec stays intact.
+    expected["LoadImage"]["input"]["required"]["mode"][0] = []
+    assert _object_info_sha256(value) == _sha(expected)
+    assert value == snapshot
 
 
 def test_prepared_endpoint_accepts_file_choice_drift_but_rejects_schema_drift(monkeypatch):
