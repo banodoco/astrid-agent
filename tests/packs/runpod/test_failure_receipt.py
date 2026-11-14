@@ -371,9 +371,14 @@ def test_host_job_function_puts_timing_on_terminal_machine_and_writes_the_receip
     monkeypatch.setattr(failure_receipt, "failures_root", lambda: receipts)
     context = SimpleNamespace(get=lambda **k: c.adapter, begin=lambda *a: None, done=lambda *a: None)
 
+    class Host:
+        _run_machine_job_in_scope = generic_host.GenericPackHost._run_machine_job_in_scope
+
+    host = Host()
+
     def host_job(job, terminal):
         return generic_host.GenericPackHost._run_machine_job(
-            None, SimpleNamespace(id="vibecomfy.run"), {}, job.policy, context, dict(job.inputs),
+            host, SimpleNamespace(id="vibecomfy.run"), {}, job.policy, context, dict(job.inputs),
             root=job.scratch, output_root=job.scratch / "outputs", cancelled=lambda: False,
             cancel_signal=None, task_id="task", attempt_id=job.attempt_id, fence=1, terminal=terminal)
 
@@ -433,9 +438,13 @@ def test_a_non_runpod_machine_failure_writes_no_runpod_receipt_and_no_timing(tmp
     monkeypatch.setattr(generic_host, "_task_generation_intent", lambda task: {"metadata": {"model": "cpu-image"}})
     context = SimpleNamespace(get=lambda **k: None, begin=lambda *a: None, done=lambda *a: None)
     terminal = {}
+
+    class Host:
+        _run_machine_job_in_scope = generic_host.GenericPackHost._run_machine_job_in_scope
+
     with pytest.raises(RuntimeError, match="no capacity"):
         generic_host.GenericPackHost._run_machine_job(
-            None, SimpleNamespace(id="vibecomfy.run"), {}, {"kind": "other"}, context, {},
+            Host(), SimpleNamespace(id="vibecomfy.run"), {}, {"kind": "other"}, context, {},
             root=tmp_path, output_root=tmp_path / "out", cancelled=lambda: False, cancel_signal=None,
             task_id="task", attempt_id="a1", fence=1, terminal=terminal)
     assert seen["timing"] is None and terminal == {}
