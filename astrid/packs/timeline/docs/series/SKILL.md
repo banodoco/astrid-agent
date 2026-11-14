@@ -4,6 +4,8 @@ description: Edit a group of timelines safely, record each outcome, and recover 
 ---
 # Edit a timeline series
 
+Astrid commands here run through the launcher; its path on each OS is in the [astrid-setup skill's Launcher paths](../../../setup/docs/SKILL.md#launcher-paths), and the commands show the Linux path.
+
 ```python
 from astrid.sdk.timeline.api import CommitConflict, Timeline
 
@@ -38,5 +40,5 @@ process restart, keep the record in a file outside the loop.
 
 Make a variant with `tl.duplicate(as_="variant-a")`, then open it with
 `Timeline.open(project, "variant-a")`. Archive an unwanted copy with
-`python3 -m astrid timelines archive variant-a --project <project>`;
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines archive variant-a --project <project>`;
 `timelines recover` brings it back.

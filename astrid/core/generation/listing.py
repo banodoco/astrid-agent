@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import urllib.parse
 from typing import Any
 
 from astrid.core.generation.availability import (
@@ -119,10 +120,46 @@ def catalog_rows() -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (row["id"], row["kind"], row["mode"], row["backend"], row["source"], row["template"]))
 
 
+def runtime_placement_endpoint(client: Any = None) -> str | None:
+    """The attached ComfyUI endpoint that the Runtime placement default names, if it names one."""
+    from astrid.core.generation import settings
+    from astrid.core.generation.targets import normalize_target
+
+    default = settings.placement_default(client)
+    if default.get("kind") != "attached" or not default.get("endpoint"):
+        return None
+    return normalize_target({"endpoint": default["endpoint"]}).endpoint
+
+
+def target_selection(client: Any = None, request: str = "auto", repo: Any = None):
+    """``resolve_target``, where the Runtime placement default outranks a TOML target and discovery.
+
+    An environment override and an explicit request still win, as they do in ``resolve_target``.
+    """
+    from astrid.core.generation import targets
+
+    selection = targets.resolve_target(request, repo=repo)
+    endpoint = runtime_placement_endpoint(client) if request == "auto" else None
+    if endpoint is not None and selection.source in {"repo", "global", "discovery"}:
+        return targets.TargetSelection(targets.normalize_target({"endpoint": endpoint}), "settings", True)
+    return selection
+
+
+def placement_block(selection: Any) -> dict[str, Any]:
+    """The resolved placement of a target selection and where it came from."""
+    endpoint = selection.record.endpoint if selection.record is not None else None
+    return {"resolved": {"kind": "attached" if endpoint else "managed", "endpoint": endpoint},
+            "source": selection.source}
+
+
 def _targets() -> list[tuple[ComfyTarget, dict[str, Any] | None]]:
     from astrid.packs.vibecomfy.local import scan
+    ports = [8188, 8000]
+    endpoint = runtime_placement_endpoint()
+    if endpoint is not None:
+        ports.append(urllib.parse.urlsplit(endpoint).port)
     targets = {}
-    for server in scan([8188, 8000]).get("servers", []):
+    for server in scan(list(dict.fromkeys(ports))).get("servers", []):
         try:
             target = ComfyTarget(server["url"], "attached", facts=server)
         except (KeyError, TypeError, ValueError):
@@ -151,7 +188,8 @@ class _InventoryClient(ComfyTargetClient):
 
 
 def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
-                     target: ComfyTarget | None, schema: dict[str, Any] | None) -> dict[str, Any]:
+                     target: ComfyTarget | None, schema: dict[str, Any] | None,
+                     client: _InventoryClient | None = None) -> dict[str, Any]:
     result = {"target": target.url if target else "attached", "target_kind": "attached",
               "ready": False, "readiness_scope": "target_inventory", "models_present": []}
     if row["source"] in {"user-entry", "ready-template"} and row.get("reason"):
@@ -159,6 +197,7 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
     if target is None or schema is None:
         return {**result, "reason": "no attached ComfyUI target or model probe unavailable",
                 "fix": "Start ComfyUI on loopback and make /object_info available."}
+    client = client if client is not None else _InventoryClient(target, schema)
     if row["source"] in {"user-entry", "ready-template"}:
         from tempfile import TemporaryDirectory
 
@@ -170,7 +209,7 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
 
         if row["source"] == "ready-template" and row.get("registry_id"):
             try:
-                plan = resolve_comfy_models(_InventoryClient(target, schema), registry, row["registry_id"], row["mode"])
+                plan = resolve_comfy_models(client, registry, row["registry_id"], row["mode"])
             except (ComfyModelMissing, KeyError, ValueError):
                 return {**result, "reason": "required models missing or ambiguous",
                         "fix": "Provide the catalog-declared model roles on the attached ComfyUI."}
@@ -184,7 +223,7 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
         try:
             with TemporaryDirectory(prefix="astrid-entry-list-") as scratch:
                 loaded = load_workflow_path(entries.bundle_path(entry), scratch, comfy_url=target.url)
-                entries.target_schema(entry, loaded.resolved.workflow, _InventoryClient(target, schema))
+                entries.target_schema(entry, loaded.resolved.workflow, client)
         except (OSError, ValueError, KeyError, ProductionEngineError) as exc:
             return {**result, "reason": str(exc), "fix": "Provide the workflow's required nodes and models on the attached ComfyUI."}
         return {**result, "ready": True, "reason": "workflow nodes and model references present (model bytes unverified)",
@@ -200,7 +239,7 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
         return {**result, "reason": "model requirements unavailable in catalog",
                 "fix": "Inspect the workflow; add exact loader roles to its model catalog declaration."}
     try:
-        plan = resolve_comfy_models(_InventoryClient(target, schema), registry, model_id, row["mode"])
+        plan = resolve_comfy_models(client, registry, model_id, row["mode"])
     except ComfyModelMissing as exc:
         roles = sorted(exc.failures)
         requirements = [f"{role} ({' or '.join(spec.model_roles[role].names)})" for role in roles]
@@ -218,6 +257,9 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
     rows = [row for row in catalog_rows() if kind is None or row["kind"] == kind]
     targets = _targets() if any(row["backend"] == "local" for row in rows) else []
     registry = ModelRegistry.load_default() if any(row["backend"] == "local" for row in rows) else None
+    # One inventory client per target: its folder listing is then read once for all of that target's rows.
+    shared = [(target, schema, _InventoryClient(target, schema) if target is not None and schema is not None else None)
+              for target, schema in (targets or [(None, None)])]
     output = []
     for row in rows:
         base = dict(row)
@@ -231,8 +273,8 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
                            "models_present": []})
         elif row["backend"] == "local":
             assert registry is not None
-            for target, schema in targets or [(None, None)]:
-                output.append({**base, **_local_readiness(row, registry, target, schema)})
+            for target, schema, client in shared:
+                output.append({**base, **_local_readiness(row, registry, target, schema, client)})
         elif row["backend"] in {"cloud", "wavespeed"}:
             key_name = "FAL_KEY" if row["backend"] == "cloud" else "WAVESPEED_API_KEY"
             # os._Environ.__contains__ can fetch a value via __getitem__.

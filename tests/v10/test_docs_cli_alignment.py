@@ -109,6 +109,11 @@ def _all_docs() -> list[Path]:
     return list(_CORE_DOCS) + _pack_docs() + _contract_docs()
 
 
+# ``astrid``, ``python3 -m astrid``, or the installed launcher as the skills write
+# it (``"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid"``).
+_INVOCATION_RE = re.compile(r'(?:^|\s)(?:(?:python3\s+-m\s+)?astrid|"[^"\s]*/run-astrid")(?=\s|$)')
+
+
 def _commands_from_line(raw_line: str) -> list[list[str]]:
     """Extract the ``astrid`` invocation from one shell-ish doc line.
 
@@ -120,7 +125,7 @@ def _commands_from_line(raw_line: str) -> list[list[str]]:
     line = raw_line.split("#", 1)[0].strip()
     if not line:
         return []
-    match = re.search(r"(?:^|\s)(?:python3\s+-m\s+)?astrid(?=\s|$)", line)
+    match = _INVOCATION_RE.search(line)
     if not match:
         return []
     tail = re.split(r"[;&|]", line[match.end():].strip())[0].strip()
@@ -177,7 +182,7 @@ def _extract_commands(text: str) -> list[list[str]]:
         if match.group(1) in _FENCE_LANGS:
             _scan(match.group(2))
     for span in re.findall(r"`([^`]*)`", _FENCE_RE.sub("", text)):
-        if re.search(r"(?:^|\s)astrid(?=\s|$)", span):
+        if _INVOCATION_RE.search(span):
             _scan(span)
     return commands
 

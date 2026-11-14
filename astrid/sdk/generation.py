@@ -592,10 +592,18 @@ def _resolve_invoke_destination(
     project: str | None,
     project_root: str | Path | None,
     client: Any | None = None,
+    dry_run: bool = False,
 ) -> tuple[Path | str | None, str | None]:
     del project_root  # project roots discover packs; they never select ownership.
+    import sys
+
     from astrid.core.project.guidance import (
+        FIRST_PROJECT_NAME,
+        FIRST_PROJECT_SLUG,
+        format_first_project_dry_run_notice,
+        format_first_project_notice,
         format_project_required_guidance,
+        format_project_listing,
         selected_project,
     )
 
@@ -604,6 +612,60 @@ def _resolve_invoke_destination(
         from astrid.sdk.invocation import _runtime_selected_project
 
         selected = _runtime_selected_project(client) if client is not None else _runtime_selected_project()
+    if selected is None and client is not None:
+        from astrid.sdk.pagination import paged_rows
+
+        projects = getattr(client, "projects", None)
+        if all(callable(getattr(projects, name, None)) for name in ("list", "create", "select")):
+            def _starter(rows):
+                return next((
+                    row for row in rows
+                    if isinstance(row, dict)
+                    and (row.get("name") == FIRST_PROJECT_NAME or row.get("slug") == FIRST_PROJECT_SLUG)
+                ), None)
+
+            def _refusal(rows):
+                message = format_project_required_guidance(operation="generation")
+                listing = format_project_listing(rows)
+                return f"{message}\n{listing}" if listing else message
+
+            rows = paged_rows(projects.list)
+            if rows is None:
+                raise CapabilityPreconditionError(
+                    format_project_required_guidance(operation="generation")
+                )
+            first = _starter(rows)
+            if dry_run:
+                # A dry run never creates or selects a project. An empty workspace is
+                # not an error for a dry run: it says what a real run would create.
+                if first is None and rows:
+                    raise CapabilityPreconditionError(_refusal(rows))
+                if first is None:
+                    print(format_first_project_dry_run_notice(), file=sys.stderr)
+                    return out, None
+                selected = first.get("project_id") or first.get("id") or first.get("slug")
+            elif first is None and rows:
+                # Other projects exist and none is selected: a person chooses, Astrid does not.
+                raise CapabilityPreconditionError(_refusal(rows))
+            else:
+                created = first is None
+                if first is None:
+                    made = projects.create(slug=FIRST_PROJECT_SLUG, name=FIRST_PROJECT_NAME)
+                    if made.ok:
+                        first = made.data.get("project", made.data) if isinstance(made.data, dict) else {}
+                    else:
+                        # Another generation may have created the starter first: adopt it.
+                        relisted = paged_rows(projects.list)
+                        first = _starter(relisted) if relisted is not None else None
+                        if first is None:
+                            raise CapabilityPreconditionError(made.error.message)
+                        created = False
+                ref = first.get("slug") or first.get("project_id") or first.get("id") or FIRST_PROJECT_SLUG
+                chosen = projects.select(ref)
+                if not chosen.ok:
+                    raise CapabilityPreconditionError(chosen.error.message)
+                selected = first.get("project_id") or first.get("id") or ref
+                print(format_first_project_notice(created=created), file=sys.stderr)
     if selected is None:
         raise CapabilityPreconditionError(
             format_project_required_guidance(operation="generation")
@@ -932,6 +994,7 @@ def _speech_invoke(facade: Any, *, inputs: dict[str, Any], client: Any, out: Any
         out=out,
         project=project,
         project_root=project_root,
+        dry_run=dry_run,
     )
     result = facade._invoke(
         "generation.generate_speech",
@@ -1066,7 +1129,10 @@ class GenerationFacade:
                 return payload
             if updates:
                 raise ValueError('local target input updates are not supported; select an explicit URL')
-            selection = targets.resolve_target(placement, repo=project_root)
+            from astrid.core.generation import listing as generation_listing
+            # --save writes only what resolve_target selects, never the Runtime placement default.
+            selection = (targets.resolve_target(placement, repo=project_root) if save
+                         else generation_listing.target_selection(client, placement, repo=project_root))
             record = selection.record
             if record is None and placement == 'managed':
                 record = targets.TargetRecord(owner='astrid')
@@ -1076,7 +1142,9 @@ class GenerationFacade:
                 if record is None:
                     raise ValueError('select an explicit target before saving')
                 targets.save_target(record)
-            return readiness_envelope(target=record)
+            payload = readiness_envelope(target=record)
+            payload['placement'] = generation_listing.placement_block(selection)
+            return payload
         except (ValueError, OSError) as exc:
             raise GenerationInputError(str(exc)) from exc
 
@@ -1090,8 +1158,10 @@ class GenerationFacade:
     def set_default(self, kind, mode, entry, *, pack=None, client=None):
         """Pin ``entry`` as the default for ``kind``/``mode``; refuses an entry that cannot fill the slot."""
         from astrid.core.generation import defaults as generation_defaults
-        generation_defaults.set_default(kind, mode, entry, pack=pack, client=client)
-        return generation_defaults.listing(client)
+        _, previous = generation_defaults.set_default_reporting(kind, mode, entry, pack=pack, client=client)
+        return {**generation_defaults.listing(client), "previous": previous,
+                "restore": generation_defaults.restore_command(kind, mode, previous,
+                                                                generation_defaults.known_entries())}
 
     @_generation_boundary
     def unset_default(self, kind, mode, *, client=None):
@@ -1271,6 +1341,7 @@ class GenerationFacade:
         _reject_claim_controls(inputs or {})
         _require_single_declared_output(workflow=workflow, companion=companion)
         if placement is not None:
+            from astrid.core.generation import placement as placements
             from astrid.core.generation.entries import resolve_workflow_inputs
             if align is not None:
                 controls['align'] = _align_mode(align)
@@ -1299,7 +1370,10 @@ class GenerationFacade:
                     retained_source = _retain_generation_source(original_source, source_controls)
                     project, out = source_controls['project'], source_controls['out']
                 try:
-                    description, values = resolve_workflow_inputs(frozen, inputs or {}, mode=mode)
+                    # An attached ComfyUI's own schema names a saved workflow's custom-node inputs, as the run reads them.
+                    attached = placements.attached_comfy_url(placement)
+                    description, values = resolve_workflow_inputs(
+                        frozen, inputs or {}, mode=mode, **({'comfy_url': attached} if attached else {}))
                 except ImportError as exc:
                     from astrid.core.generation.preflight import generation_error
                     raise generation_error(exc, code='missing_dependency',
@@ -1344,7 +1418,7 @@ class GenerationFacade:
             }.items() if value is not None
         }
         invoke_out, invoke_project = _resolve_invoke_destination(
-            client=client, out=out, project=project, project_root=project_root,
+            client=client, out=out, project=project, project_root=project_root, dry_run=dry_run,
         )
         sdk_module = importlib.import_module(self.sdk_module_name)
         invoke_result = client.invoke_result if client is not None else sdk_module.invoke_result
@@ -1676,10 +1750,14 @@ class GenerationFacade:
                     if isinstance(exc, CapabilityValidationError):
                         raise
                     if align == 'check' and 'not present locally' in str(exc):
+                        if target_client is not None and target_client.target.kind == 'attached':
+                            remedy = 'put the missing model files in their folders on your ComfyUI, then retry'
+                        else:
+                            remedy = (f"run: astrid generate align --apply --consent user_env"
+                                      f" --entry {identifier}")
                         exc = ValueError(
                             f"{exc}. Fix: pass --align trust to accept the workflow's declared models as present "
-                            f"on the target (unverified), or run: astrid generate align --apply --consent user_env"
-                            f" --entry {identifier}")
+                            f"on the target (unverified), or {remedy}")
                     raise generation_error(exc, entry={'id': identifier, 'engine': 'comfyui', 'mode': mode},
                         target=getattr(target_client, 'generation_target', None),
                         code='missing_dependency' if 'missing' in str(exc).lower() else 'input_rejected') from exc
@@ -1771,6 +1849,10 @@ class GenerationFacade:
         with TemporaryDirectory(prefix="astrid-generate-target-") as scratch:
             root = Path(scratch)
             emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+            # The native bindings sent as workflow_inputs below.
+            sent_inputs = {name: value for name, value in (plan or {}).get('bindings', {}).items()
+                           if name not in assets}
+            sent_seed = sent_inputs.get('seed')
             asset_arguments: dict[str, Any] = {}
             if assets:
                 import zipfile
@@ -1814,9 +1896,7 @@ class GenerationFacade:
                 # as the sealed graph. The attached runner chooses a fresh
                 # seed when no seed binding is supplied. Media bindings are
                 # supplied separately by the staged asset manifest.
-                workflow_inputs=json.dumps({name: value for name, value in
-                    (plan or {}).get('bindings', {}).items() if name not in assets},
-                    sort_keys=True, allow_nan=False),
+                workflow_inputs=json.dumps(sent_inputs, sort_keys=True, allow_nan=False),
                 # The managed client is for preparation and inventory. Passing its
                 # loopback URL as an attached endpoint bypasses managed alignment
                 # and lifecycle ownership in the action.
@@ -1834,7 +1914,12 @@ class GenerationFacade:
             )
         if controls.get('wait') is False:
             return result
-        return _reconstruct_generation_result(result)
+        generated = _reconstruct_generation_result(result)
+        # The Runtime result carries no seed; report the one this call bound and sent,
+        # which the executor posts as is. A workflow without a seed input keeps the default 0.
+        if type(sent_seed) is int:
+            generated.seed_used = sent_seed
+        return generated
 
     @staticmethod
     def _resolve_public_entry(*, entry: str, model: str | None,
@@ -2107,6 +2192,7 @@ class GenerationFacade:
             out=out,
             project=project,
             project_root=project_root,
+            dry_run=dry_run,
         )
         result = self._invoke(
             kind.capability,

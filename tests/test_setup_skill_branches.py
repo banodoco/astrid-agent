@@ -32,6 +32,16 @@ from tests.packs.test_vibecomfy_local import _ComfyHandler, _server
 _SETUP = Path(__file__).resolve().parents[1] / "docs" / "setup" / "SKILL.md"
 _GENERATION = (Path(__file__).resolve().parents[1] / "astrid" / "packs" / "generation" /
                "docs" / "SKILL.md")
+_RUNPOD = Path(__file__).resolve().parents[1] / "astrid" / "packs" / "runpod" / "docs" / "SKILL.md"
+# The RunPod claim walkthrough moved out of the setup skill. These are the argv forms
+# that walkthrough used, kept here so the parse and consent checks still run.
+_CHECKOUT = ["generate", "settings", "checkout", "--file", "/absolute/path/generation.json"]
+_CHECKIN = ["generate", "settings", "checkin", "/absolute/path/generation.json"]
+_DESCRIBE = ["generate", "describe", "--placement", "runpod", "--engine", "comfyui", "--json"]
+_CLAIM = ["machines", "claim", "--consent", "paid", "--max-usd", "2", "--deadline",
+          "FUTURE_UTC_DEADLINE", "--for", "30m", "--json"]
+_PAID = ["generate", "image", "--entry", "ENTRY", "--inputs-json", "/absolute/path/inputs.json",
+         "--placement", "runpod", "--json"]
 
 
 def _guide_command(command_fragment: str, document: Path = _SETUP) -> str:
@@ -71,20 +81,25 @@ def _assert_command_has_local_gate(markdown: str, command_fragment: str, gate_fr
 
 
 def test_generation_skill_fenced_scan_command_uses_real_cli_parser(tmp_path, monkeypatch, capsys):
+    from astrid.core.generation import cli as generation_cli
+
     server, thread = _server(tmp_path)
     try:
         # The documented command scans default ports. Add the CLI's documented
         # testable --ports override so the fake server can use an ephemeral port.
         monkeypatch.setattr(local_scan, "_PINOKIO_INFO_URL", "http://127.0.0.1:1/pinokio/info")
-        command = _guide_command("python3 -m astrid.packs.vibecomfy.local scan", _GENERATION)
-        argv = shlex.split(command)[3:] + ["--ports", str(server.server_address[1])]
-        assert local_scan.main(argv) == 0
+        command = _guide_command('run-astrid" generate scan --json', _GENERATION)
+        assert command == '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json'
+        argv = _launcher_args(command)[1:] + ["--ports", str(server.server_address[1])]
+        assert argv[0] == "scan"
+        assert generation_cli.main(argv) == 0
         result = json.loads(capsys.readouterr().out)
         assert result["errors"] == []
         assert result["servers"][0]["workflows"] == ["portrait_flux.json", "nested/wan_i2v.json"]
         assert result["servers"][0]["url"] == f"http://127.0.0.1:{server.server_address[1]}"
         assert set(_ComfyHandler.requested) == {
-            "/system_stats", "/internal/folder_paths", "/userdata?dir=workflows",
+            "/system_stats", "/internal/folder_paths",
+            "/userdata?dir=workflows&full_info=true&recurse=true",  # P4.11a: the scan asks for edit times (full_info)
         }
     finally:
         server.shutdown()
@@ -108,7 +123,7 @@ def test_setup_engine_fenced_command_reaches_real_parser_through_fake_launcher(t
     )
     launcher.chmod(0o755)
     root = tmp_path / "engine"
-    command = _guide_command("engines install comfyui --dry-run")
+    command = _guide_command("engines install comfyui --dry-run", _GENERATION)
     env = {**os.environ, "XDG_DATA_HOME": str(data), "ASTRID_ENGINE_ROOT": str(root),
            "PYTHONPATH": str(_SETUP.parents[2])}
     result = subprocess.run(command, shell=True, cwd=_SETUP.parents[2], env=env,
@@ -133,7 +148,7 @@ def test_nvidia_fenced_command_and_csv_cross_the_12_decimal_gb_boundary(tmp_path
         f"echo 'Synthetic GPU, {memory_mib} MiB'\n"
     )
     smi.chmod(0o755)
-    command = _guide_command("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader")
+    command = _guide_command("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader", _GENERATION)
     result = subprocess.run(command, shell=True, env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
                             text=True, capture_output=True, timeout=5)
     assert result.returncode == 0
@@ -184,7 +199,7 @@ def test_runpod_machine_refuses_claim_without_paid_consent(monkeypatch, capsys):
 
     cli, _, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
-    argv = _guide_argv("machines claim --consent paid --max-usd 2")
+    argv = list(_CLAIM)
     consent = argv.index("--consent")
     del argv[consent:consent + 2]
     argv = [arg.replace("FUTURE_UTC_DEADLINE", "2099-01-01T00:00:00Z") for arg in argv]
@@ -200,8 +215,7 @@ def test_runpod_setter_guide_command_uses_hidden_prompt_without_key_in_argv_or_e
 ):
     from astrid.core.util import credential_store
 
-    command = _guide_command('credential set runpod')
-    argv = _launcher_args(command)
+    argv = _guide_argv('credential set runpod', _RUNPOD)
     assert argv == ["credential", "set", "runpod"]
     key = "fake-test-runpod-secret"
     prompt_calls: list[str] = []
@@ -228,49 +242,44 @@ def test_runpod_setup_commands_reach_real_generation_parsers(monkeypatch, capsys
     from astrid.core.generation import cli as generation_cli
 
     parser = generation_cli._parser()
-    checkout = _guide_argv("generate settings checkout --file /absolute/path/generation.json")
-    checkin = _guide_argv("generate settings checkin /absolute/path/generation.json")
-    checkout_args = parser.parse_args(checkout[1:])
-    checkin_args = parser.parse_args(checkin[1:])
+    checkout_args = parser.parse_args(_CHECKOUT[1:])
+    checkin_args = parser.parse_args(_CHECKIN[1:])
     assert (checkout_args.modality, checkout_args.settings_action, checkout_args.file) == (
         "settings", "checkout", "/absolute/path/generation.json")
     assert (checkin_args.modality, checkin_args.settings_action, checkin_args.file) == (
         "settings", "checkin", "/absolute/path/generation.json")
 
-    offer = _guide_argv("generate describe --placement runpod --engine comfyui --json")
-    offer_args = parser.parse_args(offer[1:])
+    offer_args = parser.parse_args(_DESCRIBE[1:])
     assert (offer_args.modality, offer_args.placement, offer_args.engine, offer_args.json) == (
         "describe", "runpod", "comfyui", True)
 
     from tests.packs.runpod.test_machine import _claim_cli_case
 
     cli, _, _, calls, describe, claim = _claim_cli_case(monkeypatch)
-    claim_argv = _guide_argv("machines claim --consent paid --max-usd 2")
-    claim_argv = [arg.replace("FUTURE_UTC_DEADLINE", "2099-01-01T00:00:00Z") for arg in claim_argv]
+    claim_argv = [arg.replace("FUTURE_UTC_DEADLINE", "2099-01-01T00:00:00Z") for arg in _CLAIM]
     assert cli.main(claim_argv[1:], describe=describe, claim=claim) == 0
     grant = calls[-1][1]["consent"]
-    paid = _guide_argv("generate image --entry ENTRY --inputs-json /absolute/path/inputs.json")
-    paid_args = parser.parse_args(paid[1:])
+    paid_args = parser.parse_args(_PAID[1:])
     assert paid_args.modality == "image"
     # cause f123e45c1; ruling: machines 07:40 Sat
     assert paid_args.placement == "runpod" and grant.consent == ("paid",)
     assert grant.max_usd == 2 and grant.deadline == "2099-01-01T00:00:00Z"
     assert grant.idle_seconds == 1800 and grant.capacity_timeout_seconds == 1800
     assert json.loads(capsys.readouterr().out)["policy"]["deadline"] == "2099-01-01T00:00:00Z"
-    assert not {"--consent", "--max-usd", "--deadline", "--allow-paid", "--until-release"}.intersection(paid)
+    assert not {"--consent", "--max-usd", "--deadline", "--allow-paid", "--until-release"}.intersection(_PAID)
 
 
 def test_runpod_lease_guide_commands_parse_without_provider_access(monkeypatch, capsys):
     from astrid.core import machines_cli
 
-    list_command = _guide_argv("machines --json")
+    list_command = _guide_argv("machines --json", _RUNPOD)
     monkeypatch.setattr(machines_cli, "_leases", lambda: [{"id": "fake-pod", "kind": "runpod",
                                                               "gpu": "fake", "state": "idle",
                                                               "live": True, "cost_usd": 0}])
     assert machines_cli.main(list_command[1:]) == 0
     assert "fake-pod" in capsys.readouterr().out
 
-    release = _guide_argv("machines release ID --json")
+    release = ["machines", "release", "ID", "--json"]
     calls: list[bool] = []
     rows = iter([
         [{"id": "fake-pod", "kind": "runpod", "gpu": "fake", "state": "idle", "live": True}],
@@ -283,40 +292,39 @@ def test_runpod_lease_guide_commands_parse_without_provider_access(monkeypatch, 
 
 
 def test_install_and_paid_run_commands_are_locally_gated_by_the_guide():
-    markdown = _SETUP.read_text()
+    # P4.7.1: the managed-engine install moved to the generation skill's Placement; its gate moved with it.
     gates = [
-        ("curl -fsSL https://astrid.haus/install | sh -s -- --yes",
-         "Run one install command for the user's OS, after consent"),
-        ("https://astrid.haus/install.ps1))) --yes",
-         "Run one install command for the user's OS, after consent"),
-        ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui',
-         "Run the following Linux command only on its own yes", True),
-        ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkout',
-         "With a separate yes"),
-        ('"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkin',
-         "With a separate yes"),
-        ("generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod",
-         "Obtain a fresh paid consent for that exact offer and bounds"),
+        (_SETUP, "curl -fsSL https://astrid.haus/install | sh -s -- --yes",
+         "After consent, run the line for the user's OS"),
+        (_SETUP, "https://astrid.haus/install.ps1))) --yes",
+         "After consent, run the line for the user's OS"),
+        (_GENERATION, '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui',
+         "Run this only after its own yes", True),
+        (_SETUP, '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement',
+         "On that yes, save the connection"),
+        (_SETUP, '--apply PLAN_SHA256', "On that yes, rerun with the plan's digest"),
     ]
     for gate in gates:
-        command, wording, *exact = gate
-        _assert_command_has_local_gate(markdown, command, wording, exact_line=bool(exact))
+        document, command, wording, *exact = gate
+        _assert_command_has_local_gate(document.read_text(), command, wording, exact_line=bool(exact))
 
 
 def test_sensitive_command_gate_assertion_fails_when_yes_wording_is_removed():
-    markdown = _SETUP.read_text()
+    markdown = _GENERATION.read_text()
     command = '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui'
-    gate = "Run the following Linux command only on its own yes"
+    gate = "Run this only after its own yes"
     _assert_command_has_local_gate(markdown, command, gate, exact_line=True)
-    without_gate = markdown.replace(gate, "Run the following Linux command", 1)
+    without_gate = markdown.replace(gate, "Run this", 1)
     with pytest.raises(AssertionError, match="does not govern"):
         _assert_command_has_local_gate(without_gate, command, gate, exact_line=True)
 
 
 def test_runpod_setup_guide_explains_the_persisted_policy():
-    guide = _SETUP.read_text()
-    assert "`machines.runpod`" in guide
-    assert "`gpu_types`" in guide
+    # The policy walkthrough moved to the RunPod skill; setup links it.
+    assert "[RunPod machine skill]" in _SETUP.read_text()
+    runpod = _RUNPOD.read_text()
+    assert "`machines.runpod`" in runpod
+    assert "gpu_types" in runpod
 
 
 def test_runpod_setup_from_pristine_settings_preserves_choices_and_quotes_without_claim(
@@ -365,15 +373,15 @@ def test_runpod_setup_from_pristine_settings_preserves_choices_and_quotes_withou
     monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(client))
     monkeypatch.setattr(settings, "transport_of", lambda _: generation_settings_store)
     path = tmp_path / "generation.json"
-    checkout = _guide_argv("generate settings checkout --file /absolute/path/generation.json")
-    checkin = _guide_argv("generate settings checkin /absolute/path/generation.json")
+    checkout = _CHECKOUT
+    checkin = _CHECKIN
     assert cli.main([arg.replace("/absolute/path/generation.json", str(path)) for arg in checkout[1:]]) == 0
     document = json.loads(path.read_text())
     document["placement"] = {"kind": "runpod"}
     path.write_text(json.dumps(document))
     assert cli.main([arg.replace("/absolute/path/generation.json", str(path)) for arg in checkin[1:]]) == 0
     assert settings.read().content["machines"]["runpod"] == saved
-    offer_args = cli._parser().parse_args(_guide_argv("generate describe --placement runpod --engine comfyui --json")[1:])
+    offer_args = cli._parser().parse_args(_DESCRIBE[1:])
     quote = GenerationFacade().describe(placement=offer_args.placement, engine=offer_args.engine, client=client)
     assert quote["offer"]["gpu_type"] == prefs.gpu_types[0]
     grant = replace(c.grant, offer_digest=quote["offer_digest"], max_usd=5.0)
@@ -385,3 +393,368 @@ def test_runpod_setup_from_pristine_settings_preserves_choices_and_quotes_withou
     assert calls == ["runpod.setup", "runpod.status"]
     assert c.creates == 0 and not c.owner.path.exists()
     capsys.readouterr()
+
+
+def _generation_setup_section() -> str:
+    text = _GENERATION.read_text()
+    start = text.index("## Set up my generation")
+    return text[start:text.index("\n## ", start + 1)]
+
+
+def _offered_generate_argv(section: str, tokens: dict[str, str]) -> list[list[str]]:
+    """Every inline launcher `generate ...` command the section offers, as argv after `generate`."""
+    offered = []
+    # Launcher form (the setup skill's Launcher paths); the Linux path is the one written out.
+    for command in re.findall(r'`("\$\{XDG_DATA_HOME[^`]+run-astrid" generate [^`]+)`', section):
+        offered.append([tokens.get(arg, arg) for arg in shlex.split(command)[2:]])
+    return offered
+
+
+def _tokens(workflow: Path, name: str = "lighthouse") -> dict[str, str]:
+    return {"KIND": "image", "MODE": "t2i", "ENTRY": "z-image", "NAME": name, "FILE": str(workflow)}
+
+
+def test_generation_defaults_step_offers_four_answers_each_with_one_undo():
+    section = _generation_setup_section()
+    step = section[section.index("4. **"):section.index("5. **")]
+    assert "One question per default slot" in step
+    for label in ("**Keep Astrid's**", "**Use one of yours**", "**Another shipped entry**",
+                  "**Create a new default when none of those fits**", "**Save and pin**"):
+        assert label in step, label
+    assert step.count("Undo:") == 4
+
+
+def test_generation_defaults_commands_parse_through_real_cli_and_never_queue_a_run(tmp_path):
+    from astrid.core.generation import cli as generation_cli
+
+    offered = _offered_generate_argv(_generation_setup_section(), _tokens(tmp_path / "workflow.json"))
+    relevant = [argv for argv in offered if argv[0] in {"defaults", "workflow", "list"}]
+    parser = generation_cli._parser()
+    parsed = [parser.parse_args(argv) for argv in relevant]
+    workflows = [argv for argv in relevant if argv[0] == "workflow"]
+    assert any(argv[0] == "defaults" and "set" in argv for argv in relevant)
+    assert any(argv[0] == "defaults" and "unset" in argv for argv in relevant)
+    assert workflows and len(parsed) == len(relevant)
+    for argv in workflows:
+        assert "--as-entry" in argv
+        assert "--dry-run" in argv or "--no-run" in argv, argv
+    assert any("--dry-run" in argv for argv in workflows)
+    assert any("--no-run" in argv for argv in workflows)
+
+
+def test_generation_defaults_preview_and_save_run_against_fakes(tmp_path, monkeypatch, capsys):
+    from astrid.core.generation import cli as generation_cli
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import load_bundle
+
+    # a small workflow keeps the save leg fast; the per-node cache rehash is filed against VibeComfy
+    workflow = tmp_path / "workflow.json"
+    workflow.write_text((Path(__file__).resolve().parent / "fixtures" / "vibecomfy_ir" / "flat.json").read_text())
+    entries_dir = tmp_path / "entries"
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(entries_dir))
+    monkeypatch.setattr(generation_cli, "_open_client", lambda: pytest.fail("the setup step opened Runtime"))
+    monkeypatch.setattr(generation_cli, "_generate_facade", lambda: pytest.fail("the setup step ran a workflow"))
+    for argv in _offered_generate_argv(_generation_setup_section(), _tokens(workflow)):
+        if argv[0] != "workflow":
+            continue
+        assert generation_cli.main(argv) == 0
+        result = json.loads(capsys.readouterr().out)
+        if "--dry-run" in argv:
+            assert result["written"] is False and result["would_save_entry"] == "lighthouse"
+            assert not entries_dir.exists()
+        else:
+            assert result == {"saved": True, "ran": False, "entry": "lighthouse", "replaced": False}
+            assert (entries_dir / "lighthouse").is_dir()
+
+
+def test_generation_defaults_fetch_saved_workflow_read_only_then_pins_it(
+    tmp_path, monkeypatch, capsys, generation_settings_store,
+):
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from astrid.core.generation import cli as generation_cli, settings
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import load_bundle
+
+    # a small workflow keeps the save leg fast; the per-node cache rehash is filed against VibeComfy
+    body = (Path(__file__).resolve().parent / "fixtures" / "vibecomfy_ir" / "flat.json").read_bytes()
+    seen: list[tuple[str, str]] = []
+
+    class Fake(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.command, self.path))
+            if self.path == "/userdata/workflows%2Fportrait_flux.json":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_error(404)
+
+        def do_POST(self):
+            seen.append((self.command, self.path))
+            self.send_error(405)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        command = _guide_command("userdata/workflows%2FWORKFLOW", _GENERATION)
+        command = command.replace("127.0.0.1:PORT", f"127.0.0.1:{port}").replace("WORKFLOW", "portrait_flux.json")
+        result = subprocess.run(command, shell=True, env={**os.environ, "WORK": str(tmp_path)},
+                                text=True, capture_output=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        assert seen == [("GET", "/userdata/workflows%2Fportrait_flux.json")]
+        fetched = tmp_path / "workflow.json"
+        assert fetched.read_bytes() == body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    entries_dir = tmp_path / "entries"
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(entries_dir))
+    tokens = _tokens(fetched, name="portrait_saved")
+    real_facade = generation_cli._generate_facade
+    monkeypatch.setattr(generation_cli, "_generate_facade", lambda: pytest.fail("the setup step ran a workflow"))
+    monkeypatch.setattr(generation_cli, "_open_client", lambda: pytest.fail("the setup step opened Runtime"))
+    for argv in _offered_generate_argv(_generation_setup_section(), tokens):
+        if argv[0] == "workflow":
+            assert generation_cli.main(argv) == 0
+            capsys.readouterr()
+    assert (entries_dir / "portrait_saved").is_dir()
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+
+    monkeypatch.setattr(generation_cli, "_open_client", lambda: Client())
+    monkeypatch.setattr(generation_cli, "_generate_facade", real_facade)
+    monkeypatch.setattr(settings, "transport_of", lambda client: generation_settings_store)
+    pins = [argv for argv in _offered_generate_argv(_generation_setup_section(), tokens)
+            if argv[:2] == ["defaults", "set"] and argv[-1] == "portrait_saved"]
+    assert pins == [["defaults", "set", "image", "t2i", "portrait_saved"]]
+    assert generation_cli.main(pins[0]) == 0
+    capsys.readouterr()
+    assert generation_cli.main(["defaults", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)["slots"]
+    assert next(row for row in rows if row["slot"] == "image.t2i")["entry"] == "portrait_saved"
+
+
+_HANDOFF = "Next: set up generation with the astrid-setup skill."
+_LAUNCHER_FORMS = (
+    '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid"',
+    '"$HOME/.local/share/astrid/run-astrid"',
+    '& "$env:LOCALAPPDATA\\Astrid\\run-astrid.cmd"',
+)
+
+
+def _fenced_setup_commands(markdown: str) -> list[list[str]]:
+    """Every launcher-form command in a fenced block of the setup skill, as argv after the launcher."""
+    commands = []
+    for block in re.findall(r"```[^\n]*\n(.*?)\n```", markdown, re.S):
+        for line in block.splitlines():
+            for form in _LAUNCHER_FORMS:
+                if line.startswith(form):
+                    commands.append(shlex.split(line[len(form):].replace("& ", "", 1))
+                                    if form.startswith("&") else shlex.split(line[len(form):]))
+    return commands
+
+
+def test_setup_skill_has_one_hand_off_sentence_and_no_runpod_walkthrough():
+    source = (_SETUP.parents[2] / "astrid/packs/setup/docs/SKILL.md").read_text()
+    assert source.count(_HANDOFF) == 1
+    for text in (source, _SETUP.read_text()):
+        assert "machines claim" not in text
+        assert "credential set runpod" not in text
+        assert "generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod" not in text
+
+
+def test_setup_skill_generate_commands_all_parse_through_the_real_cli():
+    from astrid.core.generation import cli as generation_cli
+
+    parser = generation_cli._parser()
+    argvs = [argv for argv in _fenced_setup_commands(_SETUP.read_text()) if argv[:1] == ["generate"]]
+    assert argvs, "the setup skill has no generate commands"
+    for argv in argvs:
+        parser.parse_args(argv[1:])
+    # The only write to a ComfyUI is fetch-models with --apply, and it sits after its one yes.
+    writers = [argv for argv in argvs if "--apply" in argv]
+    assert [argv[1] for argv in writers] == ["fetch-models"], writers
+    assert not [argv for argv in argvs if argv[1:2] == ["launch"]]
+
+
+def test_setup_skill_placement_commands_run_against_a_fake_store(
+    monkeypatch, capsys, generation_settings_store,
+):
+    from astrid.core.generation import cli as generation_cli, settings
+
+    monkeypatch.setattr(settings, "transport_of", lambda client: generation_settings_store)
+    fixture_argv = [argv for argv in _fenced_setup_commands(_SETUP.read_text())
+                    if argv[:1] == ["generate"] and argv[1:4] == ["settings", "set", "placement"]]
+    assert len(fixture_argv) == 1, fixture_argv
+    set_argv = [arg.replace("PORT", "8188") for arg in fixture_argv[0][1:]]
+    unset_argv = ["settings", "unset", "placement"]
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+
+    monkeypatch.setattr(generation_cli, "_open_client", lambda: Client())
+    monkeypatch.setattr(generation_cli, "_generate_facade", lambda: pytest.fail("setup ran a generation"))
+    assert generation_cli.main(set_argv) == 0
+    capsys.readouterr()
+    assert settings.read().content["placement"]["kind"] == "attached"
+    assert generation_cli.main(unset_argv) == 0
+    capsys.readouterr()
+    assert not settings.read().content["placement"]  # empty: the built-in default applies again
+
+
+def test_setup_skill_fetch_models_plan_and_apply_are_in_separate_blocks():
+    markdown = _SETUP.read_text()
+    for block in re.findall(r"```[^\n]*\n(.*?)\n```", markdown, re.S):
+        lines = [line for line in block.splitlines() if "generate fetch-models" in line]
+        assert not (any("--apply" in line for line in lines)
+                    and any("--apply" not in line for line in lines)), block
+
+
+# --- R4.B: Pinokio route, restore undos, placement settings, work folder ----------------------------
+
+_SETUP_SOURCE = Path(__file__).resolve().parents[1] / "astrid" / "packs" / "setup" / "docs" / "SKILL.md"
+
+
+def _setup_step_0() -> str:
+    text = _SETUP.read_text()
+    start = text.index("## 0. ")
+    return text[start:text.index("\n## ", start + 1)]
+
+
+def _setup_launcher_paths() -> str:
+    text = _SETUP.read_text()
+    start = text.index("## Launcher paths")
+    return text[start:text.index("\n## ", start + 1)]
+
+
+def _route_texts(step: str) -> dict[str, str]:
+    return {match.group(1): " ".join(match.group(0).split()) for match in re.finditer(
+        r"^\d\. \*\*([^*]+)\*\*:.*?(?=^\d\. \*\*|\Z)", step, re.M | re.S)}
+
+
+def _launcher_line(label: str) -> str:
+    line = next(line for line in _setup_launcher_paths().splitlines() if line.startswith(f"- {label}"))
+    return re.search(r"`([^`]+)`", line).group(1)
+
+
+_PINOKIO_APP = "Astrid O'Malley"
+
+
+def _fake_pinokio_install(home: Path) -> Path:
+    """One Pinokio-managed install under a Pinokio home that is not ~/pinokio."""
+    install = home / "api" / _PINOKIO_APP / "app" / "astrid"
+    install.mkdir(parents=True)
+    (install / "install.json").write_text(json.dumps(
+        {"owner": "haus.astrid.runtime", "managed_by": "pinokio"}, indent=2))
+    launcher = install / "run"
+    launcher.write_text('#!/bin/sh\necho stub-launcher "$@"\n')
+    launcher.chmod(0o755)
+    return launcher
+
+
+def _pinokio_detect_command() -> str:
+    return next(block for block in re.findall(r"```[^\n]*\n(.*?)\n```", _SETUP.read_text(), re.S)
+                if "managed_by" in block)
+
+
+def test_route_zero_detects_a_pinokio_install_before_a_fresh_install(tmp_path):
+    step = _setup_step_0()
+    routes = _route_texts(step)
+    names = list(routes)
+    assert names.index("Pinokio install") < names.index("Fresh install"), names
+    home = tmp_path / "Pinokio Home"
+    launcher = _fake_pinokio_install(home)
+    env = {**os.environ, "HOME": str(tmp_path / "home"), "XDG_DATA_HOME": str(tmp_path / "data"),
+           "PINOKIO_HOME": str(home)}
+    standard = subprocess.run(f"ls {_launcher_line('Linux:')}", shell=True, env=env, text=True,
+                              capture_output=True)
+    assert standard.returncode != 0
+    detect = subprocess.run(_pinokio_detect_command(), shell=True, env=env, text=True,
+                            capture_output=True)
+    assert detect.returncode == 0, detect.stderr
+    assert detect.stdout.strip() == str(launcher)
+    route = routes["Pinokio install"]
+    assert "launcher at the Pinokio path" in route
+    assert "Never run the installer" in route
+    for forbidden in ("astrid.haus/install", "--root", "--managed-by", "--yes"):
+        assert forbidden not in route, forbidden
+    assert "no launcher at either path" in routes["Fresh install"]
+
+
+def test_pinokio_launcher_resolved_from_the_skill_runs_with_its_arguments(tmp_path):
+    home = tmp_path / "Pinokio Home"
+    _fake_pinokio_install(home)
+    env = {**os.environ, "HOME": str(tmp_path / "home"), "PINOKIO_HOME": str(home)}
+    detect = subprocess.run(_pinokio_detect_command(), shell=True, env=env, text=True,
+                            capture_output=True)
+    assert detect.returncode == 0, detect.stderr
+    resolved = detect.stdout.strip()
+    assert resolved.endswith(f"/api/{_PINOKIO_APP}/app/astrid/run"), resolved
+    run = subprocess.run(f"{shlex.quote(resolved)} status", shell=True, env=env, text=True,
+                         capture_output=True)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "stub-launcher status"
+
+
+def test_launcher_paths_list_the_pinokio_launcher_for_each_os():
+    paths = _setup_launcher_paths()
+    assert _launcher_line("Pinokio, macOS and Linux:") == '"$PINOKIO_HOME"/api/*/app/astrid/run'
+    assert _launcher_line("Pinokio, Windows PowerShell:").endswith('\\app\\astrid\\run.cmd"')
+    assert "pinokio.home" in paths
+    assert "managed_by" in paths and "install.json" in paths
+    assert "run-astrid" not in "".join(_launcher_line(label) for label in (
+        "Pinokio, macOS and Linux:", "Pinokio, Windows PowerShell:"))
+
+
+def test_generation_defaults_undo_is_the_restore_command_defaults_set_prints():
+    section = _generation_setup_section()
+    step = section[section.index("4. **"):section.index("5. **")]
+    bullets = {label: step[step.index(label):] for label in
+               ("**Use one of yours**", "**Another shipped entry**", "**Create a new default when none of those fits**")}
+    for label, rest in bullets.items():
+        undo = rest[rest.index("Undo:"):].split("\n   - ")[0]
+        assert "`restore:`" in undo, (label, undo)
+        assert "defaults unset" not in undo, (label, undo)
+    assert "Previous pin:" in step
+
+
+def test_generation_steps_3_and_6_save_and_undo_a_placement_with_settings_set_and_unset():
+    section = _generation_setup_section()
+    step3 = section[section.index("3. **"):section.index("4. **")]
+    step6 = section[section.index("6. **"):]
+    assert "settings set placement URL" in step3
+    assert "settings unset placement" in step6
+    for step in (step3, step6):
+        assert "checkout" not in step and "checkin" not in step
+    for argv in _offered_generate_argv(step3 + step6, {}):
+        assert argv[:2] == ["settings", "set"] or argv[:2] == ["settings", "unset"] or argv[0] == "defaults"
+
+
+def test_work_folder_is_defined_before_first_use_and_windows_fetch_uses_curl_exe():
+    # P4.7.1 (c8): setup's saved-workflow fetch moved to the generation skill; setup links it
+    # and uses no work folder, so the rule applies where the fetch now lives.
+    setup = _SETUP_SOURCE.read_text()
+    assert "$WORK" not in setup and "userdata/workflows" not in setup
+    assert "astrid/packs/generation/docs/SKILL.md#set-up-my-generation" in setup
+    for document in (_GENERATION,):
+        text = document.read_text()
+        assert "WORK=$(mktemp -d)" in text, document
+        assert "$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))" in text, document
+        assert text.index("WORK=$(mktemp -d)") < text.index('"$WORK/'), document
+        assert "curl.exe -fsS" in text, document
+        assert "percent-encode" in text, document
+        assert "%2F" in text, document

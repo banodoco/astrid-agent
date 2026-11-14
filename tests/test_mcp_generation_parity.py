@@ -17,6 +17,12 @@ EXPECTED = {
     "generate_workflow", "generate_targets", "generate_launch", "generate_release",
     "tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry",
     "tasks_events", "tasks_follow", "tasks_logs", "engines_install",
+    "generate_audio", "generate_align",  # r13/compose
+    "generate_failure",  # r13/compose: the read-only diagnostic after a failed run
+    "generate_defaults_set", "generate_defaults_unset",  # r13/compose
+    "generate_settings_checkout", "generate_settings_checkin",  # r13/compose
+    "generate_fetch_models", "generate_scan",  # Plan 20 phase 4
+    "generate_settings_set", "generate_settings_unset",  # Plan 20 phase 4
 }
 
 
@@ -56,17 +62,28 @@ def test_phase_one_tools_list_and_parser_registration():
     assert set(tools) & EXPECTED == EXPECTED
     assert {name for name in tools if name.startswith(("generate_", "tasks_", "engines_"))} == EXPECTED
     assert "engines_status" not in tools
-    assert "generate_audio" not in tools and "generate_speech" not in tools
+    # R4.J: generate audio is an MCP tool in R13 (tts, sfx, music); orchestrator ruling 14 Nov.
+    assert "generate_speech" not in tools
     assert "tasks_submit" not in tools and "tasks_get" not in tools
 
     from astrid.core.cli.domain_product import family_parsers
     task_names = {"tasks_" + path[-1] for path, _, _ in mcp_server._leaves(
         family_parsers()["tasks"], ("tasks",), "")}
     from astrid.core.generation.cli import _parser as generation_parser
-    gen_names = {"generate_" + path[-1] for path, _, _ in mcp_server._leaves(
-        generation_parser(), ("generate",), "")}
+    gen_paths = [path for path, _, _ in mcp_server._leaves(generation_parser(), ("generate",), "")]
+    gen_names = {mcp_server._tool_name(path) for path in gen_paths}
+    # No two generate leaves (e.g. defaults set and settings set) share one MCP tool name.
+    assert len(gen_names) == len(gen_paths)
+    assert {name for name in tools if name.startswith("generate_")} == gen_names
     assert task_names == {"tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry", "tasks_events", "tasks_follow", "tasks_logs"}
-    assert gen_names == {"generate_list", "generate_image", "generate_video", "generate_describe", "generate_workflow", "generate_targets", "generate_launch", "generate_release"}
+    assert gen_names == {"generate_list", "generate_image", "generate_video", "generate_describe", "generate_workflow", "generate_targets", "generate_launch", "generate_release",
+                         "generate_audio", "generate_align",  # r13/compose
+                         "generate_failure",  # r13/compose: the read-only diagnostic after a failed run
+                         "generate_defaults_set", "generate_defaults_unset",  # r13/compose
+                         "generate_settings_checkout", "generate_settings_checkin",  # r13/compose
+                         "generate_fetch_models", "generate_scan",  # Plan 20 phase 4
+                         "generate_settings_set", "generate_settings_unset"}  # Plan 20 phase 4
+    assert gen_names == {name for name in EXPECTED if name.startswith("generate_")}
 
     state = {"tools": tools, "prompts": {}}
     listed = mcp_server.handle({"jsonrpc": "2.0", "id": 8, "method": "tools/list"}, state)
@@ -190,6 +207,8 @@ def test_generate_schema_and_argv_for_all_leaves():
             "input": "array", "engine": "string", "no_wait": "boolean", "consent": "array",
             "recovery_path": "string", "align": "string", "inputs": "object",
         }
+        if name == "generate_video":
+            expected_types["video_ref"] = "string"  # r13/compose: --video-ref on video (and audio)
         assert {key: value["type"] for key, value in props.items()} == expected_types
         assert props["consent"]["items"]["enum"] == ["user_env"]
         assert tools[name]["definition"]["inputSchema"]["required"] == []

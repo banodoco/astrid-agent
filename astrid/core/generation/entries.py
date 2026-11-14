@@ -593,8 +593,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
     return description if _native else public_description(description)
 
 
-def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> dict[str, Any]:
-    """Describe raw/canonical Comfy work through the same offline input path."""
+def describe_workflow(path: Path, mode: str | None = None, *, _native=False, comfy_url: str = '') -> dict[str, Any]:
+    """Describe raw/canonical Comfy work; ``comfy_url`` (an attached server) converts UI JSON against its schema."""
     from vibecomfy.entries import draft_entry
 
     from astrid.packs.vibecomfy.production_engine import load_workflow_path
@@ -602,7 +602,7 @@ def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> 
     if path.is_dir():
         path = path / 'workflow.py'
     with TemporaryDirectory(prefix='astrid-workflow-describe-') as scratch:
-        loaded = load_workflow_path(path, scratch, comfy_url='')
+        loaded = load_workflow_path(path, scratch, comfy_url=comfy_url)
         workflow = loaded.resolved.workflow
         entry = draft_entry(workflow, 'workflow', bundle=str(path.resolve()))
         selected = mode or (entry['modes'][0] if len(entry['modes']) == 1 else 'workflow')
@@ -612,8 +612,9 @@ def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> 
     return result if _native else public_description(result)
 
 
-def resolve_workflow_inputs(path: Path, inputs: Mapping[str, Any], *, mode=None):
-    description = describe_workflow(path, mode=mode, _native=True)
+def resolve_workflow_inputs(path: Path, inputs: Mapping[str, Any], *, mode=None, comfy_url: str = ''):
+    """Validate inputs against the workflow's description, read on the attached server when ``comfy_url`` names one."""
+    description = describe_workflow(path, mode=mode, _native=True, comfy_url=comfy_url)
     values = validate_inputs(description, _dimension_values(description, inputs))
     return public_description(description), values
 
@@ -855,7 +856,8 @@ def prepare(path: Path, *, target_client: Any, mode: str, binds: dict[str, Any] 
         loaded = load_workflow_path(path, scratch, comfy_url=target_client.target.url if target_client else "")
         workflow = loaded.resolved.workflow
         return apply_workflow_inputs(workflow, mode=mode, binds=binds, values=values,
-                                     defaults=defaults, param_map=param_map)
+                                     defaults=defaults, param_map=param_map,
+                                     saved_seed_controls=loaded.saved_seed_controls)
 
 
 def _output_prefix_binding(workflow: Any, requested: dict[str, Any], binds) -> dict[str, str]:
@@ -876,22 +878,37 @@ def _output_prefix_binding(workflow: Any, requested: dict[str, Any], binds) -> d
     return {'filename_prefix': _resolve_binding(workflow, 'filename_prefix', f'{node.id}.filename_prefix')}
 
 
-def prepare_execution_bindings(workflow: Any, bindings: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def prepare_execution_bindings(workflow: Any, bindings: Mapping[str, Any] | None = None, *,
+                               saved_seed_controls: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """Resolve run randomness once, before sealing, and retain it as native bindings.
 
     The same helper prepares catalog, entry, hook and direct workflow executions.
     An explicit or replayed seed is authoritative; independent seedless preparations stay fresh.
+    ``saved_seed_controls`` is only given for a person's own saved UI workflow (the seed and control
+    read from the file, ``production_engine.saved_ui_seed_controls``): its seed is kept when the
+    control is ``fixed`` (as ComfyUI queues it); ``randomize``, ``increment`` and ``decrement`` stay fresh.
     """
     import secrets
 
     prepared = dict(bindings or {})
     if "seed" in getattr(workflow, "inputs", {}) and "seed" not in prepared:
-        prepared["seed"] = secrets.randbelow(2**32)
+        saved = _saved_fixed_seed(workflow, saved_seed_controls)
+        prepared["seed"] = saved if saved is not None else secrets.randbelow(2**32)
     return prepared
 
 
+def _saved_fixed_seed(workflow: Any, controls: Mapping[str, Mapping[str, Any]] | None) -> int | None:
+    """The saved seed when its control is ``fixed``; None for any other control or without saved controls."""
+    seed = getattr(workflow, "inputs", {}).get("seed")
+    saved = (controls or {}).get(str(getattr(seed, "node_id", "")))
+    if saved is None or saved.get("field") != seed.field or saved.get("control") != "fixed":
+        return None
+    value = saved.get("value")
+    return value if type(value) is int and 0 <= value < 2**32 else None
+
+
 def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
-                          binds=None, defaults=None, param_map=None):
+                          binds=None, defaults=None, param_map=None, saved_seed_controls=None):
     """One validated native binding path for catalog, entry and raw workflows."""
     kind = infer_kind(workflow)
     binds = {**_output_prefix_binding(workflow, {**(defaults or {}), **values}, binds), **(binds or {})}
@@ -936,7 +953,7 @@ def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
             assets[public] = Path(value)
         else:
             workflow.set_input(public, value)
-    prepared = prepare_execution_bindings(workflow, applied)
+    prepared = prepare_execution_bindings(workflow, applied, saved_seed_controls=saved_seed_controls)
     for name in prepared.keys() - applied.keys():
         workflow.set_input(name, prepared[name])
     return workflow, {"kind": kind, "bindings": prepared, "unbound": sorted(unbound)}, assets

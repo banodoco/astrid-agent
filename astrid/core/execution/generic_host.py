@@ -839,7 +839,13 @@ class _ManagedLocalServerTaskAdapter(_ManagedTaskAdapter):
     def _cleanup(self) -> None:
         from astrid.core.generation.backends.vibecomfy_local_server import cleanup_prompts
 
-        cleanup_prompts(self.url, self.destination)
+        try:
+            cleanup_prompts(self.url, self.destination)
+        except Exception as exc:
+            refusal = _attached_cleanup_refusal(exc)
+            if refusal is None:
+                raise
+            raise refusal from exc
 
     def cancel(self, *, reason: str) -> dict[str, Any]:
         self._cancel_signal.set()
@@ -856,6 +862,25 @@ class _ManagedLocalServerTaskAdapter(_ManagedTaskAdapter):
         # journal read here to catch acceptance racing an earlier cancel.
         self._cleanup()
         return super().release(reason=reason)
+
+
+def _attached_cleanup_refusal(exc: BaseException) -> RuntimeError | None:
+    """Name the attached ComfyUI endpoint and status when it refuses Astrid's scoped cleanup."""
+    from urllib.error import HTTPError
+    from urllib.parse import urlsplit
+
+    seen: BaseException | None = exc
+    for _ in range(12):
+        if seen is None:
+            break
+        if isinstance(seen, HTTPError):
+            endpoint = urlsplit(seen.url or "").path or "/queue"
+            return RuntimeError(
+                f"attached ComfyUI refused Astrid's scoped cleanup at {endpoint} "
+                f"with HTTP {seen.code}; other queued jobs were not touched"
+            )
+        seen = seen.__cause__ or seen.__context__
+    return None
 
 
 

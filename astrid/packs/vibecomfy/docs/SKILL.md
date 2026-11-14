@@ -43,12 +43,13 @@ before installing anything.
 ### Find their ComfyUI
 
 If the generation settings already name a ComfyUI address, check it with one
-scan. Otherwise discover. Both use the same read-only helper, run with Astrid's
-Python (the one that runs `python3 -m astrid`):
+scan. Otherwise discover. Both use the same read-only command, through the
+launcher (its path is in the setup skill's [Launcher paths](../../setup/docs/SKILL.md#launcher-paths); the blocks show
+the Linux one):
 
 ```sh
-python3 -m astrid.packs.vibecomfy.local scan                 # ports 8188 and 8000
-python3 -m astrid.packs.vibecomfy.local scan --ports 8188    # health-check a saved address
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json                # ports 8188 and 8000
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --ports 8188 --json   # health-check a saved address
 ```
 
 It reads `/system_stats`, `/internal/folder_paths` (model folders and
@@ -90,9 +91,20 @@ Match the request to a saved workflow name from `workflows`. One clear match:
 use it and say which. Several plausible ones: ask with the short list. None:
 show the list.
 
-Fetch it read-only into a scratch folder of your own (`$WORK` below), e.g.
-`curl -s "http://127.0.0.1:8188/userdata/workflows%2Fportrait_flux.json" -o "$WORK/portrait_flux.json"`,
-or copy it from `<base>/user/default/workflows/`. Never write into their
+Make a scratch folder of your own first (`$WORK` below), then fetch into it
+read-only:
+
+```powershell
+$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))
+curl.exe -fsS "http://127.0.0.1:8188/userdata/workflows%2Fportrait_flux.json" -o "$WORK\portrait_flux.json"
+```
+
+```sh
+WORK=$(mktemp -d)
+curl -fsS "http://127.0.0.1:8188/userdata/workflows%2Fportrait_flux.json" -o "$WORK/portrait_flux.json"
+```
+
+Or copy it from `<base>/user/default/workflows/`. Never write into their
 ComfyUI folders.
 
 Read the JSON yourself before running, and check the inputs you pass land on
@@ -103,7 +115,7 @@ which encoder a prompt reaches. Flux (`CLIPTextEncodeFlux`) and SDXL
 Describe the workflow to see the inputs it declares, then pass values:
 
 ```sh
-python3 -m astrid generate describe "$WORK/portrait_flux.json" --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe "$WORK/portrait_flux.json" --json
 ```
 
 For anything the declared inputs don't cover (negative prompt, steps, size, LoRA
@@ -120,7 +132,7 @@ Run the workflow file on the attached ComfyUI. Give the address as the
 placement; the address must be loopback (`http://127.0.0.1:PORT`):
 
 ```sh
-python3 -m astrid generate workflow "$WORK/portrait_flux.json" \
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow "$WORK/portrait_flux.json" \
   --placement http://127.0.0.1:8188 --inputs-json "$WORK/inputs.json" \
   --project PROJECT --json
 ```
@@ -133,12 +145,12 @@ For stills, follow in the same turn with a limit, and tell the user they can
 watch it in their ComfyUI window:
 
 ```sh
-python3 -m astrid tasks follow TASK_ID --project PROJECT --timeout-seconds 600
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" tasks follow TASK_ID --project PROJECT --timeout-seconds 600
 ```
 
 Video can take longer: when the limit passes, the task keeps running; check it
-later with `python3 -m astrid tasks show TASK_ID --project PROJECT --json`. "Stop" or
-"cancel" means `python3 -m astrid tasks cancel TASK_ID --project PROJECT`, which removes
+later with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" tasks show TASK_ID --project PROJECT --json`. "Stop" or
+"cancel" means `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" tasks cancel TASK_ID --project PROJECT`, which removes
 only Astrid's prompt from their queue.
 
 Set `seed` in `inputs.json` to repeat an image. Without it, the result records
@@ -193,7 +205,7 @@ Never use `vibecomfy prepare`, `vibecomfy run --ensure-*` or
 
 The outputs settle as normal task outputs in the project: in Astrid App they
 appear in chat and Project media; elsewhere name them from
-`python3 -m astrid tasks show TASK_ID --project PROJECT --json`.
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" tasks show TASK_ID --project PROJECT --json`.
 Report the seed and the time taken. Place results on the timeline only when
 asked. "Another one" means the same workflow with a new seed; "same but X"
 means edit the copy and pass the previous seed unless asked otherwise.
@@ -209,7 +221,7 @@ Wan2GP is manual: the user runs it themselves, then you import its results. To
 check a Wan2GP folder without running anything, use
 `python3 -m astrid.packs.vibecomfy.local wan2gp /abs/Wan2GP` (it reports whether
 `wgp.py` is there and where `outputs/` is). Then import a result with
-`python3 -m astrid media import /abs/Wan2GP/outputs/clip.mp4 --project PROJECT --json`.
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media import /abs/Wan2GP/outputs/clip.mp4 --project PROJECT --json`.
 
 ### Remember the setup
 
@@ -222,16 +234,16 @@ defaults, local versus cloud) only when the user asks, or offer once and save
 on yes. Store saved workflow names, not absolute workflow paths. Never store
 secrets, tokens or API keys.
 
-The settings document is edited as a file, the same way as preferences:
+Save the placement with `settings set placement`, and undo it with
+`settings unset placement`:
 
 ```sh
-python3 -m astrid generate settings checkout --file "$WORK/generation.json"
-python3 -m astrid generate settings checkin "$WORK/generation.json"
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement URL
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings unset placement
 ```
 
-A conflict is refused with both versions shown; check out again and merge.
-The shape is `{"placement": {"kind": "attached", "endpoint": "http://127.0.0.1:8188"},
-"defaults": {...}}`, and the generation skill's Set up section explains each key.
+`URL` is the attached ComfyUI endpoint, e.g. `http://127.0.0.1:8188`. The
+generation skill's Set up section explains the other keys.
 
 ## Workflow authoring
 

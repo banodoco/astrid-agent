@@ -122,6 +122,8 @@ class ComfyTargetClient:
         self._prompt_lock = threading.Lock()
         self._prompt_attempted = False
         self._witnessed_prompts: set[str] = set()
+        self._folder_paths_read = False
+        self._folder_paths: Any = None
 
     @property
     def http_origin(self) -> str:
@@ -195,7 +197,7 @@ class ComfyTargetClient:
         if payload is not None and path in {"/prompt", "/api/prompt"}:
             raise ValueError("use submit_prompt to preserve prompt acceptance")
         if payload is None:
-            allowed = path in {"/queue", "/history", "/system_stats", "/object_info"}
+            allowed = path in {"/queue", "/history", "/system_stats", "/object_info", "/internal/folder_paths"}
             if path.startswith("/history/"):
                 self._prompt_id(path.removeprefix("/history/"))
                 allowed = True
@@ -222,6 +224,16 @@ class ComfyTargetClient:
                               acknowledge_empty=payload is not None)
         except (OSError, urllib_error.URLError) as exc:
             raise ValueError(f"comfy target {path} request failed") from exc
+
+    def folder_paths(self) -> Any:
+        """The server's model folder paths, read at most once per client (one attempt); None if unavailable."""
+        if not self._folder_paths_read:
+            self._folder_paths_read = True
+            try:
+                self._folder_paths = self.request_json("/internal/folder_paths", timeout=5, response_limit=64 * 1024)
+            except (ValueError, OSError, TransportError):
+                self._folder_paths = None
+        return self._folder_paths
 
     def object_info(self) -> dict[str, Any]:
         """Capture schema through this target's existing attested transport."""
@@ -610,7 +622,8 @@ class ComfyModelMissing(ValueError):
     engine_code = "COMFY_MODEL_MISSING"
 
     def __init__(self, model: str, mode: str, failures: dict[str, list[str]],
-                 alternatives: list[str], expected_names: dict[str, list[str]] | None = None):
+                 alternatives: list[str], expected_names: dict[str, list[str]] | None = None,
+                 placements: list[dict[str, Any]] | None = None):
         self.model = model
         self.mode = mode
         self.failures = failures
@@ -618,13 +631,19 @@ class ComfyModelMissing(ValueError):
         self.expected_names = expected_names or {}
         import shlex
         from astrid.core.generation.asset_gaps import asset_readiness, align_argv
-        names = [f"{', '.join(values)} (role {role})" for role, values in self.expected_names.items()]
-        self.readiness = asset_readiness(model, models=names or [f'{model}/{mode}: unresolved roles {failures}'])
+        if placements is not None:
+            # Attached target: the user places the file in their own ComfyUI; Astrid installs nothing there.
+            self.readiness = asset_readiness(model, placements=placements)
+            tail = "; ".join(fix["details"]["action"] for fix in self.readiness["fixes"])
+        else:
+            names = [f"{', '.join(values)} (role {role})" for role, values in self.expected_names.items()]
+            self.readiness = asset_readiness(model, models=names or [f'{model}/{mode}: unresolved roles {failures}'])
+            tail = f"run: {shlex.join(align_argv(model))}"
         super().__init__(
             f"{self.code}: {model}/{mode}: unresolved roles {failures}; "
             f"expected filenames: {self.expected_names}; "
             f"compatible catalog entries: {', '.join(alternatives) or 'none'}; "
-            f"run: {shlex.join(align_argv(model))}"
+            f"{tail}"
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -656,6 +675,39 @@ def _resolve_roles(spec: Any, object_info: dict[str, Any]) -> tuple[dict[str, st
     return resolved, failures
 
 
+# ComfyUI loader input -> the folder key its file list is read from on the server.
+_COMFY_MODEL_FOLDERS = {
+    ("UNETLoader", "unet_name"): "diffusion_models",
+    ("CLIPLoader", "clip_name"): "text_encoders",
+    ("VAELoader", "vae_name"): "vae",
+}
+
+
+def _attached_model_placements(client: ComfyTargetClient, spec: Any,
+                               failures: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """Name each missing file and its folder from the attached server's own folder paths."""
+    listed = client.folder_paths()
+    folders = listed if isinstance(listed, dict) else {}
+    placements = []
+    for role in failures:
+        declaration = spec.model_roles.get(role) if spec and spec.model_roles else None
+        if declaration is None:
+            continue
+        key = _COMFY_MODEL_FOLDERS.get((declaration.node_class, declaration.input))
+        paths = folders.get(key) if key else None
+        if isinstance(paths, str):
+            paths = [paths]
+        from astrid.core.generation.asset_gaps import canonical_folder
+        folder = canonical_folder(paths, key)
+        matches = list(failures[role] or ())
+        if len(matches) > 1:
+            # Ambiguous: the matching files are present; the user keeps exactly one of them.
+            placements.append({"role": role, "file": " or ".join(matches), "folder": folder, "matches": matches})
+        else:
+            placements.append({"role": role, "file": " or ".join(declaration.names), "folder": folder})
+    return placements or [{"role": None, "file": "the required model files", "folder": None}]
+
+
 def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
                               model_id: str, mode: str, *, align: str = "check") -> tuple[dict[str, Any], dict[str, Any]]:
     """Keep the observed inventory internal; a returned plan grants no authority."""
@@ -679,8 +731,10 @@ def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
                                 if spec and role in spec.model_roles
                                 and spec.model_roles[role].node_class not in object_info})
         if missing_nodes:
-            from astrid.core.generation.asset_gaps import asset_readiness
+            from astrid.core.generation.asset_gaps import asset_readiness, attached_asset_readiness
             from astrid.core.generation.preflight import GenerationReadinessError
+            if client.target.kind == 'attached':
+                raise GenerationReadinessError(attached_asset_readiness(model_id, nodes=missing_nodes))
             raise GenerationReadinessError(asset_readiness(model_id, nodes=missing_nodes))
         alternatives = []
         for candidate in registry.list_all():
@@ -698,8 +752,10 @@ def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
                     candidate_spec, candidate_roles, object_info, client.http_origin,
                 ):
                     alternatives.append(candidate.id)
+        attached = client.target.kind == "attached"
         raise ComfyModelMissing(model_id, mode, failures, sorted(alternatives),
-            {role: list(spec.model_roles[role].names) for role in failures if spec and role in spec.model_roles})
+            {role: list(spec.model_roles[role].names) for role in failures if spec and role in spec.model_roles},
+            placements=_attached_model_placements(client, spec, failures) if attached else None)
     plan = {"model": model_id, "mode": mode, "template": spec.template,
             "target": {"url": client.target.url, "kind": client.target.kind},
             "roles": resolved, "model_bytes": "unverified_declaration" if align == "trust" else "unverified_target_inventory"}

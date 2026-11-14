@@ -148,9 +148,11 @@ disclosed idle retention.
 For example, after approval of these illustrative limits:
 
 ```sh
-astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --for 30m --consent paid
+astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --deadline FUTURE_UTC_DEADLINE --for 30m --consent paid
 astrid generate image "A studio portrait" --placement runpod
 ```
+
+Set FUTURE_UTC_DEADLINE to the current UTC time plus the session you want (for example, 1 hour), in the form 2026-01-01T13:00:00Z.
 
 The default is to wait until a machine is claimed or the operation is
 cancelled. Each attempt reports GPU, datacenter and result. Ordinary retries
@@ -180,7 +182,7 @@ and asks for paid consent; `--consent paid` is the explicit unattended form.
 For example, after approving the displayed terms:
 
 ```sh
-astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --max-hourly-usd 1 --max-usd 3 --for 30m --consent paid
+astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --max-hourly-usd 1 --max-usd 3 --deadline FUTURE_UTC_DEADLINE --for 30m --consent paid
 astrid machines
 astrid machines --json
 ```
@@ -203,6 +205,9 @@ The machine table shows live and recently ended leases: ID, GPU, state,
 scheduled release time in UTC, minutes left, estimated accrued USD cost,
 hourly rate and end reason. The release time is the idle expiry while idle
 and the paid expiry while active. Estimates are not a provider invoice.
+A task's machine column records the placement kind, pod ID or `local`, lease ID
+and device. A provider-terminated or missing pod leaves warm reuse; a job pinned to
+that machine is refused with its reason and the live leases.
 After a failed job, a verified machine stays idle until that release time; inspect its last job outcome and reuse it or release it explicitly.
 
 To authorize a separate extension for that exact live machine:
@@ -227,6 +232,16 @@ Release explicitly before stopping the host when the machine is no longer
 needed. Recovery must preserve the original custody and release receipt.
 Release is complete only when the exact pod GET returns 404 and a successful
 account list confirms its absence; unresolved cleanup blocks reuse. Releasing a pod preserves its network volume.
+
+After a generation, list the machines and tell the user that a kept-warm machine
+keeps costing money until it is released. Unless the user chooses to keep it
+warm, release it by its ID with `astrid machines release MACHINE_ID`.
+
+**What warm means here.** A job's models stay loaded on the claimed pod between
+jobs until ComfyUI needs the room for a different model. Warmth ends when the
+claim's idle time runs out and the pod is released: the next job on a new claim
+loads its models again. Plan around the claim's idle time, not around the models
+staying loaded.
 
 ### Runtime and storage
 

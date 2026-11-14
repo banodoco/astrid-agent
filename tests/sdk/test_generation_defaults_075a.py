@@ -64,7 +64,11 @@ def test_failed_qwen_default_surfaces_own_error_without_z_image(network, monkeyp
         assert 'qwen_image_2.1_turbo_int8_convrot.safetensors' in str(caught.value)
     assert caught.value.to_envelope()['entry']['id'] == 'qwen-image-2.1-turbo'
     # Z-Image would make a second inventory request and successfully substitute.
-    assert calls == [('GET', '/system_stats'), ('GET', '/object_info')]
+    if failure == 'missing_model':
+        # R4.L: P4.6b (62b47709) reads the ComfyUI folder list once per refusal to place missing models.
+        assert calls == [('GET', '/system_stats'), ('GET', '/object_info'), ('GET', '/internal/folder_paths')]
+    else:
+        assert calls == [('GET', '/system_stats'), ('GET', '/object_info')]
 
 
 @pytest.mark.parametrize('mode,preferred', [
