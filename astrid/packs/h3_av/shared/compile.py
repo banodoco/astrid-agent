@@ -399,7 +399,6 @@ def _compile_lanpaint(
     keyframes, audio_intervals, schedule = _lanpaint_masks(request, asset_binding=asset_binding, internal_full_frame="mask_full_frame", internal_preserve="mask_preserve")
     asset_manifest = _write_asset_bundle(destination / "managed-assets.zip", bindings)
     members = _member_by_binding(asset_manifest)
-    source_id = request.value["source"]["asset"]
     workflow_inputs = {
         "model": request.value["overrides"].get("model", "minimax_h3_fl2va_pruned_fp8_scaled.safetensors"),
         "steps": request.value["overrides"].get("steps", 20),
