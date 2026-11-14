@@ -295,8 +295,8 @@ def test_machine_release_settles_snapshot_before_stop_and_without_waiting_when_w
     _claim_machine(c)
     calls = []
 
-    def settle(state, *, wait_seconds, budget_seconds):
-        calls.append((wait_seconds, budget_seconds is not None and budget_seconds > 0, list(c.deletes)))
+    def settle(state, *, wait_seconds, budget_seconds, cancelled):
+        calls.append((round(wait_seconds, -1), budget_seconds is not None and budget_seconds > 0, list(c.deletes)))
         raise RuntimeError("snapshot bookkeeping broke")  # must never fail release
 
     monkeypatch.setattr(c.placement, "settle_engine_snapshot", settle)
@@ -306,7 +306,7 @@ def test_machine_release_settles_snapshot_before_stop_and_without_waiting_when_w
     cold = c.machine.claim(c.job(2))
     c.machine.release(cold, False)
     assert c.deletes == ["pod-1"]
-    assert calls == [(0, True, []), (rp.SNAPSHOT_PUBLISH_WAIT_SECONDS, True, [])]
+    assert calls == [(0, True, []), (rp.SNAPSHOT_PUBLISH_WAIT_SECONDS, True, [])]  # cold: ~the full bound
 
 
 class _ExecClock:
@@ -385,12 +385,14 @@ def _stalled_release(c, monkeypatch, *, wait_seconds=0.4, interrupt=False, minim
     inner = lease.claim.ops.exec
 
     def exec_(command, timeout=600, *args, **kwargs):
+        exec_.seen.append(command)
         if "/proc/4242" in command or "engine_snapshot" in command:
             if interrupt:
                 raise KeyboardInterrupt
             never.wait(timeout * 10 + 30)  # ignores its timeout, like the real transport
         return inner(command, timeout, *args, **kwargs)
 
+    exec_.seen = []
     lease.claim.ops.exec = exec_
     started = _time.monotonic()
     return lease, started, never
@@ -434,3 +436,114 @@ def test_settlement_skipped_when_under_ten_seconds_remain(machine_case, monkeypa
     assert ("engine_snapshot_settlement", "skipped") in {(e["step"], e["status"]) for e in lease.state.steps}
     assert not any("/proc/4242" in str(e) for e in lease.state.steps)
     assert c.deletes == ["pod-1"]
+
+
+def _settlement_threads():
+    import threading
+    return [t for t in threading.enumerate() if t.name == "engine-snapshot-settlement"]
+
+
+def test_abandoned_settlement_is_fenced_and_late_results_ignored(machine_case, monkeypatch):
+    """W116: after release abandons settlement, the woken worker runs no report and notes nothing."""
+    c = machine_case
+    lease, _started, never = _stalled_release(c, monkeypatch)
+    c.machine.release(lease, False)
+    seen = lease.claim.ops.exec.seen
+    issued = list(seen)
+    steps_at_release = len(lease.state.steps)
+    never.set()  # the stalled exec returns late
+    for thread in _settlement_threads():
+        thread.join(5)
+    assert not _settlement_threads()
+    assert len(lease.state.steps) == steps_at_release
+    assert not any(e["step"] == "engine_snapshot_report" for e in lease.state.steps)
+    assert seen == issued  # no exec at all after the fence, in particular no report
+    assert not any("engine_snapshot report" in command for command in seen)
+
+
+def test_interrupt_during_thread_construction_still_deletes_the_pod(machine_case, monkeypatch):
+    c = machine_case
+    lease, _started, never = _stalled_release(c, monkeypatch)
+
+    real = rm.threading.Thread
+
+    class Exploding(real):  # only the settlement thread; release's own threads are untouched
+        def __init__(self, *args, name=None, **kwargs):
+            if name == "engine-snapshot-settlement":
+                raise KeyboardInterrupt
+            super().__init__(*args, name=name, **kwargs)
+
+    monkeypatch.setattr(rm.threading, "Thread", Exploding)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            c.machine.release(lease, False)
+    finally:
+        never.set()
+    assert c.deletes == ["pod-1"] and lease.released
+
+
+def test_thread_start_failure_leaves_a_successful_job_successful(machine_case, monkeypatch):
+    c = machine_case
+    lease, _started, never = _stalled_release(c, monkeypatch)
+    real = rm.threading.Thread
+
+    class NoThreads(real):
+        def start(self):
+            if self.name == "engine-snapshot-settlement":
+                raise RuntimeError("can't start new thread")
+            return super().start()
+
+    monkeypatch.setattr(rm.threading, "Thread", NoThreads)
+    try:
+        c.machine.release(lease, False)  # must not raise: the job completed
+    finally:
+        never.set()
+    assert c.deletes == ["pod-1"] and lease.released
+
+
+def test_release_error_never_replaces_a_held_interrupt(machine_case, monkeypatch):
+    c = machine_case
+    lease, _started, never = _stalled_release(c, monkeypatch, interrupt=True)
+    monkeypatch.setattr(c.machine, "_finish", lambda *a, **k: (_ for _ in ()).throw(OSError("finish broke")))
+    try:
+        with pytest.raises(KeyboardInterrupt) as info:
+            c.machine.release(lease, False)
+    finally:
+        never.set()
+    assert isinstance(info.value.__cause__, OSError)
+
+
+def test_near_expiry_paid_clock_skips_settlement(machine_case, monkeypatch):
+    """A real near-expiry owner clock (not a lowered cap): under 10 s of paid lease, no settlement."""
+    c = machine_case
+    lease, _started, never = _stalled_release(c, monkeypatch, wait_seconds=180, minimum=10)
+    owner = c.machine._require().lease_owner
+    with owner.lock:
+        paid = owner.preparation_claim(lease.lease)["lease"]["paid_expires_at"]
+    monkeypatch.setattr(owner, "clock", lambda: paid - 5)
+    try:
+        c.machine.release(lease, False)
+    finally:
+        never.set()
+    assert ("engine_snapshot_settlement", "skipped") in {(e["step"], e["status"]) for e in lease.state.steps}
+    assert c.deletes == ["pod-1"]
+
+
+def test_settle_fence_ignores_a_late_wait_and_never_reports(tmp_path, sources):
+    """W116: release abandons while the on-pod wait is in flight; nothing after it runs or is noted."""
+    placement, state, pod = _prepare(tmp_path, sources)
+    pod.alive = [0, 0]
+    fence = {"set": False}
+    inner = pod.exec
+
+    def exec_(command, timeout=600):
+        result = inner(command, timeout)
+        if "-lt" in command:
+            fence["set"] = True  # abandoned by release before this wait returned
+        return result
+
+    pod.exec = exec_
+    placement.settle_engine_snapshot(state, cancelled=lambda: fence["set"])
+    assert not any("engine_snapshot report" in command for command in pod.exec_log)
+    assert not _notes(state, "engine_snapshot_report")
+    assert not _notes(state, "engine_snapshot_publish")[1:]

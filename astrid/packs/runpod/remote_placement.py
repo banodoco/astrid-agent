@@ -880,11 +880,15 @@ class RemotePlacement:
         state.note("engine_snapshot_publish", "started", pid=pid)
 
     def settle_engine_snapshot(self, state: RemoteRun, *, wait_seconds: float = SNAPSHOT_PUBLISH_WAIT_SECONDS,
-                               budget_seconds: float | None = None) -> None:
+                               budget_seconds: float | None = None,
+                               cancelled: Callable[[], bool] | None = None) -> None:
         """Before the pod stops: wait (bounded) for this run's publish, then report and prune partials.
 
         Never raises; an unfinished publish has no manifest, so it is invisible to restore.
+        ``cancelled`` fences an abandoned settlement: once it is true, no further exec runs and
+        no late result is noted.
         """
+        fenced = cancelled if cancelled is not None else (lambda: False)
         pid = getattr(state, "snapshot_publish_pid", None)
         if type(pid) is not int or pid <= 0 or getattr(state, "claim", None) is None:
             return
@@ -897,9 +901,11 @@ class RemotePlacement:
                      f"[ -n \"$s\" ] && [ \"$s\" != Z ] && grep -q engine_snapshot /proc/{pid}/cmdline")
             # One bound for the whole settlement: wait + report, transport slack included.
             total = min(SNAPSHOT_PUBLISH_WAIT_SECONDS, budget)
+            if fenced():
+                return
             if wait_seconds <= 0:
                 # A warm pod keeps running; publish finishes there and a later report counts it.
-                if ops.exec(alive, 10)[0] == 0:
+                if ops.exec(alive, 10)[0] == 0 and not fenced():
                     state.note("engine_snapshot_publish", "still_running", pid=pid)
                     return
             else:
@@ -909,14 +915,18 @@ class RemotePlacement:
                 code, _o, _e = ops.exec(
                     f"i=0; while {{ {alive}; }} && [ $i -lt {wait} ]; do sleep 1; i=$((i+1)); done; "
                     f"{{ {alive}; }} && exit 3; exit 0", wait + SNAPSHOT_SLACK_SECONDS)
+                if fenced():
+                    return
                 if code != 0:
                     state.note("engine_snapshot_publish", "publish_unfinished", pid=pid)
             left = total - (self._clock() - started)
             command = self._snapshot_command(state, "report")
-            if command is None or left < SNAPSHOT_REPORT_MIN_SECONDS:
+            if command is None or left < SNAPSHOT_REPORT_MIN_SECONDS or fenced():
                 return
             bound = int(min(SNAPSHOT_REPORT_SECONDS, left))
             code, stdout, _e = ops.exec(f"{command} --deadline {max(1, bound - 5)}", bound)
+            if fenced():
+                return  # abandoned by release: a late report is ignored
             result = self._snapshot_result(stdout) if code == 0 else None
             if result is None:
                 state.note("engine_snapshot_report", "skipped", reason="report_failed")
@@ -933,7 +943,8 @@ class RemotePlacement:
                        identities=count(result.get("identities")), partials=count(result.get("partials")),
                        durations=result["durations"])
         except Exception:  # noqa: BLE001 - release must never block or fail on the snapshot
-            state.note("engine_snapshot_report", "skipped", reason="report_failed")
+            if not fenced():
+                state.note("engine_snapshot_report", "skipped", reason="report_failed")
 
     def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:
         from astrid.core.generation import engine_recipe, engine_runner
