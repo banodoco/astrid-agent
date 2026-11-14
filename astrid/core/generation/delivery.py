@@ -9,6 +9,33 @@ from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from urllib.parse import urlencode
+
+# The hosted App: the origin the installers open (installer/backend.py) and the one the README names.
+HOSTED_APP_ORIGIN = 'https://astrid.haus'
+
+
+def open_url_for(project: str) -> str:
+    """The one link that opens a project's gallery in the hosted App; the project id is its only parameter."""
+    return f'{HOSTED_APP_ORIGIN}/tools/video-editor?{urlencode({"project": project})}'
+
+
+def admitted_project(payload: Any, *, explicit: str | None = None, client: Any = None) -> str | None:
+    """The project an admitted generation runs in: the Runtime's own id, then the caller's, then the selection."""
+    project = payload.get('project_id') if isinstance(payload, Mapping) else None
+    if isinstance(project, str) and project.strip():
+        return project
+    if explicit:
+        return explicit
+    if client is None:
+        return None
+    from astrid.sdk.exceptions import CapabilityInvocationError
+    from astrid.sdk.invocation import _runtime_selected_project
+    try:
+        return _runtime_selected_project(client)
+    except CapabilityInvocationError:
+        # The generation is already admitted; a client that cannot name its selection gets no link.
+        return None
 
 
 def _sha256(value: Any) -> str:
@@ -145,4 +172,7 @@ def _deliver(payload, rows, *, client, out, managed, project):
         # No requested file is replaced until every object passes verification.
         for temporary, path in staged:
             os.replace(temporary, path)
-    return {**payload, 'image_paths': paths, 'run_dir': str(root)}
+    result = {**payload, 'image_paths': paths, 'run_dir': str(root)}
+    if project:
+        result['open_url'] = open_url_for(project)
+    return result

@@ -163,6 +163,22 @@ def request_from_selector(selector: Any) -> Mapping[str, Any] | Placement | None
     return {"kind": selector}
 
 
+def attached_comfy_url(selector: Any) -> str:
+    """The loopback ComfyUI a selector places work on, for reading a saved workflow against its schema.
+
+    ``''`` when the selector resolves to no attached endpoint (managed, a machine kind, a
+    non-loopback address or a refused placement): the run reports those itself.
+    """
+    from astrid.core.generation import targets
+    try:
+        placement = resolve_placement(request_from_selector(selector))
+        if placement.kind != "attached" or not placement.endpoint:
+            return ""
+        return targets.normalize_target({"endpoint": placement.endpoint}).endpoint
+    except (AstridError, targets.TargetConfigError, ValueError):
+        return ""
+
+
 def comfy_selector(placement: Placement) -> str:
     """What ``select_generation_target`` is asked for, from the resolved placement.
 

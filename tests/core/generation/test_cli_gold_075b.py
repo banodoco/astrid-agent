@@ -730,5 +730,6 @@ def test_attached_voice_fails_with_align_check_and_names_the_fixes(tmp_path, att
     assert result.returncode != 0, _describe(result)
     text = result.stdout + result.stderr
     assert AUTO_ASSET_REFUSALS["voice"] in text, _describe(result)
-    assert "--align trust" in text and "generate align" in text, _describe(result)
+    assert "--align trust" in text and "put the missing model files in their folders on your ComfyUI" in text, _describe(result)
+    assert "generate align" not in text, _describe(result)  # R4.O: attached targets are never told to run the managed installer (822c2501)
     assert not _task_ids(_payload(result)) and not comfy.writes()

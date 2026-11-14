@@ -30,7 +30,7 @@ def test_plan_is_platform_specific_and_does_not_install(tmp_path, monkeypatch, p
             platform_name = {"linux": "Linux", "darwin": "macOS"}[platform]
             assert plan["reason"] == (
                 f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
-                "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
+                "then pass `comfy_url` (find it with `astrid generate scan`)."
             )
         else:
             assert "admitted Wan2GP checkout and interpreter" in plan["reason"]
@@ -85,7 +85,7 @@ def test_unmanaged_comfy_provision_rejection_gives_bring_your_own_path(platform,
         gpu.provision_environment(plan)
     assert str(exc.value) == (
         f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
-        "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
+        "then pass `comfy_url` (find it with `astrid generate scan`)."
     )
 
 

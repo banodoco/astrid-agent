@@ -11,6 +11,12 @@ computer through Astrid Runtime.
 
 If an agent is doing the setup, have it follow the onboarding skill at
 `docs/setup/SKILL.md`, which shows these choices and lets you change them.
+To give your agent only that skill first (no Astrid, no Runtime), run one of
+these. It asks which harness you use (Claude Code, Codex or Hermes) and copies
+the skill into that harness's skills folder.
+
+- macOS or Linux: `python3 -c 'import urllib.request; exec(urllib.request.urlopen("https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py").read())'`
+- Windows PowerShell: `python -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py').read())"`
 
 Open Terminal on macOS or Linux, or PowerShell on Windows. Read the installer
 before running it. It keeps your existing workspace and credentials. Ask for
@@ -77,14 +83,11 @@ offline; online models and providers still need internet.
 
 The `astrid-app` clone is your editor's code. Edit it while the server runs to
 see changes. Start later with `npm run dev:local` in that folder. Stop with
-Ctrl+C; an already running installed Runtime keeps running. To update, stop
-the editor, save or commit source changes, then run `git pull --ff-only origin main`,
-`npx -y npm@11 ci`, and `npm run dev:local`. If Git reports a conflict or divergence,
-keep your changes and resolve it before continuing. Update the Runtime and
-agent with the [official update command](setup/troubleshooting.md#update-astrid),
-then restart the editor. See the
-[App README](https://github.com/banodoco/astrid-app#run-astrid-fully-on-your-computer)
-for details.
+Ctrl+C; an already running installed Runtime keeps running. To update, follow the
+[App README](https://github.com/banodoco/astrid-app#run-astrid-fully-on-your-computer).
+If Git reports a conflict or divergence, keep your changes and resolve it before
+continuing. Update the Runtime and agent with the
+[official update command](setup/troubleshooting.md#update-astrid), then restart the editor.
 
 ## Developer reference
 

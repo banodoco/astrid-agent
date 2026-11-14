@@ -19,42 +19,66 @@ generation" or "connect my ComfyUI". Skip it when the user asked for one specifi
 generation and the defaults already work.
 
 It only reads until a step asks the user. Never launch, restart or touch the
-user's ComfyUI or its queue; never download or install anything during setup;
-never read or print an API key; never write a change without that change's own yes.
+user's ComfyUI or its queue. The one download is a default's missing models, and
+only on the user's yes in the astrid-setup skill's first-image step. Never read or
+print an API key; never write a change without that change's own yes.
 
-1. **Read what is set.** `python3 -m astrid generate defaults --json` (each slot and
-   where its value came from) and `python3 -m astrid generate targets --json` (the placement).
+Astrid commands here use the launcher; its path on each OS is in the
+[astrid-setup skill's Launcher paths](../../setup/docs/SKILL.md#launcher-paths).
+The blocks show the Linux path. Make a work folder first: `WORK=$(mktemp -d)`
+(PowerShell: `$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))`).
+
+1. **Read what is set.** `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults --json` (each slot and
+   where its value came from) and `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate targets --json` (the placement).
 2. **Discover, read-only.** Scan for the user's ComfyUI, with its saved workflows:
-   `python3 -m astrid.packs.vibecomfy.local scan`. Check provider keys by presence
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json`
+   (its details are in the [VibeComfy skill](../../vibecomfy/docs/SKILL.md#find-their-comfyui)). Check provider keys by presence
    only (for example `test -n "$FAL_KEY" && echo set`). For Wan2GP, ask for the
    folder if the user knows it, then check it:
-   `python3 -m astrid.packs.vibecomfy.local wan2gp /abs/Wan2GP`. Show one list of
+   `python3 -m astrid.packs.vibecomfy.local wan2gp /abs/Wan2GP` (no launcher route for this one). Show one list of
    what was found, and what was not.
 3. **Ask once which tool is primary**: their ComfyUI, Wan2GP, RunPod, or this
    computer's built-in engine. Save the placement only on a yes:
-   `python3 -m astrid generate settings checkout --file "$WORK/generation.json"`, edit
-   `placement`, then `python3 -m astrid generate settings checkin "$WORK/generation.json"`.
-   For a ComfyUI, `placement` is `{"kind": "attached", "endpoint": "http://127.0.0.1:PORT"}`.
-4. **One question per default slot.** Use `python3 -m astrid generate list --json`
-   for readiness, and ask with the evidence: "you have X's models; set it as your
-   image default?" Save each yes with
-   `python3 -m astrid generate defaults set <kind> <mode> <entry>`.
-5. **A checklist of the other saved workflows** from the scan. For each one the
-   user ticks, preview it first, then save it as an entry:
-   `python3 -m astrid generate workflow FILE --as-entry NAME --dry-run --json`
-   shows the inputs the entry would declare and writes nothing.
-   Save it with `python3 -m astrid generate workflow FILE --as-entry NAME --no-run`.
-   `--no-run` saves the entry and queues nothing on any target, so setup never
-   touches the user's ComfyUI queue.
-6. **Show how to run each one** (the commands in the sections below), then offer one
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement URL`
+   (for a ComfyUI, `URL` is its address, such as `http://127.0.0.1:PORT`; see Placement).
+4. **One question per default slot, four answers.** Read readiness from
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate list --json`, then ask with the evidence: "you have X's
+   models; set it as your image default?" No answer runs anything. Each has one undo:
+   - **Keep Astrid's**, with its readiness shown. Nothing is written. Undo: none needed.
+   - **Use one of yours**. Show their saved workflows from the scan, most recently
+     edited first (`workflows_detail`, by `modified`). On a yes, fetch the chosen one
+     read-only to `$WORK/workflow.json`, then save and pin it below as `FILE`:
+     `curl -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK/workflow.json"`
+     (on Windows PowerShell, `curl.exe -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK\workflow.json"`,
+     since PowerShell 5.1 aliases `curl`). `WORKFLOW` is its scan name,
+     percent-encoded: a space is `%20`, and a nested name keeps its `/` as `%2F`. Undo:
+     the `restore:` command that the pin's `defaults set` prints (below).
+   - **Another shipped entry**, or leave the slot to the pack default. Pin one from
+     `generate list --json` with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults set KIND MODE ENTRY`,
+     or drop the user's pin with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults unset KIND MODE`.
+     Undo: the `restore:` command that `defaults set` prints after `Previous pin: X`.
+     After a drop, pin the entry step 1 showed with `defaults set KIND MODE ENTRY` again.
+   - **Create a new default when none of those fits**: a workflow of theirs that is a
+     file on disk, not among the scan's. Save and pin it below as `FILE`. Undo:
+     the `restore:` command that the pin's `defaults set` prints (below).
+   - **Save and pin** (answers 2 and 4; `FILE` is the workflow, `NAME` the entry name).
+     Preview first, which writes nothing:
+     `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --as-entry NAME --dry-run --json`.
+     On a yes, save, which queues nothing on any target:
+     `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --as-entry NAME --no-run`.
+     Then pin it: `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults set KIND MODE NAME`.
+     It prints `Previous pin: X; restore: CMD` (`previous` and `restore` with `--json`);
+     keep `CMD`, run through the launcher, as that pin's undo.
+     The saved entry stays; delete `${VIBECOMFY_ENTRIES_DIR:-$HOME/.vibecomfy/entries}/NAME`
+     only on a second yes.
+5. **Show how to run each one** (the commands in the sections below), then offer one
    test generation. Run it only on a yes.
-7. **List every change and its undo.** Undo a placement with `settings checkout`
-   and restore the old value; a pinned default with
-   `python3 -m astrid generate defaults unset <kind> <mode>`. Say which changes were
+6. **List every change and its undo.** Undo a placement with
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings unset placement`; a pinned default with
+   the `restore:` command its `defaults set` printed. Say which changes were
    made and which were not.
 
-A ComfyUI that is not running is a finding, not an error: say so, and ask the user
-to start it.
+If their ComfyUI is not running, say so, and ask the user to start it.
 
 ## Generate
 
@@ -68,14 +92,22 @@ img.outputs["artifacts"]   # runtime artifact references
 The CLI has the same shape:
 
 ```sh
-python3 -m astrid generate list --json                  # entries and readiness
-python3 -m astrid generate describe --entry ENTRY --json  # declared inputs, without checking readiness
-python3 -m astrid generate image --entry image/flux2_klein_4b_t2i --inputs-json FILE --placement local --out outputs/
-python3 -m astrid generate video --entry h3 --inputs-json FILE --dry-run
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate list --json                  # entries and readiness
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe --entry ENTRY --json  # declared inputs, without checking readiness
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry image/flux2_klein_4b_t2i --inputs-json FILE --placement local --out outputs/
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry ENTRY --inputs-json FILE --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate video --entry h3 --inputs-json FILE --dry-run
 ```
 
 `--dry-run` prints the plan without running it. `--out` puts the result in a
 folder you name; without it, files land in `./outputs/<task-id>/`.
+
+Until first-frame conditioning lands, image-to-video uses the image as a style and subject reference, not as the exact first frame; the first frame is not guaranteed to match the picture.
+
+To cancel a stuck or unwanted generation, run
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" tasks cancel TASK_ID --project PROJECT`;
+over MCP, use the `tasks_cancel` tool. It removes only Astrid's own job from the user's ComfyUI queue;
+other jobs there are untouched.
 
 ## Placement
 
@@ -83,36 +115,91 @@ A placement is where a generation runs. Three kinds:
 
 - **`local`**: this computer, through Astrid's managed ComfyUI. Optional `device` picks a GPU index.
   If that engine is not installed, the run reports the install and its download size.
-  The download runs only on the user's yes; setup never starts it.
+  The engine download runs only after the user's own yes.
 - **`attached`**: the user's own ComfyUI at a loopback address, given as the endpoint.
   Astrid never starts or stops it. Pass the address as `--placement http://127.0.0.1:8188`.
 - **`runpod`**: a rented RunPod GPU. Pass `--placement runpod`; it uses an already claimed
-  machine. Approve paid limits with `astrid machines claim` first, see below.
+  machine. Claims and paid limits are in the [RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines).
 
 Resolution, the same for every call: the request, then the user's default
 placement, then the built-in default (`local`). `--placement auto` means "use the
 default". Set the default in the generation settings, not per call, unless the user
-asks for one place just this time.
+asks for one place just this time. Set a ComfyUI as the default, and undo it:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement http://127.0.0.1:PORT
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings unset placement
+```
 
 Checking models: `--align check` (default) compares the workflow's models against
 the target's inventory and refuses if one is missing. `--align trust` accepts the
 workflow's declared models as present, unverified, and should be used only when the
-user asks. `python3 -m astrid generate align --entry ENTRY` inspects locked managed
+user asks. `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate align --entry ENTRY` inspects locked managed
 assets; `--apply --consent user_env` installs them and only with that explicit consent.
+
+A default's missing models on the user's own ComfyUI: the first command shows the
+plan and writes nothing; the second downloads with that plan's digest, only on the
+user's yes:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL --apply PLAN_SHA256
+```
+
+**No local GPU or ComfyUI?** On Linux or Windows, run this once. On macOS, run
+`uname -m` instead:
+
+```sh
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+```
+
+A capable Linux or Windows computer has one NVIDIA GPU with at least 12 GB of
+VRAM, or meets the declared requirement of the default generation, if there is
+one. Do not add memory across GPUs. Report what you found, and say if capability
+is unconfirmed. Then offer one of these, each on its own yes:
+
+**Astrid's managed engine** (`local`), on a capable computer where it is
+available. Check the plan first. This installs nothing:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui --dry-run
+```
+
+Run this only after its own yes. It installs a new ComfyUI on this computer and
+leaves the user's own one alone:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui
+```
+
+**RunPod** rents a GPU and costs money: hand over to the
+[RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines)
+(installed name: `runpod`), and never ask for a key in chat.
+
+The user can say no to both and set up generation later.
+
+**Warm models.** A model that has loaded stays in memory between jobs, so the
+next job that needs it starts without reloading. ComfyUI frees a loaded model
+when a different model needs the room, so warmth is a convenience, never a
+guarantee. Where it ends depends on where the job runs: on RunPod, when the
+claim's idle time ends and the pod is released; on local-managed, after the idle
+time, when the engine frees its memory. Astrid never restarts an attached ComfyUI
+or unloads its models, so what stays warm there is up to that server.
 
 ## Run a ComfyUI workflow file
 
 A workflow file runs without any pack or entry:
 
 ```sh
-python3 -m astrid generate workflow FILE --placement local --inputs-json INPUTS.json
-python3 -m astrid generate workflow FILE --placement http://127.0.0.1:8188 --inputs-json INPUTS.json
-python3 -m astrid machines claim --max-usd 2 --for 30m --consent paid
-python3 -m astrid generate workflow FILE --placement runpod --inputs-json INPUTS.json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --placement local --inputs-json INPUTS.json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --placement http://127.0.0.1:8188 --inputs-json INPUTS.json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe FILE --placement http://127.0.0.1:8188
 ```
 
+For a rented GPU, claim a machine first in the [RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines), then run the workflow with `--placement runpod`.
+
 `INPUTS.json` is a JSON object of the workflow's declared inputs. List them with
-`python3 -m astrid generate describe FILE --json`; a prompt is usually a node input such as
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe FILE --json`; a prompt is usually a node input such as
 `node:20.text`. A reference image is passed with `--edit FILE`; it is shipped with the
 run, so the workflow does not need a path on the target. Add `--dry-run` first on any placement.
 
@@ -134,9 +221,9 @@ Each `(kind, mode)` slot has one entry. Packs offer defaults as data
 highest-priority pack default, then refused.
 
 ```sh
-python3 -m astrid generate defaults --json            # every slot, its entry, and where it came from
-python3 -m astrid generate defaults set image t2i flux-schnell
-python3 -m astrid generate defaults unset image t2i
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults --json            # every slot, its entry, and where it came from
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults set image t2i flux-schnell
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults unset image t2i
 ```
 
 A pin naming an entry that does not exist, or lacks that kind and mode, is refused
@@ -148,8 +235,8 @@ Placement and defaults live in one document in the Runtime's user settings,
 `generation`. It is editable as a file:
 
 ```sh
-python3 -m astrid generate settings checkout --file "$WORK/generation.json"
-python3 -m astrid generate settings checkin "$WORK/generation.json"
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkout --file "$WORK/generation.json"
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkin "$WORK/generation.json"
 ```
 
 The shape is `{"placement": {...}, "defaults": {"<kind>.<mode>": {"pack": "...", "entry": "..."}}, "machines": {"runpod": {...}}}`.
@@ -159,26 +246,9 @@ in the environment.
 
 ## RunPod
 
-For RunPod setup, GPU and datacenter choices, capacity waiting, paid consent,
-and the complete claim/keep/release workflow, use the
-[RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines)
-(installed name: `runpod`). Start with `astrid machines setup` when the user
-asks to configure RunPod; a missing preference refuses and never launches
-setup automatically.
-
-Each machine claim needs fresh paid consent. Generation uses a compatible
-already-claimed machine within its existing paid limit; reuse cannot extend
-that limit.
-`astrid machines` shows the scheduled release time, minutes left, estimated
-cost and hourly rate. `astrid machines keep` authorizes a separate bounded
-extension, and `astrid machines release ID` ends the machine. Automatic
-release only happens while its owning host is running.
-
-An optional network volume keeps models between pods and is preserved on
-release. The task's machine column records the placement kind, pod ID or
-`local`, lease ID and device. A provider-terminated or missing pod leaves warm
-reuse; a job pinned to that machine is refused with its reason and the live
-leases.
+For RunPod setup, GPU and datacenter choices, claims, keeping a machine, release
+and cost, use the [RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines)
+(installed name: `runpod`). Generation uses only a machine already claimed there.
 
 ## Provider APIs
 

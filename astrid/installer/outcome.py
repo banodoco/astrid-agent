@@ -39,6 +39,10 @@ EXIT_CODES = {"updated": 0, "already-current": 0, "repaired": 0,
 
 PUBLIC_INSTALL_LINE = "curl -fsSL https://astrid.haus/install | sh"
 PUBLIC_INSTALL_LINE_WINDOWS = "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))"
+# The hand-off sentence. The setup skill owns the words (astrid/packs/setup/docs/SKILL.md);
+# this is the one copy in Agent code. scripts/render_readme.py imports it, and
+# tests/test_handoff_sentence.py asserts it equals the skill's sentence.
+HANDOFF_SENTENCE = "Next: set up generation with the astrid-setup skill."
 
 
 def _repair_next() -> str:
@@ -141,7 +145,7 @@ class Outcome:
                  if self.kind in SUCCESS and self.warnings else "")
         if self.kind == "updated":
             if self.start is None:
-                return [f"Astrid installed: {release(self.target)}{notes}."]
+                return [f"Astrid installed: {release(self.target)}{notes}.", HANDOFF_SENTENCE]
             return [f"Astrid updated: {release(self.start)} → {release(self.target)}{notes}."]
         if self.kind == "already-current":
             return [f"Astrid is already up to date ({release(self.still)}){notes}. Nothing was changed."]

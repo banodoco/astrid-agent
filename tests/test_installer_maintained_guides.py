@@ -1,5 +1,6 @@
 import importlib.util
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from astrid.installer.outcome import SUCCESS, Outcome
@@ -9,9 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = "docs/setup/SKILL.md"
 PLAIN_UNIX_LINE = "curl -fsSL https://astrid.haus/install | sh"
 FULL_UNIX_LINE = "curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies off"
-FRESH_LABEL = "for a fresh install, or after the choices step only"
+FRESH_LABEL = "for a fresh install, after step 1"
 BANNER_ENDING = "Confirm that astrid.haus shows Connected, then help me begin at https://astrid.haus."
 FENCE = re.compile(r"^```[^\n]*\n(.*?)^```", re.M | re.S)
+ISO_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z")
+DEADLINE_LITERAL = re.compile(r"--deadline[= ]+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z)")
 OS_LABEL = re.compile(r"\*\*(macOS or Linux|macOS|Linux|Windows)[^*]*:\*\*")
 OS_OF_LABEL = {"macOS or Linux": ["macOS", "Linux"], "macOS": ["macOS"], "Linux": ["Linux"], "Windows": ["Windows"]}
 DEFAULTS = (
@@ -109,17 +112,37 @@ def test_install_journey_hands_over_to_generation():
     assert "coming" not in text.lower()
 
 
+def _generation_placement() -> str:
+    # The generation skill's "## Placement" section, which owns the no-GPU route (P4.7.1, c1).
+    text = (ROOT / "astrid/packs/generation/docs/SKILL.md").read_text(encoding="utf-8")
+    start = text.index("## Placement\n")
+    return text[start:text.index("\n## ", start + 1)]
+
+
 def test_generation_setup_routes_capability_and_consent():
+    # P4.7.1: the capability check and engine offer moved to the generation skill's Placement
+    # (c1); setup step 4 keeps a one-line link. The Wan2GP "planned (Plan 12)" line is gone (c9).
     body = " ".join(_steps(_skill())[4].split())
     for phrase in (
-        "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader",
-        "uname -m", "NVIDIA", "12 GB", "declared", "Wan2GP", "Plan 12",
-        "managed engine", "RunPod", "own yes", "Never", "chat",
-        '"kind": "runpod"', "--consent paid", "--max-usd", "$2",
-        "machines", "release", "--doctor",
+        "No local GPU or ComfyUI?", "astrid/packs/generation/docs/SKILL.md#placement",
+        "managed engine", "RunPod", "Never", "--doctor",
+        "runpod/docs/SKILL.md#runpod-generation-machines",
     ):
         assert phrase in body, phrase
-    assert body.count("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader") == 1
+    assert "nvidia-smi" not in body
+    assert "Plan 12" not in _skill()
+    placement = " ".join(_generation_placement().split())
+    for phrase in (
+        "No local GPU or ComfyUI?",
+        "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader",
+        "uname -m", "NVIDIA", "12 GB", "declared",
+        "managed engine", "RunPod", "own yes", "never ask for a key in chat",
+        "runpod/docs/SKILL.md#runpod-generation-machines",
+    ):
+        assert phrase in placement, phrase
+    assert placement.count("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader") == 1
+    generation = (ROOT / "astrid/packs/generation/docs/SKILL.md").read_text(encoding="utf-8")
+    assert "Wan2GP" in generation[generation.index("## Set up my generation"):generation.index("## Generate")]
     core = (ROOT / "astrid/packs/_core/docs/SKILL.md").read_text(encoding="utf-8")
     row = next(line for line in core.splitlines() if line.startswith("| Set up my generation:"))
     assert "https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md#4-set-up-generation" in row
@@ -127,6 +150,10 @@ def test_generation_setup_routes_capability_and_consent():
 
 
 def test_generation_commands_include_platform_launchers_and_paid_bounds():
+    # Rewritten: the RunPod claim walkthrough (its paid bounds, --offer-digest included)
+    # moved to the RunPod skill. Setup keeps the launcher forms and links that skill.
+    # cause f123e45c1, 889312e1f; ruling: machines 12:25 Sat
+    # P4.R13: the claim now lives in the RunPod skill (Plan 20 phase 4); its paid-bounds rule follows it there.
     import shlex
 
     from astrid.core.machines_cli import _parser
@@ -134,30 +161,74 @@ def test_generation_commands_include_platform_launchers_and_paid_bounds():
     body = _steps(_skill())[4]
     blocks = FENCE.findall(body)
     assert blocks
-    assert '"$HOME/.local/share/astrid/run-astrid" credential set runpod' in body
-    assert '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" credential set runpod' in body
-    assert '"$env:LOCALAPPDATA\\Astrid\\run-astrid.cmd" credential set runpod' in body
-    # cause f123e45c1, 889312e1f; ruling: machines 12:25 Sat
-    commands = [shlex.split(line) for block in blocks for line in block.splitlines()
-                if "run-astrid" in line]
-    claims = [command[command.index("machines") + 1:] for command in commands
-              if "machines" in command and command[command.index("machines") + 1:][:1] == ["claim"]]
-    generates = [command[command.index("generate") + 1:] for command in commands if "generate" in command]
-    assert len(claims) == 3
-    assert generates
-    claim_flags = {"--consent", "--max-usd", "--deadline", "--for", "--json"}
-    for claim in claims:
-        flags = [arg.split("=", 1)[0] for arg in claim if arg.startswith("--")]
-        assert set(flags) == claim_flags and len(flags) == len(claim_flags), claim
-        parsed = _parser().parse_args(claim)
-        assert parsed.consent == ["paid"]
-        assert parsed.max_usd > 0 and parsed.deadline and parsed.claim_for and parsed.claim_json
+    launchers = (
+        '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid"',
+        '"$HOME/.local/share/astrid/run-astrid"',
+        '& "$env:LOCALAPPDATA\\Astrid\\run-astrid.cmd"',
+    )
+    skill = _skill()
+    for launcher in launchers:
+        assert launcher in skill, launcher
+    for command in ("credential set runpod", "machines claim", "--consent paid", "generate describe --placement runpod"):
+        assert command not in body, command
+    assert "engines install comfyui --dry-run" in _generation_placement()  # P4.7.1 (c1)
+    assert "generate fetch-models" in body and "--apply PLAN_SHA256" in body
+
+    # Every guide the installer ships or the MCP surface serves: build_prompts() serves each
+    # pack SKILL.md (main and extras, e.g. astrid/packs/*/docs/**/SKILL.md) and docs/setup/ is the setup guide set.
+    guides = sorted({*ROOT.glob("astrid/packs/**/SKILL.md"), *(ROOT / "docs/setup").rglob("*.md")})
+    runpod_skill = ROOT / "astrid/packs/runpod/docs/SKILL.md"
+    assert runpod_skill in guides and (ROOT / "docs/setup/SKILL.md") in guides
+
+    def commands_of(path):
+        text = path.read_text(encoding="utf-8")
+        for block in FENCE.findall(text):
+            for line in block.replace("\\\n", " ").splitlines():
+                if "machines" in line or "generate" in line:
+                    try:
+                        yield shlex.split(line)
+                    except ValueError:
+                        yield line.split()
+
     paid_flags = {"--consent", "--max-usd", "--deadline", "--offer-digest", "--preparation-seconds",
                   "--execution-seconds", "--idle-seconds", "--allow-paid", "--until-release"}
-    for generate in generates:
-        assert not paid_flags.intersection(arg.split("=", 1)[0] for arg in generate), generate
-    assert any("generate describe --placement runpod" in block for block in blocks)
-    assert any("engines install comfyui --dry-run" in block for block in blocks)
+    claims_by_guide, generates, runpod_generates = {}, [], 0
+    for guide in guides:
+        for command in commands_of(guide):
+            if "machines" in command and command[command.index("machines") + 1:][:1] == ["claim"]:
+                claims_by_guide.setdefault(guide, []).append(command[command.index("machines") + 1:])
+            elif "generate" in command:
+                generate = command[command.index("generate") + 1:]
+                generates.append((guide, generate))
+                if "--placement=runpod" in generate or any(
+                        a == "--placement" and generate[i + 1:i + 2] == ["runpod"] for i, a in enumerate(generate)):
+                    runpod_generates += 1
+    all_claims = [(g, c) for g, claims in claims_by_guide.items() for c in claims]
+    assert all_claims, "no `machines claim` line found in any guide"
+    assert runpod_generates, "no `generate ... --placement runpod` line found in any guide"
+    assert claims_by_guide.get(runpod_skill), "the RunPod skill shows no `machines claim` line"
+    now = datetime.now(timezone.utc)
+    deadline_now = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for guide, claim in all_claims:
+        claim = [deadline_now if arg == "FUTURE_UTC_DEADLINE" else arg for arg in claim]
+        flags = [arg.split("=", 1)[0] for arg in claim if arg.startswith("--")]
+        assert {"--consent", "--max-usd", "--deadline", "--for"} <= set(flags), (guide.name, claim)
+        parsed = _parser().parse_args(claim)
+        assert parsed.consent == ["paid"], (guide.name, claim)
+        assert parsed.max_usd > 0 and parsed.deadline and parsed.claim_for, (guide.name, claim)
+    # A literal deadline a day or more out goes stale and agents copy it; only placeholders may sit that far ahead.
+    horizon = now + timedelta(hours=24)
+    for guide in guides:
+        for block in FENCE.findall(guide.read_text(encoding="utf-8")):
+            for line in block.replace("\\\n", " ").splitlines():
+                stamps = DEADLINE_LITERAL.findall(line)
+                if "machines" in line and " claim" in line:
+                    stamps += ISO_UTC.findall(line)
+                for stamp in stamps:
+                    when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                    assert when <= horizon, (guide.name, stamp, line)
+    for guide, generate in generates:
+        assert not paid_flags.intersection(arg.split("=", 1)[0] for arg in generate), (guide.name, generate)
 
 
 def test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallback():
@@ -232,7 +303,7 @@ def test_existing_install_route_keeps_saved_choices_and_passes_no_choice_flags()
     route = _routes()["Existing install"]
     assert "Your saved setup choices stay as they are. Tell me if you want to change one." in route
     assert "step 1" not in route, route
-    assert "`--yes` is not needed" in route, route
+    assert "no `--yes`" in route, route
     for command in EXISTING_INSTALL_COMMANDS:
         assert f"`{command}`" in route, command
     for flag in CHOICE_FLAG_NAMES:
@@ -245,7 +316,7 @@ def test_app_brief_route_shows_the_brief_values_and_runs_its_command_as_given():
     assert "Show those values back" in route, route
     assert "Install with these choices, or change one?" in route, route
     assert "run the brief's command exactly as given" in route, route
-    assert "Then follow step 2's success and failure rules." in route, route
+    assert "Then check the result as in step 2." in route, route
 
 
 def test_success_first_lines_start_with_a_quoted_prefix_in_step_2():
@@ -266,7 +337,7 @@ def test_step_2_labels_the_full_flag_command_for_fresh_install_only():
 def test_step_1_keeps_the_brief_values_and_applies_a_changed_choice_alone():
     # R1.5
     body = _steps(_skill())[1]
-    assert "brief's values" in body
+    assert "keep the brief's other values" in body
     assert "unchanged" not in body
 
 
@@ -309,14 +380,14 @@ def test_setup_choices_recommend_current_settings():
     assert "Recommend Astrid defaults." in routes["Fresh install"]
     existing = routes["Existing install"]
     assert 'Recommend "keep your current settings".' in existing
-    assert "Do not guess saved choices." in existing
-    assert "Do not show the choices list." in existing
+    # P4.7.1 (c3): "Do not guess" and "Do not show" restated this promise; it now says it once.
+    assert "Keep the saved choices and say so:" in existing
     choices = " ".join(_steps(_skill())[1].split())
-    assert "If there is an App brief, recommend keeping the brief's values." in choices
-    assert "For a fresh install without an App brief, recommend Astrid defaults." in choices
+    # P4.7.1 (c4): step 1 no longer repeats the routes' recommendations, which are asserted above.
+    assert "recommend" not in choices.lower(), choices
     assert "Astrid defaults are:" in choices
     install = " ".join(_steps(_skill())[2].split())
-    assert "Use the approved values from step 1 for every choice." in install
+    assert "After consent, run the line for the user's OS with the values from step 1." in install
     banner_line = (
         "Before you install, show me the setup choices, recommending my current "
         "settings, and let me change them."
