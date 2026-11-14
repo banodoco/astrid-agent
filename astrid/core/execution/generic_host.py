@@ -6810,26 +6810,80 @@ class GenericPackHost:
         self._claim_slots: tuple[GenericPackHost, ...] = ()
         self._claim_loop_lock = threading.Lock()
 
-    def _default_attempt_base(self) -> Path:
-        """Reuse this executor's private spool across host incarnations."""
-        digest = hashlib.sha256(self.executor_id.encode("utf-8")).hexdigest()[:16]
-        base = Path(tempfile.gettempdir()) / f"{ATTEMPT_ROOT_PREFIX}{digest}"
-        with self._process_lock:
-            try:
-                if sys.platform == "win32":
-                    if not base.exists() and not base.is_symlink():
-                        platform.private_directory(base)
-                else:
-                    base.mkdir(mode=0o700, exist_ok=True)
-                metadata = base.lstat()
+    @staticmethod
+    def _ensure_private_attempt_directory(base: Path, *, private_root: Path | None = None) -> None:
+        """Create/check private components without traversing symlink parents."""
+        private_root = private_root or base
+        current = Path(base.anchor)
+        descriptor = None
+        try:
+            if sys.platform != "win32":
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                descriptor = os.open(current, flags)
+            for part in base.parts[1:]:
+                current /= part
+                private = current == private_root or private_root in current.parents
+                created = False
+                try:
+                    if sys.platform == "win32":
+                        if not current.exists() and not current.is_symlink():
+                            platform.private_directory(current)
+                            created = True
+                    else:
+                        os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                        created = True
+                except FileExistsError:
+                    pass
+                metadata = current.lstat()
                 if (not stat.S_ISDIR(metadata.st_mode)
-                        or (sys.platform == "win32" and not platform.is_owner_only(base, directory=True))
-                        or (sys.platform != "win32" and (metadata.st_uid != os.getuid()
-                            or stat.S_IMODE(metadata.st_mode) != 0o700))):
-                    raise HostError(f"private default attempt base has unsafe ownership, mode or type: {base}")
-            except OSError as exc:
-                raise HostError(f"private default attempt base is unavailable: {base}: {exc}") from exc
-        return base
+                        or ((private or created) and (
+                            (sys.platform == "win32" and not platform.is_owner_only(current, directory=True))
+                            or (sys.platform != "win32" and (metadata.st_uid != os.getuid()
+                                or stat.S_IMODE(metadata.st_mode) != 0o700))))):
+                    raise HostError(f"private default attempt base has unsafe ownership, mode or type: {current}")
+                if descriptor is not None:
+                    child = os.open(part, flags, dir_fd=descriptor)
+                    os.close(descriptor)
+                    descriptor = child
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _default_attempt_base(self) -> Path:
+        """Reuse this executor's private spool, tolerating squatted temp names."""
+        from astrid.sdk.storage_root import resolve_runtime_data_root
+
+        digest = hashlib.sha256(self.executor_id.encode("utf-8")).hexdigest()[:16]
+        with self._process_lock:
+            cached = getattr(self, "_fallback_attempt_base", None)
+            reason = ""
+            if cached is None:
+                try:
+                    private = resolve_runtime_data_root(fallback=False)
+                    if private is None:
+                        runtime = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+                        private = Path(runtime).expanduser() if runtime else Path.home() / ".cache" / "astrid"
+                    if not private.is_absolute():
+                        raise HostError(f"private attempt root must be absolute: {private}")
+                    base = private / "attempts" / digest
+                    self._ensure_private_attempt_directory(base, private_root=private)
+                    return base
+                except (OSError, ValueError, HostError) as exc:
+                    reason = str(exc)
+            base = cached or Path(tempfile.gettempdir()) / f"{ATTEMPT_ROOT_PREFIX}{digest}"
+            try:
+                self._ensure_private_attempt_directory(base)
+            except (OSError, HostError) as exc:
+                reason = f"{reason}; {exc}" if reason else str(exc)
+                base = Path(tempfile.mkdtemp(prefix=ATTEMPT_ROOT_PREFIX))
+                if sys.platform == "win32":
+                    platform.owner_only(base)
+                self._ensure_private_attempt_directory(base)
+            self._fallback_attempt_base = base
+            if reason:
+                print(f"generic host default attempt base fallback: {reason}; using {base}",
+                      file=sys.stderr, flush=True)
+            return base
 
     def _allocate_attempt_root(self, task_id: str, attempt_id: str) -> Path:
         """Allocate the filesystem namespace for one claimed attempt."""

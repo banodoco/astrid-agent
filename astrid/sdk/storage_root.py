@@ -149,7 +149,7 @@ def _ambiguous_roots_error(
     )
 
 
-def resolve_runtime_data_root() -> Path:
+def resolve_runtime_data_root(*, fallback: bool = True) -> Path | None:
     """Return one stable support root selected by existing config surfaces.
 
     An explicit ``ASTRID_RUNTIME_DATA_ROOT`` override wins. Otherwise a
@@ -157,7 +157,8 @@ def resolve_runtime_data_root() -> Path:
     Next a persisted Astrid setup selection is reused when available, followed
     by the checked-in install config. A wheel without these surfaces uses
     ``~/.astrid-data``. Existing selections are read only; this function never
-    creates a workspace or moves data.
+    creates a workspace or moves data. With ``fallback=False``, return None
+    when no existing configuration surface selects a root.
     """
 
     configured = os.environ.get(DATA_ROOT_ENV, "").strip()
@@ -190,7 +191,7 @@ def resolve_runtime_data_root() -> Path:
     # A wheel does not ship the source checkout's top-level config. Keep its
     # fallback persistent and cwd-independent rather than silently falling
     # back to the neutral launcher's old external support tree.
-    return _safe_absolute(Path.home() / ".astrid-data", base=Path.home())
+    return _safe_absolute(Path.home() / ".astrid-data", base=Path.home()) if fallback else None
 
 
 def ensure_no_unmigrated_runtime(data_root: Path) -> None:
