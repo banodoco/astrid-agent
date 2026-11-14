@@ -15,6 +15,29 @@ from urllib.parse import urlencode
 HOSTED_APP_ORIGIN = 'https://astrid.haus'
 
 
+def open_url_for(project: str) -> str:
+    """The one link that opens a project's gallery in the hosted App; the project id is its only parameter."""
+    return f'{HOSTED_APP_ORIGIN}/tools/video-editor?{urlencode({"project": project})}'
+
+
+def admitted_project(payload: Any, *, explicit: str | None = None, client: Any = None) -> str | None:
+    """The project an admitted generation runs in: the Runtime's own id, then the caller's, then the selection."""
+    project = payload.get('project_id') if isinstance(payload, Mapping) else None
+    if isinstance(project, str) and project.strip():
+        return project
+    if explicit:
+        return explicit
+    if client is None:
+        return None
+    from astrid.sdk.exceptions import CapabilityInvocationError
+    from astrid.sdk.invocation import _runtime_selected_project
+    try:
+        return _runtime_selected_project(client)
+    except CapabilityInvocationError:
+        # The generation is already admitted; a client that cannot name its selection gets no link.
+        return None
+
+
 def _sha256(value: Any) -> str:
     digest = str(value or '').removeprefix('sha256:').lower()
     if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
@@ -151,5 +174,5 @@ def _deliver(payload, rows, *, client, out, managed, project):
             os.replace(temporary, path)
     result = {**payload, 'image_paths': paths, 'run_dir': str(root)}
     if project:
-        result['open_url'] = f'{HOSTED_APP_ORIGIN}/tools/video-editor?{urlencode({"project": project})}'
+        result['open_url'] = open_url_for(project)
     return result
