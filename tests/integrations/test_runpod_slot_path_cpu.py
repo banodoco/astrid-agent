@@ -318,8 +318,11 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
         return invoke(capability, **kwargs)
     client.invoke_result = bounded
     packs = Path(__file__).resolve().parents[2] / "astrid" / "packs"
+    # RunPod cells submit one job at a time. Spare 20ms claim loops compete
+    # with source preparation; the attached/local cells retain their slots.
+    concurrency = 1 if target_kind == "runpod" else 4
     host = GenericPackHost(pack_roots=[packs / "vibecomfy", packs / "h3_av", packs / "runpod"],
-        client=RuntimeProtocolClient(daemon.endpoint, worker_token), max_concurrency=4, attempt_base=tmp_path / "attempts",
+        client=RuntimeProtocolClient(daemon.endpoint, worker_token), max_concurrency=concurrency, attempt_base=tmp_path / "attempts",
         credential_source={"RUNPOD_RUNPOD_FAKE_CREDENTIAL": "synthetic-only"})
     host.discover()
     host.preflight()
