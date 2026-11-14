@@ -97,7 +97,7 @@ Read the installer first. The commands below are
 for a fresh install, after step 1; an existing install uses route 4 in step 0.
 They show Astrid defaults.
 After consent, run the line for the user's OS with the values from step 1.
-`--yes` records that consent.
+`--yes` records that consent. Never use it to skip the consent question.
 
 **macOS or Linux:**
 

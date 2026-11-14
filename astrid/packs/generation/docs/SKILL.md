@@ -109,7 +109,7 @@ A placement is where a generation runs. Three kinds:
 
 - **`local`**: this computer, through Astrid's managed ComfyUI. Optional `device` picks a GPU index.
   If that engine is not installed, the run reports the install and its download size.
-  The download runs only on the user's yes; setup never starts it.
+  The engine download runs only after the user's own yes.
 - **`attached`**: the user's own ComfyUI at a loopback address, given as the endpoint.
   Astrid never starts or stops it. Pass the address as `--placement http://127.0.0.1:8188`.
 - **`runpod`**: a rented RunPod GPU. Pass `--placement runpod`; it uses an already claimed
