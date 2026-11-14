@@ -56,10 +56,10 @@ def _file_map(inputs: Mapping[str, Any], files: Mapping[str, Any]) -> dict[str, 
 
 
 def _require_media_tools() -> None:
-    """ffmpeg and ffprobe, checked before any work: after_outputs needs them once the GPU run is paid for."""
+    """Check output tools on the execution machine before the GPU run."""
     missing = [tool for tool in ("ffmpeg", "ffprobe") if shutil.which(tool) is None]
     if missing:
-        raise RuntimeError("h3 needs ffmpeg and ffprobe on PATH on the machine that runs it; missing: "
+        raise ValueError("h3 needs ffmpeg and ffprobe on PATH on the machine that runs it; missing: "
                            + ", ".join(missing))
 
 
@@ -96,9 +96,12 @@ def _state_dir(job_dir) -> Path:
     return (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="astrid-h3-"))) / "h3"
 
 
-def build(inputs, files, out, *, engine=None):
+def build(inputs, files, out, *, engine=None, check_runtime=False):
     """{workflow, bindings, plan, assets, bundle}: the chosen trio's graph, bindings, sealed plan, media, folder."""
-    _require_media_tools()
+    # Source inspection checks its own tools during planning. Output composition
+    # tools belong to execution, on the machine that will run after_outputs.
+    if check_runtime:
+        _require_media_tools()
     if engine is not None:
         _shared("engine_facts").install(engine)
     facts = _shared("engine_facts").facts()

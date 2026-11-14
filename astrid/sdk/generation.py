@@ -1582,7 +1582,8 @@ class GenerationFacade:
                         job_dir = candidate.get('job_dir') or Path(tempfile.mkdtemp(prefix='astrid-job-'))
                         if not candidate.get('job_dir'):
                             _job_dirs.append(Path(job_dir))
-                        built = workflow_entries.build_entry(candidate, inputs, job_dir)
+                        built = workflow_entries.build_entry(
+                            candidate, inputs, job_dir, check_runtime=not dry_run and not is_remote_target)
                         workflow, assets = built['workflow'], dict(built.get('assets') or {})
                         plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
                                 'build_plan': built.get('plan'), 'job_dir': str(job_dir)}

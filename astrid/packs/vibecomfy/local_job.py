@@ -270,7 +270,7 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
     try:
         if "build" in hooks:
             job_dir = Path(tempfile.mkdtemp(prefix="astrid-job-"))
-            built = entries.build_entry(described, inputs, job_dir)  # (b) build, once
+            built = entries.build_entry(described, inputs, job_dir, check_runtime=True)  # (b) build, once
             if built is None:
                 raise JobFileError(f"entry {named!r} build returned no workflow")
             workflow, workflow_inputs = Path(built["bundle"]) / "workflow.py", dict(built["bindings"])
