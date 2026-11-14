@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 from types import ModuleType
 
 from astrid.pack_api import build_manifest, write_manifest
@@ -781,6 +781,12 @@ def _settle_failed_attempt(output_root: Path, workflow_path: Path, source_snapsh
         error.add_note(f"producer evidence could not be materialized: {type(evidence_error).__name__}")
 
 
+class _SettlementFailure(Protocol):
+    """Settlement marker carried by the original producer exception."""
+
+    _astrid_settlement_done: bool
+
+
 def _run_and_settle(
     workflow_path: Path,
     output_root: Path,
@@ -1000,7 +1006,7 @@ def _run_and_settle(
                             os.environ[key] = value
     except BaseException as error:
         if settlement_attempt != "-" and not getattr(error, "_astrid_settlement_done", False):
-            error._astrid_settlement_done = True
+            cast(_SettlementFailure, error)._astrid_settlement_done = True
             _settle_failed_attempt(output_root, workflow_path, source_snapshot,
                                    task_identity, settlement_attempt, producer_run_id,
                                    workflow_input_bindings, producer_context, error)
@@ -1025,7 +1031,7 @@ def _run_and_settle(
                 execution.get("message") or f"producer execution {execution['status']}",
                 code=execution.get("code") or f"producer_{execution['status']}",
             )
-            error._astrid_settlement_done = True
+            cast(_SettlementFailure, error)._astrid_settlement_done = True
             raise error
         return manifest
 

@@ -10,6 +10,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+from astrid.core.generation import cli_shared
+
 _logger = logging.getLogger(__name__)
 
 # One table of what each generation kind needs at the CLI boundary: its help
@@ -90,19 +92,6 @@ def _common_options(command):
     command.add_argument('--no-wait', action='store_true', help='Return the admitted task; follow it separately.')
     command.add_argument('--consent', action='append', choices=('user_env',), default=[])
     command.add_argument('--recovery-path', action=_Once, help='Save the exact Runtime admission receipt.')
-
-
-def _gpu_placement(placement, gpu_types, parser):
-    """Choose GPUs for a claim quote."""
-    from astrid.core.generation.placement import is_runpod_placement
-
-    if not gpu_types:
-        return placement
-    if not is_runpod_placement(placement):
-        parser.error("--gpu requires --placement runpod")
-    if any(not gpu.strip() for gpu in gpu_types):
-        parser.error("--gpu values must be nonempty GPU type names")
-    return {"kind": "runpod", "policy": {"gpu_types": list(gpu_types)}}
 
 
 def _validate_datacenter(placement, datacenter, parser):
@@ -559,7 +548,7 @@ def _main(argv: list[str]) -> int:
         if parsed.placement is not None:
             if parsed.entry is not None or parsed.workflow is not None:
                 parser.error('target describe cannot also select an entry or workflow')
-            placement = _gpu_placement(parsed.placement, parsed.gpu, parser)
+            placement = cli_shared._gpu_placement(parsed.placement, parsed.gpu, parser)
             with _open_client() as client:
                 description = _generate_facade().describe(placement=placement, engine=parsed.engine, client=client,
                     **({"datacenter": parsed.datacenter} if parsed.datacenter is not None else {}),
@@ -743,7 +732,6 @@ def _failure_command(parsed) -> int:
 def _kept_failure(before: set[tuple[str | None, int | None]], *, kind: str = 'runpod') -> None:
     """Read only the bounded owner result after a failed RunPod command."""
     try:
-        from astrid.core.machines_cli import _when
         from astrid.core.generation.placement import _runpod_leases
         for row in _runpod_leases(kind):
             last = row.get('last_job') or {}
@@ -759,7 +747,7 @@ def _kept_failure(before: set[tuple[str | None, int | None]], *, kind: str = 'ru
             if isinstance(facts.get('logs_dir'), str):
                 details.append(f"logs: {facts['logs_dir']}")
             print(f"Failure: {summary or 'unknown'}. machine {row['id']} kept until "
-                  f"{_when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
+                  f"{cli_shared._when(row['release_at'])} UTC (cost so far ${row['cost_usd']:.2f}); "
                   f"reuse it or run `astrid machines release {row['id']}`"
                   + ("; " + "; ".join(details) if details else ""), file=sys.stderr)
     except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback

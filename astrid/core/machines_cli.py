@@ -22,17 +22,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, cast
 
+from astrid.core.generation import cli_shared
+
 
 def _leases() -> list[dict[str, Any]]:
     from astrid.packs.runpod.machine import journal_leases
 
     return journal_leases()
-
-
-def _when(value: Any) -> str:
-    if not isinstance(value, (int, float)):
-        return "-"
-    return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
 _HOST_ONLY_WARNING = "{id}: this pod can't stop itself; Astrid stops it at its deadline while this computer is running."
@@ -42,7 +38,7 @@ def render(rows: Sequence[dict[str, Any]]) -> str:
     header = ["ID", "KIND", "GPU", "STATE", "RELEASES (UTC)", "MIN LEFT",
               "COST EST. (USD)", "RATE (USD/HR)", "LAST JOB", "PREPARATION", "RELEASE CAUSE", "ENDED"]
     body = [[str(r.get("id") or "-"), str(r.get("kind") or "-"), str(r.get("gpu") or "-"),
-             str(r.get("state") or "-"), _when(r.get("release_at")),
+             str(r.get("state") or "-"), cli_shared._when(r.get("release_at")),
              "-" if r.get("minutes_left") is None else f"{float(r['minutes_left']):.1f}",
              f"{float(r.get('cost_usd') or 0):.2f}",
              "-" if r.get("hourly_usd") is None else f"{float(r['hourly_usd']):.2f}",
@@ -346,7 +342,7 @@ def _keep(machine_id: str, *, for_duration: str | None, until_release: bool,
     payload = {"ok": True, "machine": updated, "max_usd": effective_cap,
                "requested_max_usd": cap, "until_release": until_release}
     print(json.dumps(payload, sort_keys=True, default=str) if as_json else
-          f"kept {machine_id}; release scheduled for {_when(updated.get('release_at') if updated else None)} UTC "
+          f"kept {machine_id}; release scheduled for {cli_shared._when(updated.get('release_at') if updated else None)} UTC "
           f"(additional spend cap ${effective_cap:.2f}; requested cap ${cap:.2f}). "
           f"Automatic release only happens while the owning Astrid host is running.")
     return 0
@@ -372,13 +368,12 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
         print(json.dumps({"ok": False, "error": message}) if as_json else message)
         return 2
 
-    from astrid.core.generation.cli import _gpu_placement
     from astrid.packs.runpod.target_selection import PaidRunConsent, RunPodPreferences, _number
     from astrid.sdk.generation import GenerationFacade
 
     try:
         cap = _number(max_usd, "USD cap")
-        placement = _gpu_placement("runpod", gpu_types, argparse.ArgumentParser(prog="astrid machines claim"))
+        placement = cli_shared._gpu_placement("runpod", gpu_types, argparse.ArgumentParser(prog="astrid machines claim"))
         timeout = _duration_seconds(capacity_timeout) if capacity_timeout else None
         if describe is None or claim is None:
             from astrid.sdk import AstridClient
@@ -440,7 +435,7 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
         if machine is None or machine.get("release_at") is None:
             raise TimeoutError("host returned no confirmed machine release time")
         print(json.dumps({"ok": True, "machine": machine, "policy": policy}, sort_keys=True) if as_json else
-              f"claimed {machine_id}; release scheduled for {_when(machine['release_at'])} UTC "
+              f"claimed {machine_id}; release scheduled for {cli_shared._when(machine['release_at'])} UTC "
               f"(spend cap ${cap:.2f}; hourly ceiling ${ceiling:.2f}). "
               "Automatic release only happens while the owning Astrid host is running."
               + (" " + _HOST_ONLY_WARNING.format(id=machine_id) if machine.get("self_stop") is False else ""))
