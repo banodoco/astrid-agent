@@ -83,6 +83,26 @@ def test_existing_unselected_first_project_is_selected_not_duplicated(capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_project_holding_starter_slug_under_other_name_is_selected(capsys):
+    projects = _FakeProjects(rows=[
+        {"project_id": "P-slug", "slug": "my-first-project", "name": "Renamed by a person"},
+    ])
+    client = _client(projects)
+
+    out, selected = _resolve_invoke_destination(
+        out="results", project=None, project_root=None, client=client,
+    )
+
+    assert (out, selected) == ("results", "P-slug")
+    assert projects.created == []
+    assert projects.selects == ["my-first-project"]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines() == [
+        'Selected project "My first project" for this generation.'
+    ]
+
+
 def test_explicit_project_is_untouched(capsys):
     projects = _FakeProjects()
     client = _client(projects)

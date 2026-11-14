@@ -543,7 +543,11 @@ def _resolve_invoke_destination(
                 raise CapabilityPreconditionError(
                     format_project_required_guidance(operation="generation")
                 )
-            first = next((row for row in rows if isinstance(row, dict) and row.get("name") == FIRST_PROJECT_NAME), None)
+            first = next((
+                row for row in rows
+                if isinstance(row, dict)
+                and (row.get("name") == FIRST_PROJECT_NAME or row.get("slug") == FIRST_PROJECT_SLUG)
+            ), None)
             created = first is None
             if first is None:
                 made = projects.create(slug=FIRST_PROJECT_SLUG, name=FIRST_PROJECT_NAME)
