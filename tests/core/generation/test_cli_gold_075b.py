@@ -96,10 +96,10 @@ SLOTS: tuple[Slot, ...] = (
     Slot("voice", "audio/qwen3_tts_custom_voice", "audio/qwen3_tts_custom_voice", "audio",
          ("--mode", "tts", "--input", "text=Hello from the lighthouse."),
          "audio/qwen3_tts_custom_voice", False),
-    # ("audio", "music") -> audio/minimax_music_3 (generation.py:9d3bb248:1018).
-    Slot("music", "audio/minimax_music_3", "audio/minimax_music_3", "audio",
+    # ("audio", "music") defaults to the live-proven ACE-Step entry.
+    Slot("music", "audio/ace_step_1_5_t2a_song", "audio/ace_step_1_5_t2a_song", "audio",
          ("A calm piano piece about a lighthouse.", "--mode", "music"),
-         "audio/minimax_music_3", False),
+         "audio/ace_step_1_5_t2a_song", False),
     # ("audio", "sfx") -> audio/hunyuan_video_foley (generation.py:9d3bb248:1019; plan Decision 2).
     # The template's required public inputs are prompt and video_ref
     # (VibeComfy 1b2e242c ready_templates/audio/hunyuan_video_foley.py PUBLIC_INPUT_METADATA).

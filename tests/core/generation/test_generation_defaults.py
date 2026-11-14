@@ -23,7 +23,7 @@ def test_builtin_slots_resolve_as_before_and_video_is_h3():
     assert [o["entry"] for o in by_slot["image.t2i"]["others"]] == ["z-image", "qwen-image-2512"]
     assert by_slot["image.edit"]["entry"] == "qwen-image-2.1-turbo-edit"
     assert by_slot["audio.tts"]["entry"] == "audio/qwen3_tts_custom_voice"
-    assert by_slot["audio.music"]["entry"] == "audio/minimax_music_3"
+    assert by_slot["audio.music"]["entry"] == "audio/ace_step_1_5_t2a_song"
     assert by_slot["audio.sfx"]["entry"] == "audio/hunyuan_video_foley"
     assert by_slot["video.i2v"]["entry"] == "h3" and by_slot["video.i2v"]["pack"] == "h3_av"
     assert by_slot["video.i2v"]["source"] == "pack default"
