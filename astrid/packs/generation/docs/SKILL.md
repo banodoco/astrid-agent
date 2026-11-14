@@ -136,6 +136,14 @@ user's yes:
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL --apply PLAN_SHA256
 ```
 
+**Warm models.** A model that has loaded stays in memory between jobs, so the
+next job that needs it starts without reloading. ComfyUI frees a loaded model
+when a different model needs the room, so warmth is a convenience, never a
+guarantee. Where it ends depends on where the job runs: on RunPod, when the
+claim's idle time ends and the pod is released; on local-managed, after the idle
+time, when the engine frees its memory. Astrid never restarts an attached ComfyUI
+or unloads its models, so what stays warm there is up to that server.
+
 ## Run a ComfyUI workflow file
 
 A workflow file runs without any pack or entry:

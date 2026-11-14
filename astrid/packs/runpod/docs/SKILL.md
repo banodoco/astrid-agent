@@ -231,6 +231,12 @@ After a generation, list the machines and tell the user that a kept-warm machine
 keeps costing money until it is released. Unless the user chooses to keep it
 warm, release it by its ID with `astrid machines release MACHINE_ID`.
 
+**What warm means here.** A job's models stay loaded on the claimed pod between
+jobs until ComfyUI needs the room for a different model. Warmth ends when the
+claim's idle time runs out and the pod is released: the next job on a new claim
+loads its models again. Plan around the claim's idle time, not around the models
+staying loaded.
+
 ### Runtime and storage
 
 RunPod generation needs an installed Astrid layout. Pinned Runtime,
