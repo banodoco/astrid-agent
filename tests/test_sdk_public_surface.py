@@ -3291,3 +3291,22 @@ def test_generate_facade_maps_contract_failures_and_openai_rejection(
             out=tmp_path,
             project="demo",
         )
+
+
+def test_video_mode_inference_v2v_video_ref(monkeypatch, tmp_path):
+    """A lone video reference selects v2v; an explicit mode still wins."""
+    astrid = _import_public_module()
+    from astrid.sdk.generation import GenerationFacade
+
+    monkeypatch.setattr(importlib.import_module("astrid.sdk"), "_load_model_registry",
+                        lambda **kwargs: object())
+    seen = []
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        lambda self, **kwargs: seen.append(kwargs) or "routed")
+    common = {"placement": "runpod", "out": tmp_path,
+              "prompt": "a red bicycle", "video_ref": "clip.mp4"}
+    assert astrid.generate.video(**common) == "routed"
+    assert astrid.generate.video(**common, mode="video-edit") == "routed"
+    assert [row["mode"] for row in seen] == ["v2v", "video-edit"]
+    assert all(row["inputs"] == {"prompt": "a red bicycle", "video_ref": "clip.mp4"}
+               for row in seen)

@@ -530,6 +530,8 @@ def _infer_video_mode(
         return "flf"
     if has_image_ref:
         return "i2v"
+    if inputs.get("video_ref"):
+        return "v2v"
     return "t2v"
 
 
@@ -1594,7 +1596,16 @@ class GenerationFacade:
                         job_dir = candidate.get('job_dir') or Path(tempfile.mkdtemp(prefix='astrid-job-'))
                         if not candidate.get('job_dir'):
                             _job_dirs.append(Path(job_dir))
-                        built = workflow_entries.build_entry(candidate, inputs, job_dir)
+                        # Discovery checks only required ports. The selected hook must
+                        # honor the same declared-controls contract as an explicit entry.
+                        build_inputs = dict(inputs)
+                        if build_inputs.get('count') == 1 and not any(
+                                'count' in (port['name'], *port.get('aliases', []))
+                                for port in candidate.get('inputs', [])):
+                            build_inputs.pop('count')  # single-output admission was checked above
+                        build_inputs = workflow_entries.validate_inputs(candidate, build_inputs)
+                        built = workflow_entries.build_entry(
+                            candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target)
                         workflow, assets = built['workflow'], dict(built.get('assets') or {})
                         plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
                                 'build_plan': built.get('plan'), 'job_dir': str(job_dir)}

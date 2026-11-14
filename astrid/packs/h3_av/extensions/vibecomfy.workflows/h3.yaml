@@ -13,8 +13,17 @@ entries:
     # No model needs are declared here: build's graph carries its own model rows (requirements()).
     needs: []
     inputs:
-      - {name: request, type: file, required: true, description: "H3 request document (request.v1 or request.v2 JSON)."}
-      - {name: asset_map, type: file_map, required: true, description: "Map of the request's asset ids to local files."}
+      # Either a request document with its asset map, or the kind's plain inputs: a prompt with
+      # image_ref (i2v: one reference image) or video_ref (v2v: the whole clip regenerated).
+      # build writes the same request.v1 document from the plain inputs (hooks.py:_plain_request).
+      - {name: request, type: file, required: false, description: "H3 request document (request.v1 or request.v2 JSON)."}
+      - {name: asset_map, type: file_map, required: false, description: "Map of the request's asset ids to local files."}
+      - {name: prompt, type: string, required: false, description: "What to generate, when no request document is given."}
+      - {name: image_ref, type: file, required: false, description: "Reference image for i2v (named <Picture 1> in the prompt)."}
+      - {name: video_ref, type: file, required: false, description: "Source clip for v2v: 1024x576, 24 fps, at most 15 s; its whole picture is regenerated."}
+      - {name: frames, type: integer, required: false, description: "Length of an i2v result in frames at 24 fps (default 120)."}
+      - {name: seed, type: integer, required: false}
+      - {name: steps, type: integer, required: false}
     binds: {}
     defaults: {}
     # MiniMax H3 is the video default; a user pin (astrid generate defaults set) overrides it.

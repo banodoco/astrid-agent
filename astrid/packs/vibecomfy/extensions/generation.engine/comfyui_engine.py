@@ -21,13 +21,17 @@ class _ComfyUIValidationError(ValueError):
 _WORKFLOWS: dict[Any, list[Any]] = {}
 
 
-def _call_hook(hook: Any, *args: Any) -> Any:
+def _call_hook(hook: Any, *args: Any, check_runtime: bool | None = None) -> Any:
     """Call a workflow hook; one that declares an ``engine`` parameter is given the engine's facts."""
     import inspect
-    if "engine" in inspect.signature(hook).parameters:
+    parameters = inspect.signature(hook).parameters
+    kwargs = {}
+    if "engine" in parameters:
         from astrid.core.generation.engine_facts import comfyui_facts
-        return hook(*args, engine=comfyui_facts())
-    return hook(*args)
+        kwargs['engine'] = comfyui_facts()
+    if check_runtime is not None and 'check_runtime' in parameters:
+        kwargs['check_runtime'] = check_runtime
+    return hook(*args, **kwargs)
 
 
 def _workflows(entry: Any, inputs: Any = None) -> list[Any]:
@@ -232,7 +236,8 @@ class ComfyUIEngine:
         build = (job.get("hooks") or {}).get("build")
         if build is None:
             return None
-        built = _call_hook(build, job.get("inputs", {}), job.get("files", {}), _job_dir(job))
+        built = _call_hook(build, job.get("inputs", {}), job.get("files", {}), _job_dir(job),
+                           check_runtime=bool(job.get('check_runtime', False)))
         if not isinstance(built, dict) or "workflow" not in built:
             raise ValueError("build must return {'workflow': ..., 'bindings': ..., 'plan': ...}")
         from astrid.core.generation.entries import prepare_execution_bindings
@@ -260,7 +265,7 @@ class ComfyUIEngine:
 
     def run(self, job: Any, local: Any) -> Any:
         """Build, align, start or reuse ComfyUI on this machine, submit to localhost, then finalize."""
-        built = self.prepare(job)
+        built = self.prepare({**job, 'check_runtime': True})
         endpoint = job.get("endpoint")
         if endpoint:  # attached: probe the caller's server, then trust it; align only when asked for
             probed = self.probe(endpoint)

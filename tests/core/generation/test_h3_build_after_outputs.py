@@ -33,11 +33,14 @@ def test_h3_is_the_contribution_not_an_action_entry():
     assert entry["source"] == "user-entry" and entry["contribution"] == "h3_av.h3"
     assert "action" not in entry
     assert entry["hooks_declared"] == ["build", "after_outputs"]
-    assert [(p["name"], p["type"]) for p in entry["inputs"]] == [("request", "file"), ("asset_map", "file_map")]
+    assert [(p["name"], p["type"]) for p in entry["inputs"]] == [
+        ("request", "file"), ("asset_map", "file_map"), ("prompt", "string"), ("image_ref", "file"),
+        ("video_ref", "file"), ("frames", "integer"), ("seed", "integer"), ("steps", "integer")]
     assert all(isinstance(need, dict) for need in entry["needs"])
     description = entries.describe_entry("h3", mode="i2v", _native=True)
     assert description["source"] == "workflow" and "action" not in description
-    assert [p["name"] for p in description["inputs"]] == ["request", "asset_map"]
+    assert [p["name"] for p in description["inputs"]] == [
+        "request", "asset_map", "prompt", "image_ref", "video_ref", "frames", "seed", "steps"]
 
 
 def test_h3_contribution_build_and_after_outputs_end_to_end(tmp_path):
@@ -113,3 +116,34 @@ def test_the_run_actions_after_outputs_spec_composes_the_candidate(tmp_path):
     produced = after_outputs([generated])
     assert Path(produced[0]).is_file() and Path(produced[0]) != generated
     assert run._after_outputs("{}") is None
+
+
+def test_h3_builds_the_same_request_from_the_kinds_plain_inputs(tmp_path):
+    """A prompt with one media file is the request document h3 would be handed: no second path."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "h3_hooks_plain", "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py")
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+
+    class Facts:
+        @staticmethod
+        def measure_source_av(path):
+            return {"video_frames": 60}
+
+    request_module = hooks._shared("request")
+    document, assets = hooks._plain_request({"prompt": "a kite", "frames": 72, "seed": 7}, {"image_ref": "/x/look.png"}, Facts)
+    assert assets == {"image_ref": "/x/look.png"}
+    value = request_module.normalize_request(document).value
+    assert value["operation"] == "generate" and value["output"]["duration"] == 3.0 and value["overrides"] == {"seed": 7}
+    assert value["references"] == [{"asset": "image_ref", "purpose": "appearance"}]
+
+    document, assets = hooks._plain_request({"prompt": "as water"}, {"video_ref": "/x/clip.mp4"}, Facts)
+    assert assets == {"video_ref": "/x/clip.mp4"}
+    value = request_module.normalize_request(document).value
+    assert value["operation"] == "edit" and value["source"] == {"asset": "video_ref", "range": [0.0, 2.5]}
+    assert value["output"]["duration"] == 2.5
+
+    for bad in ({}, {"prompt": "x"}, {"prompt": "x", "image_ref": "a.png", "video_ref": "b.mp4"}, {"image_ref": "a.png"}):
+        with pytest.raises(ValueError, match="request.*or a prompt with exactly one of"):
+            hooks._plain_request(bad, {}, Facts)
