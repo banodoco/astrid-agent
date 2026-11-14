@@ -236,3 +236,49 @@ def test_catalog_fresh_seed_is_the_seed_used(placement, tmp_path, monkeypatch, c
     payload, posted = _catalog_run(placement, tmp_path, monkeypatch, capsys)
     assert type(posted) is int and posted != 0
     assert payload['seed_used'] == posted
+
+
+# --- a rented machine (RunPod): the controller ships the entry inputs and the bindings ---------------
+
+def test_rented_machine_seed_is_the_seed_in_the_shipped_archive(tmp_path, monkeypatch):
+    # The live-lease seam of test_runpod_engine_selection: a live pod is leased, and no
+    # provider, pod or machine is reached. The fake Runtime keeps each imported member,
+    # so the test reads the entry-inputs archive and the bindings the machine would ship.
+    import zipfile
+
+    from astrid.core.generation import placement
+    from astrid.sdk.generation import GenerationFacade
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [{'machine': 'pod-a', 'id': 'pod-a', 'live': True}])
+    imported, shipped = {}, []
+
+    def import_file(*, project, path):
+        data = path.read_bytes()
+        digest = 'sha256:' + _sha(data)
+        imported[digest] = data
+        return SimpleNamespace(ok=True, data={'object_id': digest, 'filename': path.name})
+
+    def invoke_result(capability, **kwargs):
+        assert capability == 'vibecomfy.run'
+        archive = io.BytesIO(imported[kwargs['inputs']['entry_inputs']['digest']])
+        with zipfile.ZipFile(archive) as members:
+            public = json.loads(members.read('inputs.json'))['inputs']
+        # The machine ships both: the archive as the job's public inputs, and workflow_inputs as
+        # its bindings, which the pod's run_prepared_job posts as is (runpod/machine.py, local_job.py).
+        shipped.append((public, json.loads(kwargs['inputs']['workflow_inputs'])))
+        digest = 'sha256:' + _sha(b'pod output')
+        row = {'association_id': 'managed-output-image', 'project_id': PROJECT, 'run_id': 'run-1',
+               'task_id': TASK_ID, 'attempt_id': 'attempt-1', 'generation_id': 'generation-seed',
+               'output_port': 'vibecomfy_run', 'selector': {'group_key': 'main', 'variant_key': 'original'},
+               'ordinal': 0, 'role': 'result', 'filename': 'seeded.png', 'media_type': 'image/png',
+               'size': 10, 'digest': digest, 'object_id': digest, 'durability': 'durable'}
+        return InvocationResult(capability, 'executor', 'command', True, kernel_task_id=TASK_ID,
+                                raw_result={'task': {'task_id': TASK_ID, 'state': 'COMPLETED'},
+                                            'managed_outputs': [row]})
+
+    client = SimpleNamespace(invoke_result=invoke_result, media=SimpleNamespace(import_file=import_file))
+    result = GenerationFacade().image(entry='z-image', prompt='a boat', seed=7, client=client, project=PROJECT,
+                                      placement={'kind': 'runpod', 'machine': 'pod-a'})
+    assert len(shipped) == 1, shipped
+    public, bindings = shipped[0]
+    assert public['seed'] == 7 and bindings['seed'] == 7, shipped
+    assert result.seed_used == 7
