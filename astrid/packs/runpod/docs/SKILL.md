@@ -144,9 +144,11 @@ disclosed idle retention.
 For example, after approval of these illustrative limits:
 
 ```sh
-astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --deadline 2027-12-31T23:59:59Z --for 30m --consent paid
+astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --deadline FUTURE_UTC_DEADLINE --for 30m --consent paid
 astrid generate image "A studio portrait" --placement runpod
 ```
+
+Set FUTURE_UTC_DEADLINE to the current UTC time plus the session you want (for example, 1 hour), in the form 2026-01-01T13:00:00Z.
 
 The default is to wait until a machine is claimed or the operation is
 cancelled. Each attempt reports GPU, datacenter and result. Ordinary retries
@@ -176,7 +178,7 @@ and asks for paid consent; `--consent paid` is the explicit unattended form.
 For example, after approving the displayed terms:
 
 ```sh
-astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --max-hourly-usd 1 --max-usd 3 --deadline 2027-12-31T23:59:59Z --for 30m --consent paid
+astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --max-hourly-usd 1 --max-usd 3 --deadline FUTURE_UTC_DEADLINE --for 30m --consent paid
 astrid machines
 astrid machines --json
 ```
