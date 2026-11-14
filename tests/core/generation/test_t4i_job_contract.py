@@ -109,8 +109,10 @@ def test_job_runs_readiness_and_target_schema_on_the_machine(user_entry, ready, 
         raise AstridError("engine not ready", code="COMFY_TARGET_NOT_READY", field="target")
 
     monkeypatch.setattr("astrid.core.generation.preflight.require_generation_target_readiness", refuse)
-    with pytest.raises(ValueError, match="engine not ready"):  # --json errors surface as the readiness error
+    # e724eb501: the job command re-raises a typed AstridError for the structured JSON renderer.
+    with pytest.raises(AstridError, match="engine not ready") as caught:
         _run_cli(tmp_path, user_entry, {})
+    assert caught.value.code == "COMFY_TARGET_NOT_READY"
     assert len(runs) == 1
 
     # An entry that needs review is refused by target_schema, before the run.
