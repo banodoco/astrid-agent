@@ -184,8 +184,6 @@ def test_preparation_errors_do_not_try_another_catalog_candidate(producer, monke
 
 
 def test_missing_target_schema_fails_closed(producer, monkeypatch):
-    from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
-
-    monkeypatch.setattr(VibeComfyBackend, "prepare_catalog_workflow", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(generation, "_prepare_catalog_target_workflow", lambda **kwargs: (None, None, None, None))
     with pytest.raises(CapabilityValidationError, match="resolved target model authority"):
         prepare(producer)
