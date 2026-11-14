@@ -292,11 +292,29 @@ def test_selected_h3_does_not_fall_back_when_required_inputs_missing(image, live
         monkeypatch.setattr(defaults, 'pinned_entry', lambda *args: 'h3')
         monkeypatch.setattr(defaults, 'ordered_ids', lambda *args: ('h3',))
     client = NoPodClient()
-    with pytest.raises(Exception, match="unsupported entry inputs|needs the 'request' input"):
-        GenerationFacade().video(prompt='a boat', image_ref=str(image), placement='runpod',
+    # h3 declares the kind's plain inputs (5fe9ed7a0): prompt alone still lacks a reference.
+    with pytest.raises(Exception, match='requires a reference|prompt with exactly one of'):
+        GenerationFacade().video(prompt='a boat', placement='runpod',
                                  client=client, project='demo', wait=False,
                                  **({} if pinned else {'entry': 'h3'}))
     assert client.calls == []
+
+
+@pytest.mark.parametrize('pinned', [False, True])
+def test_selected_h3_accepts_plain_image_inputs_without_falling_back(image, live_machine, monkeypatch, pinned):
+    from astrid.core.generation import defaults
+    if pinned:
+        monkeypatch.setattr(defaults, 'pinned_entry', lambda *args: 'h3')
+        monkeypatch.setattr(defaults, 'ordered_ids', lambda *args: ('h3',))
+    chosen = []
+    real = entries.runpod_engine
+    monkeypatch.setattr(entries, 'runpod_engine', lambda entry: chosen.append(entry['id']) or real(entry))
+    client = NoPodClient()
+    GenerationFacade().video(prompt='a boat', image_ref=str(image), placement='runpod',
+                             client=client, project='demo', wait=False,
+                             **({} if pinned else {'entry': 'h3'}))
+    assert chosen == ['h3']
+    assert [capability for capability, _ in client.calls] == ['vibecomfy.run']
 
 
 def test_uncovered_entry_selects_recipe():
