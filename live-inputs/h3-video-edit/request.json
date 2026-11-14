@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "duration": 0.25,
+  "prompt": "Gently brighten the scene, keeping the composition of <Picture 1>.",
+  "media": [
+    {
+      "id": "source",
+      "asset": "source.mp4",
+      "role": "timeline",
+      "modality": "video",
+      "at": {"frame": 0},
+      "range": [0, 0.25],
+      "edit": [
+        {
+          "stream": "video",
+          "during": [0, 0.25],
+          "mask": {"full_frame": true},
+          "guides": ["first-frame"]
+        }
+      ]
+    },
+    {
+      "id": "first-frame",
+      "asset": "first-frame.png",
+      "role": "reference",
+      "modality": "image"
+    }
+  ],
+  "settings": {"steps": 1, "seed": 42}
+}
