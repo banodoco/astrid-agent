@@ -763,6 +763,8 @@ class RunPodSelectionOwner:
                            lease: Mapping[str, Any] | None = None, lock_held: bool = False,
                            offer: RunPodOffer | None = None,
                            cancelled: Callable[[], None] | None = None) -> Mapping[str, Any]:
+        from .reuse_policy import RunPodPolicyMismatch, check_reuse_policy
+
         p, now = self.preferences, self.clock()
         if not dry_run and lease is None and (self.compatibility is not None or p.volume_id is None):
             raise PaidSelectionError("this target requires admission through the retained lease owner")
@@ -955,6 +957,11 @@ class RunPodSelectionOwner:
                         def before_post(pending):
                             if cancelled is not None:
                                 cancelled()
+                            # Capacity may have changed long after admission.
+                            # No create POST may use a now-unknown or changed cap.
+                            check_reuse_policy(["runpod", "comfyui", p.as_mapping()],
+                                kind="runpod", engine="comfyui", preferences=p.as_mapping(),
+                                current_saved="ceiling")
                             stamp = self.clock()
                             paid_expiry = consent.validate(offer, p, stamp, allow_policy=True)
                             paid = {**limits, "authorized_at": stamp.isoformat(), "expires_at": paid_expiry.isoformat()}
@@ -977,6 +984,8 @@ class RunPodSelectionOwner:
                             config, handle_path=self.path, attempt=record, volume=volume,
                             ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
                         )
+                except RunPodPolicyMismatch:
+                    raise
                 except PodWatchdogError:
                     raise
                 except CapacityExhaustedError:

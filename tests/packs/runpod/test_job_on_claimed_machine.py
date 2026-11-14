@@ -217,6 +217,61 @@ def test_jobs_ignore_changed_preferences(machine_case, monkeypatch):
     assert c.creates == 1
 
 
+@pytest.mark.parametrize("saved_cap,saved_idle", [(0.5, 10), (20, 3600)])
+@pytest.mark.parametrize("exhausted", ["budget", "expiry"])
+@pytest.mark.usefixtures("machine_case")
+def test_jobs_obey_recorded_bounds_and_report_stricter_saved_policy(request, monkeypatch,
+                                                                 saved_cap, saved_idle, exhausted):
+    from astrid.packs.runpod import adapter, target_selection
+    from astrid.packs.runpod.worker_preparation import write_target_record
+
+    c = request.getfixturevalue("machine_case")
+    c.grant = replace(c.grant, idle_seconds=3600)
+    claim(c)
+    recorded = c.read()
+    paid = dict(recorded["paid_limits"])
+    expiry = recorded["lease"]["paid_expires_at"]
+    # Run near the paid boundary so a renewed idle hold must be clamped.
+    c.clock.advance(expiry - c.clock() - 60)
+    target_selection.save_runpod_preferences({**c.prefs.as_mapping(), "budget_cap_usd": saved_cap,
+                                              "idle_timeout_seconds": saved_idle})
+    forbid_allocation(c, monkeypatch)
+    bindings = adapter.TargetProviderBindings(pack_roots=(), holds=None, credentials=None, environ={})
+    bindings.provider = c.machine.adapter
+    bindings.signature = json.dumps(["runpod", "comfyui", recorded["claim_preferences"]])
+    assert bindings.get(kind="runpod", engine="comfyui", job=True) is c.machine.adapter
+    request = job(c)
+    descriptions = []
+    receipt = run_on_machine(c.machine, request, destination=request.scratch / "outputs",
+                             cancelled=lambda: False, sleep=lambda _: None,
+                             on_claim=lambda lease: descriptions.append(c.machine.describe(lease)))
+    status = bindings.operate({"kind": "runpod", "engine": "comfyui",
+                               "preferences": None}, "status")
+    if saved_cap < paid["max_usd"]:
+        expected = {"budget_cap_usd": {"recorded": paid["max_usd"], "saved": saved_cap},
+                    "idle_timeout_seconds": {"recorded": paid["idle_seconds"], "saved": saved_idle}}
+        assert receipt["policy_notice"]["limits"] == expected
+        for field, values in expected.items():
+            message = receipt["policy_notice"]["message"]
+            assert field in message and str(values["recorded"]) in message and str(values["saved"]) in message
+        assert status["policy_notice"] == receipt["policy_notice"]
+        assert descriptions[0]["policy_notice"] == receipt["policy_notice"]
+    else:
+        assert "policy_notice" not in receipt and "policy_notice" not in status
+    assert c.read()["paid_limits"] == paid
+    assert c.read()["lease"]["paid_expires_at"] == expiry
+    assert c.read()["lease"]["idle_expires_at"] <= expiry
+    if exhausted == "budget":
+        record = c.read()
+        record["paid_limits"]["max_usd"] = 0
+        write_target_record(c.owner.path, record)
+    else:
+        c.clock.advance(expiry - c.clock() + 1)
+    with pytest.raises(Exception, match="remaining budget|no machine"):
+        run(c, job(c, 2))
+    assert c.creates == 1
+
+
 def test_sdk_admission_and_job_need_only_saved_account(machine_case, monkeypatch):
     """A live claim needs no saved budget, GPU or datacenter choices for a job."""
     import time

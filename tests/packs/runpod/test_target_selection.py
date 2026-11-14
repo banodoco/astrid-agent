@@ -93,6 +93,8 @@ def case(tmp_path, monkeypatch, pod_watchdog_transport):
         "invocation-1", offer.digest(prefs), 1.0, (now + timedelta(hours=1)).isoformat(),
         ("paid",), 30, 30, 60,
     )
+    # Paid POSTs require positively known current saved policy, even in fakes.
+    save_runpod_preferences(raw)
     return state
 
 
@@ -545,6 +547,31 @@ def test_definite_capacity_rejection_rotates_datacenters_without_reobserving(cas
     assert attempts == [("preferred-gpu", "DC-A"), ("preferred-gpu", "DC-B")]
     assert len(observations) == 1 and sleeps == [5]
     assert result["network_volume_datacenter_id"] == "DC-B" and case.creates == 2
+
+
+def test_saved_ceiling_lowered_during_capacity_wait_prevents_post(case, monkeypatch, request):
+    attempts, owner = capacity_offer_provider(case, monkeypatch, request)
+    preferences = case.owner.preferences.as_mapping()
+    save_runpod_preferences(preferences)
+    observations = []
+
+    def offers():
+        observations.append(1)
+        if len(observations) == 1:
+            raise selection.OfferObservationError("stock_unavailable")
+        return (replace(case.offer, datacenter_id="DC-A"),)
+
+    async def sleep(seconds):
+        case.now += timedelta(seconds=seconds)
+        save_runpod_preferences({**preferences, "budget_cap_usd": 1.5})
+
+    case.owner.observe_offers = offers
+    case.owner.sleep = sleep
+    case.owner.monotonic = lambda: case.now.timestamp()
+    with pytest.raises(ValueError, match="preferences differ.*runpod.setup"):
+        owner.acquire(waiting_grant(case, max_usd=2), requested_idle_seconds=0)
+    assert len(observations) == 2
+    assert attempts == [] and case.creates == 0 and case.pods == []
 
 
 def test_exhausted_offer_list_reobserves_and_restarts_the_user_gpu_order(case, monkeypatch, request):

@@ -16,6 +16,7 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -329,9 +330,34 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         snapshot = claim_path.read_bytes()
         refusal = setup({**changed, "budget_cap_usd": 1.25})
         assert not refusal.ok and claim_path.read_bytes() == snapshot and len(provider.pods) == 1
-        release = GenerationFacade().release(engine="comfyui", placement="runpod", client=client, wait=True)
+        # cause a5198a148; ruling: machines 14:00 Sat
+        # A corrupt on-disk settings store must not strand existing custody.
+        from astrid.sdk.generation import _runpod_operation
+
+        corrupt_path = tmp_path / "corrupt-generation-settings.json"
+        corrupt_path.write_text("{broken")
+        disk_store = SimpleNamespace(get_user_app_state=lambda key: json.loads(corrupt_path.read_text()))
+
+        def invoke_cleanup(*args, **kwargs):
+            kwargs["client"] = client
+            return client.invoke_result(*args, **kwargs)
+
+        broken_client = SimpleNamespace(get_user_app_state=disk_store.get_user_app_state,
+                                        invoke_result=invoke_cleanup)
+        paid_before_cleanup = dict(record["paid_limits"])
+        with monkeypatch.context() as corrupt:
+            corrupt.setattr(settings, "_store_factory", lambda: disk_store)
+            retained_owner = host._target_bindings.provider.lease_owner
+            corrupt.setattr(retained_owner, "claim", lambda *a, **k: pytest.fail("cleanup claimed"))
+            corrupt.setattr(retained_owner, "keep", lambda *a, **k: pytest.fail("cleanup extended"))
+            listing = _runpod_operation("ls", client=broken_client, wait=True)
+            assert listing.ok and provider.pod_id in json.dumps(listing.to_dict())
+            assert len(provider.pods) == 1 and provider.deploys == 1
+            release = GenerationFacade().release(engine="different-engine", placement="runpod",
+                                                 client=broken_client, wait=True)
         assert release.ok, release.to_dict()
         record = json.loads(claim_path.read_text())
+        assert record["paid_limits"] == paid_before_cleanup and provider.deploys == 1
         assert record["state"] == "cleanup_complete" and record["cleanup"]["absence"]["exact_get_status"] == 404
         assert not provider.pods and len(provider.kinds(" generate cpu-image ")) == 1
         assert not any("/engines/" in str(event) for event in provider.events)
