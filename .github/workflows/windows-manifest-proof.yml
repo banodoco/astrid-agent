@@ -41,7 +41,7 @@ jobs:
 
       - name: Install with the App's public install line
         run: |
-          $env:BROWSER = 'cmd.exe /c rem %s'   # suppress the website open; no operator here
+          $env:BROWSER = "`"$((Get-Command python).Source)`" -c pass %s"   # as ci_windows_journey.py:412-413
           & ([scriptblock]::Create((Invoke-RestMethod https://astrid.haus/install.ps1))) --yes
 
       - name: The current version's manifest names the expected Agent SHA
@@ -67,16 +67,35 @@ jobs:
           & ([scriptblock]::Create((Invoke-RestMethod https://astrid.haus/install.ps1))) --uninstall --delete-data --yes
 
       - name: Install folders and the Scheduled Task are gone
+        if: always()
         run: |
           $left = @('Astrid', 'Astrid Runtime', 'Astrid Installer') |
             ForEach-Object { Join-Path $env:LOCALAPPDATA $_ } | Where-Object { Test-Path -LiteralPath $_ }
           $task = Get-ScheduledTask | Where-Object { $_.TaskName -eq 'Astrid Runtime' -and $_.TaskPath -eq '\' }
+          "- Leftover folders: $(if ($left) { $left -join ', ' } else { 'none' }); task: $(if ($task) { 'present' } else { 'gone' })" >> $env:GITHUB_STEP_SUMMARY
           if ($left) { throw "left behind: $($left -join ', ')" }
           if ($task) { throw "Scheduled Task \Astrid Runtime still registered" }
+
+      - name: Collect installer and Runtime logs
+        if: always()
+        run: |
+          $out = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'evidence')
+          foreach ($dir in 'Astrid Runtime\logs', 'Astrid Installer', 'Astrid\logs') {
+            $src = Join-Path $env:LOCALAPPDATA $dir
+            if (Test-Path -LiteralPath $src) {
+              Copy-Item -LiteralPath $src -Destination (Join-Path $out ($dir -replace '[\\ ]', '_')) -Recurse -Force -ErrorAction SilentlyContinue
+              Get-ChildItem -LiteralPath $src -Recurse -File | Select-Object FullName, Length |
+                Out-File -Append (Join-Path $out 'listing.txt')
+            }
+          }
+          Get-ScheduledTask | Where-Object TaskName -like 'Astrid*' | Format-List * | Out-File (Join-Path $out 'tasks.txt')
+          Get-Process | Where-Object { $_.Path -like "$env:LOCALAPPDATA\Astrid*" } | Select-Object Id, Path | Out-File (Join-Path $out 'processes.txt')
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-manifest-proof
-          path: ${{ runner.temp }}/astrid-doctor.zip
+          path: |
+            ${{ runner.temp }}/astrid-doctor.zip
+            ${{ runner.temp }}/evidence/
           if-no-files-found: warn
