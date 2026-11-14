@@ -428,27 +428,69 @@ def test_canonical_run_uses_managed_production_engine_without_gpu(
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import emit_bundle_with_candidate
+
     python_path = tmp_path / "workflow.py"
-    python_path.write_bytes(b"workflow = VibeWorkflow(id='portrait')\n")
-    python_path.with_name("workflow.vibe.json").write_text("{}", encoding="utf-8")
-    python_path.with_name("source.json").write_text("{}", encoding="utf-8")
+    source_bytes = b'{"nodes":[],"links":[]}'
+    python_path.with_name("source.json").write_bytes(source_bytes)
+    emit_bundle_with_candidate(
+        VibeWorkflow("portrait", WorkflowSource("portrait", path="source.json")),
+        python_path, Provenance.USER_CONFIRMED, None, source_format="scratchpad",
+    )
     output_root = tmp_path / "run-results"
     engine_result_path = output_root / "engine-output" / "engine-result.png"
     engine_result_path.parent.mkdir(parents=True)
     engine_result_path.write_bytes(b"fixture image bytes")
     from astrid.packs.vibecomfy import production_engine
 
-    managed_run = Mock(return_value=(engine_result_path,))
+    def produce_managed_result(*args, **kwargs):
+        payload = {
+            "schema_version": 1, "kind": "managed-generation-result.v1",
+            "task_id": kwargs["task_identity"], "attempt_id": "attempt-1",
+            "producer_run_id": "producer-1", "created": "2026-11-14T00:00:00Z",
+            "inputs": {"source": {
+                "object_id": "sha256:" + hashlib.sha256(source_bytes).hexdigest(),
+                "bytes": len(source_bytes), "filename": "source.json",
+            }},
+            "outputs": [{
+                "producer_output_id": "vibecomfy:image:0", "output_port": "image",
+                "ordinal": 0, "path": engine_result_path.relative_to(output_root).as_posix(),
+                "media_type": "image/png", "bytes": engine_result_path.stat().st_size,
+                "sha256": hashlib.sha256(engine_result_path.read_bytes()).hexdigest(),
+            }],
+            "warnings": [],
+            "outcomes": {"execution": {"status": "succeeded"},
+                         "retrieval": {"status": "succeeded"},
+                         "verification": {"status": "succeeded"},
+                         "publication": {"status": "not_started"}},
+            "evidence": {"producer": {}, "transport": {}},
+        }
+        envelope = output_root / "managed-generation-result.json"
+        envelope.write_text(json.dumps(payload), encoding="utf-8")
+        production_engine._LAST_PRODUCTION_RESULT = production_engine.ProductionRunResult(
+            outputs=(engine_result_path,), managed_generation_result_path=envelope,
+            managed_generation_result=payload,
+        )
+        return (engine_result_path,)
+
+    managed_run = Mock(side_effect=produce_managed_result)
     monkeypatch.setattr(production_engine, "run_workflow_path", managed_run)
 
-    from tests.local_engine_stub import LOCAL_ENGINE_URL, local_engine_patch
+    from tests.local_engine_stub import LOCAL_ENGINE_URL
 
-    with local_engine_patch():
+    # Supply an already prepared endpoint: this test owns producer dispatch and settlement.
+    with patch("astrid.core.generation.managed_preparation.read_preparation", return_value={
+        "placement": "managed", "alignment": {"mode": "check"},
+        "manifest": {"models": []}, "execution_identity": "execution-1",
+    }):
         manifest = run._run_and_settle(
             python_path,
             output_root,
             task_identity="task-1",
             execution_identity="execution-1",
+            comfy_url=LOCAL_ENGINE_URL,
         )
 
     managed_run.assert_called_once_with(
@@ -460,7 +502,11 @@ def test_canonical_run_uses_managed_production_engine_without_gpu(
         hc03_profile=None,
         comfy_url=LOCAL_ENGINE_URL,
     )
-    assert manifest["outputs"][0]["path"].startswith("artifacts/")
+    assert manifest["outputs"][0]["path"].startswith("outputs/")
+    assert manifest["managed_generation_result_path"] == (
+        "managed-generation/managed-generation-result.json"
+    )
+    assert (output_root / manifest["managed_generation_result_path"]).is_file()
 
 
 def _load_import_runner(monkeypatch: pytest.MonkeyPatch):

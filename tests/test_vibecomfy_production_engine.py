@@ -310,21 +310,34 @@ def test_run_executor_rejects_outputs_outside_private_custody(
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    workflow = tmp_path / "workflow.json"
-    workflow.write_text('{"template_id":"image/a","bindings":{}}', encoding="utf-8")
+    from astrid.pack_api import AstridValueError
+
+    envelope, payload = _managed_result_fixture(tmp_path)
     outside = tmp_path / "outside.png"
     outside.write_bytes(b"image")
-    monkeypatch.setattr(
-        production_engine,
-        "run_workflow_path",
-        Mock(return_value=(outside,)),
+    escaped = envelope.parent / "outputs" / "escaped.png"
+    escaped.symlink_to(outside)
+    payload["outputs"][0].update(
+        path="outputs/escaped.png", media_type="image/png", bytes=outside.stat().st_size,
+        sha256=hashlib.sha256(outside.read_bytes()).hexdigest(),
+    )
+    envelope.write_text(json.dumps(payload), encoding="utf-8")
+    production = production_engine.ProductionRunResult(
+        outputs=(escaped,), managed_generation_result_path=envelope,
+        managed_generation_result=payload,
     )
 
-    with pytest.raises(FileNotFoundError, match="escaped output custody"), local_engine_patch():
-        run._run_and_settle(
-            workflow,
+    # Exercise the real envelope validator, before any host-owned output is copied.
+    with pytest.raises(
+        AstridValueError,
+        match="managed-generation result failed validation:.*escapes the assigned staging directory",
+    ):
+        run._materialize_managed_generation_result(
             tmp_path / "outputs",
+            production,
             task_identity="task-1",
+            attempt_identity="attempt-1",
+            workflow_path=tmp_path / "workflow.json",
         )
 
 
