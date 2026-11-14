@@ -69,28 +69,110 @@ def test_owned_process_does_not_inherit_caller_ld_library_path(monkeypatch):
 
 
 def test_supervisor_gives_every_spawn_the_engine_env_and_launch_fingerprint_is_stable(tmp_path, monkeypatch):
-    """Probes, helpers and the launch share one spawn path; the fingerprint ignores LD."""
-    from astrid.core.generation import engine_recipe
-    from astrid.core.generation.engine_custody import _Supervisor
+    """Probes, helpers and the admitted launch share the engine environment."""
+    from copy import deepcopy
+    from pathlib import Path
+    import socket
+    from types import SimpleNamespace
+
+    from astrid.core.generation import engine_custody as custody, engine_recipe, engine_runner
 
     key = "linux-x86_64-cu130"
     recipe = engine_recipe.load_recipe("comfyui", key)
     primary = next(e for e in recipe.environments if e.name == recipe.primary_environment)
     root = str(tmp_path / "engine")
-    sup = _Supervisor({"platform": key, "root": root, "engine": "comfyui"}, recipe, "t")
-    def launch():
-        request = sup.adapter.start_request(recipe, root, deadline=1e12)
-        return {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+    source = next(s for s in recipe.sources if s.name == "vibecomfy")
+    source_root = Path(root, source.relative_path)
+    source_root.mkdir(parents=True)
+    (source_root / "fixture.py").write_text("VALUE = 1\n")
+    control = Path(root, ".astrid-engine")
+    control.mkdir(mode=0o700)
+    (control / "session").mkdir(mode=0o700)
+    identity = dict(platform=key, root=root, engine=recipe.engine,
+                    recipe_sha256=engine_recipe.recipe_digest(recipe),
+                    helper_sha256=engine_runner._sha(engine_runner.helper_manifest(recipe)))
+    sup = custody._Supervisor(identity, recipe, "fixture-owner")
+    spawned = []
 
-    assert sup.launch is None  # Launch identity is bound at admission, after installation.
-    before = launch()
-    site = f"{root}/{primary.relative_path}/lib/python3.12/site-packages/nvidia/cu13/lib"
-    os.makedirs(site)  # the venv appears after the supervisor computed its fingerprint
-    expected = [site, *DRIVER]
-    for caller in ("", CALLER_LD, "/usr/local/cuda-13.0/lib64"):
-        monkeypatch.setenv("LD_LIBRARY_PATH", caller)
-        for env in ({}, {"LD_LIBRARY_PATH": caller}):
-            request = sup.child_request(CommandRequest(("true",), root, env, 1e12))
-            assert _ld(request.env) == expected
-    assert "LD_LIBRARY_PATH" not in before["env"]
-    assert launch() == before and sup.launch is None
+    class OwnedProcess:
+        """The process boundary; supervisor admission and identity remain real."""
+        def __init__(self, request, *, secrets=(), output_log=None):
+            spawned.append(request)
+            git = request.argv[0] == "git"
+            if git:
+                assert request.cwd == str(source_root)
+                outputs = {("git", "rev-parse", "HEAD"): source.pin.revision + "\n",
+                           ("git", "ls-files", "-z", "-c", "-o", "--exclude-standard"): "fixture.py\0"}
+                stdout = outputs[request.argv]
+            else:
+                stdout = ""
+            self.process = SimpleNamespace(pid=os.getpid(), returncode=0 if git else None)
+            self.stdout = SimpleNamespace(text=lambda: stdout, truncated=lambda: False)
+            self.stderr = SimpleNamespace(text=lambda: "", truncated=lambda: False)
+            if output_log is not None:
+                Path(output_log).touch()
+
+        def live(self):
+            return self.process.returncode is None
+
+        def stop(self, deadline):
+            self.process.returncode = 0
+
+    def response(port, path, limit, deadline, check):
+        assert sup.engine is not None and sup.engine.live()
+        check()
+        if path == recipe.health.object_info_path:
+            return {name: {} for name in recipe.health.required_nodes}
+        assert path == recipe.health.path
+        return {"system": {}}
+
+    monkeypatch.setattr(custody, "_Owned", OwnedProcess)
+    monkeypatch.setattr(socket.socket, "bind", lambda self, address: None)
+    monkeypatch.setattr(custody, "_listener_owned", lambda process, port: True)
+    monkeypatch.setattr(custody, "_get_json", response)
+    request = sup.adapter.start_request(recipe, root, deadline=1e12)
+    payload = {"schema": custody._SCHEMA, **identity,
+               "launch": {"argv": list(request.argv), "cwd": request.cwd,
+                          "env": {**request.env, "CUDA_VISIBLE_DEVICES": None}},
+               "owner_id": None, "timeout_seconds": recipe.health.timeout_seconds,
+               "poll_interval_seconds": recipe.health.poll_interval_seconds}
+    channel, peer = socket.socketpair()
+    try:
+        assert sup.launch is None
+        admitted = sup.service("start", payload, 1e12, channel)
+        assert admitted["state"] == "owned" and admitted["healthy"] is True
+        assert sup.engine is not None and spawned[-1].argv == request.argv
+        assert _ld(spawned[-1].env) == DRIVER
+        before = deepcopy(sup.launch)
+        assert before == payload["launch"]
+        assert "LD_LIBRARY_PATH" not in sup.launch["env"]
+        fingerprint = admitted["launch_sha256"]
+        assert fingerprint == engine_runner._sha(before)
+
+        sites = []
+        for library in ("cu13", "cudnn"):
+            site = f"{root}/{primary.relative_path}/lib/python3.12/site-packages/nvidia/{library}/lib"
+            os.makedirs(site)
+            sites.append(site)
+            expected = [*sites, *DRIVER]
+            for caller in ("", CALLER_LD, "/usr/local/cuda-13.0/lib64"):
+                monkeypatch.setenv("LD_LIBRARY_PATH", caller)
+                for env in ({}, {"LD_LIBRARY_PATH": caller}):
+                    command = CommandRequest(("true",), root, env, 1e12)
+                    child = sup.child_request(command)
+                    assert _ld(child.env) == expected
+                    assert sup.launch == before
+                    owned = sup.spawn(command)
+                    assert _ld(spawned[-1].env) == expected
+                    sup.drain(owned, 1e12)
+                    assert "LD_LIBRARY_PATH" not in sup.launch["env"]
+                    assert sup.launch == before
+                observed = sup.service("health", payload, 1e12, channel)
+                assert observed["launch_sha256"] == fingerprint
+                assert sup.launch == before
+    finally:
+        try:
+            sup.stop(deadline=1e12)
+        finally:
+            channel.close()
+            peer.close()

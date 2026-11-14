@@ -475,17 +475,27 @@ def _assert_auxiliary_verification_sidecar(fixture, before_sidecars):
     assert verified['expected_size_bytes'] == auxiliary.bytes
 
 
-@pytest.mark.parametrize('change', ['match', 'hash', 'size', 'missing', 'unattested'])
+@pytest.mark.parametrize('change', ['match', 'hash', 'size', 'missing', 'unattested', 'declaration_backed'])
 def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkeypatch, change):
     fixture = _receipt_attested_managed_workflow(tmp_path, monkeypatch)
-    if change == 'unattested':
-        # A complete pinned declaration supplies custody for verified bytes without a receipt row.
+    if change in {'unattested', 'declaration_backed'}:
         fixture.receipt.models = fixture.receipt.models[1:]
+    if change == 'unattested':
+        # Neither receipt custody nor a trusted declaration attests these present bytes.
+        ready = entries.ready_entries()[0]
+        ready['model_assets'] = ready['model_assets'][1:]
     client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
     inventory = client.target.facts['model_root']['inventory']
-    assert len(inventory) == len(fixture.workflow.metadata['model_assets'])
+    if change == 'declaration_backed':
+        # A complete pinned declaration can supply the omitted receipt row.
+        assert len(inventory) == len(fixture.workflow.metadata['model_assets'])
+    else:
+        assert len(inventory) == len(fixture.receipt.models)
+    attested_assets = fixture.workflow.metadata['model_assets']
+    if change == 'unattested':
+        attested_assets = attested_assets[1:]
     assert {(row['subdir'], row['name']) for row in inventory} == {
-        (asset['subdir'], asset['name']) for asset in fixture.workflow.metadata['model_assets']}
+        (asset['subdir'], asset['name']) for asset in attested_assets}
     assert fixture.workflow.metadata['model_assets'][:3] == fixture.original_assets
     path = fixture.models_root / fixture.original_assets[0]['subdir'] / fixture.original_assets[0]['name']
     if change == 'hash':
@@ -496,7 +506,7 @@ def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkey
         path.unlink()
     before_receipt = fixture.receipt_path.read_bytes()
     before_sidecars = set(fixture.models_root.rglob('*.json'))
-    if change not in {'match', 'unattested'}:
+    if change not in {'match', 'declaration_backed'}:
         with pytest.raises(ValueError, match='model-root'):
             entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
         assert not (tmp_path / 'approved').exists()
@@ -509,7 +519,7 @@ def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkey
         _assert_auxiliary_verification_sidecar(fixture, before_sidecars)
         assert entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client).auxiliary_model_custody == 'target'
     assert fixture.receipt_path.read_bytes() == before_receipt
-    if change not in {'match', 'unattested'}:
+    if change not in {'match', 'declaration_backed'}:
         assert set(fixture.models_root.rglob('*.json')) == before_sidecars
     assert set(fixture.requests) == {'/object_info'}
 
@@ -519,11 +529,15 @@ def test_incomplete_declaration_cannot_replace_receipt_custody(tmp_path, monkeyp
     first = fixture.original_assets[0]
     fixture.receipt.models = fixture.receipt.models[1:]
     entries.ready_entries()[0]['model_assets'][0].pop('sha256')
+    before_receipt = fixture.receipt_path.read_bytes()
+    before_sidecars = {path: path.read_bytes() for path in fixture.models_root.rglob('*.json')}
     client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
     assert not any((row['subdir'], row['name']) == (first['subdir'], first['name'])
                    for row in client.target.facts['model_root']['inventory'])
     with pytest.raises(ValueError, match='model-root'):
         entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
+    assert fixture.receipt_path.read_bytes() == before_receipt
+    assert {path: path.read_bytes() for path in fixture.models_root.rglob('*.json')} == before_sidecars
 
 
 @pytest.mark.parametrize('field', ['sha256', 'size_bytes'])
