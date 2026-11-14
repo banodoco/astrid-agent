@@ -34,6 +34,7 @@ import os
 import re
 import secrets
 import shlex
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -50,6 +51,7 @@ from .remote_placement import (
     RESULT_MARK,
     RUNS_ROOT,
     SNAPSHOT_PUBLISH_WAIT_SECONDS,
+    SNAPSHOT_SETTLE_MIN_SECONDS,
     Claim,
     DigestMismatch,
     RemotePlacement,
@@ -1515,13 +1517,8 @@ class RunPodMachine:
         # The last point on this pod before it stops (or settles warm): bounded wait for this
         # run's detached snapshot publish, then report. Success path only: a failed job's release
         # never waits on it (an unfinished publish has no manifest and is invisible).
-        settle = getattr(adapter.placement, "settle_engine_snapshot", None)
-        if settle is not None and failure is None and rejection is None:
-            try:
-                settle(lease.state, wait_seconds=0 if warm else SNAPSHOT_PUBLISH_WAIT_SECONDS,
-                       budget_seconds=None if paid_expiry is None else paid_expiry - owner.clock())
-            except Exception:  # noqa: BLE001 - snapshot bookkeeping must never fail release
-                _logger.debug("Engine snapshot settlement failed; continuing release", exc_info=True)
+        pending = (self._settle_engine_snapshot(adapter, lease, owner, warm=warm, paid_expiry=paid_expiry)
+                   if failure is None and rejection is None else None)
         unreaped = getattr(lease.claim.ops, "unreaped_child", None)
         if unreaped is not None:
             owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)
@@ -1566,6 +1563,8 @@ class RunPodMachine:
             lease.expires_at = info.get("idle_expires_at")
             lease.cost_usd = record.get("estimated_cost_usd", 0) + max(0, owner.clock() - info.get("accounted_at", info["started_at"])) * info.get("hourly_usd", 0) / 3600
             lease.preparation_state = (info.get("preparation") or {}).get("state")
+            if pending is not None:
+                raise pending  # an interrupt during settlement, re-raised once the pod is settled
             return
         try:
             if observer_key is not None:
@@ -1583,6 +1582,54 @@ class RunPodMachine:
                         and record.get("lease", {}).get("state") == "releasing"):
                     raise
         lease.released = True
+        if pending is not None:
+            raise pending  # an interrupt during settlement, re-raised once the pod is released
+
+    @staticmethod
+    def _settle_engine_snapshot(adapter: Any, lease: MachineLease, owner: Any, *, warm: bool,
+                                paid_expiry: float | None) -> BaseException | None:
+        """Run snapshot settlement under ONE absolute deadline that the transport cannot extend.
+
+        The pinned transport does not bound a remote exec by its timeout (start, poll, cancel and
+        retries run outside it), so settlement runs in a daemon thread that release abandons at the
+        deadline. Stopping the pod is what ends a stalled exec; an unfinished publish has no
+        manifest, so it is invisible. Returns an interrupt raised during settlement, for the caller
+        to re-raise only after the pod is released or settled; every other error is swallowed.
+        """
+        settle = getattr(adapter.placement, "settle_engine_snapshot", None)
+        if settle is None:
+            return None
+        start = time.monotonic()
+        budget = float(SNAPSHOT_PUBLISH_WAIT_SECONDS)
+        if paid_expiry is not None:
+            budget = min(budget, paid_expiry - owner.clock())
+        if budget < SNAPSHOT_SETTLE_MIN_SECONDS:
+            lease.state.note("engine_snapshot_settlement", "skipped", reason="budget_short")
+            return None
+        deadline = start + budget
+        caught: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                settle(lease.state, wait_seconds=0 if warm else budget, budget_seconds=budget)
+            except BaseException as exc:  # noqa: BLE001 - surfaced to release, never raised in the thread
+                caught.append(exc)
+
+        worker = threading.Thread(target=run, name="engine-snapshot-settlement", daemon=True)
+        try:
+            worker.start()
+            worker.join(max(0.0, deadline - time.monotonic()))
+        except BaseException as exc:  # noqa: BLE001 - an interrupt in release itself: release first
+            lease.state.note("engine_snapshot_settlement", "abandoned", reason="interrupted")
+            return exc
+        if worker.is_alive():
+            lease.state.note("engine_snapshot_settlement", "abandoned", reason="deadline")
+            return None
+        if caught and not isinstance(caught[0], Exception):
+            return caught[0]
+        if caught:
+            _logger.debug("Engine snapshot settlement failed; continuing release", exc_info=caught[0])
+        return None
 
     def _reset(self, lease: MachineLease, *, verify_deadline: float | None = None,
                paid_expiry: float | None = None) -> dict[str, Any]:

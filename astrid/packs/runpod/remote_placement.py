@@ -73,6 +73,8 @@ SNAPSHOT_PUBLISH_WAIT_SECONDS = 180
 SNAPSHOT_REPORT_SECONDS = 60
 SNAPSHOT_REPORT_MIN_SECONDS = 10
 SNAPSHOT_SLACK_SECONDS = 10
+# Below this much release budget, settlement is skipped entirely (machine release).
+SNAPSHOT_SETTLE_MIN_SECONDS = 10
 SNAPSHOT_PUBLISH_LOG = f"{BOOTSTRAP_ROOT}/engine-snapshot-publish.log"
 SNAPSHOT_PUBLISH_PID = f"{BOOTSTRAP_ROOT}/engine-snapshot-publish.pid"
 SOURCE_DIRS = (

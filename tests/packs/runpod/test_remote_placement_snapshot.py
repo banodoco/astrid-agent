@@ -365,3 +365,72 @@ def test_failed_job_release_never_settles_snapshot(machine_case, monkeypatch, fa
     except Exception:  # noqa: BLE001 - classification may surface; only the wait matters here
         pass
     assert calls == []
+
+
+def _stalled_release(c, monkeypatch, *, wait_seconds=0.4, interrupt=False, minimum=0.1):
+    """Cold release whose snapshot settlement uses the REAL settle over a transport exec that
+    blocks far past any timeout it was given (the pinned transport does not bound its exec)."""
+    import threading
+    import time as _time
+
+    from tests.packs.runpod.test_machine import _claim_machine
+
+    _claim_machine(c)
+    monkeypatch.setattr(rm, "SNAPSHOT_PUBLISH_WAIT_SECONDS", wait_seconds)
+    monkeypatch.setattr(rm, "SNAPSHOT_SETTLE_MIN_SECONDS", minimum)
+    never = threading.Event()
+    lease = c.machine.claim(c.job())
+    lease.state.snapshot_publish_pid = 4242
+    lease.state.volume = {"mount_path": "/workspace", "size_gb": 300}
+    inner = lease.claim.ops.exec
+
+    def exec_(command, timeout=600, *args, **kwargs):
+        if "/proc/4242" in command or "engine_snapshot" in command:
+            if interrupt:
+                raise KeyboardInterrupt
+            never.wait(timeout * 10 + 30)  # ignores its timeout, like the real transport
+        return inner(command, timeout, *args, **kwargs)
+
+    lease.claim.ops.exec = exec_
+    started = _time.monotonic()
+    return lease, started, never
+
+
+def test_stalled_settlement_transport_never_holds_a_paid_pod(machine_case, monkeypatch):
+    """Astra W113: release reaches owner.release within the bound even when the exec stalls."""
+    import time as _time
+
+    c = machine_case
+    lease, started, never = _stalled_release(c, monkeypatch)
+    try:
+        c.machine.release(lease, False)
+        elapsed = _time.monotonic() - started
+    finally:
+        never.set()
+    assert elapsed < 0.4 + 2.0
+    assert c.deletes == ["pod-1"] and lease.released
+    assert ("engine_snapshot_settlement", "abandoned") in {
+        (e["step"], e["status"]) for e in lease.state.steps}
+
+
+def test_interrupt_inside_settlement_still_releases_then_propagates(machine_case, monkeypatch):
+    c = machine_case
+    lease, _started, never = _stalled_release(c, monkeypatch, interrupt=True)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            c.machine.release(lease, False)
+    finally:
+        never.set()
+    assert c.deletes == ["pod-1"] and lease.released
+
+
+def test_settlement_skipped_when_under_ten_seconds_remain(machine_case, monkeypatch):
+    c = machine_case
+    lease, _started, never = _stalled_release(c, monkeypatch, wait_seconds=5, minimum=10)
+    try:
+        c.machine.release(lease, False)
+    finally:
+        never.set()
+    assert ("engine_snapshot_settlement", "skipped") in {(e["step"], e["status"]) for e in lease.state.steps}
+    assert not any("/proc/4242" in str(e) for e in lease.state.steps)
+    assert c.deletes == ["pod-1"]
