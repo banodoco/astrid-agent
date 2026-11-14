@@ -410,3 +410,75 @@ def test_run_scoped_prefix_survives_public_input_compilation():
     scoped = run_scoped_overrides(built, "attempt-123")
     assert scoped.compile("api")["1"]["inputs"]["filename_prefix"] == "chosen_astrid_attempt-123"
     assert built.compile("api")["1"]["inputs"]["filename_prefix"] == "chosen"
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_machine_job_carries_model_verification_choice_without_reading_pod_store(tmp_path, monkeypatch, enabled):
+    import json
+
+    from astrid.core.generation import local_job, settings
+
+    body = {'schema': local_job.SCHEMA, 'align': 'check', 'inputs': {},
+            'generation_settings': {'models': {'trust_unchanged': enabled}}}
+    path = tmp_path / 'job.json'
+    path.write_text(json.dumps(body))
+    def no_pod_store(*args, **kwargs):
+        pytest.fail('projected operator choice must not read a different pod settings store')
+    monkeypatch.setattr(settings, 'read', no_pod_store)
+    monkeypatch.setattr(local_job, '_run_job', lambda *a, **kw: settings.model_trust_unchanged())
+    assert local_job.run_job('workflow', path, tmp_path / 'out') is enabled
+
+
+@pytest.mark.parametrize('value', [None, {}, {'models': {}}, {'models': {'trust_unchanged': 'true'}}])
+def test_machine_job_rejects_malformed_model_verification_choice(tmp_path, value):
+    import json
+
+    from astrid.core.generation import local_job
+
+    path = tmp_path / 'job.json'
+    path.write_text(json.dumps({'schema': local_job.SCHEMA, 'align': 'check', 'inputs': {},
+                                'generation_settings': value}))
+    with pytest.raises(local_job.JobFileError, match='generation settings'):
+        local_job.read_job(path)
+
+
+@pytest.mark.parametrize('projection', ['omitted', False, True])
+def test_machine_job_hashing_uses_projection_or_default(tmp_path, monkeypatch, generation_settings_store, projection):
+    import json
+
+    from astrid.core.generation import local_job
+    from tests.core.generation.test_model_verification_record import make_model, preparation
+
+    # The pod's own store says false, and there is already a valid verification record.
+    generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': False}}, 1)
+    model = make_model(tmp_path, monkeypatch)
+    model.verify()
+    assert model.reads
+    model.reads.clear()
+    body = {'schema': local_job.SCHEMA, 'align': 'check', 'inputs': {}}
+    if projection != 'omitted':
+        body['generation_settings'] = {'models': {'trust_unchanged': projection}}
+    path = tmp_path / 'job.json'
+    path.write_text(json.dumps(body))
+    store_reads = []
+    original = generation_settings_store.get_user_app_state
+
+    def pod_store(key):
+        store_reads.append(key)
+        return original(key)
+
+    def verify_job(*args, **kwargs):
+        prep = preparation(model.root)
+        prep._verify_models(model.manifest)
+        return prep._model_verification.report()
+
+    monkeypatch.setattr(generation_settings_store, 'get_user_app_state', pod_store)
+    monkeypatch.setattr(local_job, '_run_job', verify_job)
+    report = local_job.run_job('workflow', path, tmp_path / 'out')
+    if projection is not False:
+        assert model.reads == []
+        assert report == {'trust_unchanged': True, 'hashed': 0, 'skipped': 1}
+    else:
+        assert model.reads
+        assert report == {'trust_unchanged': False, 'hashed': 1, 'skipped': 0}
+    assert store_reads == []
