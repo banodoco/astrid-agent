@@ -9,6 +9,7 @@ arrives as one ``EngineFacts`` object: the engine passes it to a hook that decla
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Any, Callable, Mapping
 
 PLATFORM = "linux-x86_64-cu130"
@@ -25,10 +26,13 @@ class EngineFacts:
     assert_no_unresolved_placeholders: Callable[[Any], None]
     measure_source_av: Callable[[Any], Mapping[str, Any]]
     astrid_error: Callable[[Exception], Any]
+    run_logs: ModuleType
 
 
 def comfyui_facts() -> EngineFacts:
     """The facts of the comfyui engine on the RunPod platform."""
+    from astrid.core._shared import run_logs
+
     def comfy_commit() -> str:
         from astrid.core.generation.engine_recipe import engine_source_revision
         return engine_source_revision("comfyui", PLATFORM, "comfyui")
@@ -74,4 +78,5 @@ def comfyui_facts() -> EngineFacts:
         return coerce_astrid_error(error)
 
     return EngineFacts(comfy_commit, locked_models, bind_model_root, build_asset_manifest, read_archive,
-                       write_json_atomic, assert_no_unresolved_placeholders, measure_source_av, astrid_error)
+                       write_json_atomic, assert_no_unresolved_placeholders, measure_source_av, astrid_error,
+                       run_logs)
