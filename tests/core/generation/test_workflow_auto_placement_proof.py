@@ -27,6 +27,9 @@ def isolated_catalog(monkeypatch, catalog_snapshot):
     monkeypatch.setattr(entries, "user_entries", lambda: contributed)
 
 
+# Measured 115 seconds when run alone.
+# Under load, this test exceeds the default 120-second timeout.
+@pytest.mark.timeout(600)
 def test_non_registry_catalog_entries_use_default_placement(monkeypatch, capsys):
     from astrid.sdk.generation import GenerationFacade
 
