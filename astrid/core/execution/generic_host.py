@@ -6772,7 +6772,8 @@ class GenericPackHost:
         self._evidence_observation_lock = threading.RLock()
         # Idle release for the session slot (Wan2GP) and Remotion frame owner.
         self.warm_holds = WarmHolds(on_change=self._publish_evidence_status)
-        self._local_engine_idle = LocalEngineIdle(on_change=self._publish_evidence_status)
+        self._local_engine_idle = LocalEngineIdle(on_change=self._publish_evidence_status,
+            release_blocked=lambda: bool(getattr(self, "recovery_blocked", None)))
         self._target_bindings = None
         self._target_bindings_kind = None
         self._machines_observed_at: float = float("-inf")

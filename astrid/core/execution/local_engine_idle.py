@@ -32,7 +32,7 @@ class LocalEngineIdle:
     re-arms it. There is no polling or retry loop.
     """
 
-    def __init__(self, *, timer=_start_timer, clock=time.time, on_change=None):
+    def __init__(self, *, timer=_start_timer, clock=time.time, on_change=None, release_blocked=None):
         self._condition = threading.Condition(threading.RLock())
         self._holds = WarmHolds(timer=timer, clock=clock)
         # No installation-lock edge: the HTTP worker bypasses supervisor work,
@@ -50,6 +50,7 @@ class LocalEngineIdle:
         self._release_record = None
         self._warning = None
         self._on_change = on_change
+        self._release_blocked = release_blocked
 
     def begin(self, *, requested=None):
         seconds = idle_seconds(DEFAULT_IDLE_SECONDS, requested=requested)
@@ -87,6 +88,9 @@ class LocalEngineIdle:
         self._changed()
 
     def _release_if_idle(self, generation):
+        # Query host custody outside the condition; admission must still make
+        # progress while the predicate runs. Recheck generation afterwards.
+        blocked = self._release_blocked is not None and self._release_blocked()
         with self._condition:
             if self._closed or self._active_jobs or generation != self._generation:
                 return
@@ -99,7 +103,8 @@ class LocalEngineIdle:
             # never an interrupted execution. Do not fence HTTP preparation
             # with an installation lock. Its supervisor RPC may instead wait
             # behind this release for at most this independent 10s budget.
-            record = supervisor.release_owned(deadline=time.monotonic() + 10.0)
+            record = ({"status": "skipped", "reason": "unresolved host custody"} if blocked else
+                      supervisor.release_owned(deadline=time.monotonic() + 10.0))
             status = record.get("status") if isinstance(record, dict) else "failed"
             reason = record.get("reason") if isinstance(record, dict) else None
             warning = None if status == "completed" else f"release returned {status}" + (f": {reason}" if reason else "")

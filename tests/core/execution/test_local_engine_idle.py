@@ -72,8 +72,9 @@ def task(task_id="job", *, kind="local", idle=12, wrapped=False):
 def world(tmp_path, monkeypatch):
     host = GenericPackHost(pack_roots=[tmp_path], attempt_root=tmp_path / "attempt")
     timers = Timers()
-    idle = host._local_engine_idle = type(host._local_engine_idle)(
-        timer=timers, on_change=host._publish_evidence_status)
+    # Keep the host's real predicate wiring, replacing only the timer driver.
+    idle = host._local_engine_idle
+    idle._holds._timer = timers
     host.evidence_status_path = tmp_path / "evidence.json"
     supervisor = Supervisor()
 
@@ -209,6 +210,26 @@ def test_host_shutdown_cancels_pending_timer_without_releasing(world):
     pending.callback()
     assert supervisor.events == ["job"]
     assert idle.status()["closed"] is True
+
+
+def test_host_unresolved_custody_consumes_idle_deadline_and_logs_skip(world, caplog):
+    host, idle, timers, supervisor = world
+    run(host)
+    # host-wedge adds this attribute; the predicate must also support hosts
+    # which have not yet gained it, as all the other fixture tests exercise.
+    host.recovery_blocked = {"uncertain-task": {"reason": "cleanup unconfirmed"}}
+    with caplog.at_level(logging.WARNING):
+        timers.fire()
+    assert supervisor.events == ["job"]
+    assert timers.live() is None
+    assert idle.status()["last_release"] == "skipped"
+    assert "unresolved host custody" in idle.status()["warning"]
+    assert "unresolved host custody" in caplog.text
+    host.recovery_blocked.clear()
+    assert timers.live() is None, "recovery alone must not re-arm an idle release"
+    run(host, task("after-recovery"))
+    timers.fire()
+    assert supervisor.events == ["job", "after-recovery", "release"]
 
 
 def test_job_admitted_during_release_still_runs_with_supervisor_serialization(world):
