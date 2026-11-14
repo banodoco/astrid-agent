@@ -439,3 +439,27 @@ def test_a_file_that_appears_before_the_hard_link_is_never_overwritten(comfy, mo
     assert caught.value.code == "file_exists"
     assert existing.read_bytes() == b"appeared while downloading"
     assert _files(root) == ["vae/ae.safetensors"]  # the staged download is cleaned up
+
+
+def test_a_file_of_the_old_staging_name_is_never_deleted(comfy, models, file_server):
+    """The person's own `<model>.astrid-partial` survives a successful and a failed download byte for byte."""
+    root, _ = models
+    plan = _plan(comfy, file_server)
+    item = next(f for f in plan["files"] if f["file"] == "ae.safetensors")
+    theirs = root / "vae" / "ae.safetensors.astrid-partial"
+    theirs.write_bytes(b"the person's own file, not Astrid's")
+    final = root / "vae" / "ae.safetensors"
+
+    _fetch_into_folder(item, _http())
+    assert final.read_bytes() == BLOBS["/vae.bin"]
+    assert theirs.read_bytes() == b"the person's own file, not Astrid's"
+    assert sorted(p.name for p in (root / "vae").iterdir()) == ["ae.safetensors", "ae.safetensors.astrid-partial"]
+
+    final.unlink()
+    file_server.blobs["/vae.bin"] = b"vae-BYTES"  # same size, other bytes: the checksum fails
+    with pytest.raises(Exception):
+        _fetch_into_folder(item, _http())
+    assert not final.exists()
+    assert theirs.read_bytes() == b"the person's own file, not Astrid's"
+    assert sorted(p.name for p in (root / "vae").iterdir()) == ["ae.safetensors.astrid-partial"]
+    assert not (root / ".vibecomfy").exists()

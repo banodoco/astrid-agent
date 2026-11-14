@@ -420,13 +420,20 @@ def _fetch_into_folder(item: dict[str, Any], http_client) -> None:
 
     folder = Path(item['folder']).resolve(strict=True)
     root, final = folder.parent, folder / item['file']
-    staged_name = item['file'] + '.astrid-partial'
-    staged = folder / staged_name
-    entry = {'name': staged_name, 'subdir': folder.name, 'url': item['url'],
+    # A unique staging name claimed exclusively (O_EXCL), so a file the person already has is never touched. The
+    # empty claim is kept: fetch.download only reuses a non-empty destination and otherwise replaces it with its own
+    # temp file, so the name stays this call's own until it is removed below.
+    fd, claimed = tempfile.mkstemp(dir=folder, prefix='.' + item['file'] + '.', suffix='.astrid-partial')
+    os.close(fd)
+    staged = Path(claimed)
+    entry = {'name': staged.name, 'subdir': folder.name, 'url': item['url'],
              'sha256': item['sha256'], 'size_bytes': item['bytes']}
-    receipt = fetch._verification_receipt_path(staged, root=root)
+    try:
+        receipt = fetch._verification_receipt_path(staged, root=root)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
     kept = [d for d in (receipt.parent, receipt.parent.parent) if d.exists()]
-    staged.unlink(missing_ok=True)
     try:
         fetch.download(entry, root=root, client=http_client, quiet=True)
         _publish(staged, final, hard_links=item.get('hard_links', True))
