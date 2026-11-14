@@ -15,7 +15,6 @@ import os
 import re
 import socket
 import threading
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -30,7 +29,7 @@ from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
 from tests.integrations.runpod_slot_pod import PodComfy, pin_object_info, receipt_files
-from tests.integrations.test_remote_machine_cpu import MachineProviderHTTP
+from tests.integrations.test_remote_machine_cpu import MachineProviderHTTP, claim_machine, serve_pod_agent
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 
 from tests.helpers.generation_defaults import default_entries
@@ -281,6 +280,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     monkeypatch.setattr(httpx.Client, "send", http_send)
     monkeypatch.setattr(requests.Session, "send", requests_send)
     monkeypatch.setattr(socket.socket, "connect", local_connect)
+    agent_server = serve_pod_agent(provider, monkeypatch) if target_kind == "runpod" else None
 
     from astrid.core.execution._child_bridge import ChildBridgeError, HostChildBridge
     dispatch = HostChildBridge.dispatch
@@ -333,11 +333,8 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
                     inputs={"placement_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": preferences})},
                     wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
                 assert setup.ok
-                quote = GenerationFacade().describe(placement="runpod", client=client)
-                controls = dict(placement="runpod", client=client, project=project_id, consent=("paid",), max_usd=1.5,
-                    deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-                    offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-                    idle_seconds=1800, wait=True)
+                claim_machine(client)
+                controls = dict(placement="runpod", client=client, project=project_id, wait=True)
             elif target_kind == "attached":
                 # A human's ComfyUI already holds the models its engines' install receipts list (as a
                 # provisioned pod does after its install); the RunPod setup never ran against it.
@@ -373,6 +370,9 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
         worker.join(timeout=35)
         host.shutdown()
         daemon.stop()
+        if agent_server is not None:
+            agent_server.shutdown()
+            agent_server.server_close()
 
 
 # The sound-effects case needs real Foley weights (hunyuanvideo_foley_xl.pth,
