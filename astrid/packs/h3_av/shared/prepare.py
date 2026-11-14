@@ -505,9 +505,11 @@ def prepare_request(
 
 
 def write_preparation(path: str | Path, manifest: Mapping[str, Any]) -> Path:
+    from .request_v2 import json_times
+
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    destination.write_text(json.dumps(json_times(manifest), indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     return destination
 
 
