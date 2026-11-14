@@ -287,7 +287,7 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
     subparser.add_argument("--kind", default=None, help="Exact generation kind filter.")
     subparser.add_argument("--model", default=None, help="Exact generation model filter.")
-    subparser.add_argument("--target", default=None, help="Exact generation target filter.")
+    subparser.add_argument("--placement", dest="target", default=None, help="Exact generation placement filter.")
     subparser.add_argument("--tag", default=None, help="Exact generation tag filter.")
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_list)
