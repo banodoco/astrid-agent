@@ -84,7 +84,8 @@ def test_generation_skill_fenced_scan_command_uses_real_cli_parser(tmp_path, mon
         assert result["servers"][0]["workflows"] == ["portrait_flux.json", "nested/wan_i2v.json"]
         assert result["servers"][0]["url"] == f"http://127.0.0.1:{server.server_address[1]}"
         assert set(_ComfyHandler.requested) == {
-            "/system_stats", "/internal/folder_paths", "/userdata?dir=workflows",
+            "/system_stats", "/internal/folder_paths",
+            "/userdata?dir=workflows&full_info=true&recurse=true",  # P4.11a: the scan asks for edit times (full_info)
         }
     finally:
         server.shutdown()
@@ -401,12 +402,16 @@ def _offered_generate_argv(section: str, tokens: dict[str, str]) -> list[list[st
     return offered
 
 
+def _tokens(workflow: Path, name: str = "lighthouse") -> dict[str, str]:
+    return {"KIND": "image", "MODE": "t2i", "ENTRY": "z-image", "NAME": name, "FILE": str(workflow)}
+
+
 def test_generation_defaults_step_offers_four_answers_each_with_one_undo():
     section = _generation_setup_section()
     step = section[section.index("4. **"):section.index("5. **")]
     assert "One question per default slot" in step
-    for label in ("**Keep Astrid's**", "**Use one of theirs**", "**Another shipped entry**",
-                  "**A new default from their workflow**"):
+    for label in ("**Keep Astrid's**", "**Use one of yours**", "**Another shipped entry**",
+                  "**Create a new default when none of those fits**", "**Save and pin**"):
         assert label in step, label
     assert step.count("Undo:") == 4
 
@@ -414,12 +419,9 @@ def test_generation_defaults_step_offers_four_answers_each_with_one_undo():
 def test_generation_defaults_commands_parse_through_real_cli_and_never_queue_a_run(tmp_path):
     from astrid.core.generation import cli as generation_cli
 
-    workflow = tmp_path / "workflow.json"
-    tokens = {"KIND": "image", "MODE": "t2i", "ENTRY": "z-image", "NAME": "lighthouse",
-              "/absolute/path/workflow.json": str(workflow)}
-    offered = _offered_generate_argv(_generation_setup_section(), tokens)
-    parser = generation_cli._parser()
+    offered = _offered_generate_argv(_generation_setup_section(), _tokens(tmp_path / "workflow.json"))
     relevant = [argv for argv in offered if argv[0] in {"defaults", "workflow", "list"}]
+    parser = generation_cli._parser()
     parsed = [parser.parse_args(argv) for argv in relevant]
     workflows = [argv for argv in relevant if argv[0] == "workflow"]
     assert any(argv[0] == "defaults" and "set" in argv for argv in relevant)
@@ -437,15 +439,14 @@ def test_generation_defaults_preview_and_save_run_against_fakes(tmp_path, monkey
     from vibecomfy.registry.ready import workflow_from_ready
     from vibecomfy.workflow_bundle import load_bundle
 
+    # a small workflow keeps the save leg fast; the per-node cache rehash is filed against VibeComfy
     workflow = tmp_path / "workflow.json"
-    workflow.write_text(json.dumps(load_bundle(workflow_from_ready("image/flux2_klein_4b_t2i")).materialize_ui()))
+    workflow.write_text((Path(__file__).resolve().parent / "fixtures" / "vibecomfy_ir" / "flat.json").read_text())
     entries_dir = tmp_path / "entries"
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(entries_dir))
     monkeypatch.setattr(generation_cli, "_open_client", lambda: pytest.fail("the setup step opened Runtime"))
     monkeypatch.setattr(generation_cli, "_generate_facade", lambda: pytest.fail("the setup step ran a workflow"))
-    tokens = {"KIND": "image", "MODE": "t2i", "ENTRY": "z-image", "NAME": "lighthouse",
-              "/absolute/path/workflow.json": str(workflow)}
-    for argv in _offered_generate_argv(_generation_setup_section(), tokens):
+    for argv in _offered_generate_argv(_generation_setup_section(), _tokens(workflow)):
         if argv[0] != "workflow":
             continue
         assert generation_cli.main(argv) == 0
@@ -456,3 +457,83 @@ def test_generation_defaults_preview_and_save_run_against_fakes(tmp_path, monkey
         else:
             assert result == {"saved": True, "ran": False, "entry": "lighthouse", "replaced": False}
             assert (entries_dir / "lighthouse").is_dir()
+
+
+def test_generation_defaults_fetch_saved_workflow_read_only_then_pins_it(
+    tmp_path, monkeypatch, capsys, generation_settings_store,
+):
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from astrid.core.generation import cli as generation_cli, settings
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import load_bundle
+
+    # a small workflow keeps the save leg fast; the per-node cache rehash is filed against VibeComfy
+    body = (Path(__file__).resolve().parent / "fixtures" / "vibecomfy_ir" / "flat.json").read_bytes()
+    seen: list[tuple[str, str]] = []
+
+    class Fake(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.command, self.path))
+            if self.path == "/userdata/workflows%2Fportrait_flux.json":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_error(404)
+
+        def do_POST(self):
+            seen.append((self.command, self.path))
+            self.send_error(405)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        command = _guide_command("userdata/workflows%2FWORKFLOW", _GENERATION)
+        command = command.replace("127.0.0.1:PORT", f"127.0.0.1:{port}").replace("WORKFLOW", "portrait_flux.json")
+        result = subprocess.run(command, shell=True, env={**os.environ, "WORK": str(tmp_path)},
+                                text=True, capture_output=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        assert seen == [("GET", "/userdata/workflows%2Fportrait_flux.json")]
+        fetched = tmp_path / "workflow.json"
+        assert fetched.read_bytes() == body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    entries_dir = tmp_path / "entries"
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(entries_dir))
+    tokens = _tokens(fetched, name="portrait_saved")
+    real_facade = generation_cli._generate_facade
+    monkeypatch.setattr(generation_cli, "_generate_facade", lambda: pytest.fail("the setup step ran a workflow"))
+    monkeypatch.setattr(generation_cli, "_open_client", lambda: pytest.fail("the setup step opened Runtime"))
+    for argv in _offered_generate_argv(_generation_setup_section(), tokens):
+        if argv[0] == "workflow":
+            assert generation_cli.main(argv) == 0
+            capsys.readouterr()
+    assert (entries_dir / "portrait_saved").is_dir()
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+
+    monkeypatch.setattr(generation_cli, "_open_client", lambda: Client())
+    monkeypatch.setattr(generation_cli, "_generate_facade", real_facade)
+    monkeypatch.setattr(settings, "transport_of", lambda client: generation_settings_store)
+    pins = [argv for argv in _offered_generate_argv(_generation_setup_section(), tokens)
+            if argv[:2] == ["defaults", "set"] and argv[-1] == "portrait_saved"]
+    assert pins == [["defaults", "set", "image", "t2i", "portrait_saved"]]
+    assert generation_cli.main(pins[0]) == 0
+    capsys.readouterr()
+    assert generation_cli.main(["defaults", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)["slots"]
+    assert next(row for row in rows if row["slot"] == "image.t2i")["entry"] == "portrait_saved"
