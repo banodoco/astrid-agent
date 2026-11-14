@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Callable
 
 _OWNED_ROOTS_FILE = "storage-owned-roots.json"
+# Shared by the host's private incarnation directories and their reclaim policy.
+ATTEMPT_ROOT_PREFIX = "astrid-attempt-"
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,7 @@ def registered_roots(data_root: Path, *, temporary_root: Path | None = None, cac
         RootPolicy("fast-lane-objects", "fast timeline frame input cache", "timeline visualize fast lane", "size capped by fast-lane writer; expire after 14 days", temp / "astrid-fast-lane" / "objects", 14 * 86400, lambda p: p.is_file()),
         RootPolicy("fast-lane-capture", "per-call frame capture work", "timeline visualize fast lane", "expire after 1 day", temp / "astrid-fast-lane", 86400, lambda p: p.is_dir() and p.name.startswith("capture-")),
         RootPolicy("fast-lane-verify", "per-call timeline verification work", "timeline visualize fast lane", "expire after 7 days", temp / "astrid-fast-lane", 7 * 86400, lambda p: p.is_dir() and p.name.startswith("verify-")),
-        RootPolicy("attempt-roots", "crash-abandoned executor attempts", "generic pack host", "expire after 2 days", temp, 2 * 86400, lambda p: p.is_dir() and p.name.startswith("astrid-attempt-")),
+        RootPolicy("attempt-roots", "crash-abandoned executor attempts", "generic pack host", "expire after 2 days", temp, 2 * 86400, lambda p: p.is_dir() and p.name.startswith(ATTEMPT_ROOT_PREFIX)),
         RootPolicy("host-log-archives", "rotated host logs", "runtime operator diagnostics", "expire after 30 days", data_root, 30 * 86400, lambda p: p.is_file() and (p.name.endswith(".gz") or ".log." in p.name)),
         RootPolicy("runtime-presentations", "named copy-on-write render views", "runs open desktop media reader", "expire after 30 days", data_root / "runtime" / "realms", 30 * 86400, lambda p: p.is_file()),
         RootPolicy("replay-output", "renderer replay outputs", "renderer replay tooling", "expire after 7 days", data_root / "renderer", 7 * 86400, lambda p: p.is_dir() and p.name.endswith(".replay-output")),
@@ -155,10 +157,23 @@ def _candidates(policy: RootPolicy) -> list[Path]:
             prefixes = {
                 "fast-lane-capture": ("capture-",),
                 "fast-lane-verify": ("verify-",),
-                "attempt-roots": ("astrid-attempt-",),
+                "attempt-roots": (ATTEMPT_ROOT_PREFIX,),
             }[policy.name]
             candidates = root.iterdir() if not prefixes else (p for prefix in prefixes for p in root.glob(prefix + "*"))
-            return [p for p in candidates if not p.is_symlink() and policy.selector(p)]
+            selected = [p for p in candidates if not p.is_symlink() and policy.selector(p)]
+            if policy.name == "attempt-roots":
+                # Host-incarnation directories contain ordinary attempt roots.
+                # Age the attempt itself: progress in a child must not leave a
+                # live spool subject to its older parent's expiry date. Flat
+                # roots from older hosts and empty incarnation roots still age
+                # under the same policy.
+                attempts = []
+                for parent in selected:
+                    children = [p for p in parent.glob(ATTEMPT_ROOT_PREFIX + "*")
+                                if not p.is_symlink() and policy.selector(p)]
+                    attempts.extend(children or [parent])
+                return attempts
+            return selected
         except OSError:
             return []
     if policy.name == "legacy-cache":
