@@ -3,7 +3,8 @@
 
 NOT FOR GENERATION. This is an operator/validation launcher and is not the generation path.
 Generation is `astrid generate <image|video|audio> --entry ... --placement runpod ...`
-(with --gpu, --max-hourly-usd, --max-usd and --consent paid); it claims and releases its own pod.
+(after `astrid machines claim` with --gpu, --max-hourly-usd, --max-usd and
+--consent paid); generation uses that claimed machine.
 
 Usage: pod_session.py --datacenters EUR-NO-1 --storage-name storage --sources-dir DIR --workdir DIR
                       (--jobs jobs.yaml | --request job/request.json --asset-map job/asset-map.json)
