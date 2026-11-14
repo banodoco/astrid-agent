@@ -64,7 +64,7 @@ jobs:
       - name: Uninstall with --delete-data
         if: always()
         run: |
-          & ([scriptblock]::Create((Invoke-RestMethod https://astrid.haus/install.ps1))) --uninstall --delete-data --yes
+          & ([scriptblock]::Create((Invoke-RestMethod https://astrid.haus/install.ps1))) --uninstall --delete-data
 
       - name: Install folders and the Scheduled Task are gone
         if: always()
