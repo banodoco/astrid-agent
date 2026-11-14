@@ -574,6 +574,42 @@ def test_saved_ceiling_lowered_during_capacity_wait_prevents_post(case, monkeypa
     assert attempts == [] and case.creates == 0 and case.pods == []
 
 
+def test_saved_ceiling_lowered_during_provider_pacing_prevents_post(case, monkeypatch, request, tmp_path):
+    import time
+
+    from astrid.packs.runpod import provider, worker_preparation
+
+    attempts, owner = capacity_offer_provider(case, monkeypatch, request)
+    case.owner.preferences = replace(case.owner.preferences, budget_cap_usd=2.5)
+    preferences = case.owner.preferences.as_mapping()
+    save_runpod_preferences(preferences)
+    case.owner.observe_offers = lambda: (replace(case.offer, datacenter_id="DC-A"),)
+    clock = [time.time()]
+    sleeps = []
+
+    def pacing_sleep(seconds):
+        sleeps.append(seconds)
+        save_runpod_preferences({**preferences, "budget_cap_usd": 1.5})
+        clock[0] += seconds
+
+    gate = provider.ProviderGate(tmp_path / "pacing.json", clock=lambda: clock[0],
+                                 sleep=pacing_sleep, minimum_interval=0)
+    monkeypatch.setattr(provider, "account_gate", lambda *args, **kwargs: gate)
+    admitted_operation = worker_preparation.async_provider_operation
+
+    async def paced_create(*args, **kwargs):
+        # Seed the real gate immediately before create admission. Its actual
+        # before_call() loop sleeps and changes policy after the old callback.
+        gate._state(lambda state: state.update(next=clock[0] + 1))
+        return await admitted_operation(*args, **kwargs)
+
+    monkeypatch.setattr(worker_preparation, "async_provider_operation", paced_create)
+    with pytest.raises(ValueError, match="ceiling.*runpod.setup"):
+        owner.acquire(waiting_grant(case, max_usd=2), requested_idle_seconds=0)
+    assert sleeps == [1]
+    assert attempts == [] and case.creates == 0 and case.pods == []
+
+
 def test_exhausted_offer_list_reobserves_and_restarts_the_user_gpu_order(case, monkeypatch, request):
     attempts, owner = capacity_offer_provider(case, monkeypatch, request, rejections=3)
     sleeps = fake_capacity_clock(case, monkeypatch)

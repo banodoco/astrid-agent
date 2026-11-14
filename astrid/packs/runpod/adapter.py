@@ -288,6 +288,8 @@ class RunPodAdapter:
 
     def operate(self, operation, *, include_quote=False, machine_id=None, consent=None, until_release=False,
                 requested_idle_seconds=None, cancelled=None):
+        # This facade does not enforce saved-policy freshness itself; normal
+        # host dispatch does so through check_reuse_policy before reaching it.
         if operation == "setup":
             if include_quote:
                 raise ValueError("setup does not observe offers")
@@ -534,6 +536,8 @@ class TargetProviderBindings:
         while True:
             with self.lock:
                 if self.provider is not None:
+                    # Cached lookup checks the binding, not saved-policy
+                    # freshness; normal dispatch uses check_reuse_policy for it.
                     if job:
                         # Saved defaults cannot expand or shrink this job's
                         # recorded budget/expiry; idle renewal stays inside it.

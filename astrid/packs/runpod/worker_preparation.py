@@ -1505,18 +1505,31 @@ async def acquire_target(
                 window = capacity_window_seconds
 
             pre_create = dict(attempt)
-            pending = {
-                **attempt,
-                "state": "allocation_pending",
-                "create_attempts": int(attempt.get("create_attempts", 0)) + 1,
-                "reconciliation_required": True,
-                "safe_to_retry": False,
-                "last_create_started_at": utc_now_iso(),
-            }
-            if before_post is not None:
-                pending = before_post(pending)
-            replace_target_record(handle_path, pending, operation_id=operation_id)
-            attempt = pending
+
+            def authorize_create():
+                nonlocal attempt
+                pending = {
+                    **attempt,
+                    "state": "allocation_pending",
+                    "create_attempts": int(attempt.get("create_attempts", 0)) + 1,
+                    "reconciliation_required": True,
+                    "safe_to_retry": False,
+                    "last_create_started_at": utc_now_iso(),
+                }
+                if before_post is not None:
+                    pending = before_post(pending)
+                replace_target_record(handle_path, pending, operation_id=operation_id)
+                attempt = pending
+
+            async def create_after_pacing():
+                # This operation runs inside ProviderGate.call, after its last
+                # pacing sleep. Recheck paid authority and persist the intent
+                # immediately before the single lifecycle create request.
+                authorize_create()
+                return await launch_when_available(
+                    config, name=expected_name, max_wait_sec=0,
+                    retry_interval_sec=retry_interval_seconds,
+                )
 
             def retain_late_pod(pod):
                 # The cancelled caller releases ownership before this worker
@@ -1540,13 +1553,8 @@ async def acquire_target(
             try:
                 with provider_budget(max(0., deadline - time.monotonic()) if deadline is not None else window):
                     pod = await async_provider_operation(
-                        config.api_key, launch_when_available, config,
+                        config.api_key, create_after_pacing,
                         on_late_result=retain_late_pod,
-                        name=expected_name,
-                        # Zero asks lifecycle for one launch; the bounded loop
-                        # owns timing and persists each POST before it starts.
-                        max_wait_sec=0,
-                        retry_interval_sec=retry_interval_seconds,
                     )
             except ProviderNotStarted:
                 # Only admission can produce this type. No provider operation

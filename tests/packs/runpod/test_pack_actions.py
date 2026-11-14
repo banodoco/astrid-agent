@@ -170,6 +170,20 @@ def test_unsupported_operation_refuses_before_provider_construction():
         bindings.operate({"kind": "runpod", "engine": "comfyui", "preferences": {}}, "reboot")
 
 
+def test_settings_discovery_failure_logs_type_without_exception_data(monkeypatch, caplog):
+    from astrid.core.generation import settings
+
+    def unavailable():
+        raise OSError("private-discovery-details")
+
+    settings.set_store_factory(unavailable)
+    with caplog.at_level("DEBUG", logger=settings.__name__):
+        assert settings.read().source == "unavailable"
+    assert "OSError" in caplog.text
+    assert "private-discovery-details" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
 @pytest.mark.parametrize("state", [None, "claimed", "cleanup_complete"])
 @pytest.mark.parametrize("change", [
     {"budget_cap_usd": 1.5}, {"gpu_types": ["gpu-b"]}, {"datacenter_id": "DC-other"},

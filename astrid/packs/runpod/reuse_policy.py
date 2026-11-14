@@ -61,9 +61,12 @@ def check_reuse_policy(retained: Sequence[Any], *, kind: str, engine: str,
     for requested in policies:
         # Equality is conservative: raising the saved ceiling also requires a
         # fresh owner; it never silently expands retained paid authority.
-        if expected != [kind, engine, RunPodPreferences.from_mapping(requested).as_mapping()]:
+        normalized = RunPodPreferences.from_mapping(requested).as_mapping()
+        if expected != [kind, engine, normalized]:
+            ceiling = (" (budget ceiling differs)" if expected[2].get("budget_cap_usd")
+                       != normalized.get("budget_cap_usd") else "")
             raise RunPodPolicyMismatch(
-                "target operation preferences differ from the retained provider owner; "
+                f"target operation preferences differ from the retained provider owner{ceiling}; "
                 "invoke runpod.setup to replace preferences after releasing any owned lease"
             )
 
