@@ -199,6 +199,9 @@ The machine table shows live and recently ended leases: ID, GPU, state,
 scheduled release time in UTC, minutes left, estimated accrued USD cost,
 hourly rate and end reason. The release time is the idle expiry while idle
 and the paid expiry while active. Estimates are not a provider invoice.
+A task's machine column records the placement kind, pod ID or `local`, lease ID
+and device. A provider-terminated or missing pod leaves warm reuse; a job pinned to
+that machine is refused with its reason and the live leases.
 After a failed job, a verified machine stays idle until that release time; inspect its last job outcome and reuse it or release it explicitly.
 
 To authorize a separate extension for that exact live machine:
@@ -223,6 +226,10 @@ Release explicitly before stopping the host when the machine is no longer
 needed. Recovery must preserve the original custody and release receipt.
 Release is complete only when the exact pod GET returns 404 and a successful
 account list confirms its absence; unresolved cleanup blocks reuse. Releasing a pod preserves its network volume.
+
+After a generation, list the machines and tell the user that a kept-warm machine
+keeps costing money until it is released. Unless the user chooses to keep it
+warm, release it by its ID with `astrid machines release MACHINE_ID`.
 
 ### Runtime and storage
 
