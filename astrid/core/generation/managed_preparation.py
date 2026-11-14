@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -271,9 +272,13 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
 
 def judge_declarations(workflow, scratch, engine):
     """Render and judge the declarations without consulting installed state."""
-    from vibecomfy.security.provenance import Provenance
-    from vibecomfy.workflow_bundle import WorkflowBundleError, emit_bundle_with_candidate, load_bundle
     from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import (
+        WorkflowBundleError,
+        emit_bundle_with_candidate,
+        load_bundle,
+    )
 
     canonical_path = Path(scratch) / "canonical" / "workflow.py"
     canonical_path.parent.mkdir(parents=True, exist_ok=True)
@@ -548,9 +553,16 @@ class ManagedEnginePreparation:
     def _preflight_model_storage(self, manifest):
         """Budget native VibeComfy fetch's full writes; that path ignores `.part`."""
         from ._engine_target_files import _TargetFiles
-        from .model_storage import STORAGE_WARNING, ModelStorageInsufficient, available_model_bytes, declare_storage_inventory
+        from .model_storage import (
+            DECLARED_VOLUME,
+            STORAGE_WARNING,
+            ModelStorageInsufficient,
+            available_model_bytes,
+            measure_declared_volume,
+        )
 
         root = Path(manifest["models_root"])
+        self._storage_models_root = root
         files = _TargetFiles(str(root))
         demand, candidates = {}, []
         for model in manifest["models"]:
@@ -573,21 +585,37 @@ class ManagedEnginePreparation:
             directory = path.parent.resolve(strict=False)
             demand[directory] = demand.get(directory, 0) + model["size"]
         if demand:
-            warn = False
+            declared = DECLARED_VOLUME.get()
+            volume = (measure_declared_volume(declared, root, deadline=self.deadline, check=self.check)
+                      if declared is not None else None)
+            warn = declared is not None and volume is None
             for directory, needed in demand.items():
                 free, unknown = available_model_bytes(directory, deadline=self.deadline, check=self.check)
+                if volume is not None and volume.covers(directory):
+                    free = min(free, volume.free_bytes) if free is not None else volume.free_bytes
                 warn |= unknown
                 if free is not None and needed > free:
-                    logs_root = getattr(self, "logs_root", None)
-                    if logs_root is not None:
-                        try:
-                            declare_storage_inventory(logs_root, root, deadline=self.deadline, cancelled=self.cancelled)
-                        except (OSError, ValueError):
-                            pass  # Diagnostics must never replace the measured refusal.
+                    self._declare_storage_inventory()
                     raise ModelStorageInsufficient(needed, free, getattr(self, "task", "<task>"))
             if warn:
                 from types import SimpleNamespace
                 self._keep_step_output("storage", SimpleNamespace(stdout="", stderr=STORAGE_WARNING + "\n"))
+
+    def _declare_storage_inventory(self) -> bool:
+        """Best-effort diagnostics must preserve the failure, including its text."""
+        from .model_storage import declare_storage_inventory
+
+        logs_root = getattr(self, "logs_root", None)
+        if logs_root is None:
+            return False
+        try:
+            root = getattr(self, "_storage_models_root", None)
+            if root is None:
+                root = Path(configured_models_root(root=self.root))
+            declare_storage_inventory(logs_root, root, deadline=self.deadline, cancelled=self.cancelled)
+            return True
+        except Exception:  # noqa: BLE001 - inventory must never mask the original storage failure
+            return False
 
     def _guard_runtime(self, workflow, runner, *, post):
         """Refuse changes to the receipt-owned base before native synchronization."""
@@ -675,7 +703,12 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             detail = f", missing_classes={json.dumps(classes)}" if classes else ""
             where = ("its whole output is the run logs preparation.{0}.stdout and preparation.{0}.stderr"
                      .format(step) if self._keep_step_output(step, result) else "inspect the host log for this attempt")
-            raise IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}")
+            error = IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}")
+            if step == "fetch" and any(re.search(
+                    r"\[Errno (?:28|122)\]|\b(?:EDQUOT|ENOSPC)\b|Disk quota exceeded|No space left on device",
+                    text, re.IGNORECASE) for text in (result.stdout, result.stderr)):
+                setattr(error, "storage_exhausted", True)
+            raise error
         # A successful step's output is evidence too (for example restore's "declared patches verified").
         self._keep_step_output(step, result)
         self.check()
@@ -732,7 +765,14 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                                                               step="prepare").stdout)
         else:
             step = "nodes_restore" if argv[0] == "nodes" else argv[0]
-            self._native(program, *argv, step=step)
+            try:
+                self._native(program, *argv, step=step)
+            except (OSError, IntegrityError) as error:
+                if step == "fetch" and (getattr(error, "errno", None) in {errno.EDQUOT, errno.ENOSPC}
+                                        or getattr(error, "storage_exhausted", False)):
+                    if self._declare_storage_inventory():
+                        error.add_note(f"see `astrid tasks logs {self.task}` (storage.inventory).")
+                raise
 
     def _doctor(self, argv):
         from astrid.packs.vibecomfy.native_preparation import native_doctor_program

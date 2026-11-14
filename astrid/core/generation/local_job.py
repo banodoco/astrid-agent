@@ -37,21 +37,35 @@ def read_job(path: str | Path) -> dict[str, Any]:
         raise JobFileError(f"job align must be one of {', '.join(ALIGN_MODES)}")
     if not isinstance(body.get("inputs"), dict):
         raise JobFileError("job inputs must be an object")
+    volume = body.get("storage_volume")
+    if volume is not None:
+        if (not isinstance(volume, dict) or set(volume) != {"id", "size_gb", "mount_path"}
+                or not isinstance(volume["id"], str) or not volume["id"].strip()
+                or type(volume["size_gb"]) is not int or volume["size_gb"] <= 0
+                or not isinstance(volume["mount_path"], str)
+                or not Path(volume["mount_path"]).is_absolute()
+                or ".." in Path(volume["mount_path"]).parts):
+            raise JobFileError("job storage volume must declare an id, positive size_gb and absolute mount_path")
     return body
 
 
 def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | None = None,
             align: str | None = None) -> dict[str, Any]:
     """Run with this job's validated trust choice scoped to the execution."""
+    from .model_storage import DECLARED_VOLUME, DeclaredVolume
     from .target_inventory import POD_ALIGN
 
     job = read_job(job_path)
     if align is not None and align not in ALIGN_MODES:
         raise JobFileError(f"align must be one of {', '.join(ALIGN_MODES)}")
     token = POD_ALIGN.set(align or job['align'])
+    volume = job.get("storage_volume")
+    storage_token = DECLARED_VOLUME.set(
+        DeclaredVolume(Path(volume["mount_path"]), volume["size_gb"]) if volume is not None else None)
     try:
         return _run_job(entry, job, out, mode=mode, align=align)
     finally:
+        DECLARED_VOLUME.reset(storage_token)
         POD_ALIGN.reset(token)
 
 

@@ -895,6 +895,12 @@ class RunPodMachine:
                 "task_identity": job.task_id, "attempt_identity": job.attempt_id,
                 "idempotency_key": f"remote:{job.task_id}:{job.attempt_id}",
                 "inputs": public_inputs, "bindings": bindings, "execution": shipped}
+        record = lease.lease.claim
+        size, mount = record.get("network_volume_size_gb"), record.get("volume_mount_path")
+        if (record.get("network_volume_id") and type(size) is int and size > 0
+                and isinstance(mount, str) and mount.startswith("/")):
+            body["storage_volume"] = {"id": record["network_volume_id"], "size_gb": size,
+                                      "mount_path": mount}
         local_job = staging / JOB_NAME
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         from .failure_diagnostics import graph_facts
