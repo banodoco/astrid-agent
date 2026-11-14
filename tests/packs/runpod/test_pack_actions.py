@@ -1,9 +1,9 @@
 """Owner-backed setup and lease listing stay local to retained custody."""
 from __future__ import annotations
 
+import json
 import socket
 import threading
-import json
 from dataclasses import asdict
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -14,7 +14,10 @@ from astrid.core.execution.warm_hold import WarmHolds
 from astrid.packs.runpod import target_selection
 from astrid.packs.runpod.adapter import RunPodAdapter, TargetProviderBindings
 from astrid.packs.runpod.target_selection import (
-    PaidRunConsent, PaidSelectionError, RunPodOffer, RunPodPreferences,
+    PaidRunConsent,
+    PaidSelectionError,
+    RunPodOffer,
+    RunPodPreferences,
 )
 from astrid.packs.runpod.worker_owner import RunPodLeaseOwner, RunPodWorkerOwnerError
 
@@ -167,6 +170,202 @@ def test_unsupported_operation_refuses_before_provider_construction():
         bindings.operate({"kind": "runpod", "engine": "comfyui", "preferences": {}}, "reboot")
 
 
+def test_settings_discovery_failure_logs_type_without_exception_data(monkeypatch, caplog):
+    from astrid.core.generation import settings
+
+    def unavailable():
+        raise OSError("private-discovery-details")
+
+    settings.set_store_factory(unavailable)
+    with caplog.at_level("DEBUG", logger=settings.__name__):
+        assert settings.read().source == "unavailable"
+    assert "OSError" in caplog.text
+    assert "private-discovery-details" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+@pytest.mark.parametrize("state", [None, "claimed", "cleanup_complete"])
+@pytest.mark.parametrize("change", [
+    {"budget_cap_usd": 1.5}, {"gpu_types": ["gpu-b"]}, {"datacenter_id": "DC-other"},
+    {"volume": {"id": "volume-b", "name": "other", "size_gb": 200, "mount_path": "/workspace"}},
+])
+def test_status_refuses_changed_preferences_without_touching_retained_owner(state, change):
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    preferences = RunPodPreferences.from_mapping(raw_preferences()).as_mapping()
+    provider = SimpleNamespace(operate=lambda *args, **kwargs: pytest.fail("status reached mismatched owner"),
+        lease_owner=SimpleNamespace(_read=lambda: None if state is None else {"state": state}))
+    bindings.provider = provider
+    bindings.signature = json.dumps(["runpod", "comfyui", preferences])
+    bindings.get = lambda **kwargs: pytest.fail("status replaced the retained owner")
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": {**preferences, **change}}
+    before = json.dumps(policy, sort_keys=True)
+    with pytest.raises(ValueError, match="preferences differ.*runpod.setup"):
+        bindings.operate(policy, "status")
+    assert bindings.provider is provider and bindings.operations == 0
+    assert json.dumps(policy, sort_keys=True) == before
+
+
+@pytest.mark.parametrize("operation", ["status", "ls", "release"])
+def test_retained_operations_accept_equivalent_optional_volume_preferences(operation):
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    preferences = RunPodPreferences.from_mapping(raw_preferences(volume=None)).as_mapping()
+    calls = []
+    bindings.provider = SimpleNamespace(operate=lambda name, **kwargs: calls.append(name) or {"state": "absent"})
+    bindings.signature = json.dumps(["runpod", "comfyui", preferences])
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": {**preferences, "volume": None}}
+    assert bindings.operate(policy, operation) == {"state": "absent"}
+    assert calls == [operation]
+
+
+@pytest.mark.parametrize("operation", ["ls", "release"])
+def test_custody_listing_and_release_use_retained_owner_after_preferences_change(operation):
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    preferences = RunPodPreferences.from_mapping(raw_preferences()).as_mapping()
+    calls = []
+    provider = SimpleNamespace(operate=lambda name, **kwargs: calls.append(name) or {"state": "cleanup_complete"})
+    bindings.provider = provider
+    bindings.signature = json.dumps(["runpod", "comfyui", preferences])
+    bindings.get = lambda **kwargs: pytest.fail("custody operation replaced retained owner")
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": {**preferences, "budget_cap_usd": 1.5}}
+    assert bindings.operate(policy, operation) == {"state": "cleanup_complete"}
+    assert calls == [operation] and bindings.provider is provider
+
+
+@pytest.mark.parametrize("key", ["max_usd", "deadline", "budget_cap_uds"])
+def test_preferences_reject_unknown_or_claim_only_keys(key):
+    with pytest.raises(PaidSelectionError, match="unsupported RunPod preferences"):
+        RunPodPreferences.from_mapping(raw_preferences(**{key: 1.5}))
+
+
+@pytest.mark.parametrize("operation", ["ls", "release"])
+@pytest.mark.parametrize("change,engine", [
+    ({"unknown_key": True}, "comfyui"), ({"gpu_types": []}, "comfyui"),
+    ({"image": "invalid"}, "comfyui"), ({"volume": "invalid"}, "comfyui"),
+    ({"budget_cap_usd": -1}, "comfyui"), ({}, "different-engine"),
+])
+def test_cleanup_ignores_invalid_saved_and_requested_policy(operation, change, engine, monkeypatch):
+    from astrid.core.generation import settings
+
+    preferences = raw_preferences()
+    settings.set_machine_policy("runpod", {**preferences, **change})
+    calls = []
+
+    class Owner:
+        def ls(self):
+            calls.append("ls")
+            return [{"pod_id": "pod-owned"}]
+
+        def release(self, **kwargs):
+            calls.append("release")
+            return {"state": "cleanup_complete"}
+
+        def claim(self, *args, **kwargs):
+            pytest.fail("cleanup spent through claim")
+
+        def keep(self, *args, **kwargs):
+            pytest.fail("cleanup spent through keep")
+
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.provider = RunPodAdapter(lease_owner=Owner(), placement=None, installation=None, validate=None)
+    bindings.signature = json.dumps(["runpod", "comfyui", preferences])
+    bindings.get = lambda **kwargs: pytest.fail("cleanup constructed or created a provider")
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: pytest.fail("cleanup read settings"))
+    result = bindings.operate({"kind": "runpod", "engine": engine,
+                               "preferences": {**preferences, **change}}, operation)
+    assert calls == [operation]
+    if operation == "ls":
+        assert result["leases"] == [{"pod_id": "pod-owned"}]
+    else:
+        assert result["state"] == "cleanup_complete"
+
+
+@pytest.mark.parametrize("operation", ["keep", "claim"])
+@pytest.mark.parametrize("state,reason", [("missing", "no saved policy"),
+    ("discovery", "store unreadable"), ("disk", "store unreadable"), ("invalid", "saved policy invalid")])
+def test_paid_operation_refuses_unknown_current_policy(operation, state, reason, monkeypatch, tmp_path):
+    from astrid.core.generation import settings
+
+    policy = keep_policy() if operation == "keep" else claim_policy()
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.provider = SimpleNamespace(operate=lambda *args, **kwargs: pytest.fail("unknown policy reached paid owner"))
+    bindings.signature = json.dumps([policy["kind"], policy["engine"], policy["preferences"]])
+    if state == "discovery":
+        def unavailable():
+            raise OSError("test store discovery failed")
+        settings.set_store_factory(unavailable)
+    elif state == "disk":
+        path = tmp_path / "corrupt-settings.json"
+        path.write_text("{broken")
+        settings.set_store_factory(lambda: SimpleNamespace(get_user_app_state=lambda key: json.loads(path.read_text())))
+    else:
+        from tests.conftest import InMemoryAppState
+        store = InMemoryAppState()
+        settings.set_store_factory(lambda: store)
+        if state == "invalid":
+            settings.set_machine_policy("runpod", raw_preferences(gpu_types=[]))
+    with pytest.raises(ValueError, match=reason + ".*runpod.setup"):
+        bindings.operate(policy, operation)
+    assert bindings.operations == 0
+
+
+@pytest.mark.parametrize("operation", ["keep", "claim"])
+def test_raising_saved_ceiling_conservatively_refuses_retained_owner(operation):
+    policy = keep_policy() if operation == "keep" else claim_policy()
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.provider = SimpleNamespace(operate=lambda *a, **k: pytest.fail("raised ceiling reused old authority"))
+    bindings.signature = json.dumps([policy["kind"], policy["engine"], policy["preferences"]])
+    target_selection.save_runpod_preferences(raw_preferences(budget_cap_usd=3))
+    with pytest.raises(ValueError, match="preferences differ.*runpod.setup"):
+        bindings.operate(policy, operation)
+
+
+@pytest.mark.parametrize("operation,engine", [("ls", "comfyui"), ("release", "comfyui"),
+                                               ("release", "different-engine")])
+def test_cleanup_sdk_ignores_corrupt_disk_settings(operation, engine, monkeypatch, tmp_path):
+    from astrid.core.generation import settings
+    from astrid.sdk.generation import GenerationFacade, _runpod_operation
+
+    path = tmp_path / "corrupt-settings.json"
+    path.write_text("{broken")
+    broken = SimpleNamespace(get_user_app_state=lambda key: json.loads(path.read_text()))
+    settings.set_store_factory(lambda: broken)
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.signature = json.dumps(["runpod", "comfyui", raw_preferences()])
+    calls = []
+
+    def cleanup(name, **kwargs):
+        assert name in {"ls", "release"}, "cleanup reached claim, keep or create"
+        assert "consent" not in kwargs
+        calls.append(name)
+        return {"state": "cleanup_complete"}
+
+    bindings.provider = SimpleNamespace(operate=cleanup)
+    bindings.get = lambda **kwargs: pytest.fail("cleanup built or created a provider")
+
+    def invoke(capability, **kwargs):
+        assert capability == "runpod." + operation
+        return bindings.operate(json.loads(kwargs["inputs"]["placement_policy"]), operation)
+
+    broken.invoke_result = invoke
+    result = (_runpod_operation("ls", client=broken, wait=True) if operation == "ls" else
+              GenerationFacade().release(engine=engine, placement="runpod", client=broken, wait=True))
+    assert result["state"] == "cleanup_complete" and calls == [operation]
+
+
+def test_cold_listing_uses_journal_without_settings_or_provider(monkeypatch):
+    from astrid.packs.runpod import adapter
+
+    record = {"operation_id": "operation", "pod_id": "pod-owned", "provider_account_ref": "account-a",
+              "state": "claimed", "lease": {"state": "idle", "paid_expires_at": 200, "idle_seconds": 60}}
+    monkeypatch.setattr(adapter, "_cleanup_records", lambda machine_id=None: [record])
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.get = lambda **kwargs: pytest.fail("cold list constructed or created a provider")
+    result = bindings.operate({"kind": "runpod", "engine": "different", "preferences": None}, "ls")
+    assert result["leases"][0]["pod_id"] == "pod-owned"
+    assert result["leases"][0]["lease"]["paid_expires_at"] == 200
+    assert bindings.provider is None
+
+
 def test_manifest_routes_setup_and_ls_to_the_existing_host_owner():
     from pathlib import Path
 
@@ -181,11 +380,170 @@ def test_manifest_routes_setup_and_ls_to_the_existing_host_owner():
 
 def keep_policy():
     preferences = RunPodPreferences.from_mapping(raw_preferences())
+    target_selection.save_runpod_preferences(preferences.as_mapping())
     offer = RunPodOffer("account-a", "gpu-a", 1.0, "offer-1")
     grant = PaidRunConsent("keep-1", offer.digest(preferences), 2.0,
                            "2026-11-02T02:00:00Z", ("paid",), 0, 0, 120)
     return {"kind": "runpod", "engine": "comfyui", "preferences": preferences.as_mapping(),
             "machine": "pod-owned", "paid_consent": asdict(grant), "until_release": True}
+
+
+@pytest.mark.parametrize("operation", ["status", "keep"])
+@pytest.mark.parametrize("field,value", [
+    pytest.param("budget_cap_usd", 1.5, id="budget"),
+    pytest.param("gpu_types", ["gpu-b"], id="gpu"),
+    pytest.param("datacenter_id", "DC-other", id="datacenter"),
+    pytest.param("volume.id", "other-volume", id="volume-id"),
+    pytest.param("volume.name", "other-name", id="volume-name"),
+    pytest.param("volume.size_gb", 200, id="volume-size"),
+    pytest.param("volume.mount_path", "/other", id="volume-mount"),
+    pytest.param("provider_account_ref", "account-b", id="account"),
+    pytest.param("image", "worker@sha256:" + "b" * 64, id="image"),
+    pytest.param("idle_timeout_seconds", 60, id="idle"),
+    pytest.param("credential_ref", "env:RUNPOD_OTHER_CREDENTIAL", id="credential"),
+    pytest.param("engine", "other-engine", id="engine"),
+])
+def test_retained_status_and_keep_refuse_full_policy_mismatch(operation, field, value):
+    policy = keep_policy()
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    provider = SimpleNamespace(operate=lambda *args, **kwargs: pytest.fail("mismatched policy reached owner"))
+    bindings.provider = provider
+    bindings.signature = json.dumps([policy["kind"], policy["engine"], policy["preferences"]])
+    bindings.get = lambda **kwargs: pytest.fail("mismatched policy replaced owner")
+    if operation == "status":
+        policy = {key: policy[key] for key in ("kind", "engine", "preferences")}
+    if field == "engine":
+        policy["engine"] = value
+    elif field.startswith("volume."):
+        policy["preferences"]["volume"][field.split(".")[1]] = value
+    else:
+        policy["preferences"][field] = value
+    before = json.dumps(policy, sort_keys=True)
+    # cause daed72ed7; ruling: machines 12:35 Sat
+    with pytest.raises(ValueError, match="preferences differ.*runpod.setup"):
+        bindings.operate(policy, operation)
+    assert bindings.provider is provider and bindings.operations == 0
+    assert json.dumps(policy, sort_keys=True) == before
+
+
+def test_keep_accepts_equivalent_normalized_volume_without_replacing_owner():
+    policy = keep_policy()
+    policy["preferences"].pop("volume")
+    target_selection.save_runpod_preferences(policy["preferences"])
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.signature = json.dumps([policy["kind"], policy["engine"], policy["preferences"]])
+    calls = []
+    bindings.provider = SimpleNamespace(operate=lambda name, **kwargs: calls.append(name) or {"state": "claimed"})
+    bindings.get = lambda **kwargs: pytest.fail("equivalent policy replaced owner")
+    policy["preferences"]["volume"] = {"id": None, "name": None, "size_gb": 0, "mount_path": "/workspace"}
+    assert bindings.operate(policy, "keep") == {"state": "claimed"}
+    assert calls == ["keep"]
+
+
+def test_every_retained_entry_point_checks_policy_or_is_explicitly_nonspending(monkeypatch):
+    import ast
+    import inspect
+    import textwrap
+    from pathlib import Path
+
+    import yaml
+
+    from astrid.packs.runpod import adapter
+
+    routes = adapter.RETAINED_OPERATION_POLICY
+    manifest = yaml.safe_load((Path(__file__).parents[3] / "astrid/packs/runpod/pack.yaml").read_text())
+    declared = {action["metadata"]["host_target_operation"]
+                for action in manifest["actions"].values()
+                if action.get("metadata", {}).get("host_target_operation")}
+    dispatched = set()
+    for method in (adapter.RunPodAdapter.operate, adapter.TargetProviderBindings.operate):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name) and node.left.id == "operation":
+                dispatched.update(child.value for operand in node.comparators for child in ast.walk(operand)
+                                  if isinstance(child, ast.Constant) and isinstance(child.value, str))
+    assert declared | dispatched <= routes.keys(), "an action has no retained-policy classification"
+    assert set(routes.values()) <= {"checked", "nonspending"}, "unclassified retained operation"
+    assert {name for name, route in routes.items() if route == "nonspending"} == {"ls", "release"}
+
+    class PolicyChecked(Exception):
+        pass
+
+    def checked(**kwargs):
+        raise PolicyChecked
+
+    def bindings_for(policy):
+        bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+        bindings.signature = json.dumps([policy["kind"], policy["engine"], policy["preferences"]])
+        selection = SimpleNamespace(_read=lambda: {"claim_preferences": policy["preferences"]})
+        bindings.provider = SimpleNamespace(
+            operate=lambda name, **kwargs: {"operation": name},
+            lease_owner=SimpleNamespace(selection=selection))
+        monkeypatch.setattr(bindings, "_check_reuse_policy", checked)
+        return bindings
+
+    for operation, route in routes.items():
+        policy = (keep_policy() if operation == "keep" else claim_policy() if operation == "claim" else
+                  {key: value for key, value in keep_policy().items() if key in {"kind", "engine", "preferences"}})
+        variants = ({}, {"include_quote": True}, {"fresh_claim": True},
+                    {"include_quote": True, "fresh_claim": True}) if operation == "status" else ({},)
+        for variant in variants:
+            request = {**policy, **({"fresh_claim": True} if variant.get("fresh_claim") else {})}
+            bindings = bindings_for(policy)
+            if route == "checked":
+                with pytest.raises(PolicyChecked):
+                    bindings.operate(request, operation, include_quote=variant.get("include_quote", False))
+            else:
+                assert bindings.operate(request, operation) == {"operation": operation}
+
+    # GenericPackHost takes jobs through get(), not the target-action dispatcher.
+    for job in (False, True):
+        policy = keep_policy()
+        bindings = bindings_for(policy)
+        with pytest.raises(PolicyChecked):
+            bindings.get(kind=policy["kind"], engine=policy["engine"],
+                         preferences=None if job else policy["preferences"], job=job)
+
+        # A restarted host may reconstruct the owner from the claim journal.
+        cold = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+        monkeypatch.setattr(cold, "_check_reuse_policy", checked)
+        monkeypatch.setattr(adapter, "build_host_adapter", lambda **kwargs: bindings.provider)
+        monkeypatch.setattr(adapter, "_claimed_preferences", lambda *args: policy["preferences"])
+        with pytest.raises(PolicyChecked):
+            cold.get(kind=policy["kind"], engine=policy["engine"],
+                     preferences=None if job else policy["preferences"], job=job)
+
+
+@pytest.mark.parametrize("change", [{"budget_cap_usd": 1.5}, {"gpu_types": ["gpu-b"]},
+                                     {"credential_ref": "env:RUNPOD_OTHER_CREDENTIAL"}])
+def test_cached_job_checks_full_recorded_claim_policy(change):
+    preferences = RunPodPreferences.from_mapping(raw_preferences()).as_mapping()
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.signature = json.dumps(["runpod", "comfyui", preferences])
+    selection = SimpleNamespace(_read=lambda: {"claim_preferences": {**preferences, **change}})
+    provider = SimpleNamespace(lease_owner=SimpleNamespace(selection=selection))
+    bindings.provider = provider
+    with pytest.raises(ValueError, match="preferences differ.*runpod.setup"):
+        bindings.get(kind="runpod", engine="comfyui", job=True)
+    assert bindings.provider is provider
+
+
+def test_claim_override_keeps_gpu_and_datacenter_but_obeys_current_saved_ceiling():
+    target_selection.save_runpod_preferences(raw_preferences())
+    policy = claim_policy()
+    policy["preferences"] = {**policy["preferences"], "gpu_types": ["gpu-b"], "datacenter_id": "DC-other"}
+    preferences = RunPodPreferences.from_mapping(policy["preferences"])
+    policy["paid_consent"]["offer_digest"] = RunPodOffer("account-a", "gpu-b", 1, "offer-1", "DC-other").digest(preferences)
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+    bindings.signature = json.dumps(["runpod", "comfyui", preferences.as_mapping()])
+    calls = []
+    bindings.provider = SimpleNamespace(operate=lambda name, **kwargs: calls.append(name) or {"state": "claimed"})
+    assert bindings.operate(policy, "claim") == {"state": "claimed"}
+    assert calls == ["claim"]
+    target_selection.save_runpod_preferences(raw_preferences(budget_cap_usd=1.5))
+    with pytest.raises(ValueError, match="preferences differ.*runpod.setup"):
+        bindings.operate(policy, "claim")
+    assert calls == ["claim"], "a stale explicit claim reached the old ceiling"
 
 
 def test_keep_without_a_live_owner_refuses_without_constructing_or_recovering():
@@ -323,6 +681,7 @@ def test_sdk_claim_requires_ready_host_before_submission_and_serializes_fresh_co
 
 def test_manifest_claim_routes_to_existing_host_without_media_output():
     from pathlib import Path
+
     import yaml
     manifest = yaml.safe_load((Path(__file__).parents[3] / "astrid/packs/runpod/pack.yaml").read_text())
     assert manifest["actions"]["claim"]["metadata"]["host_target_operation"] == "claim"
@@ -351,7 +710,9 @@ def test_claim_wait_policy_is_recognized_and_ctrl_c_cancels_known_task(monkeypat
 
 def test_claim_policy_without_volume_or_datacenter_observes_all_returned_datacenters(monkeypatch):
     import asyncio
+
     import runpod_lifecycle
+
     from astrid.packs.runpod.adapter import observe_priced_offer
     preferences = RunPodPreferences.from_mapping(raw_preferences(volume=None, datacenter_id=None))
     seen = []

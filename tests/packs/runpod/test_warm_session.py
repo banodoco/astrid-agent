@@ -621,6 +621,44 @@ def keep_grant(c, **changes):
     return replace(c.grant, **values)
 
 
+@pytest.mark.parametrize("policy_source", ["saved", "stale-request"])
+@pytest.mark.parametrize("operation", ["keep", "claim"])
+def test_keep_lowered_saved_budget_refuses_before_extending_old_owner(small_lease, policy_source, operation):
+    from astrid.packs.runpod.adapter import RunPodAdapter, TargetProviderBindings
+
+    c = small_lease
+    c.prefs = replace(c.prefs, budget_cap_usd=2.5)
+    c.owner.preferences = c.prefs
+    c.grant = replace(c.grant, offer_digest=c.offer.digest(c.prefs))
+    target_selection.save_runpod_preferences(c.prefs.as_mapping())
+    owner = c.fresh()
+    invocation = owner.acquire(c.grant, requested_idle_seconds=10)
+    owner.settle(invocation)
+    target_selection.save_runpod_preferences({**c.prefs.as_mapping(), "budget_cap_usd": 1.5})
+    bindings = TargetProviderBindings(pack_roots=[], holds=owner.holds, credentials=None, environ={})
+    bindings.provider = RunPodAdapter(lease_owner=owner, placement=None, installation=None, validate=None)
+    bindings.signature = json.dumps(["runpod", "comfyui", c.prefs.as_mapping()])
+    grant = keep_grant(c, max_usd=2)
+    # This consent is valid against the retained $2.50 ceiling, but not $1.50.
+    grant.validate_authority(c.prefs, datetime.fromtimestamp(c.clock(), timezone.utc))
+    snapshot = c.owner.path.read_bytes()
+    timers = list(c.clock.timers)
+    preferences = (target_selection.read_runpod_preferences().as_mapping()
+                   if policy_source == "saved" else c.prefs.as_mapping())
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences,
+              "machine": "pod-1", "paid_consent": worker_owner.asdict(grant), "until_release": True}
+    if operation == "claim":
+        policy.pop("machine")
+        policy.pop("until_release")
+        policy["requested_idle_seconds"] = grant.idle_seconds
+    message = ("policy differs" if operation == "claim" and policy_source == "saved"
+               else "preferences differ.*runpod.setup")
+    with pytest.raises(ValueError, match=message):
+        bindings.operate(policy, operation)
+    assert c.owner.path.read_bytes() == snapshot and c.clock.timers == timers
+    assert c.creates == 1 and not c.deletes
+
+
 def test_small_lease_keep_extends_paid_limit_accrues_cost_and_rearms(small_lease):
     c = small_lease
     owner = c.fresh()
