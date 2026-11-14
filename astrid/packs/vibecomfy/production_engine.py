@@ -234,7 +234,6 @@ def _is_saved_ui_workflow(workflow_path: str | Path) -> bool:
 
 
 _SEED_CONTROLS = frozenset({"fixed", "randomize", "increment", "decrement"})
-_SEED_CONTROLS_HANDOFF = ".saved-seed-controls.json"
 _NON_WIDGET_KEYS = frozenset({"forceInput", "rawLink", "socketless"})
 
 
@@ -279,7 +278,7 @@ def _canonicalize_ui_workflow(
     scratch: Path,
     *,
     schema_url: str = "",
-) -> tuple[Any, str | None]:
+) -> tuple[Any, str | None, dict[str, dict[str, Any]]]:
     """Convert UI JSON through VibeComfy's canonical import service.
 
     With ``schema_url`` (the run's own ComfyUI), widget values map to input names
@@ -292,6 +291,7 @@ def _canonicalize_ui_workflow(
 
         schema_provider = None
         schema_digest = None
+        seed_controls: dict[str, dict[str, Any]] = {}
         if schema_url:
             from vibecomfy.schema.provider import get_target_schema_provider
 
@@ -301,9 +301,8 @@ def _canonicalize_ui_workflow(
                 object_info, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
             ).encode("utf-8")
             schema_digest = "sha256:" + hashlib.sha256(canonical_object_info).hexdigest()
-            # Handed to load_workflow_path in the scratch folder: this is the one schema fetch.
-            (scratch / _SEED_CONTROLS_HANDOFF).write_text(
-                json.dumps(saved_ui_seed_controls(raw_workflow, object_info)), encoding="utf-8")
+            # Read from the one schema fetch and returned with this workflow only.
+            seed_controls = saved_ui_seed_controls(raw_workflow, object_info)
         artifacts = import_workflow_bytes(
             source_bytes,
             workflow_id=_ui_workflow_identity(raw_workflow, source_bytes),
@@ -343,7 +342,7 @@ def _canonicalize_ui_workflow(
         from vibecomfy.security.provenance import Provenance
         from vibecomfy.workflow_bundle import load_bundle
 
-        return load_bundle(python_path, trust=Provenance.USER_CONFIRMED), schema_digest
+        return load_bundle(python_path, trust=Provenance.USER_CONFIRMED), schema_digest, seed_controls
     except Exception as exc:
         raise ProductionEngineError(
             f"VibeComfy canonical UI workflow bundle could not be loaded: {exc}"
@@ -394,16 +393,12 @@ def load_workflow_path(
             resolved = _load_workflow(raw_workflow, {}, scratch_path)
             workflow_conversion_object_info_sha256 = None
         else:
-            resolved, workflow_conversion_object_info_sha256 = _canonicalize_ui_workflow(
+            resolved, workflow_conversion_object_info_sha256, saved_seed_controls = _canonicalize_ui_workflow(
                 source,
                 raw_workflow,
                 scratch_path,
                 schema_url=comfy_url,
             )
-            try:
-                saved_seed_controls = json.loads((scratch_path / _SEED_CONTROLS_HANDOFF).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                saved_seed_controls = None
     bundle = _canonical_bundle_value(resolved)
     metadata = getattr(bundle.workflow, "metadata", {})
     if not isinstance(metadata, Mapping):

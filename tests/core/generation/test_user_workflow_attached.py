@@ -311,3 +311,19 @@ def test_a_workflow_not_read_as_a_saved_file_keeps_its_seed_fresh(fake_comfy, sa
     _, plan, _ = entries.apply_workflow_inputs(workflow, mode="workflow", values={})
 
     assert plan["bindings"]["seed"] != 7 and 0 <= plan["bindings"]["seed"] < 2**32
+
+
+def test_a_canonical_workflow_loaded_in_the_same_scratch_keeps_a_fresh_seed(fake_comfy, saved_workflow, tmp_path):
+    # Saved controls belong to the load that read them, not to the scratch folder they were read in.
+    from astrid.core.generation.entries import prepare_execution_bindings
+    from astrid.packs.vibecomfy.production_engine import load_workflow_path
+    scratch = tmp_path / "shared"
+    saved = load_workflow_path(saved_workflow, scratch, comfy_url=fake_comfy.url)
+    assert prepare_execution_bindings(
+        saved.resolved.workflow, saved_seed_controls=saved.saved_seed_controls)["seed"] == 7
+
+    canonical = next(scratch.glob("canonical-ui-*/workflow.py"))
+    again = load_workflow_path(canonical, scratch)
+    assert again.saved_seed_controls is None
+    seed = prepare_execution_bindings(again.resolved.workflow, saved_seed_controls=again.saved_seed_controls)["seed"]
+    assert seed != 7 and 0 <= seed < 2**32
