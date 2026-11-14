@@ -1559,17 +1559,9 @@ class GenerationFacade:
                         require_generation_target_readiness(prerequisite, mode, target_client)
                     if candidate["kind"] != modality or mode not in candidate["modes"]:
                         raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
-                    registry_id = candidate.get("registry_id")
-                    if registry_id:
-                        catalog_entry = registry.get(registry_id)
-                        if not is_remote_target:
-                            require_generation_target_readiness(catalog_entry, mode, target_client)
-                        workflow, plan, schema, assets = _prepare_catalog_target_workflow(
-                            registry=registry, candidate=catalog_entry, mode=mode,
-                            modality=modality, inputs=inputs, target_client=target_client, backend=backend,
-                            retain_source=None if dry_run else retain_source,
-                            defer_target=is_remote_target or is_managed_target, align=align)
-                    elif source == "workflow" and candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
+                    # The selected workflow owns preparation. Its catalog association
+                    # supplies discovery/qualification metadata, not another selector.
+                    if candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
                         # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
                         # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
                         if controls.get('wait') is False and not dry_run and not is_remote_target:
@@ -1619,7 +1611,7 @@ class GenerationFacade:
                         schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
                                                                 pending_target=pending_target, align=align)
                 from vibecomfy.workflow_bundle import load_bundle
-                if source == "workflow" and not candidate.get("registry_id"):
+                if source == "workflow":
                     # Re-emit the edited canonical workflow before approval so
                     # the input bindings are represented by a fresh revision.
                     from vibecomfy.workflow_bundle import emit_bundle
