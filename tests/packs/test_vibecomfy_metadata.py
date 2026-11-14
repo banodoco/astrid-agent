@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from tests.local_engine_stub import LOCAL_ENGINE_URL, local_engine_patch
+from tests.local_engine_stub import LOCAL_ENGINE_URL
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -9,7 +10,6 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from astrid.core.execution.executor.folder import load_folder_executors
@@ -136,20 +136,58 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
             source_b = engine_output / "source-b.mp4"
             source_a.write_bytes(b"image")
             source_b.write_bytes(b"video")
-            result = SimpleNamespace(
-                outputs=[str(source_a), str(source_b)],
-                run_id="run-1",
-                prompt_id="prompt-1",
-            )
+            workflow = root / "workflow.json"
+            workflow.write_text('{"nodes":[],"links":[]}', encoding="utf-8")
+
+            def produce_managed_result(*args, **kwargs):
+                # A source CAS ref keeps the inventory to the two results plus their receipt.
+                payload = {
+                    "schema_version": 1, "kind": "managed-generation-result.v1",
+                    "task_id": kwargs["task_identity"], "attempt_id": "attempt-1",
+                    "producer_run_id": "producer-1", "created": "2026-11-14T00:00:00Z",
+                    "inputs": {"source": {
+                        "object_id": "sha256:" + hashlib.sha256(workflow.read_bytes()).hexdigest(),
+                        "bytes": workflow.stat().st_size, "filename": workflow.name,
+                    }},
+                    "outputs": [{
+                        "producer_output_id": f"vibecomfy:result:{ordinal}",
+                        "output_port": "result", "ordinal": ordinal,
+                        "path": path.relative_to(out).as_posix(), "media_type": media_type,
+                        "bytes": path.stat().st_size,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    } for ordinal, (path, media_type) in enumerate(
+                        ((source_a, "image/png"), (source_b, "video/mp4"))
+                    )],
+                    "warnings": [],
+                    "outcomes": {"execution": {"status": "succeeded"},
+                                 "retrieval": {"status": "succeeded"},
+                                 "verification": {"status": "succeeded"},
+                                 "publication": {"status": "not_started"}},
+                    "evidence": {"producer": {}, "transport": {}},
+                }
+                envelope = out / "managed-generation-result.json"
+                envelope.write_text(json.dumps(payload), encoding="utf-8")
+                production_engine._LAST_PRODUCTION_RESULT = production_engine.ProductionRunResult(
+                    outputs=(source_a, source_b), managed_generation_result_path=envelope,
+                    managed_generation_result=payload,
+                )
+                return (source_a, source_b)
+
             with patch.object(
                 production_engine,
                 "run_workflow_path",
-                return_value=(source_a, source_b),
-            ) as run_workflow, local_engine_patch():
+                side_effect=produce_managed_result,
+            ) as run_workflow, patch(
+                "astrid.core.generation.managed_preparation.read_preparation",
+                return_value={"placement": "managed", "alignment": {"mode": "check"},
+                              "manifest": {"models": []}, "execution_identity": None},
+            ):
+                # Stand in for the prepared endpoint; keep producer dispatch and settlement real.
                 manifest = _run_and_settle(
                     root / "workflow.json",
                     out,
                     task_identity="task-1",
+                    comfy_url=LOCAL_ENGINE_URL,
                 )
 
             run_workflow.assert_called_once_with(
@@ -161,8 +199,9 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 hc03_profile=None,
                 comfy_url=LOCAL_ENGINE_URL,
             )
-            self.assertEqual(len(manifest["outputs"]), 2)
-            for ordinal, entry in enumerate(manifest["outputs"]):
+            self.assertEqual(len(manifest["outputs"]), 3)
+            results = manifest["outputs"][:2]
+            for ordinal, entry in enumerate(results):
                 self.assertEqual(entry["name"], "vibecomfy_run")
                 self.assertEqual(entry["ordinal"], ordinal)
                 self.assertEqual(entry["role"], "result")
@@ -174,6 +213,13 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 self.assertTrue(entry["content_hash"].startswith("sha256:"))
                 self.assertGreater(entry["bytes"], 0)
                 self.assertTrue((out / entry["path"]).is_file())
+            receipt = manifest["outputs"][2]
+            self.assertEqual(receipt["name"], "result_manifest")
+            self.assertEqual(receipt["role"], "manifest")
+            self.assertFalse(receipt["is_primary"])
+            self.assertEqual(receipt["media_type"], "application/json")
+            self.assertEqual(receipt["path"], "outputs/managed-generation-result.json")
+            self.assertTrue((out / receipt["path"]).is_file())
             self.assertEqual(
                 json.loads((out / "manifest.json").read_text(encoding="utf-8")),
                 manifest,

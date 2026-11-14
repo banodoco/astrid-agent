@@ -71,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/system_stats":
             value = {"system": {"comfyui_version": "0.36.0"}, "devices": [{"vram_total": 24000, "vram_free": 20000}]}
         else:
-            value = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}}
+            value = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}, "UNETLoader": {}, "VAELoader": {}}
         data = json.dumps(value).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
@@ -156,7 +156,8 @@ _serve(json.loads(sys.argv[1]), recipe, int(sys.argv[2]), sys.argv[4])
         sys.executable, "-c", program, _json(identity), str(lock_fd), "--launch-token", token])
     adapter = LinuxPlatformAdapter(platform)
     request = adapter.start_request(recipe, str(root), deadline=time.monotonic() + 5)
-    launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+    launch = {"argv": list(request.argv), "cwd": request.cwd,
+              "env": {**request.env, "CUDA_VISIBLE_DEVICES": None}}
     client = custody.LinuxEngineServiceClient(**identity)
     payload = {**identity, "schema": custody._SCHEMA, "launch": launch, "owner_id": None,
                "timeout_seconds": recipe.health.timeout_seconds,

@@ -10,7 +10,11 @@ from astrid.core.generation.engine_platforms import platform_adapter
 
 
 @pytest.mark.parametrize("external", [False, True])
-def test_start_passes_models_directory_created_before_server_start(tmp_path, external):
+def test_start_passes_models_directory_and_leaves_its_creation_to_the_supervisor(tmp_path, external):
+    # Since 13b4bf569 the engine supervisor creates the models directory at admission, through
+    # its target-file helper (test_engine_fresh_install proves it exists before the server
+    # starts); the runner never creates it, so an external root is never touched through the
+    # runner's root-scoped context.
     recipe = recipes.load_recipe("comfyui", "linux-x86_64-cu130")
     root = tmp_path / "engine"
     configured = str(tmp_path / "volume") if external else None
@@ -20,7 +24,7 @@ def test_start_passes_models_directory_created_before_server_start(tmp_path, ext
     instance.plan = runner.plan_install(recipe, root=str(root), placement="local", models_root=configured)
     instance.deadline, instance.step_id, instance.visibility = 123.0, None, None
     instance.service_owner = None
-    instance.context = SimpleNamespace(ensure_dir=lambda path, **kw: Path(path).mkdir(parents=True))
+    instance.context = SimpleNamespace(ensure_dir=lambda path, **kw: pytest.fail(f"runner created {path}"))
     operations = []
 
     def service(operation, *, launch):
@@ -29,8 +33,7 @@ def test_start_passes_models_directory_created_before_server_start(tmp_path, ext
         if operation == "probe":
             assert not models.exists()
             return {"state": "absent"}
-        assert operation == "start" and models.is_dir()
-        assert not models.is_symlink()
+        assert operation == "start" and not models.exists() and not models.is_symlink()
         instance.service_owner = "fixture-owner"
         return {"state": "owned"}
 

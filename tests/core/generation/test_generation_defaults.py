@@ -23,7 +23,7 @@ def test_builtin_slots_resolve_as_before_and_video_is_h3():
     assert [o["entry"] for o in by_slot["image.t2i"]["others"]] == ["z-image", "qwen-image-2512"]
     assert by_slot["image.edit"]["entry"] == "qwen-image-2.1-turbo-edit"
     assert by_slot["audio.tts"]["entry"] == "audio/qwen3_tts_custom_voice"
-    assert by_slot["audio.music"]["entry"] == "audio/minimax_music_3"
+    assert by_slot["audio.music"]["entry"] == "audio/ace_step_1_5_t2a_song"
     assert by_slot["audio.sfx"]["entry"] == "audio/hunyuan_video_foley"
     assert by_slot["video.i2v"]["entry"] == "h3" and by_slot["video.i2v"]["pack"] == "h3_av"
     assert by_slot["video.i2v"]["source"] == "pack default"
@@ -153,7 +153,8 @@ def test_placement_default_in_the_document_is_what_generate_uses():
 
 def test_runpod_preferences_live_under_machines_runpod(generation_settings_store):
     from astrid.packs.runpod import target_selection
-    raw = {"provider_account_ref": "acct", "gpu_types": ["A40"], "image": "w@sha256:" + "a" * 64, "volume": None}
+    raw = {"provider_account_ref": "acct", "gpu_types": ["A40"], "image": "w@sha256:" + "a" * 64,
+           "volume": None, "budget_cap_usd": 10.0}
     target_selection.save_runpod_preferences(raw)
     stored = generation_settings_store.documents["generation"][0]["machines"]["runpod"]
     assert stored["provider_account_ref"] == "acct" and "credential" not in json.dumps(stored).replace("credential_ref", "")

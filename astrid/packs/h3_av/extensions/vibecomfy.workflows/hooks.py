@@ -112,6 +112,15 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
 
     work = _state_dir(out)
     work.mkdir(parents=True, exist_ok=True)
+    run_logs = facts.run_logs
+    for name, relative in {
+        "h3.preparation": "preparation.json",
+        "h3.plan": "build-state.json",
+        "h3.compilation": "plan/compile/compilation.json",
+        "h3.composition": "compose/composition-manifest.json",
+        "h3.verification": "verify.json",
+    }.items():
+        run_logs.declare(work.parent, run_logs.LogDecl(name, "run", str(Path("h3") / relative)))
     if _given(inputs, files, "request"):
         document = request_module.load_request_document(_path(inputs, files, "request"))
         asset_map = _file_map(inputs, files)
@@ -119,6 +128,7 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
         document, asset_map = _plain_request(inputs, files, facts)
     request = request_module.normalize_request(document)
     paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan")
+    _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
     plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}
@@ -153,6 +163,7 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     """Compose the generated candidate and verify it; a failure raises and fails the job."""
     if engine is not None:
         _shared("engine_facts").install(engine)
+    facts = _shared("engine_facts").facts()
     stages = _shared("stages")
     compose_candidate = importlib.import_module(f"{_PACK}.shared.compose").compose_candidate
     verify_candidate = importlib.import_module(f"{_PACK}.shared.verify").verify_candidate
@@ -165,6 +176,7 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     preparation, source = state["preparation"], state["source"]
     composition = compose_candidate(preparation=preparation, generated=outputs[0], source=source,
                                     out_dir=work / "compose")
-    verify_candidate(preparation=preparation, composition=composition, source=source,
-                     candidate=composition["candidate"]["path"])
+    verification = verify_candidate(preparation=preparation, composition=composition, source=source,
+                                    candidate=composition["candidate"]["path"])
+    facts.write_json_atomic(work / "verify.json", verification)
     return [composition["candidate"]["path"], *outputs[1:]]

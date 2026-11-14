@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -42,22 +43,29 @@ def test_committed_heartbeat_lost_reply_settles_durably(tmp_path: Path, real_run
                                  project_id=project.project_id, input_object_ids=[],
                                  idempotency_key="lease-journey-task")
         original_request = type(client.generated)._request
-        committed = []
+        committed, acknowledged = [], []
 
         def drop_reply(transport, method, path, **kwargs):
             response = original_request(transport, method, path, **kwargs)
-            if path.endswith("/heartbeat") and (attempt_root / "outputs" / "started").exists():
+            if path.endswith("/heartbeat"):
                 assert response[0] == 200
                 payload = json.loads(response[2])["data"]
-                committed.append(payload)
-                raise ApiError(0, "transport_timeout", "reply dropped after heartbeat commit")
+                if (attempt_root / "outputs" / "started").exists():
+                    committed.append(payload)
+                    raise ApiError(0, "transport_timeout", "reply dropped after heartbeat commit")
+                acknowledged.append(payload)
             return response
 
         monkeypatch.setattr(type(client.generated), "_request", drop_reply)
         started = time.monotonic()
         result = host.run(once=True)
+        completed_at = datetime.now(timezone.utc)
         assert time.monotonic() - started > 30
         assert committed and len(committed) >= 5
+        assert acknowledged
+        last_acknowledged_expiry = datetime.fromisoformat(
+            acknowledged[-1]["lease_expires_at"].replace("Z", "+00:00"))
+        assert last_acknowledged_expiry < completed_at
         assert len(result) == 1 and result[0].state == "succeeded"
         durable = reader.get_task(task.task_id)
         assert durable.state == "succeeded" and durable.result
@@ -101,7 +109,6 @@ def test_pending_publication_consumes_runtime_cleared_owner(tmp_path: Path, real
 
         def unavailable(*args, **kwargs):
             publications.append((args, kwargs))
-            assert len(publications) == 1
             if disposition == "cancelled":
                 reader.cancel_task(admitted.task_id, idempotency_key="cancel-cleared-owner")
             else:
@@ -116,6 +123,7 @@ def test_pending_publication_consumes_runtime_cleared_owner(tmp_path: Path, real
         for owner in list(host._reconciliation_owners.values()):
             owner.join(timeout=5)
         assert not host._reconciliation_owners
+        assert len(publications) == 1
         durable = reader.get_task(admitted.task_id)
         assert durable.state == ("cancelled" if disposition == "cancelled" else "queued")
         assert durable.attempt_id is None
@@ -127,6 +135,7 @@ def test_pending_publication_consumes_runtime_cleared_owner(tmp_path: Path, real
         diagnostic = terminal["lease_diagnostic"]
         assert not {"runtime_code", "request_id", "exception_type"} & diagnostic.keys()
         receipt = json.loads((root / "result.json").read_text())
+        assert receipt["lease_diagnostic"] == terminal["lease_diagnostic"]
         assert receipt["status"] == terminal["status"]
         assert receipt["publication"]["status"] != "settled"
     finally:

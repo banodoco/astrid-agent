@@ -198,7 +198,7 @@ def test_plain_comfyui_release_handoff_requires_the_same_cli_engine():
     assert argv[argv.index('--engine') + 1] == 'comfyui'
     assert argv[-len(args):] == args
     with pytest.raises(release.ReleaseError, match='handoff engine'):
-        release.release_cli_argv(**kwargs, cli_args=('engines', 'status', 'comfyui', '--root', '/engine'))
+        release.release_cli_argv(**kwargs, cli_args=('engines', 'status', 'unknown', '--root', '/engine'))
     with pytest.raises(release.ReleaseError, match='unsupported handoff engine'):
         release._handoff_recipe('/unread', engine='unknown')
 

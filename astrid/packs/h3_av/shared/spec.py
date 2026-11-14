@@ -7,10 +7,11 @@ request grammar. It describes intent and ordered dependencies, never GPU proof.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from typing import Any, Mapping, NoReturn
 
 from .request import H3Request, H3RequestError, _nonblank
-from .request_v2 import FPS, _interval
+from .request_v2 import FPS, _fraction, _interval, json_times
 
 
 class H3SpecError(H3RequestError):
@@ -24,7 +25,7 @@ def _fail(code: str, message: str, path: str, fix: str) -> NoReturn:
 @dataclass(frozen=True)
 class Source:
     asset: str
-    range: tuple[float, float]
+    range: tuple[Fraction, Fraction]
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,7 @@ class Region:
 @dataclass(frozen=True)
 class Operation:
     op: str
-    during: tuple[float, float]
+    during: tuple[Fraction, Fraction]
     region: str | None = None  # None selects the full frame.
     refs: tuple[str, ...] = ()
     stream: str = "video"
@@ -62,7 +63,7 @@ class SamplingPass:
 @dataclass(frozen=True)
 class H3Spec:
     prompt: str
-    duration: float
+    duration: Fraction
     source: Source | None = None
     refs: tuple[Reference, ...] = ()
     regions: tuple[Region, ...] = ()
@@ -172,6 +173,10 @@ def _normalize_spec(
         _fail(
             "source_count", "At most one source is supported", "source", "Supply one Source or None"
         )
+    spec = replace(spec, duration=_fraction(spec.duration, "duration"))
+    if spec.source is not None:
+        source_range, _ = _interval(spec.source.range, "source.range", FPS)
+        spec = replace(spec, source=replace(spec.source, range=tuple(map(Fraction, source_range))))
     refs = _names(spec.refs, "refs")
     regions = _names(spec.regions, "regions")
     masks = {name: _mask(region, f"regions.{name}") for name, region in regions.items()}
@@ -216,7 +221,7 @@ def _normalize_spec(
                 "unsupported_op", "Unsupported stream", f"{path}.stream", "Use video, audio, or av"
             )
         during, _ = _interval(op.during, f"{path}.during", FPS)
-        op = replace(op, during=tuple(during))
+        op = replace(op, during=tuple(map(Fraction, during)))
         if op.region is not None and op.region not in regions:
             _fail(
                 "dangling_region",
@@ -391,7 +396,7 @@ def _normalize_spec(
     }
     request = normalize_request(document, asset_modalities=modalities)
     if request_document is not None:
-        request_document.update(document)
+        request_document.update(json_times(document))
     result = _from_v2(request)
     return replace(result, prompt=spec.prompt)  # v1's prompt bytes remain significant.
 
@@ -497,7 +502,7 @@ def _from_v2(request: H3Request) -> H3Spec:
                 "media",
                 "Use one bounded video without hard anchors",
             )
-        source = Source(item["asset"], tuple(item["range"]))
+        source = Source(item["asset"], tuple(_fraction(t, "media.range") for t in item["range"]))
         for edit in item["edit"]:
             if (
                 set(edit) - {"stream", "during", "resolved", "action", "mask", "guides", "channels", "strength", "seed"}
@@ -515,7 +520,7 @@ def _from_v2(request: H3Request) -> H3Spec:
             ops.append(
                 Operation(
                     "preserve" if edit["action"] == "preserve" else "regenerate",
-                    tuple(edit["during"]),
+                    tuple(_fraction(t, "media.edit.during") for t in edit["during"]),
                     region,
                     guides,
                     edit["stream"],
@@ -525,7 +530,7 @@ def _from_v2(request: H3Request) -> H3Spec:
             )
     if source is None:
         ops = [
-            Operation("generate", (0, value["duration"]), refs=tuple(names.values()), stream="av")
+            Operation("generate", (Fraction(0), _fraction(value["duration"], "duration")), refs=tuple(names.values()), stream="av")
         ]
     elif value["continuation"]:
         if any(op.op != "preserve" for op in ops):
@@ -538,14 +543,14 @@ def _from_v2(request: H3Request) -> H3Spec:
         ops.append(
             Operation(
                 "extend",
-                (source.range[1] - source.range[0], value["duration"]),
+                (source.range[1] - source.range[0], _fraction(value["duration"], "duration")),
                 refs=tuple(names.values()),
                 stream="av",
             )
         )
     return H3Spec(
         value["prompt"],
-        value["duration"],
+        _fraction(value["duration"], "duration"),
         source,
         tuple(refs),
         tuple(regions),

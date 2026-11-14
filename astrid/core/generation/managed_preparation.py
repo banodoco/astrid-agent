@@ -14,10 +14,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
-from .engine_contracts import EngineRecipe, IntegrityError, SourcePatch
+from .engine_contracts import (
+    MANAGED_ENGINE_PREPARATION_ENV as PREPARATION_ENV,
+)
+from .engine_contracts import (
+    EngineRecipe,
+    IntegrityError,
+    SourcePatch,
+)
 from .engine_local_endpoint import DEFAULT_ENGINE
 
-PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
 _NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor"})
@@ -25,6 +31,18 @@ _NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", 
 # and cleanup cannot prove that its command drained. Keep the actual lock owner
 # alive for this process lifetime; dropping the wrapper must not close the fd.
 _UNRESOLVED_CUSTODY: dict[int, "ManagedEnginePreparation"] = {}
+
+
+def _preparation_engine(name: str | None) -> Any:
+    from astrid.core.contracts.errors import AstridValueError
+
+    from .entries import engine_table
+
+    name = name or "comfyui"
+    engine = engine_table().get(name)
+    if engine is None:
+        raise AstridValueError(f"no generation.engine contribution for {name!r}")
+    return copy.copy(engine)
 
 
 def _retain_unresolved(preparation: "ManagedEnginePreparation") -> None:
@@ -382,8 +400,6 @@ class ManagedEnginePreparation:
         self._preparing_engine = False
 
     def _prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
-        from astrid.packs.vibecomfy.actions.run import run as run_action
-
         from .engine_contracts import IntegrityError, RecipeValidationError
         from .engine_local_endpoint import EngineNotInstalled
         from .engine_recipe import recipe_digest
@@ -438,7 +454,7 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed installation evidence differs from its receipt")
         self._runtime_requirements = None
         self._guard_runtime(canonical_workflow, runner, post=False)
-        engine = copy.copy(run_action._engine_for({"engine": DEFAULT_ENGINE}))
+        engine = _preparation_engine(DEFAULT_ENGINE)
         manifest, source_format = judge_declarations(canonical_workflow, self.scratch, engine)
         self._native_generated_scratchpad = source_format == "scratchpad"
         canonical_path = self.scratch / "canonical" / "workflow.py"

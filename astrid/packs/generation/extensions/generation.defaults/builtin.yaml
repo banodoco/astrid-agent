@@ -10,5 +10,6 @@ defaults:
   - {kind: image, mode: edit, entry: z-image, priority: 20}
   - {kind: image, mode: edit, entry: qwen-image-2512, priority: 10}
   - {kind: audio, mode: tts, entry: audio/qwen3_tts_custom_voice, priority: 10}
+  - {kind: audio, mode: music, entry: audio/ace_step_1_5_t2a_song, priority: 20}
   - {kind: audio, mode: music, entry: audio/minimax_music_3, priority: 10}
   - {kind: audio, mode: sfx, entry: audio/hunyuan_video_foley, priority: 10}

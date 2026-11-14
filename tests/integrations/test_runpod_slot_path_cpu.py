@@ -15,7 +15,6 @@ import os
 import re
 import socket
 import threading
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -30,7 +29,7 @@ from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
 from tests.integrations.runpod_slot_pod import PodComfy, pin_object_info, receipt_files
-from tests.integrations.test_remote_machine_cpu import MachineProviderHTTP
+from tests.integrations.test_remote_machine_cpu import MachineProviderHTTP, claim_machine, serve_pod_agent
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 
 from tests.helpers.generation_defaults import default_entries
@@ -196,7 +195,7 @@ def _managed_local_engine(provider, tmp_path, monkeypatch):
     root = str(tmp_path / "managed" / "engines" / "comfyui")
     receipt = provider._install_receipt("comfyui", root)
     path = Path(root) / ".astrid-engine" / "install.json"
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, mode=0o700)  # the installer keeps .astrid-engine private to its owner
     path.write_text(_json.dumps(receipt))
     record_engine_root("comfyui", root)
     provider.comfy.installed_files = lambda: files
@@ -281,6 +280,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     monkeypatch.setattr(httpx.Client, "send", http_send)
     monkeypatch.setattr(requests.Session, "send", requests_send)
     monkeypatch.setattr(socket.socket, "connect", local_connect)
+    agent_server = serve_pod_agent(provider, monkeypatch) if target_kind == "runpod" else None
 
     from astrid.core.execution._child_bridge import ChildBridgeError, HostChildBridge
     dispatch = HostChildBridge.dispatch
@@ -318,8 +318,11 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
         return invoke(capability, **kwargs)
     client.invoke_result = bounded
     packs = Path(__file__).resolve().parents[2] / "astrid" / "packs"
+    # RunPod cells submit one job at a time. Spare 20ms claim loops compete
+    # with source preparation; the attached/local cells retain their slots.
+    concurrency = 1 if target_kind == "runpod" else 4
     host = GenericPackHost(pack_roots=[packs / "vibecomfy", packs / "h3_av", packs / "runpod"],
-        client=RuntimeProtocolClient(daemon.endpoint, worker_token), max_concurrency=4, attempt_base=tmp_path / "attempts",
+        client=RuntimeProtocolClient(daemon.endpoint, worker_token), max_concurrency=concurrency, attempt_base=tmp_path / "attempts",
         credential_source={"RUNPOD_RUNPOD_FAKE_CREDENTIAL": "synthetic-only"})
     host.discover()
     host.preflight()
@@ -333,11 +336,8 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
                     inputs={"placement_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": preferences})},
                     wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
                 assert setup.ok
-                quote = GenerationFacade().describe(placement="runpod", client=client)
-                controls = dict(placement="runpod", client=client, project=project_id, consent=("paid",), max_usd=1.5,
-                    deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-                    offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-                    idle_seconds=1800, wait=True)
+                claim_machine(client)
+                controls = dict(placement="runpod", client=client, project=project_id, wait=True)
             elif target_kind == "attached":
                 # A human's ComfyUI already holds the models its engines' install receipts list (as a
                 # provisioned pod does after its install); the RunPod setup never ran against it.
@@ -373,6 +373,9 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
         worker.join(timeout=35)
         host.shutdown()
         daemon.stop()
+        if agent_server is not None:
+            agent_server.shutdown()
+            agent_server.server_close()
 
 
 # The sound-effects case needs real Foley weights (hunyuanvideo_foley_xl.pth,

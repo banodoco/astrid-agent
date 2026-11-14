@@ -357,13 +357,15 @@ def prevalidate_task(policy, inputs, *, scratch):
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
 
     required = {"kind", "engine"}
-    if (not isinstance(policy, dict) or not required <= set(policy) <= required | {"machine", "consent"}
+    if (not isinstance(policy, dict) or not required <= set(policy) <= required | {"machine", "consent", "idle_timeout_s"}
             or policy["kind"] != "runpod"):
         raise PaidSelectionError("target policy requires a machine placement")
     if policy["engine"] not in {"comfyui"}:
         raise PaidSelectionError("unsupported retained installation route")
     if "machine" in policy and (not isinstance(policy["machine"], str) or not policy["machine"]):
         raise PaidSelectionError("a pinned machine must name a live lease's machine id")
+    if "idle_timeout_s" in policy:
+        _number(policy["idle_timeout_s"], "placement idle timeout", zero=True)
     consent = policy.get("consent", [])
     if not isinstance(consent, list) or any(value != "user_env" for value in consent):
         raise PaidSelectionError("invalid job consent scope")
@@ -589,6 +591,23 @@ class TargetProviderBindings:
             if provider is None or self.operations or (self.active is not None and not self.active["done"].is_set()):
                 return None
         return provider.lease_owner.observe_liveness(observe=getattr(provider, "observe_pod", None))
+
+    def claim_failure_recorder(self, *, task_id, attempt_id, invocation_id):
+        """Keep acquisition failures under the real claim task's identity."""
+        from types import SimpleNamespace
+
+        from .failure_receipt import record_failure
+
+        job = SimpleNamespace(task_id=task_id, attempt_id=attempt_id, invocation_id=invocation_id)
+
+        def failed(failure):
+            identity = getattr(failure, "_astrid_failed_identity", None)
+            machine = ({"placement": "runpod", "id": identity[1], "lease": identity[0]}
+                       if identity is not None else None)
+            record_failure({"failure": failure, "stage": "claim"}, job=job,
+                           machine=machine, timing=None)
+
+        return failed
 
     def operate(self, policy, operation, *, include_quote=False, cancelled=None):
         if operation not in {"setup", "ls", "status", "release", "keep", "claim"}:

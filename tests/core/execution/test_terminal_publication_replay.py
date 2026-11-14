@@ -22,7 +22,9 @@ def _wire(case, monkeypatch, statuses):
         calls.append((method, path, bytes(body), headers["Idempotency-Key"]))
         status = statuses.pop(0) if statuses else None
         if status:
-            raise ApiError(status, "publication_test", "publication unavailable")
+            code = {400: "validation_error", 409: "conflict", 422: "validation_error",
+                    408: "http_error", 429: "rate_limited"}[status]
+            raise ApiError(status, code, "publication unavailable")
         attempt_id = case.attempt["attempt_id"]
         with case.service.store._mutex:
             if path.endswith("/settle"):

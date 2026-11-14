@@ -7314,6 +7314,16 @@ class GenericPackHost:
 
     def _run_machine_job(self, record, task_data, policy, target_context, inputs, *, root, output_root,
                          cancelled, cancel_signal, task_id, attempt_id, fence, terminal):
+        from astrid.core.pack.discovery import pack_discovery_scope
+
+        with pack_discovery_scope():
+            return self._run_machine_job_in_scope(
+                record, task_data, policy, target_context, inputs, root=root, output_root=output_root,
+                cancelled=cancelled, cancel_signal=cancel_signal, task_id=task_id,
+                attempt_id=attempt_id, fence=fence, terminal=terminal)
+
+    def _run_machine_job_in_scope(self, record, task_data, policy, target_context, inputs, *, root, output_root,
+                                  cancelled, cancel_signal, task_id, attempt_id, fence, terminal):
         """Run the admitted generation on a ``generation.machine`` and land its outputs here.
 
         claim -> start -> poll (the remote progress file is copied into this
@@ -7355,11 +7365,9 @@ class GenericPackHost:
             # Which machine runs this attempt, recorded as soon as it is claimed (failures keep it too).
             terminal["machine"] = dict(machine.describe(lease))
 
-        # One local failure receipt per failed machine job, written after release.
-        failed = None
-        if is_runpod:
-            from astrid.packs.runpod.failure_receipt import recorder
-            failed = recorder(job, lambda: terminal.get("machine"), timing)
+        # The registered machine owns its optional failure receipt.
+        recorder = getattr(machine, "failure_recorder", None)
+        failed = recorder(job, lambda: terminal.get("machine"), timing) if callable(recorder) else None
 
         try:
             fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
@@ -9892,10 +9900,11 @@ class GenericPackHost:
         env.pop(TRUST_ENV, None)  # only the host's own admission reaches a child
         if record.id == "vibecomfy.run" and align in ("align", "trust"):
             env[TRUST_ENV] = align  # the child's align mode; local_server_engine reads only "trust"
-        from astrid.core.generation.managed_preparation import PREPARATION_ENV
-        env.pop(PREPARATION_ENV, None)
+        from astrid.core.generation.engine_contracts import MANAGED_ENGINE_PREPARATION_ENV
+
+        env.pop(MANAGED_ENGINE_PREPARATION_ENV, None)
         if record.id == "vibecomfy.run" and managed_preparation is not None:
-            env[PREPARATION_ENV] = json.dumps(managed_preparation, sort_keys=True, separators=(",", ":"))
+            env[MANAGED_ENGINE_PREPARATION_ENV] = json.dumps(managed_preparation, sort_keys=True, separators=(",", ":"))
         env.pop("ASTRID_GENERATION_ENTRY", None)
         if record.id == "vibecomfy.run" and generation_entry:
             env["ASTRID_GENERATION_ENTRY"] = str(generation_entry)
@@ -10694,7 +10703,7 @@ class GenericPackHost:
                     output_capture.persist()
                     if output_capture.error:
                         raise HostError(f"capability {record.id!r} output capture failed: {output_capture.error}")
-                    _assert_live_storage_envelope(storage_estimate, attempt, output_root, storage_floor_exempt=record.storage_floor_exempt)
+                    _assert_live_storage_envelope(storage_estimate, attempt, output_root, storage_floor_exempt=getattr(record, "storage_floor_exempt", False))
                     if cancelled is not None and cancelled():
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {record.id!r} cancelled")
@@ -10813,7 +10822,7 @@ class GenericPackHost:
         if capability_kind not in {"executor", "orchestrator"}:
             raise HostError(f"unsupported capability kind {capability_kind!r}")
         storage_record = captured_record or self.capabilities.get(capability_id)
-        storage_floor_exempt = storage_record is not None and storage_record.storage_floor_exempt
+        storage_floor_exempt = storage_record is not None and getattr(storage_record, "storage_floor_exempt", False)
         attempt_path = Path(attempt).expanduser().resolve()
         attempt_path.mkdir(parents=True, exist_ok=True)
         if definition is not None:
@@ -12661,6 +12670,7 @@ class GenericPackHost:
         assert_managed_input_identity = None
         target_context = machine_policy = None
         target_operation_result = None
+        claim_failure_recorder: Callable[[BaseException], None] | None = None
         try:
             session_hold = self._hold_session_slot()
             # Admission readback is bounded transport work under the lease pump.
@@ -12708,7 +12718,7 @@ class GenericPackHost:
                 cas_param_ports=cas_param_ports,
                 optional_cas_param_ports=optional_cas_param_ports,
                 storage_estimate=storage_estimate,
-                storage_floor_exempt=record.storage_floor_exempt,
+                storage_floor_exempt=getattr(record, "storage_floor_exempt", False),
                 input_size_limits=input_size_limits,
                 storage_policy_version=(
                     str(record.definition.metadata.get("storage_policy_version"))
@@ -12755,8 +12765,14 @@ class GenericPackHost:
                     include_quote = inputs.get("include_quote", False)
                     if type(include_quote) is not bool:
                         raise HostError("target quote selection must be boolean")
+                    recorder_factory = getattr(target_context, "claim_failure_recorder", None)
+                    if target_operation == "claim" and callable(recorder_factory):
+                        claim_failure_recorder = recorder_factory(
+                            task_id=str(task_id), attempt_id=str(attempt_id),
+                            invocation_id=f"{task_id}:{attempt_id}:{fence}")
                     target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote, **(
                         {"cancelled": cancelled} if policy.get("kind") == "runpod" and target_operation == "claim" else {}))
+                    claim_failure_recorder = None
                     inputs.pop("include_quote", None)
                 elif target_context is not None:
                     # A rented placement is a generation.machine: the whole local
@@ -12924,7 +12940,7 @@ class GenericPackHost:
                         )
                 except ImageStoragePolicyError as exc:
                     raise HostError(str(exc)) from exc
-            _assert_live_storage_envelope(storage_estimate, root, root / "outputs", storage_floor_exempt=record.storage_floor_exempt)
+            _assert_live_storage_envelope(storage_estimate, root, root / "outputs", storage_floor_exempt=getattr(record, "storage_floor_exempt", False))
             if cancelled():
                 raise HostCancelled("task cancelled after managed preparation")
             lifetime.assert_deadline()
@@ -13248,7 +13264,7 @@ class GenericPackHost:
                     f"capability {record.id!r} produced no typed settled outputs"
                 )
             storage_receipt = _task_storage_envelope(task_data, root, typed_outputs,
-                                                     storage_floor_exempt=record.storage_floor_exempt)
+                                                     storage_floor_exempt=getattr(record, "storage_floor_exempt", False))
             project_id = task_data.get("project_id")
             if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
                 raise HostError("runtime task project_id must be a non-empty string or None")
@@ -13424,6 +13440,8 @@ class GenericPackHost:
             cancelled_attempt = True
             return {"task_id": task_id, "status": "cancelled", "cancelled": True}
         except BaseException as exc:
+            if claim_failure_recorder is not None:
+                claim_failure_recorder(exc)
             _terminal.setdefault("error", exc)
             if _terminal.get("disposition") == "authority_refused":
                 raise

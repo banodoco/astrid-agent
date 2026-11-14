@@ -39,27 +39,36 @@ def _unknown_keys(raw: Mapping[str, Any], allowed: set[str], what: str) -> None:
                       options=sorted(allowed))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class PlacementPolicy:
     idle_timeout_s: float = float(DEFAULT_IDLE_SECONDS)
     gpu_types: tuple[str, ...] = ()
+    requested_idle_timeout_s: float | None = field(default=None, init=False, compare=False, repr=False)
+
+    def __init__(self, idle_timeout_s: float | None = None, gpu_types: tuple[str, ...] = ()) -> None:
+        object.__setattr__(self, "idle_timeout_s", float(DEFAULT_IDLE_SECONDS) if idle_timeout_s is None else idle_timeout_s)
+        object.__setattr__(self, "gpu_types", gpu_types)
+        object.__setattr__(self, "requested_idle_timeout_s", idle_timeout_s)
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any] | None) -> "PlacementPolicy":
         raw = {} if raw is None else raw
         if not isinstance(raw, Mapping):
             raise _refuse("placement policy must be a table", field_name="policy")
-        _unknown_keys(raw, {item.name for item in fields(cls)}, "placement policy")
+        _unknown_keys(raw, {item.name for item in fields(cls) if item.init}, "placement policy")
         idle = raw.get("idle_timeout_s", cls.idle_timeout_s)
         if isinstance(idle, bool) or not isinstance(idle, (int, float)) or not math.isfinite(idle) or idle < 0:
             raise _refuse("idle_timeout_s must be a finite non-negative number", field_name="policy.idle_timeout_s")
         gpus = raw.get("gpu_types", ())
         if isinstance(gpus, str) or not all(isinstance(item, str) and item for item in gpus):
             raise _refuse("gpu_types must be a list of GPU type names", field_name="policy.gpu_types")
-        return cls(float(idle), tuple(gpus))
+        return cls(float(idle) if "idle_timeout_s" in raw else None, tuple(gpus))
 
     def as_mapping(self) -> dict[str, Any]:
-        return {"idle_timeout_s": self.idle_timeout_s, "gpu_types": list(self.gpu_types)}
+        # Keep omission through resolution and serialization: a remote job
+        # inherits its claim's hold unless a request or setting supplied one.
+        return {"gpu_types": list(self.gpu_types), **(
+            {"idle_timeout_s": self.idle_timeout_s} if self.requested_idle_timeout_s is not None else {})}
 
 
 @dataclass(frozen=True)

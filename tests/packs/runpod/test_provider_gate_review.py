@@ -27,7 +27,7 @@ def test_admission_refusal_restores_intent_then_reacquires(case, tmp_path, monke
     with provider.provider_budget(1):
         provider._provider_deadline.set(now[0] + 1)
         with pytest.raises(preparation.AcquisitionUnresolvedError):
-            asyncio.run(case.owner.select(case.grant))
+            asyncio.run(case.owner._select(case.grant))
     assert case.creates == 0
     refused = case.owner._read()
     assert refused["state"] == "allocation_ready"
@@ -43,7 +43,7 @@ def test_admission_refusal_restores_intent_then_reacquires(case, tmp_path, monke
     monkeypatch.setattr(selection, "resolve_existing_volume", available)
     with provider.provider_budget(10):
         provider._provider_deadline.set(now[0] + 10)
-        acquired = asyncio.run(case.owner.select(case.grant))
+        acquired = asyncio.run(case.owner._select(case.grant))
     assert acquired["pod_id"] == "pod-1"
     assert acquired["operation_id"] == refused["operation_id"]
     assert acquired["create_attempts"] == case.creates == 1
@@ -79,7 +79,7 @@ def test_selection_binding_cancels_while_alias_lock_is_held(case, tmp_path, monk
     assert held.wait(1)
 
     async def run():
-        task = asyncio.create_task(case.owner.select(case.grant))
+        task = asyncio.create_task(case.owner._select(case.grant))
         asyncio.get_running_loop().call_later(0.01, task.cancel)
         try:
             with pytest.raises(asyncio.CancelledError):
@@ -142,7 +142,7 @@ def test_policy_readiness_can_finish_after_thirty_seconds(case, tmp_path, monkey
                       preparation_seconds=1, execution_seconds=1, idle_seconds=1,
                       policy_digest=selection.policy_consent_digest(case.prefs, 1.),
                       max_hourly_usd=1., capacity_timeout_seconds=capacity_seconds)
-    acquired = asyncio.run(case.owner.select(consent))
+    acquired = asyncio.run(case.owner._select(consent))
     assert acquired["state"] == "claimed"
     assert acquired["pod_id"] == "pod-1"
     assert case.creates == 1

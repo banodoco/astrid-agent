@@ -547,6 +547,18 @@ class RunPodLeaseOwner:
                     f"RunPod acquisition failed; created pod {captured[1]} was released" if released else
                     "RunPod machine custody could not be verified; exact release or reconciliation required")
                 error.release_identity = captured if exact and defer_unsafe_release else None
+                # Allocation can precede selection's return and on_acquired.
+                # Keep its captured identity even when cleanup or a later
+                # journal read cannot prove that exact machine was released.
+                setattr(error, "_astrid_failed_identity", captured)
+                context = dict(getattr(exc, "claim_context", {}))
+                context["acquired"] = captured is not None or context.get("acquired", False)
+                setattr(error, "claim_context", context)
+                if captured is not None:
+                    setattr(error, "machine_failure", {
+                        "id": captured[1], "lease": captured[0],
+                        "after": "released" if released else "unknown",
+                    })
                 if released:
                     raise error from exc
                 raise error from None
@@ -622,6 +634,7 @@ class RunPodLeaseOwner:
                     self._paid_consent_ids.add(consent.invocation_id)
                 self._machine_identity = (claimed["operation_id"], claimed["pod_id"])
             except BaseException as exc:
+                setattr(exc, "claim_context", {"acquired": acquired, "preparation_job": False})
                 current = self.selection._read()
                 if isinstance(exc, PodWatchdogError) and current is not None and current.get("pod_id"):
                     self.release(reason="watchdog_unavailable", _expected_operation=current["operation_id"],

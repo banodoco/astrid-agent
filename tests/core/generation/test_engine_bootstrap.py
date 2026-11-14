@@ -163,9 +163,13 @@ def test_new_declared_patch_is_bundled(monkeypatch, tmp_path):
 
 def test_real_patch_closure_and_source_budget():
     # The source travels in an environment variable via exec, with no remote caller.
-    # 96 KiB admits the declared patch closure (~84 KiB), below Linux's 128 KiB
-    # per-string limit. The independent 96 KiB aggregate budget still applies.
-    assert bootstrap._SOURCE_LIMIT == 98304
+    # 120 KiB admits the declared patch closure (~103 KiB with the transformers 5 TTS
+    # patches), below Linux's 128 KiB per-string limit. The independent 136 KiB
+    # aggregate budget still applies, and the loader enforces the same two numbers.
+    assert bootstrap._SOURCE_LIMIT == 122880
+    assert bootstrap._TOTAL_LIMIT == 139264
+    loader = (Path(bootstrap.__file__).with_name('_engine_bootstrap_loader.py')).read_text()
+    assert 'SOURCE_LIMIT = 122880\n' in loader and '> 139264):' in loader
     bundle = bootstrap.build_cli_bootstrap(ARGV)
     recipe = bootstrap.engine_recipe.load_recipe(ARGV[2], 'linux-x86_64-cu130')
     assert recipe.source_patches
@@ -175,6 +179,7 @@ def test_real_patch_closure_and_source_budget():
     # The closure outgrew the old 64 KiB budget once declared patch files travel with the recipe;
     # the limit is our own (an env string, under Linux's 131072-byte per-string cap).
     assert 65536 < source_size <= bootstrap._SOURCE_LIMIT < 131072
+    assert len('ASTRID_ENGINE_SOURCE=') + bootstrap._SOURCE_LIMIT + 1 <= 131072
 
 
 @pytest.mark.parametrize('parent', [False, True])
@@ -279,6 +284,8 @@ def test_real_console_execution_refuses_without_a2(tmp_path):
     from astrid.core.engine_cli import ENGINE_INSTALL_MIN_FREE_BYTES
     assert json.loads(result.stderr) == {'error': {
         'code': 'ENGINE_INSTALL_INSUFFICIENT_DISK', 'step': None,
+        # 9bbd06e35: every engine refusal names the check that fired.
+        'reason': 'insufficient disk space for engine installation',
         'retryable': True, 'recovery_handle': None,
         'message': 'Free disk space or choose a different --root, then retry.',
         'required_bytes': ENGINE_INSTALL_MIN_FREE_BYTES, 'free_bytes': 0,

@@ -38,6 +38,9 @@ events=[]
 class Preparation:
     def __init__(self, **kwargs):
         assert kwargs["mode"]=="check"
+        # The engine identity the run declares its engine-log slice from (8e9a3c3c5).
+        self.root=os.path.join(str(kwargs["scratch"]),"engine-root")
+        self.recipe=type("Recipe",(),{"engine":"comfyui"})
     def prepare(self, *args, **kwargs):
         guard_canonical_entrypoint("vibecomfy.run")
         events.append("prepare")

@@ -44,6 +44,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
     import threading
     import time
 
+    from astrid.core.generation.engine_contracts import DeadlineExceeded
     from astrid.core.generation.managed_preparation import (
         ManagedEnginePreparation,
         preparation_scope,
@@ -135,14 +136,21 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
         identity = loaded_workflow_execution_identity(loaded)
         if expected_execution_identity is not None and identity != expected_execution_identity:
             raise JobInputError("workflow execution identity differs from the admitted request")
+        # Plan 32 follow-up: byte-sized deadlines also need the claim's paid
+        # expiry carried to this job before this one-hour bound can grow.
         preparation = ManagedEnginePreparation(task=task_identity, attempt=attempt_identity, mode=align,
             deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine",
             logs_root=out, on_phase=on_phase)
         from astrid.core.generation.engine_custody import declare_engine_log
 
         declare_engine_log(out, preparation.root, preparation.recipe.engine)
-        report = preparation.prepare(workflow, execution_identity=identity, inputs=members,
-                                     canonical_workflow=canonical, input_digests=digests)
+        try:
+            report = preparation.prepare(workflow, execution_identity=identity, inputs=members,
+                                         canonical_workflow=canonical, input_digests=digests)
+        except DeadlineExceeded as exc:
+            exc.message = "managed preparation deadline exceeded; rerun to resume the download"
+            exc.args = (exc.message,)
+            raise
         if any(path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digests[name]
                for name, path in members.items()):
             raise JobFileError("pod workflow member changed during preparation")
@@ -245,8 +253,10 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
     """
     import shutil
     import tempfile
+    from contextlib import suppress
     from types import SimpleNamespace
 
+    from astrid.core._shared import run_logs
     from astrid.core.generation import entries
     from astrid.core.generation.preflight import require_generation_target_readiness
 
@@ -335,4 +345,14 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
         return result
     finally:
         if job_dir is not None:
+            # Collect while hook evidence still exists. The pod finish command
+            # recollects later, so declare the retained, already-sliced bytes.
+            with suppress(OSError, ValueError, TypeError):
+                declarations = run_logs.read_declared(job_dir)
+                if declarations:
+                    retained = {row["name"]: row for row in run_logs.collect(out, extra_root=job_dir)}
+                    for declaration, _source in declarations:
+                        filename = retained.get(declaration.name, {}).get("file", f"{declaration.name}.log")
+                        run_logs.declare(out, run_logs.LogDecl(
+                            declaration.name, declaration.role, str(Path(run_logs.LOGS_DIR) / filename)))
             shutil.rmtree(job_dir, ignore_errors=True)

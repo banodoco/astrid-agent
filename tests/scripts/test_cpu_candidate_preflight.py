@@ -463,9 +463,14 @@ def test_check_catalog_requires_stage_controls_and_consumes_exact_values(monkeyp
         assert argv[0:2] == ["generate", declaration["kind"]]
         assert argv[argv.index("--entry") + 1] == declaration["entry"]
         assert "--dry-run" in argv
-        assert argv[argv.index("--max-usd") + 1] == "3.25"
-        assert argv[argv.index("--deadline") + 1] == "2099-02-03T04:05:06Z"
+        claim = next(c.checks["catalog"]["planned_claim_argv"] for c in cells if c.entry == declaration["entry"])
+        assert claim[claim.index("--max-usd") + 1] == "3.25"
+        assert claim[claim.index("--deadline") + 1] == "2099-02-03T04:05:06Z"
+        assert claim[:3] == ["astrid", "machines", "claim"]
+        assert claim[claim.index("--consent") + 1] == "paid"
+        assert not {"--consent", "--max-usd", "--deadline", "--allow-paid", "--until-release"}.intersection(argv)
     assert all("--dry-run" in command.command for command in runner.commands if "generate" in command.command)
+    assert not any("claim" in command.command for command in runner.commands)
 
 
 def test_ready_request_entry_uses_native_descriptor_metadata(monkeypatch):

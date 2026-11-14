@@ -234,8 +234,9 @@ with _attached_comfy(peer,port): threading.Event().wait()
     assert (Path(remote.remote_root) / 'out' / result['managed_generation_result_path']).is_file()
     assert len(observed) == len(runtime) == len(namespaces) == 1
     assert observed[0][1] == 'trust'
+    # Pin the managed layout independently of the product's path resolver.
     assert observed[0][0] == {**dry['entry']['requirements'],
-                              'models_root': str(root / 'models')}
+                              'models_root': str(root / "runtime" / "ComfyUI" / "models")}
     from astrid.packs.vibecomfy.local_server_engine import run_scoped_overrides
     scoped = run_scoped_overrides(workflow, namespaces[0])
     for name, filename in media_bindings.items():

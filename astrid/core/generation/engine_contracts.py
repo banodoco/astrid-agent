@@ -6,6 +6,8 @@ import random
 from dataclasses import dataclass
 from typing import Any, Callable, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
 
+MANAGED_ENGINE_PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
+
 # Keep the original check text here; the raise-site inventory guards coverage.
 _ENGINE_REASONS = frozenset({
     'A target-native --root is required for Windows',
@@ -922,9 +924,13 @@ class PlacementDescriptor:
             raise ValueError("placement.schema must be astrid.generation-placement.v1")
         if not isinstance(self.supported, tuple) or not self.supported:
             raise ValueError("placement.supported must be a non-empty tuple")
-        from astrid.core.generation.placement import registered_machine_kinds
+        known = {"local"}
+        # Local backend metadata is inert: constructing every catalog backend
+        # must not rediscover and validate all provider packs.
+        if any(value != "local" for value in self.supported):
+            from astrid.core.generation.placement import registered_machine_kinds
 
-        known = {"local", *registered_machine_kinds()}
+            known.update(registered_machine_kinds())
         if any(not isinstance(value, str) or value not in known
                for value in self.supported):
             raise ValueError("placement.supported contains an invalid placement")

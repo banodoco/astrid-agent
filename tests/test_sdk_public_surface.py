@@ -38,6 +38,39 @@ SURFACE_EXECUTOR = "sdk_surface.arrange"
 SURFACE_ASSEMBLE_EXECUTOR = "sdk_surface.assemble"
 
 
+def _surface_video_registry(registry):
+    """Supply the video contract exercised by these facade tests."""
+    from astrid.core.model_catalog.registry import ModelRegistry
+    from astrid.core.model_catalog.schema import BackendSpec, ModeSpec, ModelEntry
+
+    cloud = {"cloud": BackendSpec(endpoint="fixture/video")}
+    entry = ModelEntry(id="wan-2.2", modality="video", modes={
+        "t2v": ModeSpec(supports=("prompt", "duration"), backends=cloud),
+        "flf": ModeSpec(supports=("prompt", "image_ref", "image_end_ref"), backends=cloud),
+    })
+    return ModelRegistry([item for item in registry.list_all(include_closed=True)
+                          if item.id != entry.id] + [entry])
+
+
+def _surface_video_availability():
+    from astrid.core.generation.availability import availability_declaration
+
+    declaration = dict(availability_declaration())
+    declaration["models"] = {key: value for key, value in declaration["models"].items()
+                             if key != "wan-2.2"}
+    return declaration
+
+
+@pytest.fixture
+def surface_video_registry(monkeypatch):
+    from astrid.core.generation import availability
+    sdk = importlib.import_module("astrid.sdk")
+    registry = _surface_video_registry(sdk._load_model_registry())
+    declaration = _surface_video_availability()
+    monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: registry)
+    monkeypatch.setattr(availability, "availability_declaration", lambda **kwargs: declaration)
+
+
 def _fresh_import_probe() -> dict[str, Any]:
     script = """
 import importlib
@@ -1493,6 +1526,7 @@ def test_generate_image_reconstructs_typed_result_from_generation_payload(
     assert seen["kwargs"]["inputs"]["prompt"] == "a lantern in fog"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_facade_maps_contract_failures_and_openai_route(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1650,6 +1684,7 @@ def test_astrid_generate_lazy_access_does_not_load_generation_executor_modules()
     assert probe["sdk_loaded"] is True, "astrid.sdk should be loaded after facade access"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_video_reconstructs_typed_result_from_generation_payload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1762,6 +1797,7 @@ def test_generate_facade_rejects_missing_generation_result_key_for_image(
         )
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_facade_rejects_non_mapping_payload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1884,6 +1920,7 @@ def test_generate_facade_handles_from_dict_on_minimal_payload(
     assert result.model_actual == ""
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_facade_handles_error_generation_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2207,6 +2244,7 @@ def test_image_explicit_execution_rejected_when_unavailable(
         )
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_video_mode_inference_t2v_no_refs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2257,6 +2295,7 @@ def test_video_mode_inference_i2v_image_ref(
     ]
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_video_mode_inference_flf_both_refs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2282,6 +2321,7 @@ def test_video_mode_inference_flf_both_refs(
     assert seen["kwargs"]["inputs"]["execution"] == "cloud"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_video_explicit_mode_validated(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2484,6 +2524,7 @@ def test_video_explicit_mode_rejected_when_not_supported(
         )
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_video_explicit_execution_validated_against_backends(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2626,6 +2667,7 @@ def test_generate_explicit_out_routing_image(
     assert seen["kwargs"]["project"] == "demo"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_explicit_out_routing_video(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2672,6 +2714,7 @@ def test_generate_explicit_project_routing_image(
     assert seen["kwargs"]["project"] == "my-project"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_explicit_project_routing_video(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2720,6 +2763,7 @@ def test_generate_attached_project_resolution_image(
     assert seen["kwargs"]["project"] == "autouse-session-demo"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_attached_project_resolution_video(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2771,6 +2815,7 @@ def test_generate_out_wins_over_project_image(
     assert seen["kwargs"]["project"] == "ignored-project"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_out_wins_over_project_video(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2838,7 +2883,13 @@ def fake_invoke(capability_id, **kwargs):
         }},
     )
 
-with patch.object(sdk, "invoke", fake_invoke):
+from astrid.core.generation import availability
+from tests.test_sdk_public_surface import _surface_video_availability, _surface_video_registry
+registry = _surface_video_registry(sdk._load_model_registry())
+declaration = _surface_video_availability()
+with patch.object(sdk, "invoke", fake_invoke), \
+     patch.object(sdk, "_load_model_registry", lambda **kwargs: registry), \
+     patch.object(availability, "availability_declaration", lambda **kwargs: declaration):
     old_stderr = sys.stderr
     sys.stderr = stderr_capture
     try:

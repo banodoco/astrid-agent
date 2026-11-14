@@ -27,6 +27,9 @@ from astrid.core.generation.model_root import (
 
 PLATFORM = "linux-x86_64-cu130"
 INSTALL = "astrid engines install comfyui"
+# The install's default model directory (Release 13 layout, f0ba64407): ComfyUI launches with
+# --models-directory <root>/runtime/ComfyUI/models, and the receipt's rows live there.
+MODELS = ("runtime", "ComfyUI", "models")
 FILES = {
     "diffusion_models/unet.safetensors": b"unet bytes",
     "vae/video.safetensors": b"video vae bytes",
@@ -39,7 +42,7 @@ def _install(tmp_path):
     root = tmp_path / "engine"
     models = []
     for destination, data in FILES.items():
-        path = root / "models" / destination
+        path = root.joinpath(*MODELS) / destination
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         models.append(DownloadResult(destination.rsplit("/", 1)[1], str(path), "downloaded", len(data),
@@ -77,7 +80,7 @@ def test_valid_receipt_yields_the_binding_of_the_installed_model_lock(tmp_path):
                                        status=stub)
     # The root comes from the engine status call; the inventory from the receipt's verified model files.
     assert stub.calls[0][1]["placement"] == "local" and stub.calls[0][1]["root"] == str(root)
-    assert str(binding.path) == str(root / "models")
+    assert str(binding.path) == str(root.joinpath(*MODELS))
     assert binding.qualification_identity is None
     assert [(e["subdir"], e["name"], e["size"], e["sha256"]) for e in binding.inventory] == [
         ("diffusion_models", "unet.safetensors", len(FILES["diffusion_models/unet.safetensors"]),
@@ -100,13 +103,13 @@ def test_binding_follows_the_recorded_install_root_over_the_env_fallback(tmp_pat
     stub = _status(_receipt(models))
     binding = local_model_root_binding("comfyui", platform=PLATFORM, context=object(), status=stub)
     assert stub.calls[0][1]["root"] == str(root)
-    assert str(binding.path) == str(root / "models")
+    assert str(binding.path) == str(root.joinpath(*MODELS))
 
 
 def test_derived_binding_rejects_a_model_file_that_changed_after_the_install(tmp_path):
     root, models = _install(tmp_path)
     binding = _derive(root, _receipt(models))
-    (root / "models" / "vae" / "video.safetensors").write_bytes(b"video vae bytez")  # same size, other bytes
+    (root.joinpath(*MODELS) / "vae" / "video.safetensors").write_bytes(b"video vae bytez")  # same size, other bytes
     with pytest.raises(ModelRootBindingError, match="hash mismatch"):
         validate_model_root_binding(binding.as_dict(), verify_files=True)
 
@@ -177,7 +180,7 @@ def test_host_derives_the_child_binding_from_the_installed_engine_once(tmp_path,
     first = _host_method()(host, "comfyui")
     again = _host_method()(host, "comfyui")
     assert first == again and calls == ["comfyui"]
-    assert first[MODEL_ROOT_ENV] == str(root / "models")
+    assert first[MODEL_ROOT_ENV] == str(root.joinpath(*MODELS))
     binding = validate_model_root_binding(json.loads(first[MODEL_ROOT_BINDING_ENV]), verify_files=True)
     assert str(binding.path) == first[MODEL_ROOT_ENV]
 
@@ -227,8 +230,8 @@ def test_child_environment_for_local_placement_carries_the_installed_engine_bind
     monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_model_root_binding",
                         lambda engine: _derive(root, _receipt(models)))
     env = _child_environment(monkeypatch, tmp_path, local_engine="comfyui")
-    assert env[MODEL_ROOT_ENV] == str(root / "models")
-    assert json.loads(env[MODEL_ROOT_BINDING_ENV])["path"] == str(root / "models")
+    assert env[MODEL_ROOT_ENV] == str(root.joinpath(*MODELS))
+    assert json.loads(env[MODEL_ROOT_BINDING_ENV])["path"] == str(root.joinpath(*MODELS))
 
 
 def test_readiness_profile_still_wins_over_the_local_flag(monkeypatch, tmp_path):

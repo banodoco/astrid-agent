@@ -173,7 +173,9 @@ def test_finite_helper_uses_selected_package_and_interpreter_with_isolation(
     request = CommandRequest(argv, root, {}, deadline(), max_output_bytes=4096)
     control = client.run(request)
     assert control.exit_code == 0 and not control.stderr
-    assert json.loads(control.stdout)['facts'] == {'error_code': 'integrity_failed'}
+    # 9bbd06e35: the refusal names the check that fired.
+    assert json.loads(control.stdout)['facts'] == {'error_code': 'integrity_failed',
+                                                   'reason': 'engine helper code/data identity differs'}
     if wrong_digest:
         payload['helper_sha256'] = '0' * 64
         request = CommandRequest((*argv[:-1], json.dumps(payload)), root, {}, deadline(), max_output_bytes=4096)
@@ -182,7 +184,8 @@ def test_finite_helper_uses_selected_package_and_interpreter_with_isolation(
         adapter=platform_adapter(recipe.platform), service_client=client)
     result = ctx.run(request)
     assert result.exit_code == 0 and not result.stderr
-    expected = {'error_code': 'integrity_failed'} if wrong_digest else {'helper_sha256': digest}
+    expected = ({'error_code': 'integrity_failed', 'reason': 'engine helper code/data identity differs'}
+                if wrong_digest else {'helper_sha256': digest})
     assert json.loads(result.stdout)['facts'] == expected
     assert client.request.argv[0] == sys.executable and client.request.argv[1] == '-I'
     assert (client.request.cwd, client.request.env, client.request.deadline, client.request.max_output_bytes) == (
