@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import textwrap
@@ -77,7 +78,11 @@ def machine_mcp_process(tmp_path, monkeypatch):
         machines_cli._leases = lambda: rows
     '''))
     monkeypatch.setenv("MACHINE_MCP_AUDIT", str(audit))
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path) + os.pathsep + os.environ["PYTHONPATH"])
+    # The child must import this checkout's `tests` package (runpod_guard) first: hosted runners set no PYTHONPATH, and a
+    # sibling checkout on it can carry its own `tests` package.
+    repo_root = str(Path(__file__).resolve().parents[1])
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(
+        [str(tmp_path), repo_root, *filter(None, [os.environ.get("PYTHONPATH")])]))
 
     def call(arguments):
         message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
