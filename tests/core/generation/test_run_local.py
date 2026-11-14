@@ -410,3 +410,33 @@ def test_run_scoped_prefix_survives_public_input_compilation():
     scoped = run_scoped_overrides(built, "attempt-123")
     assert scoped.compile("api")["1"]["inputs"]["filename_prefix"] == "chosen_astrid_attempt-123"
     assert built.compile("api")["1"]["inputs"]["filename_prefix"] == "chosen"
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_machine_job_carries_model_opt_out_without_reading_pod_store(tmp_path, monkeypatch, enabled):
+    import json
+
+    from astrid.core.generation import local_job, settings
+
+    body = {'schema': local_job.SCHEMA, 'align': 'check', 'inputs': {},
+            'generation_settings': {'models': {'trust_unchanged': enabled}}}
+    path = tmp_path / 'job.json'
+    path.write_text(json.dumps(body))
+    def no_pod_store(*args, **kwargs):
+        pytest.fail('projected operator choice must not read a different pod settings store')
+    monkeypatch.setattr(settings, 'read', no_pod_store)
+    monkeypatch.setattr(local_job, '_run_job', lambda *a, **kw: settings.model_trust_unchanged())
+    assert local_job.run_job('workflow', path, tmp_path / 'out') is enabled
+
+
+@pytest.mark.parametrize('value', [None, {}, {'models': {}}, {'models': {'trust_unchanged': 'true'}}])
+def test_machine_job_rejects_malformed_model_opt_out(tmp_path, value):
+    import json
+
+    from astrid.core.generation import local_job
+
+    path = tmp_path / 'job.json'
+    path.write_text(json.dumps({'schema': local_job.SCHEMA, 'align': 'check', 'inputs': {},
+                                'generation_settings': value}))
+    with pytest.raises(local_job.JobFileError, match='generation settings'):
+        local_job.read_job(path)

@@ -6,7 +6,8 @@ engine-neutral::
 
     {"placement": {kind, device?, endpoint?, policy?},
      "defaults":  {"<kind>.<mode>": {"pack": "<pack id>", "entry": "<entry id>"}},
-     "machines":  {"runpod": {gpu_types, datacenter_id, image, ...}}}
+     "machines":  {"runpod": {gpu_types, datacenter_id, image, ...}},
+     "models": {"trust_unchanged": bool}}
 
 ``machines.<id>`` is placement policy for one machine contribution; no secret is ever stored in it,
 only a credential *reference* by name. An old ``[placement]`` / ``[runpod]`` table in VibeComfy's
@@ -34,13 +35,14 @@ from astrid.core.contracts.errors import AstridError
 _logger = logging.getLogger(__name__)
 
 KEY = "generation"
-DOCUMENT_KEYS = ("placement", "defaults", "machines")
+DOCUMENT_KEYS = ("placement", "defaults", "machines", "models")
 DEFAULT_KINDS = ("image", "video", "audio")
 SLOT_PATTERN = re.compile(r"^(image|video|audio)\.([a-z0-9][a-z0-9_-]*)$")
 CHECKOUT_SCHEMA = "astrid.generation-settings-checkout.v1"
 
 _store: ContextVar[Any] = ContextVar("generation_settings_store", default=None)
 _store_factory: Callable[[], Any] | None = None
+_model_policy: ContextVar[bool | None] = ContextVar("model_trust_unchanged", default=None)
 
 
 def refuse(message: str, *, key: str, code: str = "generation_settings_invalid", options: Any = (),
@@ -64,7 +66,7 @@ class Snapshot:
 
 
 def empty_document() -> dict[str, Any]:
-    return {"placement": {}, "defaults": {}, "machines": {}}
+    return {"placement": {}, "defaults": {}, "machines": {}, "models": {}}
 
 
 # -- validation -----------------------------------------------------------------------------------
@@ -115,6 +117,14 @@ def validate_document(content: Any) -> dict[str, Any]:
                          key=f"machines.{name}")
         _no_secret(policy, f"machines.{name}")
     out["machines"] = copy.deepcopy({name: dict(policy) for name, policy in machines.items()})
+    models = content.get("models", {})
+    if not isinstance(models, Mapping):
+        raise refuse("models must be an object", key="models")
+    if set(models) - {"trust_unchanged"}:
+        raise refuse("models only supports trust_unchanged", key="models")
+    if "trust_unchanged" in models and type(models["trust_unchanged"]) is not bool:
+        raise refuse("models.trust_unchanged must be a boolean", key="models.trust_unchanged")
+    out["models"] = dict(models)
     try:
         json.dumps(out, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -252,6 +262,33 @@ def update(change: Callable[[dict[str, Any]], None], client: Any = None, *,
     return _write(current_store(client), document, snapshot.version, f"generation-{snapshot.version}-{digest}")
 
 
+@contextmanager
+def using_model_trust_unchanged(value: bool) -> Iterator[None]:
+    """Project the same user setting from a controller into its one machine job."""
+    if type(value) is not bool:
+        raise ValueError("models.trust_unchanged must be a boolean")
+    token = _model_policy.set(value)
+    try:
+        yield
+    finally:
+        _model_policy.reset(token)
+
+
+def model_trust_unchanged(client: Any = None) -> bool:
+    """Only a positively read true opts out of fresh model checksums."""
+    projected = _model_policy.get()
+    if projected is not None:
+        return projected is True
+    try:
+        snapshot = read(client)
+    except (OSError, RuntimeError, ValueError, TypeError, LookupError, AttributeError):
+        # Optional opt-out unavailable: retain full verification, never manufacture consent.
+        _logger.debug("Could not read model verification opt-out; using full verification", exc_info=True)
+        return False
+    return (snapshot.source == "runtime"
+            and snapshot.content.get("models", {}).get("trust_unchanged", False) is True)
+
+
 # -- checkout / checkin ---------------------------------------------------------------------------
 
 def _sidecar(path: Path) -> Path:
@@ -326,4 +363,4 @@ def set_machine_policy(machine: str, policy: Mapping[str, Any], client: Any = No
 
 __all__ = ["KEY", "Snapshot", "checkin", "checkout", "current_store", "empty_document", "machine_policy",
            "placement_default", "read", "refuse", "set_machine_policy", "set_store_factory", "update", "using",
-           "validate_document", "validate_pin"]
+           "validate_document", "validate_pin", "model_trust_unchanged", "using_model_trust_unchanged"]

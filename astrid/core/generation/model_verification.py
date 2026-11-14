@@ -4,6 +4,13 @@ Like the VibeComfy witness memo, a witness is valid only while the file's stat
 identity is unchanged. These records persist that result between preparations;
 callers still enforce the declared size, file kind and digest themselves.
 
+Fresh checksums are the default. The explicit operator opt-out is
+``models.trust_unchanged: true`` in the Runtime's user ``generation`` settings document,
+editable with ``astrid generate settings checkout --file FILE`` and
+``astrid generate settings checkin FILE``. "Skip re-checking model files that haven't changed since they were verified: faster warm jobs; trusts file metadata, not a fresh checksum."
+Absent, false or unreadable settings never enable reuse. One preparation snapshots the choice;
+its model_verification step log counts full hashes and skips across all model checks.
+
 Model verification records optimize re-verification for trusted writers on reliable storage
 metadata. They are not tamper-proof evidence against code running as the engine's user (ComfyUI
 and its custom nodes, which this design already trusts: engine_custody 'trusted engine'), nor
@@ -16,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from ._engine_target_files import _TargetFiles
@@ -28,8 +36,19 @@ def _signature(info: os.stat_result) -> list[int]:
     return [info.st_dev, info.st_size, info.st_mtime_ns, info.st_ino, info.st_ctime_ns]
 
 
+@dataclass
+class ModelVerification:
+    trust_unchanged: bool = False
+    hashed: int = 0
+    skipped: int = 0
+
+    def report(self) -> dict[str, bool | int]:
+        return {"trust_unchanged": self.trust_unchanged, "hashed": self.hashed, "skipped": self.skipped}
+
+
 class _VerificationRecord:
-    def __init__(self, root, models_root, path, declared_sha256, deadline):
+    def __init__(self, root, models_root, path, declared_sha256, deadline, *, verification=None):
+        self.verification = verification if verification is not None else ModelVerification()
         self.root = str(Path(root).resolve())
         self.models_root = str(Path(models_root).resolve())
         self.path = str(Path(path).resolve())
@@ -46,6 +65,8 @@ class _VerificationRecord:
                 "declared_sha256": self.declared_sha256}
 
     def lookup(self, info):
+        if self.verification.trust_unchanged is not True:
+            return None
         if not re.fullmatch(r"[0-9a-f]{64}", self.declared_sha256):
             return None
         try:
@@ -57,10 +78,12 @@ class _VerificationRecord:
                 or any(type(part) is not int for part in signature)):
             return None
         if value == self._value(info, self.declared_sha256):
+            self.verification.skipped += 1
             return self.declared_sha256
         return None
 
     def remember(self, info, sha256):
+        self.verification.hashed += 1
         # Never write a witness for a full hash that failed its declaration.
         if sha256 != self.declared_sha256:
             return
@@ -73,12 +96,17 @@ class _VerificationRecord:
             pass
 
 
-def model_file_fact(path, *, root, models_root, declared_sha256, deadline, check):
+def model_file_fact(path, *, root, models_root, declared_sha256, deadline, check, verification=None):
     """Hash or reuse one model, through the same guarded descriptor inspection."""
+    verification = verification if verification is not None else ModelVerification()
     try:
-        record = _VerificationRecord(root, models_root, path, declared_sha256, deadline)
+        record = _VerificationRecord(root, models_root, path, declared_sha256, deadline,
+                                     verification=verification)
     except (OSError, RuntimeError, ValueError, TypeError, RecipeValidationError):
         # Unresolvable paths still go through the usual file-kind/path refusal.
         record = None
-    return _TargetFiles(models_root).file_fact(path, hash_bytes=True, deadline=deadline,
-                                               check=check, verification=record)
+    fact = _TargetFiles(models_root).file_fact(path, hash_bytes=True, deadline=deadline,
+                                              check=check, verification=record)
+    if record is None and fact.sha256 is not None:
+        verification.hashed += 1
+    return fact

@@ -418,6 +418,7 @@ class ManagedEnginePreparation:
         )
 
         self.check()
+        self._begin_model_verification()
         staged_members = [workflow]
         if workflow.suffix == ".py":
             staged_members += [workflow.with_suffix(".vibe.json"), workflow.with_name("source.json")]
@@ -536,15 +537,38 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed alignment changed the installed base")
         self.check()
 
+    def _begin_model_verification(self):
+        from .model_verification import ModelVerification
+        from .settings import model_trust_unchanged
+
+        self._model_verification = ModelVerification(model_trust_unchanged())
+        self._log_model_verification()
+
+    def _log_model_verification(self):
+        from types import SimpleNamespace
+
+        self._keep_step_output("model_verification", SimpleNamespace(
+            stdout=json.dumps(self._model_verification.report(), sort_keys=True) + "\n", stderr=""))
+
+    def _model_fact(self, path, models_root, expected):
+        from .model_verification import model_file_fact
+
+        if not hasattr(self, "_model_verification"):
+            self._begin_model_verification()
+        try:
+            return model_file_fact(path, root=self.root, models_root=models_root,
+                declared_sha256=expected, deadline=self.deadline, check=self.check,
+                verification=self._model_verification)
+        finally:
+            self._log_model_verification()
+
     def _verify_models(self, manifest):
         from .engine_contracts import IntegrityError
-        from .model_verification import model_file_fact
         for model in manifest["models"]:
             self.check()
             path = str(Path(manifest["models_root"]) / model["subdir"] / model["name"])
             expected = str(model.get("sha256") or "").removeprefix("sha256:")
-            fact = model_file_fact(path, root=self.root, models_root=manifest["models_root"],
-                                   declared_sha256=expected, deadline=self.deadline, check=self.check)
+            fact = self._model_fact(path, manifest["models_root"], expected)
             if (not fact.exists or not fact.regular or fact.symlink
                     or fact.bytes != model["size"] or not re.fullmatch(r"[0-9a-f]{64}", expected)
                     or fact.sha256 != expected):
@@ -560,7 +584,6 @@ class ManagedEnginePreparation:
             available_model_bytes,
             measure_declared_volume,
         )
-        from .model_verification import model_file_fact
 
         root = Path(manifest["models_root"])
         self._storage_models_root = root
@@ -581,8 +604,7 @@ class ManagedEnginePreparation:
             self.check()
             if present:
                 expected = str(model["sha256"]).removeprefix("sha256:")
-                fact = model_file_fact(str(path), root=self.root, models_root=str(root),
-                                       declared_sha256=expected, deadline=self.deadline, check=self.check)
+                fact = self._model_fact(str(path), str(root), expected)
                 if fact.sha256 == expected:
                     continue
             directory = path.parent.resolve(strict=False)

@@ -895,6 +895,9 @@ class RunPodMachine:
                 "task_identity": job.task_id, "attempt_identity": job.attempt_id,
                 "idempotency_key": f"remote:{job.task_id}:{job.attempt_id}",
                 "inputs": public_inputs, "bindings": bindings, "execution": shipped}
+        from astrid.core.generation.settings import model_trust_unchanged
+
+        body["generation_settings"] = {"models": {"trust_unchanged": model_trust_unchanged()}}
         record = lease.lease.claim
         size, mount = record.get("network_volume_size_gb"), record.get("volume_mount_path")
         if (record.get("network_volume_id") and type(size) is int and size > 0

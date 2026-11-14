@@ -986,7 +986,11 @@ def test_fetch_storage_preflight_valid_quota_survives_unavailable_statvfs(fetch_
     c.state.fs_unavailable = True
     c.fetch()
     assert c.native == ['fetch'] and c.quota_calls
-    assert not (c.prep.logs_root / 'logs.json').exists()
+    declared = {row['name']: row for row in json.loads((c.prep.logs_root / 'logs.json').read_text())['logs']}
+    assert set(declared) == {'preparation.model_verification.stdout', 'preparation.model_verification.stderr'}
+    assert json.loads(Path(declared['preparation.model_verification.stdout']['path']).read_text()) == {
+        'trust_unchanged': False, 'hashed': 1, 'skipped': 0}
+    assert Path(declared['preparation.model_verification.stderr']['path']).read_text() == ''
 
 
 @pytest.fixture

@@ -184,3 +184,23 @@ def test_unavailable_store_uses_builtin_settings_and_logs_debug(monkeypatch, cap
     assert records[0].exc_info[1] is failure
     assert "RuntimeError: launcher transport unavailable" in caplog.text
     assert "Traceback" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_model_opt_out_round_trips_through_settings_checkout(tmp_path, generation_settings_store, enabled):
+    path = tmp_path / 'settings.json'
+    settings.checkout(path)
+    content = json.loads(path.read_text())
+    content['models'] = {'trust_unchanged': enabled}
+    path.write_text(json.dumps(content))
+    settings.checkin(path)
+    assert generation_settings_store.documents['generation'][0]['models'] == {'trust_unchanged': enabled}
+    assert settings.model_trust_unchanged() is enabled
+
+
+@pytest.mark.parametrize('value', [None, 'true', 1, [], {'unexpected': True}])
+def test_model_opt_out_rejects_non_boolean_or_unknown_settings(value):
+    models = value if isinstance(value, (dict, list)) or value is None else {'trust_unchanged': value}
+    with pytest.raises(AstridError) as caught:
+        settings.validate_document({'models': models})
+    assert caught.value.field.startswith('models')

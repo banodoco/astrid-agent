@@ -21,6 +21,12 @@ from tests.core.generation import test_managed_preparation
 fetch_volume = test_managed_preparation.fetch_volume
 
 
+@pytest.fixture(autouse=True)
+def model_verification_opt_in(generation_settings_store):
+    # Cache-specific regressions exercise the explicit operator opt-out.
+    generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': True}}, 1)
+
+
 def preparation(root):
     prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
     prep.root = str(root)
@@ -350,3 +356,43 @@ def test_constructor_failure_is_a_cache_miss(model, monkeypatch, error):
     model.reads.clear()
     model.verify()
     assert model.reads
+
+
+@pytest.mark.parametrize('choice', ['absent', False, 'unreadable'])
+def test_full_reverification_without_positive_opt_in(model, generation_settings_store, monkeypatch, choice):
+    if choice == 'absent':
+        generation_settings_store.documents['generation'] = ({}, 1)
+    elif choice is False:
+        generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': False}}, 1)
+    else:
+        def unreadable(key):
+            raise OSError('settings store unreadable')
+        monkeypatch.setattr(generation_settings_store, 'get_user_app_state', unreadable)
+    model.verify()
+    assert model.reads and record(model).exists()
+    model.reads.clear()
+    preparation(model.root)._verify_models(model.manifest)
+    assert model.reads  # a valid record never opts the operator out on its own
+
+
+def test_preparation_reads_opt_in_once_and_logs_hash_skip_counts(model, generation_settings_store, monkeypatch):
+    original = generation_settings_store.get_user_app_state
+    reads = []
+
+    def read(key):
+        reads.append(key)
+        return original(key)
+
+    monkeypatch.setattr(generation_settings_store, 'get_user_app_state', read)
+    model.prep.logs_root = model.root / 'logs'
+    model.verify()
+    # A change applies at the next preparation, not between checks in this one.
+    generation_settings_store.documents['generation'] = ({'models': {'trust_unchanged': False}}, 2)
+    model.reads.clear()
+    model.verify()
+    assert model.reads == []
+    assert reads == ['generation']
+    log = model.prep.logs_root / '.preparation-logs/model_verification.stdout.log'
+    assert json.loads(log.read_text()) == {'trust_unchanged': True, 'hashed': 1, 'skipped': 1}
+    preparation(model.root)._verify_models(model.manifest)
+    assert model.reads and reads == ['generation', 'generation']
