@@ -705,6 +705,8 @@ def _main(argv: list[str]) -> int:
         kwargs.pop("width")
         kwargs.pop("height")
         kwargs[_KIND_SPEC[parsed.modality]['dimension_key']] = f"{parsed.width}x{parsed.height}"
+    from .delivery import admitted_project, open_url_for
+    admitted = None
     try:
         generate = getattr(_generate_facade(), parsed.modality)
         from astrid.sdk.generation import _prompt_only_video
@@ -730,6 +732,10 @@ def _main(argv: list[str]) -> int:
                 if not parsed.no_wait:
                     from .delivery import deliver_generation
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
+                else:
+                    admitted = admitted_project(
+                        result.to_dict() if hasattr(result, 'to_dict') else result,
+                        explicit=parsed.project, client=client)
     except AstridSDKError as sdk_exc:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
@@ -746,6 +752,9 @@ def _main(argv: list[str]) -> int:
             'code': 'generation_failed', 'message': 'Generation did not succeed.'}
         raise generation_error(error, task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
+    if admitted and isinstance(payload, dict):
+        # An admitted generation names its project's link; the App shows the output there once it finishes.
+        payload = {**payload, 'open_url': open_url_for(admitted)}
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:

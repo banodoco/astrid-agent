@@ -316,6 +316,7 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
         if isinstance(done, dict):
             return done
         result = _cli_result(done)
+        _attach_open_url(tool, arguments, result)
         files = {dest: path.read_text(encoding="utf-8") for dest, path in outputs.items() if path.is_file()}
         for dest, text in files.items():
             result["content"].append({"type": "text", "text": f"{dest} contents:\n{text}"})
@@ -417,6 +418,32 @@ def _invoke(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
     structured = {**payload, "task_refs": reply.get("details", {}).get("astridTaskRefs", [])}
     return _text(json.dumps(structured, default=str), error=done.returncode != 0 or payload.get("ok") is False,
                  structured=structured)
+
+
+def _attach_open_url(tool: dict[str, Any], arguments: dict[str, Any], result: dict[str, Any]) -> None:
+    """Name the project's link on an admitted or completed generation, the same link the CLI prints."""
+    if result.get("isError"):
+        return
+    from astrid.core.generation.delivery import open_url_for
+    path = tool["path"]
+    envelope = result.get("structuredContent")
+    if tool.get("kind") == "generation" and path[-1] in {"image", "video", "workflow"}:
+        # Admission: the project the caller named, or the one the admitted task reports.
+        if not isinstance(envelope, dict):
+            return
+        target = envelope["data"] if isinstance(envelope.get("data"), dict) else envelope
+        project = target.get("project_id") or arguments.get("project")
+        if isinstance(project, str) and project.strip():
+            target["open_url"] = open_url_for(project)
+        return
+    if path == ("tasks", "show") and isinstance(envelope, dict):
+        task = envelope["data"] if isinstance(envelope.get("data"), dict) else envelope
+        state = str(task.get("state") or task.get("status") or "").lower()
+        if isinstance(task.get("generation_intent"), dict) and state in {"completed", "succeeded"}:
+            project = task.get("project_id") or arguments.get("project")
+            if isinstance(project, str) and project.strip():
+                task["open_url"] = open_url_for(project)
+        return
 
 
 def _cli_result(done: subprocess.CompletedProcess) -> dict[str, Any]:
