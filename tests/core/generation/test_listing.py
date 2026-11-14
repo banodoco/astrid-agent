@@ -21,10 +21,12 @@ def test_local_foley_inventory_and_text_project_license(monkeypatch, capsys):
     rows = listing.generation_rows('audio')
     row = next(row for row in rows if row['id'] == 'audio/hunyuan_video_foley')
     assert (row['kind'], row['mode'], row['backend']) == ('audio', 'sfx', 'local')
-    assert row['license_notice'] == 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.'
+    assert 'license_notice' not in row
     monkeypatch.setattr(listing, 'generation_rows', lambda kind: [row])
     assert listing.main(['list', '--kind', 'audio']) == 0
-    assert row['license_notice'] in capsys.readouterr().out
+    text = capsys.readouterr().out
+    assert row['id'] in text
+    assert 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.' not in text
 
 
 def _row(**changes):

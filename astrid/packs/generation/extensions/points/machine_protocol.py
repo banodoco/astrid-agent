@@ -11,6 +11,10 @@ cancel(run)                 -> stop the remote job (the caller then releases)
 fetch(run, destination)     -> files copied back under a digest manifest
 release(lease, warm)        -> settle warm (reusable) or release the machine
 
+A contribution may also expose ``failure_recorder(job, machine_of, timing)``
+returning a callback for failure facts after release. ``machine_of()`` reads the
+host's current machine record; contributions without this hook need no recorder.
+
 ``local`` and ``attached`` are built in and are not contributions.
 """
 
