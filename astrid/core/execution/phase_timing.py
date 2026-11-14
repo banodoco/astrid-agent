@@ -7,6 +7,7 @@ derived block is the same on success and failure and lands in
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import platform
@@ -109,14 +110,17 @@ def clock_id() -> str | None:
     """Identify a shared monotonic clock, conservatively; never use epoch subtraction.
 
     Linux boot IDs distinguish reboots and machines. macOS's boot identity is
-    used only as an identity token, never as an interval endpoint.
+    used only as an identity token, never as an interval endpoint. The value is
+    published in results and receipts that people share, so it never contains
+    the hostname (often a person's name): on macOS it is a truncated hash of the
+    boot time, equal for every process on one boot of one machine.
     """
     with suppress(Exception):
         if platform.system() == "Linux":
             return "linux:" + Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         if platform.system() == "Darwin":
             boot = subprocess.check_output(["sysctl", "-n", "kern.boottime"], timeout=1, text=True).strip()
-            return "darwin:" + platform.node() + ":" + boot
+            return "darwin:" + hashlib.sha256(boot.encode("utf-8")).hexdigest()[:16]
     return None
 
 

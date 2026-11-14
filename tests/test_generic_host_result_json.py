@@ -661,3 +661,29 @@ def test_host_v2_timing_is_stored_on_runtime_and_local_terminal(host_case, monke
         assert host["phases"]["collection"]["seconds"] is not None
     assert abs(sum(p["seconds"] or 0 for p in host["phases"].values())
                + host["unaccounted"]["raw_seconds"] - host["total"]["seconds"]) < 0.001
+
+
+def test_published_timing_never_carries_the_hostname(host_case, monkeypatch):
+    """The clock identity lands in results and receipts people share."""
+    from astrid.core.execution import phase_timing
+
+    hostname = "Hannahs-MacBook-Pro"
+    monkeypatch.setattr(phase_timing.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(phase_timing.platform, "node", lambda: hostname)
+    monkeypatch.setattr(phase_timing.subprocess, "check_output",
+                        lambda *a, **kw: "{ sec = 1700000000, usec = 123456 } Tue Nov 14 22:13:20 2023\n")
+    phase_timing.clock_id.cache_clear()
+    try:
+        identity = phase_timing.clock_id()
+        assert identity is not None and identity.startswith("darwin:") and hostname not in identity
+        assert identity == phase_timing.clock_id()  # stable for every process on this boot
+        case = host_case
+        _success_boundary(case, monkeypatch)
+        case.host.run_task(case.task, lease_token="lease-result",
+                           _generation_timing=phase_timing.GenerationTiming())
+        persisted = case.runtime.settlements[0][2]["result"]
+        local = (case.root / "result.json").read_text()
+        assert persisted["timing"]["host"]["clock_id"] == identity
+        assert hostname not in json.dumps(persisted) and hostname not in local
+    finally:
+        phase_timing.clock_id.cache_clear()
