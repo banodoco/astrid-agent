@@ -22,13 +22,18 @@ import pytest
 import requests
 
 from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
+from astrid.core.generation import settings
 from astrid.core.generation.delivery import deliver_generation
 from astrid.packs.runpod import target_selection
 from astrid.sdk import AstridClient
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
-from tests.integrations.test_remote_machine_cpu import MachineProviderHTTP, tuple_pins
+from tests.integrations.test_remote_machine_cpu import (
+    MachineProviderHTTP,
+    serve_pod_agent,
+    tuple_pins,
+)
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.integration
@@ -187,7 +192,7 @@ def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
 
 
 def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
-    from vibecomfy.workflow import VibeWorkflow, WorkflowSource, VibeOutput
+    from vibecomfy.workflow import VibeOutput, VibeWorkflow, WorkflowSource
     from vibecomfy.workflow_bundle import emit_bundle
 
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
@@ -200,7 +205,6 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         "volume": {"id": None, "name": None, "size_gb": 0, "mount_path": "/workspace"},
         "idle_timeout_seconds": 1800,
         "credential_ref": "env:RUNPOD_RUNPOD_FAKE_CREDENTIAL", "budget_cap_usd": 2.0}
-    target_selection.save_runpod_preferences(preferences)
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
     monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
     provider = MachineProviderHTTP(claim_path, tmp_path / "attempts")
@@ -254,6 +258,10 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     realm_id = daemon.service.realm["id"]
     owner = WorkspaceClient(daemon.endpoint, daemon.token)
     client = AstridClient(remote=RemoteAstridClient(owner))
+    # cause ee3015a5a; ruling: machines 11:55 Sat
+    # Setup and the SDK must share the real Runtime settings document.
+    settings.set_store_factory(lambda: owner)
+    target_selection.save_runpod_preferences(preferences, client=client)
     project = client.projects.create(name="CPU RunPod", slug="cpu-runpod", idempotency_key="project")
     assert project.ok, project.error
     project_id = project.data["project_id"]
@@ -264,9 +272,10 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         credential_source={"RUNPOD_RUNPOD_FAKE_CREDENTIAL": "synthetic-only"})
     host.discover()
     host.preflight()
-    for name in ("runpod.setup", "runpod.ls", "runpod.status", "runpod.release", "vibecomfy.run"):
+    for name in ("runpod.setup", "runpod.ls", "runpod.status", "runpod.claim", "runpod.release", "vibecomfy.run"):
         assert host.capabilities[name].ready, host.capabilities[name].preflight
     host.register()
+    agent_server = serve_pod_agent(provider, monkeypatch)
     worker = threading.Thread(target=host.run, kwargs={"poll_seconds": 0.02}, daemon=True)
     worker.start()
     def setup(raw):
@@ -277,6 +286,8 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert setup(preferences).ok
         retained = host._target_bindings.provider
         changed = {**preferences, "budget_cap_usd": 1.5}
+        # cause 8018aefbad; ruling: machines 11:55 Sat
+        # The saved budget ceiling still binds plain status to its setup owner.
         mismatch = client.invoke_result("runpod.status", kind="action", project=None,
             inputs={"placement_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": changed})},
             wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
@@ -287,11 +298,16 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         quote = GenerationFacade().describe(placement="runpod", client=client)
         assert quote["offer"]["datacenter_id"] == "DC-unpinned"
         assert target_selection.read_runpod_preferences().datacenter_id is None
-        result = GenerationFacade().image(entry="cpu-image", placement="runpod", client=client,
-            project=project_id, consent=("paid",), max_usd=1.5,
+        # cause 889312e1f, f123e45c1; ruling: machines 11:55 Sat
+        # Paid authority belongs to the claim; generation uses that live machine.
+        consent = target_selection.PaidRunConsent(
+            invocation_id="cpu-http-claim", offer_digest=quote["offer_digest"], max_usd=1.5,
             deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-            idle_seconds=1800, wait=True)
+            consent=("paid",), preparation_seconds=0, execution_seconds=0, idle_seconds=1800)
+        claimed = GenerationFacade().claim(consent=consent, requested_idle_seconds=1800, client=client, wait=True)
+        assert claimed.ok, claimed.to_dict()
+        result = GenerationFacade().image(entry="cpu-image", placement="runpod", client=client,
+            project=project_id, wait=True)
         assert result.ok, result.to_dict()
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         image_path = Path(delivered["image_paths"][0])
@@ -336,6 +352,8 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert not worker.is_alive()
         host.shutdown()
         daemon.stop()
+        agent_server.shutdown()
+        agent_server.server_close()
     evidence["selected_source"] = _same_root_lifecycle(tmp_path, tmp_path / "realm", realm_id)
     evidence["selected_source"]["agent_sha"] = subprocess.check_output(
         ["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "HEAD"], text=True).strip()
