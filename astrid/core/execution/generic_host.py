@@ -11365,18 +11365,35 @@ class GenericPackHost:
         """
         if task_data.get("capability") != "vibecomfy.run":
             return False
-        spec = _admitted_spec_envelope(task_data.get("spec", {}))
-        inputs = spec.get("inputs") or {}
+        try:
+            spec = _admitted_spec_envelope(task_data.get("spec", {}))
+        except HostError:
+            return False
+        inputs = spec.get("inputs", {})
+        if not isinstance(inputs, Mapping):
+            return False
         if inputs.get("comfy_url") or inputs.get("readiness_profile"):
             return False
         policy = inputs.get("placement_policy")
-        policy = json.loads(policy) if policy else {}
+        if policy and not isinstance(policy, str):
+            return False
+        try:
+            policy = json.loads(policy) if policy else {}
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(policy, Mapping):
+            return False
         if policy.get("kind", "local") != "local":
             return False
-        contract = _execution_contract(task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
-        requested = ((contract or {}).get("lifecycle") or {}).get("idle_timeout_seconds")
-        return self._local_engine_idle.begin(requested=(
-            requested if requested is not None else policy.get("idle_timeout_s")))
+        try:
+            if "idle_timeout_s" in policy:
+                idle_seconds(DEFAULT_IDLE_SECONDS, requested=policy["idle_timeout_s"])
+            contract = _execution_contract(task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+            requested = ((contract or {}).get("lifecycle") or {}).get("idle_timeout_seconds")
+            return self._local_engine_idle.begin(requested=(
+                requested if requested is not None else policy.get("idle_timeout_s")))
+        except (HostError, ValueError, TypeError, OverflowError):
+            return False
 
     def run_task(
         self,

@@ -383,3 +383,45 @@ def test_lifecycle_idle_timeout_wins_over_placement_and_environment(world, monke
                         lambda *args, **kwargs: {"lifecycle": {"idle_timeout_seconds": 3}})
     run(host)
     assert timers.live().seconds == 3
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        ({"inputs": {"placement_policy": "{"}}, "host target policy is not valid JSON"),
+        ({"inputs": {"placement_policy": "[]"}}, "host target policy must be an object"),
+        ({"inputs": {"placement_policy": '"x"'}}, "host target policy must be an object"),
+        ({"inputs": ["bad"]}, "vibecomfy.run canonical input preflight failed: provide a workflow JSON input or Python, companion, and source members"),
+        (["bad"], "runtime task is missing its immutable spec envelope"),
+        ({"inputs": {"placement_policy": '{"kind":"local","device":null,"idle_timeout_s":-1}'}}, "idle timeout must be finite and non-negative"),
+        ({"inputs": {"placement_policy": '{"kind":"local","device":null,"idle_timeout_s":NaN}'}}, "idle timeout must be finite and non-negative"),
+    ],
+    ids=["invalid-json", "list-policy", "string-policy", "inputs", "spec", "negative-idle", "nonfinite-idle"],
+)
+def test_bad_local_policy_reaches_normal_task_validation(tmp_path, spec, message):
+    from astrid.core.execution.generic_host import HostError
+    from tests.test_generic_host import FakeRuntime, _write_manifest
+
+    manifest = _write_manifest(tmp_path / "pack", capability_id="vibecomfy.run")
+    definition = json.loads(manifest.read_text())
+    definition["metadata"]["host_placement_policy"] = True
+    manifest.write_text(json.dumps(definition))
+    client = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=client, attempt_root=tmp_path / "attempt")
+    timers = Timers()
+    host._local_engine_idle = type(host._local_engine_idle)(timer=timers)
+    host.discover()
+    host.register()
+    value = {"task": {"id": "job", "capability": "vibecomfy.run", "project_id": "demo",
+                      "attempt_id": "a", "fence": 1, "spec": spec}}
+    client.tasks["job"] = value
+    try:
+        error_type = ValueError if message.startswith("idle timeout") else HostError
+        with pytest.raises(error_type) as exc:
+            host.run_task(value, lease_token="lease")
+        assert str(exc.value) == message
+        assert client.failures[0][2] == message
+        assert host._local_engine_idle.status()["active_jobs"] == 0
+        assert timers.armed == []
+    finally:
+        host.shutdown()
