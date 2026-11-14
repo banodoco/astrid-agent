@@ -16,6 +16,8 @@ authored guidance lives under `docs/` and is composed by Astrid's existing
 skill sync; pack-local `docs/SKILL.md` files are discovered from their declared
 manifest pointers.
 
+Astrid commands here run through the launcher; its path on each OS is in the [astrid-setup skill's Launcher paths](../../setup/docs/SKILL.md#launcher-paths), and the blocks show the Linux path.
+
 Choose the route by the requested result. Read only that route's guidance:
 
 | Request | Start here |
@@ -101,22 +103,22 @@ names to the generation settings and say so; see the generation skill.
 Never put passwords, API keys, or other secrets in preferences; they are
 included in model prompts.
 
-Use `python3 -m astrid preferences` for both scopes,
-`python3 -m astrid preferences user` for the user document, and
-`python3 -m astrid preferences project` for the selected project's
+Use `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" preferences` for both scopes,
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" preferences user` for the user document, and
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" preferences project` for the selected project's
 preferences. To change lasting guidance, read the correct scope, check it out
 to a new file, edit it, then check it in. For example:
 
 ```bash
-python3 -m astrid preferences checkout --scope user --file astrid-user-prefs.md
-python3 -m astrid preferences checkin astrid-user-prefs.md
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" preferences checkout --scope user --file astrid-user-prefs.md
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" preferences checkin astrid-user-prefs.md
 ```
 
 Read the [preferences and project documents guide](../../../../docs/guides/preferences-and-documents.md)
 for conflict recovery and the full CLI surface. Do not edit Runtime storage directly.
 
-Use `python3 -m astrid documents list` to list reusable project documents and
-`python3 -m astrid documents create --kind KIND --file FILE` to create one. The `show`,
+Use `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" documents list` to list reusable project documents and
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" documents create --kind KIND --file FILE` to create one. The `show`,
 `checkout`, and `checkin` verbs read a document and check a working copy in
 and out. Generic documents do not enter prompt context automatically.
 
@@ -132,9 +134,9 @@ an explicit project overrides it. Read-only Hivemind search and retrieval do
 not need a selected project; they can run at workspace scope.
 
 ```bash
-python3 -m astrid projects list
-python3 -m astrid projects select <project>
-python3 -m astrid runs open
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" projects list
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" projects select <project>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" runs open
 ```
 
 `--json` is optional machine-readable output, not a required argument or input
@@ -157,9 +159,9 @@ The gateway is the stable command surface. Begin with its census, then inspect
 one family when needed:
 
 ```bash
-python3 -m astrid --help
-python3 -m astrid projects --help
-python3 -m astrid timelines --help
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" --help
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" projects --help
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines --help
 ```
 
 The top-level families are `projects`, `timelines`, `media`, `tasks`, `runs`,
@@ -173,17 +175,17 @@ Use the runtime to discover work. Do not infer current state from checkout
 filenames, modification times, a local database, or event-log files.
 
 ```bash
-python3 -m astrid projects list --json
-python3 -m astrid projects current --json
-python3 -m astrid timelines list --project <project>
-python3 -m astrid runs list --project <project>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" projects list --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" projects current --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines list --project <project>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" runs list --project <project>
 ```
 
 To return to the latest successful render for a project:
 
 ```bash
-python3 -m astrid projects select <project>
-python3 -m astrid runs open
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" projects select <project>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" runs open
 ```
 
 Use an exact run id when one is known. Use `--default-timeline` when the
@@ -191,9 +193,9 @@ request is to open the project's main/default timeline render, and
 `--timeline <slug-or-id>` for another named timeline:
 
 ```bash
-python3 -m astrid runs open <run-id>
-python3 -m astrid runs open --default-timeline
-python3 -m astrid runs open --timeline <timeline>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" runs open <run-id>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" runs open --default-timeline
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" runs open --timeline <timeline>
 ```
 
 `runs open` selects a successful `rendering.render` run. It does not claim that
@@ -206,9 +208,9 @@ For paused work, include archived resources in discovery and recover through
 the runtime:
 
 ```bash
-python3 -m astrid timelines list --project <project> --include-archived --json
-python3 -m astrid timelines recover <timeline> --project <project> --json
-python3 -m astrid media references list --project <project> --include-archived --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines list --project <project> --include-archived --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines recover <timeline> --project <project> --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media references list --project <project> --include-archived --json
 ```
 
 Use `timelines show`, `history`, `diff`, `visualize`, and `render` for
@@ -221,9 +223,9 @@ rendering, worlds, effects, and generated elements. Use `tasks` and `runs` to
 inspect or manage admitted work:
 
 ```bash
-python3 -m astrid tasks list --project demo --json
-python3 -m astrid runs show <run-id> --project demo --json --evidence
-python3 -m astrid runs events <run-id> --project demo --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" tasks list --project demo --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" runs show <run-id> --project demo --json --evidence
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" runs events <run-id> --project demo --json
 ```
 
 For a failed run, start with `runs show --evidence`; if the failure detail is

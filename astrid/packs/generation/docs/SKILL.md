@@ -25,8 +25,7 @@ print an API key; never write a change without that change's own yes.
 
 Astrid commands here use the launcher; its path on each OS is in the
 [astrid-setup skill's Launcher paths](../../setup/docs/SKILL.md#launcher-paths).
-The blocks show the Linux path. In a source checkout with no launcher, use
-`python3 -m astrid` in its place. Make a work folder first: `WORK=$(mktemp -d)`
+The blocks show the Linux path. Make a work folder first: `WORK=$(mktemp -d)`
 (PowerShell: `$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))`).
 
 1. **Read what is set.** `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults --json` (each slot and
@@ -102,6 +101,13 @@ The CLI has the same shape:
 
 `--dry-run` prints the plan without running it. `--out` puts the result in a
 folder you name; without it, files land in `./outputs/<task-id>/`.
+
+Until first-frame conditioning lands, image-to-video uses the image as a style and subject reference, not as the exact first frame; the first frame is not guaranteed to match the picture.
+
+To cancel a stuck or unwanted generation, run
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" tasks cancel TASK_ID --project PROJECT`;
+over MCP, use the `tasks_cancel` tool. It removes only Astrid's own job from the user's ComfyUI queue;
+other jobs there are untouched.
 
 ## Placement
 

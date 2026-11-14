@@ -161,3 +161,48 @@ def test_user_facing_scan_strings_name_the_generate_scan_command():
     mcp_server = _text("astrid/mcp_server.py")
     assert "(astrid generate scan)" in mcp_server
     assert "vibecomfy local scan" not in mcp_server
+
+
+LAUNCHER = '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid"'
+
+
+def test_generation_skill_names_cancel_through_the_launcher_and_mcp():
+    from astrid.core.cli.domain_tasks import build_parser
+    from astrid.mcp_server import build_tools
+
+    command = f"{LAUNCHER} tasks cancel TASK_ID --project PROJECT"
+    generation = _text(GENERATION)
+    assert command in generation
+    assert "`tasks_cancel`" in generation
+    assert "tasks_cancel" in build_tools()
+    parsed = build_parser(None).parse_args(shlex.split(command)[2:])
+    assert (parsed.task_id, parsed.project) == ("TASK_ID", "PROJECT")
+    assert command in _text(VIBECOMFY)
+    for pack in ("generation", "vibecomfy"):
+        for skill in (ROOT / "astrid/packs" / pack).rglob("SKILL.md"):
+            assert "python3 -m astrid tasks cancel" not in skill.read_text(encoding="utf-8"), skill
+
+
+# The CLI form only: `python3 -m astrid.<module>` runs a module the launcher has no route for.
+_SOURCE_CLI = re.compile(r"\bpython3?\s+-m\s+astrid(?![\w.])")
+# source-checkout audience: python -m astrid is correct there (orchestrator ruling A, 14 Nov)
+_SOURCE_CHECKOUT_GUIDES = {
+    "astrid/packs/developer/docs/SKILL.md",
+    "astrid/packs/_core/docs/pack-builder/SKILL.md",
+    "astrid/packs/_core/docs/pack-testing/SKILL.md",
+    "docs/setup/release-recipe.md",
+}
+
+
+def test_shipped_skills_run_astrid_through_the_launcher_not_python_m():
+    guides = sorted({*ROOT.glob("astrid/packs/*/docs/**/SKILL.md"), *ROOT.glob("docs/setup/*.md")})
+    assert ROOT / CORE in guides and ROOT / "docs/setup/release-recipe.md" in guides
+    offenders = []
+    for guide in guides:
+        relative = guide.relative_to(ROOT).as_posix()
+        if relative in _SOURCE_CHECKOUT_GUIDES:
+            continue
+        for number, line in enumerate(guide.read_text(encoding="utf-8").splitlines(), 1):
+            if _SOURCE_CLI.search(line):
+                offenders.append(f"{relative}:{number}: {line.strip()}")
+    assert offenders == [], "\n".join(offenders)
