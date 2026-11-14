@@ -1094,7 +1094,10 @@ class GenerationFacade:
                 return payload
             if updates:
                 raise ValueError('local target input updates are not supported; select an explicit URL')
-            selection = targets.resolve_target(placement, repo=project_root)
+            from astrid.core.generation import listing as generation_listing
+            # --save writes only what resolve_target selects, never the Runtime placement default.
+            selection = (targets.resolve_target(placement, repo=project_root) if save
+                         else generation_listing.target_selection(client, placement, repo=project_root))
             record = selection.record
             if record is None and placement == 'managed':
                 record = targets.TargetRecord(owner='astrid')
@@ -1104,7 +1107,9 @@ class GenerationFacade:
                 if record is None:
                     raise ValueError('select an explicit target before saving')
                 targets.save_target(record)
-            return readiness_envelope(target=record)
+            payload = readiness_envelope(target=record)
+            payload['placement'] = generation_listing.placement_block(selection)
+            return payload
         except (ValueError, OSError) as exc:
             raise GenerationInputError(str(exc)) from exc
 
