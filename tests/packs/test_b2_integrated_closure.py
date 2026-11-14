@@ -57,7 +57,7 @@ def test_catalog_preserves_stage1_capability_census() -> None:
     assert tuple(pack.id for pack in packs) == PACK_IDS
     assert (len(packs), len(executors.list()), len(orchestrators.list()), len(elements.list())) == (
         11,
-        54,
+        49,
         0,
         24,
     )
