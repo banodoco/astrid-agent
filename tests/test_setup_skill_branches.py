@@ -202,7 +202,7 @@ def test_runpod_setter_guide_command_uses_hidden_prompt_without_key_in_argv_or_e
     assert key not in output
 
 
-def test_runpod_setup_commands_reach_real_generation_parsers():
+def test_runpod_setup_commands_reach_real_generation_parsers(monkeypatch, capsys):
     from astrid.core.generation import cli as generation_cli
 
     parser = generation_cli._parser()
@@ -220,16 +220,20 @@ def test_runpod_setup_commands_reach_real_generation_parsers():
     assert (offer_args.modality, offer_args.placement, offer_args.engine, offer_args.json) == (
         "describe", "runpod", "comfyui", True)
 
+    from tests.packs.runpod.test_machine import _claim_cli_case
+
+    cli, _, _, calls, describe, claim = _claim_cli_case(monkeypatch)
+    claim_argv = _guide_argv("machines claim --consent paid --max-usd 2")
+    claim_argv = [arg.replace("FUTURE_UTC_DEADLINE", "2099-01-01T00:00:00Z") for arg in claim_argv]
+    assert cli.main(claim_argv[1:], describe=describe, claim=claim) == 0
+    grant = calls[-1][1]["consent"]
     paid = _guide_argv("generate image --entry ENTRY --inputs-json /absolute/path/inputs.json")
-    paid = [arg.replace("FUTURE_UTC_DEADLINE", "2099-01-01T00:00:00Z")
-            .replace("OFFER_DIGEST", "fake-offer")
-            .replace("PREPARATION_SECONDS", "60")
-            .replace("EXECUTION_SECONDS", "60")
-            .replace("IDLE_SECONDS", "1800") for arg in paid]
     paid_args = parser.parse_args(paid[1:])
     assert paid_args.modality == "image"
-    assert paid_args.placement == "runpod" and paid_args.consent == ["paid"]
-    assert paid_args.max_usd == 2 and paid_args.offer_digest == "fake-offer"
+    assert paid_args.placement == "runpod" and grant.consent == ("paid",)
+    assert grant.max_usd == 2 and grant.deadline == "2099-01-01T00:00:00Z"
+    assert json.loads(capsys.readouterr().out)["policy"]["deadline"] == "2099-01-01T00:00:00Z"
+    assert not {"--consent", "--max-usd", "--deadline", "--allow-paid", "--until-release"}.intersection(paid)
 
 
 def test_runpod_lease_guide_commands_parse_without_provider_access(monkeypatch, capsys):
