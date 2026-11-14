@@ -539,7 +539,9 @@ _RED = {
     (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "Plan 34: local inventory"),
     (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "Plan 34: local inventory"),
     (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34: local inventory"),
-    (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "Plan 34: local inventory"),
+    # h3 declares the kind's plain inputs (5fe9ed7a0): a prompt plus an image now resolves to h3 on local and attached targets
+    # (recorded no-LTX-fallback limit), whose workflow needs BasicGuider; the CPU fixture's object_info does not offer it.
+    (("video", "i2v"), "attached"): ("GenerationReadinessError", "BasicGuider", "Plan 34: local inventory"),
 }
 
 
