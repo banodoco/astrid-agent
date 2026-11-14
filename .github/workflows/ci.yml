@@ -102,7 +102,10 @@ jobs:
       - name: Import cycles gate
         run: make cycles
 
+      # Runs even when an earlier gate failed: a collection error stops every shard, and the ruff, mypy and cycle gates
+      # being red on this branch must not hide it.
       - name: Collection errors gate
+        if: ${{ !cancelled() }}
         run: make collection
 
       - name: Save pip cache on main or int branches (C-08)
