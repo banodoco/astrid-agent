@@ -525,6 +525,8 @@ def _infer_video_mode(
         return "flf"
     if has_image_ref:
         return "i2v"
+    if inputs.get("video_ref"):
+        return "v2v"
     return "t2v"
 
 
