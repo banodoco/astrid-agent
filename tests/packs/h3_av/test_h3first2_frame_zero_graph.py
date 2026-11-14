@@ -213,6 +213,20 @@ def test_native_invalid_guide_positions_are_typed(position):
     assert caught.value.field == "media[0].position"
 
 
+@pytest.mark.parametrize("purpose", ["first_frame", "keyframe"])
+def test_native_timed_image_requires_resolvable_image_modality(purpose):
+    raw = _native(purpose)
+    raw["media"][0].pop("modality")
+    raw["media"][0]["asset"] = "untyped-asset"
+    if purpose == "keyframe":
+        raw["media"][0]["position"] = 3
+    with pytest.raises(H3RequestError) as caught:
+        normalize_request(raw)
+    assert caught.value.code == "h3.keyframe.unsupported"
+    assert caught.value.field == "media[0].modality"
+    assert "modality" in caught.value.fix and "image" in caught.value.fix
+
+
 def test_guide_position_refusal_reaches_the_public_generation_boundary(tmp_path):
     from astrid.sdk.generation import GenerationFacade
 

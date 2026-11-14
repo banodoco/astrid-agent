@@ -505,6 +505,13 @@ def read_prepared_request(raw: Mapping[str, Any], expected_digest: Any, *, requi
 
 def _validate_image_purposes(media, duration, *, continuation, adapter, default_first_frame):
     source_free = not continuation and not adapter and all(item["role"] == "reference" for item in media)
+    for index, item in enumerate(media):
+        if item.get("purpose") in {"first_frame", "keyframe"} and item.get("modality") != "image":
+            raise H3RequestError(
+                f"media[{index}].modality must resolve to image for a timed image purpose",
+                code="h3.keyframe.unsupported", field=f"media[{index}].modality",
+                fix="Declare modality: image or supply an inspected image asset for first_frame/keyframe",
+            )
     # Only new, unsealed single-image i2v requests gain the new default. Explicit
     # look references, multi-reference jobs and sealed older requests retain
     # their existing look-conditioning semantics.
