@@ -60,9 +60,22 @@ def _selected_managed_target(tmp_path, monkeypatch):
     asset = {'name': path.name, 'subdir': 'hunyuan_foley', 'size_bytes': len(content),
              'sha256': hashlib.sha256(content).hexdigest(),
              'url': 'https://fixture.invalid/synchformer_state_dict.pth'}
+    workflow = workflow_from_ready('image/z_image_turbo')
+    models = []
+    for loader in workflow.metadata['model_assets']:
+        loader_path = models_root / loader['subdir'] / loader['name']
+        loader_path.parent.mkdir(parents=True, exist_ok=True)
+        data = ('CPU loader fixture: ' + loader['name']).encode()
+        loader_path.write_bytes(data)
+        loader.update(sha256=hashlib.sha256(data).hexdigest(), size_bytes=len(data))
+        models.append(DownloadResult(loader_path.name, str(loader_path), 'skipped',
+                                     len(data), loader['sha256'], True, 0))
+    models.append(DownloadResult(path.name, str(path), 'skipped', len(content), asset['sha256'], True, 0))
+    workflow.metadata['model_assets'].append(asset)
+    workflow.requirements.models = copy.deepcopy(workflow.metadata['model_assets'])
     receipt = SimpleNamespace(status='installed',
         health=HealthEvidence('healthy', '2026-11-02T17:06:00Z', 'a' * 64, True),
-        models=(DownloadResult(path.name, str(path), 'skipped', len(content), asset['sha256'], True, 0),))
+        models=tuple(models))
     actual_endpoint = engine_local_endpoint.local_engine_endpoint
     monkeypatch.setattr(engine_local_endpoint, 'recorded_engine_root', lambda engine: str(root))
     monkeypatch.setattr(engine_local_endpoint, 'local_engine_endpoint',
@@ -70,12 +83,12 @@ def _selected_managed_target(tmp_path, monkeypatch):
                                                  status=lambda *a, **k: receipt))
     client = preflight.select_generation_target('managed')
     assert isinstance(client, ComfyTargetClient)
-    assert client.target.facts['model_root']['inventory'] == [{
-        'name': path.name, 'subdir': 'hunyuan_foley', 'size': len(content),
-        'sha256': 'sha256:' + asset['sha256'],
-    }]
-    workflow = workflow_from_ready('image/z_image_turbo')
-    workflow.metadata['model_assets'].append(asset)
+    expected = [{'name': model.model,
+                 'subdir': Path(model.path).parent.relative_to(models_root).as_posix(),
+                 'size': model.bytes, 'sha256': 'sha256:' + model.sha256}
+                for model in models]
+    assert client.target.facts['model_root']['inventory'] == sorted(
+        expected, key=lambda row: (row['subdir'], row['name']))
     data = _target_capture(workflow)
     monkeypatch.setattr(client, 'object_info', lambda: copy.deepcopy(data))
     return client, workflow, path
@@ -210,8 +223,17 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
              'bundle': str(bundle.python_path), 'ambiguity': None,
              'model_assets': bundle.workflow.metadata['model_assets']}
     original_find = entries._ready_entries_for
-    monkeypatch.setattr(entries, '_ready_entries_for',
-        lambda identifier=None: [entry] if identifier == entry['id'] else original_find(identifier))
+    ready_entry = copy.deepcopy(original_find('image/z_image_turbo')[0])
+    ready_entry['model_assets'] = copy.deepcopy(assets[:3])
+
+    def selected_entries(identifier=None):
+        if identifier == entry['id']:
+            return [entry]
+        if identifier == ready_entry['id']:
+            return [ready_entry]
+        return original_find(identifier)
+
+    monkeypatch.setattr(entries, '_ready_entries_for', selected_entries)
     monkeypatch.setattr(entries, 'ready_entries', lambda: [entry])
 
     root = tmp_path / 'installed-target'
@@ -370,6 +392,8 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
     # B1 regression: the pre-existing ready entry still approves with Foley
     # fixture files present. Its inventory comes from the same composition.
     other = workflow_from_ready('image/z_image_turbo')
+    other.metadata['model_assets'] = copy.deepcopy(fixture.workflow.metadata['model_assets'][:3])
+    other.requirements.models = copy.deepcopy(other.metadata['model_assets'])
     other_client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
     schema = entries.target_schema({'id': 'image/z_image_turbo'}, other, other_client)
     other_bundle = emit_bundle(other, tmp_path / 'other/workflow.py', {'operation': 'authored'})
@@ -393,8 +417,13 @@ def _receipt_attested_managed_workflow(tmp_path, monkeypatch):
         asset['size_bytes'] = len(data)
     workflow.metadata['model_assets'] = copy.deepcopy(original_assets)
     workflow.requirements.models = copy.deepcopy(original_assets)
-    ready = entries._ready_entries_for('image/z_image_turbo')
+    original_find = entries._ready_entries_for
+    ready = original_find('image/z_image_turbo')
+    for entry in ready:
+        entry['model_assets'] = copy.deepcopy(original_assets)
     monkeypatch.setattr(entries, 'ready_entries', lambda: ready)
+    monkeypatch.setattr(entries, '_ready_entries_for',
+        lambda identifier=None: ready if identifier in (None, 'image/z_image_turbo') else original_find(identifier))
     root = tmp_path / 'installed-target'
     receipt_path = root / '.astrid-engine/install.json'
     receipt_path.parent.mkdir(parents=True)
@@ -450,11 +479,13 @@ def _assert_auxiliary_verification_sidecar(fixture, before_sidecars):
 def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkeypatch, change):
     fixture = _receipt_attested_managed_workflow(tmp_path, monkeypatch)
     if change == 'unattested':
-        # Present bytes and a complete declaration do not replace a receipt.
+        # A complete pinned declaration supplies custody for verified bytes without a receipt row.
         fixture.receipt.models = fixture.receipt.models[1:]
     client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
     inventory = client.target.facts['model_root']['inventory']
-    assert len(inventory) == len(fixture.receipt.models)
+    assert len(inventory) == len(fixture.workflow.metadata['model_assets'])
+    assert {(row['subdir'], row['name']) for row in inventory} == {
+        (asset['subdir'], asset['name']) for asset in fixture.workflow.metadata['model_assets']}
     assert fixture.workflow.metadata['model_assets'][:3] == fixture.original_assets
     path = fixture.models_root / fixture.original_assets[0]['subdir'] / fixture.original_assets[0]['name']
     if change == 'hash':
@@ -465,7 +496,7 @@ def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkey
         path.unlink()
     before_receipt = fixture.receipt_path.read_bytes()
     before_sidecars = set(fixture.models_root.rglob('*.json'))
-    if change != 'match':
+    if change not in {'match', 'unattested'}:
         with pytest.raises(ValueError, match='model-root'):
             entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
         assert not (tmp_path / 'approved').exists()
@@ -478,9 +509,21 @@ def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkey
         _assert_auxiliary_verification_sidecar(fixture, before_sidecars)
         assert entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client).auxiliary_model_custody == 'target'
     assert fixture.receipt_path.read_bytes() == before_receipt
-    if change != 'match':
+    if change not in {'match', 'unattested'}:
         assert set(fixture.models_root.rglob('*.json')) == before_sidecars
     assert set(fixture.requests) == {'/object_info'}
+
+
+def test_incomplete_declaration_cannot_replace_receipt_custody(tmp_path, monkeypatch):
+    fixture = _receipt_attested_managed_workflow(tmp_path, monkeypatch)
+    first = fixture.original_assets[0]
+    fixture.receipt.models = fixture.receipt.models[1:]
+    entries.ready_entries()[0]['model_assets'][0].pop('sha256')
+    client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
+    assert not any((row['subdir'], row['name']) == (first['subdir'], first['name'])
+                   for row in client.target.facts['model_root']['inventory'])
+    with pytest.raises(ValueError, match='model-root'):
+        entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
 
 
 @pytest.mark.parametrize('field', ['sha256', 'size_bytes'])

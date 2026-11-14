@@ -78,7 +78,12 @@ def test_supervisor_gives_every_spawn_the_engine_env_and_launch_fingerprint_is_s
     primary = next(e for e in recipe.environments if e.name == recipe.primary_environment)
     root = str(tmp_path / "engine")
     sup = _Supervisor({"platform": key, "root": root, "engine": "comfyui"}, recipe, "t")
-    before = dict(sup.launch)
+    def launch():
+        request = sup.adapter.start_request(recipe, root, deadline=1e12)
+        return {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+
+    assert sup.launch is None  # Launch identity is bound at admission, after installation.
+    before = launch()
     site = f"{root}/{primary.relative_path}/lib/python3.12/site-packages/nvidia/cu13/lib"
     os.makedirs(site)  # the venv appears after the supervisor computed its fingerprint
     expected = [site, *DRIVER]
@@ -87,4 +92,5 @@ def test_supervisor_gives_every_spawn_the_engine_env_and_launch_fingerprint_is_s
         for env in ({}, {"LD_LIBRARY_PATH": caller}):
             request = sup.child_request(CommandRequest(("true",), root, env, 1e12))
             assert _ld(request.env) == expected
-    assert "LD_LIBRARY_PATH" not in sup.launch["env"] and sup.launch == before
+    assert "LD_LIBRARY_PATH" not in before["env"]
+    assert launch() == before and sup.launch is None

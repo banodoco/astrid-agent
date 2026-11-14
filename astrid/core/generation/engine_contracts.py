@@ -6,6 +6,8 @@ import random
 from dataclasses import dataclass
 from typing import Any, Callable, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
 
+MANAGED_ENGINE_PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
+
 # Keep the original check text here; the raise-site inventory guards coverage.
 _ENGINE_REASONS = frozenset({
     'A target-native --root is required for Windows',

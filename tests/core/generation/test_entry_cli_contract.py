@@ -21,7 +21,7 @@ def test_public_sfx_route_receives_declared_inputs(monkeypatch, tmp_path, capsys
         audio=lambda **kwargs: captured.append(kwargs) or {'ok': True}))
     assert console.main(['generate', *verb, '--entry', 'audio/hunyuan_video_foley',
                          '--video-ref', str(video), '--prompt', 'gravel footsteps', '--dry-run', '--json']) == 0
-    assert captured == [{'entry': 'audio/hunyuan_video_foley', 'mode': 'sfx', 'target': None,
+    assert captured == [{'entry': 'audio/hunyuan_video_foley', 'mode': 'sfx', 'placement': 'auto',
                          'dry_run': True, 'prompt': 'gravel footsteps', 'video_ref': str(video)}]
     assert json.loads(capsys.readouterr().out) == {'ok': True}
 
@@ -31,11 +31,15 @@ def test_foley_help_and_describe_show_license_without_runtime(monkeypatch, capsy
     monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('metadata opened Runtime'))
     notice = 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.'
     assert console.main(['generate', 'describe', '--entry', 'audio/hunyuan_video_foley']) == 0
-    assert notice in capsys.readouterr().out
+    text = capsys.readouterr().out
+    assert "audio/hunyuan_video_foley" in text and "video_ref" in text
+    assert notice not in text
     with pytest.raises(SystemExit) as result:
         cli.main(['audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley', '--help'])
     assert result.value.code == 0
-    assert notice in capsys.readouterr().out
+    text = capsys.readouterr().out
+    assert "audio/hunyuan_video_foley" in text and "video_ref" in text
+    assert notice not in text
 
 
 def test_describe_positional_catalog_entry_id(capsys, monkeypatch):
@@ -132,7 +136,7 @@ def test_json_and_convenience_values_use_shared_resolver(monkeypatch, capsys, tm
         image=lambda **kwargs: captured.append(kwargs) or {"ok": True}))
     assert cli.main(["image", "--entry", "workflow", "--inputs-json", str(file), "--seed", "19", "--json"]) == 0
     assert captured == [{"entry": "workflow", "mode": expected_description["mode"],
-                         "target": "auto", "dry_run": False, "client": "client", **expected}]
+                         "placement": "auto", "dry_run": False, "client": "client", **expected}]
     assert json.loads(capsys.readouterr().out) == {"ok": True}
 
 

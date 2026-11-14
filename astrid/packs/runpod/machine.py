@@ -621,6 +621,13 @@ class RunPodMachine:
         return type(self)(adapter, begin=begin, done=done,
                           observe_mounts=observe_mounts or getattr(adapter, "observe_mounts", None))
 
+    def failure_recorder(self, job: Any, machine_of: Callable[[], Mapping[str, Any] | None],
+                         timing: Any) -> Callable[[Mapping[str, Any]], None]:
+        """Build this provider's post-release failure callback for the host."""
+        from .failure_receipt import recorder
+
+        return recorder(job, machine_of, timing)
+
     def _require(self) -> Any:
         if self.adapter is None:
             raise MachineError("the runpod machine has no host-owned lease owner")
