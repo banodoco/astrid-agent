@@ -1000,7 +1000,9 @@ def inventory_pod(fetch_volume, monkeypatch):
 
     def listing(path):
         c.listings.append(path)
-        if c.listing_failed:
+        if c.listing_failed and not isinstance(path, int) and (
+            Path(path) == c.models or c.models in Path(path).parents
+        ):
             raise OSError('PRIVATE_PROVIDER_BODY')
         return original(path)
 
