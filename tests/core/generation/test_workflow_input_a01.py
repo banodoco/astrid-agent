@@ -27,7 +27,11 @@ def test_target_discovery_and_transient_override_do_not_write(monkeypatch, tmp_p
     config = targets.config_path()
     before = config.read_bytes(), config.stat().st_mtime_ns
     targets.config_lock_path().unlink()
-    assert GenerationFacade().targets() == saved
+    # P4.1: targets reports where its placement came from, which differs between the save call and the next read
+    auto = GenerationFacade().targets()
+    assert {k: v for k, v in auto.items() if k != 'placement'} == {k: v for k, v in saved.items() if k != 'placement'}
+    assert saved['placement'] == {'resolved': {'kind': 'attached', 'endpoint': 'http://127.0.0.1:8192'}, 'source': 'request'}
+    assert auto['placement'] == {'resolved': {'kind': 'attached', 'endpoint': 'http://127.0.0.1:8192'}, 'source': 'global'}
     override = GenerationFacade().targets(placement='http://localhost:8193')
     assert override['target']['endpoint'].endswith(':8193')
     assert (config.read_bytes(), config.stat().st_mtime_ns) == before

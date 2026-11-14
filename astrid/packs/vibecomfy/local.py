@@ -13,6 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -211,6 +212,39 @@ def _pinokio_candidates(
     return candidates, apps_by_port
 
 
+def _workflow_listing(entries: list[Any]) -> tuple[list[str], list[dict[str, Any]]]:
+    """Name saved workflows newest first; entries without edit times keep server order.
+
+    ComfyUI's /userdata returns {"path", "size", "modified"} objects with `modified`
+    in epoch milliseconds when full_info=true, and plain path strings from older servers.
+    """
+    dated: list[tuple[str, int]] = []
+    undated: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            undated.append(entry)
+        elif isinstance(entry, dict) and isinstance(entry.get("path"), str):
+            modified = entry.get("modified")
+            if isinstance(modified, (int, float)) and not isinstance(modified, bool):
+                dated.append((entry["path"], int(modified)))
+            else:
+                undated.append(entry["path"])
+    dated.sort(key=lambda item: (-item[1], item[0]))
+    names = [name for name, _ in dated] + undated
+    detail: list[dict[str, Any]] = [
+        {"name": name, "modified": _iso_utc_from_epoch_ms(modified)} for name, modified in dated
+    ] + [{"name": name, "modified": None} for name in undated]
+    return names, detail
+
+
+def _iso_utc_from_epoch_ms(value: int) -> str | None:
+    try:
+        moment = datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return moment.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def _probe_server(
     port: int,
     *,
@@ -275,13 +309,13 @@ def _probe_server(
     except (OSError, urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError) as exc:
         errors.append(_error(port, "/internal/folder_paths", exc))
     try:
-        query = urllib.parse.urlencode({"dir": "workflows"})
+        query = urllib.parse.urlencode({"dir": "workflows", "full_info": "true", "recurse": "true"})
         workflows = get_json("/userdata?" + query)
     except (OSError, urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError) as exc:
         errors.append(_error(port, "/userdata?dir=workflows", exc))
     else:
         if isinstance(workflows, list):
-            server["workflows"] = workflows
+            server["workflows"], server["workflows_detail"] = _workflow_listing(workflows)
         else:
             errors.append({
                 "port": port,

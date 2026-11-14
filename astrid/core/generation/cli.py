@@ -155,6 +155,20 @@ def _context_description(argv: list[str]) -> dict[str, Any] | None:
     return description
 
 
+def _attached_workflow_endpoint(parsed: argparse.Namespace) -> str:
+    """The attached ComfyUI endpoint for ``describe FILE --placement URL``; empty when not that form."""
+    if not (parsed.placement and '://' in parsed.placement and parsed.workflow and parsed.entry is None):
+        return ''
+    if not Path(parsed.workflow).expanduser().exists():
+        return ''
+    from astrid.core.generation import placement as placements, settings, targets
+    endpoint = placements.resolve_placement(placements.request_from_selector(parsed.placement)).endpoint or ''
+    try:  # loopback only, like `settings set placement`: nothing is sent to any other host
+        return targets.normalize_target({'endpoint': endpoint}).endpoint
+    except (targets.TargetConfigError, ValueError) as exc:
+        raise ValueError(settings.ATTACHED_REFUSAL) from exc
+
+
 def _json_inputs(path: str) -> dict[str, Any]:
     def object_pairs(pairs):
         values = {}
@@ -269,6 +283,12 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument('--apply', action='store_true')
     command.add_argument('--consent', action='append', choices=('user_env',), default=[])
     command.add_argument('--json', action='store_true')
+    command = sub.add_parser('fetch-models', help='Show, then download on confirmation, the models an entry lacks on your own ComfyUI.')
+    command.add_argument('entry')
+    command.add_argument('mode')
+    command.add_argument('--comfy-url', required=True)
+    command.add_argument('--apply', metavar='PLAN_SHA256', help='Download exactly the plan with this digest.')
+    command.add_argument('--json', action='store_true')
     command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
     command.add_argument('--placement', action=_Once, default='auto')
     command.add_argument('--engine', action=_Once, default='comfyui')
@@ -295,12 +315,20 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     unpin.add_argument('kind', choices=('image', 'video', 'audio'))
     unpin.add_argument('mode')
     unpin.add_argument('--json', action='store_true')
+    command = sub.add_parser('scan', help='List the running loopback ComfyUI servers (read-only).')
+    command.add_argument('--ports', default='8188,8000', help='Comma-separated loopback ports to probe.')
+    command.add_argument('--json', action='store_true', help='Print JSON (the default; kept for symmetry).')
     command = sub.add_parser('settings', help='Edit the generation settings document as a file.')
     actions = command.add_subparsers(dest='settings_action', required=True)
     out = actions.add_parser('checkout', help='Write the settings document to a new file.')
     out.add_argument('--file', required=True)
     back = actions.add_parser('checkin', help='Save an edited checkout; a stale one is refused.')
     back.add_argument('file')
+    one = actions.add_parser('set', help='Save one setting; placement takes a ComfyUI URL.')
+    one.add_argument('key', choices=('placement',))
+    one.add_argument('value')
+    gone = actions.add_parser('unset', help='Remove one setting; placement goes back to the built-in default.')
+    gone.add_argument('key', choices=('placement',))
     command = sub.add_parser('release', help='Admit release through the current host owner.')
     command.add_argument('--engine', required=True)
     command.add_argument('--placement', required=True)
@@ -360,6 +388,10 @@ def _defaults_text(payload):
         lines.append(f"{row['slot']}: {entry}  [{row['source']}: {row['origin']}]")
         for other in row['others']:
             lines.append(f"    also: {other['pack']}/{other['entry']} (priority {other['priority']})")
+    if 'restore' in payload:
+        previous = payload.get('previous')
+        was = f"{previous['pack']}/{previous['entry']}" if previous else 'none'
+        lines.append(f"Previous pin: {was}; restore: {payload['restore']}")
     return '\n'.join(lines)
 
 
@@ -383,10 +415,44 @@ def _settings_command(parsed):
     with _open_client() as client:
         if parsed.settings_action == 'checkout':
             result = settings.checkout(parsed.file, client)
+        elif parsed.settings_action == 'set':
+            result = settings.set_placement(parsed.value, client)
+        elif parsed.settings_action == 'unset':
+            result = settings.unset_placement(client)
         else:
             result = settings.checkin(parsed.file, client)
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if parsed.settings_action in ('set', 'unset'):
+        print(_placement_line(parsed.settings_action, result))
+    else:
+        print(json.dumps(result, indent=2, sort_keys=True))
     return 0
+
+
+def _placement_line(action, result):
+    """One line: what the placement is now, what it replaced, and the command that restores it."""
+    def show(placement):
+        return json.dumps(placement, sort_keys=True) if placement else 'the built-in default'
+    before, now = result['previous'], result['placement']
+    # A one-command restore is offered only when it brings back exactly what was there: `set` keeps a
+    # device only on an attached placement, and `unset` removes it, so a device is restorable only on undo of set.
+    keys = set(before)
+    if action == 'unset' and before == now:
+        restore = 'nothing to restore; no placement was saved'
+    elif before.get('kind') == 'attached' and before.get('endpoint') and keys <= {'kind', 'endpoint', 'policy'} | (
+            {'device'} if action == 'set' else set()):
+        restore = f"astrid generate settings set placement {before['endpoint']}"
+    elif keys <= {'policy'}:
+        restore = 'astrid generate settings unset placement'
+    else:
+        restore = f"none in one command; the previous placement is {show(before)}"
+    return f"placement is now {show(now)} (was {show(before)}); restore: {restore}"
+
+
+def _workflow_comfy_url(parsed: argparse.Namespace) -> dict[str, str]:
+    """``comfy_url`` of the attached ComfyUI whose schema describes this workflow, as ``describe --placement`` reads it."""
+    from astrid.core.generation import placement as placements
+    url = placements.attached_comfy_url(parsed.placement)
+    return {'comfy_url': url} if url else {}
 
 
 def _workflow_command(parsed: argparse.Namespace) -> int:
@@ -411,7 +477,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
         raise ValueError('--no-run requires --as-entry')
     if parsed.as_entry and parsed.dry_run:
         # Preview only: validate the inputs the entry would declare, write nothing, run nothing.
-        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
+        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode, **_workflow_comfy_url(parsed))
         preview = {
             "dry_run": True,
             "written": False,
@@ -431,7 +497,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
                 from astrid.core.generation.preflight import generation_error
                 raise generation_error(ValueError('The installed VibeComfy entry API does not support atomic replacement'),
                                        code='missing_dependency', details={'field': 'replace'})
-        entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
+        entries.resolve_workflow_inputs(path, values, mode=parsed.mode, **_workflow_comfy_url(parsed))
         entry = import_as_entry(path, parsed.as_entry, **({'replace': True} if parsed.replace else {}))
         if parsed.no_run:
             print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,
@@ -527,10 +593,16 @@ def _main(argv: list[str]) -> int:
     if parsed.modality == 'align':
         from astrid.core.generation.asset_alignment import main as align_main
         return align_main(parsed)
+    if parsed.modality == 'fetch-models':
+        from astrid.core.generation.asset_gaps import main as fetch_models_main
+        return fetch_models_main(parsed)
     if parsed.modality == 'targets':
         return _targets_command(parsed)
     if parsed.modality == 'defaults':
         return _defaults_command(parsed)
+    if parsed.modality == 'scan':
+        from astrid.packs.vibecomfy.local import main as scan_main
+        return scan_main(['scan', '--ports', parsed.ports])
     if parsed.modality == 'settings':
         return _settings_command(parsed)
     if parsed.modality == 'launch':
@@ -558,7 +630,9 @@ def _main(argv: list[str]) -> int:
         _validate_datacenter(parsed.placement, parsed.datacenter, parser)
         if parsed.datacenter and parsed.placement is None:
             parser.error("--datacenter requires target describe with --placement runpod")
-        if parsed.placement is not None:
+        # A saved workflow described against an attached ComfyUI converts against that server's schema (read-only).
+        comfy_url = _attached_workflow_endpoint(parsed)
+        if parsed.placement is not None and not comfy_url:
             if parsed.entry is not None or parsed.workflow is not None:
                 parser.error('target describe cannot also select an entry or workflow')
             placement = cli_shared._gpu_placement(parsed.placement, parsed.gpu, parser)
@@ -577,7 +651,7 @@ def _main(argv: list[str]) -> int:
                 path = Path(parsed.workflow).expanduser()
                 if path.exists():
                     from astrid.core.generation.entries import describe_workflow
-                    description = describe_workflow(path, mode=parsed.mode)
+                    description = describe_workflow(path, mode=parsed.mode, comfy_url=comfy_url)
                 else:
                     from astrid.core.generation.listing import catalog_rows
                     if not any(row['id'] == parsed.workflow for row in catalog_rows()):
@@ -652,6 +726,8 @@ def _main(argv: list[str]) -> int:
         kwargs.pop("width")
         kwargs.pop("height")
         kwargs[_KIND_SPEC[parsed.modality]['dimension_key']] = f"{parsed.width}x{parsed.height}"
+    from .delivery import admitted_project, open_url_for
+    admitted = None
     try:
         generate = getattr(_generate_facade(), parsed.modality)
         from astrid.sdk.generation import _prompt_only_video
@@ -678,6 +754,10 @@ def _main(argv: list[str]) -> int:
                 if not parsed.no_wait:
                     from .delivery import deliver_generation
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
+                else:
+                    admitted = admitted_project(
+                        result.to_dict() if hasattr(result, 'to_dict') else result,
+                        explicit=parsed.project, client=client)
     except AstridSDKError as sdk_exc:
         phase_timing.cli_host({"timing": getattr(sdk_exc, "timing", None)})
         # Preserve target/model problem codes and recovery guidance at the
@@ -697,6 +777,9 @@ def _main(argv: list[str]) -> int:
     payload = result.to_dict() if hasattr(result, "to_dict") else result
     if not parsed.dry_run and not parsed.no_wait:
         phase_timing.attach_cli(payload)
+    if admitted and isinstance(payload, dict):
+        # An admitted generation names its project's link; the App shows the output there once it finishes.
+        payload = {**payload, 'open_url': open_url_for(admitted)}
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:

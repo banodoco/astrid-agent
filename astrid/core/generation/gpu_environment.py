@@ -144,7 +144,7 @@ def _unmanaged_guidance(pack: str, platform: str) -> str:
     if pack == "vibecomfy":
         return (
             f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
-            "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
+            "then pass `comfy_url` (find it with `astrid generate scan`)."
         )
     return (
         f"Astrid doesn't provision Wan2GP environments on {platform_name} yet. "

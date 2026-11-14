@@ -147,7 +147,7 @@ def test_load_workflow_path_unions_ready_template_and_ui_canonicalization(
         "_load_workflow",
         Mock(return_value=ready_workflow),
     )
-    canonicalize = Mock(return_value=(ui_workflow, None))
+    canonicalize = Mock(return_value=(ui_workflow, None, {}))
     monkeypatch.setattr(production_engine, "_canonicalize_ui_workflow", canonicalize)
     monkeypatch.setattr(
         production_engine,
@@ -529,7 +529,8 @@ def test_local_server_failure_has_runnable_discovery_hint(tmp_path, monkeypatch,
 
     error = capsys.readouterr().err
     assert "missing nodes: MissingNode" in error
-    assert "recovery: python3 -m astrid.packs.vibecomfy.local scan" in error
+    # R4.1: the runnable hint on an installed Astrid is the launcher's generate scan
+    assert "recovery: astrid generate scan" in error
     assert "astrid executors" not in error
 
 

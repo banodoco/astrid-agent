@@ -947,6 +947,13 @@ def test_timeline_main_skill_code_blocks_run_with_scratch_runtime(real_runtime, 
     shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
     shim.chmod(0o755)
     env["PATH"] = f"{skill_bin}{os.pathsep}{env['PATH']}"
+    # The skill's shell blocks call the installed launcher at its Linux path; stand one in
+    # for this checkout's Astrid, only for those blocks.
+    launcher_data = tmp_path / "skill-launcher-data"
+    launcher = launcher_data / "astrid" / "run-astrid"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m astrid "$@"\n')
+    launcher.chmod(0o755)
     project = daemon.service.create_project({"slug": "skill-demo", "name": "Skill demo"})["id"]
     monkeypatch.setenv("ASTRID_TIMELINE_EVAL_ENDPOINT", daemon.endpoint)
     monkeypatch.setenv("ASTRID_TIMELINE_EVAL_CREDENTIAL", str(daemon.credential_path))
@@ -983,7 +990,8 @@ def test_timeline_main_skill_code_blocks_run_with_scratch_runtime(real_runtime, 
         if block.startswith("from astrid.sdk"):
             exec(compile(block, str(skill), "exec"), {"__name__": "__main__"})
         else:
-            result = subprocess.run(["bash", "-c", block], cwd=tmp_path, env=env, text=True,
+            result = subprocess.run(["bash", "-c", block], cwd=tmp_path,
+                                    env={**env, "XDG_DATA_HOME": str(launcher_data)}, text=True,
                                     capture_output=True, timeout=120)
             assert result.returncode == 0, result.stdout + result.stderr
 

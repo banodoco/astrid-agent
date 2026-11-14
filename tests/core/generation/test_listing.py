@@ -408,3 +408,22 @@ def test_declared_qualified_synthetic_action_is_retained(monkeypatch):
                           'vibecomfy.character_animation'):
             assert row['availability'] == 'unavailable'
             assert row['reason'] and row['fix']
+
+
+def test_many_missing_model_rows_on_one_attached_target_read_the_folder_list_once(comfy, monkeypatch):
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+
+    comfy[1].schema = _target_info(unets=(), vaes=())
+    folder_reads = []
+    real_request_json = ComfyTargetClient.request_json
+
+    def counting(self, path, payload=None, **kwargs):
+        if path == "/internal/folder_paths":
+            folder_reads.append(self.target.url)
+        return real_request_json(self, path, payload, **kwargs)
+
+    monkeypatch.setattr(ComfyTargetClient, "request_json", counting)
+    rows = [row for row in listing.generation_rows("image")
+            if row.get("backend") == "local" and row.get("registry_id") == "z-image" and row.get("ready") is False]
+    assert len(rows) >= 2
+    assert len(folder_reads) == 1

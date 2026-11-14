@@ -160,12 +160,55 @@ def pinned_entry(kind: str, mode: str, snapshot: settings.Snapshot) -> str | Non
     return check_pin(f"{kind}.{mode}", pin, known_entries())["entry"]
 
 
+def _placement_name(placement: Mapping[str, Any], client: Any = None) -> tuple[str, str | None]:
+    """The placement a run would use, as ``(name for messages, attached endpoint or None)``."""
+    resolved = placement.get("resolved") or {}
+    endpoint = resolved.get("endpoint")
+    if endpoint:
+        return endpoint, endpoint
+    kind = settings.placement_default(client).get("kind")
+    return (kind if kind and kind != "local" else "managed"), None
+
+
+def _readiness(resolved: Resolved, listed: list[dict[str, Any]],
+               placement: Mapping[str, Any] | None = None, client: Any = None) -> dict[str, Any]:
+    """The ready and reason of the ``generate list`` row for the resolved entry on the resolved placement.
+
+    Readiness is the row's own; this only picks which row. A ComfyUI row counts only for the placement
+    that will run (its endpoint when attached); a managed or RunPod placement has no scanned row.
+    """
+    if resolved.entry is None:
+        return {"ready": False, "reason": "no entry is resolved for this slot"}
+    matches = [row for row in listed
+               if (row["id"], row["kind"], row["mode"]) == (resolved.entry, resolved.kind, resolved.mode)]
+    if not matches:
+        return {"ready": False, "reason": "generate list has no row for this entry in this slot"}
+    # A row for a scanned ComfyUI names its URL; the one a row gets when nothing was scanned names none.
+    comfy = [row for row in matches if row.get("target_kind") == "attached" and "://" in str(row["target"])]
+    if comfy and placement is not None:
+        name, endpoint = _placement_name(placement, client)
+        chosen = next((row for row in comfy if endpoint is not None
+                       and str(row["target"]).rstrip("/") == endpoint.rstrip("/")), None)
+        if chosen is None:
+            return {"ready": False, "reason": f"not established for the selected placement ({name})"}
+        return {"ready": chosen["ready"], "reason": chosen["reason"]}
+    chosen = next((row for row in matches if row["ready"]), matches[0])
+    return {"ready": chosen["ready"], "reason": chosen["reason"]}
+
+
 def listing(client: Any = None, registry: Any = None) -> dict[str, Any]:
-    """Every slot with its resolved entry, where it came from, the others, and how to edit it."""
+    """Every slot with its resolved entry, where it came from, the others, its readiness, and how to edit it."""
+    from astrid.core.generation import listing as generation_listing
+
     snapshot = settings.read(client)
     candidates = pack_candidates(registry)
     entries = known_entries(registry)
     pins = snapshot.content.get("defaults", {})
+    listed = generation_listing.generation_rows()
+    try:
+        placement = generation_listing.placement_block(generation_listing.target_selection(client))
+    except (OSError, ValueError) as exc:  # a broken saved target must not hide the slots
+        placement = {"resolved": None, "source": "error", "reason": str(exc)}
     rows = []
     for kind, mode in slots(candidates, pins):
         resolved = resolve(kind, mode, pins=pins, candidates=candidates, entries=entries,
@@ -173,14 +216,31 @@ def listing(client: Any = None, registry: Any = None) -> dict[str, Any]:
         row = resolved.as_dict()
         if resolved.source == "user pin":
             row["origin"] = snapshot.label
+        row.update(_readiness(resolved, listed, None if placement.get("resolved") is None else placement, client))
         rows.append(row)
     return {"settings": {"source": snapshot.source, "version": snapshot.version, "label": snapshot.label},
-            "edit": "astrid generate settings checkout --file <path>", "slots": rows}
+            "edit": "astrid generate settings checkout --file <path>", "slots": rows, "placement": placement}
 
 
 def set_default(kind: str, mode: str, entry: str, *, pack: str | None = None, client: Any = None,
                 registry: Any = None) -> settings.Snapshot:
     """Pin ``entry`` for the slot; refuses an entry that does not exist or lacks that kind and mode."""
+    return set_default_reporting(kind, mode, entry, pack=pack, client=client, registry=registry)[0]
+
+
+def restore_command(kind: str, mode: str, previous: Mapping[str, Any] | None, entries: Iterable[Mapping[str, Any]]) -> str:
+    """The one command that puts the slot's pin back as it was before a ``set``."""
+    if not previous:
+        return f"astrid generate defaults unset {kind} {mode}"
+    packs = {row["pack"] for row in entries if row["entry"] == previous["entry"]
+             and row["kind"] == kind and mode in row["modes"]}
+    named = f" --pack {previous['pack']}" if len(packs) > 1 else ""
+    return f"astrid generate defaults set {kind} {mode} {previous['entry']}{named}"
+
+
+def set_default_reporting(kind: str, mode: str, entry: str, *, pack: str | None = None, client: Any = None,
+                          registry: Any = None) -> tuple[settings.Snapshot, dict[str, Any] | None]:
+    """``set_default``, also returning the user pin it replaced (``None`` when there was none)."""
     entries = known_entries(registry)
     packs = sorted({row["pack"] for row in entries if row["entry"] == entry
                     and row["kind"] == kind and mode in row["modes"]})
@@ -192,7 +252,15 @@ def set_default(kind: str, mode: str, entry: str, *, pack: str | None = None, cl
                 key=f"defaults.{kind}.{mode}", options=packs)
         pack = packs[0]
     pin = check_pin(f"{kind}.{mode}", {"pack": pack, "entry": entry}, entries)
-    return settings.update(lambda document: document["defaults"].__setitem__(f"{kind}.{mode}", pin), client)
+    previous: dict[str, Any] | None = None
+
+    def write(document: dict[str, Any]) -> None:
+        nonlocal previous
+        old = document["defaults"].get(f"{kind}.{mode}")
+        previous = dict(old) if isinstance(old, Mapping) else None
+        document["defaults"][f"{kind}.{mode}"] = pin
+
+    return settings.update(write, client), previous
 
 
 def unset_default(kind: str, mode: str, *, client: Any = None) -> settings.Snapshot:

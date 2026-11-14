@@ -543,3 +543,69 @@ def test_restart_recovery_failure_keeps_retry_timer_and_exact_custody(machine_ca
     assert c.read()["paid_limits"] == paid
     assert c.read()["lease"]["paid_expires_at"] == paid_expiry
     bindings.close()
+
+
+
+def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_case, monkeypatch):
+    from runpod_lifecycle import api
+    from astrid.packs.runpod.target_selection import PaidSelectionError
+
+    c = machine_case
+    claim(c)
+    active, events = set(), []
+    start, poll, cancel, delete = c.pod.job_start, c.pod.job_poll, c.pod.job_cancel, api.terminate_pod
+    allow_cancel = False
+
+    def detached_start(command, *args, **kwargs):
+        assert not active, "a second detached job overlapped the dead host's live job"
+        result = start(command, *args, **kwargs)
+        if " generate cpu-image " in command:
+            active.add(result["id"])
+            events.append(("start", result["id"]))
+        return result
+
+    def detached_poll(job_id):
+        return {"id": job_id, "state": "running"} if job_id in active else poll(job_id)
+
+    def detached_cancel(job_id):
+        events.append(("cancel", job_id))
+        if not allow_cancel:
+            return {"id": job_id, "state": "running"}
+        result = cancel(job_id)
+        active.discard(job_id)
+        return result
+
+    def terminate(pod_id, key):
+        assert not active, "a live detached job lost its held resource"
+        events.append(("delete", pod_id))
+        return delete(pod_id, key)
+
+    monkeypatch.setattr(c.pod, "job_start", detached_start)
+    monkeypatch.setattr(c.pod, "job_poll", detached_poll)
+    monkeypatch.setattr(c.pod, "job_cancel", detached_cancel)
+    monkeypatch.setattr(api, "terminate_pod", terminate)
+    request = job(c)
+    lease = c.machine.claim(request)
+    old = c.machine.start(lease, request)
+    assert c.read()["lease"]["job"] == {"id": old.job_id, "state": "running"}
+    assert active == {old.job_id}
+    c.host.close()
+    replacement = c.fresh()
+    c.adapter.lease_owner = replacement
+    replacement.recover_job()
+    assert c.read()["state"] != "cleanup_complete"
+    assert c.read()["lease"]["state"] != "idle" and active == {old.job_id}
+    assert c.deletes == [] and c.creates == 1
+    dispatched = len(c.pod.job_log)
+    with pytest.raises(PaidSelectionError):
+        run(c, job(c, 2))
+    assert len(c.pod.job_log) == dispatched
+    assert events == [("start", old.job_id), ("cancel", old.job_id)]
+    allow_cancel = True
+    replacement.recover_job()
+    assert active == set()
+    assert events == [("start", old.job_id), ("cancel", old.job_id),
+                      ("cancel", old.job_id), ("delete", "pod-1")]
+    assert c.pod.cancelled == [old.job_id]
+    assert c.deletes == ["pod-1"] and c.creates == 1
+    assert c.read()["state"] == "cleanup_complete"
