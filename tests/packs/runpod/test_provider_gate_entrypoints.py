@@ -71,7 +71,7 @@ def test_launch_observes_cooldown_without_unjournaled_retry(case, tmp_path, monk
     monkeypatch.setattr(target_selection, "resolve_existing_volume", already_observed_volume)
     with provider.provider_budget(0.1):
         with pytest.raises(preparation.AcquisitionUnresolvedError):
-            asyncio.run(case.owner.select(case.grant))
+            asyncio.run(case.owner._select(case.grant))
     assert case.creates == 0
     if case.owner.path.exists():
         assert case.owner._read()["create_attempts"] <= 1

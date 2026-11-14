@@ -34,7 +34,7 @@ def test_select_rotated_credential_shares_account_before_volume_lookup(case, tmp
 
     monkeypatch.setattr(selection, "resolve_existing_volume", volume)
     with pytest.raises(selection.AcquisitionUnresolvedError):
-        asyncio.run(case.owner.select(case.grant))
+        asyncio.run(case.owner._select(case.grant))
     assert lookups == ["rotated-key"]
     assert provider.account_gate("rotated-key").path == first.path
     assert case.creates == 0

@@ -193,9 +193,14 @@ def test_fresh_reset_uses_launcher_owner_authority_and_preserves_scoped_connecti
 
     pod, data = tmp_path / "pod", tmp_path / "pod" / "runtime-data"
     pod.mkdir()
+    # Source identity must stay stable while reset writes its Runtime state.
+    # CI also nests dependency Git checkouts under the working repository.
+    source = pod / "agent-source"
+    subprocess.run(["git", "clone", "--shared", "--quiet",
+                    str(Path(__file__).resolve().parents[3]), str(source)], check=True)
     manifest = pod / "source-manifest.json"
     manifest.write_text(json.dumps({"profile": "astrid", "runtime_checkout": str(runtime_checkout()),
-        "source_checkout": str(Path(__file__).resolve().parents[3]),
+        "source_checkout": str(source),
         "runtime_environment": str(Path(sys.prefix).resolve())}))
     profile = data / "runtime" / "source-profiles" / "astrid.json"
     profile.parent.mkdir(parents=True)

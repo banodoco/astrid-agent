@@ -2,6 +2,7 @@
 
 import ast
 import builtins
+import json
 from pathlib import Path
 
 import yaml
@@ -111,14 +112,21 @@ def test_every_runpod_exception_name_is_receipt_safe_or_explicitly_excluded():
 
 def test_known_receipt_exception_names_are_preserved():
     from astrid.packs.runpod.failure_diagnostics import host_summary
+    from astrid.packs.runpod.machine import InstallationUnverified
     from astrid.packs.runpod.managed_sources import ManagedSourcesError
+    from astrid.packs.runpod.pod_watchdog import PodWatchdogError, PodWatchdogTransportError
+    from astrid.packs.runpod.provider import ProviderNotStarted
+    from astrid.packs.runpod.remote_placement import InstallationReceiptChanged
     from astrid.packs.runpod.target_selection import CapacityWaitCancelled
     from astrid.packs.runpod.worker_staging import PreparationJournalError, WorkerPreparationError
 
     for error_type in (ManagedSourcesError, WorkerPreparationError,
-                       PreparationJournalError, CapacityWaitCancelled):
-        summary = host_summary(error_type("safe test detail"))
+                       PreparationJournalError, CapacityWaitCancelled,
+                       InstallationReceiptChanged, InstallationUnverified,
+                       PodWatchdogError, PodWatchdogTransportError, ProviderNotStarted):
+        summary = host_summary(error_type("SENTINEL_TOKEN private exception detail"))
         assert summary["exception"] == error_type.__name__
+        assert "SENTINEL_TOKEN" not in json.dumps(summary)
 
 
 def test_runpod_host_target_operations_match_manifest_metadata():

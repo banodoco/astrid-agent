@@ -15,8 +15,12 @@ import pytest
 
 from astrid.core.generation import engine_readiness
 from astrid.packs.vibecomfy import local as local_scan
-from tests.packs.runpod.test_machine import machine_case as machine_case  # noqa: F401
+from tests.packs.runpod.conftest import (  # noqa: F401
+    lease_https_transport as lease_https_transport,
+    pod_watchdog_transport as pod_watchdog_transport,
+)
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401
+from tests.packs.runpod.test_machine import machine_case as machine_case  # noqa: F401
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401
 from tests.packs.runpod.test_target_selection import case as case  # noqa: F401
 from tests.packs.runpod.test_warm_session import (  # noqa: F401
@@ -160,7 +164,9 @@ def test_engine_readiness_parser_uses_its_distinct_query(tmp_path):
     assert observed["vram_bytes"] == 12 * 1024**3
 
 
-def test_runpod_machine_refuses_claim_without_paid_consent(machine_case):
+def test_runpod_machine_entry_refuses_a_job_without_a_claimed_machine(machine_case):
+    # Claim-first (f123e45c1): the entry refuses before any consent check; paid
+    # consent itself is covered by test_target_selection (consent=()) and the CLI case below.
     from dataclasses import replace
     from astrid.packs.runpod.target_selection import PaidSelectionError
 
@@ -171,6 +177,22 @@ def test_runpod_machine_refuses_claim_without_paid_consent(machine_case):
     with pytest.raises(PaidSelectionError):
         case.machine.claim(job)
     assert case.creates == before
+
+
+def test_runpod_machine_refuses_claim_without_paid_consent(monkeypatch, capsys):
+    from tests.packs.runpod.test_machine import _claim_cli_case
+
+    cli, _, rows, calls, describe, claim = _claim_cli_case(monkeypatch)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    argv = _guide_argv("machines claim --consent paid --max-usd 2")
+    consent = argv.index("--consent")
+    del argv[consent:consent + 2]
+    argv = [arg.replace("FUTURE_UTC_DEADLINE", "2099-01-01T00:00:00Z") for arg in argv]
+    # cause 5158964ba; ruling: machines 07:40 Sat
+    assert cli.main(argv[1:], describe=describe, claim=claim) == 2
+    refusal = json.loads(capsys.readouterr().out)
+    assert refusal["ok"] is False and "--consent paid" in refusal["error"]
+    assert calls == [] and rows == []
 
 
 def test_runpod_setter_guide_command_uses_hidden_prompt_without_key_in_argv_or_env(
@@ -230,8 +252,10 @@ def test_runpod_setup_commands_reach_real_generation_parsers(monkeypatch, capsys
     paid = _guide_argv("generate image --entry ENTRY --inputs-json /absolute/path/inputs.json")
     paid_args = parser.parse_args(paid[1:])
     assert paid_args.modality == "image"
+    # cause f123e45c1; ruling: machines 07:40 Sat
     assert paid_args.placement == "runpod" and grant.consent == ("paid",)
     assert grant.max_usd == 2 and grant.deadline == "2099-01-01T00:00:00Z"
+    assert grant.idle_seconds == 1800 and grant.capacity_timeout_seconds == 1800
     assert json.loads(capsys.readouterr().out)["policy"]["deadline"] == "2099-01-01T00:00:00Z"
     assert not {"--consent", "--max-usd", "--deadline", "--allow-paid", "--until-release"}.intersection(paid)
 
