@@ -27,7 +27,7 @@ Ask your agent: set up my generation with the astrid-setup skill.
 
 ### Set it up yourself
 
-Follow the [manual setup guide](docs/getting-started.md), or the setup guide at
+Follow [Set up Astrid →](docs/getting-started.md), or the setup guide at
 [docs/setup/SKILL.md](docs/setup/SKILL.md), which shows your setup choices before
 anything is installed. Read the installer before you run it. On a fresh install,
 Astrid asks for your consent once, unless you have already approved it. An existing
