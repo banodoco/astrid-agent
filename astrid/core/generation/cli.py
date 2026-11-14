@@ -445,6 +445,13 @@ def _placement_line(action, result):
     return f"placement is now {show(now)} (was {show(before)}); restore: {restore}"
 
 
+def _workflow_comfy_url(parsed: argparse.Namespace) -> dict[str, str]:
+    """``comfy_url`` of the attached ComfyUI whose schema describes this workflow, as ``describe --placement`` reads it."""
+    from astrid.core.generation import placement as placements
+    url = placements.attached_comfy_url(parsed.placement)
+    return {'comfy_url': url} if url else {}
+
+
 def _workflow_command(parsed: argparse.Namespace) -> int:
     """Route authored workflows through the same target admission as entries."""
     from astrid.core.generation import entries
@@ -467,7 +474,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
         raise ValueError('--no-run requires --as-entry')
     if parsed.as_entry and parsed.dry_run:
         # Preview only: validate the inputs the entry would declare, write nothing, run nothing.
-        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
+        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode, **_workflow_comfy_url(parsed))
         preview = {
             "dry_run": True,
             "written": False,
@@ -487,7 +494,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
                 from astrid.core.generation.preflight import generation_error
                 raise generation_error(ValueError('The installed VibeComfy entry API does not support atomic replacement'),
                                        code='missing_dependency', details={'field': 'replace'})
-        entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
+        entries.resolve_workflow_inputs(path, values, mode=parsed.mode, **_workflow_comfy_url(parsed))
         entry = import_as_entry(path, parsed.as_entry, **({'replace': True} if parsed.replace else {}))
         if parsed.no_run:
             print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,

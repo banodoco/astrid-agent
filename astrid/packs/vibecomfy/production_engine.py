@@ -36,6 +36,9 @@ class LoadedWorkflow:
     workflow_revision: str
     workflow_content_digest: str
     workflow_conversion_object_info_sha256: str | None = None
+    # A saved UI workflow's seed widgets read against the server schema it was converted with:
+    # {node id: {"field", "value", "control"}}. None unless that conversion ran.
+    saved_seed_controls: Mapping[str, Mapping[str, Any]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +233,46 @@ def _is_saved_ui_workflow(workflow_path: str | Path) -> bool:
     return isinstance(raw, Mapping) and not canonical
 
 
+_SEED_CONTROLS = frozenset({"fixed", "randomize", "increment", "decrement"})
+_SEED_CONTROLS_HANDOFF = ".saved-seed-controls.json"
+_NON_WIDGET_KEYS = frozenset({"forceInput", "rawLink", "socketless"})
+
+
+def saved_ui_seed_controls(raw_workflow: Mapping[str, Any], object_info: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Read each node's seed and its control from a saved UI workflow, as ComfyUI's frontend wrote them.
+
+    The server declares the control as an option on the seed input
+    (``["INT", {"control_after_generate": true}]``), and the frontend saves its value as the
+    ``widgets_values`` entry right after the seed. Widgets are counted in the server's input
+    order, so the seed is found by position, never by name.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    nodes = raw_workflow.get("nodes")
+    for node in nodes if isinstance(nodes, list) else ():
+        if not isinstance(node, Mapping) or not isinstance(node.get("widgets_values"), list):
+            continue
+        info = object_info.get(node.get("type"))
+        groups = info.get("input") if isinstance(info, Mapping) else None
+        if not isinstance(groups, Mapping):
+            continue
+        values, position = node["widgets_values"], 0
+        for group in ("required", "optional"):
+            for field, spec in (groups.get(group) or {}).items():
+                kind = spec[0] if isinstance(spec, list) and spec else None
+                options = spec[1] if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], Mapping) else {}
+                if not (isinstance(kind, list) or kind in {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"}):
+                    continue
+                if _NON_WIDGET_KEYS & options.keys():
+                    continue
+                controlled = options.get("control_after_generate") is True
+                if controlled and kind == "INT" and position + 1 < len(values):
+                    value, control = values[position], values[position + 1]
+                    if type(value) is int and control in _SEED_CONTROLS:
+                        found[str(node.get("id"))] = {"field": field, "value": value, "control": control}
+                position += 1 + bool(controlled) + bool(options.get("image_upload"))
+    return found
+
+
 def _canonicalize_ui_workflow(
     source: Path,
     raw_workflow: Mapping[str, Any],
@@ -258,6 +301,9 @@ def _canonicalize_ui_workflow(
                 object_info, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
             ).encode("utf-8")
             schema_digest = "sha256:" + hashlib.sha256(canonical_object_info).hexdigest()
+            # Handed to load_workflow_path in the scratch folder: this is the one schema fetch.
+            (scratch / _SEED_CONTROLS_HANDOFF).write_text(
+                json.dumps(saved_ui_seed_controls(raw_workflow, object_info)), encoding="utf-8")
         artifacts = import_workflow_bytes(
             source_bytes,
             workflow_id=_ui_workflow_identity(raw_workflow, source_bytes),
@@ -320,6 +366,7 @@ def load_workflow_path(
     source = Path(workflow_path).expanduser().resolve(strict=True)
     scratch_path = Path(scratch).expanduser().resolve()
     scratch_path.mkdir(parents=True, exist_ok=True)
+    saved_seed_controls = None
     try:
         source_bytes = source.read_bytes()
         raw_workflow = None if source.suffix.lower() == ".py" else json.loads(
@@ -353,6 +400,10 @@ def load_workflow_path(
                 scratch_path,
                 schema_url=comfy_url,
             )
+            try:
+                saved_seed_controls = json.loads((scratch_path / _SEED_CONTROLS_HANDOFF).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                saved_seed_controls = None
     bundle = _canonical_bundle_value(resolved)
     metadata = getattr(bundle.workflow, "metadata", {})
     if not isinstance(metadata, Mapping):
@@ -375,6 +426,7 @@ def load_workflow_path(
         workflow_revision=workflow_revision,
         workflow_content_digest=_workflow_content_digest(source),
         workflow_conversion_object_info_sha256=workflow_conversion_object_info_sha256,
+        saved_seed_controls=saved_seed_controls,
     )
 
 
@@ -800,8 +852,9 @@ def run_workflow_path(
     if profile_id == "local_server":
         bundle = _canonical_bundle_value(resolved)
         from astrid.core.generation.entries import prepare_execution_bindings
-        run_inputs = prepare_execution_bindings(bundle.workflow, run_inputs,
-                                                saved_ui=_is_saved_ui_workflow(workflow_path))
+        run_inputs = prepare_execution_bindings(
+            bundle.workflow, run_inputs,
+            saved_seed_controls=loaded.saved_seed_controls if _is_saved_ui_workflow(workflow_path) else None)
     global _LAST_PRODUCTION_RESULT
     _LAST_PRODUCTION_RESULT = None
     profile_kwargs: dict[str, Any] = {}
