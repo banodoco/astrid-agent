@@ -106,6 +106,9 @@ EXCEPTIONS = frozenset({
     'AllocationRejected', 'AttachmentPending', 'BuildError', 'CapacityUnavailable',
     'InvalidPodField', 'ManagedSessionError', 'ResetError', 'StagingEvidenceStaleError',
     'WorkerOwnerConflict', 'WorkerProcessError', 'BoundedObserverUnreaped', 'MachineCancelled',
+    # Fixed class names only; receipt summaries still withhold exception messages.
+    'InstallationReceiptChanged', 'InstallationUnverified',
+    'PodWatchdogError', 'PodWatchdogTransportError', 'ProviderNotStarted',
 })
 
 

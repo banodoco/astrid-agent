@@ -580,13 +580,16 @@ class RemotePlacement:
                 log_root = state.local_out / ".job-logs"
                 log_root.mkdir(parents=True, exist_ok=True)
                 staged: list[tuple[str, str, Path]] = []
+                declared_names: set[str] = set()
+                transfer_error: str | None = None
                 if directory:
                     for stream_name, role in (("stdout", "stdout"), ("stderr", "stderr")):
                         source = f"{directory}/{stream_name}"
                         destination = log_root / f"{safe_what}.{stream_name}"
                         try:
                             ops.get(source, destination)
-                        except Exception:  # noqa: BLE001 - collect the remaining logs
+                        except Exception as exc:  # noqa: BLE001 - collect the remaining logs
+                            transfer_error = transfer_error or type(exc).__name__
                             destination.unlink(missing_ok=True)
                         run_logs.declare(
                             log_root,
@@ -596,6 +599,7 @@ class RemotePlacement:
                                 path=str(destination.resolve()),
                             ),
                         )
+                        declared_names.add(f"{safe_what}-{stream_name}")
                         staged.append((stream_name, role, destination))
                 if what == "engine install":
                     from astrid.core.generation.engine_custody import engine_log_path
@@ -626,7 +630,8 @@ class RemotePlacement:
                                 f"{shlex.quote(source)} {shlex.quote(remote_safe)}", 120)
                             if code == 0:
                                 ops.get(remote_safe, destination)
-                        except Exception:  # noqa: BLE001 - collect the remaining logs
+                        except Exception as exc:  # noqa: BLE001 - collect the remaining logs
+                            transfer_error = transfer_error or type(exc).__name__
                             destination.unlink(missing_ok=True)
                         finally:
                             try:
@@ -635,6 +640,7 @@ class RemotePlacement:
                                 pass
                         run_logs.declare(log_root, run_logs.LogDecl(
                             name=f"engine.install.{label}", role="install", path=str(destination.resolve())))
+                        declared_names.add(f"engine.install.{label}")
                 rows = run_logs.collect(log_root)
                 by_name = {row.get("name"): row for row in rows}
                 for stream_name, _role, _source in staged:
@@ -657,7 +663,12 @@ class RemotePlacement:
                     existing = [row for row in run_logs.read_index(state.local_out) if row.get("name") not in names]
                     (final_logs / "index.json").write_text(json.dumps(
                         {"schema": "run-logs.collected.v1", "logs": existing + rows}, sort_keys=True) + "\n")
-                state.note("logs", "kept", what=what, files=[str(path) for path in log_paths])
+                # Earlier steps can share the index; count only this step's declarations.
+                if not log_paths and all(row.get("missing") for row in rows
+                                         if row.get("name") in declared_names):
+                    state.note("logs", "unavailable", error=transfer_error or "missing")
+                else:
+                    state.note("logs", "kept", what=what, files=[str(path) for path in log_paths])
             except Exception as exc:  # noqa: BLE001 - logs must never mask the job failure
                 state.note("logs", "unavailable", error=type(exc).__name__)
             if what == "pod reset":

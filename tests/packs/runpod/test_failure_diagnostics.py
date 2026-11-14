@@ -482,7 +482,7 @@ def test_fetch_surfaces_only_fixed_diagnostic_and_safe_exit(tmp_path, exit_code)
         def exec(self, command, timeout):
             calls.append(command)
             return 0, stdout, SENTINEL
-    run = SimpleNamespace(job_id='fake-job', directory='/fake/job',
+    run = SimpleNamespace(job_id='fake-job', directory='/fake/job', progress=[],
                           lease=SimpleNamespace(state=None, claim=SimpleNamespace(ops=Ops())))
     machine = rm.RunPodMachine(SimpleNamespace(placement=None))
     machine._checkpoint = lambda *args: None
@@ -653,7 +653,10 @@ def test_graph_names_survive_the_journal_round_trip_and_are_revalidated():
 
 
 def test_large_real_edit_template_yields_names_and_ids():
-    qwen_edit = Path(os.environ['ASTRID_VIBECOMFY_CHECKOUT']).resolve() / 'ready_templates/sources/official/edit/qwen_image_2_1_turbo_edit.json'
+    from vibecomfy.utils import find_repo_root
+
+    checkout = Path(os.environ.get('ASTRID_VIBECOMFY_CHECKOUT') or find_repo_root()).resolve()
+    qwen_edit = checkout / 'ready_templates/sources/official/edit/qwen_image_2_1_turbo_edit.json'
     # 100 KB release-cell source (editor format, nodes inside a subgraph definition): above the
     # 64 KiB result-frame cap, which the graph no longer shares.
     assert qwen_edit.stat().st_size > fd.MAX_RESULT_BYTES
