@@ -23,7 +23,7 @@ PACKS = ROOT / "astrid/packs"
 # so deriving here would make the exact-set assertions circular).
 PACK_IDS = tuple(sorted({
     "developer", "generation", "h3_av", "local", "rendering",
-    "runpod", "timeline", "training", "vibecomfy", "wan2gp",
+    "runpod", "setup", "timeline", "training", "vibecomfy", "wan2gp",
 }))
 RETIRED = {"builtin", "references", "astrid", "runaway", "shots"}
 
@@ -43,6 +43,7 @@ def test_current_catalog_is_exact_strict_v3_capability_set() -> None:
         assert data["documentation"] == {
             "kind": "skill",
             "path": "docs/SKILL.md",
+            **({"sync_name": "astrid-setup"} if data["id"] == "setup" else {}),
         }
         assert (manifest.parent / "docs/SKILL.md").is_file()
         assert validate_canonical_pack(manifest.parent).id == data["id"]

@@ -48,7 +48,7 @@ _PRESERVED_HELPER_PACKAGE_MARKERS = (
 # pack must be a deliberate edit of this test. No shipped pack is local-only.
 _SHIPPED_PACK_IDS = frozenset({
     "developer", "generation", "h3_av", "local", "rendering",
-    "runpod", "timeline", "training", "vibecomfy", "wan2gp",
+    "runpod", "setup", "timeline", "training", "vibecomfy", "wan2gp",
 })
 _TRACKED_SHIPPED_PACK_IDS = _SHIPPED_PACK_IDS
 
