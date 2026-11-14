@@ -570,19 +570,21 @@ class ManagedEnginePreparation:
                 fact = files.file_fact(str(path), hash_bytes=True, deadline=self.deadline, check=self.check)
                 if fact.sha256 == str(model["sha256"]).removeprefix("sha256:"):
                     continue
-            demand[path.parent] = demand.get(path.parent, 0) + model["size"]
+            directory = path.parent.resolve(strict=False)
+            demand[directory] = demand.get(directory, 0) + model["size"]
         if demand:
-            capacities, warn = available_model_bytes(demand, deadline=self.deadline, check=self.check)
-            for capacity in capacities:
-                needed = sum(demand[parent] for parent in capacity.parents)
-                if needed > capacity.free_bytes:
+            warn = False
+            for directory, needed in demand.items():
+                free, unknown = available_model_bytes(directory, deadline=self.deadline, check=self.check)
+                warn |= unknown
+                if free is not None and needed > free:
                     logs_root = getattr(self, "logs_root", None)
                     if logs_root is not None:
                         try:
                             declare_storage_inventory(logs_root, root, deadline=self.deadline, cancelled=self.cancelled)
                         except (OSError, ValueError):
                             pass  # Diagnostics must never replace the measured refusal.
-                    raise ModelStorageInsufficient(needed, capacity.free_bytes, getattr(self, "task", "<task>"))
+                    raise ModelStorageInsufficient(needed, free, getattr(self, "task", "<task>"))
             if warn:
                 from types import SimpleNamespace
                 self._keep_step_output("storage", SimpleNamespace(stdout="", stderr=STORAGE_WARNING + "\n"))

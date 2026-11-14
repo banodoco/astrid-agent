@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import heapq
 import os
-import selectors
-import signal
 import re
+import stat
 import subprocess
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,15 +36,6 @@ class ModelStorageInsufficient(IntegrityError):
     def __init__(self, needed: int, free: int, task: str = "<task>"):
         super().__init__(storage_refusal_message(needed, free, task), step_id="fetch")
         self.details = {"needed_bytes": needed, "free_bytes": free}
-
-
-@dataclass(frozen=True)
-class StorageCapacity:
-    """A measured budget and precisely the destination directories it covers."""
-
-    scope: tuple[str, int | Path]
-    parents: frozenset[Path]
-    free_bytes: int
 
 
 @dataclass(frozen=True)
@@ -110,203 +100,156 @@ def _quota(path: Path, *, deadline: float) -> dict[str, _QuotaRow]:
     return _quota_rows(result.stdout)
 
 
-def available_model_bytes(parents: Iterable[Path], *, deadline: float,
-                          check: Callable[[], None]) -> tuple[tuple[StorageCapacity, ...], bool]:
-    """Return scoped measurements and whether proceeding needs a warning.
-
-    A filesystem budget covers only destinations on that device; a hard-byte
-    quota covers destinations beneath that quota on its mounted filesystem.
-    Soft quotas never refuse, irrespective of grace. Unavailable observations
-    are unknown, not zero; other measured budgets remain independently usable.
-    """
+def available_model_bytes(parent: Path, *, deadline: float,
+                          check: Callable[[], None]) -> tuple[int | None, bool]:
+    """Tightest measured budget for one directory; never infer a shared scope."""
+    check()
+    probe = parent
+    try:
+        while not probe.exists():
+            probe = probe.parent
+        if not probe.is_dir() or any(path.is_symlink() for path in (parent, *parent.parents)):
+            raise UnsafePathError("unsafe target path")
+    except OSError:
+        return None, True
+    available = []
+    try:
+        space = os.statvfs(probe)
+        available.append(max(0, space.f_bavail * space.f_frsize))
+    except (OSError, ValueError):
+        pass
     try:
         content = Path("/proc/self/mountinfo").read_text()
+        mount, filesystem, source = _mount(probe, content)
     except (OSError, ValueError):
-        content = None
-    requested = set(parents)
-    filesystem_targets: dict[int, set[Path]] = {}
-    filesystem_free: dict[int, list[int]] = {}
-    scopes: dict[Path, set[Path]] = {}
-    quota_unknown = content is None
-    for parent in sorted(requested):
-        check()
-        try:
-            probe = parent
-            while not probe.exists():
-                probe = probe.parent
-            if not probe.is_dir() or any(path.is_symlink() for path in (probe, *probe.parents)):
-                raise UnsafePathError("unsafe target path")
-            device = probe.stat().st_dev
-        except OSError:
-            quota_unknown = True
-            continue
-        filesystem_targets.setdefault(device, set()).add(parent)
-        try:
-            space = os.statvfs(probe)
-            filesystem_free.setdefault(device, []).append(max(0, space.f_bavail * space.f_frsize))
-        except (OSError, ValueError):
-            pass  # A native quota report may still establish capacity.
-        if content is None:
-            continue
-        try:
-            mount, filesystem, source = _mount(probe, content)
-        except ValueError:
-            quota_unknown = True
-            continue
-        if filesystem in {"fuse.mfs", "fuse.moosefs", "mfs"} or source.startswith("mfs#"):
-            for scope in (mount, *(path for path in (probe, *probe.parents) if mount in path.parents)):
-                scopes.setdefault(scope, set()).add(parent)
-        elif filesystem.startswith("fuse") or filesystem in _NETWORK_FILESYSTEMS:
-            quota_unknown = True
-    available = [StorageCapacity(("filesystem", device), frozenset(filesystem_targets[device]), min(values))
-                 for device, values in sorted(filesystem_free.items())]
-    constrained = False
-    for scope in sorted(scopes):
-        check()
-        try:
-            rows = _quota(scope, deadline=deadline)
-        except (OSError, ValueError, subprocess.SubprocessError):
-            quota_unknown = True
-            continue
-        for kind, row in rows.items():
-            if kind == "length":
-                if row.hard is not None:
-                    available.append(StorageCapacity(("quota", scope), frozenset(scopes[scope]),
-                                                     max(0, row.hard - row.current)))
+        return (min(available) if available else None), True
+    unknown = False
+    if filesystem in {"fuse.mfs", "fuse.moosefs", "mfs"} or source.startswith("mfs#"):
+        constrained = False
+        for ancestor in (probe, *probe.parents):
+            if ancestor != mount and mount not in ancestor.parents:
+                break
+            check()
+            try:
+                rows = _quota(ancestor, deadline=deadline)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                unknown = True
+                continue
+            for kind, row in rows.items():
+                if kind == "length" and row.hard is not None:
+                    available.append(max(0, row.hard - row.current))
                     constrained = True
-            elif row.soft is not None or row.hard is not None:
-                # Inode/chunk/replica limits require other accounting. They
-                # cannot turn unknown payload capacity into a refusal.
-                quota_unknown = True
-    if scopes and not constrained:
-        quota_unknown = True
-    measured = {parent for capacity in available for parent in capacity.parents}
-    return tuple(available), quota_unknown or bool(requested - measured)
+                elif kind != "length" and (row.soft is not None or row.hard is not None):
+                    unknown = True  # Other dimensions cannot measure payload bytes.
+        unknown |= not constrained
+    elif filesystem.startswith("fuse") or filesystem in _NETWORK_FILESYSTEMS:
+        unknown = True
+    return (min(available) if available else None), unknown or not available
 
 
 
-_INVENTORY_CUSTODY: dict[int, subprocess.Popen[bytes]] = {}
-
-
-def _inventory_command(argv: list[str], *, deadline: float, cancelled: Callable[[], bool],
-                       top: int | None = None) -> str:
-    """Drain a read-only command without unbounded capture or sort temp files."""
-    if time.monotonic() >= deadline or cancelled():
-        return "could not gather: diagnostic time budget exhausted or cancelled\n"
-    process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL, start_new_session=True,
-                               env={"PATH": "/usr/local/bin:/usr/bin:/bin", "LC_ALL": "C"})
-    retained: list[tuple[int, str]] = []
-    output, pending = bytearray(), b""
-    interrupted = False
-    unreaped = cleanup_unconfirmed = False
-
-    def line(raw: bytes) -> None:
-        if top is None:
-            output.extend((raw + b"\n")[:max(0, 8192 - len(output))])
-            return
-        parts = raw.split(None, 1)
-        if len(parts) == 2 and parts[0].isdigit():
-            item = (int(parts[0]), parts[1][:4096].decode("utf-8", errors="replace"))
-            heapq.heappush(retained, item)
-            if len(retained) > top:
-                heapq.heappop(retained)
-
-    try:
-        assert process.stdout is not None
-        os.set_blocking(process.stdout.fileno(), False)
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ)
-            while process.poll() is None or selector.get_map():
-                if cancelled() or time.monotonic() >= deadline:
-                    interrupted = True
-                    break
-                for key, _event in selector.select(min(0.1, max(0, deadline - time.monotonic()))):
-                    block = os.read(key.fd, 65536)
-                    if not block:
-                        selector.unregister(key.fileobj)
+def _inventory_walk(root: Path, *, deadline: float, cancelled: Callable[[], bool]) -> str:
+    """Bounded metadata-only walk; partial diagnostics never replace refusal."""
+    sizes: dict[Path, int] = {root: 0}
+    files: list[tuple[int, str]] = []
+    stack: list[tuple[Path, tuple[Path, ...]]] = [(root, (root,))]
+    entries, scheduled = 0, 1
+    incomplete = False
+    fact = root.stat(follow_symlinks=False)
+    device = fact.st_dev
+    if not stat.S_ISDIR(fact.st_mode) or any(path.is_symlink() for path in root.parents):
+        raise OSError("models root is not a directory")
+    sizes[root] = fact.st_blocks * 512
+    while stack:
+        if cancelled() or time.monotonic() >= deadline or entries >= 100_000 or scheduled >= 10_000:
+            incomplete = True
+            break
+        directory, ancestors = stack.pop()
+        try:
+            with os.scandir(directory) as scan:
+                for entry in scan:
+                    if cancelled() or time.monotonic() >= deadline or entries >= 100_000 or scheduled >= 10_000:
+                        incomplete = True
+                        break
+                    entries += 1
+                    if entry.name in {".codex", ".env"}:
                         continue
-                    pending += block
-                    while b"\n" in pending:
-                        raw, pending = pending.split(b"\n", 1)
-                        line(raw)
-                    if len(pending) > 16384:
-                        line(pending[:16384])
-                        pending = b""
-        if pending:
-            line(pending)
-    finally:
-        # A reaped leader does not establish that its inherited stdout or
-        # process group drained. The new session still belongs to this command.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+                    fact = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(fact.st_mode) or fact.st_dev != device:
+                        continue
+                    allocated = fact.st_blocks * 512
+                    for ancestor in ancestors:
+                        sizes[ancestor] += allocated
+                    path = Path(entry.path)
+                    if stat.S_ISDIR(fact.st_mode):
+                        scheduled += 1
+                        tracked = ancestors
+                        if len(ancestors) < 4:
+                            sizes[path] = allocated
+                            tracked += (path,)
+                        stack.append((path, tracked))
+                    elif stat.S_ISREG(fact.st_mode) and fact.st_size > 2**30:
+                        heapq.heappush(files, (fact.st_size, str(path)))
+                        if len(files) > 60:
+                            heapq.heappop(files)
         except OSError:
-            cleanup_unconfirmed = True
-        try:
-            process.wait(timeout=1)
-        except (OSError, subprocess.TimeoutExpired):
-            unreaped = True
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            pass
-        except OSError:
-            cleanup_unconfirmed = True
-        else:
-            # A non-child descendant (including an unreaped zombie) cannot be
-            # waited here. Keep its group custody and report the uncertainty.
-            cleanup_unconfirmed = True
-        if unreaped or cleanup_unconfirmed:
-            _INVENTORY_CUSTODY[process.pid] = process
-        if process.stdout is not None:
-            process.stdout.close()
-    text = ("".join(f"{size}\t{path}\n" for size, path in sorted(retained, reverse=True))
-            if top is not None else output.decode("utf-8", errors="replace"))
-    if interrupted or process.returncode != 0:
-        text += "could not gather complete listing: timeout, cancellation, or command failure\n"
-    if unreaped:
-        text += f"could not reap inventory command (pid {process.pid}); cleanup unconfirmed; custody retained\n"
-    if cleanup_unconfirmed:
-        text += f"inventory process group {process.pid} cleanup unconfirmed; custody retained\n"
-    return text
+            incomplete = True
+        if incomplete and (cancelled() or time.monotonic() >= deadline or entries >= 100_000 or scheduled >= 10_000):
+            break
+    def rows(items: list[tuple[int, str]]) -> str:
+        lines = []
+        for size, name in sorted(items, reverse=True):
+            raw = name.replace("\n", r"\n").replace("\r", r"\r").encode(errors="replace")
+            lines.append(f"{size}\t{raw[:1024].decode(errors='ignore')}{'...' if len(raw) > 1024 else ''}\n")
+        return "".join(lines)
+    directories = heapq.nlargest(40, ((size, str(path)) for path, size in sizes.items()))
+    return ("Largest directories (allocated bytes, top 40):\n" + rows(directories)
+            + "Files over 1 GiB (logical bytes, top 60):\n" + rows(files)
+            + ("incomplete: directory walk stopped or metadata unavailable\n" if incomplete else ""))
 
 
 def declare_storage_inventory(out: Path, models_root: Path, *, deadline: float,
                               cancelled: Callable[[], bool]) -> None:
-    """Declare diagnostics before refusal; command failure never replaces its numbers."""
+    """Declare bounded Python diagnostics before raising the measured refusal."""
     from astrid.core._shared import run_logs
 
     path = Path(out) / ".preparation-logs" / "storage.inventory.log"
     path.parent.mkdir(parents=True, exist_ok=True)
     run_logs.declare(out, run_logs.LogDecl("storage.inventory", "run", str(path)))
-    # Reserve cleanup time below the requested approximately 60-second ceiling.
     end = min(deadline, time.monotonic() + 55)
-    volume = models_root
-    while not volume.exists():
-        volume = volume.parent
-    note = ""
+    intended = models_root.absolute()
+    probe = intended
+    while not probe.exists():
+        probe = probe.parent
+    root, text = probe, ""
     try:
-        volume, _filesystem, _source = _mount(volume, Path("/proc/self/mountinfo").read_text())
+        mounts = []
+        content = Path("/proc/self/mountinfo").read_text(errors="replace")
+        for line in content.splitlines():
+            fields = line.partition(" - ")[0].split()
+            if len(fields) >= 6 and Path(_unescape(fields[4])) in (intended, *intended.parents):
+                mounts.append(line)
+        raw = "\n".join(mounts).encode(errors="replace")
+        text += "Mounts (/proc/self/mountinfo):\n" + raw[:8192].decode(errors="ignore") + "\n"
+        if len(raw) > 8192:
+            text += "incomplete: mount listing truncated\n"
+        mount, _filesystem, _source = _mount(intended, content)
+        if mount.stat(follow_symlinks=False).st_dev != probe.stat(follow_symlinks=False).st_dev:
+            raise ValueError("mount device differs from models device")
+        root = mount
     except (OSError, ValueError):
-        note = "could not resolve volume mount; listing the target subtree instead\n"
-    commands = [
-        (["findmnt", "-T", str(volume)], None, 5),
-        (["df", "-B1", "--", str(volume)], None, 5),
-        (["du", "-x", "-B1", "--max-depth=3", "--exclude=.codex", "--", str(volume)], 40, 20),
-        (["find", str(volume), "-xdev", "-name", ".codex", "-prune", "-o", "-type", "f",
-          "-size", "+1073741824c", "-printf", "%s\t%p\n"], 60, 25),
-    ]
-    with path.open("w", encoding="utf-8") as stream:
-        stream.write(f"Storage inventory: {volume}\nRead-only; .codex directories excluded.\n" + note)
-        for argv, top, seconds in commands:
-            stream.write(f"\n$ {' '.join(argv)}\n")
-            stream.flush()
-            try:
-                text = _inventory_command(argv, top=top, deadline=min(end, time.monotonic() + seconds),
-                                          cancelled=cancelled)
-            except (OSError, ValueError, subprocess.SubprocessError):
-                text = "could not gather: command unavailable or listing failed\n"
-            stream.write(text[:262144] + ("\nlisting truncated\n" if len(text) > 262144 else ""))
-            stream.flush()
+        text += "incomplete: covering mount unavailable; listing target subtree\n"
+    text = f"Storage inventory: {root}\nRead-only; symlinks and .codex excluded.\n" + text
+    try:
+        space = os.statvfs(probe)
+        text += f"statvfs: free_bytes={space.f_bavail * space.f_frsize} total_bytes={space.f_blocks * space.f_frsize}\n"
+    except (OSError, ValueError):
+        text += "incomplete: statvfs unavailable\n"
+    try:
+        text += _inventory_walk(root, deadline=end, cancelled=cancelled)
+    except (OSError, ValueError):
+        text += "incomplete: directory listing unavailable\n"
+    encoded = text.encode(errors="replace")
+    if len(encoded) > 131072:
+        encoded = encoded[:131040] + b"\nincomplete: output truncated\n"
+    path.write_text(encoded.decode(errors="ignore"), encoding="utf-8")

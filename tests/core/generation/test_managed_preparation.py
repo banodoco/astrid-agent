@@ -853,11 +853,13 @@ def test_fetch_storage_preflight_keeps_destination_quota_scopes(fetch_volume, fi
     else:
         c.fetch()
         assert c.native == ['fetch']
-    assert {str(first), str(second)} <= {argv[-1] for argv in c.quota_calls}
+    assert str(first) in {argv[-1] for argv in c.quota_calls}
+    if not refused:
+        assert str(second) in {argv[-1] for argv in c.quota_calls}
 
 
-@pytest.mark.parametrize('separate,unavailable,refused', [(True, False, False), (False, False, True), (True, True, False)])
-def test_fetch_storage_preflight_keeps_filesystem_scopes(fetch_volume, monkeypatch, separate, unavailable, refused):
+@pytest.mark.parametrize('first_free,second_free', [(5, 10), (4, 9), (12, 12), (4, None)])
+def test_fetch_storage_preflight_checks_each_directory_independently(fetch_volume, monkeypatch, first_free, second_free):
     import os
 
     c = fetch_volume
@@ -865,38 +867,23 @@ def test_fetch_storage_preflight_keeps_filesystem_scopes(fetch_volume, monkeypat
     first, second = c.models / 'first', c.models / 'second'
     first.mkdir()
     second.mkdir()
+    assert first.stat().st_dev == second.stat().st_dev  # XFS projects may share a device.
     c.rows[0]['subdir'], c.rows[1]['subdir'] = 'first', 'second'
     c.state.mountinfo = c.state.mountinfo.replace('fuse.mfs mfs#host:9421', 'ext4 /dev/fake')
-    original_stat = Path.stat
-
-    def stat(path, *args, **kwargs):
-        info = original_stat(path, *args, **kwargs)
-        if separate and path in {first, second}:
-            fields = list(info)
-            fields[2] = 101 if path == first else 102
-            return os.stat_result(fields)
-        return info
-
-    monkeypatch.setattr(Path, 'stat', stat)
     def space(path):
-        if unavailable and path == second:
+        value = {first: first_free, second: second_free}.get(path, 1000)
+        if value is None:
             raise OSError('PRIVATE_PROVIDER_BODY')
-        return SimpleNamespace(f_bavail=({first: 4, second: 9}[path] if separate else 12), f_frsize=1)
+        return SimpleNamespace(f_bavail=value, f_frsize=1, f_blocks=1000)
 
     monkeypatch.setattr(os, 'statvfs', space)
-    if refused:
-        with pytest.raises(IntegrityError) as caught:
-            c.fetch()
-        assert caught.value.details == {'needed_bytes': 13, 'free_bytes': 12}
-        assert c.native == []
-    else:
-        c.fetch()
-        assert c.native == ['fetch']
-        if unavailable:
-            _assert_storage_warning(c)
+    c.fetch()
+    assert c.native == ['fetch']
+    if second_free is None:
+        _assert_storage_warning(c)
 
 
-def test_fetch_storage_preflight_sums_shared_ancestor_quota(fetch_volume):
+def test_fetch_storage_preflight_does_not_sum_different_directories_under_shared_quota(fetch_volume):
     c = fetch_volume
     c.have.unlink()
     first, second = c.models / 'first', c.models / 'second'
@@ -905,10 +892,36 @@ def test_fetch_storage_preflight_sums_shared_ancestor_quota(fetch_volume):
     c.rows[0]['subdir'], c.rows[1]['subdir'] = 'first', 'second'
     c.state.free = 100
     c.state.transform = lambda text, path: text.replace('| 290 |', '| 202 |') if path == str(c.models) else text
+    c.fetch()
+    assert c.native == ['fetch']
+
+
+def test_fetch_storage_preflight_sums_only_one_destination_directory(fetch_volume):
+    c = fetch_volume
+    c.have.unlink()
+    c.state.free = 12
     with pytest.raises(IntegrityError) as caught:
         c.fetch()
     assert caught.value.details == {'needed_bytes': 13, 'free_bytes': 12}
     assert c.native == []
+
+
+@pytest.mark.parametrize('same_directory,refused', [(False, False), (True, True)])
+def test_fetch_storage_preflight_keeps_missing_intended_directories_distinct(fetch_volume, same_directory, refused):
+    c = fetch_volume
+    c.have.unlink()
+    c.rows[0]['subdir'] = 'missing/first'
+    c.rows[1]['subdir'] = 'missing/first' if same_directory else 'missing/second'
+    c.state.free = 12
+    if refused:
+        with pytest.raises(IntegrityError) as caught:
+            c.fetch()
+        assert caught.value.details == {'needed_bytes': 13, 'free_bytes': 12}
+        assert c.native == []
+    else:
+        c.fetch()
+        assert c.native == ['fetch']
+    assert not (c.models / 'missing').exists()
 
 
 def test_fetch_storage_preflight_checks_destination_ancestor_quota(fetch_volume):
@@ -978,28 +991,20 @@ def test_fetch_storage_preflight_valid_quota_survives_unavailable_statvfs(fetch_
 
 @pytest.fixture
 def inventory_pod(fetch_volume, monkeypatch):
-    import subprocess
-    import sys
+    import os
 
     c = fetch_volume
     c.state.fs_free = 8
     c.listings, c.listing_failed = [], False
-    original = subprocess.Popen
-    data = {
-        'findmnt': 'TARGET SOURCE FSTYPE OPTIONS\n/volume fake fuse.mfs rw\n',
-        'df': 'Filesystem 1B-blocks Used Available Use% Mounted on\nfake 200 192 8 96% /volume\n',
-        'du': ''.join(f'{i}\t/volume/release-{i}\n' for i in range(1, 81)),
-        'find': ''.join(f'{2**30 + i}\t/volume/model-{i}.bin\n' for i in range(1, 101)),
-    }
+    original = os.scandir
 
-    def pod_command(argv, **kwargs):
-        assert argv[0] in data, f'unexpected pod command: {argv}'
-        assert kwargs.get('shell', False) is False
-        c.listings.append(argv)
-        program = 'import sys;sys.exit(2)' if c.listing_failed else f'print({data[argv[0]]!r},end="")'
-        return original([sys.executable, '-c', program], **kwargs)
+    def listing(path):
+        c.listings.append(path)
+        if c.listing_failed:
+            raise OSError('PRIVATE_PROVIDER_BODY')
+        return original(path)
 
-    monkeypatch.setattr(subprocess, 'Popen', pod_command)
+    monkeypatch.setattr(os, 'scandir', listing)
     return c
 
 
@@ -1012,15 +1017,16 @@ def _storage_inventory(c):
 
 def test_storage_refusal_declares_inventory_with_bounded_sorted_listing(inventory_pod):
     c = inventory_pod
+    for i in range(1, 101):
+        with (c.models / f'model-{i:03}.bin').open('wb') as stream:
+            stream.truncate(2**30 + i)
     with pytest.raises(IntegrityError) as caught:
         c.fetch()
     assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
     text = _storage_inventory(c)
-    assert 'TARGET SOURCE FSTYPE OPTIONS' in text and 'Filesystem 1B-blocks' in text
-    assert '/volume/release-80' in text and '/volume/release-40\n' not in text
-    assert '/volume/model-100.bin' in text and '/volume/model-40.bin\n' not in text
-    assert text.index('/volume/release-80') < text.index('/volume/release-79')
-    assert text.index('/volume/model-100.bin') < text.index('/volume/model-99.bin')
+    assert 'fuse.mfs mfs#host:9421' in text and 'statvfs: free_bytes=8' in text
+    assert '/model-100.bin' in text and '/model-040.bin\n' not in text
+    assert text.index('/model-100.bin') < text.index('/model-099.bin')
     assert len(text.encode()) < 128 * 1024
     assert 'see `astrid tasks logs task-storage` (storage.inventory)' in str(caught.value)
     assert c.native == []
@@ -1033,7 +1039,8 @@ def test_storage_refusal_failed_inventory_preserves_numbers_and_note(inventory_p
         c.fetch()
     assert caught.value.code == 'insufficient_storage'
     assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
-    assert 'could not gather' in _storage_inventory(c)
+    assert 'incomplete' in _storage_inventory(c)
+    assert 'PRIVATE_PROVIDER_BODY' not in _storage_inventory(c)
     assert c.native == []
 
 
@@ -1045,5 +1052,5 @@ def test_storage_inventory_never_deletes_volume_content(inventory_pod):
     with pytest.raises(IntegrityError):
         c.fetch()
     assert {str(p): p.read_bytes() for p in c.models.rglob('*') if p.is_file()} == before
-    assert [argv[0] for argv in c.listings] == ['findmnt', 'df', 'du', 'find']
+    assert c.models in c.listings
     assert 'storage.inventory' in (c.prep.logs_root / 'logs.json').read_text()

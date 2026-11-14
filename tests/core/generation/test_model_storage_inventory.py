@@ -1,132 +1,136 @@
-"""Inventory interruption drains the owned process group, including orphaned children."""
+"""Storage diagnostics walk metadata without subprocesses or following links."""
 from __future__ import annotations
 
-import ctypes
 import os
-import signal
-import subprocess
-import sys
 import time
-from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from astrid.core.generation import model_storage
 
 
-@contextmanager
-def _subreaper():
-    # The helper's orphan becomes this test's child, so even the failing
-    # pre-fix control can kill and reap it without leaving a PID 1 zombie.
-    libc = ctypes.CDLL(None, use_errno=True)
-    previous = ctypes.c_int()
-    assert libc.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0  # PR_GET_CHILD_SUBREAPER
-    assert libc.prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
-    try:
-        yield
-    finally:
-        assert libc.prctl(36, previous.value, 0, 0, 0) == 0
+@pytest.fixture
+def inventory(tmp_path, monkeypatch):
+    volume = tmp_path / 'volume'
+    root = volume / 'models'
+    root.mkdir(parents=True)
+    original = Path.read_text
+    mounts = f'1 0 0:1 / {volume} rw - ext4 fake rw\n'
+    monkeypatch.setattr(Path, 'read_text', lambda path, *a, **kw:
+        mounts if str(path) == '/proc/self/mountinfo' else original(path, *a, **kw))
+    monkeypatch.setattr(model_storage.subprocess, 'Popen', lambda *a, **kw: pytest.fail('inventory spawned a child'))
 
+    def collect(*, cancelled=lambda: False, deadline=None):
+        model_storage.declare_storage_inventory(tmp_path, root,
+            deadline=time.monotonic() + 10 if deadline is None else deadline, cancelled=cancelled)
+        return (tmp_path / '.preparation-logs/storage.inventory.log').read_text()
 
-def _reap(pid, seconds):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        found, status = os.waitpid(pid, os.WNOHANG)
-        if found:
-            return status
-        time.sleep(.01)
-    return None
+    return SimpleNamespace(root=root, volume=volume, collect=collect)
 
 
 @pytest.mark.parametrize('interrupt', ['deadline', 'cancel'])
-def test_inventory_kills_child_after_command_leader_exits(tmp_path, monkeypatch, interrupt):
-    pid_path = tmp_path / 'child.pid'
-    script = '''import os, pathlib, sys, time
-pid_path = pathlib.Path(sys.argv[1])
-if os.fork() == 0:
-    pid_path.write_text(str(os.getpid()))
-    print("child holds inventory stdout open", flush=True)
-    time.sleep(30)
-    os._exit(0)
-while not pid_path.exists() or not pid_path.stat().st_size:
-    time.sleep(.001)
-os._exit(0)
-'''
-    popen = subprocess.Popen
-    owned = []
+def test_inventory_walk_stops_with_partial_listing(inventory, monkeypatch, interrupt):
+    child = inventory.volume / 'not-entered'
+    child.mkdir()
+    scanned, stop = [], [False]
+    original = os.scandir
+    clock = [1.0]
+    monkeypatch.setattr(model_storage.time, 'monotonic', lambda: clock[0])
 
-    def command(*args, **kwargs):
-        process = popen(*args, **kwargs)
-        owned.append(process)
-        return process
+    def scandir(path):
+        scanned.append(path)
+        stop[0] = True
+        if interrupt == 'deadline':
+            clock[0] = 20.0
+        return original(path)
 
-    monkeypatch.setattr(model_storage.subprocess, 'Popen', command)
-    with _subreaper():
-        child = None
-        status = None
-        try:
-            output = model_storage._inventory_command(
-                [sys.executable, '-c', script, str(pid_path)],
-                deadline=time.monotonic() + (.4 if interrupt == 'deadline' else 2),
-                cancelled=lambda: interrupt == 'cancel' and bool(owned) and owned[0].poll() is not None,
-            )
-            assert owned[0].returncode == 0, 'the leader must exit before interruption'
-            child = int(pid_path.read_text())
-            status = _reap(child, .5)
-            assert status is not None, 'inventory descendant survived its deadline/cancellation'
-            assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
-            assert 'could not gather complete listing' in output
-            assert 'cleanup unconfirmed' in output or not _group_exists(owned[0].pid)
-            if 'cleanup unconfirmed' in output:
-                assert owned[0].pid in model_storage._INVENTORY_CUSTODY
-        finally:
-            if owned:
-                try:
-                    os.killpg(owned[0].pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                owned[0].wait(timeout=1)
-            if child is None and pid_path.exists():
-                child = int(pid_path.read_text())
-            if child is not None and status is None:
-                status = _reap(child, 1)
-                assert status is not None, 'test harness could not reap its inventory child'
-            if owned and not _group_exists(owned[0].pid):
-                getattr(model_storage, '_INVENTORY_CUSTODY', {}).pop(owned[0].pid, None)
+    monkeypatch.setattr(model_storage.os, 'scandir', scandir)
+    text = inventory.collect(deadline=10, cancelled=lambda: interrupt == 'cancel' and stop[0])
+    assert scanned == [inventory.volume]
+    assert 'incomplete' in text
+    assert str(child) not in text
 
 
-def _group_exists(pgid):
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+def test_inventory_walk_never_follows_symlinks(inventory, tmp_path, monkeypatch):
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / 'secret.bin').touch()
+    (inventory.root / 'linked').symlink_to(outside, target_is_directory=True)
+    (inventory.root / 'loop').symlink_to(inventory.root, target_is_directory=True)
+    original, scanned = os.scandir, []
+
+    def scandir(path):
+        scanned.append(path)
+        return original(path)
+
+    monkeypatch.setattr(model_storage.os, 'scandir', scandir)
+    text = inventory.collect()
+    assert scanned == [inventory.volume, inventory.root]
+    assert 'secret.bin' not in text and 'linked' not in text and 'loop' not in text
+    assert 'statvfs' in text
 
 
-def test_inventory_reports_an_unreapable_command(monkeypatch):
-    read_fd, write_fd = os.pipe()
-    os.close(write_fd)
+def test_inventory_walk_does_not_enter_another_device(inventory, monkeypatch):
+    other = inventory.root / 'other-device'
+    other.mkdir()
+    original, scanned = os.scandir, []
 
-    class Unreapable:
-        pid = 1 << 30
-        returncode = 0
+    class Entry:
+        name, path = other.name, str(other)
 
-        def __init__(self):
-            self.stdout = os.fdopen(read_fd, 'rb')
+        def stat(self, *, follow_symlinks):
+            assert follow_symlinks is False
+            values = list(other.stat())
+            values[2] += 1
+            return os.stat_result(values)
 
-        def poll(self):
-            return self.returncode
+    class Scan:
+        def __enter__(self):
+            return iter([Entry()])
 
-        def wait(self, timeout):
-            raise subprocess.TimeoutExpired('inventory', timeout)
+        def __exit__(self, *args):
+            pass
 
-    process = Unreapable()
-    monkeypatch.setattr(model_storage.subprocess, 'Popen', lambda *args, **kwargs: process)
-    try:
-        output = model_storage._inventory_command(['fake-inventory'], deadline=time.monotonic() + 1,
-                                                  cancelled=lambda: False)
-        assert 'could not reap inventory command' in output
-        assert 'cleanup unconfirmed' in output
-        assert model_storage._INVENTORY_CUSTODY[process.pid] is process
-    finally:
-        getattr(model_storage, '_INVENTORY_CUSTODY', {}).pop(process.pid, None)
+    def scandir(path):
+        scanned.append(path)
+        return Scan() if path == inventory.root else original(path)
+
+    monkeypatch.setattr(model_storage.os, 'scandir', scandir)
+    inventory.collect()
+    assert scanned == [inventory.volume, inventory.root]
+
+
+def test_inventory_reports_old_engine_beside_current_models(inventory):
+    old = inventory.volume / 'old-engine/version-1'
+    old.mkdir(parents=True)
+    model = old / 'unreferenced-large-model.bin'
+    with model.open('wb') as stream:
+        stream.truncate(2**30 + 1)
+    text = inventory.collect()
+    assert f'{2**30 + 1}\t{model}\n' in text
+    assert f'Storage inventory: {inventory.volume}\n' in text
+
+
+def test_inventory_walk_caps_sorted_rows_and_log_bytes(inventory, monkeypatch):
+    original = Path.read_text
+    mounts = (f'1 0 0:1 / {inventory.root.parent} rw - ext4 {"x" * 150_000} rw\n'
+              '2 0 0:2 / /unrelated-inventory-mount rw - ext4 fake rw\n')
+    monkeypatch.setattr(Path, 'read_text', lambda path, *a, **kw:
+        mounts if str(path) == '/proc/self/mountinfo' else original(path, *a, **kw))
+    for index in range(80):
+        directory = inventory.root / f'dir-{index:03}'
+        directory.mkdir()
+        # Sparse files provide real metadata without consuming model-size disk.
+        with (directory / f'model-{index:03}.bin').open('wb') as stream:
+            stream.truncate(2**30 + index + 1)
+    text = inventory.collect()
+    directory_rows, file_rows = text.split('Largest directories (allocated bytes, top 40):\n')[1].split(
+        'Files over 1 GiB (logical bytes, top 60):\n')
+    assert len(directory_rows.strip().splitlines()) == 40
+    files = file_rows.strip().splitlines()
+    assert len(files) == 60
+    assert files[0].endswith('model-079.bin') and files[-1].endswith('model-020.bin')
+    assert '/unrelated-inventory-mount' not in text and 'x' * 8193 not in text
+    assert len(text.encode()) <= 128 * 1024

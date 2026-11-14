@@ -121,13 +121,14 @@ remain on its branch. Exception identity, code, retryability, recovery handle,
 cleanup and execution-timeout test assertions remain unchanged. The one-hour
 preparation limit also remains unchanged.
 
-For MooseFS, preparation queries `mfsgetquota -n` at the mount and every
-visible existing ancestor of each destination directory. Each observation
-retains its scope: filesystem `f_bavail * f_frsize` covers destinations on
-that device, and a quota covers destinations beneath that subtree on its
-mount. Only those destinations' missing bytes are summed against that
-observation. Common filesystem and ancestor quotas still sum their shared
-demand. A refusal reports the failing scope's needed/free numbers.
+Preparation groups demand only by the exact resolved target directory and
+compares each group's bytes with that directory's `statvfs` free bytes and
+covering hard quotas. Missing intended directories remain separate groups;
+their nearest existing ancestor supplies measurements without creating them.
+MooseFS quotas are queried directly with `mfsgetquota -n PATH`, one short
+command per queried ancestor, with a timeout capped at ten seconds and the
+shared preparation deadline. There is no device or quota-alias aggregation.
+This deliberately accepts missed refusals for directories sharing a budget or bind aliases in exchange for avoiding cross-directory false refusals.
 
 The manager's round-7 ruling for the **P1 soft-quota false refusal** is that
 a soft limit never refuses, regardless of grace. Soft and hard fields are
@@ -152,10 +153,7 @@ work owned by the manager.
 
 Hashing checks cancellation before every 1 MiB read and before returning,
 while retaining the existing deadline and file-identity checks. A single
-blocked filesystem read is not preempted by this callback. Inventory cleanup
-signals its owned process group even after leader exit; unreaped commands or
-unconfirmed groups remain retained in process custody and are explicitly
-reported in the declared inventory log.
+blocked filesystem read is not preempted by this callback.
 
 The optional native query supports logical-length quotas. Missing tools,
 failed or malformed reports, no visible byte quota, other network backends,
@@ -213,22 +211,20 @@ Preparation does not delete files, install quota tools, or extend paid time.
 An `insufficient_storage` refusal now gathers inventory inside preparation and
 declares it through `run_logs.declare(out, LogDecl("storage.inventory", ...))`.
 The owner can retrieve it with `astrid tasks logs <task>` without a pod shell.
-It contains `findmnt -T <volume>`, `df -B1`, the largest 40 rows from
-`du -x -B1 --max-depth=3 <volume>`, and the largest 60 regular files over
-1 GiB, with byte sizes and paths. Both lists are sorted descending in memory;
-there are no sort temporary files or cleanup commands. `.codex` directories
-are excluded from recursive inspection.
+It contains covering `/proc/self/mountinfo` lines, `statvfs` free/total bytes,
+the largest 40 directory totals through depth three, and the largest 60 regular
+files over 1 GiB. A metadata-only `os.scandir` walk stays on the models root's
+device and skips symlinks and `.codex`. No inventory subprocesses are started;
+the separate quota read is one direct `mfsgetquota -n <path>` command with a timeout.
 
-The commands share a 55-second collection deadline, capped by preparation's
-existing deadline, and check cancellation while draining output. Each process
-has bounded cleanup time. Missing commands, failed commands and timeouts leave
-a note in the declared log; they never replace the refusal's needed/free
-numbers. Reads and retained output are bounded (at most 40/60 paths, bounded
-headers and sections). Only the log and normal log-registration metadata are
-written. The measured refusal adds the task-log hint shown above.
+The walk checks cancellation and a shared 55-second deadline capped by
+preparation's deadline, and bounds entries, directory bookkeeping and output
+(128 KiB). An incomplete note accompanies partial results or unavailable
+metadata; diagnostics never replace the measured refusal's numbers. Only the
+declared log and normal log-registration metadata are written.
 
-The new three fake-command cases failed before this change and prove successful
-listing, failed listing with preserved refusal numbers, and no volume deletion.
+CPU cases prove partial deadline/cancellation results, skipped symlinks and
+other devices, capped sorted lists, and no volume deletion.
 The prior low-statvfs test now requires the inventory declaration while still
 forbidding a misleading proceeding warning; this assertion changes because the
 manager explicitly requires a log on every refusal.
