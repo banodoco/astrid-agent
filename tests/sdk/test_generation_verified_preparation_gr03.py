@@ -25,6 +25,16 @@ def canonical(value):
 
 @pytest.fixture
 def producer(monkeypatch, tmp_path):
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    # This fixture's target inventory contains Z-Image, so make that the
+    # preferred installed candidate while retaining the other fallback entries.
+    list_by_modality = ModelRegistry.list_by_modality
+    monkeypatch.setattr(
+        ModelRegistry, "list_by_modality",
+        lambda self, *args, **kwargs: [entry for entry in list_by_modality(self, *args, **kwargs)
+                                       if entry.id != "qwen-image-2.1-turbo"],
+    )
     info = target_info(vaes=("ae.safetensors",))
     client = ComfyTargetClient(ComfyTarget("http://127.0.0.1:8188", "attached"))
     client.object_info = Mock(return_value=info)
