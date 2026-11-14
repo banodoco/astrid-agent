@@ -2,7 +2,8 @@
 
 MooseFS reports cluster capacity through statvfs, independently of subtree
 quotas. Its native quota query supplies the enforced logical-byte headroom.
-Unavailable quota observations fall back to statvfs; unavailable capacity never blocks preparation.
+Declared volume capacity minus a complete allocated-byte walk supplies another
+independent observation. Unavailable capacity never blocks preparation.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import stat
 import subprocess
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +22,112 @@ from .engine_contracts import IntegrityError, UnsafePathError
 
 STORAGE_WARNING = "storage capacity could not be measured; proceeding"
 _NETWORK_FILESYSTEMS = frozenset({"nfs", "nfs4", "cifs", "smb3", "ceph", "lustre", "9p"})
+
+
+@dataclass(frozen=True)
+class DeclaredVolume:
+    """Controller-recorded capacity; GB uses the larger binary interpretation."""
+
+    mount_path: Path
+    size_gb: int
+
+
+DECLARED_VOLUME: ContextVar[DeclaredVolume | None] = ContextVar("model_storage_volume", default=None)
+
+
+@dataclass(frozen=True)
+class VolumeSpace:
+    mount_path: Path
+    device: int
+    free_bytes: int
+
+    def covers(self, directory: Path) -> bool:
+        if directory != self.mount_path and self.mount_path not in directory.parents:
+            return False
+        try:
+            probe = directory
+            while not probe.exists():
+                probe = probe.parent
+            return probe.stat(follow_symlinks=False).st_dev == self.device
+        except OSError:
+            return False
+
+
+def measure_declared_volume(volume: DeclaredVolume, directory: Path, *, deadline: float,
+                            check: Callable[[], None]) -> VolumeSpace | None:
+    """Measure a whole declared mount, or return unknown without partial credit.
+
+    The walk gets at most one quarter of the remaining preparation time (60s
+    maximum). Directory descriptors prevent following a replaced symlink.
+    Files are never opened; metadata and hardlink identities suffice.
+    """
+    check()
+    root = volume.mount_path
+    if (not root.is_absolute() or ".." in root.parts or volume.size_gb <= 0
+            or (directory != root and root not in directory.parents)):
+        return None
+    now = time.monotonic()
+    end = min(deadline, now + min(60, max(0, deadline - now) / 4))
+    seen: set[tuple[int, int]] = set()
+    used, entries, directories = 0, 0, 0
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+    def bound() -> None:
+        check()
+        if time.monotonic() >= end:
+            raise ValueError("volume walk budget exhausted")
+
+    def visit(fd: int, depth: int, device: int) -> None:
+        nonlocal used, entries, directories
+        bound()
+        directories += 1
+        if depth > 128 or directories > 10_000:
+            raise ValueError("volume walk directory bound exhausted")
+        with os.scandir(fd) as scan:
+            for entry in scan:
+                bound()
+                entries += 1
+                if entries > 100_000:
+                    raise ValueError("volume walk entry bound exhausted")
+                fact = entry.stat(follow_symlinks=False)
+                if fact.st_dev != device:
+                    continue
+                identity = (fact.st_dev, fact.st_ino)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                used += fact.st_blocks * 512
+                if stat.S_ISDIR(fact.st_mode):
+                    child = os.open(entry.name, flags, dir_fd=fd)
+                    try:
+                        current = os.fstat(child)
+                        if (current.st_dev, current.st_ino) != identity:
+                            raise ValueError("volume directory changed during walk")
+                        visit(child, depth + 1, device)
+                    finally:
+                        os.close(child)
+        bound()
+
+    try:
+        fd = os.open(root.anchor, flags)
+        try:
+            for part in root.parts[1:]:
+                bound()
+                child = os.open(part, flags, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            fact = os.fstat(fd)
+            observation = VolumeSpace(root, fact.st_dev, 0)
+            if not observation.covers(directory):
+                return None
+            seen.add((fact.st_dev, fact.st_ino))
+            used = fact.st_blocks * 512
+            visit(fd, 0, fact.st_dev)
+            return VolumeSpace(root, fact.st_dev, max(0, volume.size_gb * 2**30 - used))
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        return None
 
 
 def storage_refusal_message(needed: int, free: int, task: str = "<task>") -> str:

@@ -138,8 +138,8 @@ actually used default grace. It now declares zero grace and expects admission
 below the hard limit; a 24-hour-grace regression also distinguishes soft198
 from hard1000 versus hard198 at usage190. This explicitly supersedes the
 earlier soft-limit expectation. The old storage probe uses only `statvfs`;
-that can describe the cluster rather than a subtree quota. Nominal provider
-size minus `du` is not used as quota authority.
+that can describe the cluster rather than a subtree quota. The declared-volume
+observation below supplements these quota measurements.
 
 The round-7 URL/revision finding remains a known missed refusal under the
 manager's ruling. Native VibeComfy can redownload a digest-valid file when
@@ -273,3 +273,67 @@ it serializes and downloads all 36 lock rows. These figures exclude runtime,
 outputs and optional unlocked adapters; actual admission still subtracts only
 models verified at the selected destination. Recreated ephemeral pods must
 re-download their selected model sets.
+
+## Declared network-volume capacity (Release 13)
+
+The RunPod claim journal already records `network_volume_id`,
+`network_volume_size_gb` and `volume_mount_path`. Machine submission copies
+these facts into the existing `astrid.machine-job.v1` document as
+`storage_volume` (`id`, `size_gb`, `mount_path`). The pod scopes that declaration
+to this job's managed preparation; it makes no provider lookup. Ephemeral pods
+and older claims without a declared network-volume size keep the existing
+statvfs/quota behavior.
+
+The repository labels RunPod's size field as GB, but contains no provider API
+statement defining its byte multiplier. Admission deliberately uses
+`size_gb * 2**30`, the larger reading: ambiguity can under-refuse, never cause a
+false refusal through choosing decimal GB.
+
+Before fetch, a metadata-only walk measures allocated bytes (`st_blocks * 512`)
+across the **whole declared mount**, including old engines, other caches and
+outputs beside the current models directory. Each `(device, inode)` contributes
+once, so hardlinks do not inflate usage. Symlinks contribute only their own
+allocated metadata; their targets are never followed. Directory descriptors
+opened with `O_NOFOLLOW` also guard against replaced directory links. Other
+devices are excluded. A target must be inside the declared mount and on its
+device for the observation to apply.
+
+The walk checks preparation cancellation and its shared deadline between
+entries and directories. Its own budget is at most 60 seconds or one quarter
+of preparation's remaining time, whichever is smaller; it also caps entries
+at 100,000, directories at 10,000 and depth at 128. A timeout, unreadable
+metadata, changed directory identity or exhausted bound makes the observation
+unknown. Partial usage never becomes a free-space estimate. Cancellation and
+the overall preparation deadline still stop preparation normally. As with the
+existing inventory, one blocked filesystem syscall cannot be preempted by a
+Python callback.
+
+A completed observation is `max(0, declared_capacity - allocated_usage)`. It is
+computed once per preflight and joins statvfs and hard logical-byte quota
+measurements for each covered target directory: the tightest known budget
+wins. Soft quotas do not refuse; an unknown observation cannot refuse by
+itself. Existing quota queries and their warning policy remain in place.
+This remains a capacity observation, not a reservation against other writers.
+
+## Inventory after fetch runs out of space
+
+The native managed `fetch` step also declares `storage.inventory` when it
+raises `OSError` with EDQUOT (122) or ENOSPC (28), or when its failed command
+reports those errno values, symbolic names, or the corresponding standard
+quota/space diagnostic. Both stdout and stderr are checked locally; raw
+output still stays in the declared preparation logs rather than the public
+remote failure diagnostic.
+
+Inventory uses the same bounded declaration and collection as a preflight
+refusal. The original error object is re-raised with its type, code and message
+unchanged; a Python exception note points to
+`astrid tasks logs <task>` (`storage.inventory`) when inventory succeeds. The
+ordinary failed-job log transfer also carries this named log into the failure
+receipt. A failed inventory cannot replace the original fetch failure.
+Other fetch failures and storage errors in other native steps do not trigger
+this inventory path.
+
+CPU regressions cover claim-to-job transport, full-mount allocation accounting,
+exact admission boundaries, binary GB, hardlinks, symlinks, other devices,
+deadline/cancellation, unknown and absent declarations, EDQUOT/ENOSPC exceptions
+and command diagnostics, preserved errors, inventory failure, and receipt logs.
