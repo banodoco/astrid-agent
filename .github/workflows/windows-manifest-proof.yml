@@ -88,6 +88,8 @@ jobs:
                 Out-File -Append (Join-Path $out 'listing.txt')
             }
           }
+          Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -Filter 'install*.log' -ErrorAction SilentlyContinue |
+            ForEach-Object { "===== $($_.FullName) (last 120 lines)"; Get-Content -LiteralPath $_.FullName -Tail 120 }
           Get-ScheduledTask | Where-Object TaskName -like 'Astrid*' | Format-List * | Out-File (Join-Path $out 'tasks.txt')
           Get-Process | Where-Object { $_.Path -like "$env:LOCALAPPDATA\Astrid*" } | Select-Object Id, Path | Out-File (Join-Path $out 'processes.txt')
 
