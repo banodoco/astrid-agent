@@ -403,14 +403,18 @@ def _placement_line(action, result):
     def show(placement):
         return json.dumps(placement, sort_keys=True) if placement else 'the built-in default'
     before, now = result['previous'], result['placement']
-    if before.get('kind') == 'attached' and before.get('endpoint'):
+    # A one-command restore is offered only when it brings back exactly what was there: `set` keeps a
+    # device only on an attached placement, and `unset` removes it, so a device is restorable only on undo of set.
+    keys = set(before)
+    if action == 'unset' and before == now:
+        restore = 'nothing to restore; no placement was saved'
+    elif before.get('kind') == 'attached' and before.get('endpoint') and keys <= {'kind', 'endpoint', 'policy'} | (
+            {'device'} if action == 'set' else set()):
         restore = f"astrid generate settings set placement {before['endpoint']}"
-    elif before.get('kind') is None and 'endpoint' not in before:
+    elif keys <= {'policy'}:
         restore = 'astrid generate settings unset placement'
     else:
         restore = f"none in one command; the previous placement is {show(before)}"
-    if action == 'unset' and before == now:
-        restore = 'nothing to restore; no placement was saved'
     return f"placement is now {show(now)} (was {show(before)}); restore: {restore}"
 
 

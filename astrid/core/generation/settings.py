@@ -343,9 +343,9 @@ def _change_placement(client: Any, change: Callable[[dict[str, Any]], dict[str, 
 def set_placement(url: str, client: Any = None) -> dict[str, Any]:
     """Save one attached ComfyUI endpoint as the placement default; the URL must pass ``normalize_target``.
 
-    The saved ``policy`` and ``device`` stay as they were (the validator accepts a device on an attached
-    placement). ``machine`` and ``engine`` name another place, so they do not carry over; ``previous``
-    keeps them.
+    The saved ``policy`` stays. ``device``, ``machine`` and ``engine`` belong to the place they were saved
+    for (the same rule as ``placement._merge``): ``device`` is kept only when the previous kind was already
+    attached, and ``machine`` and ``engine`` always go. ``previous`` shows everything that was dropped.
     """
     from astrid.core.generation import targets
 
@@ -355,17 +355,19 @@ def set_placement(url: str, client: Any = None) -> dict[str, Any]:
         raise refuse(ATTACHED_REFUSAL, key="placement.endpoint", code="generation_settings_invalid") from exc
 
     def change(current: dict[str, Any]) -> dict[str, Any]:
-        current.pop("machine", None)
-        current.pop("engine", None)
+        same_place = current.get("kind") == "attached"
+        for name in ("device", "machine", "engine"):
+            if name != "device" or not same_place:
+                current.pop(name, None)
         return {**current, "kind": "attached", "endpoint": endpoint}
 
     return _change_placement(client, change)
 
 
 def unset_placement(client: Any = None) -> dict[str, Any]:
-    """Remove only ``kind`` and ``endpoint``; ``policy`` and ``device`` stay, so nothing saved is lost."""
+    """Remove ``kind``, ``endpoint`` and ``device`` (all belong to the place); ``policy`` stays."""
     return _change_placement(client, lambda current: {k: v for k, v in current.items()
-                                                      if k not in ("kind", "endpoint")})
+                                                      if k not in ("kind", "endpoint", "device")})
 
 
 __all__ = ["KEY", "Snapshot", "checkin", "checkout", "current_store", "empty_document", "machine_policy",

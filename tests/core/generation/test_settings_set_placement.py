@@ -126,17 +126,46 @@ def test_set_and_unset_keep_a_saved_policy_and_report_previous(run, generation_s
     assert generation_settings_store.documents["generation"][0]["placement"] == {"policy": policy}
 
 
-def test_set_and_unset_keep_a_valid_device_with_the_policy(run, generation_settings_store):
+def test_set_drops_a_device_from_another_kind_and_reports_it(run, generation_settings_store):
     policy = {"idle_timeout_s": 60.0}
     _seed(generation_settings_store, {"kind": "local", "device": 1, "policy": policy})
 
     result = settings.set_placement("http://127.0.0.1:9123")
-    assert result["placement"] == {"kind": "attached", "endpoint": "http://127.0.0.1:9123", "device": 1,
-                                    "policy": policy}
+    assert result["placement"] == {"kind": "attached", "endpoint": "http://127.0.0.1:9123", "policy": policy}
     assert result["previous"] == {"kind": "local", "device": 1, "policy": policy}
 
     result = settings.unset_placement()
-    assert result["placement"] == {"device": 1, "policy": policy}
+    assert result["placement"] == {"policy": policy}
+    assert result["previous"] == {"kind": "attached", "endpoint": "http://127.0.0.1:9123", "policy": policy}
+
+
+def test_set_keeps_a_device_when_the_placement_was_already_attached(run, generation_settings_store):
+    policy = {"idle_timeout_s": 60.0}
+    _seed(generation_settings_store, {"kind": "attached", "endpoint": "http://127.0.0.1:18111", "device": 1,
+                                      "policy": policy})
+    result = settings.set_placement("http://127.0.0.1:9123")
+    assert result["placement"] == {"kind": "attached", "endpoint": "http://127.0.0.1:9123", "device": 1,
+                                   "policy": policy}
+    assert result["previous"] == {"kind": "attached", "endpoint": "http://127.0.0.1:18111", "device": 1,
+                                  "policy": policy}
+
+
+def test_unset_removes_the_device_and_leaves_only_the_policy(run, generation_settings_store):
+    policy = {"idle_timeout_s": 60.0}
+    _seed(generation_settings_store, {"kind": "attached", "endpoint": "http://127.0.0.1:18111", "device": 1,
+                                      "policy": policy})
+    result = settings.unset_placement()
+    assert result["placement"] == {"policy": policy}
+    assert result["previous"] == {"kind": "attached", "endpoint": "http://127.0.0.1:18111", "device": 1,
+                                  "policy": policy}
+
+
+def test_cli_set_names_a_dropped_device_and_says_it_is_not_restorable(run, generation_settings_store):
+    _seed(generation_settings_store, {"kind": "local", "device": 1})
+    line = run(["settings", "set", "placement", "http://127.0.0.1:9123"]).strip()
+    assert generation_settings_store.documents["generation"][0]["placement"] == {
+        "kind": "attached", "endpoint": "http://127.0.0.1:9123"}
+    assert '"device": 1' in line and "restore: none in one command" in line
 
 
 def test_cli_set_prints_one_line_naming_previous_and_the_restore_command(run, generation_settings_store):
