@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "prompt": "Keep the calm scene and camera steady, guided by <Picture 1>.",
+  "duration": 0.25,
+  "settings": {"steps": 1, "seed": 42},
+  "media": [
+    {
+      "id": "source",
+      "asset": "source.mp4",
+      "role": "timeline",
+      "modality": "video",
+      "at": {"frame": 0},
+      "range": [0, 0.25],
+      "edit": [
+        {
+          "stream": "video",
+          "during": [0, 0.25],
+          "mask": {"full_frame": true},
+          "guides": ["look"]
+        }
+      ]
+    },
+    {
+      "id": "look",
+      "asset": "look.png",
+      "role": "reference",
+      "modality": "image"
+    }
+  ]
+}
