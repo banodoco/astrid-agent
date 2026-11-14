@@ -1943,8 +1943,20 @@ def test_release_accepts_successful_free_reply(session, setting):
     mode.write_text(setting)
     result = client.release_owned(deadline=time.monotonic() + 8)
     assert result["status"] == "completed" and result["models_unloaded"] is True
-    record = json.loads(Path(custody.engine_log_path(str(root), recipe.engine)).read_text().splitlines()[-1])
-    assert record == result
+    log_path = Path(custody.engine_log_path(str(root), recipe.engine))
+    with log_path.open("a") as log:
+        log.write("engine output after release\n")
+    lines = log_path.read_text().splitlines()
+    records = []
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and {"status", "models_unloaded"} <= value.keys():
+            records.append(value)
+    assert records, f"No release record found in engine log lines: {lines!r}"
+    assert records[-1] == result
 
 
 @pytest.mark.parametrize("setting", ["emptyqueue", "emptystats"])
