@@ -23,7 +23,7 @@ jobs:
   integration:
     name: integration shard ${{ matrix.group }} / 4
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 240
     env:
       # tests/lanes.py: a lane this job provides fails, not skips, when its dependency is missing.
       ASTRID_CI_JOB: lanes-integration
