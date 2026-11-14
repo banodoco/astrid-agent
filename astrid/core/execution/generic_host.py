@@ -6686,9 +6686,6 @@ class GenericPackHost:
             raise ValueError("attempt_root and attempt_base are mutually exclusive")
         self.attempt_root = Path(attempt_root).expanduser().resolve() if attempt_root else None
         self.attempt_base = Path(attempt_base).expanduser().resolve() if attempt_base else None
-        # Default spools belong to this host incarnation, never to every host
-        # sharing the system temporary directory. Reclaim owns the outer root.
-        self._ephemeral_attempt_base: Path | None = None
         self.capabilities: dict[str, CapabilityRecord] = {}
         self._orchestrators: dict[str, _OrchestratorRecord] = {}
         self.stale_matrix_entries: tuple[str, ...] = ()
@@ -6808,6 +6805,27 @@ class GenericPackHost:
         self._claim_slots: tuple[GenericPackHost, ...] = ()
         self._claim_loop_lock = threading.Lock()
 
+    def _default_attempt_base(self) -> Path:
+        """Reuse this executor's private spool across host incarnations."""
+        digest = hashlib.sha256(self.executor_id.encode("utf-8")).hexdigest()[:16]
+        base = Path(tempfile.gettempdir()) / f"{ATTEMPT_ROOT_PREFIX}{digest}"
+        with self._process_lock:
+            try:
+                if sys.platform == "win32":
+                    if not base.exists() and not base.is_symlink():
+                        platform.private_directory(base)
+                else:
+                    base.mkdir(mode=0o700, exist_ok=True)
+                metadata = base.lstat()
+                if (not stat.S_ISDIR(metadata.st_mode)
+                        or (sys.platform == "win32" and not platform.is_owner_only(base, directory=True))
+                        or (sys.platform != "win32" and (metadata.st_uid != os.getuid()
+                            or stat.S_IMODE(metadata.st_mode) != 0o700))):
+                    raise HostError(f"private default attempt base has unsafe ownership, mode or type: {base}")
+            except OSError as exc:
+                raise HostError(f"private default attempt base is unavailable: {base}: {exc}") from exc
+        return base
+
     def _allocate_attempt_root(self, task_id: str, attempt_id: str) -> Path:
         """Allocate the filesystem namespace for one claimed attempt."""
         if self.attempt_base is not None:
@@ -6823,21 +6841,13 @@ class GenericPackHost:
                 root.mkdir()
                 root.chmod(0o700)
             return root.resolve()
-        if self.attempt_root is None:
-            with self._process_lock:
-                if self._ephemeral_attempt_base is None:
-                    self._ephemeral_attempt_base = Path(tempfile.mkdtemp(prefix=ATTEMPT_ROOT_PREFIX)).resolve()
-                    if sys.platform == "win32":
-                        platform.owner_only(self._ephemeral_attempt_base)
-                base = self._ephemeral_attempt_base
-            if base.is_symlink() or not base.is_dir():
-                raise HostError("ephemeral attempt base must be a non-symlink directory")
-            if sys.platform == "win32":
-                root = base / f"{ATTEMPT_ROOT_PREFIX}{secrets_module.token_hex(16)}"
-                platform.private_directory(root)
-                return root.resolve()
+        base = self._default_attempt_base() if self.attempt_root is None else None
+        if base is not None and sys.platform == "win32":
+            root = base / f"{ATTEMPT_ROOT_PREFIX}{secrets_module.token_hex(16)}"
+            platform.private_directory(root)
+            return root.resolve()
         root = self.attempt_root or Path(tempfile.mkdtemp(
-            prefix=ATTEMPT_ROOT_PREFIX, dir=self._ephemeral_attempt_base)).resolve()
+            prefix=ATTEMPT_ROOT_PREFIX, dir=base)).resolve()
         root.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             platform.owner_only(root)
@@ -14101,7 +14111,25 @@ class GenericPackHost:
         roots = []
         if self.attempt_root is not None:
             roots.append(self.attempt_root)
-        base = self.attempt_base if self.attempt_base is not None else self._ephemeral_attempt_base
+        base = self.attempt_base
+        if self.attempt_root is None and base is None:
+            base = self._default_attempt_base()
+            # Older hosts spooled directly in system temp. Only a recorded
+            # executor match admits a flat legacy root to identity recovery.
+            for legacy in Path(tempfile.gettempdir()).glob(ATTEMPT_ROOT_PREFIX + "*"):
+                if legacy == base or legacy.is_symlink() or not legacy.is_dir():
+                    continue
+                for name in ("fail-request.json", "cancel-request.json"):
+                    marker = legacy / name
+                    try:
+                        if marker.is_symlink():
+                            continue
+                        saved = json.loads(marker.read_text(encoding="utf-8"))
+                        if isinstance(saved, dict) and saved.get("executor_id") == self.executor_id:
+                            roots.append(legacy)
+                            break
+                    except (OSError, ValueError, TypeError):
+                        continue
         if base is not None and base.is_dir() and not base.is_symlink():
             roots.extend(path for path in base.iterdir()
                          if path.is_dir() and not path.is_symlink())

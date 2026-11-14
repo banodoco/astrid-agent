@@ -85,17 +85,14 @@ def test_foreign_stale_request_does_not_block_generation(host_case, tmp_path, mo
     assert len(case.runtime.settlements) == 1
     assert path.read_bytes() == before
     assert sorted(p.name for p in stale.iterdir()) == ["fail-request.json"]
-    if configured:
-        assert reads.count("unknown-task") == 1
-        assert capsys.readouterr().err.count("generic host recovery skipped") == 1
-    else:
-        assert "unknown-task" not in reads
+    assert reads.count("unknown-task") == 1
+    assert capsys.readouterr().err.count("generic host recovery skipped") == 1
 
 
 def test_default_attempt_namespaces_are_isolated_and_reclaimable(tmp_path, monkeypatch):
     monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
     first = GenericPackHost(pack_roots=[])
-    second = GenericPackHost(pack_roots=[])
+    second = GenericPackHost(pack_roots=[], executor_id="second-worker")
     left = first._allocate_attempt_root("task", "attempt")
     right = second._allocate_attempt_root("task", "attempt")
     assert left.parent != right.parent
@@ -271,3 +268,89 @@ def test_success_response_with_unrelated_result_requires_real_failure_readback(s
     stored = case.service.task(case.task_id)["task"]
     assert stored["status"] == "failed"
     assert stored["result"]["error"] == request["body"]["error"]
+
+
+def _default_spool(case, tmp_path, monkeypatch):
+    _, request = _saved_failure(case, tmp_path)
+    case.host.attempt_root = None
+    monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
+    root = case.host._allocate_attempt_root(case.task_id, case.attempt["attempt_id"])
+    (root / "fail-request.json").write_text(json.dumps(request))
+    return root, request
+
+
+def test_default_spool_survives_same_executor_restart(settlement_case, tmp_path, monkeypatch):
+    case = settlement_case
+    root, request = _default_spool(case, tmp_path, monkeypatch)
+    restarted = GenericPackHost(pack_roots=[], client=case.host.client, executor_id=case.host.executor_id)
+    _bounded_run(restarted, restarted._recover_terminal_requests)
+    assert len(case.failures) == 1
+    assert case.service.task(case.task_id)["task"]["status"] == "failed"
+    assert json.loads((root / "fail-request.json").read_text()) == request
+    assert restarted._allocate_attempt_root("next", "next").parent == root.parent
+    assert root.parent.stat().st_mode & 0o777 == 0o700
+    assert root.parent.stat().st_uid == os.getuid()
+
+
+def test_default_spool_is_invisible_to_different_executor(settlement_case, tmp_path, monkeypatch):
+    case = settlement_case
+    root, _ = _default_spool(case, tmp_path, monkeypatch)
+    before = {p.name: p.read_bytes() for p in root.iterdir()}
+    reads = []
+    task = case.host.client.task
+    monkeypatch.setattr(case.host.client, "task", lambda task_id: (reads.append(task_id), task(task_id))[1])
+    restarted = GenericPackHost(pack_roots=[], client=case.host.client, executor_id="different-worker")
+    _bounded_run(restarted, restarted._recover_terminal_requests)
+    assert not case.failures and not reads
+    assert {p.name: p.read_bytes() for p in root.iterdir()} == before
+    assert restarted._allocate_attempt_root("next", "next").parent != root.parent
+
+
+
+@pytest.mark.parametrize("damage", ["mode", "symlink", "owner"])
+@pytest.mark.parametrize("use", ["allocate", "recover"])
+def test_default_base_refuses_unsafe_directory(tmp_path, monkeypatch, damage, use):
+    monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
+    host = GenericPackHost(pack_roots=[], executor_id="private-worker", client=object())
+    base = host._allocate_attempt_root("task", "attempt").parent
+    if damage == "mode":
+        base.chmod(0o755)
+    elif damage == "symlink":
+        moved = tmp_path / "moved"
+        base.rename(moved)
+        base.symlink_to(moved, target_is_directory=True)
+    else:
+        monkeypatch.setattr(generic_host.os, "getuid", lambda: base.stat().st_uid + 1)
+    with pytest.raises(HostError, match="private.*attempt base"):
+        if use == "allocate":
+            host._allocate_attempt_root("next", "next")
+        else:
+            host._recover_terminal_requests()
+
+
+def test_legacy_flat_own_request_survives_restart(settlement_case, tmp_path, monkeypatch):
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    legacy = tmp_path / "astrid-attempt-legacy"
+    root.rename(legacy)
+    monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
+    restarted = GenericPackHost(pack_roots=[], client=case.host.client, executor_id=case.host.executor_id)
+    _bounded_run(restarted, restarted._recover_terminal_requests)
+    assert len(case.failures) == 1
+    assert case.service.task(case.task_id)["task"]["status"] == "failed"
+
+
+def test_reused_default_base_ages_children_individually(tmp_path, monkeypatch):
+    monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
+    host = GenericPackHost(pack_roots=[], executor_id="reused-worker")
+    stale = host._allocate_attempt_root("old", "old")
+    live = host._allocate_attempt_root("live", "live")
+    assert stale.parent == live.parent
+    then = time.time() - 3 * 86400
+    os.utime(stale, (then, then))
+    os.utime(stale.parent, (then, then))
+    report = reclaim(tmp_path / "data", temporary_root=tmp_path, cache_root=tmp_path / "cache")
+    attempts = next(row for row in report["roots"] if row["name"] == "attempt-roots")
+    assert attempts["expired_count"] == 1
+    assert not stale.exists() and live.is_dir() and live.parent.is_dir()
+    assert host._allocate_attempt_root("new", "new").parent == live.parent
