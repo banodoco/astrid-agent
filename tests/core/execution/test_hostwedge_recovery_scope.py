@@ -4,6 +4,7 @@ from __future__ import annotations
 # Pytest fixtures are deliberately imported and consumed by argument name.
 # ruff: noqa: F811
 import hashlib
+import io
 import json
 import os
 import threading
@@ -14,13 +15,12 @@ import pytest
 
 from astrid.core.execution import generic_host
 from astrid.core.execution.generic_host import GenericPackHost, HostError
-from astrid.sdk.storage_ownership import reclaim
 from astrid.sdk import storage_root
+from astrid.sdk.storage_ownership import reclaim
 from astrid_runtime_client.generated import ApiError
 from tests.core.execution.test_bug14_settlement_liveness import settlement_case  # noqa: F401
 from tests.core.execution.test_terminal_publication_replay import _saved_failure
 from tests.test_generic_host_result_json import _success_boundary, host_case  # noqa: F401
-
 
 
 @pytest.fixture(autouse=True)
@@ -618,3 +618,50 @@ def test_missing_runtime_epoch_remains_host_wide_error(settlement_case, tmp_path
     with pytest.raises(HostError, match="Runtime recovery health has no epoch"):
         _bounded_run(case.host, lambda: case.host.run(once=True))
     assert not claimed and not case.failures
+
+
+@pytest.mark.parametrize("damage", ["owner", "group-writable", "world-writable", "symlink", "file"])
+def test_unsafe_legacy_root_never_opens_markers(settlement_case, tmp_path, monkeypatch, capsys, damage):
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    legacy = tmp_path / "astrid-attempt-unsafe-legacy"
+    root.rename(legacy)
+    if damage == "owner":
+        _foreign_lstat(monkeypatch, legacy)
+    elif damage == "group-writable":
+        legacy.chmod(0o770)
+    elif damage == "world-writable":
+        legacy.chmod(0o707)
+    else:
+        target = tmp_path / "legacy-evidence"
+        legacy.rename(target)
+        if damage == "symlink":
+            legacy.symlink_to(target, target_is_directory=True)
+        else:
+            legacy.write_text("not a directory")
+    marker_paths = {legacy / "fail-request.json", legacy / "cancel-request.json", legacy / "result.json"}
+    reads = []
+    read_text = Path.read_text
+    open_file = io.open
+
+    def record_read(path, *args, **kwargs):
+        if path in marker_paths:
+            reads.append(path)
+        return read_text(path, *args, **kwargs)
+
+    def record_open(path, *args, **kwargs):
+        if isinstance(path, (str, Path)) and Path(path) in marker_paths:
+            reads.append(Path(path))
+        return open_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", record_read)
+    monkeypatch.setattr(io, "open", record_open)
+    monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
+    restarted = GenericPackHost(pack_roots=[], client=case.host.client, executor_id=case.host.executor_id)
+    _bounded_run(restarted, restarted._recover_terminal_requests)
+    assert not reads
+    assert not case.failures and not case.cancels and not case.writes
+    assert case.service.task(case.task_id)["task"]["status"] == "running"
+    diagnostic = capsys.readouterr().err
+    assert diagnostic.count("generic host recovery skipped unsafe legacy root") == 1
+    assert str(legacy) in diagnostic

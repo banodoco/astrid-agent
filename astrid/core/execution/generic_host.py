@@ -14188,7 +14188,17 @@ class GenericPackHost:
             # Older hosts spooled directly in system temp. Only a recorded
             # executor match admits a flat legacy root to identity recovery.
             for legacy in Path(tempfile.gettempdir()).glob(ATTEMPT_ROOT_PREFIX + "*"):
-                if legacy == base or legacy.is_symlink() or not legacy.is_dir():
+                if legacy == base:
+                    continue
+                try:
+                    metadata = legacy.lstat()
+                    if (not stat.S_ISDIR(metadata.st_mode)
+                            or (sys.platform != "win32" and (metadata.st_uid != os.getuid()
+                                or metadata.st_mode & 0o022))):
+                        raise ValueError("unsafe ownership, mode or type")
+                except (OSError, ValueError) as exc:
+                    print(f"generic host recovery skipped unsafe legacy root {legacy}: {exc}",
+                          file=sys.stderr, flush=True)
                     continue
                 for name in ("fail-request.json", "cancel-request.json"):
                     marker = legacy / name
