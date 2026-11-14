@@ -90,6 +90,8 @@ def test_invalid_save_or_duplicate_input_rejects_before_runtime(monkeypatch, cap
 
 @pytest.mark.integration
 @pytest.mark.parametrize('save_entry', [False, True])
+# Slow on purpose: measured about 98 s on hosted Lanes; the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_workflow_inputs_cross_real_runtime_and_preserve_exact_source(
     loopback_comfy, real_runtime, monkeypatch, tmp_path, capsys, save_entry,
 ):

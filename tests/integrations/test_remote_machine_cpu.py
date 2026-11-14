@@ -933,6 +933,8 @@ def test_a_custody_change_refuses_warm_reuse(journey):
     assert provider.deploys == 1
 
 
+# Slow on purpose: measured about 210 s on hosted Lanes; the suite default is 120 s.
+@pytest.mark.timeout(400)
 def test_cancel_mid_poll_stops_the_job_then_releases(journey):
     j = journey
     s = j.start()
@@ -978,6 +980,8 @@ def test_a_bad_mount_mapping_fails_before_install_and_releases(journey):
     _released(provider, j.record())
 
 
+# Slow on purpose: measured about 102 s on hosted Lanes; the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_a_killed_pod_ends_its_lease_and_the_next_default_job_claims_fresh(journey, capsys):
     """T5d: liveness before reuse; provider_terminated; a pinned job is refused; astrid machines lists both."""
     j = journey
