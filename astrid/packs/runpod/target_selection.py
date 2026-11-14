@@ -987,6 +987,14 @@ class RunPodSelectionOwner:
                         "the same journal retains exact pod custody for recovery cleanup"
                     ) from None
                 except Exception as exc:
+                    if self.clock() >= expires:
+                        # A POST may have returned exact custody after its paid
+                        # clock expired. Keep that journal for cleanup, but do
+                        # not report the subsequent budget refusal as inventory.
+                        raise PaidSelectionError(
+                            "claim preparation consumed its paid lifetime", gate="lifetime",
+                            custody=worker_preparation._record_custody(self._read() or {}),
+                        ) from None
                     gate = worker_preparation.observation_failure_gate(exc)
                     logging.getLogger(__name__).exception(
                         "RunPod provider acquisition failed; gate=%s (%s)", gate or "unclassified",
