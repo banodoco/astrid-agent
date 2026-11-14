@@ -35,7 +35,12 @@ class _ComfyHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/internal/folder_paths":
             payload = {"custom_nodes": [str(self.base_dir / "custom_nodes")]}
         elif parsed.path == "/userdata":
-            assert parse_qs(parsed.query) == {"dir": ["workflows"]}
+            # P4.11a: the scan asks for edit times (full_info)
+            assert parse_qs(parsed.query) == {
+                "dir": ["workflows"],
+                "full_info": ["true"],
+                "recurse": ["true"],
+            }
             payload = ["portrait_flux.json", "nested/wan_i2v.json"]
         else:
             self.send_error(404)
@@ -166,13 +171,19 @@ def test_scan_reports_local_comfyui_and_endpoint_data(tmp_path: Path) -> None:
         "base_dir": str(tmp_path),
         "output_dir": str(tmp_path / "renders"),
         "workflows": ["portrait_flux.json", "nested/wan_i2v.json"],
+        # P4.11a: the scan asks for edit times (full_info)
+        "workflows_detail": [
+            {"name": "portrait_flux.json", "modified": None},
+            {"name": "nested/wan_i2v.json", "modified": None},
+        ],
         "manager_present": True,
         "python": str(tmp_path / "venv" / "bin" / "python"),
     }
     assert _ComfyHandler.requested == [
         "/system_stats",
         "/internal/folder_paths",
-        "/userdata?dir=workflows",
+        # P4.11a: the scan asks for edit times (full_info)
+        "/userdata?dir=workflows&full_info=true&recurse=true",
     ]
 
 
@@ -435,6 +446,107 @@ def test_scan_omits_non_comfyui_pinokio_responder(monkeypatch: pytest.MonkeyPatc
 
     assert _NonComfyHandler.requested == ["/system_stats"]
     assert result["servers"] == []
+
+
+class _WorkflowListingHandler(_ComfyHandler):
+    listing: object = []
+    methods: list[str] = []
+
+    def do_GET(self) -> None:
+        type(self).methods.append(self.command)
+        if urlsplit(self.path).path != "/userdata":
+            super().do_GET()
+            return
+        self.requested.append(self.path)
+        body = json.dumps(type(self).listing).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        type(self).methods.append(self.command)
+        self.send_error(405)
+
+    do_PUT = do_POST
+    do_PATCH = do_POST
+    do_DELETE = do_POST
+
+
+def _listing_server(tmp_path: Path, listing: object) -> tuple[ThreadingHTTPServer, threading.Thread]:
+    (tmp_path / "custom_nodes" / "ComfyUI-Manager").mkdir(parents=True)
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    (tmp_path / "venv" / "bin" / "python").touch()
+    _WorkflowListingHandler.base_dir = tmp_path
+    _WorkflowListingHandler.requested = []
+    _WorkflowListingHandler.methods = []
+    _WorkflowListingHandler.listing = listing
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _WorkflowListingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def test_scan_lists_saved_workflows_newest_first_with_edit_times(tmp_path: Path) -> None:
+    listing = [
+        {"path": "old.json", "size": 10, "modified": 1700000000000},
+        {"path": "nested/new.json", "size": 10, "modified": 1800000000000},
+        {"path": "mid.json", "size": 10, "modified": 1750000000000},
+    ]
+    server, thread = _listing_server(tmp_path, listing)
+    try:
+        result = scan([server.server_address[1]])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result["errors"] == []
+    found = result["servers"][0]
+    assert found["workflows"] == ["nested/new.json", "mid.json", "old.json"]
+    assert found["workflows_detail"] == [
+        {"name": "nested/new.json", "modified": "2027-01-15T08:00:00Z"},
+        {"name": "mid.json", "modified": "2025-06-15T15:06:40Z"},
+        {"name": "old.json", "modified": "2023-11-14T22:13:20Z"},
+    ]
+    assert parse_qs(urlsplit(_WorkflowListingHandler.requested[-1]).query) == {
+        "dir": ["workflows"],
+        "full_info": ["true"],
+        "recurse": ["true"],
+    }
+
+
+def test_scan_accepts_plain_name_listing_from_older_server(tmp_path: Path) -> None:
+    server, thread = _listing_server(tmp_path, ["portrait_flux.json", "nested/wan_i2v.json"])
+    try:
+        result = scan([server.server_address[1]])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result["errors"] == []
+    found = result["servers"][0]
+    assert found["workflows"] == ["portrait_flux.json", "nested/wan_i2v.json"]
+    assert found["workflows_detail"] == [
+        {"name": "portrait_flux.json", "modified": None},
+        {"name": "nested/wan_i2v.json", "modified": None},
+    ]
+
+
+def test_scan_only_issues_get_requests_for_workflow_listing(tmp_path: Path) -> None:
+    listing = [{"path": "a.json", "size": 1, "modified": 1800000000000}]
+    server, thread = _listing_server(tmp_path, listing)
+    try:
+        scan([server.server_address[1]])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert _WorkflowListingHandler.methods
+    assert set(_WorkflowListingHandler.methods) == {"GET"}
 
 
 def test_pack_images_round_trips_through_manifest_and_run_staging(tmp_path: Path) -> None:
