@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import os
-
-import pytest
-
-from astrid.sdk import storage_ownership
 import time
 from pathlib import Path
 
+import pytest
+
+from astrid.packs.rendering.actions.timeline_visualize.fast_lane import _prune_runs
+from astrid.sdk import storage_ownership
 from astrid.sdk.media_views import clone_or_copy, verified_cas_path
 from astrid.sdk.storage_ownership import reclaim, register_owned_root, registered_roots
-from astrid.packs.rendering.actions.timeline_visualize.fast_lane import _prune_runs
 
 
 def test_registry_describes_all_reported_persistent_roots(tmp_path: Path) -> None:

@@ -22,13 +22,13 @@ from astrid_runtime_client.generated import ApiError
 from tests.core.execution.test_bug14_settlement_liveness import settlement_case  # noqa: F401
 from tests.core.execution.test_terminal_publication_replay import _saved_failure
 from tests.core.generation.test_engine_custody import (
-    _call,  # noqa: F401
+    _call,
     _client,
     _request,
     _wait,
 )
 from tests.core.generation.test_engine_custody import (
-    session as engine_session,
+    session as engine_session,  # noqa: F401
 )
 from tests.test_generic_host_result_json import _success_boundary, host_case  # noqa: F401
 
