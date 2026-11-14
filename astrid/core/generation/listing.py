@@ -188,7 +188,8 @@ class _InventoryClient(ComfyTargetClient):
 
 
 def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
-                     target: ComfyTarget | None, schema: dict[str, Any] | None) -> dict[str, Any]:
+                     target: ComfyTarget | None, schema: dict[str, Any] | None,
+                     client: _InventoryClient | None = None) -> dict[str, Any]:
     result = {"target": target.url if target else "attached", "target_kind": "attached",
               "ready": False, "readiness_scope": "target_inventory", "models_present": []}
     if row["source"] in {"user-entry", "ready-template"} and row.get("reason"):
@@ -196,6 +197,7 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
     if target is None or schema is None:
         return {**result, "reason": "no attached ComfyUI target or model probe unavailable",
                 "fix": "Start ComfyUI on loopback and make /object_info available."}
+    client = client if client is not None else _InventoryClient(target, schema)
     if row["source"] in {"user-entry", "ready-template"}:
         from tempfile import TemporaryDirectory
 
@@ -207,7 +209,7 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
 
         if row["source"] == "ready-template" and row.get("registry_id"):
             try:
-                plan = resolve_comfy_models(_InventoryClient(target, schema), registry, row["registry_id"], row["mode"])
+                plan = resolve_comfy_models(client, registry, row["registry_id"], row["mode"])
             except (ComfyModelMissing, KeyError, ValueError):
                 return {**result, "reason": "required models missing or ambiguous",
                         "fix": "Provide the catalog-declared model roles on the attached ComfyUI."}
@@ -221,7 +223,7 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
         try:
             with TemporaryDirectory(prefix="astrid-entry-list-") as scratch:
                 loaded = load_workflow_path(entries.bundle_path(entry), scratch, comfy_url=target.url)
-                entries.target_schema(entry, loaded.resolved.workflow, _InventoryClient(target, schema))
+                entries.target_schema(entry, loaded.resolved.workflow, client)
         except (OSError, ValueError, KeyError, ProductionEngineError) as exc:
             return {**result, "reason": str(exc), "fix": "Provide the workflow's required nodes and models on the attached ComfyUI."}
         return {**result, "ready": True, "reason": "workflow nodes and model references present (model bytes unverified)",
@@ -237,7 +239,7 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
         return {**result, "reason": "model requirements unavailable in catalog",
                 "fix": "Inspect the workflow; add exact loader roles to its model catalog declaration."}
     try:
-        plan = resolve_comfy_models(_InventoryClient(target, schema), registry, model_id, row["mode"])
+        plan = resolve_comfy_models(client, registry, model_id, row["mode"])
     except ComfyModelMissing as exc:
         roles = sorted(exc.failures)
         requirements = [f"{role} ({' or '.join(spec.model_roles[role].names)})" for role in roles]
@@ -255,6 +257,9 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
     rows = [row for row in catalog_rows() if kind is None or row["kind"] == kind]
     targets = _targets() if any(row["backend"] == "local" for row in rows) else []
     registry = ModelRegistry.load_default() if any(row["backend"] == "local" for row in rows) else None
+    # One inventory client per target: its folder listing is then read once for all of that target's rows.
+    shared = [(target, schema, _InventoryClient(target, schema) if target is not None and schema is not None else None)
+              for target, schema in (targets or [(None, None)])]
     output = []
     for row in rows:
         base = dict(row)
@@ -268,8 +273,8 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
                            "models_present": []})
         elif row["backend"] == "local":
             assert registry is not None
-            for target, schema in targets or [(None, None)]:
-                output.append({**base, **_local_readiness(row, registry, target, schema)})
+            for target, schema, client in shared:
+                output.append({**base, **_local_readiness(row, registry, target, schema, client)})
         elif row["backend"] in {"cloud", "wavespeed"}:
             key_name = "FAL_KEY" if row["backend"] == "cloud" else "WAVESPEED_API_KEY"
             # os._Environ.__contains__ can fetch a value via __getitem__.

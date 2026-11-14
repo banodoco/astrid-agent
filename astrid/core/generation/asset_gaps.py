@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,7 @@ def require_workflow_assets(workflow: Any, observed: dict[str, Any], entry: str 
 # --- Download a default's missing models into the person's own (same-machine) ComfyUI ---------
 
 DOWNLOAD_MARGIN_BYTES = 1 << 30  # free space kept beyond the files: 1 GiB
+MODEL_EXTENSIONS = ('.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf')  # what ComfyUI loads as models
 _LOOPBACK = frozenset({'127.0.0.1', '::1', 'localhost'})
 
 
@@ -221,6 +223,34 @@ def _default_sources(entry_id: str) -> dict[str, Any]:
             for mode in manifest['modes'] for model in mode['models']}
 
 
+def _served_models(info: Any, declaration: Any) -> frozenset[str]:
+    """The model files ComfyUI's own loader lists for this role: the server's list for its folder."""
+    node = info.get(declaration.node_class, {}) if isinstance(info, dict) else {}
+    inputs = node.get('input', {}) if isinstance(node, dict) else {}
+    for group in ('required', 'optional'):
+        fields = inputs.get(group, {}) if isinstance(inputs, dict) else {}
+        if isinstance(fields, dict) and declaration.input in fields:
+            field = fields[declaration.input]
+            choices = field[0] if isinstance(field, (tuple, list)) and field else None
+            names = choices if isinstance(choices, (tuple, list)) else ()
+            return frozenset(name.replace('\\', '/') for name in names
+                             if isinstance(name, str) and name.lower().endswith(MODEL_EXTENSIONS))
+    return frozenset()
+
+
+def _local_models(paths) -> frozenset[str]:
+    """Model files present in any of the candidate folders the server reports (legacy and canonical alike)."""
+    names = set()
+    for path in paths:
+        root = Path(path)
+        if not root.is_dir():
+            continue
+        for found in root.rglob('*'):
+            if found.is_file() and found.name.lower().endswith(MODEL_EXTENSIONS):
+                names.add(found.relative_to(root).as_posix())
+    return frozenset(names)
+
+
 def _download_gaps(client, entry_id: str, mode: str):
     """Missing role files of the entry on the attached server, each with its server folder."""
     from astrid.core.model_catalog.registry import ModelRegistry
@@ -247,8 +277,12 @@ def _download_gaps(client, entry_id: str, mode: str):
             continue  # ambiguous: the person keeps exactly one; nothing to download
         declaration = spec.model_roles[role]
         key = _COMFY_MODEL_FOLDERS.get((declaration.node_class, declaration.input))
+        candidates = folders.get(key) if key else None
+        paths = [p for p in ([candidates] if isinstance(candidates, str) else candidates or ())
+                 if isinstance(p, str) and p]
         gaps.append({'role': role, 'key': key, 'names': list(declaration.names),
-                     'folder': canonical_folder(folders.get(key) if key else None, key)})
+                     'folder': canonical_folder(folders.get(key) if key else None, key),
+                     'served': _served_models(info, declaration), 'local': _local_models(paths)})
     return gaps, spec, info
 
 
@@ -262,6 +296,11 @@ def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=No
 
     files, manual = [], []
     for gap in gaps:
+        if gap['key'] and gap['folder'] and gap['served'] != gap['local']:
+            # The server's list and this computer's folder disagree: it is not the folder on this computer.
+            manual.append({'role': gap['role'], 'file': ' or '.join(gap['names']), 'folder': gap['folder'],
+                           'reason': "the folder ComfyUI reports isn't the one on this computer"})
+            continue
         model = next((sources[f"{gap['key']}/{name}"] for name in gap['names']
                       if gap['key'] and f"{gap['key']}/{name}" in sources
                       and '/' not in name and '\\' not in name), None)
@@ -291,6 +330,11 @@ def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=No
     if problems:
         raise AttachedDownloadRefused('folder_not_writable', 'The folder ' + problems[0]
             + ' reported by your ComfyUI does not exist on this computer or is not writable; nothing was downloaded.')
+    links = {}
+    for f in files:
+        if f['folder'] not in links:
+            links[f['folder']] = _hard_links_supported(Path(f['folder']))
+        f['hard_links'] = links[f['folder']]
     total = sum(f['bytes'] for f in files)
     devices = {}
     for f in files:
@@ -325,6 +369,49 @@ def render_attached_download_plan(plan: dict[str, Any]) -> str:
     return '\n'.join(lines)
 
 
+def _hard_links_supported(folder: Path) -> bool:
+    """Probe with a tiny temporary file: FAT, exFAT and some network mounts cannot hard-link."""
+    fd, name = tempfile.mkstemp(dir=folder, prefix='.astrid-link-probe-')
+    os.close(fd)
+    probe = Path(name)
+    twin = probe.with_name(probe.name + '.twin')
+    try:
+        os.link(probe, twin)
+        return True
+    except OSError:
+        return False
+    finally:
+        for path in (twin, probe):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def _publish(staged: Path, final: Path, *, hard_links: bool) -> None:
+    """Give the verified staged file its final name without ever overwriting another file.
+
+    Without hard links, an exclusive create claims the final name first; the staged file then replaces that placeholder.
+    """
+    if hard_links:
+        try:
+            os.link(staged, final)  # fails if the file appeared meanwhile: never overwrites
+            return
+        except FileExistsError as exc:
+            raise AttachedDownloadRefused('file_exists', f'{final} appeared while downloading; left untouched.') from exc
+        except OSError:
+            pass  # no hard links on this folder: claim the name exclusively instead
+    try:
+        os.close(os.open(final, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except FileExistsError as exc:
+        raise AttachedDownloadRefused('file_exists', f'{final} appeared while downloading; left untouched.') from exc
+    try:
+        os.replace(staged, final)
+    except BaseException:
+        final.unlink(missing_ok=True)  # our own placeholder only: the name was claimed exclusively above
+        raise
+
+
 def _fetch_into_folder(item: dict[str, Any], http_client) -> None:
     """One verified file via VibeComfy fetch, staged under a temp name in the same folder, then renamed."""
     from vibecomfy import fetch
@@ -340,10 +427,7 @@ def _fetch_into_folder(item: dict[str, Any], http_client) -> None:
     staged.unlink(missing_ok=True)
     try:
         fetch.download(entry, root=root, client=http_client, quiet=True)
-        try:
-            os.link(staged, final)  # fails if the file appeared meanwhile: never overwrites
-        except FileExistsError as exc:
-            raise AttachedDownloadRefused('file_exists', f'{final} appeared while downloading; left untouched.') from exc
+        _publish(staged, final, hard_links=item.get('hard_links', True))
     finally:
         staged.unlink(missing_ok=True)
         receipt.unlink(missing_ok=True)

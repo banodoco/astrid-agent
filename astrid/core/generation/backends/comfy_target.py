@@ -122,6 +122,8 @@ class ComfyTargetClient:
         self._prompt_lock = threading.Lock()
         self._prompt_attempted = False
         self._witnessed_prompts: set[str] = set()
+        self._folder_paths_read = False
+        self._folder_paths: Any = None
 
     @property
     def http_origin(self) -> str:
@@ -222,6 +224,16 @@ class ComfyTargetClient:
                               acknowledge_empty=payload is not None)
         except (OSError, urllib_error.URLError) as exc:
             raise ValueError(f"comfy target {path} request failed") from exc
+
+    def folder_paths(self) -> Any:
+        """The server's model folder paths, read at most once per client (one attempt); None if unavailable."""
+        if not self._folder_paths_read:
+            self._folder_paths_read = True
+            try:
+                self._folder_paths = self.request_json("/internal/folder_paths", timeout=5, response_limit=64 * 1024)
+            except (ValueError, OSError, TransportError):
+                self._folder_paths = None
+        return self._folder_paths
 
     def object_info(self) -> dict[str, Any]:
         """Capture schema through this target's existing attested transport."""
@@ -674,10 +686,7 @@ _COMFY_MODEL_FOLDERS = {
 def _attached_model_placements(client: ComfyTargetClient, spec: Any,
                                failures: dict[str, list[str]]) -> list[dict[str, Any]]:
     """Name each missing file and its folder from the attached server's own folder paths."""
-    try:
-        listed = client.request_json("/internal/folder_paths", timeout=5, response_limit=64 * 1024)
-    except (ValueError, OSError, TransportError):
-        listed = None
+    listed = client.folder_paths()
     folders = listed if isinstance(listed, dict) else {}
     placements = []
     for role in failures:

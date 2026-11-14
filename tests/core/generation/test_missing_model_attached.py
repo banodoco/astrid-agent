@@ -92,6 +92,18 @@ def test_attached_ambiguous_model_asks_user_to_keep_exactly_one(monkeypatch):
     assert all("argv" not in fix for fix in error.readiness["fixes"])
 
 
+def test_attached_folder_listing_is_read_once_for_many_missing_models(monkeypatch):
+    info = target_info("t2i", vaes=("other.safetensors",))
+    seen = _fake_server(monkeypatch, info, FOLDERS)
+    client = ComfyTargetClient(ComfyTarget(URL, "attached"))
+    registry = ModelRegistry.load_default()
+    for _ in range(3):
+        with pytest.raises(ComfyModelMissing) as caught:
+            _capture_model_resolution(client, registry, "z-image", "t2i")
+        assert "/srv/ComfyUI/models/vae" in str(caught.value)
+    assert seen.count("/internal/folder_paths") == 1
+
+
 def test_attached_folder_lookup_failure_falls_back_without_folder(monkeypatch):
     error, seen = _capture("attached", monkeypatch, folders=ValueError("checkout_server request failed"))
     assert "/internal/folder_paths" in seen
