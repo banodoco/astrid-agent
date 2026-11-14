@@ -1,24 +1,26 @@
 ---
 name: astrid-setup
-description: Set up Astrid on a new or existing machine, verify its Runtime connection, and help the user begin.
+description: Set up Astrid on a new or existing machine, verify its Runtime connection, and reach a first image from the user's own ComfyUI.
 ---
 
 # Set up Astrid
 
-Help the user install Astrid on this computer and reach a first image. Use
-[astrid.haus](https://astrid.haus) by default. If they choose to run everything
-on their computer so they can change the editor itself, follow the fully local
-path below. Both paths use the same installed Runtime and workspace.
+Point Astrid at the ComfyUI the user already runs and get an image from it in a
+few minutes, without changing anything on it. Use [astrid.haus](https://astrid.haus)
+by default. If the user wants everything on their computer, use the last section.
+
+Every door ends with this sentence, quoted exactly:
+*Ask your agent: set up my generation with the astrid-setup skill.*
 
 The journey has five steps, in order: 0 entry route, 1 choices, 2 install,
-3 connected, 4 generation.
-Carry out requested checks, report their actual results, and do not claim a
-check passed when it could not be run.
+3 connected, 4 set up generation. Carry out requested checks, report their
+actual results, and do not claim a check passed when it could not be run.
 
 ## Launcher paths
 
-Every Astrid command uses the stable launcher's absolute path, so it needs no
-PATH entry. Use the path for the user's OS:
+Astrid's commands run through its stable launcher, so no PATH entry is needed.
+Every command in this skill and in the generation skill uses the launcher for the
+user's OS. The blocks below show the Linux path; on macOS and Windows substitute:
 
 - Linux: `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid"`
 - macOS: `"$HOME/.local/share/astrid/run-astrid"`
@@ -40,8 +42,7 @@ Check the routes in this order. Use the first one that fits, and only that one:
    they have already approved this run. Recommend "keep your current settings".
    Do not guess saved choices. Tell the user: "Your saved setup choices
    stay as they are. Tell me if you want to change one." Do not show the choices
-   list. Run
-   the install command for the user's OS with no choice flags:
+   list. Run the install command for the user's OS with no choice flags:
    `curl -fsSL https://astrid.haus/install | sh` on macOS or Linux, or
    `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))` in
    Windows PowerShell. Add a choice flag only for a choice the user names,
@@ -62,21 +63,13 @@ Astrid defaults are:
 - Astrid skills: on (`--skills on|off`)
 - skill copies: off (`--skill-copies on|off`)
 
-Before Astrid is installed, offer to install this setup skill by itself. Ask
-which harness they are using if it is not clear. The command prompts for
-Claude Code, Codex, or Hermes and writes one copy in that harness's supported
-skills folder. It also keeps a source under the user's data directory and
-writes the exact `.astrid-managed-skill.json` ownership marker. If the target
-already exists, the command preserves it and stops. This installs the skill
-only; Astrid and its Runtime are not installed.
+Ask which harness they are using if it is not clear. The setup skill can be
+installed by itself before Astrid, with the command below. It prompts for Claude
+Code, Codex, or Hermes, writes one copy in that harness's skills folder, and
+installs the skill only. Astrid and its Runtime are not installed.
 
 - macOS or Linux: `python3 -c 'import urllib.request; exec(urllib.request.urlopen("https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py").read())'`
 - Windows PowerShell: `python -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py').read())"`
-
-On a fresh install, default sync adopts the preinstalled managed copy and
-refreshes it from Astrid's writable view. Unmanaged skill folders are preserved.
-The command downloads only the setup skill source and helper; it does not request
-credentials.
 
 Ask the user whether they want to change any choice. If they change one, use
 its new value in step 2. If the user approved an App brief, keep the brief's values,
@@ -110,9 +103,8 @@ after consent, with the user's approved choice values:
 
 If you run inside an MSIX-packaged Windows desktop app, install from a
 standalone PowerShell window opened from the Start menu. A PowerShell started
-by that app can inherit its filesystem redirection. Files written under
-`%LOCALAPPDATA%` may then land in the app's private cache, where the Astrid
-scheduled task cannot find them.
+by that app can inherit its filesystem redirection, so files written under
+`%LOCALAPPDATA%` may land where the Astrid scheduled task cannot find them.
 
 Succeeds when the first line of output starts with `Astrid installed:`,
 `Astrid updated:`, `Astrid is installed and running`, or `Astrid is already up to date`. Any other
@@ -126,6 +118,8 @@ agrees.
 If the install fails, read the log at the printed `Details:` path. To get help,
 run the install command for the user's OS with `--doctor` added. Attach the
 bundle it makes, and follow [Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md#make-a-support-bundle).
+If the install line fails behind a proxy that blocks GitHub downloads, see
+[Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md).
 
 ## 3. Connected
 
@@ -137,225 +131,115 @@ If it does not, follow [Troubleshooting](https://github.com/banodoco/astrid-agen
 
 ## 4. Set up generation
 
-Use the **Set up my generation** section of the `generation` skill first
-(installed name: `generation`;
-[public copy](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/generation/docs/SKILL.md#set-up-my-generation)).
-It discovers existing tools and settings, asks before each change, and reports
-changes and undo. Keep its discovery and handoff. Do not repeat its scan or
-change its read-only rules. Tell the user what it found before proposing a
-change. Explain what each proposed change does before asking for its own yes.
-The user can decline a change and leave generation setup for later.
+Setup reads first and asks before each change. Never launch, restart or install
+anything into the user's ComfyUI. Its only download is a default's missing models,
+and only on the user's yes. If a read fails, use the `--doctor` fallback from step 2.
 
-If it finds a working ComfyUI, tell the user it can use that installation.
-Continue the generation handoff. If it finds only Wan2GP, tell the user that
-Wan2GP support is planned in Plan 12. Continue the handoff without installing
-or altering Wan2GP. If nothing is found, tell the user no existing generation
-tool was found. Assess this computer before offering a route below.
+If the scan finds a working ComfyUI, tell the user it can use that installation.
+If it finds only Wan2GP, tell the user that Wan2GP support is planned in Plan 12,
+and continue without installing or altering Wan2GP.
 
-On Linux or Windows run this once:
+**See what you have.** Run these read-only commands and report what they show:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate targets --json
+python3 -m astrid.packs.vibecomfy.local scan
+```
+
+`defaults` lists each slot with `ready` and `reason`, and `placement` shows
+where it resolves. The scan lists running ComfyUI servers and their saved
+workflows, newest first. The scan is a pack module, so it is not an Astrid
+command and the launcher does not run it. Success is exit 0 with that output.
+A ComfyUI that is not running is a finding: say so, and ask the user to start it.
+
+**Use it.** If a ComfyUI is running, ask: "Use the ComfyUI at this address to
+generate?" On that yes, save the connection. A project is created for them if
+none exists, and generation prints one line saying so:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement http://127.0.0.1:PORT
+```
+
+Undo it with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings unset placement`.
+
+**First image.** Astrid's default image is the first success. Read its entry
+from `defaults` (slot `image.t2i`). If its models are missing on their ComfyUI,
+show the plan. This writes nothing:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL
+```
+
+The plan lists the files, sizes, folder and total. On the person's one yes,
+run the same command with the plan's digest. This is the only write setup makes
+to their ComfyUI:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL --apply PLAN_SHA256
+```
+
+Then ask for a yes to the first image and run it with inputs from a file:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --json
+```
+
+If the user declines the downloads, use their own saved workflow instead. Fetch
+it read-only, describe it, then run it; its fixed saved seed is kept:
+
+```sh
+curl -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK/workflow.json"
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe "$WORK/workflow.json" --placement URL
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow "$WORK/workflow.json" --placement URL --inputs-json /absolute/path/inputs.json
+```
+
+A completed generation's JSON result carries `open_url`. Give that link once,
+and say: the new image is in the gallery at the bottom of the editor (the
+"Open Gallery" tab). If a workflow reports a missing node, say what the message names: an attached
+ComfyUI names a core node to update, and a custom node names its pack for the
+user to install. Setup never installs nodes.
+
+**Make it yours.** Each default slot gets one question: keep Astrid's, use one
+of theirs, pick another, or create a new one from their workflow. Follow the
+[defaults step](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/generation/docs/SKILL.md#set-up-my-generation)
+of the generation skill; do not repeat it here.
+
+**No local GPU or ComfyUI?** Check the hardware. On Linux or Windows run this
+once, and on macOS run `uname -m` instead:
 
 ```sh
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 ```
 
-Success is GPU names and memory. On macOS run:
+A capable Linux or Windows computer has one NVIDIA GPU with at least 12 GB VRAM,
+or meets the declared default generation requirement if available. Do not add
+GPU memory together. Report the GPU and memory or architecture found, and say
+whether capability is still unconfirmed. Then offer one of these, each on its
+own yes:
 
-```sh
-uname -m
-```
-
-Success is an architecture. On failure use the installer's `--doctor` fallback
-from step 2. Report the result. Treat capability as unconfirmed. A capable
-Linux or Windows computer has one NVIDIA GPU with at least 12 GB VRAM, or meets
-the declared default generation requirement if available. Do not add GPU
-memory together. macOS has no managed engine. Report the GPU and memory or
-architecture found. Explain whether this computer meets the requirement or
-whether capability is still unconfirmed.
-
-On a capable computer, check the engine recipe and read-only plan. On Linux:
+**Astrid's managed engine**, on a capable computer where it is available: see the
+[placement section](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/generation/docs/SKILL.md#placement).
+Check the plan first, which installs nothing:
 
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui --dry-run
 ```
 
-On Windows, substitute an absolute Windows engine root:
-
-```powershell
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" engines install comfyui --platform windows-x86_64-cu130 --root ABSOLUTE_ENGINE_ROOT --dry-run
-```
-
-Each succeeds on exit 0 with a plan and disk check; otherwise use `--doctor`.
-A recipe alone does not establish execution support: Windows execution is not
-yet available. If a managed engine is available for this platform, show the
-plan and disk requirement. Explain that the next step installs ComfyUI on this
-computer. The user can decline installation and leave generation setup for
-later. Run the following Linux command only on its own yes. Consent is an
-agent gate, not a CLI flag:
+Run the following Linux command only on its own yes. It installs ComfyUI on this
+computer; it never touches the user's existing ComfyUI:
 
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui
 ```
 
-Success is exit 0 with installed status; otherwise use `--doctor`. Report the
-installation result. Return to the generation handoff to select placement and
-defaults. Never install into or restart the user's existing ComfyUI. If capable
-but no managed engine is available, explain that Astrid cannot install a managed
-engine on this platform yet. Point to the engine's own installer or offer RunPod.
-The user can choose either route or leave generation setup for later.
-
-If the computer is not capable or capability is unconfirmed, offer RunPod.
-Explain that RunPod rents a GPU and costs money. Give the same explanation
-whenever offering RunPod above. The user can decline RunPod and leave generation
-setup for later. If they choose RunPod, explain that the next step saves their
-key locally. Guide them to enter it using the hidden prompt. Linux:
-
-```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" credential set runpod
-```
-
-macOS:
-
-```sh
-"$HOME/.local/share/astrid/run-astrid" credential set runpod
-```
-
-Windows PowerShell:
-
-```powershell
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" credential set runpod
-```
-
-Each succeeds on a successful setter result; otherwise use `--doctor`. Never
-ask for the key in chat, a command argument, or shell history. Explain the
-RunPod preferences to be saved before asking the user to approve them. The user
-can decline saving preferences. Set up the retained RunPod owner using [runpod.setup](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/runpod/docs/SKILL.md#replacing-preferences),
-with the user's approved policy, positive `budget_cap_usd` ceiling and credential
-reference, not the key. The policy needs the account reference, ordered GPU
-types (`gpu_types`, in the user's chosen order), an image pinned by sha256
-digest and a positive cap; use the user's actual choices rather than inventing
-them. Supply these as `preferences` to the linked setup call: set
-`provider_account_ref`, `gpu_types`, `image`, `credential_ref` (for example
-`env:RUNPOD_API_KEY`), and `budget_cap_usd`. The call saves the validated
-policy under `machines.runpod` in generation settings. It succeeds when the result is ok and
-`target_operation.state` is `saved`; otherwise use `--doctor`. Saving preferences
-does not authorize spending.
-
-Explain that the next change selects RunPod for generation. The user can decline
-this change and keep their current placement. With a separate yes, set
-`placement` to `{"kind": "runpod"}` in the generation settings. Preserve the
-other settings. Substitute a safe absolute file path.
-On Linux, checkout and checkin use respectively:
-
-```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkout --file /absolute/path/generation.json
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkin /absolute/path/generation.json
-```
-
-On macOS:
-
-```sh
-"$HOME/.local/share/astrid/run-astrid" generate settings checkout --file /absolute/path/generation.json
-"$HOME/.local/share/astrid/run-astrid" generate settings checkin /absolute/path/generation.json
-```
-
-On Windows:
-
-```powershell
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate settings checkout --file C:\absolute\path\generation.json
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate settings checkin C:\absolute\path\generation.json
-```
-
-Edit the checked-out file between the commands. Checkout succeeds on exit 0
-with the file; checkin succeeds on exit 0. On failure use `--doctor`. On stale
-checkin, checkout again. Merge the changes before retrying checkin.
-Report whether the placement change succeeded. Return to the generation handoff
-for defaults and undo.
-
-Before claiming a paid machine, obtain the current offer without claiming a pod.
-On Linux:
-
-```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe --placement runpod --engine comfyui --json
-```
-
-On macOS:
-
-```sh
-"$HOME/.local/share/astrid/run-astrid" generate describe --placement runpod --engine comfyui --json
-```
-
-On Windows:
-
-```powershell
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate describe --placement runpod --engine comfyui --json
-```
-
-Success is exit 0 with an offer and `offer_digest`; otherwise use `--doctor`.
-Disclose the account, offer, rate, image, optional volume, estimated cost,
-spend cap, idle retention and absolute UTC deadline. Explain that claim rents
-a machine and the following generation uses it within the claim's limits.
-The user can decline before any pod is claimed. Obtain a fresh paid consent for that exact offer and bounds.
-The claim discloses the current policy and hourly ceiling; changed prices or
-terms need another yes. Suggest a $2 cap within the saved ceiling. Substitute
-the approved entry, input file and future UTC deadline below. Validate the
-entry and inputs first. Claim must succeed before running generate.
-Linux:
-
-```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" machines claim --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --for 30m --json
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod --json
-```
-
-macOS:
-
-```sh
-"$HOME/.local/share/astrid/run-astrid" machines claim --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --for 30m --json
-"$HOME/.local/share/astrid/run-astrid" generate image --entry ENTRY --inputs-json /absolute/path/inputs.json --placement runpod --json
-```
-
-Windows:
-
-```powershell
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" machines claim --consent paid --max-usd 2 --deadline FUTURE_UTC_DEADLINE --for 30m --json
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate image --entry ENTRY --inputs-json C:\absolute\path\inputs.json --placement runpod --json
-```
-
-Success requires a successful generation result and delivered artifact, not
-merely a pod claim; on failure use `--doctor`. Report the result and the artifact
-location if delivered. Afterward list leases. Explain that keeping a lease warm
-can continue to cost money. Unless the user chooses to keep it warm, release the
-owned lease by its ID. Linux:
-
-```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" machines --json
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" machines release ID --json
-```
-
-macOS:
-
-```sh
-"$HOME/.local/share/astrid/run-astrid" machines --json
-"$HOME/.local/share/astrid/run-astrid" machines release ID --json
-```
-
-Windows:
-
-```powershell
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" machines --json
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" machines release ID --json
-```
-
-Listing succeeds on exit 0 with the lease list; release succeeds on exit 0 and
-an ok result. Verify the lease ended and follow the RunPod skill's independent
-provider cleanup checks; use `--doctor` on failure. Never create a pod during
-setup without paid consent.
-
-When the user asks to set up RunPod, use the complete
+**RunPod**, which rents a GPU and costs money. Set it up with the
 [RunPod machine skill](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/runpod/docs/SKILL.md#runpod-generation-machines)
-(installed name: `runpod`). It covers the credential prompt, `astrid machines
-setup`, saved GPU/storage choices and `setup --show`. Setup saves preferences;
-a paid claim requires separate consent, and generation uses that claim. Do not launch RunPod
-setup or a paid test automatically.
+(installed name: `runpod`). Its key prompt, preferences, paid consent and
+release steps are there; setup does not claim a machine. Never ask for a key in
+chat.
+
+The user can decline either and leave generation setup for later.
 
 ## Run everything on this computer
 
@@ -370,26 +254,12 @@ npx -y npm@11 ci
 npm run dev:local
 ```
 
-If a clone already exists, keep its changes and update to `main` without
-discarding work. The supported start command is `npm run dev:local`. It uses
-the installed Runtime, checks compatibility, and starts a source editor at
-http://127.0.0.1:5180/tools/video-editor?connect=1. Open that address in the browser and
-confirm it shows Connected. No browser local-network permission is needed;
-the local dev server proxies requests and holds the credential. The hosted
-door stays available for astrid.haus. The installer may have opened that site;
-finish this path in the local editor.
-
-Tell the user where the clone lives. Source edits appear through Vite's normal
-development workflow. To start later, run `npm run dev:local` in the clone.
-Ctrl+C stops the editor, its proxy, and any Runtime it started; a Runtime it
-attached to keeps running. To update the editor, stop it, save or commit local
-changes, then run `git pull --ff-only origin main`, `npx -y npm@11 ci`, and
-`npm run dev:local`. Resolve Git conflicts without discarding the user's work.
-Update the Runtime and agent through the official installer with `--update`,
-then restart the editor. Follow the
+If a clone already exists, keep its changes and update to `main` without discarding the user's work. The start command `npm run dev:local` uses the
+installed Runtime and opens a source editor at
+http://127.0.0.1:5180/tools/video-editor?connect=1, which should show Connected.
+Ctrl+C stops the editor and its proxy. Follow the
 [App README](https://github.com/banodoco/astrid-app#run-astrid-fully-on-your-computer)
-for the complete commands. Report actual verification results, including any
-check you could not run.
+for updates and the complete commands. Report actual verification results.
 
 ## Repair and next steps
 
@@ -399,6 +269,6 @@ run the same install line with `--doctor`, attach the bundle, and follow
 [Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md#update-astrid).
 
 Once setup is complete, give outside agents the launcher path for their OS
-listed above. Then follow [Astrid’s core skill](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/_core/docs/SKILL.md) and
+listed above. Then follow [Astrid's core skill](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/_core/docs/SKILL.md) and
 the relevant pack for the work they want to do. Guide any provider credential
 entry locally; never ask the user to paste a secret into chat.
