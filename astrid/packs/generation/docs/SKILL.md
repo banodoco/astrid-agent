@@ -39,19 +39,25 @@ never read or print an API key; never write a change without that change's own y
    `python3 -m astrid generate list --json`, then ask with the evidence: "you have X's
    models; set it as your image default?" No answer runs anything. Each has one undo:
    - **Keep Astrid's**, with its readiness shown. Nothing is written. Undo: none needed.
-   - **Use one of theirs**. Show their saved workflows from the scan, newest first
-     (`workflows_detail`, by `modified`). Pin one that is already a saved entry:
-     `python3 -m astrid generate defaults set KIND MODE ENTRY`. Undo:
+   - **Use one of yours**. Show their saved workflows from the scan, most recently
+     edited first (`workflows_detail`, by `modified`). On a yes, fetch the chosen one
+     read-only to `$WORK/workflow.json`, then save and pin it below as `FILE`:
+     `curl -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK/workflow.json"`
+     (`WORKFLOW` is its scan name; a nested name keeps its `/` as `%2F`). Undo:
      `python3 -m astrid generate defaults unset KIND MODE`.
    - **Another shipped entry**, or leave the slot to the pack default. Pin one from
-     `generate list --json` with `defaults set KIND MODE ENTRY`, or drop the user's
-     pin with `defaults unset KIND MODE`. Undo: `defaults set KIND MODE ENTRY` again,
-     with the entry step 1 showed.
-   - **A new default from their workflow**. Preview it, which writes nothing:
-     `python3 -m astrid generate workflow /absolute/path/workflow.json --as-entry NAME --dry-run --json`.
-     On a yes, save it, which queues nothing on any target:
-     `python3 -m astrid generate workflow /absolute/path/workflow.json --as-entry NAME --no-run`.
-     Then pin it with `defaults set KIND MODE NAME`. Undo: `defaults unset KIND MODE`.
+     `generate list --json` with `python3 -m astrid generate defaults set KIND MODE ENTRY`,
+     or drop the user's pin with `python3 -m astrid generate defaults unset KIND MODE`.
+     Undo: pin the entry step 1 showed, with `defaults set KIND MODE ENTRY` again.
+   - **Create a new default when none of those fits**: a workflow of theirs that is a
+     file on disk, not among the scan's. Save and pin it below as `FILE`. Undo:
+     `python3 -m astrid generate defaults unset KIND MODE`.
+   - **Save and pin** (answers 2 and 4; `FILE` is the workflow, `NAME` the entry name).
+     Preview first, which writes nothing:
+     `python3 -m astrid generate workflow FILE --as-entry NAME --dry-run --json`.
+     On a yes, save, which queues nothing on any target:
+     `python3 -m astrid generate workflow FILE --as-entry NAME --no-run`.
+     Then pin it: `python3 -m astrid generate defaults set KIND MODE NAME`.
      The saved entry stays; delete `${VIBECOMFY_ENTRIES_DIR:-$HOME/.vibecomfy/entries}/NAME`
      only on a second yes.
 5. **Show how to run each one** (the commands in the sections below), then offer one
