@@ -143,7 +143,7 @@ def test_sdk_override_drops_saved_launch_authority(public_launch, monkeypatch, o
     url = h.target.endpoint if same_endpoint else 'http://127.0.0.1:8200'
     kwargs = {}
     if override == 'url':
-        kwargs['target'] = url
+        kwargs['placement'] = url  # b9a611eaa renamed the SDK's target= to placement=
     else:
         monkeypatch.setenv('VIBECOMFY_COMFYUI_URL', url)
     result = facade.launch(consent=('user_env',), **kwargs)

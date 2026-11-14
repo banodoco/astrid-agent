@@ -11,7 +11,7 @@ import zipfile
 import lzma
 from pathlib import Path, PurePosixPath
 
-SOURCE_LIMIT = 98304
+SOURCE_LIMIT = 122880
 ARCHIVE_LIMIT = 524288
 SPEC_LIMIT = 16384
 EXPECTED_SPEC = '@SPEC_SHA256@'
@@ -23,7 +23,7 @@ def fail():
 
 if (sum(len(k.encode()) + len(os.environ.get(k, '').encode()) + 2
         for k in ('ASTRID_ENGINE_SOURCE', 'ASTRID_ENGINE_SPEC')) +
-        sum(len(arg.encode()) + 1 for arg in sys.orig_argv) > 98304):
+        sum(len(arg.encode()) + 1 for arg in sys.orig_argv) > 139264):
     fail()
 
 
