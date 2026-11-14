@@ -284,6 +284,8 @@ def test_real_console_execution_refuses_without_a2(tmp_path):
     from astrid.core.engine_cli import ENGINE_INSTALL_MIN_FREE_BYTES
     assert json.loads(result.stderr) == {'error': {
         'code': 'ENGINE_INSTALL_INSUFFICIENT_DISK', 'step': None,
+        # 9bbd06e35: every engine refusal names the check that fired.
+        'reason': 'insufficient disk space for engine installation',
         'retryable': True, 'recovery_handle': None,
         'message': 'Free disk space or choose a different --root, then retry.',
         'required_bytes': ENGINE_INSTALL_MIN_FREE_BYTES, 'free_bytes': 0,
