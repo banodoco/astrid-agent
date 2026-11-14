@@ -1467,9 +1467,10 @@ class _Supervisor:
             time.sleep(_RELEASE_POLL_SECONDS)
             try:
                 sample = request("/system_stats", request_deadline=poll_deadline)
-            except DeadlineExceeded:
+                _, sample_after = vram(sample)
+            except (OSError, ValueError, DeadlineExceeded):
                 break
-            _, after = vram(sample)
+            after = sample_after
             after_stats = sample
         result = {"status": "completed" if unloaded else "failed", "models_unloaded": unloaded,
                   "vram_total_bytes": total, "vram_free_before_bytes": before,

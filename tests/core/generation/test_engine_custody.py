@@ -2333,3 +2333,29 @@ def test_release_completes_when_vram_does_not_change(tmp_path, monkeypatch):
     result = supervisor.release({}, start + 2, None)
     assert result["status"] == "completed" and result["vram_free_after_bytes"] == 100
     assert time.monotonic() - start < 1
+
+
+@pytest.mark.parametrize("failure", [OSError("connection reset"), ValueError("malformed JSON"), {"devices": []}])
+def test_release_preserves_last_good_stats_when_poll_fails(tmp_path, monkeypatch, failure):
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "owner")
+    supervisor.engine = object()
+    monkeypatch.setattr(supervisor, "check", lambda *args: None)
+    monkeypatch.setattr(custody, "_RELEASE_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(custody, "_RELEASE_POLL_LIMIT_SECONDS", 0.1)
+    samples = iter([
+        {"system": {"ram_free": 40}, "devices": [{"vram_total": 200, "vram_free": 100}]},
+        {"system": {"ram_free": 50}, "devices": [{"vram_total": 200, "vram_free": 100}]},
+        failure,
+    ])
+    def fake_request(port, path, *args, **kwargs):
+        if path == "/system_stats":
+            sample = next(samples)
+            if isinstance(sample, Exception):
+                raise sample
+            return sample
+        return {"queue_running": [], "queue_pending": []}
+    monkeypatch.setattr(custody, "_get_json", fake_request)
+    result = supervisor.release({}, time.monotonic() + 2, None)
+    assert result["status"] == "completed" and result["models_unloaded"] is True
+    assert result["vram_free_after_bytes"] == 100
+    assert result["ram_free_after_bytes"] == 50
