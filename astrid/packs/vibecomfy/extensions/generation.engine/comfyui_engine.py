@@ -25,8 +25,8 @@ def _call_hook(hook: Any, *args: Any) -> Any:
     """Call a workflow hook; one that declares an ``engine`` parameter is given the engine's facts."""
     import inspect
     if "engine" in inspect.signature(hook).parameters:
-        from astrid.core.generation.engine_facts import comfyui_facts
-        return hook(*args, engine=comfyui_facts())
+        from astrid.packs.vibecomfy.engine_facts import comfyui_engine_facts
+        return hook(*args, engine=comfyui_engine_facts())
     return hook(*args)
 
 

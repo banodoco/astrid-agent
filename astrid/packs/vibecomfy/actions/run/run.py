@@ -596,11 +596,11 @@ def _t9_child_dispatch(
     if (profile_hash != "sha256:" + hashlib.sha256(profile_bytes).hexdigest()
             or json.loads(profile_bytes) != readiness_profile):
         raise AstridValueError("T9 child readiness profile differs from the paired Worker bytes")
-    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.vibecomfy.engine_facts import comfyui_engine_facts
     from astrid.packs.h3_av.shared import engine_facts, generation
 
     # h3_av imports nothing from Astrid; this child is its host, so it installs the engine facts.
-    engine_facts.install(comfyui_facts())
+    engine_facts.install(comfyui_engine_facts())
 
     # Reuse the strict synthetic model/candidate/fixture inventory checks;
     # merely having a profile or an ambient Python module is not activation.

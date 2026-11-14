@@ -83,9 +83,9 @@ def test_generation_rejects_missing_required_lock_destination(monkeypatch, index
 
 def _install_lock(lock):
     """Hand the pack a modified model lock through its engine facts (the autouse fixture restores them)."""
-    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.vibecomfy.engine_facts import comfyui_engine_facts
     from astrid.packs.h3_av.shared import engine_facts
-    engine_facts.install(replace(comfyui_facts(), locked_models=lambda: {m.destination: m for m in lock.models}))
+    engine_facts.install(replace(comfyui_engine_facts(), locked_models=lambda: {m.destination: m for m in lock.models}))
 
 
 def request(count=4, **updates):
