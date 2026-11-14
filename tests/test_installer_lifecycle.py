@@ -1635,6 +1635,8 @@ def test_real_runtime_migration_bootstrap_follows_backend_c1_stop(tmp_path, monk
 
 @pytest.mark.integration
 @pytest.mark.linux_native
+# Slow on purpose: measured about 100 s on hosted Lanes; the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_path, monkeypatch):
     """Run real migration and rollback activation using selected version identity."""
     import importlib

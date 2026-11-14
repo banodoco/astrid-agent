@@ -69,7 +69,7 @@ def test_failed_qwen_default_surfaces_own_error_without_z_image(network, monkeyp
 
 @pytest.mark.parametrize('mode,preferred', [
     ('tts', 'audio/qwen3_tts_custom_voice'),
-    ('music', 'audio/minimax_music_3'),
+    ('music', 'audio/ace_step_1_5_t2a_song'),
     ('sfx', 'audio/hunyuan_video_foley'),
 ])
 def test_audio_preferred_row_owns_its_error(network, monkeypatch, mode, preferred):

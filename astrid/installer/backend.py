@@ -11,13 +11,13 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlsplit
-import urllib.parse
 
 from runtime_protocol import platform
 from runtime_protocol.door import DEFAULT_DOOR_PORT
@@ -43,8 +43,15 @@ from .core import (
 from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
-from .tools import (asset_downloads, binary, clone_source, install_tools, repository_identity,
-                    source, validate_pack_build)
+from .tools import (
+    asset_downloads,
+    binary,
+    clone_source,
+    install_tools,
+    repository_identity,
+    source,
+    validate_pack_build,
+)
 
 
 class _HttpsRedirect(urllib.request.HTTPRedirectHandler):
@@ -185,7 +192,11 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
     """Secure only the new venv's guarded inputs, detaching shared file inodes."""
     if os.name == "nt":
         return  # Windows admission uses ACLs rather than POSIX modes.
-    from ..core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH, runtime_lock_path
+    from ..core.rendering._local_schema import (
+        READER_INPUTS,
+        SCHEMA_RELATIVE_PATH,
+        runtime_lock_path,
+    )
 
     venv_root = folder / "py"
     try:

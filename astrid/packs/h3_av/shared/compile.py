@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -398,7 +399,6 @@ def _compile_lanpaint(
     keyframes, audio_intervals, schedule = _lanpaint_masks(request, asset_binding=asset_binding, internal_full_frame="mask_full_frame", internal_preserve="mask_preserve")
     asset_manifest = _write_asset_bundle(destination / "managed-assets.zip", bindings)
     members = _member_by_binding(asset_manifest)
-    source_id = request.value["source"]["asset"]
     workflow_inputs = {
         "model": request.value["overrides"].get("model", "minimax_h3_fl2va_pruned_fp8_scaled.safetensors"),
         "steps": request.value["overrides"].get("steps", 20),
@@ -548,7 +548,7 @@ def _compile_native_masked_edit(
             raise CompilationError(f"native masked edit reference {item.asset!r} is missing from preparation")
         bindings[f"reference_{index}"] = assets[item.asset]
     try:
-        timing = generation_timing(float(spec.duration))
+        timing = generation_timing(spec.duration)
     except ValueError as exc:
         raise CompilationError(str(exc)) from exc
     prompt = spec.prompt
@@ -719,7 +719,7 @@ def _compile_character_swap_v2(
         })
 
     try:
-        timing = generation_timing(float(value["duration"]))
+        timing = generation_timing(value["duration"])
     except ValueError as exc:
         raise CompilationError(str(exc)) from exc
     prompt = _native_v2_prompt(request)
@@ -972,12 +972,12 @@ def _compile_native_v2(
         )
     source_start = float(source["range"][0])
     source_frames = int(source_range[1]) - int(source_range[0])
-    source_end = source_frames / 24.0
+    source_end = Fraction(source_frames, 24)
 
     try:
         timing = plan_continuation(
             source_end=source_end,
-            output_duration=float(request.value["duration"]),
+            output_duration=request.value["duration"],
         )
     except ContinuationTimingError as exc:
         raise CompilationError(str(exc)) from exc

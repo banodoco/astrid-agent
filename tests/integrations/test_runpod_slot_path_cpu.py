@@ -422,6 +422,8 @@ def test_default_slot_through_the_runpod_machine(slot, tmp_path, monkeypatch, re
 H3_REQUEST = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "request.v2.json"
 
 
+# Slow on purpose: measured about 327 s on hosted Lanes; the suite default is 120 s.
+@pytest.mark.timeout(600)
 def test_h3_av_through_the_runpod_machine(tmp_path, monkeypatch, real_runtime, tuple_sources):
     """The Matrix continuation request (57 frames, 24 fps, 1024x576 source) through the host bind."""
     import subprocess
@@ -581,6 +583,8 @@ def _capability_call(capability):
      for t in TARGET_KINDS for c in CAPABILITIES]
     + [pytest.param(("audio", mode), target, "trust", id=f"audio/{mode}-{target}-trust")
        for mode in ("tts", "sfx") for target in ("local-managed", "attached")])
+# Slow on purpose: the video/h3 cells measured 267-304 s on hosted Lanes; the suite default is 120 s.
+@pytest.mark.timeout(600)
 def test_capability_reaches_generation_on_each_target(capability, target_kind, align_mode, tmp_path, monkeypatch,
                                                       real_runtime, tuple_sources):
     composed = set()
@@ -658,6 +662,8 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, a
         assert client.tasks.show(result.task_id).data["state"] == "succeeded"
 
 
+# Slow on purpose: measured about 186 s on hosted Lanes; the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_h3_facade_passes_its_after_outputs_job_and_the_hook_composes_the_candidate(tmp_path, monkeypatch, real_runtime, tuple_sources):
     """Facade level: generate --entry h3 builds, hands vibecomfy.run its after_outputs job, and that job's hook
     turns the generated video into the composed and verified candidate (not the raw output)."""

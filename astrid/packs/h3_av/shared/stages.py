@@ -14,14 +14,14 @@ from typing import Any, Mapping
 
 from .errors import PreparationError
 from .request import H3Request, _asset_ids, normalize_request
-from .request_v2 import branch_for
+from .request_v2 import branch_for, json_times, read_prepared_request
 
 STATE_NAME = "build-state.json"
 _OUTPUT_CONTRACTS = {"muxed_av_full_timeline", "separate_av_full_timeline"}
 
 
 def stable_digest(value: Any) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    payload = json.dumps(json_times(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -129,8 +129,8 @@ def save_build_state(directory: Path, *, request: H3Request, document: Mapping[s
     """What ``after_outputs`` needs, written once by ``build`` into the shared job directory."""
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / STATE_NAME
-    path.write_text(json.dumps({"request": document, "request_digest": request.digest,
-                                "preparation": preparation, "source": source, "plan": plan},
+    path.write_text(json.dumps(json_times({"request": document, "request_digest": request.digest,
+                                "preparation": preparation, "source": source, "plan": plan}),
                                sort_keys=True), encoding="utf-8")
     return path
 
@@ -145,4 +145,9 @@ def load_build_state(directory: Path) -> dict[str, Any]:
     request = normalize_request(state["request"])
     if request.digest != state["request_digest"]:
         raise ValueError("h3 build state does not match its request digest")
+    preparation = state["preparation"]
+    if preparation["request"].get("version") == 2:
+        preparation["request"] = read_prepared_request(
+            preparation["request"], preparation["request_digest"], require_normalized_v2=True,
+        ).value
     return {**state, "request_object": request}

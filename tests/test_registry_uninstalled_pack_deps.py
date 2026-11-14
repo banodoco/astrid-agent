@@ -28,7 +28,7 @@ SIX_SLOT_ENTRIES = (
     "qwen-image-2.1-turbo-edit",
     "h3",
     "audio/qwen3_tts_custom_voice",
-    "audio/minimax_music_3",
+    "audio/ace_step_1_5_t2a_song",
     "audio/hunyuan_video_foley",
 )
 

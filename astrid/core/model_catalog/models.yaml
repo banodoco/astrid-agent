@@ -754,14 +754,10 @@ models:
     modality: video
     modes:
       t2v:
-        # The pinned template (video/ltx2_3_t2v) is image-conditioned with conditioning
-        # bypassed (3159 bypass=True) and needs an image file until the text-only graph
-        # lands (ledger M02-40 follow-up). The catalog matches the template.
         supports:
           - prompt
           - negative_prompt
           - seed
-          - image_ref
           - resolution
           - frames
           - fps
@@ -772,11 +768,10 @@ models:
           - enable_safety_checker
         requires:
           - prompt
-          - image_ref
         backends:
           local:
             template: video/ltx2_3_t2v
-            template_hash: "sha256:4f7415f1fc4e776f9a04c70b8cacafcc87682f013b9b88ec80d881437efa77fd"
+            template_hash: "sha256:7d5201f83c21a5e3d0287099871c1e5305cc91fbf6931efcf5e11677acc8c342"
           cloud:
             endpoint: fal-ai/ltx-2.3/text-to-video/fast
       i2v:
@@ -799,7 +794,7 @@ models:
         backends:
           local:
             template: video/ltx2_3_i2v
-            template_hash: "sha256:9e7d3fe3bad9f59f9250810130c96ea3f17cc3126e627de22bc1b1515deebb68"
+            template_hash: "sha256:b4c03b1e3bd14ed3399eb8426af756c18057ea2dfae91ba1e1c7655b29a47560"
           cloud:
             endpoint: fal-ai/ltx-2.3/image-to-video/fast
             # When LoRAs are requested the backend routes to this quality
@@ -824,7 +819,7 @@ models:
         backends:
           local:
             template: video/ltx2_3_runexx_first_last_frame
-            template_hash: "sha256:e85c54f75f33a97ad7b72d44db315b41bcb0e75b2609622e9568cd2d59f022e9"
+            template_hash: "sha256:74019142182b684558178d0d1e8849df0f3d1887d2e03e1cc8dff5702682f1f4"
   # =========================================================================
   # ltx-2.3-pro — LTX-2.3 pro endpoints (cloud-only t2v + i2v)
   # =========================================================================
@@ -1178,7 +1173,7 @@ models:
         backends:
           local:
             template: audio/hunyuan_video_foley
-            template_hash: "sha256:d31fc21886192c3c23565d6a54b2d8444e16e7d63948f5c906fdf35db6e7749e"
+            template_hash: "sha256:ce61d756a18c7ff5d46d5e6da8108d893e1c6f6e73a513443b9636a3c63f9aaa"
             param_map: {video_ref: video_ref, prompt: prompt, seed: seed}
             model_roles:
               foley: {node_class: HunyuanFoleyModelLoader, input: foley_checkpoint_name, binding: diffusion_model, names: ['hunyuanvideo_foley_xl.pth']}

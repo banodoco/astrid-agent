@@ -14,13 +14,13 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from functools import wraps
 from pathlib import Path
-from typing import Any, Mapping, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from ._module import _sdk_module
 from .exceptions import (
     AstridSDKError,
-    CapabilityPreconditionError,
     CapabilityInvocationError,
+    CapabilityPreconditionError,
     CapabilityValidationError,
 )
 from .results import _reconstruct_generation_result
@@ -51,8 +51,8 @@ class GenerationInputError(CapabilityValidationError):
     """Keep the SDK validation taxonomy while carrying the shared envelope."""
 
     def __init__(self, message: str, *, entry=None):
-        from astrid.core.generation.preflight import generation_error
         from astrid.core.generation.entries import public_description
+        from astrid.core.generation.preflight import generation_error
         if entry is not None and 'inputs' in entry:
             entry = public_description(entry)
         error = generation_error(ValueError(message), entry=entry, code='input_rejected',
@@ -124,6 +124,7 @@ def _require_single_declared_output(*, workflow: Any, companion: Any) -> None:
 
 def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
     import hashlib
+
     from astrid.core.execution.managed_inputs import managed_file_digest
     client = controls.get('client')
     importer = getattr(getattr(client, 'media', None), 'import_file', None)
@@ -174,7 +175,7 @@ def _snapshot_generation_workflow(path: Path):
         try:
             if original.suffix.lower() == '.py':
                 from vibecomfy.security.provenance import Provenance
-                from vibecomfy.workflow_bundle import load_bundle, _atomic_publish_pair
+                from vibecomfy.workflow_bundle import _atomic_publish_pair, load_bundle
 
                 bundle = load_bundle(original, trust=Provenance.USER_CONFIRMED)
                 bundle.require_canonical_authority('snapshot generation workflow')
@@ -254,9 +255,8 @@ def _generation_controls(*, engine, consent):
 
 def _runpod_preferences(client):
     """The saved RunPod placement policy, read from the caller's Runtime connection when it has one."""
-    from astrid.packs.runpod.target_selection import read_runpod_preferences
-
     from astrid.core.generation import settings
+    from astrid.packs.runpod.target_selection import read_runpod_preferences
 
     # Only a connection that serves app-state can hold the settings document.
     if hasattr(settings.transport_of(client), "get_user_app_state"):
@@ -268,7 +268,7 @@ def _runpod_job_preferences(preferences, datacenter):
     """Apply a per-job datacenter to a copied preference snapshot."""
     if datacenter is None:
         return preferences
-    from astrid.packs.runpod.target_selection import RunPodPreferences, PaidSelectionError
+    from astrid.packs.runpod.target_selection import PaidSelectionError, RunPodPreferences
 
     try:
         candidate = dict(preferences)
@@ -292,6 +292,7 @@ _NO_MACHINE = 'no machine: run `astrid machines claim`'
 def _require_claimed_machine(kind, machine=None):
     """Read local custody only; the owning host rechecks it before running."""
     import time
+
     from astrid.core.generation.placement import _runpod_leases
 
     now = time.time()
@@ -315,8 +316,8 @@ def _runpod_placement_policy(*, engine, machine=None, consent=(), idle_timeout_s
 def _require_runpod_claim_host(client):
     """Refuse manual acquisition without a ready Runtime host registration."""
     from astrid.core.generation.settings import transport_of
-    from astrid.sdk.pagination import paged_rows
     from astrid.sdk.capability_selection import select_capability_row
+    from astrid.sdk.pagination import paged_rows
 
     transport = transport_of(client)
     reader = getattr(transport, "list_capabilities", None)
@@ -397,8 +398,8 @@ def _generation_boundary(method):
     """Project legacy SDK failures without changing their exception taxonomy."""
     @wraps(method)
     def call(*args, **kwargs):
-        from astrid.core.generation.preflight import generation_error
         from astrid.core.contracts.errors import AstridError
+        from astrid.core.generation.preflight import generation_error
         from astrid.core.pack.discovery import pack_discovery_scope
         try:
             with pack_discovery_scope():
@@ -530,6 +531,8 @@ def _infer_video_mode(
         return "flf"
     if has_image_ref:
         return "i2v"
+    if inputs.get("video_ref"):
+        return "v2v"
     return "t2v"
 
 
@@ -658,18 +661,20 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
     import secrets
     from tempfile import TemporaryDirectory
 
+    from vibecomfy.model_assets import _referenced_model_values
+    from vibecomfy.workflow_bundle import emit_bundle
+
     from astrid.core.generation.backends.comfy_target import ComfyTargetClient
     from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+    from astrid.core.generation.features import backend_descriptors_from_pack
     from astrid.core.generation.model_root import (
-        ModelRootBinding, validate_model_root_binding,
+        ModelRootBinding,
+        validate_model_root_binding,
     )
     from astrid.core.model_catalog import registry as catalog
     from astrid.core.model_catalog.schema import validate_registry_with_backends
     from astrid.core.model_catalog.taxonomy import GenerationTaxonomyRegistry
-    from astrid.core.generation.features import backend_descriptors_from_pack
     from astrid.core.pack import load_pack_manifest
-    from vibecomfy.model_assets import _referenced_model_values
-    from vibecomfy.workflow_bundle import emit_bundle
 
     def canonical(value: Any) -> bytes:
         return json.dumps(value, sort_keys=True, separators=(",", ":"),
@@ -1107,7 +1112,11 @@ class GenerationFacade:
             preferences = _runpod_job_preferences(_runpod_preferences(client), datacenter)
             if resolved.policy.gpu_types:
                 preferences['gpu_types'] = list(resolved.policy.gpu_types)
-            from astrid.packs.runpod.target_selection import RunPodPreferences, policy_consent_digest, _number
+            from astrid.packs.runpod.target_selection import (
+                RunPodPreferences,
+                _number,
+                policy_consent_digest,
+            )
 
             if max_hourly_usd is not None:
                 max_hourly_usd = _number(max_hourly_usd, "hourly USD ceiling")
@@ -1383,14 +1392,15 @@ class GenerationFacade:
         from tempfile import TemporaryDirectory
 
         from astrid.core.contracts.errors import AstridError
+        from astrid.core.generation import placement as placements
         from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
         from astrid.core.generation.preflight import (
+            compare_versions,
+            generation_error,
+            readiness_envelope,
             require_generation_target_readiness,
             select_generation_target,
-            generation_error, readiness_envelope, compare_versions,
         )
-
-        from astrid.core.generation import placement as placements
 
         requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
         align = _align_mode(requested_align or 'check')
@@ -1409,13 +1419,12 @@ class GenerationFacade:
             raise CapabilityValidationError(
                 "shot_generation_recipe requires the generation image action"
             )
-        from astrid.core.generation import entries as workflow_entries
-        from astrid.packs.vibecomfy.production_engine import ProductionEngineError
-
         # Catalog priority is explicit, stable and per modality/mode. Unknown
         # catalog entries and user entries remain eligible in lexical order.
         from astrid.core.generation import defaults as generation_defaults
+        from astrid.core.generation import entries as workflow_entries
         from astrid.core.generation import settings as generation_settings
+        from astrid.packs.vibecomfy.production_engine import ProductionEngineError
         settings_snapshot = generation_settings.read(controls.get('client'))
         pinned = (generation_defaults.pinned_entry(modality, mode, settings_snapshot)
                   if model is None and workflow_entry is None else None)
@@ -1438,14 +1447,14 @@ class GenerationFacade:
                     raise CapabilityValidationError(str(exc)) from exc
         else:
             candidates = [("catalog", entry) for entry in registry.list_by_modality(modality)
-                          if entry.id not in _EXPLICIT_ONLY_ENTRIES
+                          if (entry.id not in _EXPLICIT_ONLY_ENTRIES or entry.id in preferred)
                           and mode in entry.modes and _local_template(entry, mode)]
             candidates += [("workflow", entry) for entry in
                            [*({**entry, 'source': 'user-entry'} for entry in workflow_entries.user_entries()),
                             *({**entry, 'source': 'ready-template'} for entry in workflow_entries.ready_entries())]
                            if entry["kind"] == modality and mode in entry["modes"]
-                           and entry["id"] not in _EXPLICIT_ONLY_ENTRIES
-                           and not entry.get("registry_id")]
+                           and (entry["id"] not in _EXPLICIT_ONLY_ENTRIES or entry["id"] in preferred)
+                           and (not entry.get("registry_id") or entry["id"] in preferred)]
             if pinned is not None and not any(
                     (c[1].id if c[0] == "catalog" else c[1]["id"]) == pinned for c in candidates):
                 found = workflow_entries.find_entry(pinned)
@@ -1453,7 +1462,8 @@ class GenerationFacade:
                     candidates.append(("workflow", found))
             candidates.sort(key=rank)
         from astrid.core.generation.availability import (
-            require_model_available, require_entry_available,
+            require_entry_available,
+            require_model_available,
         )
         automatic = model is None and workflow_entry is None
         qualified = []
@@ -1579,17 +1589,9 @@ class GenerationFacade:
                         require_generation_target_readiness(prerequisite, mode, target_client)
                     if candidate["kind"] != modality or mode not in candidate["modes"]:
                         raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
-                    registry_id = candidate.get("registry_id")
-                    if registry_id:
-                        catalog_entry = registry.get(registry_id)
-                        if not is_remote_target:
-                            require_generation_target_readiness(catalog_entry, mode, target_client)
-                        workflow, plan, schema, assets = _prepare_catalog_target_workflow(
-                            registry=registry, candidate=catalog_entry, mode=mode,
-                            modality=modality, inputs=inputs, target_client=target_client, backend=backend,
-                            retain_source=None if dry_run else retain_source,
-                            defer_target=is_remote_target or is_managed_target, align=align)
-                    elif source == "workflow" and candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
+                    # The selected workflow owns preparation. Its catalog association
+                    # supplies discovery/qualification metadata, not another selector.
+                    if candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
                         # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
                         # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
                         if controls.get('wait') is False and not dry_run and not is_remote_target:
@@ -1602,7 +1604,16 @@ class GenerationFacade:
                         job_dir = candidate.get('job_dir') or Path(tempfile.mkdtemp(prefix='astrid-job-'))
                         if not candidate.get('job_dir'):
                             _job_dirs.append(Path(job_dir))
-                        built = workflow_entries.build_entry(candidate, inputs, job_dir)
+                        # Discovery checks only required ports. The selected hook must
+                        # honor the same declared-controls contract as an explicit entry.
+                        build_inputs = dict(inputs)
+                        if build_inputs.get('count') == 1 and not any(
+                                'count' in (port['name'], *port.get('aliases', []))
+                                for port in candidate.get('inputs', [])):
+                            build_inputs.pop('count')  # single-output admission was checked above
+                        build_inputs = workflow_entries.validate_inputs(candidate, build_inputs)
+                        built = workflow_entries.build_entry(
+                            candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target)
                         workflow, assets = built['workflow'], dict(built.get('assets') or {})
                         plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
                                 'build_plan': built.get('plan'), 'job_dir': str(job_dir)}
@@ -1639,7 +1650,7 @@ class GenerationFacade:
                         schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
                                                                 pending_target=pending_target, align=align)
                 from vibecomfy.workflow_bundle import load_bundle
-                if source == "workflow" and not candidate.get("registry_id"):
+                if source == "workflow":
                     # Re-emit the edited canonical workflow before approval so
                     # the input bindings are represented by a fresh revision.
                     from vibecomfy.workflow_bundle import emit_bundle
@@ -1725,9 +1736,13 @@ class GenerationFacade:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
             # Only managed placements run declaration preparation on the execution host.
             if is_managed_target or is_remote_target:
-                from astrid.core.generation.managed_preparation import judge_declarations
-                from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value, load_workflow_path
                 from vibecomfy.workflow_bundle import emit_bundle
+
+                from astrid.core.generation.managed_preparation import judge_declarations
+                from astrid.packs.vibecomfy.production_engine import (
+                    _canonical_bundle_value,
+                    load_workflow_path,
+                )
                 with TemporaryDirectory(prefix="astrid-dry-declarations-") as scratch:
                     root = Path(scratch)
                     capsule = root / "workflow.py"
@@ -1755,6 +1770,7 @@ class GenerationFacade:
             asset_arguments: dict[str, Any] = {}
             if assets:
                 import zipfile
+
                 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
                 manifest = build_asset_manifest(assets)
                 archive = root / "assets.zip"

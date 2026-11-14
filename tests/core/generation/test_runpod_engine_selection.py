@@ -53,7 +53,8 @@ def attached_url():
     from tests.integrations.test_runpod_slot_path_cpu import SLOTS as CPU_SLOTS, SlotPod, _attached_comfy, _slot_classes
     classes = set().union(*(_slot_classes(slot) for slot in CPU_SLOTS))
     pod = SlotPod.__new__(SlotPod)  # receipts only: no provider HTTP
-    pod.receipts, pod.schema = {}, pin_object_info()
+    pod.receipts, pod.schema, pod.volume = {}, pin_object_info(), None  # no network volume: the receipt's models root is the engine's own
+    pod.volume = None
     files = []
     for engine in dict.fromkeys(("comfyui", *entries.runpod_engines())):
         files += receipt_files(pod._receipt_for(engine))
@@ -96,9 +97,10 @@ class NoPodClient:
                                 kernel_task_id='task-a', raw_result={'state': 'queued'})
 
 
-def test_managed_preview_and_live_freeze_declarations_with_installed_alternate(monkeypatch):
+def test_managed_preview_and_live_freeze_declarations_with_installed_alternate(monkeypatch, tmp_path):
     from astrid.core.generation import preflight
     from astrid.core.generation.backends.comfy_target import _resolve_roles
+    from astrid.core.generation.engine_local_endpoint import record_engine_root
     from astrid.core.model_catalog.registry import ModelRegistry
 
     # The target has only the second declared VAE choice. Managed selection
@@ -111,11 +113,15 @@ def test_managed_preview_and_live_freeze_declarations_with_installed_alternate(m
     resolved, failures = _resolve_roles(SimpleNamespace(model_roles={'vae': declaration}), alternate.object_info())
     assert resolved == {'vae': r'FLUX1\ae.safetensors'} and not failures
     selections = []
-    monkeypatch.setattr(preflight, 'select_generation_target',
+    # Keep real managed deferral: the installed client must never be bound
+    # while preparing declarations. Admission only needs the registered root.
+    record_engine_root('comfyui', str(tmp_path / 'engine'))
+    monkeypatch.setattr(preflight, '_installed_managed_target',
                         lambda *args, **kwargs: selections.append(alternate) or alternate)
     graphs = []
     prepare = generation._prepare_catalog_target_workflow
     def capture(**kwargs):
+        assert kwargs['target_client'] is None
         result = prepare(**kwargs)
         graphs.append(result[0].compile('api'))
         return result

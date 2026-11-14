@@ -461,8 +461,10 @@ def test_concurrent_submission_during_child_wait(tmp_path, isolated, channel):
         waiting = pool.submit(call, root, inputs={"message": "hello"}, child_key="waiting", wait=True,
                               timeout_seconds=0.2, poll_seconds=0.01)
         admitted = pool.submit(call, root, inputs={"message": "hello"}, child_key="other")
-        assert admitted.result(timeout=1).ok
-        timed = waiting.result(timeout=1)
+        # The futures bound only the harness wait; the product timeout under test is timeout_seconds=0.2 above. One hosted
+        # shard run raised TimeoutError at the old 1 s bound; the test passes locally on R12 and R13.
+        assert admitted.result(timeout=10).ok
+        timed = waiting.result(timeout=10)
     assert not timed.ok and timed.error["code"] == "task_wait_timeout"
     assert timed.error["sdk_category"] == "runtime"
     assert any(m["op"] == "submit" and m["child_key"] == "other" for m in messages)
