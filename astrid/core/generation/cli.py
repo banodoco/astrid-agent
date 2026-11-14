@@ -316,6 +316,11 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     out.add_argument('--file', required=True)
     back = actions.add_parser('checkin', help='Save an edited checkout; a stale one is refused.')
     back.add_argument('file')
+    one = actions.add_parser('set', help='Save one setting; placement takes a ComfyUI URL.')
+    one.add_argument('key', choices=('placement',))
+    one.add_argument('value')
+    gone = actions.add_parser('unset', help='Remove one setting; placement goes back to the built-in default.')
+    gone.add_argument('key', choices=('placement',))
     command = sub.add_parser('release', help='Admit release through the current host owner.')
     command.add_argument('--engine', required=True)
     command.add_argument('--placement', required=True)
@@ -396,10 +401,37 @@ def _settings_command(parsed):
     with _open_client() as client:
         if parsed.settings_action == 'checkout':
             result = settings.checkout(parsed.file, client)
+        elif parsed.settings_action == 'set':
+            result = settings.set_placement(parsed.value, client)
+        elif parsed.settings_action == 'unset':
+            result = settings.unset_placement(client)
         else:
             result = settings.checkin(parsed.file, client)
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if parsed.settings_action in ('set', 'unset'):
+        print(_placement_line(parsed.settings_action, result))
+    else:
+        print(json.dumps(result, indent=2, sort_keys=True))
     return 0
+
+
+def _placement_line(action, result):
+    """One line: what the placement is now, what it replaced, and the command that restores it."""
+    def show(placement):
+        return json.dumps(placement, sort_keys=True) if placement else 'the built-in default'
+    before, now = result['previous'], result['placement']
+    # A one-command restore is offered only when it brings back exactly what was there: `set` keeps a
+    # device only on an attached placement, and `unset` removes it, so a device is restorable only on undo of set.
+    keys = set(before)
+    if action == 'unset' and before == now:
+        restore = 'nothing to restore; no placement was saved'
+    elif before.get('kind') == 'attached' and before.get('endpoint') and keys <= {'kind', 'endpoint', 'policy'} | (
+            {'device'} if action == 'set' else set()):
+        restore = f"astrid generate settings set placement {before['endpoint']}"
+    elif keys <= {'policy'}:
+        restore = 'astrid generate settings unset placement'
+    else:
+        restore = f"none in one command; the previous placement is {show(before)}"
+    return f"placement is now {show(now)} (was {show(before)}); restore: {restore}"
 
 
 def _workflow_command(parsed: argparse.Namespace) -> int:

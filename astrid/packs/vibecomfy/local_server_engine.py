@@ -190,15 +190,15 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
             gaps.append("missing nodes: " + ", ".join(nodes))
         if missing_models:
             gaps.append("missing models: " + ", ".join(missing_models))
-        from astrid.core.generation.asset_gaps import asset_readiness
-        readiness = asset_readiness(
+        from astrid.core.generation.asset_gaps import attached_asset_readiness
+        readiness = attached_asset_readiness(
             getattr(bundle.workflow, 'metadata', {}).get('registry_id'),
             nodes=missing_nodes, models=missing_models,
+            lockfile_path=destination / "custom_nodes.lock",
         )
-        import shlex
         error = ProductionEngineError(
             f"ComfyUI at {url}: {'; '.join(gaps)}. "
-            'Run: ' + shlex.join(readiness['fixes'][0]['argv']) +
+            + ' '.join(issue['message'] for issue in readiness['issues']) +
             ". See 'Missing nodes and models' in the VibeComfy skill (packs/vibecomfy/docs/SKILL.md)."
         )
         error.readiness = readiness
@@ -565,10 +565,9 @@ def run_local_server(
                 )
                 exc.add_note(f"local_server prompt cleanup failed: {cleanup_error}")
             if "vibecomfy schema refresh" in str(exc) or getattr(exc, "next_action", None) == "vibecomfy schema refresh":
-                import shlex
-
-                from astrid.core.generation.asset_gaps import align_argv
-                fix = 'Install the missing locked node pack: ' + shlex.join(align_argv())
+                # local_server is always the person's own ComfyUI: never point at align, which writes to the managed engine.
+                fix = ("update ComfyUI if the node is part of ComfyUI, or install its custom node pack in your "
+                       "ComfyUI's custom_nodes and restart ComfyUI yourself; then retry")
                 raise ProductionEngineError(str(exc).replace("vibecomfy schema refresh", fix)) from exc
             raise
     finally:
