@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import urllib.parse
 from typing import Any
 
 from astrid.core.generation.availability import (
@@ -119,10 +120,46 @@ def catalog_rows() -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (row["id"], row["kind"], row["mode"], row["backend"], row["source"], row["template"]))
 
 
+def runtime_placement_endpoint(client: Any = None) -> str | None:
+    """The attached ComfyUI endpoint that the Runtime placement default names, if it names one."""
+    from astrid.core.generation import settings
+    from astrid.core.generation.targets import normalize_target
+
+    default = settings.placement_default(client)
+    if default.get("kind") != "attached" or not default.get("endpoint"):
+        return None
+    return normalize_target({"endpoint": default["endpoint"]}).endpoint
+
+
+def target_selection(client: Any = None, request: str = "auto", repo: Any = None):
+    """``resolve_target``, where the Runtime placement default outranks a TOML target and discovery.
+
+    An environment override and an explicit request still win, as they do in ``resolve_target``.
+    """
+    from astrid.core.generation import targets
+
+    selection = targets.resolve_target(request, repo=repo)
+    endpoint = runtime_placement_endpoint(client) if request == "auto" else None
+    if endpoint is not None and selection.source in {"repo", "global", "discovery"}:
+        return targets.TargetSelection(targets.normalize_target({"endpoint": endpoint}), "settings", True)
+    return selection
+
+
+def placement_block(selection: Any) -> dict[str, Any]:
+    """The resolved placement of a target selection and where it came from."""
+    endpoint = selection.record.endpoint if selection.record is not None else None
+    return {"resolved": {"kind": "attached" if endpoint else "managed", "endpoint": endpoint},
+            "source": selection.source}
+
+
 def _targets() -> list[tuple[ComfyTarget, dict[str, Any] | None]]:
     from astrid.packs.vibecomfy.local import scan
+    ports = [8188, 8000]
+    endpoint = runtime_placement_endpoint()
+    if endpoint is not None:
+        ports.append(urllib.parse.urlsplit(endpoint).port)
     targets = {}
-    for server in scan([8188, 8000]).get("servers", []):
+    for server in scan(list(dict.fromkeys(ports))).get("servers", []):
         try:
             target = ComfyTarget(server["url"], "attached", facts=server)
         except (KeyError, TypeError, ValueError):

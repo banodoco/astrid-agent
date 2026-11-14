@@ -195,7 +195,7 @@ class ComfyTargetClient:
         if payload is not None and path in {"/prompt", "/api/prompt"}:
             raise ValueError("use submit_prompt to preserve prompt acceptance")
         if payload is None:
-            allowed = path in {"/queue", "/history", "/system_stats", "/object_info"}
+            allowed = path in {"/queue", "/history", "/system_stats", "/object_info", "/internal/folder_paths"}
             if path.startswith("/history/"):
                 self._prompt_id(path.removeprefix("/history/"))
                 allowed = True
@@ -610,7 +610,8 @@ class ComfyModelMissing(ValueError):
     engine_code = "COMFY_MODEL_MISSING"
 
     def __init__(self, model: str, mode: str, failures: dict[str, list[str]],
-                 alternatives: list[str], expected_names: dict[str, list[str]] | None = None):
+                 alternatives: list[str], expected_names: dict[str, list[str]] | None = None,
+                 placements: list[dict[str, Any]] | None = None):
         self.model = model
         self.mode = mode
         self.failures = failures
@@ -618,13 +619,19 @@ class ComfyModelMissing(ValueError):
         self.expected_names = expected_names or {}
         import shlex
         from astrid.core.generation.asset_gaps import asset_readiness, align_argv
-        names = [f"{', '.join(values)} (role {role})" for role, values in self.expected_names.items()]
-        self.readiness = asset_readiness(model, models=names or [f'{model}/{mode}: unresolved roles {failures}'])
+        if placements is not None:
+            # Attached target: the user places the file in their own ComfyUI; Astrid installs nothing there.
+            self.readiness = asset_readiness(model, placements=placements)
+            tail = "; ".join(fix["details"]["action"] for fix in self.readiness["fixes"])
+        else:
+            names = [f"{', '.join(values)} (role {role})" for role, values in self.expected_names.items()]
+            self.readiness = asset_readiness(model, models=names or [f'{model}/{mode}: unresolved roles {failures}'])
+            tail = f"run: {shlex.join(align_argv(model))}"
         super().__init__(
             f"{self.code}: {model}/{mode}: unresolved roles {failures}; "
             f"expected filenames: {self.expected_names}; "
             f"compatible catalog entries: {', '.join(alternatives) or 'none'}; "
-            f"run: {shlex.join(align_argv(model))}"
+            f"{tail}"
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -654,6 +661,41 @@ def _resolve_roles(spec: Any, object_info: dict[str, Any]) -> tuple[dict[str, st
         else:
             failures[role] = matches
     return resolved, failures
+
+
+# ComfyUI loader input -> the folder key its file list is read from on the server.
+_COMFY_MODEL_FOLDERS = {
+    ("UNETLoader", "unet_name"): "diffusion_models",
+    ("CLIPLoader", "clip_name"): "text_encoders",
+    ("VAELoader", "vae_name"): "vae",
+}
+
+
+def _attached_model_placements(client: ComfyTargetClient, spec: Any,
+                               failures: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """Name each missing file and its folder from the attached server's own folder paths."""
+    try:
+        listed = client.request_json("/internal/folder_paths", timeout=5, response_limit=64 * 1024)
+    except (ValueError, OSError, TransportError):
+        listed = None
+    folders = listed if isinstance(listed, dict) else {}
+    placements = []
+    for role in failures:
+        declaration = spec.model_roles.get(role) if spec and spec.model_roles else None
+        if declaration is None:
+            continue
+        key = _COMFY_MODEL_FOLDERS.get((declaration.node_class, declaration.input))
+        paths = folders.get(key) if key else None
+        if isinstance(paths, str):
+            paths = [paths]
+        folder = next((path for path in paths or () if isinstance(path, str) and path), None)
+        matches = list(failures[role] or ())
+        if len(matches) > 1:
+            # Ambiguous: the matching files are present; the user keeps exactly one of them.
+            placements.append({"role": role, "file": " or ".join(matches), "folder": folder, "matches": matches})
+        else:
+            placements.append({"role": role, "file": " or ".join(declaration.names), "folder": folder})
+    return placements or [{"role": None, "file": "the required model files", "folder": None}]
 
 
 def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
@@ -698,8 +740,10 @@ def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
                     candidate_spec, candidate_roles, object_info, client.http_origin,
                 ):
                     alternatives.append(candidate.id)
+        attached = client.target.kind == "attached"
         raise ComfyModelMissing(model_id, mode, failures, sorted(alternatives),
-            {role: list(spec.model_roles[role].names) for role in failures if spec and role in spec.model_roles})
+            {role: list(spec.model_roles[role].names) for role in failures if spec and role in spec.model_roles},
+            placements=_attached_model_placements(client, spec, failures) if attached else None)
     plan = {"model": model_id, "mode": mode, "template": spec.template,
             "target": {"url": client.target.url, "kind": client.target.kind},
             "roles": resolved, "model_bytes": "unverified_declaration" if align == "trust" else "unverified_target_inventory"}

@@ -160,12 +160,27 @@ def pinned_entry(kind: str, mode: str, snapshot: settings.Snapshot) -> str | Non
     return check_pin(f"{kind}.{mode}", pin, known_entries())["entry"]
 
 
+def _readiness(resolved: Resolved, listed: list[dict[str, Any]]) -> dict[str, Any]:
+    """The ready and reason of the ``generate list`` row for the resolved entry; no readiness rule here."""
+    if resolved.entry is None:
+        return {"ready": False, "reason": "no entry is resolved for this slot"}
+    matches = [row for row in listed
+               if (row["id"], row["kind"], row["mode"]) == (resolved.entry, resolved.kind, resolved.mode)]
+    if not matches:
+        return {"ready": False, "reason": "generate list has no row for this entry in this slot"}
+    chosen = next((row for row in matches if row["ready"]), matches[0])
+    return {"ready": chosen["ready"], "reason": chosen["reason"]}
+
+
 def listing(client: Any = None, registry: Any = None) -> dict[str, Any]:
-    """Every slot with its resolved entry, where it came from, the others, and how to edit it."""
+    """Every slot with its resolved entry, where it came from, the others, its readiness, and how to edit it."""
+    from astrid.core.generation import listing as generation_listing
+
     snapshot = settings.read(client)
     candidates = pack_candidates(registry)
     entries = known_entries(registry)
     pins = snapshot.content.get("defaults", {})
+    listed = generation_listing.generation_rows()
     rows = []
     for kind, mode in slots(candidates, pins):
         resolved = resolve(kind, mode, pins=pins, candidates=candidates, entries=entries,
@@ -173,9 +188,14 @@ def listing(client: Any = None, registry: Any = None) -> dict[str, Any]:
         row = resolved.as_dict()
         if resolved.source == "user pin":
             row["origin"] = snapshot.label
+        row.update(_readiness(resolved, listed))
         rows.append(row)
+    try:
+        placement = generation_listing.placement_block(generation_listing.target_selection(client))
+    except (OSError, ValueError) as exc:  # a broken saved target must not hide the slots
+        placement = {"resolved": None, "source": "error", "reason": str(exc)}
     return {"settings": {"source": snapshot.source, "version": snapshot.version, "label": snapshot.label},
-            "edit": "astrid generate settings checkout --file <path>", "slots": rows}
+            "edit": "astrid generate settings checkout --file <path>", "slots": rows, "placement": placement}
 
 
 def set_default(kind: str, mode: str, entry: str, *, pack: str | None = None, client: Any = None,

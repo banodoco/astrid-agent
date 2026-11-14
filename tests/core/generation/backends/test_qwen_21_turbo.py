@@ -120,7 +120,8 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
             assert 'image_ref' in selected['entry']['accepted_inputs']
         else:
             assert selected['entry']['approval']['status'] == 'approved'
-        assert requests == ['/object_info', '/object_info', '/system_stats', '/object_info']
+        # P4.6: the attached missing-model path asks the server for its model folders
+        assert requests == ['/object_info', '/object_info', '/internal/folder_paths', '/system_stats', '/object_info']
     finally:
         server.shutdown(); server.server_close(); thread.join()
 

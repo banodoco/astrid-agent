@@ -28,6 +28,17 @@ def selected_project(
     return None, "missing"
 
 
+FIRST_PROJECT_NAME = "My first project"
+FIRST_PROJECT_SLUG = "my-first-project"
+
+
+def format_first_project_notice(*, created: bool) -> str:
+    """One-line notice printed when generation creates or selects the starter project."""
+
+    verb = "Created and selected" if created else "Selected"
+    return f'{verb} project "{FIRST_PROJECT_NAME}" for this generation.'
+
+
 def format_project_required_guidance(*, operation: str) -> str:
     """Return stable recovery text for an unaddressed runtime command."""
 
@@ -37,4 +48,10 @@ def format_project_required_guidance(*, operation: str) -> str:
     )
 
 
-__all__ = ["format_project_required_guidance", "selected_project"]
+__all__ = [
+    "FIRST_PROJECT_NAME",
+    "FIRST_PROJECT_SLUG",
+    "format_first_project_notice",
+    "format_project_required_guidance",
+    "selected_project",
+]
