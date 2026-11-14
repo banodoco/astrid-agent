@@ -125,8 +125,8 @@ class _TargetFiles:
                             verification.remember(before, digest)
                     if hash_bytes and verification is not None:
                         after = self._regular(fd)
-                        if ((before.st_size, before.st_mtime_ns, before.st_ino, before.st_ctime_ns)
-                                != (after.st_size, after.st_mtime_ns, after.st_ino, after.st_ctime_ns)):
+                        if ((before.st_dev, before.st_size, before.st_mtime_ns, before.st_ino, before.st_ctime_ns)
+                                != (after.st_dev, after.st_size, after.st_mtime_ns, after.st_ino, after.st_ctime_ns)):
                             raise UnsafePathError("target changed during inspection")
                     _check(deadline)
                     if check is not None:
@@ -180,13 +180,13 @@ class _TargetFiles:
         _check(deadline)
         return value
 
-    def write_json_atomic(self, path, value, *, deadline):
+    def write_json_atomic(self, path, value, *, deadline, ensure_ascii=False):
         parts = self._relative(path)
         if not isinstance(value, Mapping):
             raise RecipeValidationError("target JSON must be an object")
         try:
             data = json.dumps(dict(value), sort_keys=True, separators=(',', ':'),
-                              ensure_ascii=False, allow_nan=False).encode('utf-8')
+                              ensure_ascii=ensure_ascii, allow_nan=False).encode('utf-8')
         except (TypeError, ValueError, UnicodeError, RecursionError):
             raise RecipeValidationError("invalid target JSON") from None
         if len(data) > _JSON_LIMIT:

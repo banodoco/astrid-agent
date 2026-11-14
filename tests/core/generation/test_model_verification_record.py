@@ -10,7 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.core.generation import _engine_target_files as target
-from astrid.core.generation.engine_contracts import IntegrityError, UnsafePathError
+from astrid.core.generation.engine_contracts import (
+    IntegrityError,
+    RecipeValidationError,
+    UnsafePathError,
+)
 from astrid.core.generation.managed_preparation import ManagedEnginePreparation
 from tests.core.generation import test_managed_preparation
 
@@ -27,21 +31,26 @@ def preparation(root):
 
 @pytest.fixture
 def model(tmp_path, monkeypatch):
+    return make_model(tmp_path, monkeypatch)
+
+
+def make_model(tmp_path, monkeypatch, name='weight.bin'):
     root = tmp_path / 'engine'
     (root / '.astrid-engine').mkdir(parents=True)
     models = tmp_path / 'models'
     models.mkdir()
-    path = models / 'weight.bin'
+    path = models / name
     path.write_bytes(b'weights')
     row = {'name': path.name, 'subdir': '', 'size': path.stat().st_size,
            'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
     manifest = {'models_root': str(models), 'models': [row]}
     reads = []
     original = os.read
-    original_stat = os.fstat
+    original_stat, original_path_stat = os.fstat, os.stat
 
     def read(fd, size):
-        if original_stat(fd).st_ino == path.stat().st_ino:
+        info, current = original_stat(fd), original_path_stat(path)
+        if (info.st_dev, info.st_ino) == (current.st_dev, current.st_ino):
             reads.append(fd)
         return original(fd, size)
 
@@ -70,27 +79,47 @@ def test_second_preparation_reads_no_model_bytes(fetch_volume, monkeypatch):
     c = fetch_volume
     need = c.models / 'checkpoints/need.bin'
     c.prep._native = lambda *a, **kw: need.write_bytes(b'need-more')
-    aligned = c.prep._verify_alignment
+    from astrid.core.generation import engine_runner
 
-    def verify(*args):
-        c.prep._verify_models({'models_root': str(c.models), 'models': c.rows})
-        aligned(*args)
+    # Restore the production method hidden by the storage-only fixture's sentinel.
+    del c.prep._verify_alignment
+    original_runner = engine_runner._Runner
 
-    c.prep._verify_alignment = verify
+    class StartupReached(Exception):
+        pass
+
+    def stop_startup(**kwargs):
+        raise StartupReached
+
+    def runner_for_alignment(plan, *args, **kwargs):
+        runner = original_runner(plan, *args, **kwargs)
+        runner.plan = plan  # unrelated source/environment checks have no steps
+        runner.start = stop_startup
+        return runner
+
+    monkeypatch.setattr(engine_runner, '_Runner', runner_for_alignment)
     original = os.read
     reads = []
 
     def read(fd, size):
-        if os.fstat(fd).st_ino in {p.stat().st_ino for p in (c.have, need) if p.exists()}:
-            reads.append(fd)
+        info = os.fstat(fd)
+        for path in (c.have, need):
+            if path.exists() and (info.st_dev, info.st_ino) == (path.stat().st_dev, path.stat().st_ino):
+                reads.append(path.name)
         return original(fd, size)
 
     monkeypatch.setattr(target.os, 'read', read)
-    c.fetch()
-    assert reads
+    with pytest.raises(StartupReached):
+        c.fetch()
+    assert set(reads) == {c.have.name, need.name}
     reads.clear()
-    c.fetch()
+    with pytest.raises(StartupReached):
+        c.fetch()
     assert reads == []
+    c.have.write_bytes(b'evil')  # same size: preflight alone cannot reject this
+    with pytest.raises(IntegrityError, match='managed model bytes differ from the declared digest: have.bin'):
+        c.fetch()
+    assert c.have.name in reads
 
 
 @pytest.mark.parametrize('field', ['st_size', 'st_mtime_ns', 'st_ino', 'st_ctime_ns'])
@@ -248,3 +277,76 @@ def test_symlink_model_keeps_existing_integrity_refusal(model):
         model.verify()
     assert str(caught.value) == 'managed model bytes differ from the declared digest: weight.bin'
     assert model.reads == []
+
+
+
+def test_changed_device_rehashes_different_bytes_at_same_path(model, monkeypatch):
+    # Adapted from review2/correctness_probes.py's different-device probe.
+    warm(model)
+    old = model.path.stat()
+    model.path.write_bytes(b'changed')
+    current = model.path.stat()
+    real_stat, real_fstat = os.stat, os.fstat
+
+    def observed(info):
+        if (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino):
+            return info
+        values = {name: getattr(info, name) for name in
+                  ('st_mode', 'st_nlink', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+        values.update(st_dev=old.st_dev + 1, st_size=old.st_size, st_ino=old.st_ino,
+                      st_mtime_ns=old.st_mtime_ns, st_ctime_ns=old.st_ctime_ns)
+        return SimpleNamespace(**values)
+
+    monkeypatch.setattr(target.os, 'stat', lambda *a, **kw: observed(real_stat(*a, **kw)))
+    monkeypatch.setattr(target.os, 'fstat', lambda fd: observed(real_fstat(fd)))
+    # Under the identical observations, the uncached path sees changed bytes.
+    fact = target._TargetFiles(model.manifest['models_root']).file_fact(
+        str(model.path), hash_bytes=True, deadline=model.prep.deadline)
+    assert fact.sha256 != model.row['sha256']
+    model.reads.clear()
+    with pytest.raises(IntegrityError, match='managed model bytes differ from the declared digest: weight.bin'):
+        model.verify()
+    assert model.reads
+
+
+def test_v1_record_is_a_miss(model):
+    warm(model)
+    saved = record(model)
+    info = model.path.stat()
+    value = json.loads(saved.read_text())
+    value.update(schema='astrid.model-verification.v1',
+                 stat=[info.st_size, info.st_mtime_ns, info.st_ino, info.st_ctime_ns])
+    saved.write_text(json.dumps(value))
+    model.verify()
+    assert model.reads
+    assert json.loads(saved.read_text())['schema'] == 'astrid.model-verification.v2'
+
+
+def test_non_utf8_filename_hashes_then_reuses(tmp_path, monkeypatch):
+    if os.name != 'posix':
+        pytest.skip('requires POSIX surrogateescape filenames')
+    name = os.fsdecode(b'weight-\xff.bin')
+    try:
+        m = make_model(tmp_path, monkeypatch, name)
+    except (OSError, UnicodeError):
+        pytest.skip('filesystem does not support this filename')
+    assert os.fsencode(m.path.name) == b'weight-\xff.bin'
+    warm(m)
+    assert json.loads(record(m).read_text())['path'] == str(m.path.resolve())
+
+
+@pytest.mark.parametrize('error', [OSError('cache unavailable'), RuntimeError('unresolvable path'),
+    UnicodeEncodeError('utf-8', '\udcff', 0, 1, 'surrogate'), ValueError('invalid cache name'),
+    TypeError('invalid cache input'), RecipeValidationError('invalid cache root')])
+def test_constructor_failure_is_a_cache_miss(model, monkeypatch, error):
+    from astrid.core.generation import model_verification
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(model_verification, '_VerificationRecord', fail)
+    model.verify()
+    assert model.reads
+    model.reads.clear()
+    model.verify()
+    assert model.reads
