@@ -117,11 +117,13 @@ frame zero with explicit video edit permissions. On the source-backed route, the
 preparation probes the source video for an audio stream. The composer preserves
 source audio where it exists and uses generated audio for uncovered intervals;
 explicit audio preservation requires a source audio stream. Other protected
-intervals follow the normalized schedule. Video edits must use temporal
-full-frame masks and audio edits must target all channels. Regional spatial masks, channel-specific
-audio edits, continuation, audio-only timelines, and separate timeline audio or
-image anchors are rejected before execution. A helper or compile test does not
-establish public Runtime CPU acceptance or final managed publication.
+intervals follow the normalized schedule. For Character Swap, video edits accept
+full-frame masks or resolved image-mask assets; rectangle/polygon geometry
+masks and channel-specific audio edits are rejected. Continuation, audio-only
+timelines, and separate timeline audio or image anchors are also rejected on
+this route. Ordinary source-backed edit support is described below. A helper or
+compile test does not establish public Runtime CPU acceptance or final managed
+publication.
 
 ## Request shape
 
@@ -211,6 +213,78 @@ This adapter does not yet support video/audio references, timed keyframes, or
 source-free masks/preservation schedules. Those requests fail before GPU work.
 Its CPU bundle and transport tests do not establish live GPU acceptance or
 visual quality; target attestation and a live run remain separate gates.
+
+## Worked source-backed edits
+
+Edits can't regenerate audio; use video-only changes (the source audio is kept).
+Ordinary source-backed edits use the native `H3V2VGranularFractionalDenoise`
+spatial/temporal mask route. The LanPaint helper in `shared/compile.py` is not
+on the active edit dispatch. The composer rejects changed outside-mask pixels
+(`shared/compose.py:678–680`); CPU admission alone does not prove output equality.
+
+These complete requests use 3-second, 24 fps, 1024×576 clips with source audio.
+Supply an asset map whose keys exactly match the asset names below:
+`bike.mp4`, `bike-still.mp4`, and `frame-mask.png`, mapped to local files.
+The regional mask is black outside the editable white region.
+
+Temporal edit: keep frames 0–35, permit video changes in frames 36–71, and keep
+source audio throughout.
+
+```yaml
+# example: temporal-edit
+version: 1
+operation: edit
+source: {asset: bike.mp4, range: [0.0, 3.0]}
+output: {duration: 3.0}
+content: {prompt: "End state: the same bicycle and wall at dusk, long warm shadows, a street lamp flickers on. Quiet evening ambience."}
+changes:
+  video: [{during: [1.5, 3.0], area: {full_frame: true}, action: generate}]
+  audio: []
+overrides: {steps: 8, seed: 42}
+```
+
+First frame via still: keep the first four frames of `bike-still.mp4`, permit
+video changes from frame 4 onward, and keep its source audio. A still-clip edit
+keeps the first N frames of the supplied clip: a lossless clip keeps them exactly
+in the decoded source. A lossy still clip is not bit-identical to the original
+picture. i2v with an image reference supplies a style/subject reference, not an
+exact first frame; exact first-frame conditioning is not yet supported.
+
+Use exact frame-aligned boundaries in v2, such as `"1/6"` seconds for four
+frames at 24 fps. The decimal `0.1667` is not representable on the native clock.
+
+```yaml
+# example: first-frame-via-still
+version: 2
+prompt: "The bicycle begins to roll forward along the wall."
+duration: 3.0
+media:
+  - asset: bike-still.mp4
+    role: timeline
+    modality: video
+    at: {frame: 0}
+    range: [0.0, 3.0]
+    edit:
+      - {stream: video, during: ["1/6", 3.0], mask: {full_frame: true}, action: generate}
+settings: {steps: 8, seed: 42, turbo: {enabled: true}}
+```
+
+Regional edit: permit video changes in the supplied white `mask_asset` region
+for all 72 frames, with source audio kept; the composer rejects changed
+outside-mask pixels.
+
+```yaml
+# example: regional-mask
+version: 1
+operation: edit
+source: {asset: bike.mp4, range: [0.0, 3.0]}
+output: {duration: 3.0}
+content: {prompt: "The bicycle frame is deep cobalt blue. Everything else is unchanged."}
+changes:
+  video: [{during: [0.0, 3.0], area: {mask_asset: frame-mask.png}, action: generate}]
+  audio: []
+overrides: {steps: 8, seed: 42}
+```
 
 ## Mask semantics
 
