@@ -6811,79 +6811,102 @@ class GenericPackHost:
         self._claim_loop_lock = threading.Lock()
 
     @staticmethod
-    def _ensure_private_attempt_directory(base: Path, *, private_root: Path | None = None) -> None:
-        """Create/check private components without traversing symlink parents."""
-        private_root = private_root or base
+    def _check_attempt_directory(path: Path, metadata: os.stat_result, *, private: bool) -> None:
+        reason = None
+        if not stat.S_ISDIR(metadata.st_mode):
+            reason = "not a non-symlink directory"
+        elif sys.platform == "win32":
+            if private and not platform.is_owner_only(path, directory=True):
+                reason = "not owner-only"
+        elif private:
+            if metadata.st_uid != os.getuid():
+                reason = f"owner uid {metadata.st_uid}, expected {os.getuid()}"
+            elif stat.S_IMODE(metadata.st_mode) != 0o700:
+                reason = f"mode {stat.S_IMODE(metadata.st_mode):04o}, expected 0700"
+        elif metadata.st_uid not in {0, os.getuid()}:
+            reason = f"ancestor owner uid {metadata.st_uid}, expected root or {os.getuid()}"
+        elif metadata.st_mode & 0o022 and not metadata.st_mode & stat.S_ISVTX:
+            reason = "group/world-writable ancestor without sticky bit"
+        if reason:
+            raise HostError(f"private default attempt base refused at {path}: {reason}; "
+                            "repair ownership/permissions or remove the unsafe path before restarting")
+
+    @staticmethod
+    @contextmanager
+    def _open_attempt_directory(base: Path, *, private_root: Path | None = None, create: bool = False):
+        """Validate the descriptors actually traversed; keep the final one open."""
         current = Path(base.anchor)
         descriptor = None
         try:
+            if not base.is_absolute() or ".." in base.parts:
+                raise HostError(f"private default attempt base refused at {base}: expected an absolute path "
+                                "without '..'; repair the configured path before restarting")
             if sys.platform != "win32":
                 flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
                 descriptor = os.open(current, flags)
+                GenericPackHost._check_attempt_directory(current, os.fstat(descriptor), private=False)
             for part in base.parts[1:]:
                 current /= part
-                private = current == private_root or private_root in current.parents
+                private = private_root is not None and (current == private_root or private_root in current.parents)
                 created = False
-                try:
-                    if sys.platform == "win32":
-                        if not current.exists() and not current.is_symlink():
-                            platform.private_directory(current)
+                if create:
+                    try:
+                        if sys.platform == "win32":
+                            if not current.exists() and not current.is_symlink():
+                                platform.private_directory(current)
+                                created = True
+                        else:
+                            os.mkdir(part, mode=0o700, dir_fd=descriptor)
                             created = True
-                    else:
-                        os.mkdir(part, mode=0o700, dir_fd=descriptor)
-                        created = True
-                except FileExistsError:
-                    pass
+                    except FileExistsError:
+                        pass
                 metadata = current.lstat()
-                if (not stat.S_ISDIR(metadata.st_mode)
-                        or ((private or created) and (
-                            (sys.platform == "win32" and not platform.is_owner_only(current, directory=True))
-                            or (sys.platform != "win32" and (metadata.st_uid != os.getuid()
-                                or stat.S_IMODE(metadata.st_mode) != 0o700))))):
-                    raise HostError(f"private default attempt base has unsafe ownership, mode or type: {current}")
+                GenericPackHost._check_attempt_directory(current, metadata, private=private or created)
                 if descriptor is not None:
                     child = os.open(part, flags, dir_fd=descriptor)
                     os.close(descriptor)
                     descriptor = child
+                    opened = os.fstat(descriptor)
+                    GenericPackHost._check_attempt_directory(current, opened, private=private or created)
+                    if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                        raise HostError(f"private default attempt base refused at {current}: swapped identity; "
+                                        "remove the replacement path and restart")
+                    metadata = opened
+            yield descriptor, metadata
+        except OSError as exc:
+            raise HostError(f"private default attempt base refused at {current}: {exc}; "
+                            "repair or remove this path before restarting") from exc
         finally:
             if descriptor is not None:
                 os.close(descriptor)
 
+    @staticmethod
+    def _ensure_private_attempt_directory(base: Path, *, private_root: Path | None = None) -> tuple[int, int]:
+        with GenericPackHost._open_attempt_directory(base, private_root=private_root or base, create=True) as (_, metadata):
+            return metadata.st_dev, metadata.st_ino
+
     def _default_attempt_base(self) -> Path:
-        """Reuse this executor's private spool, tolerating squatted temp names."""
-        from astrid.sdk.storage_root import resolve_runtime_data_root
+        """Reuse private state; an unsafe spool is a host-wide startup refusal."""
+        from astrid.sdk.storage_root import resolve_runtime_data_root, resolve_xdg_runtime_root
 
         digest = hashlib.sha256(self.executor_id.encode("utf-8")).hexdigest()[:16]
+        try:
+            private = resolve_runtime_data_root(fallback=False)
+            if private is None:
+                private = resolve_xdg_runtime_root() or Path.home() / ".cache" / "astrid"
+            base = private / "attempts" / digest
+            identity = self._ensure_private_attempt_directory(base, private_root=private)
+        except (OSError, ValueError) as exc:
+            raise HostError(f"private default attempt base refused: {exc}; "
+                            "repair the configured private state path before restarting") from exc
+        # No filesystem or config I/O under the process lock: only identity custody.
         with self._process_lock:
-            cached = getattr(self, "_fallback_attempt_base", None)
-            reason = ""
-            if cached is None:
-                try:
-                    private = resolve_runtime_data_root(fallback=False)
-                    if private is None:
-                        runtime = os.environ.get("XDG_RUNTIME_DIR", "").strip()
-                        private = Path(runtime).expanduser() if runtime else Path.home() / ".cache" / "astrid"
-                    if not private.is_absolute():
-                        raise HostError(f"private attempt root must be absolute: {private}")
-                    base = private / "attempts" / digest
-                    self._ensure_private_attempt_directory(base, private_root=private)
-                    return base
-                except (OSError, ValueError, HostError) as exc:
-                    reason = str(exc)
-            base = cached or Path(tempfile.gettempdir()) / f"{ATTEMPT_ROOT_PREFIX}{digest}"
-            try:
-                self._ensure_private_attempt_directory(base)
-            except (OSError, HostError) as exc:
-                reason = f"{reason}; {exc}" if reason else str(exc)
-                base = Path(tempfile.mkdtemp(prefix=ATTEMPT_ROOT_PREFIX))
-                if sys.platform == "win32":
-                    platform.owner_only(base)
-                self._ensure_private_attempt_directory(base)
-            self._fallback_attempt_base = base
-            if reason:
-                print(f"generic host default attempt base fallback: {reason}; using {base}",
-                      file=sys.stderr, flush=True)
-            return base
+            previous = getattr(self, "_private_attempt_base_identity", None)
+            if previous is not None and previous[0] == base and previous[1] != identity:
+                raise HostError(f"private default attempt base refused at {base}: swapped identity; "
+                                "remove the replacement path and restart")
+            self._private_attempt_base_identity = (base, identity)
+        return base
 
     def _allocate_attempt_root(self, task_id: str, attempt_id: str) -> Path:
         """Allocate the filesystem namespace for one claimed attempt."""
@@ -6900,18 +6923,28 @@ class GenericPackHost:
                 root.mkdir()
                 root.chmod(0o700)
             return root.resolve()
-        base = self._default_attempt_base() if self.attempt_root is None else None
-        if base is not None and sys.platform == "win32":
-            root = base / f"{ATTEMPT_ROOT_PREFIX}{secrets_module.token_hex(16)}"
-            platform.private_directory(root)
-            return root.resolve()
-        root = self.attempt_root or Path(tempfile.mkdtemp(
-            prefix=ATTEMPT_ROOT_PREFIX, dir=base)).resolve()
+        if self.attempt_root is None:
+            base = self._default_attempt_base()
+            expected = self._private_attempt_base_identity[1]
+            with self._open_attempt_directory(base, private_root=base.parent.parent) as (descriptor, metadata):
+                if (metadata.st_dev, metadata.st_ino) != expected:
+                    raise HostError(f"private default attempt base refused at {base}: swapped identity; "
+                                    "remove the replacement path and restart")
+                name = f"{ATTEMPT_ROOT_PREFIX}{secrets_module.token_hex(16)}"
+                root = base / name
+                if descriptor is None:
+                    platform.private_directory(root)
+                else:
+                    os.mkdir(name, mode=0o700, dir_fd=descriptor)
+                after = base.lstat()
+                if (after.st_dev, after.st_ino) != expected:
+                    raise HostError(f"private default attempt base refused at {base}: swapped identity; "
+                                    "remove the replacement path and restart")
+                return root
+        root = self.attempt_root
         root.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             platform.owner_only(root)
-        elif self.attempt_root is None:
-            root.chmod(0o700)
         return root
 
     @property
@@ -14185,9 +14218,18 @@ class GenericPackHost:
         base = self.attempt_base
         if self.attempt_root is None and base is None:
             base = self._default_attempt_base()
-            # Older hosts spooled directly in system temp. Only a recorded
-            # executor match admits a flat legacy root to identity recovery.
-            for legacy in Path(tempfile.gettempdir()).glob(ATTEMPT_ROOT_PREFIX + "*"):
+            # Older hosts used both flat temp roots and nested temp spools.
+            temporary = Path(tempfile.gettempdir())
+            try:
+                with self._open_attempt_directory(temporary):
+                    pass
+            except HostError as exc:
+                print(f"generic host recovery skipped unsafe legacy root {temporary}: {exc}",
+                      file=sys.stderr, flush=True)
+                legacy_roots = []
+            else:
+                legacy_roots = list(temporary.glob(ATTEMPT_ROOT_PREFIX + "*"))
+            for legacy in legacy_roots:
                 if legacy == base:
                     continue
                 try:
@@ -14200,6 +14242,10 @@ class GenericPackHost:
                     print(f"generic host recovery skipped unsafe legacy root {legacy}: {exc}",
                           file=sys.stderr, flush=True)
                     continue
+                # Appending children retains the same admission check before
+                # either enumeration or opening any terminal marker.
+                if legacy.parent == temporary:
+                    legacy_roots.extend(legacy.glob(ATTEMPT_ROOT_PREFIX + "*"))
                 for name in ("fail-request.json", "cancel-request.json"):
                     marker = legacy / name
                     try:

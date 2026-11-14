@@ -33,6 +33,18 @@ def _safe_absolute(value: str | Path, *, base: Path) -> Path:
     return path
 
 
+def resolve_xdg_runtime_root() -> Path | None:
+    """Ignore malformed XDG sources before any normalization can hide '..'."""
+    raw = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute() or ".." in path.parts:
+        print(f"Astrid ignored XDG_RUNTIME_DIR {raw!r}: expected an absolute path without '..'", file=sys.stderr)
+        return None
+    return path
+
+
 def _persistent_setup_selection_path() -> Path:
     """Return the existing Astrid skills/setup selection document path."""
 

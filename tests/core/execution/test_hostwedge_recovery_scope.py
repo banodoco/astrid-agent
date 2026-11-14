@@ -34,12 +34,6 @@ def private_home(tmp_path, monkeypatch):
     monkeypatch.setattr(storage_root, "CONFIG_PATH", home / "no-install-config.json")
 
 
-def _unavailable_private_root(monkeypatch):
-    def unavailable(**kwargs):
-        raise OSError("private storage unavailable")
-    monkeypatch.setattr(storage_root, "resolve_runtime_data_root", unavailable)
-
-
 def _foreign_lstat(monkeypatch, target):
     original = Path.lstat
 
@@ -81,14 +75,11 @@ def test_private_attempt_location_precedence(tmp_path, monkeypatch, selection):
 
 
 @pytest.mark.parametrize("damage", ["owner", "mode", "symlink"])
-def test_squatted_tmp_base_still_runs_generation(host_case, tmp_path, monkeypatch, capsys, damage):
+def test_squatted_private_base_refuses_startup(host_case, tmp_path, monkeypatch, damage):
+    # Product change: private-state failures now refuse startup; no temp fallback.
     case = host_case
     case.host.attempt_root = None
-    _unavailable_private_root(monkeypatch)
-    monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
-    digest = hashlib.sha256(case.host.executor_id.encode()).hexdigest()[:16]
-    squat = tmp_path / f"astrid-attempt-{digest}"
-    squat.mkdir(mode=0o700)
+    squat = case.host._default_attempt_base()
     if damage == "owner":
         _foreign_lstat(monkeypatch, squat)
     elif damage == "mode":
@@ -99,20 +90,21 @@ def test_squatted_tmp_base_still_runs_generation(host_case, tmp_path, monkeypatc
         squat.symlink_to(target, target_is_directory=True)
     _success_boundary(case, monkeypatch)
     monkeypatch.setattr(case.host, "claim_once", lambda: case.host.run_task(case.task, lease_token="lease-result"))
-    _bounded_run(case.host, lambda: case.host.run(once=True))
-    assert len(case.runtime.settlements) == 1
-    base = case.host._default_attempt_base()
-    assert base != squat and base.parent == tmp_path
-    assert case.host._allocate_attempt_root("next", "next").parent == base
-    assert capsys.readouterr().err.count("generic host default attempt base fallback") == 1
+    with pytest.raises(HostError) as error:
+        _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert str(squat) in str(error.value)
+    assert "remove" in str(error.value).lower() or "repair" in str(error.value).lower()
+    assert not case.runtime.settlements
+    with pytest.raises(HostError):
+        case.host._allocate_attempt_root("next", "next")
+    assert not hasattr(case.host, "_fallback_attempt_base")
 
 
 @pytest.mark.parametrize("damage", ["owner", "mode", "symlink"])
-def test_unsafe_private_ancestor_falls_back_without_following(tmp_path, monkeypatch, capsys, damage):
+def test_unsafe_private_ancestor_refuses_without_following(tmp_path, monkeypatch, damage):
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(private))
-    monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
     if damage == "owner":
         _foreign_lstat(monkeypatch, private)
     elif damage == "mode":
@@ -122,10 +114,10 @@ def test_unsafe_private_ancestor_falls_back_without_following(tmp_path, monkeypa
         private.rename(target)
         private.symlink_to(target, target_is_directory=True)
     host = GenericPackHost(pack_roots=[])
-    root = host._allocate_attempt_root("task", "attempt")
-    assert root.parent.parent == tmp_path
+    with pytest.raises(HostError, match=str(private)):
+        host._allocate_attempt_root("task", "attempt")
     assert not (private / "attempts").exists()
-    assert capsys.readouterr().err.count("generic host default attempt base fallback") == 1
+    assert not hasattr(host, "_fallback_attempt_base")
 
 
 def test_private_spool_is_outside_tmp_reclaim(tmp_path, monkeypatch):
@@ -213,8 +205,7 @@ def test_foreign_stale_request_does_not_block_generation(host_case, tmp_path, mo
     assert capsys.readouterr().err.count("generic host recovery skipped") == 1
 
 
-def test_default_attempt_namespaces_are_isolated_and_reclaimable(tmp_path, monkeypatch):
-    _unavailable_private_root(monkeypatch)
+def test_default_attempt_namespaces_are_isolated_and_retained(tmp_path, monkeypatch):
     monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
     first = GenericPackHost(pack_roots=[])
     second = GenericPackHost(pack_roots=[], executor_id="second-worker")
@@ -223,7 +214,7 @@ def test_default_attempt_namespaces_are_isolated_and_reclaimable(tmp_path, monke
     assert left.parent != right.parent
     assert left.name.startswith("astrid-attempt-")
     assert right.name.startswith("astrid-attempt-")
-    assert left.parent.parent == right.parent.parent == tmp_path
+    assert left.parent.parent == right.parent.parent == Path.home() / ".cache" / "astrid" / "attempts"
     (left / "fail-request.json").write_text("foreign, unreadable evidence")
     reads = []
 
@@ -242,8 +233,8 @@ def test_default_attempt_namespaces_are_isolated_and_reclaimable(tmp_path, monke
     os.utime(left, (then, then))
     report = reclaim(tmp_path / "data", temporary_root=tmp_path, cache_root=tmp_path / "cache")
     attempts = next(row for row in report["roots"] if row["name"] == "attempt-roots")
-    assert attempts["expired_count"] == 1
-    assert not left.exists() and right.exists()
+    assert attempts["expired_count"] == 0
+    assert left.exists() and right.exists()
 
 
 @pytest.mark.parametrize("foreign", ["executor", "epoch"])
@@ -455,12 +446,12 @@ def test_default_base_refuses_unsafe_directory(tmp_path, monkeypatch, capsys, da
         _foreign_lstat(monkeypatch, base)
     with pytest.raises(HostError, match="private.*attempt base"):
         host._ensure_private_attempt_directory(base)
-    if use == "allocate":
-        assert host._allocate_attempt_root("next", "next").parent != base
-    else:
-        host._recover_terminal_requests()
-        assert host._default_attempt_base() != base
-    assert capsys.readouterr().err.count("generic host default attempt base fallback") == 1
+    with pytest.raises(HostError, match=str(base)):
+        if use == "allocate":
+            host._allocate_attempt_root("next", "next")
+        else:
+            host._recover_terminal_requests()
+    assert not hasattr(host, "_fallback_attempt_base")
 
 
 def test_legacy_flat_own_request_survives_restart(settlement_case, tmp_path, monkeypatch):
@@ -476,11 +467,13 @@ def test_legacy_flat_own_request_survives_restart(settlement_case, tmp_path, mon
 
 
 def test_reused_default_base_ages_children_individually(tmp_path, monkeypatch):
-    _unavailable_private_root(monkeypatch)
     monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
     host = GenericPackHost(pack_roots=[], executor_id="reused-worker")
-    stale = host._allocate_attempt_root("old", "old")
-    live = host._allocate_attempt_root("live", "live")
+    legacy_base = tmp_path / "astrid-attempt-old-base"
+    stale = legacy_base / "astrid-attempt-old"
+    live = legacy_base / "astrid-attempt-live"
+    stale.mkdir(parents=True, mode=0o700)
+    live.mkdir(mode=0o700)
     assert stale.parent == live.parent
     then = time.time() - 3 * 86400
     os.utime(stale, (then, then))
@@ -489,7 +482,9 @@ def test_reused_default_base_ages_children_individually(tmp_path, monkeypatch):
     attempts = next(row for row in report["roots"] if row["name"] == "attempt-roots")
     assert attempts["expired_count"] == 1
     assert not stale.exists() and live.is_dir() and live.parent.is_dir()
-    assert host._allocate_attempt_root("new", "new").parent == live.parent
+    fresh = live.parent / "astrid-attempt-new"
+    fresh.mkdir(mode=0o700)
+    assert fresh.parent == live.parent
 
 def test_corrupt_identity_and_foreign_request_allow_new_generation(host_case, tmp_path, monkeypatch, capsys):
     case = host_case
@@ -621,10 +616,13 @@ def test_missing_runtime_epoch_remains_host_wide_error(settlement_case, tmp_path
 
 
 @pytest.mark.parametrize("damage", ["owner", "group-writable", "world-writable", "symlink", "file"])
-def test_unsafe_legacy_root_never_opens_markers(settlement_case, tmp_path, monkeypatch, capsys, damage):
+@pytest.mark.parametrize("nested", [False, True])
+def test_unsafe_legacy_root_never_opens_markers(settlement_case, tmp_path, monkeypatch, capsys, damage, nested):
     case = settlement_case
     root, _ = _saved_failure(case, tmp_path)
-    legacy = tmp_path / "astrid-attempt-unsafe-legacy"
+    parent = tmp_path / "astrid-attempt-old-base" if nested else tmp_path
+    parent.mkdir(mode=0o700, exist_ok=True)
+    legacy = parent / "astrid-attempt-unsafe-legacy"
     root.rename(legacy)
     if damage == "owner":
         _foreign_lstat(monkeypatch, legacy)
@@ -665,3 +663,107 @@ def test_unsafe_legacy_root_never_opens_markers(settlement_case, tmp_path, monke
     diagnostic = capsys.readouterr().err
     assert diagnostic.count("generic host recovery skipped unsafe legacy root") == 1
     assert str(legacy) in diagnostic
+
+
+@pytest.mark.parametrize("swap", ["symlink", "directory"])
+def test_private_base_swapped_between_validation_and_allocation_refuses(tmp_path, monkeypatch, swap):
+    host = GenericPackHost(pack_roots=[])
+    base = host._default_attempt_base()
+    original = host._default_attempt_base
+    target = tmp_path / "swap-target"
+    target.mkdir(mode=0o700)
+
+    def swapped():
+        validated = original()
+        base.rename(base.with_name(base.name + "-old"))
+        if swap == "symlink":
+            base.symlink_to(target, target_is_directory=True)
+        else:
+            base.mkdir(mode=0o700)
+        return validated
+
+    monkeypatch.setattr(host, "_default_attempt_base", swapped)
+    with pytest.raises(HostError, match=str(base)) as error:
+        host._allocate_attempt_root("task", "attempt")
+    assert "remove" in str(error.value).lower() or "repair" in str(error.value).lower()
+    assert list(target.iterdir()) == []
+    if swap == "directory":
+        assert list(base.iterdir()) == []
+
+
+@pytest.mark.parametrize("mode,accepted", [(0o770, False), (0o1777, True)])
+def test_private_base_checks_ancestors_above_state_root(tmp_path, monkeypatch, mode, accepted):
+    ancestor = tmp_path / "ancestor"
+    ancestor.mkdir(mode=mode)
+    ancestor.chmod(mode)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(ancestor / "private"))
+    host = GenericPackHost(pack_roots=[])
+    if accepted:
+        # Root-owned sticky shared ancestors are accepted (the CI uid is root).
+        assert host._allocate_attempt_root("task", "attempt").is_dir()
+    else:
+        with pytest.raises(HostError, match=str(ancestor)):
+            host._allocate_attempt_root("task", "attempt")
+        assert not (ancestor / "private").exists()
+
+
+@pytest.mark.parametrize("value", ["relative-runtime", "runtime/../escaped"])
+def test_invalid_xdg_runtime_source_is_ignored(tmp_path, monkeypatch, capsys, value):
+    raw = value if value.startswith("relative") else str(tmp_path / value)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", raw)
+    host = GenericPackHost(pack_roots=[])
+    root = host._allocate_attempt_root("task", "attempt")
+    assert root.parent.parent.parent == Path.home() / ".cache" / "astrid"
+    diagnostic = capsys.readouterr().err
+    assert "XDG_RUNTIME_DIR" in diagnostic and raw in diagnostic
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+def test_nested_legacy_request_survives_restart_only_for_own_executor(settlement_case, tmp_path, monkeypatch, foreign):
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    legacy_base = tmp_path / "astrid-attempt-previous-incarnation"
+    legacy_base.mkdir(mode=0o700)
+    nested = legacy_base / "astrid-attempt-previous-task"
+    root.rename(nested)
+    monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
+    restarted = GenericPackHost(pack_roots=[], client=case.host.client,
+                                executor_id="other" if foreign else case.host.executor_id)
+    _bounded_run(restarted, restarted._recover_terminal_requests)
+    assert len(case.failures) == (0 if foreign else 1)
+    assert case.service.task(case.task_id)["task"]["status"] == ("running" if foreign else "failed")
+
+
+def test_private_base_validates_opened_descriptor(tmp_path, monkeypatch):
+    host = GenericPackHost(pack_roots=[])
+    base = host._default_attempt_base()
+    original = os.fstat
+    identity = base.stat()
+
+    def foreign_descriptor(fd):
+        metadata = original(fd)
+        if (metadata.st_dev, metadata.st_ino) == (identity.st_dev, identity.st_ino):
+            fields = list(metadata)
+            fields[4] = os.getuid() + 1
+            return os.stat_result(fields)
+        return metadata
+
+    monkeypatch.setattr(os, "fstat", foreign_descriptor)
+    with pytest.raises(HostError, match=str(base)):
+        host._allocate_attempt_root("task", "attempt")
+
+
+def test_unsafe_temp_parent_prevents_legacy_scan(settlement_case, tmp_path, monkeypatch, capsys):
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    temporary = tmp_path / "unsafe-temp"
+    temporary.mkdir(mode=0o770)
+    temporary.chmod(0o770)
+    root.rename(temporary / "astrid-attempt-legacy")
+    monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(temporary))
+    restarted = GenericPackHost(pack_roots=[], client=case.host.client, executor_id=case.host.executor_id)
+    _bounded_run(restarted, restarted._recover_terminal_requests)
+    assert not case.failures and not case.cancels and not case.writes
+    diagnostic = capsys.readouterr().err
+    assert diagnostic.count("generic host recovery skipped unsafe legacy root") == 1
+    assert str(temporary) in diagnostic
