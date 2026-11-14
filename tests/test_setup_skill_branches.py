@@ -385,3 +385,74 @@ def test_runpod_setup_from_pristine_settings_preserves_choices_and_quotes_withou
     assert calls == ["runpod.setup", "runpod.status"]
     assert c.creates == 0 and not c.owner.path.exists()
     capsys.readouterr()
+
+
+def _generation_setup_section() -> str:
+    text = _GENERATION.read_text()
+    start = text.index("## Set up my generation")
+    return text[start:text.index("\n## ", start + 1)]
+
+
+def _offered_generate_argv(section: str, tokens: dict[str, str]) -> list[list[str]]:
+    """Every inline `python3 -m astrid generate ...` command the section offers, as argv after `generate`."""
+    offered = []
+    for command in re.findall(r"`(python3 -m astrid generate [^`]+)`", section):
+        offered.append([tokens.get(arg, arg) for arg in shlex.split(command)[4:]])
+    return offered
+
+
+def test_generation_defaults_step_offers_four_answers_each_with_one_undo():
+    section = _generation_setup_section()
+    step = section[section.index("4. **"):section.index("5. **")]
+    assert "One question per default slot" in step
+    for label in ("**Keep Astrid's**", "**Use one of theirs**", "**Another shipped entry**",
+                  "**A new default from their workflow**"):
+        assert label in step, label
+    assert step.count("Undo:") == 4
+
+
+def test_generation_defaults_commands_parse_through_real_cli_and_never_queue_a_run(tmp_path):
+    from astrid.core.generation import cli as generation_cli
+
+    workflow = tmp_path / "workflow.json"
+    tokens = {"KIND": "image", "MODE": "t2i", "ENTRY": "z-image", "NAME": "lighthouse",
+              "/absolute/path/workflow.json": str(workflow)}
+    offered = _offered_generate_argv(_generation_setup_section(), tokens)
+    parser = generation_cli._parser()
+    relevant = [argv for argv in offered if argv[0] in {"defaults", "workflow", "list"}]
+    parsed = [parser.parse_args(argv) for argv in relevant]
+    workflows = [argv for argv in relevant if argv[0] == "workflow"]
+    assert any(argv[0] == "defaults" and "set" in argv for argv in relevant)
+    assert any(argv[0] == "defaults" and "unset" in argv for argv in relevant)
+    assert workflows and len(parsed) == len(relevant)
+    for argv in workflows:
+        assert "--as-entry" in argv
+        assert "--dry-run" in argv or "--no-run" in argv, argv
+    assert any("--dry-run" in argv for argv in workflows)
+    assert any("--no-run" in argv for argv in workflows)
+
+
+def test_generation_defaults_preview_and_save_run_against_fakes(tmp_path, monkeypatch, capsys):
+    from astrid.core.generation import cli as generation_cli
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import load_bundle
+
+    workflow = tmp_path / "workflow.json"
+    workflow.write_text(json.dumps(load_bundle(workflow_from_ready("image/flux2_klein_4b_t2i")).materialize_ui()))
+    entries_dir = tmp_path / "entries"
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(entries_dir))
+    monkeypatch.setattr(generation_cli, "_open_client", lambda: pytest.fail("the setup step opened Runtime"))
+    monkeypatch.setattr(generation_cli, "_generate_facade", lambda: pytest.fail("the setup step ran a workflow"))
+    tokens = {"KIND": "image", "MODE": "t2i", "ENTRY": "z-image", "NAME": "lighthouse",
+              "/absolute/path/workflow.json": str(workflow)}
+    for argv in _offered_generate_argv(_generation_setup_section(), tokens):
+        if argv[0] != "workflow":
+            continue
+        assert generation_cli.main(argv) == 0
+        result = json.loads(capsys.readouterr().out)
+        if "--dry-run" in argv:
+            assert result["written"] is False and result["would_save_entry"] == "lighthouse"
+            assert not entries_dir.exists()
+        else:
+            assert result == {"saved": True, "ran": False, "entry": "lighthouse", "replaced": False}
+            assert (entries_dir / "lighthouse").is_dir()
