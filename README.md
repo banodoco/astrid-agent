@@ -21,6 +21,8 @@ Keep my existing work and credentials.
 Confirm that astrid.haus shows Connected, then help me begin at https://astrid.haus.
 ```
 
+Ask your agent: set up my generation with the astrid-setup skill.
+
 <!-- END GENERATED AGENT BANNER -->
 
 ### Set it up yourself
