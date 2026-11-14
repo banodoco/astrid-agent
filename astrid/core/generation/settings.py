@@ -324,23 +324,48 @@ def set_machine_policy(machine: str, policy: Mapping[str, Any], client: Any = No
                   legacy_path=legacy_path)
 
 
+ATTACHED_REFUSAL = "placement must be http://127.0.0.1:<port> or http://localhost:<port>"
+
+
+def _change_placement(client: Any, change: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+    """Apply ``change`` to the saved placement table; report the result and what it replaced."""
+    previous: dict[str, Any] = {}
+
+    def write(document: dict[str, Any]) -> None:
+        nonlocal previous
+        previous = copy.deepcopy(dict(document.get("placement") or {}))
+        document["placement"] = change(copy.deepcopy(previous))
+
+    snapshot = update(write, client)
+    return {"version": snapshot.version, "placement": snapshot.content["placement"], "previous": previous}
+
+
 def set_placement(url: str, client: Any = None) -> dict[str, Any]:
-    """Save one attached ComfyUI endpoint as the placement default; the URL must pass ``normalize_target``."""
+    """Save one attached ComfyUI endpoint as the placement default; the URL must pass ``normalize_target``.
+
+    The saved ``policy`` and ``device`` stay as they were (the validator accepts a device on an attached
+    placement). ``machine`` and ``engine`` name another place, so they do not carry over; ``previous``
+    keeps them.
+    """
     from astrid.core.generation import targets
 
     try:
         endpoint = targets.normalize_target({"endpoint": url}).endpoint
     except (targets.TargetConfigError, ValueError) as exc:
-        raise refuse(str(exc), key="placement.endpoint", code="generation_settings_invalid") from exc
-    snapshot = update(lambda document: document.__setitem__("placement", {"kind": "attached", "endpoint": endpoint}),
-                      client)
-    return {"version": snapshot.version, "placement": snapshot.content["placement"]}
+        raise refuse(ATTACHED_REFUSAL, key="placement.endpoint", code="generation_settings_invalid") from exc
+
+    def change(current: dict[str, Any]) -> dict[str, Any]:
+        current.pop("machine", None)
+        current.pop("engine", None)
+        return {**current, "kind": "attached", "endpoint": endpoint}
+
+    return _change_placement(client, change)
 
 
 def unset_placement(client: Any = None) -> dict[str, Any]:
-    """Remove the saved placement; the next resolution falls back to the built-in placement."""
-    snapshot = update(lambda document: document.__setitem__("placement", {}), client)
-    return {"version": snapshot.version, "placement": snapshot.content["placement"]}
+    """Remove only ``kind`` and ``endpoint``; ``policy`` and ``device`` stay, so nothing saved is lost."""
+    return _change_placement(client, lambda current: {k: v for k, v in current.items()
+                                                      if k not in ("kind", "endpoint")})
 
 
 __all__ = ["KEY", "Snapshot", "checkin", "checkout", "current_store", "empty_document", "machine_policy",

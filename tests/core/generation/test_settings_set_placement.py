@@ -63,8 +63,10 @@ def test_settings_unset_placement_undoes_it_in_one_command(run, generation_setti
 def test_settings_set_placement_refuses_what_normalize_target_refuses(url, run, monkeypatch, capsys,
                                                                     generation_settings_store):
     from astrid.core.generation.preflight import GenerationReadinessError
-    with pytest.raises(GenerationReadinessError, match="comfy_url must be http"):
+    with pytest.raises(GenerationReadinessError,
+                       match="placement must be http://127.0.0.1:<port> or http://localhost:<port>") as caught:
         cli.main(["settings", "set", "placement", url])
+    assert "comfy_url" not in str(caught.value)
     capsys.readouterr()
     assert "generation" not in generation_settings_store.documents
 
@@ -103,3 +105,56 @@ def test_saved_placement_resolves_for_workflow_dry_run_without_placement_flag(ru
     run(["workflow", str(workflow), "--dry-run"])
     assert seen["dry_run"] is True
     assert (seen["placement"].kind, seen["placement"].endpoint) == ("attached", "http://127.0.0.1:9123")
+
+
+def _seed(store, placement):
+    settings.update(lambda document: document.__setitem__("placement", placement))
+    assert store.documents["generation"][0]["placement"] == placement
+
+
+def test_set_and_unset_keep_a_saved_policy_and_report_previous(run, generation_settings_store):
+    policy = {"idle_timeout_s": 30.0, "gpu_types": ["RTX 4090"]}
+    _seed(generation_settings_store, {"kind": "attached", "endpoint": "http://127.0.0.1:18111", "policy": policy})
+
+    result = settings.set_placement("http://127.0.0.1:9123")
+    assert result["placement"] == {"kind": "attached", "endpoint": "http://127.0.0.1:9123", "policy": policy}
+    assert result["previous"] == {"kind": "attached", "endpoint": "http://127.0.0.1:18111", "policy": policy}
+
+    result = settings.unset_placement()
+    assert result["placement"] == {"policy": policy}
+    assert result["previous"] == {"kind": "attached", "endpoint": "http://127.0.0.1:9123", "policy": policy}
+    assert generation_settings_store.documents["generation"][0]["placement"] == {"policy": policy}
+
+
+def test_set_and_unset_keep_a_valid_device_with_the_policy(run, generation_settings_store):
+    policy = {"idle_timeout_s": 60.0}
+    _seed(generation_settings_store, {"kind": "local", "device": 1, "policy": policy})
+
+    result = settings.set_placement("http://127.0.0.1:9123")
+    assert result["placement"] == {"kind": "attached", "endpoint": "http://127.0.0.1:9123", "device": 1,
+                                    "policy": policy}
+    assert result["previous"] == {"kind": "local", "device": 1, "policy": policy}
+
+    result = settings.unset_placement()
+    assert result["placement"] == {"device": 1, "policy": policy}
+
+
+def test_cli_set_prints_one_line_naming_previous_and_the_restore_command(run, generation_settings_store):
+    _seed(generation_settings_store, {"kind": "attached", "endpoint": "http://127.0.0.1:18111"})
+    line = run(["settings", "set", "placement", "http://127.0.0.1:9123"]).strip()
+    assert line.count("\n") == 0
+    assert '"endpoint": "http://127.0.0.1:18111"' in line
+    assert "restore: astrid generate settings set placement http://127.0.0.1:18111" in line
+
+
+def test_cli_set_with_no_previous_placement_restores_with_unset(run, generation_settings_store):
+    line = run(["settings", "set", "placement", "http://127.0.0.1:9123"]).strip()
+    assert "(was the built-in default)" in line
+    assert line.endswith("restore: astrid generate settings unset placement")
+
+
+def test_cli_unset_restores_the_endpoint_it_removed(run, generation_settings_store):
+    run(["settings", "set", "placement", "http://127.0.0.1:9123"])
+    line = run(["settings", "unset", "placement"]).strip()
+    assert "(was {" in line and "http://127.0.0.1:9123" in line
+    assert line.endswith("restore: astrid generate settings set placement http://127.0.0.1:9123")

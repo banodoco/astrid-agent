@@ -391,8 +391,27 @@ def _settings_command(parsed):
             result = settings.unset_placement(client)
         else:
             result = settings.checkin(parsed.file, client)
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if parsed.settings_action in ('set', 'unset'):
+        print(_placement_line(parsed.settings_action, result))
+    else:
+        print(json.dumps(result, indent=2, sort_keys=True))
     return 0
+
+
+def _placement_line(action, result):
+    """One line: what the placement is now, what it replaced, and the command that restores it."""
+    def show(placement):
+        return json.dumps(placement, sort_keys=True) if placement else 'the built-in default'
+    before, now = result['previous'], result['placement']
+    if before.get('kind') == 'attached' and before.get('endpoint'):
+        restore = f"astrid generate settings set placement {before['endpoint']}"
+    elif before.get('kind') is None and 'endpoint' not in before:
+        restore = 'astrid generate settings unset placement'
+    else:
+        restore = f"none in one command; the previous placement is {show(before)}"
+    if action == 'unset' and before == now:
+        restore = 'nothing to restore; no placement was saved'
+    return f"placement is now {show(now)} (was {show(before)}); restore: {restore}"
 
 
 def _workflow_command(parsed: argparse.Namespace) -> int:
