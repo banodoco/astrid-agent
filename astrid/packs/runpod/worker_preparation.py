@@ -50,6 +50,11 @@ _SHARED_GATES = {
 class TargetObservationError(PlacementRefused):
     """Provider observation refused; retain the provider gate for old receipts."""
 
+    cause: str
+    _astrid_failed_identity: tuple[str, str] | None
+    claim_context: dict[str, bool]
+    machine_failure: Mapping[str, object]
+
     def __init__(self, message: str, *, gate: str, retryable: bool = False,
                  retry_after: float | None = None,
                  custody: Literal["none", "exact", "unknown"] = "unknown") -> None:

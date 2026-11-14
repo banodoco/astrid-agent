@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType, SimpleNamespace
-from typing import IO, TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
+from typing import IO, TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Sequence, cast
 from urllib.parse import quote, urlsplit
 
 from runtime_protocol import platform
@@ -251,6 +251,14 @@ class HostError(RuntimeError):
 
 class HostLeaseLost(HostError):
     """A typed Runtime observation proved that the claimed authority changed."""
+
+    code: str | None
+
+
+class _RuntimeOperationFailure(Protocol):
+    """Writable metadata on coded exceptions from any Runtime client."""
+
+    runtime_operation: str
 
 
 def _runtime_authority_refusal(error: BaseException, *, operation: str) -> str | None:
@@ -5439,7 +5447,7 @@ class RuntimeProtocolClient:
             value = self._lifecycle_client(deadline=deadline).health()
         except Exception as exc:
             if getattr(exc, "code", None) is not None:
-                exc.runtime_operation = "health"
+                cast(_RuntimeOperationFailure, exc).runtime_operation = "health"
             raise
         epoch = value.get("runtime_epoch") if isinstance(value, Mapping) else getattr(value, "runtime_epoch", None)
         if epoch is not None:
@@ -6760,6 +6768,7 @@ class GenericPackHost:
         self.warm_holds = WarmHolds(on_change=self._publish_evidence_status)
         self._target_bindings = None
         self._target_bindings_kind = None
+        self._machines_observed_at: float = float("-inf")
         self._target_bindings_lock = threading.RLock()
         # A request's lifecycle.idle_timeout_seconds, for the task in flight.
         self._requested_idle_seconds: float | None = None
