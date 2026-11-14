@@ -301,6 +301,8 @@ def _built(rows: list[tuple[str, str]]) -> tuple[str, str]:
 
 
 @pytest.mark.parametrize("cell,target_kind,selected_entry", CELLS)
+# Slow on purpose: video/h3 cells measured up to ~550 s on hosted Lanes (6e1c34e2 neighbours: 258-549 s between results); the suite default is 120 s.
+@pytest.mark.timeout(900)
 def test_dry_run_equals_live_run(cell, target_kind, selected_entry, tmp_path, monkeypatch, real_runtime, tuple_sources, request):
     modality, mode = cell
     h3 = cell == ("video", "h3")

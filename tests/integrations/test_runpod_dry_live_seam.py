@@ -80,6 +80,8 @@ class CaptureClient(NoPodClient):
 
 
 @pytest.mark.parametrize('cell', [*SLOTS, ('video', 'h3')], ids=lambda cell: '/'.join(cell))
+# Slow on purpose: the video/h3 case measured about 165 s on hosted Lanes; the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, live_machine, pinned_managed_install):
     recorder = Recorder(monkeypatch)
     client = CaptureClient()
