@@ -54,7 +54,31 @@ def align_argv(entry: str | None = None) -> list[str]:
             *(['--entry', entry] if entry else ['--all'])]
 
 
-def asset_readiness(entry: str | None, *, nodes=(), models=(), target=None) -> dict[str, Any]:
+def attached_model_readiness(entry: str | None, placements, *, target=None) -> dict[str, Any]:
+    """Readiness for an attached ComfyUI: the user places the file; Astrid installs nothing there."""
+    issues, fixes = [], []
+    for placement in placements:
+        file, role, folder = placement['file'], placement.get('role'), placement.get('folder')
+        where = (f"in {folder} on your ComfyUI" if folder
+                 else f"in the models folder for {role} on your ComfyUI" if role else "on your ComfyUI")
+        label = f'{file} (role {role})' if role else file
+        if placement.get('matches'):
+            action = f"Keep exactly one of {file} in {folder or 'the models folder for ' + str(role)} on your ComfyUI and remove the others, then retry."
+            message = f'Ambiguous model for role {role}: more than one of {file} is present. {action}'
+        else:
+            action = f"Put {file} {where}, then retry."
+            message = f'Missing model {label}. {action}'
+        issues.append({'code': 'missing_model', 'severity': 'error',
+                       'message': message,
+                       'details': {'model': file, 'role': role, 'folder': folder}})
+        fixes.append({'scope': 'attached_target', 'details': {'action': action}})
+    return {'entry': {'id': entry, 'engine': 'comfyui'}, 'target': target,
+            'status': 'blocked', 'issues': issues, 'fixes': fixes}
+
+
+def asset_readiness(entry: str | None, *, nodes=(), models=(), target=None, placements=None) -> dict[str, Any]:
+    if placements is not None:
+        return attached_model_readiness(entry, placements, target=target)
     argv = align_argv(entry)
     issues = [
         {'code': 'missing_node_pack', 'severity': 'error',
