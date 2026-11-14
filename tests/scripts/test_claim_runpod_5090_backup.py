@@ -20,6 +20,11 @@ def offline_egress(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_provider_gate(monkeypatch, tmp_path):
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "runtime"))
+
+
+@pytest.fixture(autouse=True)
 def offline_machine_confirmation(monkeypatch):
     # Acquisition confirms GPU/datacenter from GraphQL pod.machine; these tests
     # fake the provider, and the confirmation has dedicated tests under tests/packs/runpod.
@@ -246,11 +251,12 @@ def test_definite_capacity_retry_is_journaled_before_the_next_create(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from runpod_lifecycle import api
+    from runpod_lifecycle.errors import ProviderCapacityUnavailable
 
     from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
 
     handle_path = tmp_path / "claim-handle.json"
-    args = _args(handle_path, "--max-wait-seconds", "30")
+    args = _args(handle_path, "--max-wait-seconds", "30", "--poll-seconds", "1")
     _offline_volume(monkeypatch)
     transitions: list[tuple[str, int, bool]] = []
     real_replace = worker_preparation.replace_target_record
@@ -272,7 +278,9 @@ def test_definite_capacity_retry_is_journaled_before_the_next_create(
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise LaunchFailure("definite capacity rejection")
+            raise LaunchFailure("definite capacity rejection") from ProviderCapacityUnavailable(
+                503, "no instances available"
+            )
         marker = json.loads(handle_path.read_text(encoding="utf-8"))
         assert marker["state"] == "allocation_pending"
         assert marker["create_attempts"] == 2
@@ -349,7 +357,7 @@ def test_resume_reconciles_empty_account_reads_then_adopts_original_without_seco
     async def preflight(_pod: Any, release_root: str) -> dict[str, str]:
         return {"release_root": release_root, "probe": "offline ready"}
 
-    monkeypatch.setattr(runpod_lifecycle, "get_pod", attach)
+    monkeypatch.setattr(worker_preparation, "_get_provider_pod", attach)
     monkeypatch.setattr(claim, "_preflight_release", preflight)
 
     for _ in range(2):
@@ -860,7 +868,7 @@ def test_exact_attach_uses_provider_validation_without_allocating(
     async def preflight(_pod: Any, release_root: str) -> dict[str, str]:
         return {"release_root": release_root, "probe": "offline ready"}
 
-    monkeypatch.setattr(runpod_lifecycle, "get_pod", attach)
+    monkeypatch.setattr(worker_preparation, "_get_provider_pod", attach)
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", forbidden_launch)
     monkeypatch.setattr(claim, "_preflight_release", preflight)
 
@@ -885,7 +893,9 @@ def test_wrong_account_attach_stops_before_ssh_or_allocation(
     monkeypatch.setattr(
         worker_preparation,
         "observe_exact_target",
-        lambda *_args, **_kwargs: _raise(TargetObservationError("pod is not in this account")),
+        lambda *_args, **_kwargs: _raise(
+            TargetObservationError("pod is not in this account", gate="identity")
+        ),
     )
 
     async def forbidden(*_args: Any, **_kwargs: Any) -> Any:
@@ -894,7 +904,7 @@ def test_wrong_account_attach_stops_before_ssh_or_allocation(
     def _raise(exc: Exception) -> Any:
         raise exc
 
-    monkeypatch.setattr(runpod_lifecycle, "get_pod", forbidden)
+    monkeypatch.setattr(worker_preparation, "_get_provider_pod", forbidden)
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", forbidden)
 
     with pytest.raises(TargetObservationError, match="not in this account"):
@@ -922,7 +932,7 @@ def test_attach_rejects_lifecycle_object_for_a_different_pod(
     async def wrong_pod(*_args: Any, **_kwargs: Any) -> WrongPod:
         return WrongPod()
 
-    monkeypatch.setattr(runpod_lifecycle, "get_pod", wrong_pod)
+    monkeypatch.setattr(worker_preparation, "_get_provider_pod", wrong_pod)
 
     with pytest.raises(TargetObservationError, match="returned pod identity"):
         asyncio.run(claim._claim(args))
@@ -1028,9 +1038,15 @@ def test_new_allocation_failure_releases_exact_unactivated_pod(
         deletes.append(pod_id)
         if cleanup_fails:
             raise RuntimeError('fixture cleanup failure')
+    def read_exact_pod(api_key, pod_id):
+        assert api_key == _TEST_API_KEY
+        assert pod_id == 'pod-failed'
+        assert deletes == [pod_id]
+        return 404, None
     monkeypatch.setattr(runpod_lifecycle, 'launch_when_available', launch)
     monkeypatch.setattr(claim, '_preflight_release', preflight)
     monkeypatch.setattr(worker_preparation, '_release_inventory', release_inventory)
+    monkeypatch.setattr(worker_preparation, 'read_exact_pod', read_exact_pod)
     monkeypatch.setattr(api, 'terminate_pod', terminate)
     with pytest.raises((RuntimeError, PostCreateHookFailure)):
         asyncio.run(claim._claim(_args(handle_path, '--transport', transport)))

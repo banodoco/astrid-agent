@@ -49,13 +49,19 @@ def test_queued_task_reports_what_it_waits_for(monkeypatch, capsys, tmp_path):
 
 def test_queued_follow_uses_task_waiting_details_without_listing(monkeypatch, capsys):
     now = [0.0]
+    list_calls = []
+
+    def list_tasks(*args, **kwargs):
+        list_calls.append((args, kwargs))
+        return _result([])
+
     task = {
         "task_id": "queued-1",
         "state": "queued",
         "waiting_details": {"holder_task_id": "runtime-holder"},
     }
     shows = iter([_result(task), _result(task), _result(task), _result({**task, "state": "succeeded"})])
-    client = SimpleNamespace(tasks=SimpleNamespace(show=lambda _: next(shows)))
+    client = SimpleNamespace(tasks=SimpleNamespace(show=lambda _: next(shows), list=list_tasks))
     monkeypatch.setattr(invocation.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(invocation.time, "sleep", lambda delay: now.__setitem__(0, now[0] + 5))
 
@@ -64,6 +70,7 @@ def test_queued_follow_uses_task_waiting_details_without_listing(monkeypatch, ca
     )
 
     assert "current executor occupancy: waiting_details.holder_task_id=runtime-holder" in capsys.readouterr().err
+    assert list_calls == []
 
 
 def test_queued_follow_reports_why_runtime_occupancy_is_unavailable(monkeypatch, tmp_path):
@@ -101,4 +108,5 @@ def test_idle_and_follow_share_the_occupancy_reader(tmp_path, monkeypatch):
     for active in (True, "1", -1, None):
         (tmp_path / "generic-host.busy.json").write_text(json.dumps({"pid": 123, "active": active}))
         assert host_bootstrap.host_occupancy(123, tmp_path) is None
+    (tmp_path / "generic-host.busy.json").write_text(json.dumps({"pid": 123, "active": 1}))
     assert host_bootstrap.host_occupancy(456, tmp_path) is None

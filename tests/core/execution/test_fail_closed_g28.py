@@ -75,6 +75,8 @@ def assert_failed(case, started, *, code="executor_failed"):
 @pytest.mark.parametrize("fault", ["executor", "failure_handler", "system_exit", "allocate", "heartbeat", "pump_start",
                                  "error_string", "error_properties", "error_normalizer", "normalized_attributes", "failure_rpc"])
 def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
+    fault_calls = []
+
     class BrokenString(Exception):
         def __str__(self):
             raise OSError("error string failed")
@@ -85,6 +87,7 @@ def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
             raise OSError("error code failed")
 
     def broken(*args, **kwargs):
+        fault_calls.append(None)
         if fault == "failure_handler":
             # A failing decorator used to escape from the exception handler
             # before the Runtime failure mutation.
@@ -121,8 +124,13 @@ def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
     started = time.monotonic()
     if fault == "heartbeat":
         case.host.run_task(case.task, lease_token="lease-result")
+        assert fault_calls
         assert receipt(case)["status"] == "succeeded"
+        assert receipt(case)["lease_diagnostic"]["category"] == "heartbeat_exception"
         assert not case.runtime.failures
+        assert time.monotonic() - started < 10
+        assert not any(t.name == "astrid-heartbeat-task-result" and t.is_alive()
+                       for t in threading.enumerate())
         return
     with pytest.raises(AttributeError if fault == "normalized_attributes" else (OSError, HostError)):
         case.host.run_task(case.task, lease_token="lease-result")
@@ -339,6 +347,9 @@ def test_lease_observation_ends_work_only_on_runtime_verdict(case, monkeypatch, 
     started = time.monotonic()
     if unknown:
         case.host.run_task(case.task, lease_token="lease-result")
+        assert time.monotonic() - started < 10
+        assert not any(t.name == "astrid-heartbeat-task-result" and t.is_alive()
+                       for t in threading.enumerate())
         assert not case.runtime.failures and len(case.runtime.settlements) == 1
         assert receipt(case)["status"] == "succeeded"
         log = capsys.readouterr().err
@@ -943,8 +954,16 @@ def test_transient_transport_recovers_inside_last_acknowledged_validity(case, le
     assert terminal["progress"] == {"phase": "work", "percent": 10}
 
 
-def test_initial_transport_fault_can_recover_within_acknowledged_claim_validity(case, lease_clock):
-    faults = []
+def test_initial_transport_fault_can_recover_within_acknowledged_claim_validity(case, lease_clock, monkeypatch):
+    faults, acknowledged = [], []
+    original_heartbeat = case.runtime.heartbeat
+
+    def heartbeat(*args, **kwargs):
+        result = original_heartbeat(*args, **kwargs)
+        acknowledged.append((lease_clock.at, result.lease_expires_at))
+        return result
+
+    monkeypatch.setattr(case.runtime, "heartbeat", heartbeat)
 
     def transient():
         if not faults:
@@ -956,13 +975,31 @@ def test_initial_transport_fault_can_recover_within_acknowledged_claim_validity(
     assert faults == [0.0]
     assert not terminal.get("forced") and not case.runtime.failures
     assert lease_clock.at > 4 * lease_clock.ttl
-    assert terminal["lease_diagnostic"]["last_successful_heartbeat_at_utc"] is not None
+    successful_times = [at for at, _ in acknowledged]
+    assert len(successful_times) > 4
+    assert any(at > faults[0] for at in successful_times)
+    interval = [faults[0], *successful_times, lease_clock.at]
+    assert all(right - left <= lease_clock.ttl for left, right in zip(interval, interval[1:]))
+    diagnostic = terminal["lease_diagnostic"]
+    assert diagnostic["last_successful_heartbeat_expiry"] == acknowledged[-1][1]
+    assert datetime.fromisoformat(diagnostic["last_successful_heartbeat_at_utc"]) == (
+        datetime(2035, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=acknowledged[-1][0]))
 
 
 @pytest.mark.parametrize("operation", ["read", "heartbeat"])
 @pytest.mark.parametrize("verdict", ["runtime", "deadline"])
-def test_sustained_transport_keeps_work_until_runtime_verdict_or_deadline(case, lease_clock, operation, verdict):
+def test_sustained_transport_keeps_work_until_runtime_verdict_or_deadline(case, lease_clock, monkeypatch, operation, verdict):
     case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=0.6 if verdict == "deadline" else 10)
+    consumed = []
+    original_task = case.runtime.task
+
+    def task(*args, **kwargs):
+        result = original_task(*args, **kwargs)
+        if result["task"]["fence"] == 4:
+            consumed.append((lease_clock.at, len(lease_clock.pulses)))
+        return result
+
+    monkeypatch.setattr(case.runtime, "task", task)
 
     def unavailable():
         if 0 < lease_clock.at < 0.6 or verdict == "deadline":
@@ -982,7 +1019,15 @@ def test_sustained_transport_keeps_work_until_runtime_verdict_or_deadline(case, 
     terminal = lease_clock.run()
     assert terminal["forced"] == ("timeout" if verdict == "deadline" else "lease_lost")
     assert terminal["cancel_signal"].is_set()
-    assert 0.6 <= lease_clock.at <= 0.65
+    if verdict == "deadline":
+        assert lease_clock.at == 0.6
+        assert all(at < 0.6 for at, _ in lease_clock.pulses)
+    else:
+        assert 0.6 <= lease_clock.at <= 0.65
+        assert len(consumed) == 1
+        consumed_at, pulse_count = consumed[0]
+        assert len(lease_clock.pulses) == pulse_count
+        assert all(at < consumed_at for at, _ in lease_clock.pulses)
     assert lease_clock.at > lease_clock.ttl
     assert any(at > lease_clock.ttl for at in lease_clock.reads)
     assert not case.runtime.settlements
@@ -990,10 +1035,11 @@ def test_sustained_transport_keeps_work_until_runtime_verdict_or_deadline(case, 
     assert diagnostic["last_successful_heartbeat_expiry"] == "2035-01-01T00:00:00.200000+00:00"
     assert "private transport detail" not in json.dumps(diagnostic)
     assert len(json.dumps(diagnostic)) < 1200
+    assert receipt(case)["lease_diagnostic"] == diagnostic
+    assert receipt(case)["error"]["code"] == ("timeout" if verdict == "deadline" else "lease_lost")
+    assert len(case.runtime.failures) == 1
     if verdict == "runtime":
-        assert receipt(case)["lease_diagnostic"] == diagnostic
         assert case.runtime.failures[0][3]["failure_diagnostic"] == diagnostic
-        assert receipt(case)["error"]["code"] == "lease_lost"
 
 
 def test_committed_but_unacknowledged_heartbeat_does_not_fail_attempt(case, lease_clock):
@@ -1446,13 +1492,18 @@ def test_publication_replays_past_thirty_seconds_until_runtime_disposition(case,
         owner.join(timeout=2)
     assert not case.host._reconciliation_owners
     assert now[0] - attempts[0][0] > 30
-    assert all(args == attempts[0][1] and kwargs == attempts[0][2] for _, args, kwargs in attempts)
+    assert len(attempts) == (12 if outcome in {"success", "lease_fenced"} else 11)
+    assert all(args == attempts[0][1] and kwargs == attempts[0][2] for _, args, kwargs in attempts[1:])
     terminal = terminal_seen[0]
     assert terminal["recorded"]
     expected = "succeeded" if outcome == "success" else "cancelled" if outcome == "cancel_requested" else "failed"
     assert receipt(case)["status"] == ("partial" if expected == "failed" else expected)
     assert terminal["status"] == expected
-    if outcome != "success":
+    if outcome == "success":
+        assert len(case.runtime.settlements) == 1
+        assert terminal["settled"] is True
+        assert receipt(case)["publication"]["status"] == "settled"
+    else:
         assert terminal["retain_spool"] and terminal["settled"] is False
         assert not case.runtime.settlements
         log = capsys.readouterr().err
@@ -1467,7 +1518,8 @@ def test_effective_authority_window_controls_observer_polling(case, lease_clock)
     case.host.execution_policy = replace(case.host.execution_policy, authority_window_seconds=600)
     terminal = lease_clock.run(until=0.45)
     times = [at for at, _ in lease_clock.pulses if at > 0]
-    assert times and times[0] == 0.1
+    # Polls run on 50 ms ticks; 0.2 + 0.1 falls just after the 0.3 tick.
+    assert times == [0.1, 0.2, 0.35, 0.45]
     assert all(right - left >= 0.099 for left, right in zip(times, times[1:]))
     assert not terminal.get("forced")
 
