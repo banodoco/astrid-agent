@@ -351,6 +351,8 @@ def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=No
 
 
 def render_attached_download_plan(plan: dict[str, Any]) -> str:
+    if not plan['files'] and not plan['manual']:
+        return f"Nothing is missing for {plan['entry']} {plan['mode']} on your ComfyUI at {plan['target']}; it is ready."
     lines = [f"Missing models for {plan['entry']}/{plan['mode']} on your ComfyUI at {plan['target']}:"]
     for f in plan['files']:
         lines.append(f"  {f['file']}  {_size(f['bytes'])}  -> {f['folder']}  (from {f['url']}, SHA-256 {f['sha256']})")
