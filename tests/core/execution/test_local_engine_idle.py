@@ -277,6 +277,7 @@ def test_sdk_preserves_local_idle_timeout_at_workflow_admission(tmp_path, monkey
 
 
 @pytest.mark.parametrize("queue", ["busy", "pending"])
+@pytest.mark.linux_native
 def test_engine_queue_busy_consumes_deadline_until_next_task_end(world, session, queue):  # noqa: F811
     host, idle, timers, _ = world
     client, payload, recipe, root, mode, started = session
@@ -296,6 +297,7 @@ def test_engine_queue_busy_consumes_deadline_until_next_task_end(world, session,
     assert (root / "release-posts").read_text().splitlines() == ["/api/free"]
 
 
+@pytest.mark.linux_native
 def test_owned_engine_runs_after_idle_and_records_vram_in_declared_log(world, session, tmp_path, monkeypatch):  # noqa: F811
     from astrid.core._shared import run_logs
     from astrid.core.generation.engine_custody import declare_engine_log
