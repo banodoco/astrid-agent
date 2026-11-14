@@ -451,7 +451,7 @@ class LinuxEngineServiceClient:
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
                     env=engine_process_env(dict(os.environ), self.identity["root"]),
                 )
-                _publish_owner_marker(fd, self.identity, token, self._spawned.pid)
+                _publish_owner_marker(fd, self.identity, token, self._spawned.pid, deadline=deadline)
             except BaseException as exc:
                 if isinstance(exc, EngineError):
                     raise
@@ -581,7 +581,7 @@ class LinuxEngineServiceClient:
             self._spawned.wait(timeout=_remaining(deadline))
 
 
-def _publish_owner_marker(fd, identity, token, pid):
+def _publish_owner_marker(fd, identity, token, pid, *, deadline=None):
     """Both launch and serving publish the same supervisor incarnation."""
     birth = held_child_birth_identity(pid)
     if not birth:
@@ -590,7 +590,31 @@ def _publish_owner_marker(fd, identity, token, pid):
     pod_id = os.environ.get("RUNPOD_POD_ID")
     if isinstance(pod_id, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", pod_id):
         marker["pod_id"] = pod_id
-    _write(fd, "session.json", _json(marker).encode())
+    # Launcher and child can arrive together. Publish exactly once: replacing
+    # the same incarnation races the reader's descriptor/inode binding.
+    lock = os.open("marker.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                   0o600, dir_fd=fd)
+    try:
+        info = os.fstat(lock)
+        _private(info, stat.S_ISREG)
+        if info.st_nlink != 1:
+            raise UnsafePathError("unsafe engine marker publication lock")
+        until = deadline if deadline is not None else time.monotonic() + 5
+        while True:
+            _remaining(until)
+            try:
+                native.lock_file(lock, blocking=False)
+                break
+            except BlockingIOError:
+                time.sleep(min(0.02, _remaining(until)))
+        existing = LinuxEngineServiceClient._marker(fd)
+        if existing is not None:
+            if existing != marker:
+                raise CustodyUnresolved("different supervisor incarnation retains its marker")
+            return
+        _write(fd, "session.json", _json(marker).encode())
+    finally:
+        os.close(lock)
 
 
 def _flock_reliable(fd):

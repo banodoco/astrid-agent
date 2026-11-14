@@ -19,6 +19,7 @@ from typing import Any
 
 from runtime_protocol import platform
 
+from astrid.core.generation.producer_result import public_alignment_evidence
 from astrid.packs.vibecomfy.production_engine import (
     ProductionEngineError,
     ProductionRunResult,
@@ -375,6 +376,7 @@ def _project_native_attempt(path: Path, destination: Path, *, alignment: Any, pr
 
     _custody_file(path, destination, "native attempt")
     attempt = json.loads(path.read_text(encoding="utf-8"))
+    alignment = public_alignment_evidence(alignment)
     attempt["alignment"] = alignment
     if prepared is not None:
         # Placement and preparation belong to Astrid. Native target/adapter
@@ -538,10 +540,11 @@ def run_local_server(
                 payload["evidence"]["producer"]["alignment"] = alignment
                 _project_native_attempt(result_path.with_name("attempt.json"), destination, alignment=alignment)
             if prepared is not None:
-                payload["evidence"]["producer"]["alignment"] = prepared["alignment"]
+                alignment = public_alignment_evidence(prepared["alignment"])
+                payload["evidence"]["producer"]["alignment"] = alignment
                 payload["evidence"]["transport"]["placement"] = "managed"
                 payload["evidence"]["producer"]["attempt"]["record"].update(
-                    placement="managed", alignment=prepared["alignment"], managed_engine_preparation=prepared)
+                    placement="managed", alignment=alignment, managed_engine_preparation=prepared)
             if workflow_conversion_object_info_sha256 is not None:
                 schema_provenance = payload["evidence"]["producer"]["runtime"]["schema_provenance"]
                 schema_provenance["workflow_conversion_object_info_sha256"] = (
