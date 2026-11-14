@@ -4230,7 +4230,17 @@ def test_f05_qualified_child_loses_authority_only_on_runtime_verdict(world, monk
     else:
         monkeypatch.setattr(host.client, "task", lambda tid: (_ for _ in ()).throw(OSError("readback lost")))
     if loss in {"stale_metadata", "readback", "health_readback", "malformed", "retired_route"}:
+        reads = []
+        method = "health" if loss == "health_readback" else "task"
+        unknown_read = getattr(host.client, method)
+
+        def recorded_read(*args, **kwargs):
+            reads.append((args, kwargs))
+            return unknown_read(*args, **kwargs)
+
+        monkeypatch.setattr(host.client, method, recorded_read)
         check()
+        assert reads
         assert callable(check)
     else:
         from astrid.core.execution.generic_host import HostLeaseLost
@@ -4247,8 +4257,10 @@ def test_f05_typed_placement_change_is_an_authority_verdict(world, monkeypatch, 
     check = _f05_authority(host, child, cc)
     assert callable(check)
     original = host.client.task
+    reads = []
 
     def read(tid):
+        reads.append(tid)
         value = task_resource(original(tid))
         if tid == pc["task_id"]:
             value["execution_binding"]["actual_target"]["id"] = machine_id
@@ -4260,6 +4272,7 @@ def test_f05_typed_placement_change_is_an_authority_verdict(world, monkeypatch, 
             check()
     else:
         check()
+        assert pc["task_id"] in reads
 
 
 @pytest.mark.parametrize("mode", ["interactive", "absolute_cap", "finite_timeout", "cancel", "evidence", "heartbeat"])
@@ -4271,6 +4284,14 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
     now = [100.0]
     monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
     actual_heartbeat = host.client.heartbeat
+    heartbeat_faults, terminals = [], []
+    original_impl = host._run_task_impl
+
+    def capture_terminal(*args, _terminal, **kwargs):
+        terminals.append(_terminal)
+        return original_impl(*args, _terminal=_terminal, **kwargs)
+
+    monkeypatch.setattr(host, "_run_task_impl", capture_terminal)
 
     def heartbeat_for_execution_clock(*args, **kwargs):
         # Keep the real fenced receipt. Virtual execution time is independent
@@ -4295,7 +4316,9 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
                 raise generic_host.HostCancelled("execution guard stopped fixture command")
         if mode == "heartbeat":
             (attempt / ".astrid-progress.json").write_text('{"phase":"done"}')
-            def heartbeat(*args, **kwargs): raise OSError("lease heartbeat lost")
+            def heartbeat(*args, **kwargs):
+                heartbeat_faults.append(now[0])
+                raise OSError("lease heartbeat lost")
             monkeypatch.setattr(host.client, "heartbeat", heartbeat)
         return SimpleNamespace(payload={}, process_id=12345, returncode=0)
     monkeypatch.setattr(host, "_run_command_definition", execute)
@@ -4315,6 +4338,9 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
             assert guards["lifetime"] == "lease_bound_interactive"
             assert guards["deadline_seconds"] is None
             assert guards["collection_seconds"] == 3600
+            if mode == "heartbeat":
+                assert heartbeat_faults
+                assert terminals[0]["lease_diagnostic"]["category"] == "heartbeat_exception"
         elif mode in {"absolute_cap", "finite_timeout"}:
             assert result["status"] == "failed" and result["deadline_exceeded"] is True
             assert checks == ([False, False, True] if mode == "absolute_cap" else [True])
