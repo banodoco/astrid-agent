@@ -76,6 +76,52 @@ def attached_model_readiness(entry: str | None, placements, *, target=None) -> d
             'status': 'blocked', 'issues': issues, 'fixes': fixes}
 
 
+def _is_comfyui_core_repo(repo: str) -> bool:
+    """A pack whose repository is ComfyUI itself ships with ComfyUI, not as a custom node."""
+    lowered = repo.lower().rstrip('/')
+    return 'github.com/' in lowered and lowered.endswith(('/comfyui', '/comfyui.git'))
+
+
+def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile_path=None, target=None) -> dict[str, Any]:
+    """Readiness for an attached ComfyUI: the person fixes it on their ComfyUI; Astrid installs and restarts nothing there.
+
+    A node no locked pack provides is part of ComfyUI itself. A node a locked custom pack provides
+    names that pack, and its repository when the lock declares a URL.
+    """
+    from pathlib import Path
+
+    from vibecomfy.node_packs import resolve_node_packs
+
+    lock = Path('custom_nodes.lock') if lockfile_path is None else lockfile_path
+    issues, fixes = [], []
+    for name in nodes:
+        packs = [pack for pack in resolve_node_packs({name}, lockfile_path=lock)
+                 if not _is_comfyui_core_repo(pack.repo)]
+        if packs:
+            pack = packs[0]
+            url = pack.repo if pack.repo.startswith(('http://', 'https://', 'git@')) else None
+            where = f' ({url})' if url else ''
+            action = (f"Install {pack.name}{where} in your ComfyUI's custom_nodes folder, "
+                      "then restart ComfyUI yourself and retry.")
+            message = f'Your ComfyUI does not have {name}, which comes from the custom node pack {pack.name}. {action}'
+            details = {'node': name, 'pack': pack.name, 'repository': url}
+        else:
+            action = 'Update ComfyUI, then retry.'
+            message = (f'Your ComfyUI does not have {name}, which is part of ComfyUI itself; '
+                       'update ComfyUI, then retry.')
+            details = {'node': name, 'pack': None, 'repository': None}
+        issues.append({'code': 'missing_node_pack', 'severity': 'error', 'message': message, 'details': details})
+        fixes.append({'scope': 'attached_target', 'details': {'action': action}})
+    for name in models:
+        action = 'Put the model file in its models folder on your ComfyUI yourself, then retry.'
+        issues.append({'code': 'missing_model', 'severity': 'error',
+                       'message': f'Missing model {name} on your ComfyUI. {action}',
+                       'details': {'model': name}})
+        fixes.append({'scope': 'attached_target', 'details': {'action': action}})
+    return {'entry': {'id': entry, 'engine': 'comfyui'}, 'target': target,
+            'status': 'blocked', 'issues': issues, 'fixes': fixes}
+
+
 def asset_readiness(entry: str | None, *, nodes=(), models=(), target=None, placements=None) -> dict[str, Any]:
     if placements is not None:
         return attached_model_readiness(entry, placements, target=target)
