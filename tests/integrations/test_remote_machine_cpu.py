@@ -107,7 +107,8 @@ class MachineProviderHTTP:
         )
         recipe = engine_recipe.load_recipe(engine, "linux-x86_64-cu130")
         root = root or f"/root/astrid/engines/{engine}"
-        plan = engine_runner.plan_install(recipe, root=root, placement="local")
+        models_root = f"/workspace/astrid/engines/{engine}/models" if self.volume is not None else None
+        plan = engine_runner.plan_install(recipe, root=root, placement="local", models_root=models_root)
         lock = engine_recipe.load_model_lock(recipe.models_lock)
         stamp = datetime.now(timezone.utc).isoformat()
         receipt = InstallReceipt(
@@ -116,10 +117,11 @@ class MachineProviderHTTP:
             {env.name: (env.requirements.packaged_lock.sha256 if env.requirements.packaged_lock
                         else _sha(env.name.encode())) for env in recipe.environments},
             {source.name: source.pin.revision for source in recipe.sources},
-            tuple(DownloadResult(model.name, root + "/models/" + model.destination, "downloaded",
+            tuple(DownloadResult(model.name, (models_root or root + "/models") + "/" + model.destination, "downloaded",
                                  model.bytes, model.sha256, True, 0) for model in lock.models),
             tuple(StepReceipt(step.id, step.kind, "executed", "passed", {}) for step in plan.steps),
             HealthEvidence("healthy", stamp, _sha(b"{}"), True), stamp, stamp, None,
+            models_root=models_root,
         )
         engine_runner._parse_receipt(asdict(receipt), plan)
         return asdict(receipt)
@@ -266,7 +268,10 @@ class MachineProviderHTTP:
             elif re.search(r"engines install (\S+) --platform linux-x86_64-cu130", detached):
                 engine = re.search(r"engines install (\S+) --platform", detached)[1]
                 if self.volume is not None:
-                    assert f"--model-cache-root /workspace/astrid/engines/{engine}/models" in detached
+                    # Cause: 7e3314ad2 (b67aa4424 removed the old flag); ruling: machines 05:32 Sat.
+                    install_argv = shlex.split(detached)
+                    assert install_argv[install_argv.index("--models-root") + 1] == f"/workspace/astrid/engines/{engine}/models"
+                    assert "--model-cache-root" not in detached
                 self.files[f"/root/astrid/engines/{engine}/.astrid-engine/install.json"] = json.dumps(
                     self._receipt_for(engine)).encode()
                 self._exit(directory, 0, b"")
@@ -942,12 +947,19 @@ def test_cancel_mid_poll_stops_the_job_then_releases(journey):
         time.sleep(0.05)
     provider.job_hold.clear()  # keep it running until the cancel lands
     assert client.tasks.cancel(task_id).ok
-    while j.record()["state"] != "cleanup_complete":
-        assert time.monotonic() < deadline, "the cancelled machine was not released"
+    # Causes: 80bbf6904, d072cf5da; ruling: machines 05:32 Sat.
+    while (record := j.record())["state"] != "claimed" or record["lease"]["state"] != "idle":
+        assert time.monotonic() < deadline, "the cancelled machine did not settle idle"
         time.sleep(0.05)
-    record = j.record()
-    assert record["lease"]["job"]["state"] == "cancelled"
-    _released(provider, record)
+    assert [job["state"] for job in provider.detached.values()] == ["cancelled"]
+    assert record["lease"]["last_job"]["outcome"] == "cancelled"
+    assert record["lease"]["job"]["state"] == "exited"  # The successful reset is the latest detached job.
+    assert provider.pod_state == "ready" and provider.active_job is None
+    assert [bool(reset["dirs"]) for reset in provider.resets] == [False, True]
+    assert record["pod_id"] == POD and [pod["id"] for pod in provider.pods] == [POD]
+    assert provider.deploys == 1
+    assert not [event for event in provider.events if event[0] in {"pod-delete", "pod-404"}]
+    _released(provider, j.release())
     order = [e[0] for e in provider.events if e[0] in {"detached_cancel", "pod-delete", "pod-404"}]
     assert order[:3] == ["detached_cancel", "pod-delete", "pod-404"]
     assert not any(path.endswith("/out/wrapper-manifest.json") for path in provider.files)
@@ -1305,7 +1317,10 @@ def _newest_receipt():
 def _timing_ok(block):
     assert block["schema"] == "astrid.generation.phase-timing.v1"
     stamps = block["stamps"]
-    assert (stamps["capacity_wait_started_at"] <= stamps["claimed_at"] <= stamps["preparation_ended_at"]
+    # Cause: d29f58570; ruling: machines 05:32 Sat.
+    assert "capacity_wait_started_at" not in stamps
+    assert block["phases"]["capacity_wait"] is None
+    assert (stamps["claimed_at"] <= stamps["preparation_ended_at"]
             <= stamps["job_started_at"] <= stamps["job_ended_at"] <= stamps["released_at"])
 
 
@@ -1323,6 +1338,8 @@ def test_a_successful_job_carries_the_phase_timing_block_and_no_receipt(journey)
 
 
 def test_an_execution_failure_writes_a_receipt_and_both_records_carry_timing(journey):
+    from astrid.core._shared import run_logs
+
     j = journey
     s = j.start()
     j.claim()
@@ -1331,7 +1348,12 @@ def test_an_execution_failure_writes_a_receipt_and_both_records_carry_timing(jou
         j.image()
     receipt = _newest_receipt()
     assert receipt["stage"] == "execution" and receipt["cause"]["exit_code"] == 1
-    assert receipt["collection"]["state"] == "not_collected" and receipt["files"] == []
+    # Cause: 30795fec8; ruling: machines 05:32 Sat.
+    assert receipt["collection"]["state"] == "unavailable"
+    assert receipt["collection"]["reason"] == "not_reported"
+    assert receipt["collection"]["bytes"] == 0
+    assert receipt["collection"]["cap_bytes"] == run_logs.CAP_BYTES
+    assert receipt["files"] == []
     _timing_ok(receipt["timing"])
     _released(s["provider"], j.release())
 
