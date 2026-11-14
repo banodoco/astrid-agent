@@ -14272,6 +14272,9 @@ class GenericPackHost:
         if base is not None and base.is_dir() and not base.is_symlink():
             roots.extend(path for path in children(base)
                          if path.is_dir() and not path.is_symlink())
+        # Startup replay has nothing to release: a new host holds no prior
+        # in-memory session/preparation, and the OS released the dead process's
+        # preparation flock. Supervisor/pod custody still fences engine reuse.
         for root in roots:
             for name in ("fail-request.json", "cancel-request.json"):
                 path = root / name

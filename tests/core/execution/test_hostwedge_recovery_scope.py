@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import multiprocessing
 import os
 import threading
 import time
@@ -20,6 +21,15 @@ from astrid.sdk.storage_ownership import reclaim
 from astrid_runtime_client.generated import ApiError
 from tests.core.execution.test_bug14_settlement_liveness import settlement_case  # noqa: F401
 from tests.core.execution.test_terminal_publication_replay import _saved_failure
+from tests.core.generation.test_engine_custody import (
+    _call,  # noqa: F401
+    _client,
+    _request,
+    _wait,
+)
+from tests.core.generation.test_engine_custody import (
+    session as engine_session,
+)
 from tests.test_generic_host_result_json import _success_boundary, host_case  # noqa: F401
 
 
@@ -468,7 +478,6 @@ def test_legacy_flat_own_request_survives_restart(settlement_case, tmp_path, mon
 
 def test_reused_default_base_ages_children_individually(tmp_path, monkeypatch):
     monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(tmp_path))
-    host = GenericPackHost(pack_roots=[], executor_id="reused-worker")
     legacy_base = tmp_path / "astrid-attempt-old-base"
     stale = legacy_base / "astrid-attempt-old"
     live = legacy_base / "astrid-attempt-live"
@@ -506,21 +515,94 @@ def test_corrupt_identity_and_foreign_request_allow_new_generation(host_case, tm
     assert "recovery_blocked" in capsys.readouterr().err
 
 
-def test_corrupt_identity_never_writes_runtime_and_host_starts(settlement_case, tmp_path, monkeypatch):
+def test_corrupt_identity_never_writes_runtime_and_host_starts(settlement_case, tmp_path, monkeypatch, engine_session):
     case = settlement_case
     root, request = _saved_failure(case, tmp_path)
     request["body"]["fence"] = "invalid"
     marker = root / "fail-request.json"
     marker.write_text(json.dumps(request))
     before = marker.read_bytes()
-    claimed = []
-    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
-    _bounded_run(case.host, lambda: case.host.run(once=True))
+    old_task = case.service.task(case.task_id)["task"]
+    assert old_task["attempt_id"] == case.attempt["attempt_id"]
+    assert old_task["lease_fence"] == case.attempt["fence"]
+    assert old_task["lease_token"] == case.attempt["lease_id"]
+    client, payload, recipe, engine_root, mode, started = engine_session
+    owner = _call(client, payload)["owner_id"]
+    trace, release = engine_root / "execution-order", engine_root / "release-old"
+    old_code = f'''
+import time
+from pathlib import Path
+trace=Path({str(trace)!r})
+with trace.open('a') as stream: stream.write('old:start'+chr(10))
+while not Path({str(release)!r}).exists(): time.sleep(0.01)
+with trace.open('a') as stream: stream.write('old:end'+chr(10))
+'''
+    errors, results, claimed = [], [], []
+
+    def old_run():
+        try:
+            results.append(client.run(_request(engine_root, old_code, seconds=20)))
+        except BaseException as exc:  # noqa: BLE001 - relay worker failures to the test
+            errors.append(exc)
+
+    old = threading.Thread(target=old_run, daemon=True)
+    old.start()
+    _wait(lambda: trace.exists() or errors)
+    assert not errors
+    assert len(results) == 0, results
+    # A fresh host has no session/preparation from the dead incarnation. Its
+    # new claim uses the SAME still-warm supervisor, not a second engine.
+    restarted = GenericPackHost(pack_roots=[], client=case.host.client,
+                                executor_id=case.host.executor_id, attempt_root=root)
+    replacement = _client(client.identity)
+    queued = threading.Event()
+    new_started = engine_root / "new-started"
+    new_code = f"from pathlib import Path; Path({str(new_started)!r}).write_text('yes'); " + (
+        f"stream=Path({str(trace)!r}).open('a'); stream.write('new:start'+chr(10)); stream.close()")
+
+    def claim():
+        claimed.append("claimed")
+        queued.set()
+        results.append(replacement.run(_request(engine_root, new_code, seconds=20)))
+
+    monkeypatch.setattr(restarted, "claim_once", claim)
+
+    def new_host():
+        try:
+            restarted.run(once=True)
+        except BaseException as exc:  # noqa: BLE001 - relay worker failures to the test
+            errors.append(exc)
+
+    new = threading.Thread(target=new_host, daemon=True)
+    try:
+        new.start()
+        assert queued.wait(5), "new claim did not pass the blocked recovery marker"
+        assert not new_started.exists() and not release.exists()
+        # The negative interval lets the real supervisor receive the second
+        # socket request while the first still holds its work lock.
+        time.sleep(0.2)
+        assert not new_started.exists() and old.is_alive() and new.is_alive()
+        assert not case.failures and not case.cancels and not case.writes
+        assert restarted.recovery_blocked[0]["path"] == str(marker)
+    finally:
+        release.write_text("release")
+        old.join(10)
+        new.join(10)
+        restarted._shutdown.set()
+    assert not old.is_alive() and not new.is_alive() and not errors
+    assert len(results) == 2 and all(result.exit_code == 0 for result in results)
+    assert trace.read_text().splitlines() == ["old:start", "old:end", "new:start"]
+    assert _call(replacement, payload, "health")["owner_id"] == owner
+    assert len(started.read_text().splitlines()) == 1
     assert claimed == ["claimed"]
     assert not case.failures and not case.cancels and not case.writes
     assert marker.read_bytes() == before
-    assert case.host.recovery_blocked[0]["path"] == str(marker)
-    assert str(marker) in case.host.recovery_blocked[0]["recovery_step"]
+    assert restarted.recovery_blocked[0]["path"] == str(marker)
+    assert str(marker) in restarted.recovery_blocked[0]["recovery_step"]
+    stored = case.service.task(case.task_id)["task"]
+    assert stored["status"] == "running"
+    for key in ("attempt_id", "lease_fence", "lease_token", "lease_expires_at", "executor_id"):
+        assert stored[key] == old_task[key], key
 
 
 @pytest.mark.parametrize("damage", ["request-result", "receipt-json", "receipt-type", "request-error"])
@@ -810,3 +892,60 @@ def test_recovery_enumeration_error_is_blocked_per_base_and_admission_continues(
     assert len(case.host.recovery_blocked) == 1
     assert case.host.recovery_blocked[0]["path"] == str(base)
     assert "enumeration denied" in case.host.recovery_blocked[0]["reason"]
+
+
+def _dead_host_with_preparation(engine_root, executor, ready):
+    from astrid.core.execution.managed_tool_session import CapabilityDescriptor
+    from astrid.core.generation.engine_platforms import platform_adapter
+    from astrid.core.generation.managed_preparation import ManagedEnginePreparation
+    from tests.core.execution.test_managed_tool_session import _Adapter, _binding
+
+    host = GenericPackHost(pack_roots=[], executor_id=executor)
+    host.managed_tool_session.open(capability=CapabilityDescriptor("vibecomfy.run"),
+                                   binding=_binding("dead"), adapter=_Adapter())
+    preparation = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    preparation.lock = platform_adapter("linux-x86_64-cu130").local_install_lock(
+        str(engine_root), deadline=time.monotonic() + 10)
+    preparation.lock.__enter__()
+    ready.send((host.managed_tool_session.occupied, preparation.lock is not None))
+    threading.Event().wait(60)
+
+
+def test_restart_has_no_old_session_or_preparation_and_os_releases_flock(settlement_case, tmp_path):
+    from astrid.core.generation.engine_platforms import platform_adapter
+
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    marker = root / "fail-request.json"
+    marker.write_text("{unreadable")
+    context = multiprocessing.get_context("fork")
+    received, sent = context.Pipe(duplex=False)
+    engine_root = tmp_path / "dead-host-engine"
+    dead = context.Process(target=_dead_host_with_preparation,
+                           args=(engine_root, case.host.executor_id, sent))
+    dead.start()
+    try:
+        assert received.poll(5) and received.recv() == (True, True)
+        # Kill instead of graceful close: the OS, not host cleanup, releases flock.
+        dead.kill()
+        dead.join(5)
+        assert not dead.is_alive()
+        restarted = GenericPackHost(pack_roots=[], client=case.host.client,
+                                    executor_id=case.host.executor_id, attempt_root=root)
+        assert not restarted.managed_tool_session.occupied
+        assert restarted.managed_tool_session.current_binding is None
+        assert restarted._active_processes == set() and restarted._target_bindings is None
+        assert restarted.warm_holds.status() == [] and restarted._reconciliation_owners == {}
+        _bounded_run(restarted, restarted._recover_terminal_requests)
+        assert not restarted.managed_tool_session.occupied
+        assert restarted.recovery_blocked[0]["path"] == str(marker)
+        assert not case.failures and not case.cancels and not case.writes
+        with platform_adapter("linux-x86_64-cu130").local_install_lock(
+                str(engine_root), deadline=time.monotonic() + 2):
+            pass
+    finally:
+        if dead.is_alive():
+            dead.kill()
+            dead.join(5)
+        received.close()
+        sent.close()
