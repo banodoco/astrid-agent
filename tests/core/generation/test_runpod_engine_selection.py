@@ -53,7 +53,7 @@ def attached_url():
     from tests.integrations.test_runpod_slot_path_cpu import SLOTS as CPU_SLOTS, SlotPod, _attached_comfy, _slot_classes
     classes = set().union(*(_slot_classes(slot) for slot in CPU_SLOTS))
     pod = SlotPod.__new__(SlotPod)  # receipts only: no provider HTTP
-    pod.receipts, pod.schema = {}, pin_object_info()
+    pod.receipts, pod.schema, pod.volume = {}, pin_object_info(), None  # no network volume: the receipt's models root is the engine's own
     pod.volume = None
     files = []
     for engine in dict.fromkeys(("comfyui", *entries.runpod_engines())):
