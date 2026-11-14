@@ -233,3 +233,34 @@ def test_release_never_touches_the_snapshot(machine_case, failure):
         assert c.deletes == ["pod-1"]  # failure paths keep compose's own release classification
     assert not any("engine_snapshot" in command or "/proc/" in command for command in seen)
     assert not hasattr(c.placement, "settle_engine_snapshot")
+
+
+def test_running_or_stalled_publish_has_no_effect_on_release(machine_case):
+    """A publish still running (or a pod-side snapshot command that would hang forever) neither
+    delays nor changes the release: release never issues one, so the stall is never reached."""
+    import threading
+    import time as _time
+
+    from tests.packs.runpod.test_machine import _claim_machine
+
+    c = machine_case
+    _claim_machine(c)
+    lease = c.machine.claim(c.job())
+    lease.state.volume = {"mount_path": "/workspace", "size_gb": 300}
+    lease.state.note("engine_snapshot_publish", "started", pid=4242)  # still running on the pod
+    never = threading.Event()
+    inner = lease.claim.ops.exec
+
+    def exec_(command, timeout=600, *args, **kwargs):
+        if "engine_snapshot" in command or "/proc/" in command:
+            never.wait(3600)  # would stall release for an hour if release ever touched it
+        return inner(command, timeout, *args, **kwargs)
+
+    lease.claim.ops.exec = exec_
+    started = _time.monotonic()
+    try:
+        c.machine.release(lease, False)
+    finally:
+        never.set()
+    assert _time.monotonic() - started < 10
+    assert c.deletes == ["pod-1"] and lease.released
