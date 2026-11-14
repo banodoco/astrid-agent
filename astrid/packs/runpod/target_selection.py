@@ -965,6 +965,8 @@ class RunPodSelectionOwner:
                             stamp = self.clock()
                             paid_expiry = consent.validate(offer, p, stamp, allow_policy=True)
                             paid = {**limits, "authorized_at": stamp.isoformat(), "expires_at": paid_expiry.isoformat()}
+                            if cancelled is not None:
+                                cancelled()
                             return {**pending, "paid_limits": paid, "consented_offer": asdict(offer),
                                     "last_create_started_at": stamp.isoformat(),
                                     **({"lease": {**pending["lease"], "started_at": stamp.timestamp()}}

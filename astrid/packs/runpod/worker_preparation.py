@@ -33,6 +33,7 @@ from .pod_fields import InvalidPodField, pod_field
 from .provider import (
     ProviderNotStarted,
     ProviderRefused,
+    _check_provider_cancelled,
     account_gate,
     async_provider_call,
     async_provider_operation,
@@ -1518,6 +1519,20 @@ async def acquire_target(
                 }
                 if before_post is not None:
                     pending = before_post(pending)
+                _check_provider_cancelled()
+                try:
+                    current = json.loads(handle_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, ValueError) as exc:
+                    raise AcquisitionUnresolvedError(
+                        "cannot verify journal custody before create", custody="none",
+                    ) from exc
+                if (not isinstance(current, dict)
+                        or current.get("operation_id") != operation_id
+                        or current.get("request_name") != expected_name
+                        or current.get("state") != pre_create.get("state")):
+                    raise AcquisitionUnresolvedError(
+                        "journal custody changed before create", custody="none",
+                    )
                 replace_target_record(handle_path, pending, operation_id=operation_id)
                 attempt = pending
 
@@ -1526,6 +1541,7 @@ async def acquire_target(
                 # pacing sleep. Recheck paid authority and persist the intent
                 # immediately before the single lifecycle create request.
                 authorize_create()
+                _check_provider_cancelled()
                 return await launch_when_available(
                     config, name=expected_name, max_wait_sec=0,
                     retry_interval_sec=retry_interval_seconds,
