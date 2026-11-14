@@ -9,6 +9,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from urllib.parse import urlencode
+
+# The hosted App: the origin the installers open (installer/backend.py) and the one the README names.
+HOSTED_APP_ORIGIN = 'https://astrid.haus'
 
 
 def _sha256(value: Any) -> str:
@@ -145,4 +149,7 @@ def _deliver(payload, rows, *, client, out, managed, project):
         # No requested file is replaced until every object passes verification.
         for temporary, path in staged:
             os.replace(temporary, path)
-    return {**payload, 'image_paths': paths, 'run_dir': str(root)}
+    result = {**payload, 'image_paths': paths, 'run_dir': str(root)}
+    if project:
+        result['open_url'] = f'{HOSTED_APP_ORIGIN}/tools/video-editor?{urlencode({"project": project})}'
+    return result
