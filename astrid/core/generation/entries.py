@@ -593,8 +593,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
     return description if _native else public_description(description)
 
 
-def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> dict[str, Any]:
-    """Describe raw/canonical Comfy work through the same offline input path."""
+def describe_workflow(path: Path, mode: str | None = None, *, _native=False, comfy_url: str = '') -> dict[str, Any]:
+    """Describe raw/canonical Comfy work; ``comfy_url`` (an attached server) converts UI JSON against its schema."""
     from vibecomfy.entries import draft_entry
 
     from astrid.packs.vibecomfy.production_engine import load_workflow_path
@@ -602,7 +602,7 @@ def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> 
     if path.is_dir():
         path = path / 'workflow.py'
     with TemporaryDirectory(prefix='astrid-workflow-describe-') as scratch:
-        loaded = load_workflow_path(path, scratch, comfy_url='')
+        loaded = load_workflow_path(path, scratch, comfy_url=comfy_url)
         workflow = loaded.resolved.workflow
         entry = draft_entry(workflow, 'workflow', bundle=str(path.resolve()))
         selected = mode or (entry['modes'][0] if len(entry['modes']) == 1 else 'workflow')
@@ -876,18 +876,32 @@ def _output_prefix_binding(workflow: Any, requested: dict[str, Any], binds) -> d
     return {'filename_prefix': _resolve_binding(workflow, 'filename_prefix', f'{node.id}.filename_prefix')}
 
 
-def prepare_execution_bindings(workflow: Any, bindings: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def prepare_execution_bindings(workflow: Any, bindings: Mapping[str, Any] | None = None, *,
+                               saved_ui: bool = False) -> dict[str, Any]:
     """Resolve run randomness once, before sealing, and retain it as native bindings.
 
     The same helper prepares catalog, entry, hook and direct workflow executions.
     An explicit or replayed seed is authoritative; independent seedless preparations stay fresh.
+    ``saved_ui`` marks a person's own saved UI workflow: its seed is kept when the seed widget's
+    control value is ``fixed`` (as ComfyUI queues it); ``randomize``, ``increment`` and ``decrement`` stay fresh.
     """
     import secrets
 
     prepared = dict(bindings or {})
     if "seed" in getattr(workflow, "inputs", {}) and "seed" not in prepared:
-        prepared["seed"] = secrets.randbelow(2**32)
+        saved = _saved_fixed_seed(workflow) if saved_ui else None
+        prepared["seed"] = saved if saved is not None else secrets.randbelow(2**32)
     return prepared
+
+
+def _saved_fixed_seed(workflow: Any) -> int | None:
+    """The saved seed when the seed widget's control value is ``fixed``; None for any other control."""
+    seed = getattr(workflow, "inputs", {}).get("seed")
+    node = workflow.nodes.get(str(getattr(seed, "node_id", ""))) if seed is not None else None
+    if node is None or node.inputs.get("control_after_generate") != "fixed":
+        return None
+    value = seed.value
+    return value if type(value) is int and 0 <= value < 2**32 else None
 
 
 def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],

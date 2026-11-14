@@ -154,6 +154,16 @@ def _context_description(argv: list[str]) -> dict[str, Any] | None:
     return description
 
 
+def _attached_workflow_endpoint(parsed: argparse.Namespace) -> str:
+    """The attached ComfyUI endpoint for ``describe FILE --placement URL``; empty when not that form."""
+    if not (parsed.placement and '://' in parsed.placement and parsed.workflow and parsed.entry is None):
+        return ''
+    if not Path(parsed.workflow).expanduser().exists():
+        return ''
+    from astrid.core.generation import placement as placements
+    return placements.resolve_placement(placements.request_from_selector(parsed.placement)).endpoint or ''
+
+
 def _json_inputs(path: str) -> dict[str, Any]:
     def object_pairs(pairs):
         values = {}
@@ -554,7 +564,9 @@ def _main(argv: list[str]) -> int:
         _validate_datacenter(parsed.placement, parsed.datacenter, parser)
         if parsed.datacenter and parsed.placement is None:
             parser.error("--datacenter requires target describe with --placement runpod")
-        if parsed.placement is not None:
+        # A saved workflow described against an attached ComfyUI converts against that server's schema (read-only).
+        comfy_url = _attached_workflow_endpoint(parsed)
+        if parsed.placement is not None and not comfy_url:
             if parsed.entry is not None or parsed.workflow is not None:
                 parser.error('target describe cannot also select an entry or workflow')
             placement = cli_shared._gpu_placement(parsed.placement, parsed.gpu, parser)
@@ -572,7 +584,7 @@ def _main(argv: list[str]) -> int:
                 path = Path(parsed.workflow).expanduser()
                 if path.exists():
                     from astrid.core.generation.entries import describe_workflow
-                    description = describe_workflow(path, mode=parsed.mode)
+                    description = describe_workflow(path, mode=parsed.mode, comfy_url=comfy_url)
                 else:
                     from astrid.core.generation.listing import catalog_rows
                     if not any(row['id'] == parsed.workflow for row in catalog_rows()):
