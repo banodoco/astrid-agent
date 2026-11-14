@@ -47,6 +47,9 @@ def _workflow_file() -> Path:
 _RED = {}  # local-managed flipped in T4f: the registered managed install (see _managed_local_engine) runs the file
 
 
+# A full managed-preparation run through a real Runtime: about 100 s per case on a box running three such proofs at once, so the
+# 120 s default timeout cuts it off (local-managed timed out at 120 s while its sibling cases passed).
+@pytest.mark.timeout(600)
 @pytest.mark.parametrize("target_kind", TARGET_KINDS)
 def test_workflow_file_runs_on_each_placement(target_kind, tmp_path, monkeypatch, real_runtime, tuple_sources):
     workflow = _workflow_file()
