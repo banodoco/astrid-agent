@@ -26,22 +26,22 @@ print an API key; never write a change without that change's own yes.
 Astrid commands here use the launcher; its path on each OS is in the
 [astrid-setup skill's Launcher paths](../../setup/docs/SKILL.md#launcher-paths).
 The blocks show the Linux path. In a source checkout with no launcher, use
-`python3 -m astrid` in its place; `python3 -m astrid.packs.vibecomfy.local` has no launcher route and is always run that way.
+`python3 -m astrid` in its place. Make a work folder first: `WORK=$(mktemp -d)`
+(PowerShell: `$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))`).
 
 1. **Read what is set.** `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults --json` (each slot and
    where its value came from) and `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate targets --json` (the placement).
 2. **Discover, read-only.** Scan for the user's ComfyUI, with its saved workflows:
-   `python3 -m astrid.packs.vibecomfy.local scan`, the one command here outside the launcher
-   (the gateway has no route for it; its details are in the [VibeComfy skill](../../vibecomfy/docs/SKILL.md#find-their-comfyui)). Check provider keys by presence
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json`
+   (its details are in the [VibeComfy skill](../../vibecomfy/docs/SKILL.md#find-their-comfyui)). Check provider keys by presence
    only (for example `test -n "$FAL_KEY" && echo set`). For Wan2GP, ask for the
    folder if the user knows it, then check it:
-   `python3 -m astrid.packs.vibecomfy.local wan2gp /abs/Wan2GP`. Show one list of
+   `python3 -m astrid.packs.vibecomfy.local wan2gp /abs/Wan2GP` (no launcher route for this one). Show one list of
    what was found, and what was not.
 3. **Ask once which tool is primary**: their ComfyUI, Wan2GP, RunPod, or this
    computer's built-in engine. Save the placement only on a yes:
-   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkout --file "$WORK/generation.json"`, edit
-   `placement`, then `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkin "$WORK/generation.json"`.
-   For a ComfyUI, `placement` is `{"kind": "attached", "endpoint": "http://127.0.0.1:PORT"}`.
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement URL`
+   (for a ComfyUI, `URL` is its address, such as `http://127.0.0.1:PORT`; see Placement).
 4. **One question per default slot, four answers.** Read readiness from
    `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate list --json`, then ask with the evidence: "you have X's
    models; set it as your image default?" No answer runs anything. Each has one undo:
@@ -50,28 +50,33 @@ The blocks show the Linux path. In a source checkout with no launcher, use
      edited first (`workflows_detail`, by `modified`). On a yes, fetch the chosen one
      read-only to `$WORK/workflow.json`, then save and pin it below as `FILE`:
      `curl -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK/workflow.json"`
-     (`WORKFLOW` is its scan name; a nested name keeps its `/` as `%2F`). Undo:
-     `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults unset KIND MODE`.
+     (on Windows PowerShell, `curl.exe -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK\workflow.json"`,
+     since PowerShell 5.1 aliases `curl`). `WORKFLOW` is its scan name,
+     percent-encoded: a space is `%20`, and a nested name keeps its `/` as `%2F`. Undo:
+     the `restore:` command that the pin's `defaults set` prints (below).
    - **Another shipped entry**, or leave the slot to the pack default. Pin one from
      `generate list --json` with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults set KIND MODE ENTRY`,
      or drop the user's pin with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults unset KIND MODE`.
-     Undo: pin the entry step 1 showed, with `defaults set KIND MODE ENTRY` again.
+     Undo: the `restore:` command that `defaults set` prints after `Previous pin: X`.
+     After a drop, pin the entry step 1 showed with `defaults set KIND MODE ENTRY` again.
    - **Create a new default when none of those fits**: a workflow of theirs that is a
      file on disk, not among the scan's. Save and pin it below as `FILE`. Undo:
-     `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults unset KIND MODE`.
+     the `restore:` command that the pin's `defaults set` prints (below).
    - **Save and pin** (answers 2 and 4; `FILE` is the workflow, `NAME` the entry name).
      Preview first, which writes nothing:
      `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --as-entry NAME --dry-run --json`.
      On a yes, save, which queues nothing on any target:
      `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --as-entry NAME --no-run`.
      Then pin it: `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults set KIND MODE NAME`.
+     It prints `Previous pin: X; restore: CMD` (`previous` and `restore` with `--json`);
+     keep `CMD`, run through the launcher, as that pin's undo.
      The saved entry stays; delete `${VIBECOMFY_ENTRIES_DIR:-$HOME/.vibecomfy/entries}/NAME`
      only on a second yes.
 5. **Show how to run each one** (the commands in the sections below), then offer one
    test generation. Run it only on a yes.
-6. **List every change and its undo.** Undo a placement with `settings checkout`
-   and restore the old value; a pinned default with
-   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults unset KIND MODE`. Say which changes were
+6. **List every change and its undo.** Undo a placement with
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings unset placement`; a pinned default with
+   the `restore:` command its `defaults set` printed. Say which changes were
    made and which were not.
 
 A ComfyUI that is not running is a finding, not an error: say so, and ask the user

@@ -81,14 +81,18 @@ def _assert_command_has_local_gate(markdown: str, command_fragment: str, gate_fr
 
 
 def test_generation_skill_fenced_scan_command_uses_real_cli_parser(tmp_path, monkeypatch, capsys):
+    from astrid.core.generation import cli as generation_cli
+
     server, thread = _server(tmp_path)
     try:
         # The documented command scans default ports. Add the CLI's documented
         # testable --ports override so the fake server can use an ephemeral port.
         monkeypatch.setattr(local_scan, "_PINOKIO_INFO_URL", "http://127.0.0.1:1/pinokio/info")
-        command = _guide_command("python3 -m astrid.packs.vibecomfy.local scan", _GENERATION)
-        argv = shlex.split(command)[3:] + ["--ports", str(server.server_address[1])]
-        assert local_scan.main(argv) == 0
+        command = _guide_command('run-astrid" generate scan --json', _GENERATION)
+        assert command == '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json'
+        argv = _launcher_args(command)[1:] + ["--ports", str(server.server_address[1])]
+        assert argv[0] == "scan"
+        assert generation_cli.main(argv) == 0
         result = json.loads(capsys.readouterr().out)
         assert result["errors"] == []
         assert result["servers"][0]["workflows"] == ["portrait_flux.json", "nested/wan_i2v.json"]
@@ -618,3 +622,99 @@ def test_setup_skill_fetch_models_plan_and_apply_are_in_separate_blocks():
         lines = [line for line in block.splitlines() if "generate fetch-models" in line]
         assert not (any("--apply" in line for line in lines)
                     and any("--apply" not in line for line in lines)), block
+
+
+# --- R4.B: Pinokio route, restore undos, placement settings, work folder ----------------------------
+
+_SETUP_SOURCE = Path(__file__).resolve().parents[1] / "astrid" / "packs" / "setup" / "docs" / "SKILL.md"
+
+
+def _setup_step_0() -> str:
+    text = _SETUP.read_text()
+    start = text.index("## 0. ")
+    return text[start:text.index("\n## ", start + 1)]
+
+
+def _setup_launcher_paths() -> str:
+    text = _SETUP.read_text()
+    start = text.index("## Launcher paths")
+    return text[start:text.index("\n## ", start + 1)]
+
+
+def _route_texts(step: str) -> dict[str, str]:
+    return {match.group(1): " ".join(match.group(0).split()) for match in re.finditer(
+        r"^\d\. \*\*([^*]+)\*\*:.*?(?=^\d\. \*\*|\Z)", step, re.M | re.S)}
+
+
+def _launcher_line(label: str) -> str:
+    line = next(line for line in _setup_launcher_paths().splitlines() if line.startswith(f"- {label}"))
+    return re.search(r"`([^`]+)`", line).group(1)
+
+
+def test_route_zero_detects_a_pinokio_install_before_a_fresh_install(tmp_path):
+    step = _setup_step_0()
+    routes = _route_texts(step)
+    names = list(routes)
+    assert names.index("Pinokio install") < names.index("Fresh install"), names
+    # Only the Pinokio launcher exists: the standard path is absent, the Pinokio path resolves.
+    home = tmp_path / "home"
+    pinokio_launcher = home / "pinokio" / "api" / "astrid-pinokio" / "app" / "astrid" / "run-astrid"
+    pinokio_launcher.parent.mkdir(parents=True)
+    pinokio_launcher.write_text("#!/bin/sh\n")
+    env = {**os.environ, "HOME": str(home), "XDG_DATA_HOME": str(home / ".local" / "share")}
+    standard = subprocess.run(f"ls {_launcher_line('Linux:')}", shell=True, env=env, text=True,
+                              capture_output=True)
+    assert standard.returncode != 0
+    pinokio = subprocess.run(f"ls {_launcher_line('Pinokio, macOS and Linux:')}", shell=True, env=env,
+                             text=True, capture_output=True)
+    assert pinokio.returncode == 0, pinokio.stderr
+    assert pinokio.stdout.strip() == str(pinokio_launcher)
+    # That state selects the Pinokio route, and that route offers no install command.
+    route = routes["Pinokio install"]
+    assert "launcher at the Pinokio path" in route
+    assert "Never run the installer" in route
+    for forbidden in ("astrid.haus/install", "--root", "--managed-by", "--yes"):
+        assert forbidden not in route, forbidden
+    assert "no launcher at either path" in routes["Fresh install"]
+
+
+def test_launcher_paths_list_the_pinokio_launcher_for_each_os():
+    paths = _setup_launcher_paths()
+    assert _launcher_line("Pinokio, macOS and Linux:").endswith('/api/*/app/astrid/run-astrid')
+    assert _launcher_line("Pinokio, Windows PowerShell:").endswith('\\app\\astrid\\run-astrid.cmd"')
+    assert "pinokio.home" in paths
+
+
+def test_generation_defaults_undo_is_the_restore_command_defaults_set_prints():
+    section = _generation_setup_section()
+    step = section[section.index("4. **"):section.index("5. **")]
+    bullets = {label: step[step.index(label):] for label in
+               ("**Use one of yours**", "**Another shipped entry**", "**Create a new default when none of those fits**")}
+    for label, rest in bullets.items():
+        undo = rest[rest.index("Undo:"):].split("\n   - ")[0]
+        assert "`restore:`" in undo, (label, undo)
+        assert "defaults unset" not in undo, (label, undo)
+    assert "Previous pin:" in step
+
+
+def test_generation_steps_3_and_6_save_and_undo_a_placement_with_settings_set_and_unset():
+    section = _generation_setup_section()
+    step3 = section[section.index("3. **"):section.index("4. **")]
+    step6 = section[section.index("6. **"):]
+    assert "settings set placement URL" in step3
+    assert "settings unset placement" in step6
+    for step in (step3, step6):
+        assert "checkout" not in step and "checkin" not in step
+    for argv in _offered_generate_argv(step3 + step6, {}):
+        assert argv[:2] == ["settings", "set"] or argv[:2] == ["settings", "unset"] or argv[0] == "defaults"
+
+
+def test_work_folder_is_defined_before_first_use_and_windows_fetch_uses_curl_exe():
+    for document in (_GENERATION, _SETUP_SOURCE):
+        text = document.read_text()
+        assert "WORK=$(mktemp -d)" in text, document
+        assert "$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))" in text, document
+        assert text.index("WORK=$(mktemp -d)") < text.index('"$WORK/'), document
+        assert "curl.exe -fsS" in text, document
+        assert "percent-encode" in text, document
+        assert "%2F" in text, document

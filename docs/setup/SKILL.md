@@ -26,6 +26,13 @@ one for the user's OS:
 - macOS: `"$HOME/.local/share/astrid/run-astrid"`
 - Windows PowerShell: `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd"`
 
+A Pinokio-managed install keeps its launcher at a different root. Pinokio's
+home is `~/pinokio` unless the scan's `pinokio.home` names another. If the
+launcher is there, use it in place of the one above for every command:
+
+- Pinokio, macOS and Linux: `"$HOME/pinokio"/api/*/app/astrid/run-astrid`
+- Pinokio, Windows PowerShell: `"$env:USERPROFILE\pinokio\api\*\app\astrid\run-astrid.cmd"`
+
 ## 0. Work out the entry route
 
 Take the first route that fits, and only that one:
@@ -35,10 +42,14 @@ Take the first route that fits, and only that one:
    Ask: "Install with these choices, or change one?"
    If they keep them, run the brief's command exactly as given. If they change
    one, go to step 1. Then follow step 2's success and failure rules.
-2. **Fresh install**: there is no launcher at the path above. Ask for consent
+2. **Pinokio install**: there is a launcher at the Pinokio path (Launcher paths).
+   Pinokio manages this install and its data. Never run the installer for it,
+   and do not offer a second install. It is updated and repaired from the
+   Pinokio app. Use that launcher for every command, and go to step 3.
+3. **Fresh install**: there is no launcher at either path. Ask for consent
    once, unless the user already gave it. Recommend Astrid defaults.
    Then go to step 1.
-3. **Existing install**: the launcher exists. Ask for consent, unless the user
+4. **Existing install**: the launcher exists. Ask for consent, unless the user
    already approved this run. Recommend "keep your current settings".
    Do not guess saved choices. Tell the user: "Your saved setup choices
    stay as they are. Tell me if you want to change one." Do not show the choices
@@ -77,7 +88,7 @@ before you install. Then go to step 2.
 
 Run one install command for the user's OS, after consent. Read the installer
 first. The commands below are for a fresh install, or after the choices step only;
-an existing install uses route 3 in step 0. They show Astrid defaults. Use the approved values from step 1 for every choice.
+an existing install uses route 4 in step 0. They show Astrid defaults. Use the approved values from step 1 for every choice.
 `--yes` records consent the user already gave. Never use it to skip the
 consent question.
 
@@ -135,13 +146,12 @@ planned (Plan 12) and leave it alone.
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults --json
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate targets --json
-python3 -m astrid.packs.vibecomfy.local scan
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json
 ```
 
 `defaults` lists each slot with `ready` and `reason`. `targets` shows where
-generation would run. The scan is a pack module, so it runs without the
-launcher. It lists running ComfyUI servers and their saved workflows, newest
-first. If their ComfyUI is not running, ask the user to start it.
+generation would run. The scan lists running ComfyUI servers and their saved
+workflows, newest first. If their ComfyUI is not running, ask the user to start it.
 
 **Use it.** If a ComfyUI is running, ask: "Use the ComfyUI at this address to
 generate?" On that yes, save the connection. This creates a project if there is
@@ -175,7 +185,18 @@ Then ask for a yes to the first image, and run it:
 If they say no to the downloads, use one of their saved workflows instead
 (fetched read-only; its saved seed is kept):
 
+Make a work folder first, and percent-encode `WORKFLOW`, the workflow's scan
+name: a space is `%20`, and a nested name keeps its `/` as `%2F`. In
+PowerShell, make the folder as below and fetch with `curl.exe -fsS`, since
+PowerShell 5.1 aliases `curl`:
+
+```powershell
+$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))
+curl.exe -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK\workflow.json"
+```
+
 ```sh
+WORK=$(mktemp -d)
 curl -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK/workflow.json"
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe "$WORK/workflow.json" --placement URL
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow "$WORK/workflow.json" --placement URL --inputs-json /absolute/path/inputs.json

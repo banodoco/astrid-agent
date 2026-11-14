@@ -134,3 +134,16 @@ def test_runpod_section_in_the_generation_skill_is_one_line_and_a_link():
     assert "RunPod machine skill" in body
     assert "astrid machines" not in body
     assert len([line for line in body.splitlines() if line.strip()]) <= 4, body
+
+
+def test_skills_reach_the_scan_through_the_launcher_and_never_the_pack_module():
+    launcher_scan = 'run-astrid" generate scan'
+    for relative in (SETUP_SOURCE, SETUP_MIRROR, GENERATION, VIBECOMFY):
+        text = _text(relative)
+        assert "vibecomfy.local scan" not in text, relative
+        assert "outside the launcher" not in text, relative
+        assert "runs without the launcher" not in text, relative
+        assert launcher_scan in text, relative
+    for relative in (SETUP_SOURCE, SETUP_MIRROR, GENERATION):
+        assert 'run-astrid" generate scan --json' in _text(relative), relative
+    assert 'run-astrid" generate scan --ports 8188 --json' in _text(VIBECOMFY)
