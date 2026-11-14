@@ -1,7 +1,14 @@
 """Shared read-only workflow asset diagnostics, before canonical approval."""
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import re
 import shlex
+import shutil
+import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -123,3 +130,211 @@ def require_workflow_assets(workflow: Any, observed: dict[str, Any], entry: str 
     nodes, models = workflow_asset_gaps(workflow, observed)
     if nodes or models:
         raise GenerationReadinessError(asset_readiness(entry, nodes=nodes, models=models))
+
+
+# --- Download a default's missing models into the person's own (same-machine) ComfyUI ---------
+
+DOWNLOAD_MARGIN_BYTES = 1 << 30  # free space kept beyond the files: 1 GiB
+_LOOPBACK = frozenset({'127.0.0.1', '::1', 'localhost'})
+
+
+class AttachedDownloadRefused(Exception):
+    """The download step declined; nothing was written, or only verified whole files were."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def canonical_folder(paths, key: str | None) -> str | None:
+    """The folder whose last segment is the folder key, else the first path.
+
+    ComfyUI lists the legacy `unet` and `clip` folders before `diffusion_models` and `text_encoders`.
+    """
+    candidates = [path for path in ([paths] if isinstance(paths, str) else paths or ())
+                  if isinstance(path, str) and path]
+    named = [path for path in candidates if path.replace('\\', '/').rstrip('/').rsplit('/', 1)[-1] == key]
+    return (named or candidates or [None])[0]
+
+
+def _size(count: int) -> str:
+    return f'{count} bytes' if count < 1 << 20 else f'{count / (1 << 30):.2f} GiB ({count} bytes)'
+
+
+def _default_sources(entry_id: str) -> dict[str, Any]:
+    """Complete declarations only (URL, size, SHA-256): packaged locks and entry model_assets."""
+    from .asset_alignment import catalog_manifests
+    return {model.destination: model for manifest in catalog_manifests(entry_id)
+            for mode in manifest['modes'] for model in mode['models']}
+
+
+def _download_gaps(client, entry_id: str, mode: str):
+    """Missing role files of the entry on the attached server, each with its server folder."""
+    from astrid.core.model_catalog.registry import ModelRegistry
+    from .backends.comfy_target import _COMFY_MODEL_FOLDERS, _resolve_roles
+
+    _entry, mode_spec = ModelRegistry.load_default().get_by_mode(entry_id, mode)
+    spec = mode_spec.backends.get('local')
+    if spec is None or not spec.model_roles:
+        raise AttachedDownloadRefused('no_model_roles', f'{entry_id}/{mode} declares no model files to download.')
+    info = client.object_info()
+    absent = sorted({role.node_class for role in spec.model_roles.values() if role.node_class not in info})
+    if absent:
+        raise AttachedDownloadRefused('missing_node', 'This ComfyUI lacks the node(s) ' + ', '.join(absent)
+                                      + '; install them first. Nothing was downloaded.')
+    _resolved, failures = _resolve_roles(spec, info)
+    try:
+        listed = client.request_json('/internal/folder_paths', timeout=5, response_limit=64 * 1024)
+    except Exception:  # noqa: BLE001 - a failed folder lookup only loses the folder
+        listed = None
+    folders = listed if isinstance(listed, dict) else {}
+    gaps = []
+    for role, matches in failures.items():
+        if len(matches) > 1:
+            continue  # ambiguous: the person keeps exactly one; nothing to download
+        declaration = spec.model_roles[role]
+        key = _COMFY_MODEL_FOLDERS.get((declaration.node_class, declaration.input))
+        gaps.append({'role': role, 'key': key, 'names': list(declaration.names),
+                     'folder': canonical_folder(folders.get(key) if key else None, key)})
+    return gaps, spec, info
+
+
+def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=None) -> dict[str, Any]:
+    """Read-only: what would be downloaded where. Writes nothing and asks the server only for reads."""
+    from urllib.parse import urlsplit
+
+    gaps, _spec, _info = _download_gaps(client, entry_id, mode)
+    sources = _default_sources(entry_id) if sources is None else sources
+    files, manual = [], []
+    for gap in gaps:
+        model = next((sources[f"{gap['key']}/{name}"] for name in gap['names']
+                      if gap['key'] and f"{gap['key']}/{name}" in sources
+                      and '/' not in name and '\\' not in name), None)
+        if model is None or not gap['folder']:
+            manual.append({'role': gap['role'], 'file': ' or '.join(gap['names']), 'folder': gap['folder']})
+        else:
+            files.append({'role': gap['role'], 'file': model.destination.rsplit('/', 1)[-1], 'folder': gap['folder'],
+                          'url': model.url, 'bytes': model.bytes, 'sha256': model.sha256})
+    host = urlsplit(client.target.url).hostname
+    if host not in _LOOPBACK:
+        raise AttachedDownloadRefused('not_same_machine', 'This ComfyUI is not on this computer, so nothing is '
+            'downloaded for it. ' + ' '.join(i['message'] for i in attached_model_readiness(
+                entry_id, [{'role': g['role'], 'file': ' or '.join(g['names']), 'folder': g['folder']}
+                           for g in gaps])['issues']))
+    problems = [f['folder'] for f in files if not (os.path.isabs(f['folder']) and os.path.isdir(f['folder'])
+                                                    and os.access(f['folder'], os.W_OK))]
+    if problems:
+        raise AttachedDownloadRefused('folder_not_writable', 'The folder ' + problems[0]
+            + ' reported by your ComfyUI does not exist on this computer or is not writable; nothing was downloaded.')
+    total = sum(f['bytes'] for f in files)
+    devices = {}
+    for f in files:
+        devices.setdefault(os.stat(f['folder']).st_dev, []).append(f)
+    free, enough = None, True
+    for group in devices.values():
+        space = shutil.disk_usage(group[0]['folder']).free
+        free = space if free is None else min(free, space)
+        enough = enough and space >= sum(f['bytes'] for f in group) + DOWNLOAD_MARGIN_BYTES
+    body = {'entry': entry_id, 'mode': mode, 'target': client.target.url, 'files': files, 'manual': manual}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return {**body, 'total_bytes': total, 'margin_bytes': DOWNLOAD_MARGIN_BYTES, 'free_bytes': free,
+            'space_ok': enough, 'plan_sha256': digest}
+
+
+def render_attached_download_plan(plan: dict[str, Any]) -> str:
+    lines = [f"Missing models for {plan['entry']}/{plan['mode']} on your ComfyUI at {plan['target']}:"]
+    for f in plan['files']:
+        lines.append(f"  {f['file']}  {_size(f['bytes'])}  -> {f['folder']}  (from {f['url']}, SHA-256 {f['sha256']})")
+    for m in plan['manual']:
+        lines.append(f"  {m['file']}: no verified source is declared; put {m['file']} in "
+                     f"{m['folder'] or 'the models folder for ' + str(m['role'])} yourself.")
+    if not plan['files']:
+        return '\n'.join(lines + ['Nothing can be downloaded.'])
+    lines.append(f"Total: {_size(plan['total_bytes'])}; free space: {_size(plan['free_bytes'])}, "
+                 f"and {_size(plan['margin_bytes'])} more is kept free as a margin.")
+    if not plan['space_ok']:
+        lines.append('Not enough free space for this download; free some space first.')
+    lines.append('Nothing has been written. ComfyUI is not restarted and nothing else on it is changed.')
+    lines.append(f"To download exactly this, run: astrid generate fetch-models {plan['entry']} {plan['mode']} "
+                 f"--comfy-url {plan['target']} --apply {plan['plan_sha256']}")
+    return '\n'.join(lines)
+
+
+def _fetch_into_folder(item: dict[str, Any], http_client) -> None:
+    """One verified file via VibeComfy fetch, staged under a temp name in the same folder, then renamed."""
+    from vibecomfy import fetch
+
+    folder = Path(item['folder']).resolve(strict=True)
+    root, final = folder.parent, folder / item['file']
+    staged_name = item['file'] + '.astrid-partial'
+    staged = folder / staged_name
+    entry = {'name': staged_name, 'subdir': folder.name, 'url': item['url'],
+             'sha256': item['sha256'], 'size_bytes': item['bytes']}
+    receipt = fetch._verification_receipt_path(staged, root=root)
+    kept = [d for d in (receipt.parent, receipt.parent.parent) if d.exists()]
+    staged.unlink(missing_ok=True)
+    try:
+        fetch.download(entry, root=root, client=http_client, quiet=True)
+        try:
+            os.link(staged, final)  # fails if the file appeared meanwhile: never overwrites
+        except FileExistsError as exc:
+            raise AttachedDownloadRefused('file_exists', f'{final} appeared while downloading; left untouched.') from exc
+    finally:
+        staged.unlink(missing_ok=True)
+        receipt.unlink(missing_ok=True)
+        for directory in (receipt.parent, receipt.parent.parent):
+            if directory not in kept:
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+
+
+def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha256, sources=None,
+                                  http_client=None) -> dict[str, Any]:
+    """Download exactly the plan whose digest was confirmed; re-checks everything before the first write."""
+    if not isinstance(plan_sha256, str) or not re.fullmatch('[0-9a-f]{64}', plan_sha256):
+        raise AttachedDownloadRefused('confirmation_required', 'Run without --apply to see the plan, then pass its '
+                                      'plan digest to --apply. Nothing was written.')
+    plan = plan_attached_model_download(client, entry_id, mode, sources=sources)
+    if plan['plan_sha256'] != plan_sha256:
+        raise AttachedDownloadRefused('plan_changed', 'The plan changed since it was shown (files, sources or folders); '
+                                      'review the new plan and confirm it. Nothing was written.')
+    if not plan['files']:
+        raise AttachedDownloadRefused('nothing_to_download', 'Nothing in the plan can be downloaded.')
+    if not plan['space_ok']:
+        raise AttachedDownloadRefused('insufficient_space',
+            f"Not enough free space: {_size(plan['free_bytes'])} free, need {_size(plan['total_bytes'])} plus a "
+            f"margin of {_size(plan['margin_bytes'])}. Nothing was written.")
+    for f in plan['files']:
+        if os.path.lexists(os.path.join(f['folder'], f['file'])):
+            raise AttachedDownloadRefused('file_exists', f"{f['file']} already exists in {f['folder']}; it is never "
+                                          'overwritten. Nothing was written.')
+    done = []
+    for f in plan['files']:
+        _fetch_into_folder(f, http_client)
+        done.append({'file': f['file'], 'folder': f['folder'], 'bytes': f['bytes']})
+    return {'downloaded': done, 'total_bytes': plan['total_bytes'], 'restarted': False,
+            'next_step': 'No restart needed: ComfyUI re-reads a model folder when its modification time changes, so '
+                         'the new files appear on its next /object_info request (refresh the node definitions in an '
+                         'open ComfyUI page, or reload it).'}
+
+
+def main(args) -> int:
+    from .backends.comfy_target import ComfyTarget, ComfyTargetClient
+
+    try:
+        client = ComfyTargetClient(ComfyTarget(args.comfy_url, 'attached'))
+        if args.apply:
+            result = apply_attached_model_download(client, args.entry, args.mode, plan_sha256=args.apply)
+            text = '\n'.join([*(f"Downloaded {d['file']} -> {d['folder']}" for d in result['downloaded']),
+                              result['next_step']])
+        else:
+            result = plan_attached_model_download(client, args.entry, args.mode)
+            text = render_attached_download_plan(result)
+    except (AttachedDownloadRefused, ValueError, OSError, KeyError, RuntimeError) as exc:
+        print(json.dumps({'error': {'code': getattr(exc, 'code', 'download_failed'), 'message': str(exc)}},
+                         sort_keys=True), file=sys.stderr)
+        return 1
+    print(json.dumps(result, sort_keys=True) if args.json else text)
+    return 0
