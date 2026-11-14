@@ -29,7 +29,8 @@ to a pod. No separate B3 or second live runner.
   parser, **not yet a runnable or frozen command**, is:
 
   ```sh
-  astrid generate image --placement runpod --engine comfyui --entry '<V08-entry>' --inputs-json '<V08-inputs.json>' --project '<isolated-project>' --out '<V08-output>' --consent paid --max-usd '<approved-journey-cap>' --deadline '<approved-absolute-UTC-deadline>' --no-wait --json
+  astrid machines claim --consent paid --max-usd '<approved-journey-cap>' --deadline '<approved-absolute-UTC-deadline>' --json
+  astrid generate image --placement runpod --engine comfyui --entry '<V08-entry>' --inputs-json '<V08-inputs.json>' --project '<isolated-project>' --out '<V08-output>' --no-wait --json
   ```
 
   V08 must replace every placeholder, use the approved entry's exact required

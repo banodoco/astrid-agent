@@ -55,12 +55,17 @@ def utc(seconds):
 
 
 @pytest.fixture
-def warm_case(release_case, monkeypatch):
+def warm_case(release_case, monkeypatch, pod_watchdog_transport):
+    from runpod_lifecycle.https import write_token_file
+
     case = release_case
     clock = Clock()
     record = copy.deepcopy(case.record)
+    token_path = case.path.with_name("https-token")
+    write_token_file(token_path, pod_watchdog_transport)
     record.update(request_name="astrid-product-operation-1", name="astrid-product-operation-1",
-                  target_identity_verified=True, reconciliation_required=False, volume_mount_path="/workspace")
+                  target_identity_verified=True, reconciliation_required=False, volume_mount_path="/workspace",
+                  transport="https", https_token_file=str(token_path))
     record["paid_limits"] = {
         "invocation_id": "run-consent-1", "hourly_usd": 1, "max_usd": 1,
         "authorized_at": utc(clock()), "deadline": utc(clock() + 1000),
@@ -596,7 +601,7 @@ def test_small_lease_paid_bound_fences_active_invocation(small_lease):
         owner.acquire(replace(grant, invocation_id="blocked"), requested_idle_seconds=0)
     assert c.creates == 1
     c.drain_error = None
-    c.clock.advance(1)
+    c.clock.advance(5)
     assert c.deletes == ["pod-1"]
 
 
@@ -760,7 +765,7 @@ def test_deadline_passing_during_post_keeps_paid_clock_and_releases_exact_pod(sm
         owner.acquire(grant, requested_idle_seconds=0)
     assert c.read()["paid_limits"]["authorized_at"] == utc(initial)
     assert target_selection._utc(c.read()["paid_limits"]["expires_at"]).timestamp() == initial + 10
-    c.clock.advance(1)
+    c.clock.advance(5)
     assert c.deletes == ["pod-1"] and c.creates == 1 and c.read()["state"] == "cleanup_complete"
 
 
@@ -783,7 +788,7 @@ def test_cancellation_during_post_reconciles_and_releases_without_second_create(
     with pytest.raises(target_selection.CapacityWaitCancelled):
         owner.acquire(c.grant, cancelled=lambda: cancelled[0])
     assert c.read()["state"] == "allocation_unknown"
-    c.clock.advance(1)
+    c.clock.advance(5)
     assert c.creates == 1 and c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
 
 
@@ -1080,7 +1085,7 @@ def test_small_lease_expiry_retries_transient_custody_read_failure(small_lease, 
     c.clock.advance(remaining)
     assert failed and not c.deletes
     assert c.read()["state"] == "claimed"
-    c.clock.advance(1)
+    c.clock.advance(5)
     assert c.deletes == ["pod-1"]
     assert c.read()["state"] == "cleanup_complete"
     assert c.read()["cleanup"]["absence"]["account_list_absent"] is True

@@ -36,7 +36,7 @@ def test_fixed_entry_dry_run(entry_id, mode, paid_controls, tmp_path, capsys, mo
             inputs[name] = str(path)
         else:
             inputs[name] = "A clear test scene"
-    args = build_generate_argv(entry, mode, inputs, "runpod", paid_controls, dry_run=True)
+    args = build_generate_argv(entry, mode, inputs, "runpod", dry_run=True)
     before = len(runpod_guard.blocked_attempts)
     rc = console.main(args)
     output = json.loads(capsys.readouterr().out)

@@ -1000,13 +1000,13 @@ class RunPodMachine:
         except Exception as failure:  # noqa: BLE001 - every host refusal keeps its evidence
             run.lease.failure_progress_phase = next(
                 (row.get("phase") for row in reversed(run.progress) if row.get("phase")), None)
-            if run.lease.failure_verification is None:
+            if getattr(run.lease, "failure_verification", None) is None:
                 reason = getattr(failure, "reason", None)
                 run.lease.failure_verification = {
                     "outcome": "not_observed",
                     **({"reason": reason.as_dict()} if isinstance(reason, Reason) else {}),
                 }
-            if run.lease.failure_logs is None:
+            if getattr(run.lease, "failure_logs", None) is None:
                 try:
                     run.lease.failure_logs = self._collect_fetch_failure_logs(run, destination)
                 except Exception as log_error:  # noqa: BLE001 - keep the original refusal
@@ -1579,7 +1579,11 @@ class RunPodMachine:
                 raise MachineError("failure reset exceeded the original paid limit")
             record = ops.job_poll(job_id)
             if record.get("id") != job_id:
-                raise MachineError("reset poll differs from the checkpointed job custody")
+                if record.get("id") is not None:
+                    raise MachineError("reset poll differs from the checkpointed job custody")
+                # An incomplete poll cannot confirm completion. Still collect
+                # fixed reset reasons from the exact folder returned at start.
+                break
             if record.get("state") == "exited":
                 break
             if record.get("state") in {"missing", "cancelled"}:
@@ -1598,14 +1602,16 @@ class RunPodMachine:
             if sleep_for <= 0:
                 raise MachineError("failure reset exceeded the original paid limit")
             time.sleep(sleep_for)
-        self._checkpoint(lease, {"id": job_id, "state": "exited"})
+        if record.get("id") == job_id:
+            self._checkpoint(lease, {"id": job_id, "state": "exited"})
         directory = str(started.get("dir") or "")
         stdout = ""
         if directory:
             _c, stdout, _e = ops.exec(f"cat {shlex.quote(directory)}/stdout", 120)
         result = parse_reset(stdout)
         exit_code = record.get("exit_code")
-        if type(exit_code) is not int or exit_code != 0 or result.get("reset") != "ok":
+        if (record.get("id") != job_id or type(exit_code) is not int
+                or exit_code != 0 or result.get("reset") != "ok"):
             from .pod_reset import reset_failure_reason
 
             safe_code = exit_code if type(exit_code) is int and 0 <= exit_code <= 255 else "unknown"

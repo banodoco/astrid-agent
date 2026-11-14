@@ -123,11 +123,11 @@ def settlement_case(host_case, tmp_path, monkeypatch):
 
         def fail_attempt(self, attempt_id, *, idempotency_key, **body):
             case.failures.append((attempt_id, copy.deepcopy(body), idempotency_key))
-            if case.mode in {"fail_conflict", "fail_lease", "fail_transport", "cede_outage"} and "result" in body:
+            if case.mode in {"fail_conflict", "fail_validation", "fail_transport", "cede_outage"} and "result" in body:
                 if case.mode in {"fail_conflict", "cede_outage"}:
                     raise ApiError(409, "conflict", "output object is outside the task project")
-                if case.mode == "fail_lease":
-                    raise ApiError(409, "lease_expired", "lease expired")
+                if case.mode == "fail_validation":
+                    raise ApiError(422, "validation_error", "terminal evidence is invalid")
                 if len(case.failures) <= 2:
                     raise OSError("ACK unavailable")
             if case.mode == "cede_outage" and "result" not in body and sum(
@@ -294,13 +294,13 @@ def test_lost_ack_with_delayed_readback_retains_owner_without_duplicate_outputs(
     assert not case.failures and not case.cancels
 
 
-def test_bounded_reconciliation_explicitly_cancels_before_renewal_stops(settlement_case, monkeypatch):
+def test_explicit_shutdown_cancels_before_renewal_stops(settlement_case):
     case = settlement_case
     case.mode = "outage"
-    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_SECONDS", 0.1, raising=False)
     with pytest.raises(OSError, match="ACK unavailable"):
         _run(case)
     owner = case.host._reconciliation_owners[case.attempt["attempt_id"]]
+    case.host._shutdown.set()
     owner.join(timeout=3)
     _assert_resolved(case, "cancelled")
     assert not case.failures and len(case.cancels) == 1
@@ -309,18 +309,16 @@ def test_bounded_reconciliation_explicitly_cancels_before_renewal_stops(settleme
     assert case.root.exists()
 
 
-def test_expired_reconciliation_cedes_exact_owner_without_evidence(settlement_case, monkeypatch):
+def test_runtime_failure_verdict_ends_reconciliation_without_evidence(settlement_case):
     case = settlement_case
     case.mode = "outage"
-    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_SECONDS", 0.1, raising=False)
     with pytest.raises(OSError, match="ACK unavailable"):
         _run(case)
     owner = case.host._reconciliation_owners[case.attempt["attempt_id"]]
-    past = (datetime.now(timezone.utc) - timedelta(minutes=18)).isoformat()
-    with case.service.store._mutex:
-        for table, identity in (("tasks", case.task_id), ("attempts", case.attempt["attempt_id"])):
-            case.service.store.conn.execute(f"UPDATE {table} SET lease_expires_at=? WHERE id=?", (past, identity))
-        case.service.store.conn.execute("UPDATE reservations SET lease_expires_at=? WHERE task_id=?", (past, case.task_id))
+    # An explicit fenced controller verdict replaces the removed local timeout.
+    case.host.client.fail(case.task_id, case.attempt["lease_id"], "reconciliation requested",
+                          retryable=False, attempt_id=case.attempt["attempt_id"], fence=case.attempt["fence"],
+                          structured_error={"code": "reconciliation_required"})
     owner.join(timeout=3)
     assert not owner.is_alive()
     _assert_resolved(case, "failed")
@@ -375,7 +373,9 @@ def test_rejection_requires_validation_response_and_exact_nonterminal_readback(
 
     def settle(*args, **kwargs):
         writes.append((args, kwargs))
-        raise ApiError(status, "conflict", "rejected publication")
+        code = {0: "transport_error", 408: "http_error", 429: "rate_limited",
+                503: "http_error"}.get(status, "conflict")
+        raise ApiError(status, code, "rejected publication")
 
     protocol.generated.settle_attempt = settle
     with pytest.raises(RuntimeError) as raised:
@@ -386,7 +386,7 @@ def test_rejection_requires_validation_response_and_exact_nonterminal_readback(
     assert len(writes) == (1 if rejected else 2)
 
 
-@pytest.mark.parametrize("mode", ["fail_conflict", "fail_lease"])
+@pytest.mark.parametrize("mode", ["fail_conflict", "fail_validation"])
 def test_rejected_failure_cedes_without_evidence(settlement_case, monkeypatch, mode):
     case = settlement_case
     case.mode = mode

@@ -559,6 +559,7 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
         # Fresh claims never inherit a previous claim's bearer from ambient env.
         https_token=None,
         gpu_type=args.gpu_type,
+        ram_tiers_enabled=False,
         storage_name=args.storage_name,
         storage_volumes=(args.storage_name,),
         container_disk_gb=args.container_disk_gb,
