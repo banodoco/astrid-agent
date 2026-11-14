@@ -102,6 +102,9 @@ jobs:
       - name: Import cycles gate
         run: make cycles
 
+      - name: Collection errors gate
+        run: make collection
+
       - name: Save pip cache on main or int branches (C-08)
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-4.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
