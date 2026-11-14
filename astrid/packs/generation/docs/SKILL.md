@@ -35,22 +35,30 @@ never read or print an API key; never write a change without that change's own y
    `python3 -m astrid generate settings checkout --file "$WORK/generation.json"`, edit
    `placement`, then `python3 -m astrid generate settings checkin "$WORK/generation.json"`.
    For a ComfyUI, `placement` is `{"kind": "attached", "endpoint": "http://127.0.0.1:PORT"}`.
-4. **One question per default slot.** Use `python3 -m astrid generate list --json`
-   for readiness, and ask with the evidence: "you have X's models; set it as your
-   image default?" Save each yes with
-   `python3 -m astrid generate defaults set <kind> <mode> <entry>`.
-5. **A checklist of the other saved workflows** from the scan. For each one the
-   user ticks, preview it first, then save it as an entry:
-   `python3 -m astrid generate workflow FILE --as-entry NAME --dry-run --json`
-   shows the inputs the entry would declare and writes nothing.
-   Save it with `python3 -m astrid generate workflow FILE --as-entry NAME --no-run`.
-   `--no-run` saves the entry and queues nothing on any target, so setup never
-   touches the user's ComfyUI queue.
-6. **Show how to run each one** (the commands in the sections below), then offer one
+4. **One question per default slot, four answers.** Read readiness from
+   `python3 -m astrid generate list --json`, then ask with the evidence: "you have X's
+   models; set it as your image default?" No answer runs anything. Each has one undo:
+   - **Keep Astrid's**, with its readiness shown. Nothing is written. Undo: none needed.
+   - **Use one of theirs**. Show their saved workflows from the scan, newest first
+     (`workflows_detail`, by `modified`). Pin one that is already a saved entry:
+     `python3 -m astrid generate defaults set KIND MODE ENTRY`. Undo:
+     `python3 -m astrid generate defaults unset KIND MODE`.
+   - **Another shipped entry**, or leave the slot to the pack default. Pin one from
+     `generate list --json` with `defaults set KIND MODE ENTRY`, or drop the user's
+     pin with `defaults unset KIND MODE`. Undo: `defaults set KIND MODE ENTRY` again,
+     with the entry step 1 showed.
+   - **A new default from their workflow**. Preview it, which writes nothing:
+     `python3 -m astrid generate workflow /absolute/path/workflow.json --as-entry NAME --dry-run --json`.
+     On a yes, save it, which queues nothing on any target:
+     `python3 -m astrid generate workflow /absolute/path/workflow.json --as-entry NAME --no-run`.
+     Then pin it with `defaults set KIND MODE NAME`. Undo: `defaults unset KIND MODE`.
+     The saved entry stays; delete `${VIBECOMFY_ENTRIES_DIR:-$HOME/.vibecomfy/entries}/NAME`
+     only on a second yes.
+5. **Show how to run each one** (the commands in the sections below), then offer one
    test generation. Run it only on a yes.
-7. **List every change and its undo.** Undo a placement with `settings checkout`
+6. **List every change and its undo.** Undo a placement with `settings checkout`
    and restore the old value; a pinned default with
-   `python3 -m astrid generate defaults unset <kind> <mode>`. Say which changes were
+   `python3 -m astrid generate defaults unset KIND MODE`. Say which changes were
    made and which were not.
 
 A ComfyUI that is not running is a finding, not an error: say so, and ask the user
