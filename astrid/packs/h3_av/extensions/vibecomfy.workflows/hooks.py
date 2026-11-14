@@ -14,6 +14,7 @@ relative imports) and takes engine-side facts from the ``engine`` argument the e
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -54,12 +55,50 @@ def _file_map(inputs: Mapping[str, Any], files: Mapping[str, Any]) -> dict[str, 
     return {str(key): str(path) for key, path in value.items()}
 
 
+def _require_media_tools() -> None:
+    """ffmpeg and ffprobe, checked before any work: after_outputs needs them once the GPU run is paid for."""
+    missing = [tool for tool in ("ffmpeg", "ffprobe") if shutil.which(tool) is None]
+    if missing:
+        raise RuntimeError("h3 needs ffmpeg and ffprobe on PATH on the machine that runs it; missing: "
+                           + ", ".join(missing))
+
+
+def _given(inputs: Mapping[str, Any], files: Mapping[str, Any], name: str) -> Any:
+    return (files or {}).get(name) or (inputs or {}).get(name)
+
+
+def _plain_request(inputs: Mapping[str, Any], files: Mapping[str, Any], facts: Any) -> tuple[dict[str, Any], dict[str, str]]:
+    """The request.v1 document and asset map for the kind's plain inputs (a prompt and one media file).
+
+    An image is the one reference of a source-free generation. A video is regenerated over its whole
+    picture and length, keeping its audio. Anything finer (masks, continuation, more references) is a
+    request document.
+    """
+    prompt, image, video = (_given(inputs, files, name) for name in ("prompt", "image_ref", "video_ref"))
+    if not prompt or bool(image) == bool(video):
+        raise ValueError("h3 needs a 'request' document with its 'asset_map', or a prompt with exactly one of "
+                         "image_ref (i2v) or video_ref (v2v)")
+    overrides = {name: int(inputs[name]) for name in ("seed", "steps") if (inputs or {}).get(name) is not None}
+    base = {"version": 1, "content": {"prompt": str(prompt)}, "references": [], "overrides": overrides}
+    if image:
+        frames = int((inputs or {}).get("frames") or 120)
+        return ({**base, "operation": "generate", "output": {"duration": frames / 24},
+                 "changes": {"video": [], "audio": []},
+                 "references": [{"asset": "image_ref", "purpose": "appearance"}]}, {"image_ref": str(image)})
+    duration = int(facts.measure_source_av(video)["video_frames"]) / 24
+    return ({**base, "operation": "edit", "source": {"asset": "video_ref", "range": [0.0, duration]},
+             "output": {"duration": duration},
+             "changes": {"video": [{"during": [0.0, duration], "area": {"full_frame": True}, "action": "generate"}],
+                         "audio": []}}, {"video_ref": str(video)})
+
+
 def _state_dir(job_dir) -> Path:
     return (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="astrid-h3-"))) / "h3"
 
 
 def build(inputs, files, out, *, engine=None):
     """{workflow, bindings, plan, assets, bundle}: the chosen trio's graph, bindings, sealed plan, media, folder."""
+    _require_media_tools()
     if engine is not None:
         _shared("engine_facts").install(engine)
     facts = _shared("engine_facts").facts()
@@ -67,9 +106,13 @@ def build(inputs, files, out, *, engine=None):
 
     work = _state_dir(out)
     work.mkdir(parents=True, exist_ok=True)
-    document = request_module.load_request_document(_path(inputs, files, "request"))
+    if _given(inputs, files, "request"):
+        document = request_module.load_request_document(_path(inputs, files, "request"))
+        asset_map = _file_map(inputs, files)
+    else:
+        document, asset_map = _plain_request(inputs, files, facts)
     request = request_module.normalize_request(document)
-    paths, preparation, compilation = stages.compile_stages(request, _file_map(inputs, files), work / "plan")
+    paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan")
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
     plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}

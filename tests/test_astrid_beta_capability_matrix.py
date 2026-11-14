@@ -34,7 +34,9 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
     assert h3["modes"] == declaration["modes"] == ["i2v", "v2v", "video-edit"]
     assert h3["inputs"] == declaration["inputs"]
     assert [(port["name"], port["type"], port["required"]) for port in h3["inputs"]] == [
-        ("request", "file", True), ("asset_map", "file_map", True),
+        ("request", "file", False), ("asset_map", "file_map", False), ("prompt", "string", False),
+        ("image_ref", "file", False), ("video_ref", "file", False), ("frames", "integer", False),
+        ("seed", "integer", False), ("steps", "integer", False),
     ]
     # Every discovered capability must have a row in
     # config/astrid-beta-capabilities.json; no discovered id is exempted.
