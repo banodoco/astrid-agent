@@ -140,7 +140,7 @@ def test_positive_foreign_identity_preserves_all_files(settlement_case, tmp_path
 
 
 @pytest.mark.parametrize("damage", ["unreadable", "missing-owner"])
-def test_uncertain_own_identity_surfaces_bounded_error(settlement_case, tmp_path, monkeypatch, capsys, damage):
+def test_uncertain_own_identity_is_blocked_without_stopping_host(settlement_case, tmp_path, monkeypatch, capsys, damage):
     case = settlement_case
     root, request = _saved_failure(case, tmp_path)
     if damage == "unreadable":
@@ -150,8 +150,12 @@ def test_uncertain_own_identity_surfaces_bounded_error(settlement_case, tmp_path
         content = json.dumps(request)
     (root / "fail-request.json").write_text(content)
     monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_POLL_SECONDS", 0)
-    with pytest.raises(HostError, match="recovery"):
-        _bounded_run(case.host, case.host._recover_terminal_requests)
+    claimed = []
+    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert claimed == ["claimed"]
+    assert case.host.recovery_blocked[0]["path"] == str(root / "fail-request.json")
+    assert str(root / "fail-request.json") in case.host.recovery_blocked[0]["recovery_step"]
     assert (root / "fail-request.json").read_text() == content
     assert "generic host recovery could not read" in capsys.readouterr().err
     assert not case.failures
@@ -224,8 +228,11 @@ def test_exhausted_cede_is_visible_and_replayed_exactly_after_restart(settlement
 
     monkeypatch.setattr(generated, "fail_attempt", outage)
     monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_POLL_SECONDS", 0)
-    with pytest.raises(HostError, match="recovery could not reconcile"):
-        _bounded_run(case.host, case.host._recover_terminal_requests)
+    claimed = []
+    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert claimed == ["claimed"]
+    assert case.host.recovery_blocked[0]["path"] == str(root / "fail-request.json")
     assert len(calls) == 2 * generic_host._TERMINAL_RECOVERY_MAX_ATTEMPTS
     assert case.service.task(case.task_id)["task"]["status"] == "running"
     assert json.loads((root / "fail-request.json").read_text()) == request
@@ -354,3 +361,131 @@ def test_reused_default_base_ages_children_individually(tmp_path, monkeypatch):
     assert attempts["expired_count"] == 1
     assert not stale.exists() and live.is_dir() and live.parent.is_dir()
     assert host._allocate_attempt_root("new", "new").parent == live.parent
+
+def test_corrupt_identity_and_foreign_request_allow_new_generation(host_case, tmp_path, monkeypatch, capsys):
+    case = host_case
+    case.host.attempt_root = None
+    case.host.attempt_base = tmp_path / "attempts"
+    corrupt = _unknown_request(case.host.attempt_base / "broken", case.host.executor_id)
+    corrupt.write_text('{"executor_id":')
+    foreign = _unknown_request(case.host.attempt_base / "foreign", "foreign-worker")
+    before = {p: p.read_bytes() for p in (corrupt, foreign)}
+    _success_boundary(case, monkeypatch)
+    monkeypatch.setattr(case.host, "claim_once", lambda: case.host.run_task(case.task, lease_token="lease-result"))
+    _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert len(case.runtime.settlements) == 1
+    assert len(case.host.recovery_blocked) == 1
+    blocked = case.host.recovery_blocked[0]
+    assert blocked["path"] == str(corrupt)
+    assert "inspect" in blocked["recovery_step"].lower() and str(corrupt) in blocked["recovery_step"]
+    assert {p: p.read_bytes() for p in before} == before
+    assert "recovery_blocked" in capsys.readouterr().err
+
+
+def test_corrupt_identity_never_writes_runtime_and_host_starts(settlement_case, tmp_path, monkeypatch):
+    case = settlement_case
+    root, request = _saved_failure(case, tmp_path)
+    request["body"]["fence"] = "invalid"
+    marker = root / "fail-request.json"
+    marker.write_text(json.dumps(request))
+    before = marker.read_bytes()
+    claimed = []
+    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert claimed == ["claimed"]
+    assert not case.failures and not case.cancels and not case.writes
+    assert marker.read_bytes() == before
+    assert case.host.recovery_blocked[0]["path"] == str(marker)
+    assert str(marker) in case.host.recovery_blocked[0]["recovery_step"]
+
+
+@pytest.mark.parametrize("damage", ["request-result", "receipt-json", "receipt-type", "request-error"])
+def test_readable_identity_corrupt_result_cedes_and_host_starts(settlement_case, tmp_path, monkeypatch, damage):
+    case = settlement_case
+    root, request = _saved_failure(case, tmp_path)
+    if damage == "request-result":
+        request["body"]["result"] = ["invalid result"]
+    elif damage == "request-error":
+        request["body"]["error"] = "invalid error"
+    else:
+        (root / "result.json").write_text("{broken" if damage == "receipt-json" else "[]")
+    marker = root / "fail-request.json"
+    marker.write_text(json.dumps(request))
+    before = marker.read_bytes()
+    receipt_before = (root / "result.json").read_bytes() if damage.startswith("receipt-") else None
+    claimed = []
+    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert claimed == ["claimed"]
+    if receipt_before is not None:
+        assert (root / "result.json").read_bytes() == receipt_before
+    stored = case.service.task(case.task_id)["task"]
+    assert stored["status"] == "failed"
+    assert stored["result"]["error"]["code"] == "reconciliation_required"
+    assert len(case.failures) == 1
+    assert "result" not in case.failures[0][1] and "outputs" not in case.failures[0][1]
+    assert marker.read_bytes() == before
+    assert (root / "fail-request.json.reconciliation.json").is_file()
+    assert not case.host.recovery_blocked
+
+
+def test_exhausted_recovery_is_listed_and_host_starts(settlement_case, tmp_path, monkeypatch):
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    calls, claimed = [], []
+    def outage(attempt_id, **body):
+        calls.append(body)
+        raise OSError("Runtime unavailable")
+    monkeypatch.setattr(case.host.client.generated, "fail_attempt", outage)
+    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_POLL_SECONDS", 0)
+    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert claimed == ["claimed"]
+    assert len(calls) == 2 * generic_host._TERMINAL_RECOVERY_MAX_ATTEMPTS
+    assert case.host.recovery_blocked[0]["path"] == str(root / "fail-request.json")
+    assert "Runtime unavailable" in case.host.recovery_blocked[0]["reason"]
+    assert case.service.task(case.task_id)["task"]["status"] == "running"
+
+
+@pytest.mark.parametrize("contents", ["{broken", "{}", "[]", '{"body": null}'])
+def test_unreadable_reconciliation_sidecar_is_blocked(settlement_case, tmp_path, monkeypatch, contents):
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    sidecar = root / "fail-request.json.reconciliation.json"
+    sidecar.write_text(contents)
+    claimed = []
+    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_POLL_SECONDS", 0)
+    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert claimed == ["claimed"]
+    assert not case.failures and not case.cancels
+    assert sidecar.read_text() == contents
+    assert case.host.recovery_blocked[0]["path"] == str(sidecar)
+
+
+def test_blocked_recovery_is_exposed_in_ready_status(settlement_case, tmp_path, monkeypatch):
+    case = settlement_case
+    root, _ = _saved_failure(case, tmp_path)
+    (root / "fail-request.json").write_text("{broken")
+    status_path = tmp_path / "host-ready.json"
+    case.host._ready_marker_path = status_path
+    case.host._ready_marker_context = {"status": "ready"}
+    claimed = []
+    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    _bounded_run(case.host, lambda: case.host.run(once=True))
+    status = json.loads(status_path.read_text())
+    assert status["status"] == "ready"
+    assert status["recovery_blocked"] == case.host.recovery_blocked
+    assert len(status["recovery_blocked"]) == 1
+    assert claimed == ["claimed"] and not case.failures
+
+
+def test_missing_runtime_epoch_remains_host_wide_error(settlement_case, tmp_path, monkeypatch):
+    case = settlement_case
+    _saved_failure(case, tmp_path)
+    claimed = []
+    monkeypatch.setattr(case.host.client, "health", lambda: {})
+    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    with pytest.raises(HostError, match="Runtime recovery health has no epoch"):
+        _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert not claimed and not case.failures

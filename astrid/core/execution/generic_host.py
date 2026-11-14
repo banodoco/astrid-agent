@@ -278,6 +278,10 @@ class TerminalPublicationRejected(HostError):
     """A Runtime validation/conflict response with verified nonterminal custody."""
 
 
+class _RuntimeRecoveryIdentityError(HostError):
+    """The host cannot identify its Runtime for any recovered attempt."""
+
+
 class _TerminalEvidenceNotRecorded(HostError):
     """A successful task read did not contain the submitted durable evidence."""
 
@@ -6681,6 +6685,7 @@ class GenericPackHost:
         self._pack_refresh_reason = ""
         self.client = client
         self.executor_id = executor_id
+        self.recovery_blocked: list[dict[str, str]] = []
         self.max_concurrency = max(1, int(max_concurrency))
         if attempt_root is not None and attempt_base is not None:
             raise ValueError("attempt_root and attempt_base are mutually exclusive")
@@ -8127,6 +8132,7 @@ class GenericPackHost:
             "unready_capabilities": sorted(record.id for record in self.capabilities.values() if not record.ready),
             "missing_required_capabilities": list(self.missing_required_capabilities),
             "gated_checks": _gated_remotion_faults(self.capabilities.values()),
+            "recovery_blocked": list(self.recovery_blocked),
             "registration": registration,
             "source_epoch": self.source_epoch,
             "source_inventory_identity": self.source_inventory_identity,
@@ -14104,10 +14110,21 @@ class GenericPackHost:
             provider_route_grant=provider_route_grant,
         )
 
+    def _record_recovery_blocked(self, path: Path, reason: str) -> None:
+        entry = {"path": str(path), "reason": reason,
+                 "recovery_step": f"Inspect {path} and its attempt files; after checking Runtime task state, "
+                                  "repair the marker or remove the attempt directory by hand."}
+        self.recovery_blocked.append(entry)
+        print(reason, file=sys.stderr, flush=True)
+        print(json.dumps({"event": "recovery_blocked", "executor_id": self.executor_id,
+                          "recovery_blocked": [entry]}, sort_keys=True), file=sys.stderr, flush=True)
+        self._publish_ready_registration(self._ready_marker_context.get("registration"))
+
     def _recover_terminal_requests(self) -> None:
         """Resolve this host's saved requests, with bounded startup custody."""
         if self.client is None:
             return
+        self.recovery_blocked.clear()
         roots = []
         if self.attempt_root is not None:
             roots.append(self.attempt_root)
@@ -14138,11 +14155,17 @@ class GenericPackHost:
                 path = root / name
                 if not path.is_file() or path.is_symlink():
                     continue
+                receipt_path = root / "result.json"
+                receipt, receipt_error = {}, None
+                try:
+                    if receipt_path.is_file():
+                        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                        if not isinstance(receipt, dict):
+                            raise ValueError("result receipt must be an object")
+                except (OSError, ValueError, TypeError) as exc:
+                    receipt, receipt_error = {}, exc
                 try:
                     request = json.loads(path.read_text(encoding="utf-8"))
-                    receipt_path = root / "result.json"
-                    receipt = (json.loads(receipt_path.read_text(encoding="utf-8"))
-                               if receipt_path.is_file() else {})
                     body = request["body"]
                     task_id = request.get("task_id") or receipt.get("task_id") or receipt["kernel_task_id"]
                     attempt_id = (receipt.get("attempt_id") or receipt.get("kernel_attempt_id")
@@ -14152,37 +14175,38 @@ class GenericPackHost:
                     if (not isinstance(body, dict) or operation not in {"fail_attempt", "cancel_task"}
                             or (operation == "fail_attempt" and request["identifier"] != attempt_id)
                             or (operation == "cancel_task" and request["identifier"] != task_id)
-                            or (operation == "fail_attempt" and not isinstance(body.get("error"), Mapping))
-                            or (body.get("result") is not None and not isinstance(body["result"], Mapping))
                             or not isinstance(task_id, str) or not task_id
                             or not isinstance(attempt_id, str) or not attempt_id
                             or not isinstance(request.get("executor_id"), str) or not request["executor_id"]
-                            or not isinstance(request.get("idempotency_key"), str) or not request["idempotency_key"]
                             or not isinstance(body.get("lease_id"), str) or not body["lease_id"]
                             or type(body.get("fence")) is not int or body["fence"] < 1
                             or type(body.get("runtime_epoch")) is not int or body["runtime_epoch"] < 1):
                         raise ValueError("invalid terminal request identity")
                 except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-                    # Unreadable/absent identity is uncertain custody, not proof
-                    # that an attempt is foreign. Surface it instead of dropping it.
-                    message = f"generic host recovery could not read {path}: {exc}"
-                    print(message, file=sys.stderr, flush=True)
-                    raise HostError(message) from exc
+                    # Uncertain identity never authorizes a Runtime mutation.
+                    self._record_recovery_blocked(path, f"generic host recovery could not read {path}: {exc}")
+                    continue
+                payload_error = receipt_error
+                if (not isinstance(request.get("idempotency_key"), str) or not request["idempotency_key"]
+                        or (operation == "fail_attempt" and not isinstance(body.get("error"), Mapping))
+                        or (body.get("result") is not None and not isinstance(body["result"], Mapping))
+                        or (body.get("outputs") is not None and not isinstance(body["outputs"], list))):
+                    payload_error = ValueError("invalid terminal request body")
                 delay = _TERMINAL_RECONCILE_POLL_SECONDS
-                rejected = None
+                rejected = HostError(f"unreadable terminal evidence: {payload_error}") if payload_error else None
                 last_error = None
                 uncertain = False
                 ceding = False
-                expected_result = body.get("result") or {}
-                if operation == "fail_attempt":
+                expected_result = {} if payload_error else (body.get("result") or {})
+                if operation == "fail_attempt" and not payload_error:
                     expected_result = {**expected_result, "error": body["error"]}
-                wire = {**body, "idempotency_key": request["idempotency_key"]}
+                wire = {**body, "idempotency_key": request.get("idempotency_key")}
                 wire_operation, identifier = operation, request["identifier"]
                 reconciliation_path = root / f"{name}.reconciliation.json"
                 reconciliation_loaded = False
                 # The second budget is solely for the fenced, evidence-free
-                # terminal failure. If Runtime stays unavailable, fail startup
-                # visibly and retain every byte for operator recovery.
+                # terminal failure. If Runtime stays unavailable, retain every
+                # byte and report this attempt without blocking new claims.
                 for check in range(2 * _TERMINAL_RECOVERY_MAX_ATTEMPTS):
                     if self._shutdown.is_set():
                         return
@@ -14190,36 +14214,48 @@ class GenericPackHost:
                         health = self.client.health()
                         epoch = (health.get("runtime_epoch") if isinstance(health, Mapping)
                                  else getattr(health, "runtime_epoch", None))
-                        if type(epoch) is not int:
-                            raise HostError("Runtime recovery health has no epoch")
+                        if type(epoch) is not int or epoch < 1:
+                            raise _RuntimeRecoveryIdentityError("Runtime recovery health has no epoch")
                         if (request["executor_id"] != self.executor_id
                                 or body["runtime_epoch"] != epoch):
                             print(f"generic host recovery skipped {path}: foreign executor or Runtime epoch",
                                   file=sys.stderr, flush=True)
                             break
                         if not reconciliation_loaded:
-                            if reconciliation_path.exists():
-                                if reconciliation_path.is_symlink():
-                                    raise HostError("recovery reconciliation request must not be a symlink")
-                                saved = json.loads(reconciliation_path.read_text(encoding="utf-8"))
-                                if (saved["task_id"] != task_id or saved["identifier"] != attempt_id
-                                        or saved["executor_id"] != request["executor_id"]
-                                        or saved["operation"] != "fail_attempt"
-                                        or any(saved["body"][key] != body[key]
-                                               for key in ("lease_id", "fence", "runtime_epoch"))):
-                                    raise HostError("recovery reconciliation request identity differs")
-                                wire = {**saved["body"], "idempotency_key": saved["idempotency_key"]}
-                                wire_operation, identifier = "fail_attempt", str(attempt_id)
-                                expected_result = {"error": saved["body"]["error"]}
-                                ceding = True
-                                # This persisted mutation may have lost its ACK
-                                # in the preceding host incarnation.
-                                uncertain = True
+                            if reconciliation_path.exists() or reconciliation_path.is_symlink():
+                                try:
+                                    if reconciliation_path.is_symlink():
+                                        raise ValueError("reconciliation request must not be a symlink")
+                                    saved = json.loads(reconciliation_path.read_text(encoding="utf-8"))
+                                    if (saved["task_id"] != task_id or saved["identifier"] != attempt_id
+                                            or saved["executor_id"] != request["executor_id"]
+                                            or saved["operation"] != "fail_attempt"
+                                            or not isinstance(saved["idempotency_key"], str) or not saved["idempotency_key"]
+                                            or not isinstance(saved["body"]["error"], dict)
+                                            or saved["body"]["error"].get("code") != "reconciliation_required"
+                                            or "result" in saved["body"] or "outputs" in saved["body"]
+                                            or any(type(saved["body"][key]) is not type(body[key])
+                                                   or saved["body"][key] != body[key]
+                                                   for key in ("lease_id", "fence", "runtime_epoch"))):
+                                        raise ValueError("reconciliation request identity or body differs")
+                                    wire = {**saved["body"], "idempotency_key": saved["idempotency_key"]}
+                                    wire_operation, identifier = "fail_attempt", str(attempt_id)
+                                    expected_result = {"error": saved["body"]["error"]}
+                                    ceding = True
+                                    # The preceding incarnation may have lost its ACK.
+                                    uncertain = True
+                                except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                                    self._record_recovery_blocked(
+                                        reconciliation_path,
+                                        f"generic host recovery could not read {reconciliation_path}: {exc}")
+                                    break
                             reconciliation_loaded = True
                         try:
                             current = self.client.task(str(task_id))
                         except Exception as exc:
                             if getattr(exc, "status", None) == 404 and getattr(exc, "code", None) == "not_found":
+                                # Recovery has no authority to delete unknown evidence;
+                                # leave the file for storage reclaim to age out.
                                 print(f"generic host recovery skipped {path}: task unknown to this Runtime",
                                       file=sys.stderr, flush=True)
                                 break
@@ -14279,7 +14315,7 @@ class GenericPackHost:
                         if not ceding and (rejected or expired or check >= _TERMINAL_RECOVERY_MAX_ATTEMPTS):
                             reason = str(rejected or ("lease expired" if expired else
                                          f"recovery exhausted after {_TERMINAL_RECOVERY_MAX_ATTEMPTS} tries: {last_error}"))
-                            original = body.get("error") or {}
+                            original = body.get("error") if isinstance(body.get("error"), Mapping) else {}
                             message = (f"terminal evidence refused ({reason}); original failure "
                                        f"{original.get('code', 'executor_failed')}: {original.get('message', '')}")
                             if check >= _TERMINAL_RECOVERY_MAX_ATTEMPTS:
@@ -14299,8 +14335,8 @@ class GenericPackHost:
                                 "body": {key: value for key, value in wire.items() if key != "idempotency_key"},
                             })
                             ceding = True
-                            receipt.setdefault("warnings", []).append(message)
-                            write_json_atomic(receipt_path, receipt)
+                            # The sidecar owns reconciliation; preserve the
+                            # original request and receipt, including corrupt bytes.
                             print(f"generic host terminal publication ceded for {task_id}: {reason}", file=sys.stderr, flush=True)
                         uncertain = True
                         try:
@@ -14323,6 +14359,8 @@ class GenericPackHost:
                             raise HostError("Runtime recovery mutation has no terminal readback")
                         print(f"generic host terminal publication recorded for {task_id}", file=sys.stderr, flush=True)
                         break
+                    except _RuntimeRecoveryIdentityError:
+                        raise
                     except Exception as exc:  # noqa: BLE001 - bounded, visible startup recovery
                         last_error = exc
                         if check + 1 < 2 * _TERMINAL_RECOVERY_MAX_ATTEMPTS:
@@ -14330,8 +14368,8 @@ class GenericPackHost:
                             delay = min(5.0, max(_TERMINAL_RECONCILE_POLL_SECONDS, delay * 2))
                 else:
                     message = f"generic host recovery could not reconcile {path}: {last_error}"
-                    print(message, file=sys.stderr, flush=True)
-                    raise HostError(message) from last_error
+                    self._record_recovery_blocked(path, message)
+        self._publish_ready_registration(self._ready_marker_context.get("registration"))
 
     def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
@@ -18277,6 +18315,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             "event": "registered", "executor_id": host.executor_id, "pid": os.getpid(),
             "capabilities": len(host.capabilities), "ready": len(host.capabilities) - len(unready),
             "unready": unready, "withdrawn": registration.get("withdrawn_capabilities") or [],
+            "recovery_blocked": list(host.recovery_blocked),
             "gated": _gated_remotion_faults(host.capabilities.values()),
             "full_registration": str(ready_path) if ready_path is not None else None,
         }, sort_keys=True, default=_json_safe), flush=True)
