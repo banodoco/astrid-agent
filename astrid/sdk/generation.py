@@ -1873,8 +1873,6 @@ class GenerationFacade:
                     public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
                 if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
                     public_values['seed'] = plan['bindings']['seed']
-                # The pod runs from this archive: its seed is the one sent.
-                sent_seed = public_values.get('seed')
                 archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
                 asset_arguments['entry_inputs'] = import_member(archive)
             hook_job = None
