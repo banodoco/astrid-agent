@@ -81,7 +81,8 @@ def _plain_request(inputs: Mapping[str, Any], files: Mapping[str, Any], facts: A
     overrides = {name: int(inputs[name]) for name in ("seed", "steps") if (inputs or {}).get(name) is not None}
     base = {"version": 1, "content": {"prompt": str(prompt)}, "references": [], "overrides": overrides}
     if image:
-        frames = int((inputs or {}).get("frames") or 120)
+        raw_frames = (inputs or {}).get("frames")
+        frames = 120 if raw_frames is None else int(raw_frames)
         return ({**base, "operation": "generate", "output": {"duration": frames / 24},
                  "changes": {"video": [], "audio": []},
                  "references": [{"asset": "image_ref", "purpose": "appearance"}]}, {"image_ref": str(image)})
