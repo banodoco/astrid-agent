@@ -155,3 +155,144 @@ def test_runtime_that_cannot_create_or_select_keeps_today_error(capsys):
     with pytest.raises(CapabilityPreconditionError, match="project is required for generation"):
         _resolve_invoke_destination(out=None, project=None, project_root=None, client=client)
     assert capsys.readouterr().err == ""
+
+
+def _listing_line(names):
+    return ("Projects in this workspace: " + ", ".join(names)
+            + "; select one with: astrid projects select <project>")
+
+
+def test_other_projects_without_selection_refuse_and_change_nothing(capsys):
+    projects = _FakeProjects(rows=[
+        {"project_id": "P-a", "slug": "alpha", "name": "Alpha"},
+        {"project_id": "P-b", "slug": "beta", "name": "Beta"},
+    ])
+    client = _client(projects)
+
+    with pytest.raises(CapabilityPreconditionError) as excinfo:
+        _resolve_invoke_destination(out=None, project=None, project_root=None, client=client)
+
+    assert str(excinfo.value) == (
+        "project is required for generation; pass --project <project> "
+        "or select a current project in the workspace runtime\n"
+        + _listing_line(["Alpha", "Beta"])
+    )
+    assert projects.created == []
+    assert projects.selects == []
+    assert capsys.readouterr().err == ""
+
+
+def test_refusal_listing_caps_at_five_names(capsys):
+    names = [f"Project {letter}" for letter in "ABCDEFG"]
+    projects = _FakeProjects(rows=[
+        {"project_id": f"P-{n}", "slug": n.lower().replace(" ", "-"), "name": n} for n in names
+    ])
+    client = _client(projects)
+
+    with pytest.raises(CapabilityPreconditionError) as excinfo:
+        _resolve_invoke_destination(out=None, project=None, project_root=None, client=client)
+
+    detail = str(excinfo.value).splitlines()[1]
+    assert detail == ("Projects in this workspace: " + ", ".join(names[:5])
+                      + " (and 2 more); select one with: astrid projects select <project>")
+    assert projects.created == [] and projects.selects == []
+
+
+def test_empty_workspace_creates_and_selects_only_when_it_has_no_projects(capsys):
+    projects = _FakeProjects()
+    client = _client(projects)
+
+    _, selected = _resolve_invoke_destination(
+        out=None, project=None, project_root=None, client=client,
+    )
+
+    assert selected == "P-my-first-project"
+    assert len(projects.created) == 1
+    assert projects.selects == ["my-first-project"]
+
+
+class _RacingProjects(_FakeProjects):
+    """Another generation creates the starter between our list and our create."""
+
+    def create(self, *, slug, name, metadata=None, idempotency_key=None):
+        self.rows.append({"project_id": f"P-{slug}", "slug": slug, "name": name})
+        return DomainResult.failure(ErrorObject("conflict", f"project slug {slug} already exists", {}))
+
+
+def test_create_that_loses_a_race_reselects_the_starter_without_duplicating(capsys):
+    projects = _RacingProjects()
+    client = _client(projects)
+
+    _, selected = _resolve_invoke_destination(
+        out=None, project=None, project_root=None, client=client,
+    )
+
+    assert selected == "P-my-first-project"
+    assert projects.created == []
+    assert projects.selects == ["my-first-project"]
+    assert [row["slug"] for row in projects.rows] == ["my-first-project"]
+    assert capsys.readouterr().err.splitlines() == [
+        'Selected project "My first project" for this generation.'
+    ]
+
+
+def test_failed_create_without_a_starter_still_raises(capsys):
+    class _Broken(_FakeProjects):
+        def create(self, *, slug, name, metadata=None, idempotency_key=None):
+            return DomainResult.failure(ErrorObject("internal", "store unavailable", {}))
+
+    projects = _Broken()
+    client = _client(projects)
+
+    with pytest.raises(CapabilityPreconditionError, match="store unavailable"):
+        _resolve_invoke_destination(out=None, project=None, project_root=None, client=client)
+    assert projects.selects == []
+
+
+def test_dry_run_in_empty_workspace_succeeds_creates_nothing_and_says_what_a_run_would_do(capsys):
+    projects = _FakeProjects()
+    client = _client(projects)
+
+    out, selected = _resolve_invoke_destination(
+        out="results", project=None, project_root=None, client=client, dry_run=True,
+    )
+
+    assert (out, selected) == ("results", None)
+    assert projects.rows == [] and projects.created == []
+    assert projects.selects == [] and projects.selected is None
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines() == [
+        'Dry run: a real generation would create and select project "My first project".'
+    ]
+
+
+def test_dry_run_reads_an_existing_starter_without_selecting_it(capsys):
+    projects = _FakeProjects(rows=[
+        {"project_id": "P-first", "slug": "first", "name": FIRST_PROJECT_NAME},
+    ])
+    client = _client(projects)
+
+    _, selected = _resolve_invoke_destination(
+        out=None, project=None, project_root=None, client=client, dry_run=True,
+    )
+
+    assert selected == "P-first"
+    assert projects.created == [] and projects.selects == []
+    assert projects.selected is None
+    assert capsys.readouterr().err == ""
+
+
+def test_describe_never_creates_or_selects_a_project(monkeypatch):
+    import astrid.core.generation.entries as entries
+    from astrid.sdk.generation import GenerationFacade
+
+    monkeypatch.setattr(entries, "describe_entry", lambda *a, **k: {"entry": "demo"})
+    projects = _FakeProjects()
+    client = _client(projects)
+
+    described = GenerationFacade().describe("demo", client=client)
+
+    assert described == {"entry": "demo"}
+    assert projects.rows == [] and projects.created == [] and projects.selects == []
+    assert projects.selected is None

@@ -34,3 +34,18 @@ def test_open_url_uses_the_project_the_generation_was_given_when_output_names_no
     delivered = deliver_generation(result, client=client, out=tmp_path / 'out', project='proj-2')
 
     assert delivered['open_url'] == 'https://astrid.haus/tools/video-editor?project=proj-2'
+
+
+def test_open_url_carries_only_the_project_query_parameter(tmp_path):
+    from urllib.parse import parse_qs, urlsplit
+
+    result, client = _managed_result(tmp_path, row_project='proj a/b&c')
+
+    delivered = deliver_generation(result, client=client, out=tmp_path / 'out')
+
+    parts = urlsplit(delivered['open_url'])
+    assert (parts.scheme, parts.netloc, parts.path) == ('https', 'astrid.haus', '/tools/video-editor')
+    assert parse_qs(parts.query, keep_blank_values=True, strict_parsing=True) == {'project': ['proj a/b&c']}
+    assert parts.fragment == ''
+    assert 'token' not in delivered['open_url'].lower()
+    assert 'credential' not in delivered['open_url'].lower()
