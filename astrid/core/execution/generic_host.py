@@ -14213,10 +14213,22 @@ class GenericPackHost:
             return
         self.recovery_blocked.clear()
         roots = []
+
+        def children(path: Path, *, legacy: bool = False) -> list[Path]:
+            try:
+                # iterdir surfaces enumeration errors (glob may suppress them).
+                return [child for child in path.iterdir()
+                        if not legacy or child.name.startswith(ATTEMPT_ROOT_PREFIX)]
+            except OSError as exc:
+                self._record_recovery_blocked(path, f"generic host recovery could not enumerate {path}: {exc}")
+                return []
+
         if self.attempt_root is not None:
             roots.append(self.attempt_root)
         base = self.attempt_base
         if self.attempt_root is None and base is None:
+            # Private-base validation and Runtime health without an epoch are
+            # host-wide refusals; attempt-local recovery errors stay nonfatal.
             base = self._default_attempt_base()
             # Older hosts used both flat temp roots and nested temp spools.
             temporary = Path(tempfile.gettempdir())
@@ -14228,7 +14240,7 @@ class GenericPackHost:
                       file=sys.stderr, flush=True)
                 legacy_roots = []
             else:
-                legacy_roots = list(temporary.glob(ATTEMPT_ROOT_PREFIX + "*"))
+                legacy_roots = children(temporary, legacy=True)
             for legacy in legacy_roots:
                 if legacy == base:
                     continue
@@ -14245,7 +14257,7 @@ class GenericPackHost:
                 # Appending children retains the same admission check before
                 # either enumeration or opening any terminal marker.
                 if legacy.parent == temporary:
-                    legacy_roots.extend(legacy.glob(ATTEMPT_ROOT_PREFIX + "*"))
+                    legacy_roots.extend(children(legacy, legacy=True))
                 for name in ("fail-request.json", "cancel-request.json"):
                     marker = legacy / name
                     try:
@@ -14258,7 +14270,7 @@ class GenericPackHost:
                     except (OSError, ValueError, TypeError):
                         continue
         if base is not None and base.is_dir() and not base.is_symlink():
-            roots.extend(path for path in base.iterdir()
+            roots.extend(path for path in children(base)
                          if path.is_dir() and not path.is_symlink())
         for root in roots:
             for name in ("fail-request.json", "cancel-request.json"):

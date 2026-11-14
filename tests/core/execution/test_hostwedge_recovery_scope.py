@@ -767,3 +767,46 @@ def test_unsafe_temp_parent_prevents_legacy_scan(settlement_case, tmp_path, monk
     diagnostic = capsys.readouterr().err
     assert diagnostic.count("generic host recovery skipped unsafe legacy root") == 1
     assert str(temporary) in diagnostic
+
+
+@pytest.mark.parametrize("location", ["configured", "private", "temp", "legacy-nested"])
+def test_recovery_enumeration_error_is_blocked_per_base_and_admission_continues(settlement_case, tmp_path, monkeypatch, location):
+    case = settlement_case
+    if location == "configured":
+        case.host.attempt_root = None
+        case.host.attempt_base = tmp_path / "configured"
+        base = case.host.attempt_base
+        base.mkdir()
+    else:
+        case.host.attempt_root = None
+        base = case.host._default_attempt_base()
+        if location in {"temp", "legacy-nested"}:
+            temporary = tmp_path / "legacy-temp"
+            temporary.mkdir()
+            monkeypatch.setattr(generic_host.tempfile, "gettempdir", lambda: str(temporary))
+            base = temporary
+            if location == "legacy-nested":
+                base = temporary / "astrid-attempt-old-base"
+                base.mkdir(mode=0o700)
+    original_iterdir, original_glob = Path.iterdir, Path.glob
+
+    def iterdir(path):
+        if path == base:
+            raise OSError("enumeration denied")
+        return original_iterdir(path)
+
+    def glob(path, pattern, *args, **kwargs):
+        if path == base:
+            raise OSError("enumeration denied")
+        return original_glob(path, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    monkeypatch.setattr(Path, "glob", glob)
+    claimed = []
+    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    _bounded_run(case.host, lambda: case.host.run(once=True))
+    assert claimed == ["claimed"]
+    assert not case.failures and not case.cancels and not case.writes
+    assert len(case.host.recovery_blocked) == 1
+    assert case.host.recovery_blocked[0]["path"] == str(base)
+    assert "enumeration denied" in case.host.recovery_blocked[0]["reason"]
