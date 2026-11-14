@@ -1845,6 +1845,10 @@ class GenerationFacade:
         with TemporaryDirectory(prefix="astrid-generate-target-") as scratch:
             root = Path(scratch)
             emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+            # The native bindings sent as workflow_inputs below.
+            sent_inputs = {name: value for name, value in (plan or {}).get('bindings', {}).items()
+                           if name not in assets}
+            sent_seed = sent_inputs.get('seed')
             asset_arguments: dict[str, Any] = {}
             if assets:
                 import zipfile
@@ -1869,6 +1873,8 @@ class GenerationFacade:
                     public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
                 if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
                     public_values['seed'] = plan['bindings']['seed']
+                # The pod runs from this archive: its seed is the one sent.
+                sent_seed = public_values.get('seed')
                 archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
                 asset_arguments['entry_inputs'] = import_member(archive)
             hook_job = None
@@ -1888,9 +1894,7 @@ class GenerationFacade:
                 # as the sealed graph. The attached runner chooses a fresh
                 # seed when no seed binding is supplied. Media bindings are
                 # supplied separately by the staged asset manifest.
-                workflow_inputs=json.dumps({name: value for name, value in
-                    (plan or {}).get('bindings', {}).items() if name not in assets},
-                    sort_keys=True, allow_nan=False),
+                workflow_inputs=json.dumps(sent_inputs, sort_keys=True, allow_nan=False),
                 # The managed client is for preparation and inventory. Passing its
                 # loopback URL as an attached endpoint bypasses managed alignment
                 # and lifecycle ownership in the action.
@@ -1908,7 +1912,12 @@ class GenerationFacade:
             )
         if controls.get('wait') is False:
             return result
-        return _reconstruct_generation_result(result)
+        generated = _reconstruct_generation_result(result)
+        # The Runtime result carries no seed; report the one this call bound and sent,
+        # which the executor posts as is. A workflow without a seed input keeps the default 0.
+        if type(sent_seed) is int:
+            generated.seed_used = sent_seed
+        return generated
 
     @staticmethod
     def _resolve_public_entry(*, entry: str, model: str | None,
