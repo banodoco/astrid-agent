@@ -9,7 +9,7 @@ import os
 import re
 import time
 from concurrent.futures import CancelledError
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -575,7 +575,9 @@ class ManagedEnginePreparation:
             try:
                 self._verify_models(manifest)
             finally:
-                self.verification_seconds = getattr(self, "verification_seconds", 0.0) + time.monotonic() - started
+                # Timing is evidence only; it must never replace a verification error.
+                with suppress(Exception):
+                    self.verification_seconds = getattr(self, "verification_seconds", 0.0) + time.monotonic() - started
         self._guard_runtime(workflow, runner, post=True)
         for step in runner.plan.steps:
             if step.kind in {"source", "environment"}:
