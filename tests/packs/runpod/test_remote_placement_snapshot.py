@@ -7,7 +7,6 @@ never imported here, only its fixed CLI and its final ``ENGINE_SNAPSHOT_JSON=`` 
 from __future__ import annotations
 
 import json
-import re
 import shlex
 
 import pytest
@@ -42,14 +41,7 @@ class SnapshotPod(FakePod):
         self.present: set[str] = set()
         # The module's own result shapes: no reason on success, report rows and a partial count.
         self.restore = (0, _line(command="restore", action="restored", durations={"extract": 41.5}))
-        self.report = (0, _line(command="report", action="reported", durations={"total": 0.2},
-                                total_bytes=7 << 30, partials=1, cleaned=0,
-                                identities=[{"identity": "a" * 64, "bytes": 6 << 30},
-                                            {"identity": "b" * 64, "bytes": 1 << 30}]))
-        self.alive: list[int] = []  # exit codes of successive liveness checks; empty means exited
         self.restore_raises: BaseException | None = None
-        self.waits: list[int] = []
-        self.timeouts: list[float] = []
 
     def exec(self, command, timeout=600):
         if "engine_snapshot restore" in command:
@@ -61,22 +53,6 @@ class SnapshotPod(FakePod):
         if "engine_snapshot publish" in command:
             self.exec_log.append(command)
             return 0, "4242\n", ""
-        if "engine_snapshot report" in command:
-            self.exec_log.append(command)
-            code, out = self.report
-            return code, out, ""
-        if "/proc/4242/stat" in command:
-            self.exec_log.append(command)
-            self.timeouts.append(timeout)
-            wait = re.search(r"-lt (\d+)", command)
-            if wait is None:  # a single liveness check
-                return (self.alive.pop(0) if self.alive else 1), "", ""
-            # One on-pod bounded wait: one second per check, exit 3 if still running at the bound.
-            self.waits.append(int(wait.group(1)))
-            for _ in range(int(wait.group(1)) + 1):
-                if not self.alive or self.alive.pop(0) != 0:
-                    return 0, "", ""
-            return 3, "", ""
         if command.startswith("test -e "):
             self.exec_log.append(command)
             return (0 if shlex.split(command)[2] in self.present else 1), "", ""
@@ -141,8 +117,7 @@ def test_restored_then_install_and_status_healthy_flow(tmp_path, sources):
 
 
 def test_no_volume_has_no_restore_and_no_publish(tmp_path, sources):
-    placement, state, pod = _prepare(tmp_path, sources, volume=None)
-    placement.settle_engine_snapshot(state)
+    _placement, state, pod = _prepare(tmp_path, sources, volume=None)
     assert not any("engine_snapshot" in command for command in pod.exec_log)
     assert not any(command.startswith("test -e ") for command in pod.exec_log)
     assert [entry["step"] for entry in state.steps] == ["bootstrap", "install"]
@@ -203,9 +178,14 @@ def test_publish_is_detached_after_install_and_returns_immediately(tmp_path, sou
     assert f"> {rp.SNAPSHOT_PUBLISH_LOG} 2>&1 < /dev/null &" in publish
     assert rp.SNAPSHOT_PUBLISH_PID in publish
     assert "--mount /workspace --volume-size-gb 200" in publish
-    # A plain exec, not a polled job: nothing waits for publish during preparation.
+    # Report (totals, stale-partial cleanup) follows publish inside the same detached chain.
+    chain = shlex.split(publish.split("nohup setsid sh -c ", 1)[1])[0]
+    first, second = chain.split("; ")
+    assert "engine_snapshot publish" in first and "engine_snapshot report" in second
+    assert f"--deadline {rp.SNAPSHOT_REPORT_SECONDS}" in second
+    # A plain exec, not a polled job: nothing waits for publish during preparation or release.
     assert not any("engine_snapshot" in command for command in pod.job_log)
-    assert state.snapshot_publish_pid == 4242
+    assert not hasattr(state, "snapshot_publish_pid")
     assert _notes(state, "engine_snapshot_publish")[0]["pid"] == 4242
     assert not any("/proc/4242" in command for command in pod.exec_log)
 
@@ -226,324 +206,30 @@ def test_healthy_install_skipped_still_attempts_publish(tmp_path, sources):
         ("install", "skipped"), ("engine_snapshot_publish", "started")]
 
 
-def test_release_waits_for_publish_then_reports_totals(tmp_path, sources):
-    placement, state, pod = _prepare(tmp_path, sources)
-    pod.alive = [0, 0, 0]  # still running for three checks, then exited
-    placement.settle_engine_snapshot(state)
-    # Exactly one bounded on-pod wait (each exec is a job record: never poll from the host).
-    assert pod.waits == [rp.SNAPSHOT_PUBLISH_WAIT_SECONDS - rp.SNAPSHOT_REPORT_MIN_SECONDS
-                         - rp.SNAPSHOT_SLACK_SECONDS] and len(
-        [c for c in pod.exec_log if "/proc/4242" in c]) == 1
-    assert not _notes(state, "engine_snapshot_publish")[1:]
-    report = pod.exec_log[_index(pod.exec_log, "engine_snapshot report")]
-    assert _index(pod.exec_log, "engine_snapshot report") > max(
-        i for i, command in enumerate(pod.exec_log) if "/proc/4242" in command)
-    assert "--cache /workspace/astrid/engine-envs/comfyui" in report
-    note = _notes(state, "engine_snapshot_report")[0]
-    assert (note["status"], note["total_bytes"], note["identities"], note["partials"]) == (
-        "reported", 7 << 30, 2, 1)
-    # One settlement per publish.
-    placement.settle_engine_snapshot(state)
-    assert len(_notes(state, "engine_snapshot_report")) == 1
-
-
-def test_release_wait_is_bounded_and_leaves_publish_unfinished(tmp_path, sources):
-    placement, state, pod = _prepare(tmp_path, sources)
-    pod.alive = [0] * 10_000  # never exits
-    placement.settle_engine_snapshot(state)
-    assert rp.SNAPSHOT_PUBLISH_WAIT_SECONDS == 180 and pod.waits == [160]
-    assert _notes(state, "engine_snapshot_publish")[-1]["status"] == "publish_unfinished"
-    # The release continues: report still runs and its totals are noted.
-    assert _notes(state, "engine_snapshot_report")[0]["status"] == "reported"
-
-
-def test_warm_settle_does_not_wait_and_paid_budget_bounds_the_wait(tmp_path, sources):
-    placement, state, pod = _prepare(tmp_path, sources)
-    pod.alive = [0] * 100
-    placement.settle_engine_snapshot(state, wait_seconds=0)
-    assert pod.waits == []
-    assert _notes(state, "engine_snapshot_publish")[-1]["status"] == "still_running"
-    assert not _notes(state, "engine_snapshot_report")
-    placement, state, pod = _prepare(tmp_path, sources)
-    pod.alive = [0] * 100
-    placement.settle_engine_snapshot(state, budget_seconds=12)
-    assert pod.waits == [0]
-    assert _notes(state, "engine_snapshot_publish")[-1]["status"] == "publish_unfinished"
-
-
-@pytest.mark.parametrize("report", [(1, "boom"), (0, "not a result"), None])
-def test_report_or_transport_failure_never_raises(tmp_path, sources, report):
-    placement, state, pod = _prepare(tmp_path, sources)
-    if report is None:
-        def broken(command, timeout=600):
-            raise ConnectionError("transport gone")
-        pod.exec = broken
-    else:
-        pod.report = report
-    placement.settle_engine_snapshot(state)
-    assert _notes(state, "engine_snapshot_report")[-1] == {
-        "step": "engine_snapshot_report", "status": "skipped", "reason": "report_failed",
-        "at": _notes(state, "engine_snapshot_report")[-1]["at"]}
-
-
-def test_machine_release_settles_snapshot_before_stop_and_without_waiting_when_warm(
-        machine_case, monkeypatch):
-    """The release wait lives at the last pod step of machine release, before owner.release stops the pod."""
+@pytest.mark.parametrize("failure", [None, "job", "digest"])
+def test_release_never_touches_the_snapshot(machine_case, failure):
+    """W113/W116/W119: release has no snapshot step at all, on success or failure, so nothing
+    snapshot-related can delay, skip or fail the pod release."""
     from tests.packs.runpod.test_machine import _claim_machine
 
     c = machine_case
     _claim_machine(c)
-    calls = []
-
-    def settle(state, *, wait_seconds, budget_seconds, cancelled):
-        calls.append((round(wait_seconds, -1), budget_seconds is not None and budget_seconds > 0, list(c.deletes)))
-        raise RuntimeError("snapshot bookkeeping broke")  # must never fail release
-
-    monkeypatch.setattr(c.placement, "settle_engine_snapshot", settle)
-    warm = c.machine.claim(c.job())
-    c.machine.release(warm, True)
-    assert c.read()["lease"]["state"] == "idle"
-    cold = c.machine.claim(c.job(2))
-    c.machine.release(cold, False)
-    assert c.deletes == ["pod-1"]
-    assert calls == [(0, True, []), (rp.SNAPSHOT_PUBLISH_WAIT_SECONDS, True, [])]  # cold: ~the full bound
-
-
-class _ExecClock:
-    """Charges every pod exec its full transport timeout: the worst case a release can see."""
-
-    def __init__(self, pod, clock):
-        self.pod, self.clock, self.charged = pod, clock, []
-        inner = pod.exec
-
-        def exec_(command, timeout=600):
-            self.charged.append(timeout)
-            self.clock.now += timeout
-            return inner(command, timeout)
-
-        pod.exec = exec_
-
-
-@pytest.mark.parametrize("alive", [[0] * 10_000, [0, 0, 0]])
-def test_release_settlement_is_one_bound_including_report(tmp_path, sources, alive):
-    """R4: wait + report + transport slack together stay within SNAPSHOT_PUBLISH_WAIT_SECONDS."""
-    clock = Clock()
-    placement, state, pod = _prepare(tmp_path, sources, clock=clock)
-    pod.alive = alive
-    charged = _ExecClock(pod, clock)
-    start = clock.now
-    placement.settle_engine_snapshot(state)
-    assert clock.now - start <= rp.SNAPSHOT_PUBLISH_WAIT_SECONDS == 180
-    assert sum(charged.charged) <= 180
-    assert _notes(state, "engine_snapshot_report")  # the report still fits inside the bound
-
-
-def test_release_skips_report_when_under_ten_seconds_remain(tmp_path, sources):
-    clock = Clock()
-    placement, state, pod = _prepare(tmp_path, sources, clock=clock)
-    pod.alive = [0] * 10_000
-    charged = _ExecClock(pod, clock)
-    placement.settle_engine_snapshot(state, budget_seconds=15)
-    assert not any("engine_snapshot report" in command for command in pod.exec_log)
-    assert sum(charged.charged) <= 15
-
-
-@pytest.mark.parametrize("failure", ["job", "digest"])
-def test_failed_job_release_never_settles_snapshot(machine_case, monkeypatch, failure):
-    """R3: settlement runs on the success path only; a failed job's release never waits on publish."""
-    from tests.packs.runpod.test_machine import _claim_machine
-
-    c = machine_case
-    _claim_machine(c)
-    calls = []
-    monkeypatch.setattr(c.placement, "settle_engine_snapshot",
-                        lambda state, **kw: calls.append(kw))
     lease = c.machine.claim(c.job())
-    error = rm.MachineError("job failed") if failure == "job" else rp.DigestMismatch("digest")
-    try:
-        c.machine.release(lease, False, failure=error)
-    except Exception:  # noqa: BLE001 - classification may surface; only the wait matters here
-        pass
-    assert calls == []
-
-
-def _stalled_release(c, monkeypatch, *, wait_seconds=0.4, interrupt=False, minimum=0.1):
-    """Cold release whose snapshot settlement uses the REAL settle over a transport exec that
-    blocks far past any timeout it was given (the pinned transport does not bound its exec)."""
-    import threading
-    import time as _time
-
-    from tests.packs.runpod.test_machine import _claim_machine
-
-    _claim_machine(c)
-    monkeypatch.setattr(rm, "SNAPSHOT_PUBLISH_WAIT_SECONDS", wait_seconds)
-    monkeypatch.setattr(rm, "SNAPSHOT_SETTLE_MIN_SECONDS", minimum)
-    never = threading.Event()
-    lease = c.machine.claim(c.job())
-    lease.state.snapshot_publish_pid = 4242
     lease.state.volume = {"mount_path": "/workspace", "size_gb": 300}
+    seen = []
     inner = lease.claim.ops.exec
 
     def exec_(command, timeout=600, *args, **kwargs):
-        exec_.seen.append(command)
-        if "/proc/4242" in command or "engine_snapshot" in command:
-            if interrupt:
-                raise KeyboardInterrupt
-            never.wait(timeout * 10 + 30)  # ignores its timeout, like the real transport
+        seen.append(command)
         return inner(command, timeout, *args, **kwargs)
 
-    exec_.seen = []
     lease.claim.ops.exec = exec_
-    started = _time.monotonic()
-    return lease, started, never
-
-
-def test_stalled_settlement_transport_never_holds_a_paid_pod(machine_case, monkeypatch):
-    """Astra W113: release reaches owner.release within the bound even when the exec stalls."""
-    import time as _time
-
-    c = machine_case
-    lease, started, never = _stalled_release(c, monkeypatch)
+    error = {None: None, "job": rm.MachineError("job failed"), "digest": rp.DigestMismatch("digest")}[failure]
     try:
-        c.machine.release(lease, False)
-        elapsed = _time.monotonic() - started
-    finally:
-        never.set()
-    assert elapsed < 0.4 + 2.0
-    assert c.deletes == ["pod-1"] and lease.released
-    assert ("engine_snapshot_settlement", "abandoned") in {
-        (e["step"], e["status"]) for e in lease.state.steps}
-
-
-def test_interrupt_inside_settlement_still_releases_then_propagates(machine_case, monkeypatch):
-    c = machine_case
-    lease, _started, never = _stalled_release(c, monkeypatch, interrupt=True)
-    try:
-        with pytest.raises(KeyboardInterrupt):
-            c.machine.release(lease, False)
-    finally:
-        never.set()
-    assert c.deletes == ["pod-1"] and lease.released
-
-
-def test_settlement_skipped_when_under_ten_seconds_remain(machine_case, monkeypatch):
-    c = machine_case
-    lease, _started, never = _stalled_release(c, monkeypatch, wait_seconds=5, minimum=10)
-    try:
-        c.machine.release(lease, False)
-    finally:
-        never.set()
-    assert ("engine_snapshot_settlement", "skipped") in {(e["step"], e["status"]) for e in lease.state.steps}
-    assert not any("/proc/4242" in str(e) for e in lease.state.steps)
-    assert c.deletes == ["pod-1"]
-
-
-def _settlement_threads():
-    import threading
-    return [t for t in threading.enumerate() if t.name == "engine-snapshot-settlement"]
-
-
-def test_abandoned_settlement_is_fenced_and_late_results_ignored(machine_case, monkeypatch):
-    """W116: after release abandons settlement, the woken worker runs no report and notes nothing."""
-    c = machine_case
-    lease, _started, never = _stalled_release(c, monkeypatch)
-    c.machine.release(lease, False)
-    seen = lease.claim.ops.exec.seen
-    issued = list(seen)
-    steps_at_release = len(lease.state.steps)
-    never.set()  # the stalled exec returns late
-    for thread in _settlement_threads():
-        thread.join(5)
-    assert not _settlement_threads()
-    assert len(lease.state.steps) == steps_at_release
-    assert not any(e["step"] == "engine_snapshot_report" for e in lease.state.steps)
-    assert seen == issued  # no exec at all after the fence, in particular no report
-    assert not any("engine_snapshot report" in command for command in seen)
-
-
-def test_interrupt_during_thread_construction_still_deletes_the_pod(machine_case, monkeypatch):
-    c = machine_case
-    lease, _started, never = _stalled_release(c, monkeypatch)
-
-    real = rm.threading.Thread
-
-    class Exploding(real):  # only the settlement thread; release's own threads are untouched
-        def __init__(self, *args, name=None, **kwargs):
-            if name == "engine-snapshot-settlement":
-                raise KeyboardInterrupt
-            super().__init__(*args, name=name, **kwargs)
-
-    monkeypatch.setattr(rm.threading, "Thread", Exploding)
-    try:
-        with pytest.raises(KeyboardInterrupt):
-            c.machine.release(lease, False)
-    finally:
-        never.set()
-    assert c.deletes == ["pod-1"] and lease.released
-
-
-def test_thread_start_failure_leaves_a_successful_job_successful(machine_case, monkeypatch):
-    c = machine_case
-    lease, _started, never = _stalled_release(c, monkeypatch)
-    real = rm.threading.Thread
-
-    class NoThreads(real):
-        def start(self):
-            if self.name == "engine-snapshot-settlement":
-                raise RuntimeError("can't start new thread")
-            return super().start()
-
-    monkeypatch.setattr(rm.threading, "Thread", NoThreads)
-    try:
-        c.machine.release(lease, False)  # must not raise: the job completed
-    finally:
-        never.set()
-    assert c.deletes == ["pod-1"] and lease.released
-
-
-def test_release_error_never_replaces_a_held_interrupt(machine_case, monkeypatch):
-    c = machine_case
-    lease, _started, never = _stalled_release(c, monkeypatch, interrupt=True)
-    monkeypatch.setattr(c.machine, "_finish", lambda *a, **k: (_ for _ in ()).throw(OSError("finish broke")))
-    try:
-        with pytest.raises(KeyboardInterrupt) as info:
-            c.machine.release(lease, False)
-    finally:
-        never.set()
-    assert isinstance(info.value.__cause__, OSError)
-
-
-def test_near_expiry_paid_clock_skips_settlement(machine_case, monkeypatch):
-    """A real near-expiry owner clock (not a lowered cap): under 10 s of paid lease, no settlement."""
-    c = machine_case
-    lease, _started, never = _stalled_release(c, monkeypatch, wait_seconds=180, minimum=10)
-    owner = c.machine._require().lease_owner
-    with owner.lock:
-        paid = owner.preparation_claim(lease.lease)["lease"]["paid_expires_at"]
-    monkeypatch.setattr(owner, "clock", lambda: paid - 5)
-    try:
-        c.machine.release(lease, False)
-    finally:
-        never.set()
-    assert ("engine_snapshot_settlement", "skipped") in {(e["step"], e["status"]) for e in lease.state.steps}
-    assert c.deletes == ["pod-1"]
-
-
-def test_settle_fence_ignores_a_late_wait_and_never_reports(tmp_path, sources):
-    """W116: release abandons while the on-pod wait is in flight; nothing after it runs or is noted."""
-    placement, state, pod = _prepare(tmp_path, sources)
-    pod.alive = [0, 0]
-    fence = {"set": False}
-    inner = pod.exec
-
-    def exec_(command, timeout=600):
-        result = inner(command, timeout)
-        if "-lt" in command:
-            fence["set"] = True  # abandoned by release before this wait returned
-        return result
-
-    pod.exec = exec_
-    placement.settle_engine_snapshot(state, cancelled=lambda: fence["set"])
-    assert not any("engine_snapshot report" in command for command in pod.exec_log)
-    assert not _notes(state, "engine_snapshot_report")
-    assert not _notes(state, "engine_snapshot_publish")[1:]
+        c.machine.release(lease, False, failure=error) if error else c.machine.release(lease, False)
+    except Exception:  # noqa: BLE001 - classification may surface; only the snapshot steps matter here
+        pass
+    if failure is None:
+        assert c.deletes == ["pod-1"]  # failure paths keep compose's own release classification
+    assert not any("engine_snapshot" in command or "/proc/" in command for command in seen)
+    assert not hasattr(c.placement, "settle_engine_snapshot")

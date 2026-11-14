@@ -34,7 +34,6 @@ import os
 import re
 import secrets
 import shlex
-import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -50,8 +49,6 @@ from .remote_placement import (
     POD_VENV,
     RESULT_MARK,
     RUNS_ROOT,
-    SNAPSHOT_PUBLISH_WAIT_SECONDS,
-    SNAPSHOT_SETTLE_MIN_SECONDS,
     Claim,
     DigestMismatch,
     RemotePlacement,
@@ -1338,9 +1335,6 @@ class RunPodMachine:
                 failure: BaseException | None = None, stage: str = "execution") -> None:
         owner = self._require().lease_owner
         _stamp(getattr(lease, "timing", None), "release_started_at", first=True)
-        # Snapshot settlement gets ONE absolute deadline, fixed here before any release work.
-        settle_deadline = self._snapshot_settle_deadline(owner, lease)
-        held: list[BaseException] = []  # an interrupt during settlement, raised only after release
         observer_key = abort_event = None
         if failure is not None and not lease.released:
             try:
@@ -1350,37 +1344,15 @@ class RunPodMachine:
                 pass  # _release_impl still fences unsafe custody and reconciles exact release.
         try:
             self._release_impl(lease, warm, reason=reason, failure=failure, stage=stage,
-                               abort_event=abort_event, observer_key=observer_key,
-                               settle_deadline=settle_deadline, held=held)
-        except BaseException as exc:
-            if held and held[0] is not exc:
-                raise held[0] from exc  # a release error never replaces the held interrupt
-            raise
+                               abort_event=abort_event, observer_key=observer_key)
         finally:
             _stamp(getattr(lease, "timing", None), "released_at")
             if observer_key is not None:
                 owner.end_failure_observation(observer_key)
-        if held:
-            raise held[0]
-
-    @staticmethod
-    def _snapshot_settle_deadline(owner: Any, lease: MachineLease) -> float:
-        """min(180 s, the remaining paid lease) as one monotonic instant; never raises."""
-        start = time.monotonic()
-        deadline = start + SNAPSHOT_PUBLISH_WAIT_SECONDS
-        try:
-            with owner.lock:
-                paid = owner.preparation_claim(lease.lease)["lease"]["paid_expires_at"]
-            deadline = min(deadline, start + (paid - owner.clock()))
-        except Exception:  # noqa: BLE001 - an unreadable lease leaves only the fixed bound
-            _logger.debug("Could not read the paid expiry for snapshot settlement", exc_info=True)
-        return deadline
 
     def _release_impl(self, lease: MachineLease, warm: bool, *, reason: str,
                       failure: BaseException | None, stage: str,
-                      abort_event: Any = None, observer_key: Any = None,
-                      settle_deadline: float | None = None,
-                      held: list[BaseException] | None = None) -> None:
+                      abort_event: Any = None, observer_key: Any = None) -> None:
         """Reset a verified job's Runtime, then settle idle; release unsafe custody."""
         from .worker_preparation import AcquisitionUnresolvedError
 
@@ -1539,12 +1511,6 @@ class RunPodMachine:
                 warm, reason = False, "reset_failed"
         if warm and stale:
             self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"})
-        # The last point on this pod before it stops (or settles warm): bounded wait for this
-        # run's detached snapshot publish, then report. Success path only: a failed job's release
-        # never waits on it (an unfinished publish has no manifest and is invisible).
-        if failure is None and rejection is None and settle_deadline is not None:
-            self._settle_engine_snapshot(adapter, lease, warm=warm, deadline=settle_deadline,
-                                         held=held if held is not None else [])
         unreaped = getattr(lease.claim.ops, "unreaped_child", None)
         if unreaped is not None:
             owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)
@@ -1606,55 +1572,6 @@ class RunPodMachine:
                         and record.get("lease", {}).get("state") == "releasing"):
                     raise
         lease.released = True
-
-    @staticmethod
-    def _settle_engine_snapshot(adapter: Any, lease: MachineLease, *, warm: bool, deadline: float,
-                                held: list[BaseException]) -> None:
-        """Run snapshot settlement under one absolute deadline that the transport cannot extend.
-
-        The pinned transport does not bound a remote exec by its timeout (start, poll, cancel and
-        retries run outside it), so settlement runs in a daemon thread that release abandons at the
-        deadline, fenced so a late result is ignored. Stopping the pod is what ends a stalled exec;
-        an unfinished publish has no manifest, so it is invisible.
-
-        Never raises. Ordinary errors are logged and swallowed: a completed job never becomes a
-        release failure. A non-Exception interrupt (KeyboardInterrupt, SystemExit, ...) is
-        appended to ``held`` for release() to raise only after the pod is released or settled.
-        """
-        abandoned = threading.Event()
-        try:
-            settle = getattr(adapter.placement, "settle_engine_snapshot", None)
-            if settle is None:
-                return
-            budget = deadline - time.monotonic()
-            if budget < SNAPSHOT_SETTLE_MIN_SECONDS:
-                lease.state.note("engine_snapshot_settlement", "skipped", reason="budget_short")
-                return
-            caught: list[BaseException] = []
-
-            def run() -> None:
-                try:
-                    settle(lease.state, wait_seconds=0 if warm else budget, budget_seconds=budget,
-                           cancelled=abandoned.is_set)
-                except BaseException as exc:  # noqa: BLE001 - surfaced to release, never raised in the thread
-                    caught.append(exc)
-
-            worker = threading.Thread(target=run, name="engine-snapshot-settlement", daemon=True)
-            worker.start()
-            worker.join(max(0.0, deadline - time.monotonic()))
-            if worker.is_alive():
-                abandoned.set()
-                lease.state.note("engine_snapshot_settlement", "abandoned", reason="deadline")
-            elif caught and not isinstance(caught[0], Exception):
-                held.append(caught[0])
-            elif caught:
-                _logger.debug("Engine snapshot settlement failed; continuing release", exc_info=caught[0])
-        except Exception:  # noqa: BLE001 - snapshot bookkeeping must never fail release
-            abandoned.set()
-            _logger.debug("Engine snapshot settlement could not run; continuing release", exc_info=True)
-        except BaseException as exc:  # noqa: BLE001 - an interrupt here: release first, then raise it
-            abandoned.set()
-            held.append(exc)
 
     def _reset(self, lease: MachineLease, *, verify_deadline: float | None = None,
                paid_expiry: float | None = None) -> dict[str, Any]:
