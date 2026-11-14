@@ -143,6 +143,7 @@ from astrid.core.execution.guards import (
     write_evidence_status,
 )
 from astrid.core.execution.host_log import log_lease_diagnostic, start_stdio_rotator
+from astrid.core.execution.local_engine_idle import LocalEngineIdle
 from astrid.core.execution.managed_inputs import managed_file_digest
 from astrid.core.execution.managed_tool_session import (
     AdmissionToken,
@@ -6769,9 +6770,9 @@ class GenericPackHost:
         self._evidence_observation_binding: dict[str, Any] = {}
         self._child_import_host_context: dict[str, Any] = {}
         self._evidence_observation_lock = threading.RLock()
-        # Idle release for everything this host keeps warm between tasks: the
-        # session slot (Wan2GP, VibeComfy) and the Remotion frame owner.
+        # Idle release for the session slot (Wan2GP) and Remotion frame owner.
         self.warm_holds = WarmHolds(on_change=self._publish_evidence_status)
+        self._local_engine_idle = LocalEngineIdle(on_change=self._publish_evidence_status)
         self._target_bindings = None
         self._target_bindings_kind = None
         self._machines_observed_at: float = float("-inf")
@@ -7119,9 +7120,8 @@ class GenericPackHost:
     def _release_idle_session(self) -> None:
         """Idle expiry of the session slot; the warm hold runs it under the slot's lock.
 
-        Wan2GP's release ends its child.  VibeComfy's unloads models and frees
-        memory but keeps the engine process: the host cannot restart an engine
-        the Runtime selected for it, so ending it would strand the capability.
+        Wan2GP's release ends its child. Local-managed ComfyUI is retained by
+        engine custody and has a separate host-wide idle hold.
         """
         warm = self._warm_session()
         if warm is None:
@@ -7237,6 +7237,8 @@ class GenericPackHost:
         for slot in self._claim_slots:
             with slot.managed_tool_session._lock:
                 slot._shutdown.set()
+        if self._handoff_accounting_owner is self:
+            self._local_engine_idle.close()
         for slot in self._claim_slots:
             try:
                 slot.shutdown()
@@ -11354,6 +11356,28 @@ class GenericPackHost:
             if terminal.get("forced"):
                 terminal["receipt_final"] = True
 
+    def _admit_local_engine(self, task_data: Mapping[str, Any]) -> bool:
+        """Count local-managed work before preparation or waiting for a slot.
+
+        These are the same routing facts the execution path uses, before it
+        fills comfy_url with the prepared managed endpoint. Never classify an
+        endpoint by its URL: explicit endpoints belong to attached engines.
+        """
+        if task_data.get("capability") != "vibecomfy.run":
+            return False
+        spec = _admitted_spec_envelope(task_data.get("spec", {}))
+        inputs = spec.get("inputs") or {}
+        if inputs.get("comfy_url") or inputs.get("readiness_profile"):
+            return False
+        policy = inputs.get("placement_policy")
+        policy = json.loads(policy) if policy else {}
+        if policy.get("kind", "local") != "local":
+            return False
+        contract = _execution_contract(task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+        requested = ((contract or {}).get("lifecycle") or {}).get("idle_timeout_seconds")
+        return self._local_engine_idle.begin(requested=(
+            requested if requested is not None else policy.get("idle_timeout_s")))
+
     def run_task(
         self,
         task: Mapping[str, Any],
@@ -11959,7 +11983,9 @@ class GenericPackHost:
 
         terminal["reject_publication"] = reject_publication
         pump_thread = None
+        local_engine_admitted = False
         try:
+            local_engine_admitted = self._admit_local_engine(data)
             owns_attempt = self._handoff_begin_direct_attempt()
             if exact_attempt and exact_fence is not None:
                 terminal["root"] = self._allocate_attempt_root(str(data["id"]), str(exact_attempt))
@@ -12031,6 +12057,8 @@ class GenericPackHost:
             raise
         finally:
             try:
+                if local_engine_admitted:
+                    self._local_engine_idle.finish()
                 if terminal.get("root") is not None and not terminal.get("write_attempted"):
                     self._write_task_result(terminal)
                     if (self.attempt_root is None and not keep_attempt
@@ -12780,9 +12808,11 @@ class GenericPackHost:
                 if cancelled():
                     raise HostCancelled("task cancelled before target acquisition")
                 if policy.get("kind") == "local" and not target_operation:
-                    if (set(policy) != {"kind", "device"} or
+                    if (set(policy) - {"idle_timeout_s"} != {"kind", "device"} or
                             policy["device"] is not None and (type(policy["device"]) is not int or policy["device"] < 0)):
                         raise HostError("invalid local placement device")
+                    if "idle_timeout_s" in policy:
+                        idle_seconds(DEFAULT_IDLE_SECONDS, requested=policy["idle_timeout_s"])
                     local_device = policy["device"]
                     target_context = None
                 else:
@@ -12853,6 +12883,7 @@ class GenericPackHost:
                     declare_engine_log(root, engine_preparation.root, engine_preparation.recipe.engine)
                     report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs,
                                                         canonical_workflow=canonical.workflow, input_digests=original_input_digests)
+                    self._local_engine_idle.retain(engine_preparation.context.service_client)
                     assert_managed_input_identity()
                     _terminal["managed_engine_preparation"] = report
                     from astrid.packs.vibecomfy.local_server_engine import (
@@ -13749,6 +13780,7 @@ class GenericPackHost:
                         "cap_bytes": self.execution_policy.evidence_cap_bytes,
                         "warm_holds": [entry for host in (owner, *owner._claim_slots)
                                        for entry in host.warm_holds.status()],
+                        "local_engine_idle": owner._local_engine_idle.status(),
                         "updated_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                     },
                 )
@@ -14324,6 +14356,7 @@ class GenericPackHost:
         # Delegated children may create another slot from an existing slot.
         # All levels must share the coordinating host's retained resources.
         slot._handoff_accounting_owner = self._handoff_accounting_owner
+        slot._local_engine_idle = self._local_engine_idle
         # Parallel slots own private attempts, but claim/handoff accounting
         # must remain visible on the coordinating host without a false zero.
         for name in ("_handoff_enter_claim_rpc", "_handoff_leave_claim_rpc",

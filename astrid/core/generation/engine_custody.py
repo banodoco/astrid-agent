@@ -1424,9 +1424,17 @@ class _Supervisor:
         except (OSError, ValueError):
             unloaded = False
         _, after = vram(request("/system_stats"))
-        return {"status": "completed" if unloaded else "failed", "models_unloaded": unloaded,
-                "vram_total_bytes": total, "vram_free_before_bytes": before,
-                "vram_free_after_bytes": after}
+        result = {"status": "completed" if unloaded else "failed", "models_unloaded": unloaded,
+                  "vram_total_bytes": total, "vram_free_before_bytes": before,
+                  "vram_free_after_bytes": after}
+        # The same append-only engine log is declared by the preparing run.
+        # Retain the native release evidence even when idle fires after settle.
+        try:
+            with open(engine_log_path(self.root, self.identity["engine"]), "a", encoding="utf-8") as log:
+                log.write(json.dumps(result, sort_keys=True) + "\n")
+        except OSError:
+            pass  # Logging cannot change the release outcome.
+        return result
 
     def stop(self, deadline=None):
         deadline = self.cleanup_deadline(deadline)

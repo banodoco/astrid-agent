@@ -1521,7 +1521,10 @@ class GenerationFacade:
                             consent=controls.get('consent', ()),
                             idle_timeout_s=placement.policy.requested_idle_timeout_s)
                             if is_remote_target and not dry_run else
-                            {"kind": "local", "device": placement.device} if is_managed_target else None)
+                            {"kind": "local", "device": placement.device, **(
+                                {"idle_timeout_s": placement.policy.requested_idle_timeout_s}
+                                if placement.policy.requested_idle_timeout_s is not None else {})}
+                            if is_managed_target else None)
         runpod_engine = pending_target = None
         for name in ('engine', 'consent'):
             controls.pop(name, None)
