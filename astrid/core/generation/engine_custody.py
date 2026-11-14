@@ -490,7 +490,7 @@ class LinuxEngineServiceClient:
                                     "remaining_seconds": _remaining(deadline)}, deadline)
                     # Keep the connection open while target deadline cleanup is verified.
                     try:
-                        response = _receive(channel, deadline if operation == "stop" else deadline + _CLEANUP_SECONDS,
+                        response = _receive(channel, deadline if operation in {"stop", "release"} else deadline + _CLEANUP_SECONDS,
                                             **({"cancelled": cancelled} if cancelled is not None else {}))
                     except CancelledError:
                         # EOF cancels only this request; the supervisor drains its
@@ -503,7 +503,7 @@ class LinuxEngineServiceClient:
                         if not isinstance(barrier, dict) or barrier.get("exit_code") != 0 or barrier.get("timed_out") is not False:
                             raise CustodyUnresolved("cancelled engine command drainage is unconfirmed")
                         raise
-                    except DeadlineExceeded as exc:
+                    except (DeadlineExceeded, socket.timeout) as exc:
                         raise CustodyUnresolved("supervisor did not confirm command cleanup before the response deadline") from exc
                 if (not isinstance(response, dict) or response.get("identity") != self.identity
                         or set(response) not in ({"identity", "result"}, {"identity", "error", "reason"},
@@ -1432,6 +1432,10 @@ class _Supervisor:
         if running or pending:
             return {"status": "busy"}
         try:
+            # Keep the queue check immediately before POST. Production HTTP
+            # submissions bypass self.work, so these are not atomic. Pinned
+            # ComfyUI 6bfaacc6 server.py:1195-1203 sets flags only; main.py:
+            # 386-399 applies them after execution, never during a prompt.
             free = request("/api/free", {"unload_models": True, "free_memory": True})
             unloaded = free.get("models_unloaded") is True
         except (OSError, ValueError):
@@ -1473,7 +1477,9 @@ class _Supervisor:
                 with self.stop_lock:
                     self.stop_deadlines[channel] = deadline
                     self.stopping.set()
-            response_deadline = deadline if operation == "stop" else deadline + _CLEANUP_SECONDS
+            # Release owns no command to drain. In particular, preparation
+            # must not queue behind an idle RPC's command-cleanup allowance.
+            response_deadline = deadline if operation in {"stop", "release"} else deadline + _CLEANUP_SECONDS
             if not self.work.acquire(timeout=_remaining(response_deadline)):
                 raise CustodyUnresolved("active supervisor operation did not drain")
             engine_before = self.engine

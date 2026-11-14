@@ -8,6 +8,7 @@ import os
 import shutil
 from pathlib import Path
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -2014,6 +2015,34 @@ def test_live_supervisor_busy_and_failed_free_are_not_released(session, setting,
     assert result["status"] == expected
     assert result.get("models_unloaded") is not True
     assert not (root / "release-posts").exists()
+
+
+def test_release_response_uses_its_own_deadline_without_command_cleanup_allowance(tmp_path, monkeypatch):
+    client = _client(_identity(tmp_path))
+    with custody._directory(client.control, create=True):
+        pass
+    local, remote = socket.socketpair()
+    peer = struct.unpack("3i", local.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+    client._prepared_peer = (*peer, custody._vibe_birth(peer[0]))
+    monkeypatch.setattr(client, "_connect", lambda *args, **kwargs: local)
+    finished = threading.Event()
+
+    def unresponsive_peer():
+        custody._receive(remote, time.monotonic() + 2)
+        finished.wait(2)
+        remote.close()
+
+    thread = threading.Thread(target=unresponsive_peer)
+    thread.start()
+    started = time.monotonic()
+    try:
+        result = client.release_owned(deadline=started + 0.1)
+        assert time.monotonic() - started < 1, "idle release must not inherit command cleanup time"
+        assert result["status"] == "skipped"
+    finally:
+        finished.set()
+        thread.join(3)
+        local.close()
 
 
 def test_cancel_finite_request_drains_original_before_return_and_keeps_engine(session):
