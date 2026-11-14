@@ -79,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(raw_args)
     from astrid.core.contracts.errors import AstridError, coerce_astrid_error, render_astrid_error
+
     from .shared.request import H3RequestError, normalize_request
     from .shared.spec import canonical_spec
 
@@ -94,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         assets = _asset_map(args.asset_map)
         if args.command == "plan":
             from astrid.core.generation.engine_facts import comfyui_facts
+
             from .shared import engine_facts
             engine_facts.install(comfyui_facts())
             from .shared.planner import plan_request

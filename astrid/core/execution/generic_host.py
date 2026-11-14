@@ -133,7 +133,6 @@ from astrid.core.env_vars import (
     ASTRID_PACKS_PATH,
     ASTRID_VIBECOMFY_CHECKOUT,
 )
-from astrid.core.foundation.hash import sha256_file
 from astrid.core.execution import task_scope as _task_scope
 from astrid.core.execution.capability_ledger import load_capability_ledger
 from astrid.core.execution.guards import (
@@ -145,7 +144,6 @@ from astrid.core.execution.guards import (
 )
 from astrid.core.execution.host_log import log_lease_diagnostic, start_stdio_rotator
 from astrid.core.execution.managed_inputs import managed_file_digest
-from astrid.core.rendering.assets import managed_asset_digest
 from astrid.core.execution.managed_tool_session import (
     AdmissionToken,
     CapabilityDescriptor,
@@ -183,6 +181,7 @@ from astrid.core.execution.thumbnails import (
     is_visual_media_type,
 )
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS, WarmHolds, WarmLease, idle_seconds
+from astrid.core.foundation.hash import sha256_file
 from astrid.core.generation.engine_local_endpoint import LOCAL_ENGINE_HOST_ENV
 from astrid.core.generation.model_root import (
     MODEL_ROOT_BINDING_ENV,
@@ -198,6 +197,7 @@ from astrid.core.generation.vibecomfy_dependency import (
     configured_vibecomfy_checkout,
     dependency_pythonpath,
 )
+from astrid.core.rendering.assets import managed_asset_digest
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.core.util.secrets import load_local_api_key_with_source
 from astrid.sdk.execution_request import normalize_execution_request
@@ -1473,13 +1473,13 @@ def _prepare_vibecomfy_execution_identity(
     *, prepare_engine: Any = None,
 ) -> tuple[str, str, str, Mapping[str, Any]]:
     """Select and identify the exact VibeComfy input form before launch."""
+    from astrid.core.generation.engine_contracts import CustodyUnresolved
     from astrid.packs.vibecomfy.production_engine import (
         load_workflow_path,
         loaded_workflow_execution_identity,
         loaded_workflow_session_requirements,
     )
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
-    from astrid.core.generation.engine_contracts import CustodyUnresolved
 
     previous_headless = os.environ.get("VIBECOMFY_HEADLESS")
     os.environ["VIBECOMFY_HEADLESS"] = "1"
@@ -2071,8 +2071,15 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
     rendering pack itself); the host baseline variant is always present.
     A render in any other context is refused by ``_validated_runtime``.
     """
+    from astrid.core.execution.executor.folder import (
+        discover_folder_executor_roots,
+        load_folder_executor,
+    )
+    from astrid.core.execution.executor.schema import ExecutorValidationError
     from astrid.core.rendering.remotion_runtime import (
-        _NODE_ENV_KEYS, _UNSUPPORTED_PYTHON_STARTUP, _REGISTRY_SELECTORS,
+        _NODE_ENV_KEYS,
+        _REGISTRY_SELECTORS,
+        _UNSUPPORTED_PYTHON_STARTUP,
         _validate_remotion_worker_environment,
     )
     from astrid.core.subprocess_env import (
@@ -2081,8 +2088,6 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
         _is_secret_name,
         _normalize_secret_names,
     )
-    from astrid.core.execution.executor.folder import discover_folder_executor_roots, load_folder_executor
-    from astrid.core.execution.executor.schema import ExecutorValidationError
     ledger = (load_capability_ledger(capability_matrix, pack_roots=pack_roots)
               if capability_matrix else None)
     matrix = GenericPackHost._load_matrix(capability_matrix, ledger=ledger)
@@ -5706,8 +5711,9 @@ class RuntimeProtocolClient:
         Stages and managed input refs are explicit trusted-host arguments. The
         Runtime resolves them and injects any publication settlement effect.
         """
-        from ._child_bridge import ChildBridgeError, _staged_child_task, resource
         from astrid.sdk._child_bridge import _strict_json
+
+        from ._child_bridge import ChildBridgeError, _staged_child_task, resource
 
         request = normalize_execution_request(execution_request)
         staged = stage is not None or input_refs is not None
@@ -7343,7 +7349,10 @@ class GenericPackHost:
 
         from astrid.core.execution import phase_timing
         from astrid.core.execution.machine_run import (
-            WORKFLOW_FILE_ENTRY, MachineJob, resolve_machine, run_on_machine,
+            WORKFLOW_FILE_ENTRY,
+            MachineJob,
+            resolve_machine,
+            run_on_machine,
         )
 
         if record.id != "vibecomfy.run":
@@ -7708,8 +7717,8 @@ class GenericPackHost:
         Packs without actions remain eligible dependencies.
         """
         from astrid.core.pack.identity import pack_digest
-        from astrid.core.pack.loader import _load_manifest_payload
         from astrid.core.pack.imports import validate_selected_pack_map
+        from astrid.core.pack.loader import _load_manifest_payload
 
         if not record.definition.metadata.get("action_invocation"):
             return {}
@@ -9355,7 +9364,9 @@ class GenericPackHost:
         result_manifest object is authoritative. Validate its correlation and
         every local output/ref, including on the successful harvest path.
         """
-        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+        from astrid.core.contracts.managed_generation_result import (
+            validate_managed_generation_result,
+        )
 
         for descriptor in descriptors:
             if descriptor.get("name") != "result_manifest":
@@ -9989,12 +10000,16 @@ class GenericPackHost:
             broker = policy.get("broker")
             if allow_runtime_connection and isinstance(broker, Mapping) and broker.get("evidence_path"):
                 env["ASTRID_NETWORK_BROKER_EVIDENCE"] = str(broker["evidence_path"])
-        from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_ROLE, ASTRID_REMOTION_PROJECT_DIR
+        from astrid.core.env_vars import (
+            ASTRID_REMOTION_PROJECT_DIR,
+            ASTRID_REMOTION_VALIDATION_ROLE,
+        )
         if ASTRID_REMOTION_VALIDATION_ROLE in env and not _record_may_render(record):
             # Launch validated only render-capable workers; any other worker
             # carries no Remotion readiness, so it must not claim (or check) one.
             from astrid.core.env_vars import (
-                ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_PATH,
+                ASTRID_REMOTION_VALIDATION_LAUNCH,
+                ASTRID_REMOTION_VALIDATION_PATH,
                 ASTRID_REMOTION_VALIDATION_SHA256,
             )
             for name in (ASTRID_REMOTION_VALIDATION_PATH, ASTRID_REMOTION_VALIDATION_SHA256,
@@ -12572,7 +12587,9 @@ class GenericPackHost:
                 if manifest_path.is_file() and not manifest_path.is_symlink():
                     manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
                     if manifest_value.get("kind") == "managed-generation-result.v1":
-                        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+                        from astrid.core.contracts.managed_generation_result import (
+                            validate_managed_generation_result,
+                        )
 
                         validate_managed_generation_result(
                             manifest_value, staging_root=output_root,
@@ -12799,8 +12816,9 @@ class GenericPackHost:
             evidence_root = root
             if (capability_id == "vibecomfy.run" and machine_policy is None
                     and not inputs.get("comfy_url") and readiness_profile is None):
-                from astrid.core.generation.managed_preparation import ManagedEnginePreparation
                 from concurrent.futures import CancelledError
+
+                from astrid.core.generation.managed_preparation import ManagedEnginePreparation
                 admitted_mode = _align_admission(task_data).get("align", "check")
                 engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
@@ -12837,11 +12855,17 @@ class GenericPackHost:
                                                         canonical_workflow=canonical.workflow, input_digests=original_input_digests)
                     assert_managed_input_identity()
                     _terminal["managed_engine_preparation"] = report
-                    from astrid.packs.vibecomfy.local_server_engine import _live_preflight, _approve_live
+                    from astrid.packs.vibecomfy.local_server_engine import (
+                        _approve_live,
+                        _live_preflight,
+                    )
                     bundle = _canonical_bundle_value(loaded.resolved)
                     bindings = json.loads(inputs.get("workflow_inputs") or "{}")
                     if inputs.get("managed_assets"):
-                        from astrid.packs.vibecomfy.actions.run.run import _stage_managed_asset_manifest, resolve_inputs
+                        from astrid.packs.vibecomfy.actions.run.run import (
+                            _stage_managed_asset_manifest,
+                            resolve_inputs,
+                        )
                         resolved = _stage_managed_asset_manifest(inputs["managed_assets"],
                             readiness_profile=None, output_root=root / "host-preflight")
                         bindings = resolve_inputs(resolved.manifest, bindings)
@@ -16804,8 +16828,8 @@ def _task_generation_intent(task: Mapping[str, Any]) -> Mapping[str, Any] | None
     groups = payload.get("groups")
     if not isinstance(groups, list):
         raise HostError("named publication effect has no selector groups")
-    from astrid.sdk.invocation import _validate_generation_intent
     from astrid.sdk.exceptions import CapabilityValidationError
+    from astrid.sdk.invocation import _validate_generation_intent
     try:
         projected = [{"group_key": group["group_key"], "selectors": [
             {key: value for key, value in selector.items() if key != "output_port"}
@@ -17680,7 +17704,10 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     )
     args = parser.parse_args()
     _emit_startup_phase("cli_args_parsed")
-    from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE
+    from astrid.core.env_vars import (
+        ASTRID_REMOTION_VALIDATION_LAUNCH,
+        ASTRID_REMOTION_VALIDATION_ROLE,
+    )
 
     declared_validation = os.environ.get(ASTRID_REMOTION_VALIDATION_LAUNCH)
     if declared_validation != args.remotion_validation_launch_id:

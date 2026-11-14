@@ -6,6 +6,8 @@ from typing import Any
 
 from astrid.core.contracts.errors import AstridError
 
+from .hivemind import installed_pack_ids as _installed_pack_ids
+
 
 def _dispatch(raw: list[str]) -> int:
     from . import _print_entrypoint_help
@@ -676,7 +678,6 @@ _CORE_ROUTE_NAMES = frozenset(_TOP_LEVEL_HANDLERS)
 # keeps pack installation and command exposure separate: a pack is available
 # to the runtime without automatically claiming a top-level command.
 from .hivemind import PACK_COMMANDS as _PACK_COMMANDS
-from .hivemind import installed_pack_ids as _installed_pack_ids
 
 # Pack ids are discoverable, but never allowed to shadow a core family or an
 # outer launcher command. This is a blocklist/precedence rule, not a second
