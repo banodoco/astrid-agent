@@ -127,14 +127,35 @@ def test_generation_setup_routes_capability_and_consent():
 
 
 def test_generation_commands_include_platform_launchers_and_paid_bounds():
+    import shlex
+
+    from astrid.core.machines_cli import _parser
+
     body = _steps(_skill())[4]
     blocks = FENCE.findall(body)
     assert blocks
     assert '"$HOME/.local/share/astrid/run-astrid" credential set runpod' in body
     assert '"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" credential set runpod' in body
     assert '"$env:LOCALAPPDATA\\Astrid\\run-astrid.cmd" credential set runpod' in body
-    for flag in ("--deadline", "--offer-digest", "--preparation-seconds", "--execution-seconds", "--idle-seconds"):
-        assert any(flag in block for block in blocks), flag
+    # cause f123e45c1, 889312e1f; ruling: machines 12:25 Sat
+    commands = [shlex.split(line) for block in blocks for line in block.splitlines()
+                if "run-astrid" in line]
+    claims = [command[command.index("machines") + 1:] for command in commands
+              if "machines" in command and command[command.index("machines") + 1:][:1] == ["claim"]]
+    generates = [command[command.index("generate") + 1:] for command in commands if "generate" in command]
+    assert len(claims) == 3
+    assert generates
+    claim_flags = {"--consent", "--max-usd", "--deadline", "--for", "--json"}
+    for claim in claims:
+        flags = [arg.split("=", 1)[0] for arg in claim if arg.startswith("--")]
+        assert set(flags) == claim_flags and len(flags) == len(claim_flags), claim
+        parsed = _parser().parse_args(claim)
+        assert parsed.consent == ["paid"]
+        assert parsed.max_usd > 0 and parsed.deadline and parsed.claim_for and parsed.claim_json
+    paid_flags = {"--consent", "--max-usd", "--deadline", "--offer-digest", "--preparation-seconds",
+                  "--execution-seconds", "--idle-seconds", "--allow-paid", "--until-release"}
+    for generate in generates:
+        assert not paid_flags.intersection(arg.split("=", 1)[0] for arg in generate), generate
     assert any("generate describe --placement runpod" in block for block in blocks)
     assert any("engines install comfyui --dry-run" in block for block in blocks)
 
