@@ -70,12 +70,11 @@ the user to choose Allow if Chrome or Edge asks to reach their computer, then
 confirm astrid.haus shows Connected. Then follow [Set up generation](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md#4-set-up-generation) (skill `astrid-setup`). Do not install or clone `astrid-app`; it is for app
 developers.
 
-Synced skills use the absolute path of Astrid's own Python, so their
-commands work from a terminal without changing PATH.
+Commands run through the launcher (see the note above), so they work from a terminal without changing PATH.
 
 ## Start here
 
-Run Astrid commands and SDK scripts with the Python shown at the top of this
+Run Astrid commands through the launcher and SDK scripts with the Python shown at the top of this
 synced skill. The Runtime owns all work; find it only through these commands.
 
 1. Run `astrid status` to see the Runtime, selected project and recent timelines.
