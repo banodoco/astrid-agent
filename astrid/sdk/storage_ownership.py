@@ -11,6 +11,7 @@ import os
 import json
 import re
 import shutil
+import stat
 import tempfile
 import time
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Callable
 
 _OWNED_ROOTS_FILE = "storage-owned-roots.json"
+# Shared by the host's private incarnation directories and their reclaim policy.
+ATTEMPT_ROOT_PREFIX = "astrid-attempt-"
 
 
 @dataclass(frozen=True)
@@ -68,7 +71,7 @@ def registered_roots(data_root: Path, *, temporary_root: Path | None = None, cac
         RootPolicy("fast-lane-objects", "fast timeline frame input cache", "timeline visualize fast lane", "size capped by fast-lane writer; expire after 14 days", temp / "astrid-fast-lane" / "objects", 14 * 86400, lambda p: p.is_file()),
         RootPolicy("fast-lane-capture", "per-call frame capture work", "timeline visualize fast lane", "expire after 1 day", temp / "astrid-fast-lane", 86400, lambda p: p.is_dir() and p.name.startswith("capture-")),
         RootPolicy("fast-lane-verify", "per-call timeline verification work", "timeline visualize fast lane", "expire after 7 days", temp / "astrid-fast-lane", 7 * 86400, lambda p: p.is_dir() and p.name.startswith("verify-")),
-        RootPolicy("attempt-roots", "crash-abandoned executor attempts", "generic pack host", "expire after 2 days", temp, 2 * 86400, lambda p: p.is_dir() and p.name.startswith("astrid-attempt-")),
+        RootPolicy("attempt-roots", "crash-abandoned executor attempts", "generic pack host", "expire after 2 days", temp, 2 * 86400, lambda p: p.is_dir() and p.name.startswith(ATTEMPT_ROOT_PREFIX)),
         RootPolicy("host-log-archives", "rotated host logs", "runtime operator diagnostics", "expire after 30 days", data_root, 30 * 86400, lambda p: p.is_file() and (p.name.endswith(".gz") or ".log." in p.name)),
         RootPolicy("runtime-presentations", "named copy-on-write render views", "runs open desktop media reader", "expire after 30 days", data_root / "runtime" / "realms", 30 * 86400, lambda p: p.is_file()),
         RootPolicy("replay-output", "renderer replay outputs", "renderer replay tooling", "expire after 7 days", data_root / "renderer", 7 * 86400, lambda p: p.is_dir() and p.name.endswith(".replay-output")),
@@ -144,6 +147,23 @@ def _compact_owned_roots(data_root: Path) -> None:
     os.replace(temporary, manifest)
 
 
+def _reclaimable_attempt_root(path: Path) -> bool:
+    """Admit owned scratch only; marker presence preserves every evidence byte."""
+    try:
+        metadata = path.lstat()
+        if (not stat.S_ISDIR(metadata.st_mode)
+                or (os.name == "posix" and (metadata.st_uid != os.getuid()
+                    or metadata.st_mode & 0o022))):
+            return False
+        # recovery_blocked is in-memory status, not a persisted marker. Never
+        # parse these signals: corrupt, empty and symlink markers retain custody.
+        if any(os.path.lexists(path / name) for name in ("fail-request.json", "cancel-request.json")):
+            return False
+        return not any(child.name.endswith(".reconciliation.json") for child in path.iterdir())
+    except OSError:
+        return False
+
+
 def _candidates(policy: RootPolicy) -> list[Path]:
     root = policy.path
     if not root.exists() or root.is_symlink():
@@ -155,10 +175,24 @@ def _candidates(policy: RootPolicy) -> list[Path]:
             prefixes = {
                 "fast-lane-capture": ("capture-",),
                 "fast-lane-verify": ("verify-",),
-                "attempt-roots": ("astrid-attempt-",),
+                "attempt-roots": (ATTEMPT_ROOT_PREFIX,),
             }[policy.name]
             candidates = root.iterdir() if not prefixes else (p for prefix in prefixes for p in root.glob(prefix + "*"))
-            return [p for p in candidates if not p.is_symlink() and policy.selector(p)]
+            if policy.name == "attempt-roots":
+                # Filter parents before traversing them. A parent with children
+                # is a legacy spool base, never an expiry candidate itself: even
+                # an unsafe/retained child must keep its containing base alive.
+                attempts = []
+                for parent in candidates:
+                    if not _reclaimable_attempt_root(parent):
+                        continue
+                    children = list(parent.glob(ATTEMPT_ROOT_PREFIX + "*"))
+                    attempts.extend(p for p in children if _reclaimable_attempt_root(p))
+                    if not children:
+                        attempts.append(parent)
+                return attempts
+            selected = [p for p in candidates if not p.is_symlink() and policy.selector(p)]
+            return selected
         except OSError:
             return []
     if policy.name == "legacy-cache":
@@ -207,10 +241,14 @@ def reclaim(data_root: Path, *, dry_run: bool = False, now: float | None = None,
     for policy in registered_roots(data_root, temporary_root=temporary_root, cache_root=cache_root):
         items = []
         for path in _candidates(policy):
+            if policy.name == "attempt-roots" and not _reclaimable_attempt_root(path):
+                continue
             size = _tree_bytes(path)
             stale = _older_than(path, clock - policy.ttl_seconds)
             removed = False
             if stale and not dry_run:
+                if policy.name == "attempt-roots" and not _reclaimable_attempt_root(path):
+                    continue
                 try:
                     shutil.rmtree(path) if path.is_dir() else path.unlink()
                     removed = not path.exists()
