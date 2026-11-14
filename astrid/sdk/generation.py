@@ -1337,6 +1337,7 @@ class GenerationFacade:
         _reject_claim_controls(inputs or {})
         _require_single_declared_output(workflow=workflow, companion=companion)
         if placement is not None:
+            from astrid.core.generation import placement as placements
             from astrid.core.generation.entries import resolve_workflow_inputs
             if align is not None:
                 controls['align'] = _align_mode(align)
@@ -1365,7 +1366,10 @@ class GenerationFacade:
                     retained_source = _retain_generation_source(original_source, source_controls)
                     project, out = source_controls['project'], source_controls['out']
                 try:
-                    description, values = resolve_workflow_inputs(frozen, inputs or {}, mode=mode)
+                    # An attached ComfyUI's own schema names a saved workflow's custom-node inputs, as the run reads them.
+                    attached = placements.attached_comfy_url(placement)
+                    description, values = resolve_workflow_inputs(
+                        frozen, inputs or {}, mode=mode, **({'comfy_url': attached} if attached else {}))
                 except ImportError as exc:
                     from astrid.core.generation.preflight import generation_error
                     raise generation_error(exc, code='missing_dependency',

@@ -147,7 +147,7 @@ def test_load_workflow_path_unions_ready_template_and_ui_canonicalization(
         "_load_workflow",
         Mock(return_value=ready_workflow),
     )
-    canonicalize = Mock(return_value=(ui_workflow, None))
+    canonicalize = Mock(return_value=(ui_workflow, None, {}))
     monkeypatch.setattr(production_engine, "_canonicalize_ui_workflow", canonicalize)
     monkeypatch.setattr(
         production_engine,

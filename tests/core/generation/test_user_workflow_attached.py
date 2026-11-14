@@ -18,8 +18,9 @@ from astrid.core.generation import cli
 
 CUSTOM_SEED = ["INT", {"default": 0, "min": 0, "max": 2**32, "control_after_generate": True}]
 
-# Only the stock ComfyUI shape is tested: the frontend always writes the control value
-# after a seed widget, so a person's saved workflow has that shape against a stock server.
+# Only the stock ComfyUI shape is tested (as in ComfyUI's nodes.py KSampler): the control is an
+# option on ``seed`` and the frontend saves its value right after the seed widget. The converted
+# node holding a ``control_after_generate`` input is not something a stock server produces.
 OBJECT_INFO_STOCK = {
     "CheckpointLoaderSimple": {
         "input": {"required": {"ckpt_name": [["tiny-cpu-test.safetensors"]]}},
@@ -231,3 +232,98 @@ def test_explicit_seed_input_wins_over_saved_fixed_seed(tmp_path):
         assert _custom_inputs(fake.prompts[0]["prompt"])["seed"] == 99
     finally:
         fake.stop()
+
+
+# The saved seed through the paths a real run takes: the plan the facade prepares (entries.prepare),
+# the explicit public input, and `--as-entry --dry-run` (P4.9.4).
+
+def _prepared_seed(fake, path, values=None) -> int:
+    from types import SimpleNamespace
+
+    from astrid.core.generation import entries
+    _, plan, _ = entries.prepare(path, target_client=SimpleNamespace(target=SimpleNamespace(url=fake.url)),
+                                 mode="workflow", binds=None, values=values or {})
+    return plan["bindings"]["seed"]
+
+
+@pytest.mark.parametrize("control", ["fixed", "randomize", "increment", "decrement"])
+def test_prepared_plan_keeps_a_fixed_saved_seed_only(control, tmp_path):
+    fake, path = _serve(tmp_path, control)
+    try:
+        seeds = [_prepared_seed(fake, path) for _ in range(2)]
+        if control == "fixed":
+            assert seeds == [7, 7]
+        else:
+            assert all(type(seed) is int and 0 <= seed < 2**32 for seed in seeds), seeds
+            assert seeds[0] != seeds[1], seeds
+    finally:
+        fake.stop()
+
+
+def test_prepared_plan_uses_the_explicit_seed_over_a_fixed_saved_one(tmp_path):
+    fake, path = _serve(tmp_path, "fixed")
+    try:
+        assert _prepared_seed(fake, path, {"seed": 99}) == 99
+    finally:
+        fake.stop()
+
+
+def test_workflow_accepts_the_seed_input_describe_lists(fake_comfy, saved_workflow, tmp_path, capsys):
+    inputs = tmp_path / "inputs.json"
+    inputs.write_text(json.dumps({"seed": 7}), encoding="utf-8")
+    code = cli.main(["workflow", str(saved_workflow), "--placement", fake_comfy.url,
+                     "--inputs-json", str(inputs), "--dry-run", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0, payload
+    assert payload.get("status", "ready") == "ready", payload
+
+
+def test_as_entry_dry_run_lists_the_inputs_describe_lists(fake_comfy, saved_workflow, capsys):
+    assert cli.main(["describe", str(saved_workflow), "--placement", fake_comfy.url, "--json"]) == 0
+    described = [item["name"] for item in json.loads(capsys.readouterr().out)["inputs"]]
+    code = cli.main(["workflow", str(saved_workflow), "--placement", fake_comfy.url,
+                     "--as-entry", "my-portrait", "--dry-run", "--json"])
+    previewed = [item["name"] for item in json.loads(capsys.readouterr().out)["inputs"]]
+
+    assert code == 0
+    assert "seed" in previewed, previewed
+    assert previewed == described
+    assert fake_comfy.methods() == {"GET"}
+
+
+def test_seed_control_is_found_by_the_servers_widget_order():
+    from astrid.packs.vibecomfy.production_engine import saved_ui_seed_controls
+    object_info = {"Sampler": {"input": {"required": {
+        "model": ["MODEL"], "mode": [["a", "b"]], "seed": CUSTOM_SEED, "steps": ["INT", {}]}}}}
+    raw = {"nodes": [{"id": 5, "type": "Sampler", "widgets_values": ["b", 11, "increment", 4]},
+                     {"id": 6, "type": "Unknown", "widgets_values": [1, "fixed"]}]}
+
+    assert saved_ui_seed_controls(raw, object_info) == {
+        "5": {"field": "seed", "value": 11, "control": "increment"}}
+
+
+def test_a_workflow_not_read_as_a_saved_file_keeps_its_seed_fresh(fake_comfy, saved_workflow, tmp_path):
+    # Catalog and entry runs do not read saved controls: a fixed saved seed is not theirs to keep.
+    from astrid.core.generation import entries
+    from astrid.packs.vibecomfy.production_engine import load_workflow_path
+    workflow = load_workflow_path(saved_workflow, tmp_path / "s", comfy_url=fake_comfy.url).resolved.workflow
+    _, plan, _ = entries.apply_workflow_inputs(workflow, mode="workflow", values={})
+
+    assert plan["bindings"]["seed"] != 7 and 0 <= plan["bindings"]["seed"] < 2**32
+
+
+def test_a_canonical_workflow_loaded_in_the_same_scratch_keeps_a_fresh_seed(fake_comfy, saved_workflow, tmp_path):
+    # Saved controls belong to the load that read them, not to the scratch folder they were read in.
+    from astrid.core.generation.entries import prepare_execution_bindings
+    from astrid.packs.vibecomfy.production_engine import load_workflow_path
+    scratch = tmp_path / "shared"
+    saved = load_workflow_path(saved_workflow, scratch, comfy_url=fake_comfy.url)
+    assert prepare_execution_bindings(
+        saved.resolved.workflow, saved_seed_controls=saved.saved_seed_controls)["seed"] == 7
+
+    canonical = next(scratch.glob("canonical-ui-*/workflow.py"))
+    again = load_workflow_path(canonical, scratch)
+    assert again.saved_seed_controls is None
+    seed = prepare_execution_bindings(again.resolved.workflow, saved_seed_controls=again.saved_seed_controls)["seed"]
+    assert seed != 7 and 0 <= seed < 2**32
