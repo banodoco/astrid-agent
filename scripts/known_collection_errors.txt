@@ -1,3 +1,8 @@
+# Collection errors that are known and environment-only.
+# Source: generated on 14 Nov 2026 by running `python -m scripts.check_collection` in the worker environment built by
+# scripts/worker-env/agent-setup.sh (Runtime pinned by runtime.lock.json, VibeComfy at its pin, no engine-deps, no historical
+# Runtime checkout). The hosted `fast checks` job does not run collection yet; its first run of this gate may show entries
+# that differ from this list: add a real environment-only one here with its cause, never a real ImportError.
 # Engine-deps environment provides transformers.
 tests/core/generation/test_source_patch_config_cpu.py::ModuleNotFoundError: No module named 'transformers'
 # Engine-deps environment provides torch.
