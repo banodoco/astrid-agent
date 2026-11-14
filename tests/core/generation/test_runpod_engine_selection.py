@@ -17,8 +17,11 @@ from astrid.sdk.results import InvocationResult
 
 LIVE_PLACEMENT = {'kind': 'runpod', 'machine': 'pod-a'}
 # Explicit refusals a target route may answer with instead of resolving.
+# 'missing_node_pack': a typed readiness refusal with its own stable code whose message names the missing node
+# and the fix (install it on the target, or choose a target that has it). With h3 declaring the kind's plain
+# inputs (5fe9ed7a0), an attached video/i2v default resolves to h3 and may refuse this way (recorded no-LTX-fallback).
 REFUSALS = {'runpod_engine_unavailable', 'missing_dependency',
-            'engine_not_found', 'COMFY_TARGET_NO_MODEL'}
+            'engine_not_found', 'COMFY_TARGET_NO_MODEL', 'missing_node_pack'}
 TARGETS = ('auto', 'managed', 'runpod', 'attached')
 
 

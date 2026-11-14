@@ -1021,7 +1021,9 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     issues = []
     for class_type in sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys()):
         issues.append({'code': 'missing_node_pack', 'severity': 'error',
-                       'message': f'target is missing node {class_type!r}',
+                       'message': (f'target is missing node {class_type!r}; '
+                                   'install it on the requested ComfyUI target, '
+                                   'or choose a target that provides it.'),
                        'details': {'engine_code': 'comfyui.missing_node', 'node': class_type, 'bytes': None}})
     roles = {}
     needs_by_key = {}
