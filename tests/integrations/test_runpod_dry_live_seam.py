@@ -3,10 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
-import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,8 +16,10 @@ from astrid.packs.runpod import machine
 from tests.core.generation.test_runpod_engine_selection import NoPodClient, live_machine  # noqa: F401
 from tests.integrations.test_dry_run_equals_live_run import Recorder, _built, _graph
 from tests.integrations.test_remote_machine_job_seam_cpu import FileTransport, LeaseOwner
-from tests.integrations.test_managed_host_preparation import managed_install, session  # noqa: F401
-from tests.integrations.runpod_slot_pod import receipt_files
+from tests.core.generation.test_engine_custody import session  # noqa: F401
+from tests.integrations._pinned_source import (  # noqa: F401
+    pinned_comfy_source, pinned_managed_install,
+)
 from tests.integrations.test_runpod_slot_path_cpu import (
     H3_REQUEST, PROMPTS, SLOTS, SlotPod, _h3_built_classes, _slot_classes, _video_source,
 )
@@ -28,40 +27,6 @@ from tests.integrations.test_dry_run_equals_live_run import H3_CLASSES
 
 pytestmark = pytest.mark.integration
 
-
-@pytest.fixture(scope='session')
-def pinned_comfy_source(tmp_path_factory):
-    """Use a supplied clean pin or obtain the public source once per test run."""
-    pins = Path(__file__).resolve().parents[2] / 'astrid/packs/vibecomfy/pins.json'
-    pin = json.loads(pins.read_text())['sources']['comfyui']['revision']
-    supplied = os.environ.get('ASTRID_TEST_COMFY_SOURCE')
-    if supplied:
-        source = Path(supplied)
-    else:
-        source = tmp_path_factory.mktemp('pinned-comfy') / 'source'
-        subprocess.run(['git', 'clone', '--quiet', '--no-checkout', '--filter=blob:none',
-                        'https://github.com/Comfy-Org/ComfyUI.git', str(source)], check=True, timeout=180)
-        subprocess.run(['git', '-C', str(source), 'checkout', '--quiet', '--detach', pin], check=True, timeout=180)
-    assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == pin
-    assert not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'], text=True).strip()
-    return source
-
-
-@pytest.fixture
-def pinned_managed_install(session, monkeypatch, request, tmp_path, pinned_comfy_source):
-    source = pinned_comfy_source
-    profile = SimpleNamespace(comfy_source=source,
-        extra_launch_flags=('--use-ck-attention', '--disable-comfy-compiler'),
-        standin_distributions={'torch': '2.10.0+cu130', 'comfy-kitchen': '0.2.35', 'comfy-aimdo': '0.5.5'})
-    generator = managed_install.__wrapped__(session, monkeypatch, profile, tmp_path)
-    fixture = next(generator)
-    try:
-        yield fixture
-    finally:
-        try:
-            next(generator)
-        except StopIteration:
-            pass
 
 
 class CaptureClient(NoPodClient):
@@ -79,10 +44,24 @@ class CaptureClient(NoPodClient):
         return SimpleNamespace(import_file=import_file)
 
 
+def _spy_host_align(monkeypatch):
+    from astrid.core.generation import entries
+
+    observed = []
+    # cause be0027945; ruling: machines 11:35 Sat
+    cls = type(entries.engine_table()['comfyui'])
+    align = cls.align
+    def spy(self, manifest, mode, **kwargs):
+        observed.append((dict(manifest), mode, kwargs.get('workflow')))
+        return align(self, manifest, mode, **kwargs)
+    monkeypatch.setattr(cls, 'align', spy)
+    return observed
+
+
 @pytest.mark.parametrize('cell', [*SLOTS, ('video', 'h3')], ids=lambda cell: '/'.join(cell))
 # Slow on purpose: the video/h3 case measured about 165 s on hosted Lanes; the suite default is 120 s.
 @pytest.mark.timeout(300)
-def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, live_machine, pinned_managed_install):
+def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, live_machine, pinned_managed_install):  # noqa: F811
     recorder = Recorder(monkeypatch)
     client = CaptureClient()
     facade = GenerationFacade()
@@ -138,7 +117,8 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, live_machine, 
     def job_start(command, *, job_id):
         return {'id': job_id, 'dir': str(tmp_path / 'pod-agent' / job_id)}
     adapter = SimpleNamespace(placement=transport, lease_owner=owner)
-    lease = machine.MachineLease(object(), SimpleNamespace(ops=SimpleNamespace(job_start=job_start)),
+    # cause 9e5a1963a; ruling: machines 11:35 Sat
+    lease = machine.MachineLease(SimpleNamespace(claim=owner.record), SimpleNamespace(ops=SimpleNamespace(job_start=job_start)),
                                  SimpleNamespace(note=lambda *args, **kwargs: None), {}, False)
     monkeypatch.setattr(machine, 'RUNS_ROOT', str(tmp_path / 'pod' / 'runs'))
     scratch = tmp_path / 'controller'
@@ -166,22 +146,8 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, live_machine, 
                 assert archive.members[row['member']] == Path(dry_value).read_bytes()
     assert shipped['bindings'] == {name: value for name, value in dry_values.items() if name not in media_bindings}
 
-    from astrid.packs.vibecomfy.actions.run import run as action
     from astrid.packs.vibecomfy import local_server_engine
-    observed, runtime, namespaces = [], [], []
-    original_engine = action._engine_for
-    def engine_for(manifest):
-        engine = original_engine(manifest)
-        cls = type(engine)
-        if not getattr(cls, '_runpod_seam_spy', False):
-            align = cls.align
-            def spy(self, manifest, mode, **kwargs):
-                observed.append((dict(manifest), mode, kwargs.get('workflow')))
-                return align(self, manifest, mode, **kwargs)
-            monkeypatch.setattr(cls, 'align', spy)
-            monkeypatch.setattr(cls, '_runpod_seam_spy', True, raising=False)
-        return engine
-    monkeypatch.setattr(action, '_engine_for', engine_for)
+    observed, runtime, namespaces = _spy_host_align(monkeypatch), [], []
     approve, bundle = local_server_engine._approve_live, local_server_engine.local_server_bundle
     def spy_approve(bundle, bindings, provider):
         runtime.append(dict(bindings))
@@ -193,46 +159,16 @@ def test_runpod_dry_live_shipped_t2i(cell, tmp_path, monkeypatch, live_machine, 
     monkeypatch.setattr(local_server_engine, '_approve_live', spy_approve)
     monkeypatch.setattr(local_server_engine, 'local_server_bundle', spy_bundle)
     provider = SlotPod(tmp_path / 'claim.json', tmp_path / 'attempts', _slot_classes(cell) | extra_classes)
-    from astrid.core.generation import entries
     from vibecomfy.model_assets import _referenced_model_values
-    files = [path for engine in dict.fromkeys(('comfyui', *entries.runpod_engines()))
-             for path in receipt_files(provider._receipt_for(engine))]
-    files += [value for ref in _referenced_model_values(workflow)
-              for value in (ref['value'], ref['subdir'] + '/' + ref['value'])]
-    client_engine, payload, recipe, root, started, bootstrap = pinned_managed_install
-    from astrid.core.generation import engine_recipe
-    from astrid.core.generation.engine_local_endpoint import record_engine_root
-    monkeypatch.setattr(engine_recipe, 'load_recipe', lambda engine, platform, **kwargs: recipe)
-    record_engine_root('comfyui', str(root))
-    records = tmp_path / 'peer-records'
-    records.mkdir()
-    program = f'''
-import sys,json,os,threading
-sys.path[:0] = {[str(Path(__file__).resolve().parents[2]), *sys.path]!r}
-from pathlib import Path
-from tests.integrations.runpod_slot_pod import PodComfy,pin_object_info
-from tests.integrations.test_runpod_slot_path_cpu import _attached_comfy
-class Recorded(list):
- def __init__(self,name): self.path=Path({str(records)!r})/name
- def append(self,value):
-  with self.path.open('a') as out: out.write(json.dumps(value)+'\\n')
-  super().append(value)
-peer=PodComfy({provider.comfy.classes!r}, lambda: {files!r}, extra=pin_object_info())
-peer.h3_output={h3!r}
-peer.prompts=Recorded('prompts'); peer.views=Recorded('views'); peer.rejections=Recorded('rejections')
-port=int(sys.argv[1]); Path(sys.argv[3]).write_text(str(os.getpid())+'\\n')
-with _attached_comfy(peer,port): threading.Event().wait()
-'''
-    (root / 'tiny_http.py').write_text(program)
-    client_engine.stop_owned(deadline=time.monotonic() + 15)
-    try:
+    from tests.integrations._pinned_source import owned_cpu_peer, read_peer_events
+
+    files = [value for ref in _referenced_model_values(workflow)
+             for value in (ref['value'], ref['subdir'] + '/' + ref['value'])]
+    root = pinned_managed_install[3]
+    provider.comfy.h3_output = h3
+    with owned_cpu_peer(provider, pinned_managed_install, monkeypatch, extra_files=files) as records:
         result = run_job(job.entry, job_path, Path(remote.remote_root) / 'out', mode=job.mode)
-    finally:
-        client_engine.stop_owned(deadline=time.monotonic() + 15)
-    provider.comfy.installed_files = lambda: files
-    for name in ('prompts', 'views', 'rejections'):
-        path = records / name
-        setattr(provider.comfy, name, [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else [])
+    read_peer_events(provider, records)
     assert (Path(remote.remote_root) / 'out' / result['managed_generation_result_path']).is_file()
     assert len(observed) == len(runtime) == len(namespaces) == 1
     assert observed[0][1] == 'trust'

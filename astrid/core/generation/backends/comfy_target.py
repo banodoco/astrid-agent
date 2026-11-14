@@ -246,8 +246,8 @@ class ComfyTargetClient:
                     provenance.system_stats({})
         return payload
 
-    def system_stats(self) -> dict[str, Any]:
-        payload = self.request_json("/system_stats", timeout=5, response_limit=64 * 1024)
+    def system_stats(self, *, timeout: float = 5.0) -> dict[str, Any]:
+        payload = self.request_json("/system_stats", timeout=timeout, response_limit=64 * 1024)
         if not isinstance(payload, dict):
             raise ValueError("Comfy system_stats response is not an object")
         return payload

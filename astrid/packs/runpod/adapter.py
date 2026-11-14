@@ -16,6 +16,10 @@ from typing import Any
 
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
 from astrid.packs.runpod.generation import prepare_retained_generation
+from astrid.packs.runpod.reuse_policy import (
+    RunPodPolicyMismatch as _ReusePolicyMismatch,
+)
+from astrid.packs.runpod.reuse_policy import check_reuse_policy, current_policy, saved_policy_notice
 from astrid.packs.runpod.target_selection import (
     OfferObservationError,
     PaidSelectionError,
@@ -284,6 +288,8 @@ class RunPodAdapter:
 
     def operate(self, operation, *, include_quote=False, machine_id=None, consent=None, until_release=False,
                 requested_idle_seconds=None, cancelled=None):
+        # This facade does not enforce saved-policy freshness itself; normal
+        # host dispatch does so through check_reuse_policy before reaching it.
         if operation == "setup":
             if include_quote:
                 raise ValueError("setup does not observe offers")
@@ -320,6 +326,10 @@ class RunPodAdapter:
             if operation in {"keep", "claim"}:
                 result["paid_limits"] = {key: record["paid_limits"].get(key) for key in
                                          ("hourly_usd", "max_usd", "expires_at", "offer_digest")}
+            if operation == "status":
+                notice = saved_policy_notice(record)
+                if notice is not None:
+                    result["policy_notice"] = notice
         if include_quote:
             if operation != "status":
                 raise ValueError("offer observation requires status")
@@ -451,17 +461,18 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     return adapter
 
 
-def _claimed_preferences():
+def _claimed_preferences(selection=None):
     """Locate the account journal and use the claim's recorded configuration."""
     from astrid.core.generation import settings
 
     from .target_selection import RunPodSelectionOwner, canonical_claim_path
 
-    saved = settings.machine_policy("runpod")
-    if not isinstance(saved, dict) or not saved.get("provider_account_ref"):
-        raise PaidSelectionError("no machine: run `astrid machines claim`")
-    selection = RunPodSelectionOwner.__new__(RunPodSelectionOwner)
-    selection.path = canonical_claim_path(saved["provider_account_ref"])
+    if selection is None:
+        saved = settings.machine_policy("runpod")
+        if not isinstance(saved, dict) or not saved.get("provider_account_ref"):
+            raise PaidSelectionError("no machine: run `astrid machines claim`")
+        selection = RunPodSelectionOwner.__new__(RunPodSelectionOwner)
+        selection.path = canonical_claim_path(saved["provider_account_ref"])
     record = selection._read()
     if record is None:
         raise PaidSelectionError("no machine: run `astrid machines claim`")
@@ -473,6 +484,29 @@ def _claimed_preferences():
             f"run `astrid machines release {machine_id}`, then claim again"
         )
     return preferences
+
+
+def _cleanup_records(machine_id=None):
+    """Locate local custody without discovering or parsing saved settings."""
+    from astrid.sdk.storage_root import resolve_runtime_data_root
+
+    records = []
+    for path in sorted((resolve_runtime_data_root() / "runpod").glob("*/claim.json")):
+        selection = RunPodSelectionOwner.__new__(RunPodSelectionOwner)
+        selection.path = path
+        record = selection._read()
+        if (record is not None and record.get("state") != "cleanup_complete"
+                and (machine_id is None or machine_id in {record.get("pod_id"), record.get("operation_id")})):
+            records.append(record)
+    return records
+
+
+# Every target action must declare how it reaches retained custody. No action
+# may reuse an owner without a classification.
+RETAINED_OPERATION_POLICY = {
+    "setup": "checked", "status": "checked", "claim": "checked", "keep": "checked",
+    "ls": "nonspending", "release": "nonspending",
+}
 
 
 class TargetProviderBindings:
@@ -491,15 +525,28 @@ class TargetProviderBindings:
         self.constructing = None
         self.operations = 0
 
+    def _check_reuse_policy(self, *, kind, engine, preferences, current_saved=False):
+        """The same fence used immediately before a paid create POST."""
+        check_reuse_policy(json.loads(self.signature), kind=kind, engine=engine,
+                           preferences=preferences, current_saved=current_saved)
+
     def get(self, *, kind, engine, preferences=None, expected_machine_id=None, fresh_claim=False, job=False):
         signature = None if job else json.dumps(
             [kind, engine, preferences], sort_keys=True, separators=(",", ":"), allow_nan=False)
         while True:
             with self.lock:
                 if self.provider is not None:
-                    if job and json.loads(self.signature)[:2] == [kind, engine]:
-                        return self.provider
-                    if self.signature != signature:
+                    # Cached lookup checks the binding, not saved-policy
+                    # freshness; normal dispatch uses check_reuse_policy for it.
+                    if job:
+                        # Saved defaults cannot expand or shrink this job's
+                        # recorded budget/expiry; idle renewal stays inside it.
+                        preferences = _claimed_preferences(self.provider.lease_owner.selection)
+                    try:
+                        self._check_reuse_policy(kind=kind, engine=engine, preferences=preferences)
+                    except _ReusePolicyMismatch:
+                        if job:
+                            raise
                         prior = self.provider
                         if self.operations:
                             raise ValueError("target operation remains in progress")
@@ -537,6 +584,7 @@ class TargetProviderBindings:
                                               if expected_machine_id is not None else {}))
             with self.lock:
                 self.provider, self.signature = provider, signature
+                self._check_reuse_policy(kind=kind, engine=engine, preferences=preferences)
                 return provider
         finally:
             with self.lock:
@@ -610,8 +658,29 @@ class TargetProviderBindings:
         return failed
 
     def operate(self, policy, operation, *, include_quote=False, cancelled=None):
-        if operation not in {"setup", "ls", "status", "release", "keep", "claim"}:
+        if operation not in RETAINED_OPERATION_POLICY:
             raise ValueError("unsupported retained target operation")
+        checked = RETAINED_OPERATION_POLICY[operation] == "checked"
+        if not checked and self.provider is None:
+            # A restarted host can list/release journals even when its settings
+            # file is corrupt. No provider construction is needed for listing.
+            records = _cleanup_records(policy.get("machine") if isinstance(policy, dict) else None)
+            if operation == "ls":
+                return {"leases": [{
+                    **{key: record.get(key) for key in ("operation_id", "pod_id", "provider_account_ref", "state")},
+                    "lease": {**{key: record.get("lease", {}).get(key) for key in (
+                        "state", "generation", "invocation_id", "paid_expires_at", "idle_expires_at")},
+                        "idle_timeout_s": record.get("lease", {}).get("idle_seconds")},
+                } for record in records]}
+            if records:
+                if len(records) != 1:
+                    raise ValueError("release requires an exact retained machine id")
+                policy = {"kind": "runpod", "engine": "comfyui",
+                          "preferences": records[0].get("claim_preferences") or (
+                              policy.get("preferences") if isinstance(policy, dict) else None),
+                          **({"machine": policy["machine"]} if isinstance(policy, dict) and "machine" in policy else {})}
+            elif not isinstance(policy, dict) or not policy.get("preferences"):
+                return {"state": "absent"}
         allowed = {"kind", "engine", "preferences"}
         if operation == "status":
             allowed.add("fresh_claim")
@@ -642,32 +711,51 @@ class TargetProviderBindings:
                 raise ValueError(f"{operation} requires fresh paid consent and explicit retention")
             consent = PaidRunConsent(**{**policy["paid_consent"],
                                         "consent": tuple(policy["paid_consent"]["consent"])})
-        if policy["kind"] == "runpod":
+        if operation == "status" and not include_quote and policy["preferences"] is None:
+            # Default status observes the retained claim. Explicit preference
+            # probes and quotes still bind their caller-supplied full policy.
+            with self.lock:
+                if self.provider is not None:
+                    policy = {**policy, "preferences": json.loads(self.signature)[2]}
+                else:
+                    policy = {**policy, "preferences": current_policy().as_mapping()}
+        if checked and policy["kind"] == "runpod":
             from astrid.packs.runpod.target_selection import RunPodPreferences
             # The setup owner signs the representation it persists. Callers
             # may supply equivalent optional-volume forms without owning this
             # serialization policy or mutating their request in place.
             policy = {**policy, "preferences": RunPodPreferences.from_mapping(policy["preferences"]).as_mapping()}
         with self.lock:
-            provider = self.provider if self.provider is not None and json.loads(self.signature)[0] == policy["kind"] else None
-            if provider is not None and json.loads(self.signature)[1] != policy["engine"]:
-                raise ValueError("target operation engine differs from the retained provider owner")
-            # Status without a quote, listing, and release operate on the retained
-            # owner, whose custody may use a per-job override of saved preferences.
-            # A quote still binds the preferences for the offer it discloses.
+            provider = self.provider if (not checked or self.provider is not None
+                                         and json.loads(self.signature)[0] == policy["kind"]) else None
+            if provider is not None and RETAINED_OPERATION_POLICY[operation] == "checked":
+                try:
+                    self._check_reuse_policy(kind=policy["kind"], engine=policy["engine"],
+                                             preferences=policy["preferences"])
+                except _ReusePolicyMismatch:
+                    if not (fresh_claim or operation == "setup" or operation == "status" and include_quote):
+                        raise
+                    # get() may replace an ended owner; a live lease still
+                    # refuses before stock observation or paid admission.
+                    provider = None
+            # Listing and release explicitly retain access to existing custody
+            # after saved preferences change. Neither grants paid authority.
         if provider is None:
             if operation == "keep":
                 raise ValueError("keep requires a running host that owns this machine")
             provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"], **(
                 {"fresh_claim": True} if fresh_claim else {}), **(
                 {"expected_machine_id": policy["machine"]} if "machine" in policy else {}))
-        elif (fresh_claim or operation == "setup" or operation == "status" and include_quote) and json.loads(self.signature)[2] != policy["preferences"]:
-            # get() closes/rebuilds only after the old owner proves no lease is live.
-            provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"], **(
-                {"fresh_claim": True} if fresh_claim else {}))
         with self.lock:
             if provider is not self.provider:
                 raise ValueError("target provider changed before the operation")
+            if RETAINED_OPERATION_POLICY[operation] == "checked":
+                # Recheck after any ended-owner replacement. Fresh paid claims
+                # and keep cannot use an old request to evade a lower saved cap.
+                self._check_reuse_policy(kind=policy["kind"], engine=policy["engine"],
+                    preferences=policy["preferences"],
+                    current_saved=False if operation in {"setup", "status"} else
+                    "ceiling" if operation == "claim" else True)
             self.operations += 1
         try:
             return provider.operate(operation, include_quote=include_quote, **(

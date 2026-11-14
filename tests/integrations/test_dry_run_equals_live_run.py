@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -19,6 +17,10 @@ from tests.core.generation.test_engine_custody import session  # noqa: F401
 from astrid.core.generation import entries as workflow_entries
 from astrid.sdk import generation as facade_module
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
+from tests.integrations._pinned_source import (  # noqa: F401
+    owned_cpu_peer as _pinned_owned_cpu_peer,
+    pinned_comfy_source, pinned_managed_install,
+)
 from tests.integrations.test_runpod_slot_path_cpu import (
     H3_REQUEST, PROMPTS, SLOTS, SLOT_DEFAULTS, _drive,
 )
@@ -30,93 +32,6 @@ CELLS = [pytest.param(cell, target, None, id=f"{'/'.join(cell)}-{target}")
 CELLS.append(pytest.param(("image", "t2i"), "local-managed", "z-image", id="image/z-image-alternate-local-managed"))
 H3_CLASSES = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "object_info_h3_runpod_graph_closure.json"
 
-
-@pytest.fixture(scope="session")
-def _pinned_comfy_source(tmp_path_factory):
-    """Verified ComfyUI source pin used by the managed CPU execution fixture."""
-    import os
-
-    pins = Path(__file__).resolve().parents[2] / "astrid/packs/vibecomfy/pins.json"
-    pin = json.loads(pins.read_text())["sources"]["comfyui"]["revision"]
-    supplied = os.environ.get("ASTRID_TEST_COMFY_SOURCE")
-    if supplied:
-        source = Path(supplied)
-    else:
-        source = tmp_path_factory.mktemp("pinned-comfy") / "source"
-        subprocess.run(["git", "clone", "--quiet", "--no-checkout", "--filter=blob:none",
-                        "https://github.com/Comfy-Org/ComfyUI.git", str(source)], check=True, timeout=180)
-        subprocess.run(["git", "-C", str(source), "checkout", "--quiet", "--detach", pin], check=True, timeout=180)
-    assert subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() == pin
-    assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True).strip()
-    return source
-
-
-@pytest.fixture
-def _pinned_managed_install(session, monkeypatch, tmp_path, _pinned_comfy_source):
-    """Real pinned managed install; requested lazily only by local-managed matrix cells."""
-    from tests.integrations.test_managed_host_preparation import managed_install
-
-    profile = SimpleNamespace(comfy_source=_pinned_comfy_source,
-        extra_launch_flags=("--use-ck-attention", "--disable-comfy-compiler"),
-        standin_distributions={"torch": "2.10.0+cu130", "comfy-kitchen": "0.2.35", "comfy-aimdo": "0.5.5"})
-    generator = managed_install.__wrapped__(session, monkeypatch, profile, tmp_path)
-    fixture = next(generator)
-    try:
-        yield fixture
-    finally:
-        try:
-            next(generator)
-        except StopIteration:
-            pass
-
-
-@contextmanager
-def _pinned_owned_cpu_peer(provider, pinned_install, monkeypatch, *, extra_files=()):
-    """Serve the slot schemas through the real pinned engine supervisor on CPU."""
-    client_engine, _payload, recipe, root, _started, _bootstrap = pinned_install
-    from astrid.core.generation import entries, engine_recipe
-    from astrid.core.generation.asset_gaps import declared_model_specs
-    from astrid.core.generation.engine_local_endpoint import record_engine_root
-    from tests.integrations.runpod_slot_pod import receipt_files
-
-    files = [path for engine in dict.fromkeys(("comfyui", *entries.runpod_engines()))
-             for path in receipt_files(provider._receipt_for(engine))]
-    declared = [(model.destination, model.bytes, model.sha256)
-                for entry in entries.ready_entries()
-                for model in declared_model_specs(entry.get("model_assets", []), require_complete=False)]
-    files += [value for destination, _size, _sha in declared
-              for value in (destination, "models/" + destination.removeprefix("models/"))]
-    files += list(extra_files)
-    provider.comfy.installed_files = lambda: files
-    monkeypatch.setattr(engine_recipe, "load_recipe", lambda engine, platform, **kwargs: recipe)
-    record_engine_root("comfyui", str(root))
-    monkeypatch.setenv("ASTRID_ENGINE_ROOT", str(root))
-
-    records = root / "peer-records"
-    records.mkdir(exist_ok=True)
-    program = f'''\
-import sys,json,os,threading
-sys.path[:0]={[str(Path(__file__).resolve().parents[2]), *sys.path]!r}
-from pathlib import Path
-from tests.integrations.runpod_slot_pod import PodComfy,pin_object_info
-from tests.integrations.test_runpod_slot_path_cpu import _attached_comfy
-class Recorded(list):
- def __init__(self,name): self.path=Path({str(records)!r})/name
- def append(self,value):
-  with self.path.open('a') as out: out.write(json.dumps(value)+'\\n')
-  super().append(value)
-peer=PodComfy({provider.comfy.classes!r},lambda:{files!r},extra=pin_object_info())
-peer.h3_output={bool(getattr(provider.comfy, 'h3_output', False))!r}
-peer.prompts=Recorded('prompts');peer.views=Recorded('views');peer.rejections=Recorded('rejections')
-port={recipe.start.port!r}; Path(sys.argv[3]).write_text(str(os.getpid())+'\\n')
-with _attached_comfy(peer,port): threading.Event().wait()
-'''
-    (root / "tiny_http.py").write_text(program)
-    client_engine.stop_owned(deadline=__import__("time").monotonic() + 15)
-    try:
-        yield records
-    finally:
-        client_engine.stop_owned(deadline=__import__("time").monotonic() + 15)
 
 
 def _graph(workflow, *, run_inputs=None) -> str:
@@ -230,31 +145,21 @@ runpy.run_module("astrid.core.execution.generic_host_worker", run_name="__main__
 
 def _spy_host_align(monkeypatch):
     """Record the host's real alignment and the selected workflow it derives from."""
-    from astrid.packs.vibecomfy.actions.run import run as action
-
     events = []
-    original = action._engine_for
+    # cause be0027945; ruling: machines 11:35 Sat
+    cls = type(workflow_entries.engine_table()["comfyui"])
+    align, requirements = cls.align, cls.workflow_requirements
 
-    def engine_for(manifest):
-        engine = original(manifest)
-        cls = type(engine)
-        if not getattr(cls, "_d2_host_spy", False):
-            align, requirements = cls.align, cls.workflow_requirements
+    def observe_requirements(self, workflows):
+        events.append(("workflow", _graph(workflows[0])))
+        return requirements(self, workflows)
 
-            def observe_requirements(self, workflows):
-                events.append(("workflow", _graph(workflows[0])))
-                return requirements(self, workflows)
+    def observe_align(self, manifest, mode, **kwargs):
+        events.append(("align", dict(manifest), mode, kwargs.get("workflow")))
+        return align(self, manifest, mode, **kwargs)
 
-            def observe_align(self, manifest, mode, **kwargs):
-                events.append(("align", dict(manifest), mode, kwargs.get("workflow")))
-                return align(self, manifest, mode, **kwargs)
-
-            monkeypatch.setattr(cls, "workflow_requirements", observe_requirements)
-            monkeypatch.setattr(cls, "align", observe_align)
-            monkeypatch.setattr(cls, "_d2_host_spy", True, raising=False)
-        return engine
-
-    monkeypatch.setattr(action, "_engine_for", engine_for)
+    monkeypatch.setattr(cls, "workflow_requirements", observe_requirements)
+    monkeypatch.setattr(cls, "align", observe_align)
     return events
 
 
@@ -326,7 +231,7 @@ def test_dry_run_equals_live_run(cell, target_kind, selected_entry, tmp_path, mo
     align_log = tmp_path / "actual-align.jsonl"
     _spy_child_align(monkeypatch, align_log)
     host_events = _spy_host_align(monkeypatch) if target_kind == "local-managed" else []
-    pinned_install = request.getfixturevalue("_pinned_managed_install") if target_kind == "local-managed" else None
+    pinned_install = request.getfixturevalue("pinned_managed_install") if target_kind == "local-managed" else None
     if target_kind == "local-managed":
         # Use the verified ComfyUI source pin and real owned supervisor. The
         # local HTTP peer validates against the slot's packaged node schemas.
@@ -347,10 +252,10 @@ def test_dry_run_equals_live_run(cell, target_kind, selected_entry, tmp_path, mo
         @contextmanager
         def managed_engine(provider, folder, patch):
             extra_files = [*declared_files, *([r"vae/FLUX1\ae.safetensors"] if selected_entry == "z-image" else [])]
-            with _pinned_owned_cpu_peer(provider, pinned_install, patch, extra_files=extra_files):
+            with _pinned_owned_cpu_peer(provider, pinned_install, patch, extra_files=extra_files) as records:
                 patch.setenv("HOME", str(folder / "home"))
                 ensure_local_engine_server("comfyui")
-                yield
+                yield records
         monkeypatch.setattr(matrix, "_managed_local_engine", managed_engine)
     runs = {}
     replay_seed = None
@@ -418,7 +323,9 @@ def test_dry_run_equals_live_run(cell, target_kind, selected_entry, tmp_path, mo
             # reads the emitted built graph rather than h3's static bundle or rebuilding h3.
             actual = [event for event in events if event["event"] == "requirements"]
             assert len(actual) == 1, actual
-            assert actual[0]["manifest"] == dry["entry"]["requirements"]
+            # cause 8b4618389; ruling: machines 11:35 Sat
+            expected = workflow_entries.engine_table()["comfyui"].workflow_requirements([dry_workflow])
+            assert actual[0]["manifest"] == expected
             assert Path(actual[0]["bundle"]) != workflow_entries.bundle_path(workflow_entries.find_entry("h3"))
 
         if target_kind == "local-managed":

@@ -3,16 +3,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import is_dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from astrid.core._shared.result_manifest import (
     ResultManifestError,
     _validate_manifest,
     validate_result_manifest,
 )
+
+
+def public_alignment_evidence(alignment: Mapping[str, Any]) -> dict[str, Any]:
+    """Project trust's public shape without changing detailed preparation evidence."""
+    if alignment.get("mode") == "trust":
+        return {key: alignment[key] for key in ("mode", "status", "verified")}
+    return dict(alignment)
 
 
 def _read_correlated_result(path: Path, *, task_id: str | None, attempt_id: str | None):

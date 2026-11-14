@@ -53,7 +53,7 @@ class Handler(BaseHTTPRequestHandler):
    self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
   if self.path=='/object_info':
    # Like ComfyUI, a loader lists the model files present when object_info is read.
-   folder=started.parent/'models'/'diffusion_models'
+   folder=Path(os.environ['VIBECOMFY_MODELS_ROOT'])/'diffusion_models'
    listed=sorted(path.name for path in folder.iterdir()) if folder.is_dir() else []
    current={**schema,'UNETLoader':{'input':{'required':{'unet_name':[listed,{}]}},'output':['MODEL'],'output_name':['MODEL'],'output_node':False,'python_module':'nodes'}}
    return self.send({name:value for name,value in current.items() if name!='EmptyImage' or not (started.parent/'missing-node').exists()})
@@ -99,6 +99,9 @@ def managed_install(session, monkeypatch, request, tmp_path):
     (tmp_path / 'native-cli-identity.json').write_text(json.dumps(observed))
     monkeypatch.setattr('astrid.core.generation.engine_local_endpoint._engines_dir', lambda: tmp_path / 'roots')
     monkeypatch.setenv('ASTRID_ENGINE_ROOT', str(root))
+    # cause fdf67eb45; ruling: machines 11:35 Sat
+    from astrid.core.generation.engine_local_endpoint import record_engine_root
+    record_engine_root('comfyui', str(root))
     try:
         yield fixture
     finally:
@@ -133,6 +136,9 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value
     from astrid.core.generation import engine_custody
     client, payload, recipe, root, started, bootstrap = managed_install
+    # cause 0566a2cd9; ruling: machines 11:35 Sat
+    from astrid.core.generation.managed_preparation import configured_models_root
+    models_root = Path(configured_models_root(root=str(root)))
     endpoint = f'http://127.0.0.1:{recipe.start.port}'
     # Author once while the installed HTTP schema is available, then make the
     # installed service cold and deliberately omit this graph's required row.
@@ -141,7 +147,7 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     loaded = load_workflow_path(source, tmp_path / 'author', comfy_url=endpoint)
     workflow = _canonical_bundle_value(loaded.resolved).workflow
     artifact_url, artifact_bytes, artifact_hits = artifact_server
-    artifact = root / 'models/checkpoints/cpu-required.bin'
+    artifact = models_root / 'checkpoints/cpu-required.bin'
     from vibecomfy.templates import ReadyMetadata, new_workflow, OutputSpec
     from vibecomfy.nodes.core import EmptyImage, SaveImage
     asset = {'name': artifact.name, 'url': artifact_url, 'subdir': 'checkpoints',
@@ -156,7 +162,7 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     diagnostic = client.run(CommandRequest((str(root / 'runtime/venv/bin/python'), '-I', '-c',
         'import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
         'doctor', str(bundle / 'workflow.py'), '--yes', '--non-interactive', '--json'),
-        str(root / 'runtime/ComfyUI'), {'VIBECOMFY_MODELS_ROOT': str(root / 'models'), 'VIBECOMFY_HEADLESS': '1'},
+        str(root / 'runtime/ComfyUI'), {'VIBECOMFY_MODELS_ROOT': str(models_root), 'VIBECOMFY_HEADLESS': '1'},
         time.monotonic() + 15))
     assert diagnostic.exit_code == 1 and json.loads(diagnostic.stdout).get('missing_models'), diagnostic
     client.stop_owned(deadline=time.monotonic() + 15)
@@ -168,7 +174,7 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
     original_align = type(engine).align
     def align(self, manifest, mode, **kwargs):
         events.append('align')
-        assert mode == ('trust' if failure == 'trust' else 'align') and manifest['models_root'] == str(root / 'models')
+        assert mode == ('trust' if failure == 'trust' else 'align') and manifest['models_root'] == str(models_root)
         assert any(row['name'] == artifact.name for row in manifest['models'])
         if failure != 'device-ambient' or events.count('align') == 1:
             assert not started.exists(), 'server started before host alignment'
@@ -361,10 +367,15 @@ def test_managed_host_prepares_before_sandboxed_worker(tmp_path, monkeypatch, re
                     assert health['healthy'] and launch['env']['CUDA_VISIBLE_DEVICES'] == '2'
                 if failure == 'device-ambient':
                     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '1')
-                    with pytest.raises(Exception, match='engine supervisor: endpoint_ownership'):
+                    receipt_written.clear()
+                    # cause 47950c4a0; ruling: machines 11:35 Sat
+                    with pytest.raises(Exception, match=r'Engine request does not match the bound launch or owner\.'):
                         GenerationFacade().workflow(workflow=bundle / 'workflow.py', placement='managed',
                             inputs={}, client=sdk, project=project_id, align='align', wait=True,
                             timeout_seconds=120, poll_seconds=0.05)
+                    assert receipt_written.wait(10), 'host refusal receipt did not complete after Runtime settlement'
+                    refused = json.loads((tmp_path / 'attempt/result.json').read_text())
+                    assert refused['error']['code'] == 'endpoint_ownership'
                     assert service_launches[-2:] == ['0', '1']
                     assert (root / 'device-env').read_text() == '0'
                     assert len(started.read_text().splitlines()) == 1
@@ -416,7 +427,8 @@ def test_installed_status_survives_a_model_landing_in_a_loader_folder(managed_in
     client, payload, recipe, root, started, bootstrap = managed_install
     receipt = engine_readiness.canonical_status(root=str(root), deadline=time.monotonic() + 90)
     assert receipt.status == 'installed', receipt
-    (root / 'models/diffusion_models/landed-after-install.safetensors').write_bytes(b'downloaded by a later job\n')
+    from astrid.core.generation.managed_preparation import configured_models_root
+    (Path(configured_models_root(root=str(root))) / 'diffusion_models/landed-after-install.safetensors').write_bytes(b'downloaded by a later job\n')
     receipt = engine_readiness.canonical_status(root=str(root), deadline=time.monotonic() + 90)
     assert (receipt.status, receipt.error_code, receipt.failed_step_id) == ('installed', None, None)
     (root / 'missing-node').write_text('a node class the installation provided is gone')
@@ -687,8 +699,12 @@ def test_owned_doctor_retains_custody_through_preparation_completion(tmp_path, m
             assert events == ['doctor-completed', 'unlock']
             assert (root / '.astrid-engine/session/session.json').exists()
         elif outcome == 'stop-uncertain':
-            with pytest.raises(CustodyUnresolved, match='stop remains unconfirmed') as error: prepare()
+            # cause 085897af7; ruling: machines 11:35 Sat
+            with pytest.raises(IntegrityError, match='canonical workflow bytes') as error: prepare()
+            notes = getattr(error.value, '__notes__', ())
+            assert any('exact owned engine stop remains unconfirmed' in note for note in notes)
             assert 'PRIVATE_STOP_DETAIL' not in str(error.value)
+            assert all('PRIVATE_STOP_DETAIL' not in note for note in notes)
             with pytest.raises(CustodyUnresolved): prep.close()
             assert prep.uncertain and prep.lock is not None
             assert events == ['doctor-completed', 'stop-exact']

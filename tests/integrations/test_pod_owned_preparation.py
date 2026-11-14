@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -21,7 +22,7 @@ def test_pod_job_prepares_once_and_runs_on_owned_engine(tmp_path, monkeypatch, m
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.templates import OutputSpec, ReadyMetadata, new_workflow
     from vibecomfy.workflow_bundle import emit_bundle_with_candidate
-    from astrid.packs.vibecomfy.actions.run import run as action
+    from astrid.core.generation import entries
 
     client, payload, recipe, root, started, bootstrap = managed_install
     url, data, hits = artifact_server
@@ -45,24 +46,19 @@ def test_pod_job_prepares_once_and_runs_on_owned_engine(tmp_path, monkeypatch, m
     client.stop_owned(deadline=time.monotonic() + 15)
     started.unlink()
     calls = []
-    original = action._engine_for
-    def engine_for(manifest):
-        engine = original(manifest)
-        cls = type(engine)
-        if not getattr(cls, '_pod_test_spy', False):
-            align = cls.align
-            def spy(self, manifest, mode, **kwargs):
-                calls.append((manifest, mode, kwargs.get('workflow')))
-                return align(self, manifest, mode, **kwargs)
-            monkeypatch.setattr(cls, 'align', spy)
-            monkeypatch.setattr(cls, '_pod_test_spy', True, raising=False)
-        return engine
-    monkeypatch.setattr(action, '_engine_for', engine_for)
+    # cause be0027945; ruling: machines 11:35 Sat
+    cls = type(entries.engine_table()['comfyui'])
+    align = cls.align
+    def spy(self, manifest, mode, **kwargs):
+        calls.append((manifest, mode, kwargs.get('workflow')))
+        return align(self, manifest, mode, **kwargs)
+    monkeypatch.setattr(cls, 'align', spy)
     result = run_job('workflow', job_path, tmp_path / 'out')
     assert len(calls) == 1 and calls[0][1] == mode and calls[0][2] is not None
     assert (tmp_path / 'out' / result['managed_generation_result_path']).is_file()
     assert started.is_file()
-    artifact = root / 'models/checkpoints/pod-required.bin'
+    from astrid.core.generation.managed_preparation import configured_models_root
+    artifact = Path(configured_models_root(root=str(root))) / 'checkpoints/pod-required.bin'
     if mode == 'align':
         assert artifact.read_bytes() == data and hits
     else:
@@ -87,7 +83,6 @@ def test_pod_ui_json_is_frozen_before_preparation(tmp_path, managed_install):
 
 
 def test_managed_dry_preview_uses_receipt_model_root(tmp_path, monkeypatch, managed_install):
-    from astrid.core.generation import engine_recipe
     from astrid.core.generation.managed_preparation import ManagedEnginePreparation, configured_models_root
     from astrid.sdk.generation import GenerationFacade
     from astrid.packs.vibecomfy.production_engine import load_workflow_path, _canonical_bundle_value, loaded_workflow_execution_identity
@@ -95,7 +90,6 @@ def test_managed_dry_preview_uses_receipt_model_root(tmp_path, monkeypatch, mana
     from vibecomfy.workflow_bundle import emit_bundle
 
     client, payload, recipe, root, started, bootstrap = managed_install
-    monkeypatch.setattr(engine_recipe, 'load_recipe', lambda engine, platform, **kwargs: recipe)
     receipt_path = root / '.astrid-engine/install.json'
     receipt = json.loads(receipt_path.read_text())
     custom = tmp_path / 'custom-model-cache'
