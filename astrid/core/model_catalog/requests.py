@@ -21,12 +21,17 @@ class PaidControls:
         return cls(max_usd=values["max_usd"], deadline=values["deadline"])
 
 
+def build_claim_argv(paid_controls: PaidControls) -> list[str]:
+    """Build the paid machine claim that must precede live generation."""
+    return ["machines", "claim", "--consent", "paid", "--max-usd", str(paid_controls.max_usd),
+            "--deadline", paid_controls.deadline, "--json"]
+
+
 def build_generate_argv(
     entry: ModelEntry,
     mode: str,
     inputs: Mapping[str, str],
     placement: str,
-    paid_controls: PaidControls,
     *,
     dry_run: bool = False,
 ) -> list[str]:

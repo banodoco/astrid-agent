@@ -163,7 +163,7 @@ def recipe_facts():
 
 
 def check_catalog(cells, registry, runner, stage_controls=None):
-    from astrid.core.model_catalog.requests import PaidControls
+    from astrid.core.model_catalog.requests import PaidControls, build_claim_argv
     from scripts.catalog_dry_run import ready_request_entry
 
     pin = runner([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
@@ -189,7 +189,7 @@ def check_catalog(cells, registry, runner, stage_controls=None):
                         entry = registry.get(cell.entry)
                     except KeyError:
                         entry = ready_request_entry(cell.entry, cell.mode, cell.kind, registry)
-                    probe = catalog_dry_run(entry, cell.mode, Path(directory), controls=controls)
+                    probe = catalog_dry_run(entry, cell.mode, Path(directory))
                     commands.append(runner.save(["astrid", *probe.argv], ROOT, probe.exit_status,
                                                 probe.stdout + probe.stderr))
                     if probe.failure:
@@ -200,6 +200,9 @@ def check_catalog(cells, registry, runner, stage_controls=None):
             if controls is None:
                 reasons.append(controls_reason)
             cell.checks["catalog"] = outcome(status, "\n".join(reasons), commands)
+            if controls is not None:
+                # Record the live stage's claim; this CPU gate must never execute it.
+                cell.checks["catalog"]["planned_claim_argv"] = ["astrid", *build_claim_argv(controls)]
 
 
 def template_parameter(nodeid):

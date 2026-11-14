@@ -19,7 +19,9 @@ uses. A claim and a later compatible generation share the same pod, custody
 journal and paid limit. The older `runpod.provision` handle belongs to the
 individual actions below; it is not a retained generation machine.
 
-Generation path: `astrid generate <image|video|audio> --entry ... --placement runpod --gpu ... --max-hourly-usd ... --max-usd ... --preparation-seconds ... --execution-seconds ... --idle-seconds ... --consent paid`. `runpod.provision`, `runpod.session`,
+Generation path: approve paid limits with `astrid machines claim`, then run
+`astrid generate <image|video|audio> --entry ... --placement runpod` on that
+claimed machine. `runpod.provision`, `runpod.session`,
 `scripts/pod_session.py` and `scripts/claim_runpod_5090_backup.py` are operator
 tools and are not for generation.
 
@@ -106,14 +108,14 @@ rejection, Astrid tries the next allowed GPU/datacenter pair, then observes
 stock again. With no volume or selected datacenter, every datacenter returned
 by RunPod is eligible. There is no default geographic filter.
 
-Repeated `--gpu TYPE` replaces the saved GPU list for one generation or claim.
-`--datacenter ID` overrides its datacenter for that operation. Neither changes
+Repeated `--gpu TYPE` replaces the saved GPU list for one claim or quote.
+`--datacenter ID` overrides its datacenter for that claim or quote. Neither changes
 saved preferences, and a volume always stays in its own datacenter. A held
 machine with a different GPU or storage policy must be released before a new
 choice can be claimed; Astrid does not create a second pod around that refusal.
 
 Review the target with the same ordered GPU and datacenter choices you will
-use for generation:
+use for the claim:
 
 ```sh
 astrid generate describe --placement runpod --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --json
@@ -121,8 +123,7 @@ astrid generate describe --placement runpod --gpu "RTX 4090" --gpu "RTX 5090" --
 
 The hourly figure is an example ceiling, not a current price quote. Ask the
 user to approve the actual disclosed GPU choices, storage, pinned image,
-hourly ceiling, spend cap and preparation/execution/idle allowances before
-submitting a paid job.
+hourly ceiling, spend cap and idle retention before claiming a machine.
 
 To change just the saved GPU list after setup, the existing command is:
 
@@ -132,32 +133,27 @@ astrid generate targets --placement runpod --save --input 'gpu_types=["RTX 4090"
 
 ### Consent and capacity waiting
 
-Every paid invocation, including reuse, needs fresh consent. Validate the
-entry or workflow and its inputs before claim. The requested cap must fit
-the saved budget ceiling and cover the disclosed preparation, execution and
-idle allowances. There are two ways to approve a generation:
-
-- **Waiting policy:** `--max-hourly-usd` approves the chosen GPU list and saved
-  storage below that ceiling, with `--max-usd` bounding the paid lifetime.
-  Description can disclose this policy even when no matching GPU is in stock.
-  An optional `--deadline` is an additional hard UTC limit.
-- **Exact offer:** pass the described `--offer-digest` and an absolute UTC
-  `--deadline`. Use the same ordered `--gpu` list and `--datacenter` for
-  describe and generate. A changed offer or rate refuses and needs fresh
-  disclosure and consent. Do not combine an offer digest with an hourly ceiling.
+Every machine claim needs fresh paid consent. Validate the entry or workflow
+and its inputs before claim. The requested cap must fit the saved budget
+ceiling. `--max-hourly-usd` approves the chosen GPU list and saved storage
+below that ceiling, with `--max-usd` bounding the paid lifetime. Description
+can disclose this policy even when no matching GPU is in stock. An optional
+`--deadline` on claim adds a hard absolute UTC limit and must cover the
+disclosed idle retention.
 
 For example, after approval of these illustrative limits:
 
 ```sh
-astrid generate image "A studio portrait" --placement runpod --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --preparation-seconds 600 --execution-seconds 600 --idle-seconds 600 --consent paid
+astrid machines claim --gpu "RTX 4090" --gpu "RTX 5090" --datacenter US-TX-3 --max-hourly-usd 1 --max-usd 3 --for 30m --consent paid
+astrid generate image "A studio portrait" --placement runpod
 ```
 
 The default is to wait until a machine is claimed or the operation is
 cancelled. Each attempt reports GPU, datacenter and result. Ordinary retries
 are about five seconds apart; rate limits back off. Use `--capacity-timeout
 10m` to bound the wait, or `--no-wait-for-capacity` for one observation and at
-most one create attempt. `--no-wait` instead returns an admitted task to follow
-separately; it does not turn off capacity waiting.
+most one create attempt. `generate --no-wait` returns an admitted generation task to follow
+separately; generation requires the claim to have succeeded first.
 
 Capacity polling creates no new pod charges. A retained pod still costs
 money, and an ambiguous create may already have allocated a pod. The paid
@@ -191,8 +187,8 @@ Without an hourly ceiling it uses the current quote; no current quote means
 it asks for `--max-hourly-usd`. `--for` is the initial idle retention after
 claim, capped by the paid expiry. Without `--for`, it uses saved idle retention
 or 30 minutes, disclosed before consent. The machine is idle once claimed; a
-compatible generation can reuse it with fresh paid consent and the same
-expiry, without another create.
+compatible generation can reuse it under the claim's existing authority and
+expiry, without another consent or create.
 
 A running host is required. A first claim may initialize its owner only when
 custody is empty or confirmed ended. Existing or unresolved custody refuses

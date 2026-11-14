@@ -557,7 +557,13 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              {"document": document,
               "idempotency_key": {"type": "string", "description": "A new unique key for this publication."}},
              ["document", "idempotency_key"], kind="timeline_document", command="publish"),
-    ]), **_generation_tools(), **_engine_install_tools()}
+    ]), **_generation_tools(), **_engine_install_tools(), **_machine_tools()}
+
+
+def _machine_tools():
+    from astrid.core.machines_cli import _parser
+
+    return _tools_for_parsers({'machines': _parser()})
 
 
 def _engine_install_tools():
