@@ -128,6 +128,12 @@ def test_generation_setup_routes_capability_and_consent():
 def test_generation_commands_include_platform_launchers_and_paid_bounds():
     # Rewritten: the RunPod claim walkthrough (its paid bounds, --offer-digest included)
     # moved to the RunPod skill. Setup keeps the launcher forms and links that skill.
+    # cause f123e45c1, 889312e1f; ruling: machines 12:25 Sat
+    # P4.R13: the claim now lives in the RunPod skill (Plan 20 phase 4); its paid-bounds rule follows it there.
+    import shlex
+
+    from astrid.core.machines_cli import _parser
+
     body = _steps(_skill())[4]
     blocks = FENCE.findall(body)
     assert blocks
@@ -143,6 +149,48 @@ def test_generation_commands_include_platform_launchers_and_paid_bounds():
         assert command not in body, command
     assert "engines install comfyui --dry-run" in body
     assert "generate fetch-models" in body and "--apply PLAN_SHA256" in body
+
+    # Every guide the installer ships or the MCP surface serves: build_prompts() serves each
+    # pack SKILL.md (main and extras, e.g. astrid/packs/*/docs/**/SKILL.md) and docs/setup/ is the setup guide set.
+    guides = sorted({*ROOT.glob("astrid/packs/**/SKILL.md"), *(ROOT / "docs/setup").rglob("*.md")})
+    runpod_skill = ROOT / "astrid/packs/runpod/docs/SKILL.md"
+    assert runpod_skill in guides and (ROOT / "docs/setup/SKILL.md") in guides
+
+    def commands_of(path):
+        text = path.read_text(encoding="utf-8")
+        for block in FENCE.findall(text):
+            for line in block.replace("\\\n", " ").splitlines():
+                if "machines" in line or "generate" in line:
+                    try:
+                        yield shlex.split(line)
+                    except ValueError:
+                        yield line.split()
+
+    paid_flags = {"--consent", "--max-usd", "--deadline", "--offer-digest", "--preparation-seconds",
+                  "--execution-seconds", "--idle-seconds", "--allow-paid", "--until-release"}
+    claims_by_guide, generates, runpod_generates = {}, [], 0
+    for guide in guides:
+        for command in commands_of(guide):
+            if "machines" in command and command[command.index("machines") + 1:][:1] == ["claim"]:
+                claims_by_guide.setdefault(guide, []).append(command[command.index("machines") + 1:])
+            elif "generate" in command:
+                generate = command[command.index("generate") + 1:]
+                generates.append((guide, generate))
+                if "--placement=runpod" in generate or any(
+                        a == "--placement" and generate[i + 1:i + 2] == ["runpod"] for i, a in enumerate(generate)):
+                    runpod_generates += 1
+    all_claims = [(g, c) for g, claims in claims_by_guide.items() for c in claims]
+    assert all_claims, "no `machines claim` line found in any guide"
+    assert runpod_generates, "no `generate ... --placement runpod` line found in any guide"
+    assert claims_by_guide.get(runpod_skill), "the RunPod skill shows no `machines claim` line"
+    for guide, claim in all_claims:
+        flags = [arg.split("=", 1)[0] for arg in claim if arg.startswith("--")]
+        assert {"--consent", "--max-usd", "--deadline", "--for"} <= set(flags), (guide.name, claim)
+        parsed = _parser().parse_args(claim)
+        assert parsed.consent == ["paid"], (guide.name, claim)
+        assert parsed.max_usd > 0 and parsed.deadline and parsed.claim_for, (guide.name, claim)
+    for guide, generate in generates:
+        assert not paid_flags.intersection(arg.split("=", 1)[0] for arg in generate), (guide.name, generate)
 
 
 def test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallback():
