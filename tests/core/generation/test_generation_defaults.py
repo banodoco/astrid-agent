@@ -180,9 +180,10 @@ def test_unavailable_store_uses_builtin_settings_and_logs_debug(monkeypatch, cap
     records = [record for record in caplog.records if record.name == settings.__name__]
     assert len(records) == 1
     assert records[0].levelno == logging.DEBUG
-    assert records[0].getMessage() == "Could not reach the settings store; using built-in generation settings"
-    assert records[0].exc_info[1] is failure
-    assert "RuntimeError: launcher transport unavailable" in caplog.text
+    # b60438061: settings discovery logs only the exception type, never its message.
+    assert records[0].getMessage() == "Could not reach the settings store; using built-in generation settings (RuntimeError)"
+    assert not records[0].exc_info
+    assert "launcher transport unavailable" not in caplog.text
     assert "Traceback" not in capsys.readouterr().err
 
 
