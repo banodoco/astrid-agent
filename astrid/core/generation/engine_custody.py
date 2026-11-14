@@ -561,9 +561,14 @@ class LinuxEngineServiceClient:
                              "env": dict(request.env), "max_output_bytes": request.max_output_bytes}, request.deadline, **({"cancelled": self.cancelled} if self.cancelled is not None else {})))
 
     def release_owned(self, *, deadline):
-        """Release only the supervisor incarnation that prepared this client."""
+        """Prepared clients fence idle release to their original incarnation.
+
+        A fresh installation client is also used by the explicit SDK release
+        API, which releases the current owner without a prior preparation.
+        The host retains only clients from successful preparation.
+        """
         if self._prepared_peer is None:
-            return {"status": "skipped", "reason": "no prepared supervisor incarnation"}
+            return self._request("release", {}, deadline, start=False)
         try:
             return self._request("release", {}, deadline, start=False,
                                  expected_peer=self._prepared_peer)
