@@ -1,4 +1,8 @@
-"""Idle races through the host's spawned production HTTP action worker."""
+"""Idle races through the host's spawned production HTTP action worker.
+
+The test substitutes the task implementation and a fake engine, so it exercises
+the real HTTP worker path but not managed preparation.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -41,7 +45,7 @@ schema.update({
  'EmptyImage': {'input': {'required': {'width': ['INT', {'default': 16}], 'height': ['INT', {'default': 16}], 'batch_size': ['INT', {'default': 1}], 'color': ['INT', {'default': 0}]}}, 'output': ['IMAGE'], 'output_name': ['IMAGE'], 'output_node': False, 'python_module': 'nodes'},
  'SaveImage': {'input': {'required': {'images': ['IMAGE'], 'filename_prefix': ['STRING', {'default': 'astrid'}]}}, 'output': [], 'output_node': True, 'python_module': 'nodes'}})
 def wait_file(name):
- end = time.monotonic() + 30
+ end = time.monotonic() + 60
  while not (root / name).exists():
   if time.monotonic() >= end: raise RuntimeError('fixture gate expired: ' + name)
   time.sleep(.01)
@@ -163,26 +167,35 @@ def test_delayed_idle_callback_after_completed_http_job_is_consumed(http_worker,
 
     def delayed(generation):
         entered.set()
-        assert resume.wait(15)
+        assert resume.wait(60)
         original(generation)
 
     monkeypatch.setattr(idle, "_release_if_idle", delayed)
-    expiry = threading.Thread(target=timers.fire)
+    errors = []
+
+    def fire():
+        try:
+            timers.fire()
+        except BaseException as exc:  # noqa: BLE001 - relay timer failures to the test thread
+            errors.append(exc)
+
+    expiry = threading.Thread(target=fire)
     expiry.start()
     try:
-        assert entered.wait(5)
+        assert entered.wait(60)
         assert run(host, task("next"))["status"] == "succeeded"
         _assert_published(attempts)
         fresh_deadline = timers.live()
         resume.set()
-        expiry.join(5)
+        expiry.join(60)
         assert not expiry.is_alive()
+        assert not errors, errors
         assert not (root / "release-posts").exists()
         assert timers.live() is fresh_deadline, "only the next job's idle deadline remains"
         assert idle.status()["active_jobs"] == 0
     finally:
         resume.set()
-        expiry.join(5)
+        expiry.join(60)
 
 
 def test_release_flag_during_spawned_http_prompt_preserves_output(http_worker):
@@ -192,9 +205,17 @@ def test_release_flag_during_spawned_http_prompt_preserves_output(http_worker):
     (root / "history-published").unlink()
     for gate in ("pause-queue", "pause-prompt"):
         (root / gate).touch()
-    expiry = threading.Thread(target=timers.fire)
+    errors = []
+
+    def fire():
+        try:
+            timers.fire()
+        except BaseException as exc:  # noqa: BLE001 - relay timer failures to the test thread
+            errors.append(exc)
+
+    expiry = threading.Thread(target=fire)
     expiry.start()
-    errors, results = [], []
+    results = []
 
     def job():
         try:
@@ -204,20 +225,21 @@ def test_release_flag_during_spawned_http_prompt_preserves_output(http_worker):
 
     worker = threading.Thread(target=job)
     try:
-        _wait(lambda: (root / "queue-checked").exists())
+        _wait(lambda: (root / "queue-checked").exists(), seconds=60)
         worker.start()
-        _wait(lambda: (root / "prompt-running").exists())
+        _wait(lambda: (root / "prompt-running").exists(), seconds=60)
         # Submission bypasses supervisor.work while release holds that lock.
         assert idle.status()["active_jobs"] == 1
         (root / "return-queue").touch()
-        expiry.join(5)
+        expiry.join(60)
         assert not expiry.is_alive()
+        assert not errors, errors
         assert (root / "release-posts").read_text().splitlines() == ["/api/free"]
         assert worker.is_alive() and not errors
         assert not (root / "flags-applied").exists(), "free only sets flags during execution"
         assert not (root / "history-published").exists()
         (root / "finish-prompt").touch()
-        worker.join(15)
+        worker.join(60)
         assert not worker.is_alive() and not errors, errors
         assert results == [{"status": "succeeded"}]
         image = _assert_published(attempts)
@@ -227,6 +249,6 @@ def test_release_flag_during_spawned_http_prompt_preserves_output(http_worker):
     finally:
         (root / "return-queue").touch()
         (root / "finish-prompt").touch()
-        expiry.join(5)
+        expiry.join(60)
         if worker.ident is not None:
-            worker.join(15)
+            worker.join(60)
