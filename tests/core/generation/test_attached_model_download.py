@@ -59,7 +59,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def file_server():
+def file_server(monkeypatch):
+    from astrid.core.generation import asset_gaps
+    real = asset_gaps._token_safe_source
+    monkeypatch.setattr(asset_gaps, "_token_safe_source",
+                        lambda url: real(url) or url.startswith("http://127.0.0.1:"))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     server.blobs, server.requested, server.truncated = dict(BLOBS), [], set()
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -290,3 +294,32 @@ def test_an_unsourced_file_is_listed_for_manual_placement_never_downloaded(comfy
     assert len(plan["manual"]) == 1 and plan["manual"][0]["file"].startswith("ae.safetensors")
     text = render_attached_download_plan(plan)
     assert "ae.safetensors" in text and str(root / "vae") in text and "put " in text.lower()
+
+
+def test_the_real_default_plans_its_three_declared_files_and_nothing_manual(comfy, models):
+    root, _ = models
+    for loader, field in (("UNETLoader", "unet_name"), ("CLIPLoader", "clip_name"), ("VAELoader", "vae_name")):
+        comfy.info[loader]["input"]["required"][field] = [[]]
+    plan = plan_attached_model_download(comfy.client, "qwen-image-2.1-turbo", "t2i")
+    assert {f["file"]: (f["bytes"], f["folder"]) for f in plan["files"]} == {
+        "qwen_image_2.1_turbo_int8_convrot.safetensors": (7256787829, str(root / "diffusion_models")),
+        "qwen3vl_8b_int8_convrot.safetensors": (9350798360, str(root / "text_encoders")),
+        "qwen_image_2.1_vae_bf16.safetensors": (675509688, str(root / "vae")),
+    }
+    assert plan["total_bytes"] == 7256787829 + 9350798360 + 675509688
+    assert plan["manual"] == []
+    assert all(f["url"].startswith("https://huggingface.co/") for f in plan["files"])
+    assert _files(root) == []
+
+
+@pytest.mark.parametrize("url", ["https://example.com/ae.bin", "http://huggingface.co/ae.bin",
+                                 "https://huggingface.co.evil.test/ae.bin"])
+def test_a_source_off_huggingface_or_over_http_is_manual_with_a_reason(comfy, models, url):
+    root, _ = models
+    spec = ModelSpec("ae.safetensors", None, None, None, url, "vae/ae.safetensors", 9, "0" * 64)
+    plan = plan_attached_model_download(comfy.client, "z-image", "t2i", sources={"vae/ae.safetensors": spec})
+    assert plan["files"] == []
+    vae = next(m for m in plan["manual"] if m["role"] == "vae")
+    assert "huggingface.co" in vae["reason"]
+    text = render_attached_download_plan(plan)
+    assert "huggingface.co" in text and "put " in text.lower() and str(root / "vae") in text

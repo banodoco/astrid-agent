@@ -157,6 +157,13 @@ def canonical_folder(paths, key: str | None) -> str | None:
     return (named or candidates or [None])[0]
 
 
+def _token_safe_source(url: str) -> bool:
+    """VibeComfy fetch sends HF_TOKEN to whatever host it fetches: only Hugging Face over https is planned."""
+    from urllib.parse import urlsplit
+    parts = urlsplit(url)
+    return parts.scheme == 'https' and parts.hostname == 'huggingface.co' and parts.username is None
+
+
 def _size(count: int) -> str:
     return f'{count} bytes' if count < 1 << 20 else f'{count / (1 << 30):.2f} GiB ({count} bytes)'
 
@@ -205,16 +212,28 @@ def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=No
 
     gaps, _spec, _info = _download_gaps(client, entry_id, mode)
     sources = _default_sources(entry_id) if sources is None else sources
+    from .model_downloader import _validate_model
+
     files, manual = [], []
     for gap in gaps:
         model = next((sources[f"{gap['key']}/{name}"] for name in gap['names']
                       if gap['key'] and f"{gap['key']}/{name}" in sources
                       and '/' not in name and '\\' not in name), None)
-        if model is None or not gap['folder']:
-            manual.append({'role': gap['role'], 'file': ' or '.join(gap['names']), 'folder': gap['folder']})
+        reason, url = 'no verified source is declared', None
+        if model is not None:
+            try:
+                url = model.url or _validate_model(model)[1]
+            except Exception:  # noqa: BLE001 - an unusable declaration grants nothing
+                reason = 'its declared source is not usable'
+            else:
+                if not _token_safe_source(url):
+                    reason, url = 'its source is not https://huggingface.co/, so Astrid will not fetch it', None
+        if url is None or not gap['folder']:
+            manual.append({'role': gap['role'], 'file': ' or '.join(gap['names']), 'folder': gap['folder'],
+                           'reason': reason})
         else:
             files.append({'role': gap['role'], 'file': model.destination.rsplit('/', 1)[-1], 'folder': gap['folder'],
-                          'url': model.url, 'bytes': model.bytes, 'sha256': model.sha256})
+                          'url': url, 'bytes': model.bytes, 'sha256': model.sha256})
     host = urlsplit(client.target.url).hostname
     if host not in _LOOPBACK:
         raise AttachedDownloadRefused('not_same_machine', 'This ComfyUI is not on this computer, so nothing is '
@@ -246,7 +265,7 @@ def render_attached_download_plan(plan: dict[str, Any]) -> str:
     for f in plan['files']:
         lines.append(f"  {f['file']}  {_size(f['bytes'])}  -> {f['folder']}  (from {f['url']}, SHA-256 {f['sha256']})")
     for m in plan['manual']:
-        lines.append(f"  {m['file']}: no verified source is declared; put {m['file']} in "
+        lines.append(f"  {m['file']}: {m.get('reason', 'no verified source is declared')}; put {m['file']} in "
                      f"{m['folder'] or 'the models folder for ' + str(m['role'])} yourself.")
     if not plan['files']:
         return '\n'.join(lines + ['Nothing can be downloaded.'])
