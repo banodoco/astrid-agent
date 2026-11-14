@@ -8,7 +8,11 @@ from typing import Any
 
 def _gpu_placement(placement, gpu_types, parser):
     """Choose GPUs for a claim quote."""
-    from astrid.core.generation.placement import Placement, is_runpod_placement, request_from_selector
+    from astrid.core.generation.placement import (
+        Placement,
+        is_runpod_placement,
+        request_from_selector,
+    )
 
     if not gpu_types:
         return placement

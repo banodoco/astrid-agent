@@ -271,9 +271,13 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
 
 def judge_declarations(workflow, scratch, engine):
     """Render and judge the declarations without consulting installed state."""
-    from vibecomfy.security.provenance import Provenance
-    from vibecomfy.workflow_bundle import WorkflowBundleError, emit_bundle_with_candidate, load_bundle
     from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import (
+        WorkflowBundleError,
+        emit_bundle_with_candidate,
+        load_bundle,
+    )
 
     canonical_path = Path(scratch) / "canonical" / "workflow.py"
     canonical_path.parent.mkdir(parents=True, exist_ok=True)
@@ -548,7 +552,12 @@ class ManagedEnginePreparation:
     def _preflight_model_storage(self, manifest):
         """Budget native VibeComfy fetch's full writes; that path ignores `.part`."""
         from ._engine_target_files import _TargetFiles
-        from .model_storage import STORAGE_WARNING, ModelStorageInsufficient, available_model_bytes, declare_storage_inventory
+        from .model_storage import (
+            STORAGE_WARNING,
+            ModelStorageInsufficient,
+            available_model_bytes,
+            declare_storage_inventory,
+        )
 
         root = Path(manifest["models_root"])
         files = _TargetFiles(str(root))
