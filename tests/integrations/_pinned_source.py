@@ -292,15 +292,17 @@ def _sparse_model_inventory(provider, installed, monkeypatch):
     facts = _TargetFiles.file_fact
     witnesses = {path: Path(path).stat() for path in sizes}
 
-    def weight_fact(self, path, *, hash_bytes, deadline, check=None):
+    def weight_fact(self, path, *, hash_bytes, deadline, check=None, verification=None):
+        # W3 supplies verification; older file_fact implementations omit it.
+        extra = {'verification': verification} if verification is not None else {}
         if hash_bytes and path in sizes and Path(path).suffix in {'.safetensors', '.bin', '.ckpt', '.pt', '.pth'}:
-            fact = facts(self, path, hash_bytes=False, deadline=deadline, check=check)
+            fact = facts(self, path, hash_bytes=False, deadline=deadline, check=check, **extra)
             before, now = witnesses[path], Path(path).lstat()
             fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
             if (fact.exists and fact.regular and not fact.symlink and fact.bytes == sizes[path][0]
                     and all(getattr(before, key) == getattr(now, key) for key in fields)):
                 return replace(fact, sha256=sizes[path][1])
-        return facts(self, path, hash_bytes=hash_bytes, deadline=deadline, check=check)
+        return facts(self, path, hash_bytes=hash_bytes, deadline=deadline, check=check, **extra)
 
     monkeypatch.setattr(_TargetFiles, 'file_fact', weight_fact)
 

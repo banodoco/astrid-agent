@@ -1,6 +1,7 @@
 """Real CPU subprocess acceptance for the installation-scoped v2 owner."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
 import json
@@ -62,6 +63,148 @@ def test_marker_publication_retains_a_different_owner_fence(tmp_path):
         with pytest.raises(CustodyUnresolved, match='different supervisor incarnation'):
             custody._publish_owner_marker(fd, identity, '2' * 32, os.getpid())
         assert path.read_bytes() == original
+
+
+@pytest.mark.timeout(15)
+def test_first_owner_publications_serialize_without_replacing_marker(tmp_path, monkeypatch):
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    token = '1' * 32
+    monkeypatch.delenv('RUNPOD_POD_ID', raising=False)
+    expected = {'identity': identity, 'owner_id': token,
+                'process': {'pid': os.getpid(), 'birth_id': custody.held_child_birth_identity(os.getpid())}}
+    path = Path(client.control, 'session.json')
+    start = threading.Barrier(3)
+    absent_readers = threading.Barrier(2)
+    ready, released = threading.Event(), threading.Event()
+    attempts, writes = set(), []
+    guard = threading.Lock()
+    real_lock = custody.native.lock_file
+    real_marker = custody.LinuxEngineServiceClient._marker
+    real_write = custody._write
+
+    def observed_lock(handle, *, blocking):
+        with guard:
+            attempts.add(threading.get_ident())
+            if len(attempts) == 2:
+                ready.set()
+        return real_lock(handle, blocking=blocking)
+
+    def observed_marker(handle):
+        marker = real_marker(handle)
+        if not released.is_set():
+            # A missing lock must deterministically let both first publishers
+            # read absence before either writes, rather than win by scheduling.
+            absent_readers.wait(timeout=5)
+            ready.set()
+            assert released.wait(timeout=5)
+        return marker
+
+    def observed_write(handle, name, data):
+        real_write(handle, name, data)
+        with guard:
+            writes.append((data, os.stat(name, dir_fd=handle).st_ino))
+
+    with custody._directory(client.control, create=True) as fd:
+        held = os.open('marker.lock', os.O_RDWR | os.O_CREAT, 0o600, dir_fd=fd)
+        real_lock(held, blocking=False)
+        monkeypatch.setattr(custody.native, 'lock_file', observed_lock)
+        monkeypatch.setattr(custody.LinuxEngineServiceClient, '_marker', staticmethod(observed_marker))
+        monkeypatch.setattr(custody, '_write', observed_write)
+
+        def publish():
+            start.wait(timeout=5)
+            custody._publish_owner_marker(fd, identity, token, os.getpid(), deadline=time.monotonic() + 10)
+            return path.stat().st_ino, path.read_bytes()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(publish) for _ in range(2)]
+            try:
+                start.wait(timeout=5)
+                assert ready.wait(timeout=5), 'both publishers must reach the held lock'
+                assert not path.exists(), 'publication must wait for marker.lock'
+            finally:
+                released.set()
+                os.close(held)
+            results = [future.result(timeout=5) for future in futures]
+
+        assert len(writes) == 1, 'the second publisher must return without rewriting'
+        data, inode = writes[0]
+        assert json.loads(data) == expected
+        assert results == [(inode, data), (inode, data)]
+        assert path.stat().st_ino == inode
+        assert real_marker(fd) == expected
+
+
+@pytest.mark.timeout(5)
+def test_owner_marker_lock_acquisition_obeys_deadline(tmp_path):
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    with custody._directory(client.control, create=True) as fd:
+        held = os.open('marker.lock', os.O_RDWR | os.O_CREAT, 0o600, dir_fd=fd)
+        custody.native.lock_file(held, blocking=False)
+        try:
+            deadline = time.monotonic() + 0.1
+            with pytest.raises(DeadlineExceeded):
+                custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid(), deadline=deadline)
+            assert time.monotonic() >= deadline
+            assert not Path(client.control, 'session.json').exists()
+        finally:
+            os.close(held)
+
+
+def test_owner_marker_publication_exception_releases_lock(tmp_path, monkeypatch):
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    with custody._directory(client.control, create=True) as fd:
+        def failed_write(*args):
+            probe = os.open('marker.lock', os.O_RDWR, dir_fd=fd)
+            try:
+                with pytest.raises(BlockingIOError):
+                    custody.native.lock_file(probe, blocking=False)
+            finally:
+                os.close(probe)
+            raise OSError('injected marker write failure')
+
+        with monkeypatch.context() as patch:
+            patch.setattr(custody, '_write', failed_write)
+            with pytest.raises(OSError, match='injected marker write failure'):
+                custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid())
+        assert not Path(client.control, 'session.json').exists()
+        probe = os.open('marker.lock', os.O_RDWR, dir_fd=fd)
+        try:
+            custody.native.lock_file(probe, blocking=False)
+        finally:
+            os.close(probe)
+        custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid(), deadline=time.monotonic() + 0.5)
+        assert custody.LinuxEngineServiceClient._marker(fd)['owner_id'] == '1' * 32
+
+
+def test_owner_marker_failure_before_replace_leaves_no_partial_marker(tmp_path, monkeypatch):
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    with custody._directory(client.control, create=True) as fd:
+        staged = []
+
+        def fail_replace(source, destination, *, src_dir_fd, dst_dir_fd):
+            assert destination == 'session.json'
+            assert src_dir_fd == dst_dir_fd == fd
+            temporary = Path(client.control, source)
+            data = temporary.read_bytes()
+            assert json.loads(data)['owner_id'] == '1' * 32
+            assert not Path(client.control, destination).exists()
+            staged.append((temporary, data))
+            raise OSError('injected crash before marker replace')
+
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'replace', fail_replace)
+            with pytest.raises(OSError, match='injected crash before marker replace'):
+                custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid())
+        assert len(staged) == 1
+        assert not Path(client.control, 'session.json').exists()
+        assert not staged[0][0].exists()
+        custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid(), deadline=time.monotonic() + 0.5)
+        assert Path(client.control, 'session.json').read_bytes() == staged[0][1]
 
 
 _SERVER = r'''

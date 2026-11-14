@@ -592,6 +592,8 @@ def _publish_owner_marker(fd, identity, token, pid, *, deadline=None):
         marker["pod_id"] = pod_id
     # Launcher and child can arrive together. Publish exactly once: replacing
     # the same incarnation races the reader's descriptor/inode binding.
+    # This lock is not re-entrant; current callers do not re-enter publication.
+    # The fsync inside this critical section is not bounded by the deadline.
     lock = os.open("marker.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
                    0o600, dir_fd=fd)
     try:
