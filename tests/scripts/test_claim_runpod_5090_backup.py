@@ -357,7 +357,7 @@ def test_resume_reconciles_empty_account_reads_then_adopts_original_without_seco
     async def preflight(_pod: Any, release_root: str) -> dict[str, str]:
         return {"release_root": release_root, "probe": "offline ready"}
 
-    monkeypatch.setattr(runpod_lifecycle, "get_pod", attach)
+    monkeypatch.setattr(worker_preparation, "_get_provider_pod", attach)
     monkeypatch.setattr(claim, "_preflight_release", preflight)
 
     for _ in range(2):
@@ -893,7 +893,9 @@ def test_wrong_account_attach_stops_before_ssh_or_allocation(
     monkeypatch.setattr(
         worker_preparation,
         "observe_exact_target",
-        lambda *_args, **_kwargs: _raise(TargetObservationError("pod is not in this account")),
+        lambda *_args, **_kwargs: _raise(
+            TargetObservationError("pod is not in this account", gate="identity")
+        ),
     )
 
     async def forbidden(*_args: Any, **_kwargs: Any) -> Any:
@@ -902,7 +904,7 @@ def test_wrong_account_attach_stops_before_ssh_or_allocation(
     def _raise(exc: Exception) -> Any:
         raise exc
 
-    monkeypatch.setattr(runpod_lifecycle, "get_pod", forbidden)
+    monkeypatch.setattr(worker_preparation, "_get_provider_pod", forbidden)
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", forbidden)
 
     with pytest.raises(TargetObservationError, match="not in this account"):
