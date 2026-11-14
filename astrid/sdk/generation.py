@@ -1438,14 +1438,14 @@ class GenerationFacade:
                     raise CapabilityValidationError(str(exc)) from exc
         else:
             candidates = [("catalog", entry) for entry in registry.list_by_modality(modality)
-                          if entry.id not in _EXPLICIT_ONLY_ENTRIES
+                          if (entry.id not in _EXPLICIT_ONLY_ENTRIES or entry.id in preferred)
                           and mode in entry.modes and _local_template(entry, mode)]
             candidates += [("workflow", entry) for entry in
                            [*({**entry, 'source': 'user-entry'} for entry in workflow_entries.user_entries()),
                             *({**entry, 'source': 'ready-template'} for entry in workflow_entries.ready_entries())]
                            if entry["kind"] == modality and mode in entry["modes"]
-                           and entry["id"] not in _EXPLICIT_ONLY_ENTRIES
-                           and not entry.get("registry_id")]
+                           and (entry["id"] not in _EXPLICIT_ONLY_ENTRIES or entry["id"] in preferred)
+                           and (not entry.get("registry_id") or entry["id"] in preferred)]
             if pinned is not None and not any(
                     (c[1].id if c[0] == "catalog" else c[1]["id"]) == pinned for c in candidates):
                 found = workflow_entries.find_entry(pinned)
@@ -1579,17 +1579,9 @@ class GenerationFacade:
                         require_generation_target_readiness(prerequisite, mode, target_client)
                     if candidate["kind"] != modality or mode not in candidate["modes"]:
                         raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
-                    registry_id = candidate.get("registry_id")
-                    if registry_id:
-                        catalog_entry = registry.get(registry_id)
-                        if not is_remote_target:
-                            require_generation_target_readiness(catalog_entry, mode, target_client)
-                        workflow, plan, schema, assets = _prepare_catalog_target_workflow(
-                            registry=registry, candidate=catalog_entry, mode=mode,
-                            modality=modality, inputs=inputs, target_client=target_client, backend=backend,
-                            retain_source=None if dry_run else retain_source,
-                            defer_target=is_remote_target or is_managed_target, align=align)
-                    elif source == "workflow" and candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
+                    # The selected workflow owns preparation. Its catalog association
+                    # supplies discovery/qualification metadata, not another selector.
+                    if candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
                         # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
                         # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
                         if controls.get('wait') is False and not dry_run and not is_remote_target:
@@ -1639,7 +1631,7 @@ class GenerationFacade:
                         schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
                                                                 pending_target=pending_target, align=align)
                 from vibecomfy.workflow_bundle import load_bundle
-                if source == "workflow" and not candidate.get("registry_id"):
+                if source == "workflow":
                     # Re-emit the edited canonical workflow before approval so
                     # the input bindings are represented by a fresh revision.
                     from vibecomfy.workflow_bundle import emit_bundle

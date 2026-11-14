@@ -153,7 +153,8 @@ def test_placement_default_in_the_document_is_what_generate_uses():
 
 def test_runpod_preferences_live_under_machines_runpod(generation_settings_store):
     from astrid.packs.runpod import target_selection
-    raw = {"provider_account_ref": "acct", "gpu_types": ["A40"], "image": "w@sha256:" + "a" * 64, "volume": None}
+    raw = {"provider_account_ref": "acct", "gpu_types": ["A40"], "image": "w@sha256:" + "a" * 64,
+           "volume": None, "budget_cap_usd": 10.0}
     target_selection.save_runpod_preferences(raw)
     stored = generation_settings_store.documents["generation"][0]["machines"]["runpod"]
     assert stored["provider_account_ref"] == "acct" and "credential" not in json.dumps(stored).replace("credential_ref", "")
