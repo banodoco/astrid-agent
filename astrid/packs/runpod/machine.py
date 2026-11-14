@@ -525,6 +525,7 @@ class MachineLease:
     expires_at: float | None = None
     cost_usd: float | None = None
     preparation_state: str | None = None
+    policy_notice: Mapping[str, Any] | None = None
 
 
 @dataclass
@@ -833,8 +834,10 @@ class RunPodMachine:
                 raise
             finally:
                 owner.selection.wait_hook = None
+        from .reuse_policy import saved_policy_notice
+
         return MachineLease(prepared.lease, prepared.claim, prepared.state, prepared.custody, prepared.reused,
-                            timing=timing)
+                            timing=timing, policy_notice=saved_policy_notice(prepared.lease.claim))
 
     def describe(self, lease: MachineLease) -> dict[str, Any]:
         """Which machine runs this job: recorded on the attempt when the machine is claimed."""
@@ -842,6 +845,7 @@ class RunPodMachine:
         return {"placement": KIND, "machine": "runpod.runpod", "id": lease.claim.pod_id,
                 "lease": lease.lease.operation_id, "generation": lease.lease.generation,
                 "device": lease.custody.get("gpu_type") or record.get("gpu_type"), "warm": lease.warm,
+                **({"policy_notice": lease.policy_notice} if lease.policy_notice is not None else {}),
                 "idle_timeout_s": record["lease"]["idle_seconds"]}
 
     # -- start ---------------------------------------------------------------
@@ -1082,6 +1086,7 @@ class RunPodMachine:
         _stamp(timing, "collection_ended_at")
         pid = str(record.get("pid") or "").strip()
         return {"files": files, "result": result if isinstance(result, Mapping) else {},
+                **({"policy_notice": run.lease.policy_notice} if run.lease.policy_notice is not None else {}),
                 "manifest_sha256": manifest_line[len(MANIFEST_MARK):].strip(),
                 "progress": list(run.progress),
                 # The remote detached job's own process evidence (its pid on the pod).

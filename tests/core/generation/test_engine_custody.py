@@ -1,6 +1,7 @@
 """Real CPU subprocess acceptance for the installation-scoped v2 owner."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
 import json
@@ -26,6 +27,185 @@ from astrid.core.generation.engine_runner import _json, _sha, helper_manifest
 
 PLATFORM = "linux-x86_64-cu130"
 pytestmark = pytest.mark.linux_native
+
+
+def test_same_owner_publication_cannot_replace_a_marker_being_read(tmp_path, monkeypatch):
+    """The launcher/child duplicate publish must not race the inode-bound reader."""
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    with custody._directory(client.control, create=True) as fd:
+        custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid())
+        expected = custody.LinuxEngineServiceClient._marker(fd)
+        inode = os.stat('session.json', dir_fd=fd).st_ino
+        real_open = os.open
+        injected = False
+
+        def open_during_second_publish(name, *args, **kwargs):
+            nonlocal injected
+            if name == 'session.json' and not injected:
+                injected = True
+                custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid())
+            return real_open(name, *args, **kwargs)
+
+        monkeypatch.setattr(os, 'open', open_during_second_publish)
+        assert custody.LinuxEngineServiceClient._marker(fd) == expected
+        assert injected
+        assert os.stat('session.json', dir_fd=fd).st_ino == inode
+
+
+def test_marker_publication_retains_a_different_owner_fence(tmp_path):
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    with custody._directory(client.control, create=True) as fd:
+        custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid())
+        path = Path(client.control, 'session.json')
+        original = path.read_bytes()
+        with pytest.raises(CustodyUnresolved, match='different supervisor incarnation'):
+            custody._publish_owner_marker(fd, identity, '2' * 32, os.getpid())
+        assert path.read_bytes() == original
+
+
+@pytest.mark.timeout(15)
+def test_first_owner_publications_serialize_without_replacing_marker(tmp_path, monkeypatch):
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    token = '1' * 32
+    monkeypatch.delenv('RUNPOD_POD_ID', raising=False)
+    expected = {'identity': identity, 'owner_id': token,
+                'process': {'pid': os.getpid(), 'birth_id': custody.held_child_birth_identity(os.getpid())}}
+    path = Path(client.control, 'session.json')
+    start = threading.Barrier(3)
+    absent_readers = threading.Barrier(2)
+    ready, released = threading.Event(), threading.Event()
+    attempts, writes = set(), []
+    guard = threading.Lock()
+    real_lock = custody.native.lock_file
+    real_marker = custody.LinuxEngineServiceClient._marker
+    real_write = custody._write
+
+    def observed_lock(handle, *, blocking):
+        with guard:
+            attempts.add(threading.get_ident())
+            if len(attempts) == 2:
+                ready.set()
+        return real_lock(handle, blocking=blocking)
+
+    def observed_marker(handle):
+        marker = real_marker(handle)
+        if not released.is_set():
+            # A missing lock must deterministically let both first publishers
+            # read absence before either writes, rather than win by scheduling.
+            absent_readers.wait(timeout=5)
+            ready.set()
+            assert released.wait(timeout=5)
+        return marker
+
+    def observed_write(handle, name, data):
+        real_write(handle, name, data)
+        with guard:
+            writes.append((data, os.stat(name, dir_fd=handle).st_ino))
+
+    with custody._directory(client.control, create=True) as fd:
+        held = os.open('marker.lock', os.O_RDWR | os.O_CREAT, 0o600, dir_fd=fd)
+        real_lock(held, blocking=False)
+        monkeypatch.setattr(custody.native, 'lock_file', observed_lock)
+        monkeypatch.setattr(custody.LinuxEngineServiceClient, '_marker', staticmethod(observed_marker))
+        monkeypatch.setattr(custody, '_write', observed_write)
+
+        def publish():
+            start.wait(timeout=5)
+            custody._publish_owner_marker(fd, identity, token, os.getpid(), deadline=time.monotonic() + 10)
+            return path.stat().st_ino, path.read_bytes()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(publish) for _ in range(2)]
+            try:
+                start.wait(timeout=5)
+                assert ready.wait(timeout=5), 'both publishers must reach the held lock'
+                assert not path.exists(), 'publication must wait for marker.lock'
+            finally:
+                released.set()
+                os.close(held)
+            results = [future.result(timeout=5) for future in futures]
+
+        assert len(writes) == 1, 'the second publisher must return without rewriting'
+        data, inode = writes[0]
+        assert json.loads(data) == expected
+        assert results == [(inode, data), (inode, data)]
+        assert path.stat().st_ino == inode
+        assert real_marker(fd) == expected
+
+
+@pytest.mark.timeout(5)
+def test_owner_marker_lock_acquisition_obeys_deadline(tmp_path):
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    with custody._directory(client.control, create=True) as fd:
+        held = os.open('marker.lock', os.O_RDWR | os.O_CREAT, 0o600, dir_fd=fd)
+        custody.native.lock_file(held, blocking=False)
+        try:
+            deadline = time.monotonic() + 0.1
+            with pytest.raises(DeadlineExceeded):
+                custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid(), deadline=deadline)
+            assert time.monotonic() >= deadline
+            assert not Path(client.control, 'session.json').exists()
+        finally:
+            os.close(held)
+
+
+def test_owner_marker_publication_exception_releases_lock(tmp_path, monkeypatch):
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    with custody._directory(client.control, create=True) as fd:
+        def failed_write(*args):
+            probe = os.open('marker.lock', os.O_RDWR, dir_fd=fd)
+            try:
+                with pytest.raises(BlockingIOError):
+                    custody.native.lock_file(probe, blocking=False)
+            finally:
+                os.close(probe)
+            raise OSError('injected marker write failure')
+
+        with monkeypatch.context() as patch:
+            patch.setattr(custody, '_write', failed_write)
+            with pytest.raises(OSError, match='injected marker write failure'):
+                custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid())
+        assert not Path(client.control, 'session.json').exists()
+        probe = os.open('marker.lock', os.O_RDWR, dir_fd=fd)
+        try:
+            custody.native.lock_file(probe, blocking=False)
+        finally:
+            os.close(probe)
+        custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid(), deadline=time.monotonic() + 0.5)
+        assert custody.LinuxEngineServiceClient._marker(fd)['owner_id'] == '1' * 32
+
+
+def test_owner_marker_failure_before_replace_leaves_no_partial_marker(tmp_path, monkeypatch):
+    identity = _identity(tmp_path)
+    client = _client(identity)
+    with custody._directory(client.control, create=True) as fd:
+        staged = []
+
+        def fail_replace(source, destination, *, src_dir_fd, dst_dir_fd):
+            assert destination == 'session.json'
+            assert src_dir_fd == dst_dir_fd == fd
+            temporary = Path(client.control, source)
+            data = temporary.read_bytes()
+            assert json.loads(data)['owner_id'] == '1' * 32
+            assert not Path(client.control, destination).exists()
+            staged.append((temporary, data))
+            raise OSError('injected crash before marker replace')
+
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'replace', fail_replace)
+            with pytest.raises(OSError, match='injected crash before marker replace'):
+                custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid())
+        assert len(staged) == 1
+        assert not Path(client.control, 'session.json').exists()
+        assert not staged[0][0].exists()
+        custody._publish_owner_marker(fd, identity, '1' * 32, os.getpid(), deadline=time.monotonic() + 0.5)
+        assert Path(client.control, 'session.json').read_bytes() == staged[0][1]
+
 
 _SERVER = r'''
 import json,os,sys,time
@@ -802,7 +982,7 @@ def cpu_h3_install(session, monkeypatch, request):
                        for dist in sorted(native_distributions, key=lambda d: d.metadata['Name'])).encode()
     (fixture / "requirements.lock").write_bytes(lock)
     model = b"CPU model inventory witness\n"
-    model_path = root / "models/diffusion_models/cpu.bin"
+    model_path = root / "runtime/ComfyUI/models/diffusion_models/cpu.bin"
     model_path.parent.mkdir(parents=True)
     model_path.write_bytes(model)
     model_lock = {"schema": "astrid.models-lock.v1", "models": [{
@@ -830,17 +1010,21 @@ def cpu_h3_install(session, monkeypatch, request):
     comfy = root / "runtime/ComfyUI"
     pinned_comfy = getattr(request, "comfy_source", None)
     if pinned_comfy is not None:
+        cpu_model = model_path.read_bytes() if model_path.is_file() else None
         shutil.rmtree(comfy)
         subprocess.run(["git", "clone", "--quiet", "--shared", str(pinned_comfy), str(comfy)],
                        check=True, timeout=60)
+        if cpu_model is not None:
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            model_path.write_bytes(cpu_model)
     else:
         shutil.copytree(source / ".git", comfy / ".git")
         shutil.copy2(source / "tiny.py", comfy / "tiny.py")
-    if getattr(request, "param", None) == "outer":
-        # ComfyUI's real source excludes its mutable media directories. Give
-        # this tiny Git witness the same boundary before the first upload.
-        with (comfy / ".git/info/exclude").open("a") as excluded:
-            excluded.write("\n/input/\n/output/\n")
+    # cause f0ba64407; ruling: machines 11:35 Sat
+    # Like real ComfyUI, the tiny Git witness keeps mutable model/media
+    # directories outside source integrity; tracked changes still refuse.
+    with (comfy / ".git/info/exclude").open("a") as excluded:
+        excluded.write("\n/input/\n/output/\n/models/\n")
     revision = next(s.pin.revision for s in original.sources if s.name == "vibecomfy")
     comfy_revision = (next(s.pin.revision for s in original.sources if s.name == "comfyui")
                       if pinned_comfy is not None else revision)
@@ -866,7 +1050,7 @@ recipe=replace(base,
  sources=tuple(replace(s,pin=replace(s.pin,revision=({comfy_revision!r} if s.name=='comfyui' else {revision!r}))) for s in base.sources if s.name in {{'comfyui','vibecomfy'}}),
  environments=(replace(base.environments[0],name='cpu',relative_path={environment_relative!r},python_version={sys.version.split()[0]!r},uv_version={uv_version!r},requirements=RequirementsSpec('packaged',DataRef('cpu-fixture/requirements.lock',{hashlib.sha256(lock).hexdigest()!r}),(),(),None),final_wheels=(),node_lock=None,source_installs=()),),
  primary_environment='cpu',models_lock=DataRef('cpu-fixture/models.json',{hashlib.sha256(model_bytes).hexdigest()!r}),
- start=StartSpec({original.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1'}},'127.0.0.1',{original.start.port}),
+ start=StartSpec({original.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1','VIBECOMFY_MODELS_ROOT':'{{models_root}}'}},'127.0.0.1',{original.start.port}),
  health=replace(base.health,timeout_seconds=4,poll_interval_seconds=0.02))
 original_read_ref=recipes._read_ref
 def read_ref(ref,**kwargs):
@@ -877,7 +1061,15 @@ def read_ref(ref,**kwargs):
   return path,payload
  return original_read_ref(ref,**kwargs)
 recipes._read_ref=read_ref
-recipes.load_recipe=lambda engine,platform:recipe
+# cause 2caeb813fa; ruling: machines 11:35 Sat
+# An explicit catalog lookup reads product pins, not the one-model CPU install.
+canonical_load_recipe=recipes.load_recipe
+no_catalog=object()
+def load_cpu_recipe(engine,platform,*,registry=no_catalog):
+ if registry is no_catalog and (engine,platform)==(recipe.engine,recipe.platform):
+  return recipe
+ return canonical_load_recipe(engine,platform,registry=None if registry is no_catalog else registry)
+recipes.load_recipe=load_cpu_recipe
 original_run=LocalLinuxExecutionContext.run
 def run(self,request):
  if request.argv[:4]==('python3','-I','-m','astrid.core.generation.engine_runner_target'):
@@ -896,7 +1088,7 @@ LocalLinuxExecutionContext.run=run
     engine_recipe.load_recipe, engine_recipe._read_ref = previous_loader, previous_ref
     LocalLinuxExecutionContext.run = previous_run
     # Undo bootstrap's interpreter-local patches via pytest's normal teardown.
-    monkeypatch.setattr(engine_recipe, "load_recipe", lambda engine, platform: recipe)
+    monkeypatch.setattr(engine_recipe, "load_recipe", namespace["load_cpu_recipe"])
     monkeypatch.setattr(engine_recipe, "_read_ref", namespace["read_ref"])
     monkeypatch.setattr(LocalLinuxExecutionContext, "run", namespace["run"])
     supervisor = program + "\nfrom astrid.core.generation.engine_custody import _serve\n_serve(json.loads(sys.argv[1]),recipe,int(sys.argv[2]),sys.argv[4])"

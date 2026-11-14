@@ -201,6 +201,7 @@ from astrid.core.rendering.assets import managed_asset_digest
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.core.util.secrets import load_local_api_key_with_source
 from astrid.sdk.execution_request import normalize_execution_request
+from astrid.sdk.storage_ownership import ATTEMPT_ROOT_PREFIX
 from astrid.sdk.workspace_client import WorkspaceClientError, validate_runtime_endpoint
 
 
@@ -275,6 +276,14 @@ def _runtime_authority_refusal(error: BaseException, *, operation: str) -> str |
 
 class TerminalPublicationRejected(HostError):
     """A Runtime validation/conflict response with verified nonterminal custody."""
+
+
+class _RuntimeRecoveryIdentityError(HostError):
+    """The host cannot identify its Runtime for any recovered attempt."""
+
+
+class _TerminalEvidenceNotRecorded(HostError):
+    """A successful task read did not contain the submitted durable evidence."""
 
 
 def _terminal_publication_rejection(
@@ -522,6 +531,7 @@ class CommandCleanupUnresolved(HostError):
 _DEFAULT_EXECUTION_POLICY = ExecutionGuardPolicy()
 _LEASE_POLL_SECONDS = _DEFAULT_EXECUTION_POLICY.authority_window_seconds / 60
 _TERMINAL_RECONCILE_POLL_SECONDS = 0.25
+_TERMINAL_RECOVERY_MAX_ATTEMPTS = 5
 
 
 class HostCancelled(HostError):
@@ -6020,7 +6030,7 @@ class RuntimeProtocolClient:
             result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
             if ((task_id_value is not None and str(task_id_value) != task_id)
                     or not contains(result, expected_result)):
-                raise HostError("Runtime terminal evidence is not present in durable task readback")
+                raise _TerminalEvidenceNotRecorded("Runtime terminal evidence is not present in durable task readback")
         return {"task": task} if task is not None else {"result": result}
 
     def cancel(
@@ -6675,6 +6685,7 @@ class GenericPackHost:
         self._pack_refresh_reason = ""
         self.client = client
         self.executor_id = executor_id
+        self.recovery_blocked: list[dict[str, str]] = []
         self.max_concurrency = max(1, int(max_concurrency))
         if attempt_root is not None and attempt_base is not None:
             raise ValueError("attempt_root and attempt_base are mutually exclusive")
@@ -6799,6 +6810,132 @@ class GenericPackHost:
         self._claim_slots: tuple[GenericPackHost, ...] = ()
         self._claim_loop_lock = threading.Lock()
 
+    @staticmethod
+    def _check_attempt_directory(path: Path, metadata: os.stat_result, *, private: bool,
+                                 require_private_mode: bool = True) -> None:
+        reason = None
+        if not stat.S_ISDIR(metadata.st_mode):
+            reason = "not a non-symlink directory"
+        elif sys.platform == "win32":
+            if private and not platform.is_owner_only(path, directory=True):
+                reason = "not owner-only"
+        elif private:
+            if metadata.st_uid != os.getuid():
+                reason = f"owner uid {metadata.st_uid}, expected {os.getuid()}"
+            elif require_private_mode and stat.S_IMODE(metadata.st_mode) != 0o700:
+                reason = f"mode {stat.S_IMODE(metadata.st_mode):04o}, expected 0700"
+        elif metadata.st_uid not in {0, os.getuid()}:
+            reason = f"ancestor owner uid {metadata.st_uid}, expected root or {os.getuid()}"
+        elif metadata.st_mode & 0o022 and not metadata.st_mode & stat.S_ISVTX:
+            reason = "group/world-writable ancestor without sticky bit"
+        if reason:
+            raise HostError(f"private default attempt base refused at {path}: {reason}; "
+                            "repair ownership/permissions or remove the unsafe path before restarting")
+
+    @staticmethod
+    @contextmanager
+    def _open_attempt_directory(base: Path, *, private_root: Path | None = None, create: bool = False):
+        """Validate the descriptors actually traversed; keep the final one open."""
+        current = Path(base.anchor)
+        descriptor = None
+        traversed = []
+        try:
+            if not base.is_absolute() or ".." in base.parts:
+                raise HostError(f"private default attempt base refused at {base}: expected an absolute path "
+                                "without '..'; repair the configured path before restarting")
+            if sys.platform != "win32":
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                descriptor = os.open(current, flags)
+                GenericPackHost._check_attempt_directory(current, os.fstat(descriptor), private=False)
+            for part in base.parts[1:]:
+                current /= part
+                private = private_root is not None and (current == private_root or private_root in current.parents)
+                created = False
+                if create:
+                    try:
+                        if sys.platform == "win32":
+                            if not current.exists() and not current.is_symlink():
+                                platform.private_directory(current)
+                                created = True
+                        else:
+                            os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                            created = True
+                    except FileExistsError:
+                        pass
+                metadata = current.lstat()
+                # Existing spool components may need repair after a restore.
+                # Ownership and type still gate opening; permissions can only
+                # be tightened on the descriptor after its identity is checked.
+                tighten = private and create and not created
+                GenericPackHost._check_attempt_directory(
+                    current, metadata, private=private or created, require_private_mode=not tighten)
+                if descriptor is not None:
+                    child = os.open(part, flags, dir_fd=descriptor)
+                    os.close(descriptor)
+                    descriptor = child
+                    opened = os.fstat(descriptor)
+                    GenericPackHost._check_attempt_directory(
+                        current, opened, private=private or created, require_private_mode=not tighten)
+                    if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                        raise HostError(f"private default attempt base refused at {current}: swapped identity; "
+                                        "remove the replacement path and restart")
+                    if tighten and stat.S_IMODE(opened.st_mode) != 0o700:
+                        os.fchmod(descriptor, 0o700)
+                        repaired = os.fstat(descriptor)
+                        GenericPackHost._check_attempt_directory(current, repaired, private=True)
+                        after = current.lstat()
+                        if ((repaired.st_dev, repaired.st_ino) != (opened.st_dev, opened.st_ino)
+                                or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)):
+                            raise HostError(f"private default attempt base refused at {current}: swapped identity; "
+                                            "remove the replacement path and restart")
+                        opened = repaired
+                    metadata = opened
+                    traversed.append((current, (opened.st_dev, opened.st_ino)))
+            # A replaced ancestor can point back into the same moved tree,
+            # preserving the leaf inode. Recheck every traversed component.
+            for path, identity in traversed:
+                after = path.lstat()
+                if (after.st_dev, after.st_ino) != identity:
+                    raise HostError(f"private default attempt base refused at {path}: swapped identity; "
+                                    "remove the replacement path and restart")
+            yield descriptor, metadata
+        except OSError as exc:
+            raise HostError(f"private default attempt base refused at {current}: {exc}; "
+                            "repair or remove this path before restarting") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _ensure_private_attempt_directory(base: Path, *, private_root: Path | None = None) -> tuple[int, int]:
+        with GenericPackHost._open_attempt_directory(base, private_root=private_root or base, create=True) as (_, metadata):
+            return metadata.st_dev, metadata.st_ino
+
+    def _default_attempt_base(self) -> Path:
+        """Reuse private state; an unsafe spool is a host-wide startup refusal."""
+        from astrid.sdk.storage_root import resolve_runtime_data_root, resolve_xdg_runtime_root
+
+        digest = hashlib.sha256(self.executor_id.encode("utf-8")).hexdigest()[:16]
+        try:
+            private = resolve_runtime_data_root(fallback=False)
+            if private is None:
+                private = resolve_xdg_runtime_root() or Path.home() / ".cache" / "astrid"
+            base = private / "attempts" / digest
+            # The selected data/runtime/cache root can serve other consumers.
+            # Only the spool directories below it belong exclusively to us.
+            identity = self._ensure_private_attempt_directory(base, private_root=private / "attempts")
+        except (OSError, ValueError) as exc:
+            raise HostError(f"private default attempt base refused: {exc}; "
+                            "repair the configured private state path before restarting") from exc
+        # No filesystem or config I/O under the process lock: only identity custody.
+        with self._process_lock:
+            previous = getattr(self, "_private_attempt_base_identity", None)
+            if previous is not None and previous[0] == base and previous[1] != identity:
+                raise HostError(f"private default attempt base refused at {base}: swapped identity; "
+                                "remove the replacement path and restart")
+            self._private_attempt_base_identity = (base, identity)
+        return base
+
     def _allocate_attempt_root(self, task_id: str, attempt_id: str) -> Path:
         """Allocate the filesystem namespace for one claimed attempt."""
         if self.attempt_base is not None:
@@ -6814,20 +6951,28 @@ class GenericPackHost:
                 root.mkdir()
                 root.chmod(0o700)
             return root.resolve()
-        # The lease and progress marker carry the task/attempt/fence identity;
-        # do not put those values in an ephemeral filesystem basename.  Keep
-        # the established reclaim prefix so storage_ownership still finds
-        # crash-abandoned roots.
-        if self.attempt_root is None and sys.platform == "win32":
-            root = Path(tempfile.gettempdir()) / f"astrid-attempt-{secrets_module.token_hex(16)}"
-            platform.private_directory(root)
-            return root.resolve()
-        root = self.attempt_root or Path(tempfile.mkdtemp(prefix="astrid-attempt-")).resolve()
+        if self.attempt_root is None:
+            base = self._default_attempt_base()
+            expected = self._private_attempt_base_identity[1]
+            with self._open_attempt_directory(base, private_root=base.parent) as (descriptor, metadata):
+                if (metadata.st_dev, metadata.st_ino) != expected:
+                    raise HostError(f"private default attempt base refused at {base}: swapped identity; "
+                                    "remove the replacement path and restart")
+                name = f"{ATTEMPT_ROOT_PREFIX}{secrets_module.token_hex(16)}"
+                root = base / name
+                if descriptor is None:
+                    platform.private_directory(root)
+                else:
+                    os.mkdir(name, mode=0o700, dir_fd=descriptor)
+                after = base.lstat()
+                if (after.st_dev, after.st_ino) != expected:
+                    raise HostError(f"private default attempt base refused at {base}: swapped identity; "
+                                    "remove the replacement path and restart")
+                return root
+        root = self.attempt_root
         root.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             platform.owner_only(root)
-        elif self.attempt_root is None:
-            root.chmod(0o700)
         return root
 
     @property
@@ -8102,6 +8247,7 @@ class GenericPackHost:
             "unready_capabilities": sorted(record.id for record in self.capabilities.values() if not record.ready),
             "missing_required_capabilities": list(self.missing_required_capabilities),
             "gated_checks": _gated_remotion_faults(self.capabilities.values()),
+            "recovery_blocked": list(self.recovery_blocked),
             "registration": registration,
             "source_epoch": self.source_epoch,
             "source_inventory_identity": self.source_inventory_identity,
@@ -9273,7 +9419,9 @@ class GenericPackHost:
         producer = payload["evidence"]["producer"]
         transport = payload["evidence"]["transport"]
         if preparation is not None:
-            producer["alignment"] = preparation["alignment"]
+            from astrid.core.generation.producer_result import public_alignment_evidence
+
+            producer["alignment"] = public_alignment_evidence(preparation["alignment"])
             transport["placement"] = "managed"
         # The bundle loader uses a fixed sibling basename. Restore the
         # admitted source identity only after checking it against the bytes
@@ -12523,8 +12671,14 @@ class GenericPackHost:
                     raise HostError("deadline terminalization was not accepted by Runtime") from exc
                 deadline_failed = state == "failed"
 
+        job_evidence = None
+
         def upload_log_outputs(output_root: Path) -> list[dict[str, Any]]:
             warnings = _terminal.setdefault("evidence_warnings", [])
+            from contextlib import suppress
+            with suppress(Exception):
+                if job_evidence is not None:
+                    job_evidence.finish()
             try:
                 logs = self._log_outputs(output_root, attempt=root, warnings=warnings)
                 task_epoch = task_data.get("runtime_epoch")
@@ -12558,8 +12712,9 @@ class GenericPackHost:
             if output_root is None:
                 error_key = "host_failure" if status == "failed" else "error"
                 result_value = {"status": status, error_key: error_value}
-                _terminal.update(pending_outputs=[], pending_result=result_value, pending_status=status)
-                return [], result_value
+                uploaded = upload_log_outputs(root / "outputs") if job_evidence is not None else []
+                _terminal.update(pending_outputs=uploaded, pending_result=result_value, pending_status=status)
+                return uploaded, result_value
             try:
                 values = dict(_terminal.get("inputs") or {})
                 values.update({"out": str(output_root), "run_root": str(root), "python_exec": sys.executable})
@@ -12633,10 +12788,11 @@ class GenericPackHost:
                         "outcomes": {"execution": {"status": status}},
                     }
                     result_value["host_failure" if status == "failed" else "error"] = error_value
+                    logs = upload_log_outputs(Path(output_root)) if job_evidence is not None else []
                     _terminal.update(
-                        pending_outputs=[], pending_result=result_value, pending_status=status
+                        pending_outputs=logs, pending_result=result_value, pending_status=status
                     )
-                    return [], result_value
+                    return logs, result_value
                 # Keep the attempt spool and expose why evidence could not be attached.
                 _terminal["evidence_pending"] = True
                 raise HostError("terminal evidence publication is pending Runtime recovery") from evidence_error
@@ -12822,7 +12978,17 @@ class GenericPackHost:
                 admitted_mode = _align_admission(task_data).get("align", "check")
                 engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
-                    scratch=root / "engine-preparation", device=local_device, logs_root=root)
+                    scratch=root / "engine-preparation", device=local_device, logs_root=_host_log_root(root))
+                from contextlib import suppress
+
+                from astrid.core.generation.engine_custody import declare_engine_log
+                from astrid.core.generation.job_evidence import JobEvidence
+                with suppress(Exception):
+                    job_evidence = JobEvidence(_host_log_root(root), engine_preparation)
+                    engine_preparation.evidence_start = job_evidence.begin
+                    engine_preparation.evidence_waiting = job_evidence.waiting
+                if job_evidence is None:
+                    declare_engine_log(_host_log_root(root), engine_preparation.root, engine_preparation.recipe.engine)
                 _terminal["machine"] = {**_local_machine({}), "placement": "managed",
                                          "id": engine_preparation.root,
                                          "device": engine_preparation.visibility if engine_preparation.visibility is not None else "auto"}
@@ -12848,9 +13014,6 @@ class GenericPackHost:
                     assert_managed_input_identity()
                     from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value
                     canonical = _canonical_bundle_value(loaded.resolved)
-                    from astrid.core.generation.engine_custody import declare_engine_log
-
-                    declare_engine_log(root, engine_preparation.root, engine_preparation.recipe.engine)
                     report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs,
                                                         canonical_workflow=canonical.workflow, input_digests=original_input_digests)
                     assert_managed_input_identity()
@@ -13083,6 +13246,10 @@ class GenericPackHost:
                 if assert_managed_input_identity is not None:
                     assert_managed_input_identity()
                 lifetime.begin_execution()
+                from contextlib import suppress
+                with suppress(Exception):
+                    if job_evidence is not None:
+                        job_evidence.start_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
                 if capability_id != "wan2gp.generate_video":
@@ -13193,7 +13360,10 @@ class GenericPackHost:
             finally:
                 # The outer run_task finally owns lease-pump shutdown and
                 # cleanup; this boundary only preserves child env cleanup.
-                pass
+                from contextlib import suppress
+                with suppress(Exception):
+                    if job_evidence is not None:
+                        job_evidence.start_collect()
             render_child_pending = False
             _terminal["output_root"] = output_root
             _terminal["payload"] = getattr(result, "payload", {}) or {}
@@ -14079,32 +14249,100 @@ class GenericPackHost:
             provider_route_grant=provider_route_grant,
         )
 
+    def _record_recovery_blocked(self, path: Path, reason: str) -> None:
+        entry = {"path": str(path), "reason": reason,
+                 "recovery_step": f"Inspect {path} and its attempt files; after checking Runtime task state, "
+                                  "repair the marker or remove the attempt directory by hand."}
+        self.recovery_blocked.append(entry)
+        print(reason, file=sys.stderr, flush=True)
+        print(json.dumps({"event": "recovery_blocked", "executor_id": self.executor_id,
+                          "recovery_blocked": [entry]}, sort_keys=True), file=sys.stderr, flush=True)
+        self._publish_ready_registration(self._ready_marker_context.get("registration"))
+
     def _recover_terminal_requests(self) -> None:
-        """Resume terminal requests left by an interrupted host before claiming work."""
+        """Resolve this host's saved requests, with bounded startup custody."""
         if self.client is None:
             return
+        self.recovery_blocked.clear()
         roots = []
+
+        def children(path: Path, *, legacy: bool = False) -> list[Path]:
+            try:
+                # iterdir surfaces enumeration errors (glob may suppress them).
+                return [child for child in path.iterdir()
+                        if not legacy or child.name.startswith(ATTEMPT_ROOT_PREFIX)]
+            except OSError as exc:
+                self._record_recovery_blocked(path, f"generic host recovery could not enumerate {path}: {exc}")
+                return []
+
         if self.attempt_root is not None:
             roots.append(self.attempt_root)
-        if self.attempt_base is not None and self.attempt_base.is_dir():
-            roots.extend(path for path in self.attempt_base.iterdir()
+        base = self.attempt_base
+        if self.attempt_root is None and base is None:
+            # Private-base validation and Runtime health without an epoch are
+            # host-wide refusals; attempt-local recovery errors stay nonfatal.
+            base = self._default_attempt_base()
+            # Older hosts used both flat temp roots and nested temp spools.
+            temporary = Path(tempfile.gettempdir())
+            try:
+                with self._open_attempt_directory(temporary):
+                    pass
+            except HostError as exc:
+                print(f"generic host recovery skipped unsafe legacy root {temporary}: {exc}",
+                      file=sys.stderr, flush=True)
+                legacy_roots = []
+            else:
+                legacy_roots = children(temporary, legacy=True)
+            for legacy in legacy_roots:
+                if legacy == base:
+                    continue
+                try:
+                    metadata = legacy.lstat()
+                    if (not stat.S_ISDIR(metadata.st_mode)
+                            or (sys.platform != "win32" and (metadata.st_uid != os.getuid()
+                                or metadata.st_mode & 0o022))):
+                        raise ValueError("unsafe ownership, mode or type")
+                except (OSError, ValueError) as exc:
+                    print(f"generic host recovery skipped unsafe legacy root {legacy}: {exc}",
+                          file=sys.stderr, flush=True)
+                    continue
+                # Appending children retains the same admission check before
+                # either enumeration or opening any terminal marker.
+                if legacy.parent == temporary:
+                    legacy_roots.extend(children(legacy, legacy=True))
+                for name in ("fail-request.json", "cancel-request.json"):
+                    marker = legacy / name
+                    try:
+                        if marker.is_symlink():
+                            continue
+                        saved = json.loads(marker.read_text(encoding="utf-8"))
+                        if isinstance(saved, dict) and saved.get("executor_id") == self.executor_id:
+                            roots.append(legacy)
+                            break
+                    except (OSError, ValueError, TypeError):
+                        continue
+        if base is not None and base.is_dir() and not base.is_symlink():
+            roots.extend(path for path in children(base)
                          if path.is_dir() and not path.is_symlink())
-        if self.attempt_root is None and self.attempt_base is None:
-            roots.extend(path for path in Path(tempfile.gettempdir()).glob("astrid-attempt-*")
-                         if path.is_dir() and not path.is_symlink())
+        # Startup replay has nothing to release: a new host holds no prior
+        # in-memory session/preparation, and the OS released the dead process's
+        # preparation flock. Supervisor/pod custody still fences engine reuse.
         for root in roots:
             for name in ("fail-request.json", "cancel-request.json"):
                 path = root / name
                 if not path.is_file() or path.is_symlink():
                     continue
+                receipt_path = root / "result.json"
+                receipt, receipt_error = {}, None
+                try:
+                    if receipt_path.is_file():
+                        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                        if not isinstance(receipt, dict):
+                            raise ValueError("result receipt must be an object")
+                except (OSError, ValueError, TypeError) as exc:
+                    receipt, receipt_error = {}, exc
                 try:
                     request = json.loads(path.read_text(encoding="utf-8"))
-                    receipt_path = root / "result.json"
-                    receipt = (json.loads(receipt_path.read_text(encoding="utf-8"))
-                               if receipt_path.is_file() else {})
-                    if (self.attempt_root is None and self.attempt_base is None
-                            and request.get("executor_id") != self.executor_id):
-                        continue
                     body = request["body"]
                     task_id = request.get("task_id") or receipt.get("task_id") or receipt["kernel_task_id"]
                     attempt_id = (receipt.get("attempt_id") or receipt.get("kernel_attempt_id")
@@ -14114,68 +14352,203 @@ class GenericPackHost:
                     if (not isinstance(body, dict) or operation not in {"fail_attempt", "cancel_task"}
                             or (operation == "fail_attempt" and request["identifier"] != attempt_id)
                             or (operation == "cancel_task" and request["identifier"] != task_id)
-                            or request.get("executor_id") not in (None, self.executor_id)
-                            or not body.get("lease_id") or body.get("fence") is None
-                            or body.get("runtime_epoch") is None):
+                            or not isinstance(task_id, str) or not task_id
+                            or not isinstance(attempt_id, str) or not attempt_id
+                            or not isinstance(request.get("executor_id"), str) or not request["executor_id"]
+                            or not isinstance(body.get("lease_id"), str) or not body["lease_id"]
+                            or type(body.get("fence")) is not int or body["fence"] < 1
+                            or type(body.get("runtime_epoch")) is not int or body["runtime_epoch"] < 1):
                         raise ValueError("invalid terminal request identity")
-                except (OSError, ValueError, KeyError, TypeError) as exc:
-                    print(f"generic host recovery could not read {path}: {exc}", file=sys.stderr, flush=True)
+                except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                    # Uncertain identity never authorizes a Runtime mutation.
+                    self._record_recovery_blocked(path, f"generic host recovery could not read {path}: {exc}")
                     continue
+                payload_error = receipt_error
+                if (not isinstance(request.get("idempotency_key"), str) or not request["idempotency_key"]
+                        or (operation == "fail_attempt" and not isinstance(body.get("error"), Mapping))
+                        or (body.get("result") is not None and not isinstance(body["result"], Mapping))
+                        or (body.get("outputs") is not None and not isinstance(body["outputs"], list))):
+                    payload_error = ValueError("invalid terminal request body")
                 delay = _TERMINAL_RECONCILE_POLL_SECONDS
-                rejected = None
-                while not self._shutdown.is_set():
+                rejected = HostError(f"unreadable terminal evidence: {payload_error}") if payload_error else None
+                last_error = None
+                uncertain = False
+                ceding = False
+                expected_result = {} if payload_error else (body.get("result") or {})
+                if operation == "fail_attempt" and not payload_error:
+                    expected_result = {**expected_result, "error": body["error"]}
+                wire = {**body, "idempotency_key": request.get("idempotency_key")}
+                wire_operation, identifier = operation, request["identifier"]
+                reconciliation_path = root / f"{name}.reconciliation.json"
+                reconciliation_loaded = False
+                # The second budget is solely for the fenced, evidence-free
+                # terminal failure. If Runtime stays unavailable, retain every
+                # byte and report this attempt without blocking new claims.
+                for check in range(2 * _TERMINAL_RECOVERY_MAX_ATTEMPTS):
+                    if self._shutdown.is_set():
+                        return
                     try:
-                        current = self.client.task(str(task_id))
+                        health = self.client.health()
+                        epoch = (health.get("runtime_epoch") if isinstance(health, Mapping)
+                                 else getattr(health, "runtime_epoch", None))
+                        if type(epoch) is not int or epoch < 1:
+                            raise _RuntimeRecoveryIdentityError("Runtime recovery health has no epoch")
+                        if (request["executor_id"] != self.executor_id
+                                or body["runtime_epoch"] != epoch):
+                            print(f"generic host recovery skipped {path}: foreign executor or Runtime epoch",
+                                  file=sys.stderr, flush=True)
+                            break
+                        if not reconciliation_loaded:
+                            if reconciliation_path.exists() or reconciliation_path.is_symlink():
+                                try:
+                                    if reconciliation_path.is_symlink():
+                                        raise ValueError("reconciliation request must not be a symlink")
+                                    saved = json.loads(reconciliation_path.read_text(encoding="utf-8"))
+                                    if (saved["task_id"] != task_id or saved["identifier"] != attempt_id
+                                            or saved["executor_id"] != request["executor_id"]
+                                            or saved["operation"] != "fail_attempt"
+                                            or not isinstance(saved["idempotency_key"], str) or not saved["idempotency_key"]
+                                            or not isinstance(saved["body"]["error"], dict)
+                                            or saved["body"]["error"].get("code") != "reconciliation_required"
+                                            or "result" in saved["body"] or "outputs" in saved["body"]
+                                            or any(type(saved["body"][key]) is not type(body[key])
+                                                   or saved["body"][key] != body[key]
+                                                   for key in ("lease_id", "fence", "runtime_epoch"))):
+                                        raise ValueError("reconciliation request identity or body differs")
+                                    wire = {**saved["body"], "idempotency_key": saved["idempotency_key"]}
+                                    wire_operation, identifier = "fail_attempt", str(attempt_id)
+                                    expected_result = {"error": saved["body"]["error"]}
+                                    ceding = True
+                                    # The preceding incarnation may have lost its ACK.
+                                    uncertain = True
+                                except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                                    self._record_recovery_blocked(
+                                        reconciliation_path,
+                                        f"generic host recovery could not read {reconciliation_path}: {exc}")
+                                    break
+                            reconciliation_loaded = True
+                        try:
+                            current = self.client.task(str(task_id))
+                        except Exception as exc:
+                            if getattr(exc, "status", None) == 404 and getattr(exc, "code", None) == "not_found":
+                                # Recovery has no authority to delete unknown evidence;
+                                # leave the file for storage reclaim to age out.
+                                print(f"generic host recovery skipped {path}: task unknown to this Runtime",
+                                      file=sys.stderr, flush=True)
+                                break
+                            raise
                         current = current.get("task", current) if isinstance(current, Mapping) else current
+
                         def field(key, default=None):
                             return current.get(key, default) if isinstance(current, Mapping) else getattr(current, key, default)
+
+                        if uncertain and isinstance(self.client, RuntimeProtocolClient):
+                            # A read outage cannot authorize another mutation.
+                            # The adapter checks durable evidence; if it is
+                            # absent, obtain the live owner again before replay.
+                            try:
+                                verified = self.client._verify_terminal_evidence_readback(
+                                    str(task_id), expected_result or {}, {"task": current})
+                            except _TerminalEvidenceNotRecorded:
+                                current = self.client.task(str(task_id))
+                                current = current.get("task", current) if isinstance(current, Mapping) else current
+                            else:
+                                current = verified["task"]
+                            uncertain = False
                         state = field("state", field("status"))
+                        current_id = field("task_id", field("id"))
+                        if current_id is None or field("runtime_epoch") is None:
+                            raise HostError("Runtime recovery task has no positive identity")
+                        if str(current_id) != str(task_id):
+                            print(f"generic host recovery skipped {path}: foreign task identity",
+                                  file=sys.stderr, flush=True)
+                            break
+                        if state in {"failed", "cancelled", "completed", "succeeded"}:
+                            if isinstance(self.client, RuntimeProtocolClient) and isinstance(expected_result, Mapping):
+                                try:
+                                    self.client._verify_terminal_evidence_readback(
+                                        str(task_id), expected_result, {"task": current})
+                                except _TerminalEvidenceNotRecorded:
+                                    # Runtime may already have failed/cancelled
+                                    # the attempt, including a prior cede whose
+                                    # ACK was lost. Never overwrite that state.
+                                    print(f"generic host recovery terminal evidence differs for {task_id}: {state}",
+                                          file=sys.stderr, flush=True)
+                                    break
+                            print(f"generic host terminal publication recorded for {task_id}", file=sys.stderr, flush=True)
+                            break
                         if (state != "running" or field("attempt_id") != attempt_id
                                 or field("fence", field("lease_fence")) != body["fence"]
+                                or field("runtime_epoch") != body["runtime_epoch"]
                                 or field("executor_id", self.executor_id) not in (None, self.executor_id)):
+                            print(f"generic host recovery skipped {path}: task no longer owned by this attempt",
+                                  file=sys.stderr, flush=True)
                             break
+                        if not isinstance(self.client, RuntimeProtocolClient):
+                            raise HostError("terminal request replay requires a Runtime protocol client")
                         expiry = field("lease_expires_at")
                         expired = bool(expiry and datetime.fromisoformat(expiry.replace("Z", "+00:00"))
                                        <= datetime.now(timezone.utc))
-                        if rejected or expired:
-                            reason = str(rejected or "lease expired")
-                            original = body.get("error") or {}
+                        if not ceding and (rejected or expired or check >= _TERMINAL_RECOVERY_MAX_ATTEMPTS):
+                            reason = str(rejected or ("lease expired" if expired else
+                                         f"recovery exhausted after {_TERMINAL_RECOVERY_MAX_ATTEMPTS} tries: {last_error}"))
+                            original = body.get("error") if isinstance(body.get("error"), Mapping) else {}
                             message = (f"terminal evidence refused ({reason}); original failure "
                                        f"{original.get('code', 'executor_failed')}: {original.get('message', '')}")
-                            if isinstance(self.client, RuntimeProtocolClient):
-                                self.client._attempt_runtime_epochs[str(attempt_id)] = int(body["runtime_epoch"])
-                            self._handoff_settlement_call(
-                                self.client.fail, str(task_id), body["lease_id"], message,
-                                attempt_id=str(attempt_id), fence=body["fence"], retryable=False,
-                                structured_error={"code": "reconciliation_required"})
-                            warnings = receipt.setdefault("warnings", [])
-                            warnings.append(message)
-                            write_json_atomic(receipt_path, receipt)
+                            if check >= _TERMINAL_RECOVERY_MAX_ATTEMPTS:
+                                print(f"generic host recovery exhausted for {task_id}: {reason}", file=sys.stderr, flush=True)
+                            # Use one wire mutation per check; the general fail
+                            # adapter retries internally without a result readback.
+                            expected_result = {"error": {"code": "reconciliation_required",
+                                                         "message": message, "retryable": False}}
+                            wire = {key: body[key] for key in ("lease_id", "fence", "runtime_epoch")}
+                            wire.update(error=expected_result["error"],
+                                        idempotency_key=f"fail-{attempt_id}-{body['fence']}-cede")
+                            wire_operation, identifier = "fail_attempt", str(attempt_id)
+                            _persist_terminal_request(reconciliation_path, {
+                                "operation": wire_operation, "identifier": identifier,
+                                "task_id": task_id, "executor_id": request["executor_id"],
+                                "idempotency_key": wire["idempotency_key"],
+                                "body": {key: value for key, value in wire.items() if key != "idempotency_key"},
+                            })
+                            ceding = True
+                            # The sidecar owns reconciliation; preserve the
+                            # original request and receipt, including corrupt bytes.
+                            if not receipt_path.exists() and not receipt_path.is_symlink():
+                                write_json_atomic(receipt_path, {"warnings": [message]})
                             print(f"generic host terminal publication ceded for {task_id}: {reason}", file=sys.stderr, flush=True)
-                        else:
-                            if not isinstance(self.client, RuntimeProtocolClient):
-                                raise HostError("terminal request replay requires a Runtime protocol client")
-                            wire = {**body, "idempotency_key": request["idempotency_key"]}
-                            try:
-                                self._handoff_settlement_call(
-                                    self.client._terminal_evidence_request, self.client._lifecycle_client(),
-                                    operation, request["identifier"], wire)
-                            except Exception as exc:
-                                # Only this mutation's error may authorize a
-                                # cede. A failed task read cannot reject evidence.
-                                rejection = _terminal_publication_rejection(
-                                    exc, str(task_id), (str(attempt_id), body["fence"]), self.client.task)
-                                if rejection is not None:
-                                    rejected = rejection
-                                    print(f"generic host terminal publication rejected for {task_id}: {rejection}",
-                                          file=sys.stderr, flush=True)
-                                    continue
-                                raise
+                        uncertain = True
+                        try:
+                            response = self._handoff_settlement_call(
+                                self.client._terminal_evidence_request, self.client._lifecycle_client(),
+                                wire_operation, identifier, wire)
+                        except Exception as exc:
+                            rejection = _terminal_publication_rejection(
+                                exc, str(task_id), (str(attempt_id), body["fence"]), self.client.task)
+                            if rejection is not None and not ceding:
+                                rejected = rejection
+                                print(f"generic host terminal publication rejected for {task_id}: {rejection}",
+                                      file=sys.stderr, flush=True)
+                            raise
+                        verified = self.client._verify_terminal_evidence_readback(
+                            str(task_id), expected_result or {}, response)
+                        terminal = verified["task"]
+                        if (_claim_field(terminal, "state") or _claim_field(terminal, "status")) not in {
+                                "failed", "cancelled", "completed", "succeeded"}:
+                            raise HostError("Runtime recovery mutation has no terminal readback")
                         print(f"generic host terminal publication recorded for {task_id}", file=sys.stderr, flush=True)
                         break
-                    except Exception:  # noqa: BLE001 - retain custody during Runtime outages
-                        self._shutdown.wait(delay)
-                        delay = min(5.0, max(_TERMINAL_RECONCILE_POLL_SECONDS, delay * 2))
+                    except _RuntimeRecoveryIdentityError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - bounded, visible startup recovery
+                        last_error = exc
+                        if check + 1 < 2 * _TERMINAL_RECOVERY_MAX_ATTEMPTS:
+                            self._shutdown.wait(delay)
+                            delay = min(5.0, max(_TERMINAL_RECONCILE_POLL_SECONDS, delay * 2))
+                else:
+                    message = f"generic host recovery could not reconcile {path}: {last_error}"
+                    self._record_recovery_blocked(path, message)
+        self._publish_ready_registration(self._ready_marker_context.get("registration"))
 
     def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
@@ -18121,6 +18494,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             "event": "registered", "executor_id": host.executor_id, "pid": os.getpid(),
             "capabilities": len(host.capabilities), "ready": len(host.capabilities) - len(unready),
             "unready": unready, "withdrawn": registration.get("withdrawn_capabilities") or [],
+            "recovery_blocked": list(host.recovery_blocked),
             "gated": _gated_remotion_faults(host.capabilities.values()),
             "full_registration": str(ready_path) if ready_path is not None else None,
         }, sort_keys=True, default=_json_safe), flush=True)

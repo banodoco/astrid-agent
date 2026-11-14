@@ -191,7 +191,13 @@ def test_real_canonical_validation_uses_attested_model_root_and_model_aware_comp
     "extracted_references",
     [
         [],
-        [{"value": "fixture.safetensors", "subdir": "checkpoints"}],
+        [{
+            "node_id": "checkpoint-node",
+            "class_type": "CheckpointLoaderSimple",
+            "field": "ckpt_name",
+            "value": "fixture.safetensors",
+            "subdir": "checkpoints",
+        }],
     ],
     ids=["empty", "incomplete"],
 )

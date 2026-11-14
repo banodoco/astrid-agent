@@ -3,10 +3,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
-import subprocess
-import sys
-import time
 import shlex
 import threading
 from pathlib import Path
@@ -23,7 +19,9 @@ from astrid.core.model_catalog.registry import ModelRegistry
 from astrid.packs.runpod import machine
 from astrid.sdk.generation import _prepare_catalog_target_workflow
 from tests.helpers.generation_defaults import default_entries
-from tests.integrations.test_runpod_slot_path_cpu import SlotPod, _managed_local_engine, _slot_classes
+from tests.integrations.test_runpod_slot_path_cpu import SlotPod, _slot_classes
+from tests.core.generation.test_engine_custody import session  # noqa: F401
+from tests.integrations._pinned_source import pinned_comfy_source, pinned_managed_install  # noqa: F401
 
 pytestmark = pytest.mark.integration
 
@@ -60,67 +58,18 @@ class LeaseOwner:
 
 
 @contextlib.contextmanager
-def _owned_cpu_engine(provider, folder, monkeypatch):
-    """The real installed-engine supervisor starts a CPU HTTP implementation.
+def _owned_cpu_engine(provider, installed, monkeypatch):
+    """Use the same pinned native install and owned HTTP peer as the matrix."""
+    from tests.integrations._pinned_source import owned_cpu_peer, read_peer_events
 
-    Reuse the matrix's fake install/model bytes, then replace GPU main.py with
-    the existing validating HTTP peer. No job-runner or server lifecycle call
-    is replaced; the normal recipe, socket ownership and source checks run.
-    """
-    import vibecomfy
-    from astrid.core.generation.engine_custody import LinuxEngineServiceClient
-    from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
-    from astrid.core.generation.engine_runner import _sha, helper_manifest
-
-    with _managed_local_engine(provider, folder, monkeypatch):
-        pass  # provision the fake install; close its thread before the real owned child starts
-    root = folder / 'managed' / 'engines' / 'comfyui'
-    (root / '.astrid-engine').chmod(0o700)
-    runtime = root / 'runtime'
-    comfy_root = runtime / 'ComfyUI'
-    comfy_root.mkdir(parents=True)
-    (comfy_root / 'output').mkdir()
-    python = runtime / 'venv' / 'bin' / 'python'
-    python.parent.mkdir(parents=True)
-    python.symlink_to(sys.executable)
-    subprocess.run(['git', 'clone', '--quiet', '--shared', str(Path(vibecomfy.__file__).resolve().parents[1]),
-                    str(runtime / 'vibecomfy')], check=True)
-    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
-    revision = next(source.pin.revision for source in recipe.sources if source.name == 'vibecomfy')
-    subprocess.run(['git', 'checkout', '--quiet', '--detach', revision], cwd=runtime / 'vibecomfy', check=True)
-    assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=runtime / 'vibecomfy', text=True).strip() == revision
-    records = root / 'peer-records'
-    records.mkdir()
-    program = f"""
-import sys,json,threading
-sys.path[:0]={[str(Path(__file__).resolve().parents[2]), *sys.path]!r}
-from pathlib import Path
-from tests.integrations.runpod_slot_pod import PodComfy,pin_object_info
-from tests.integrations.test_runpod_slot_path_cpu import _attached_comfy
-class Recorded(list):
-    def __init__(self,name): self.path=Path({str(records)!r})/name
-    def append(self,value):
-        with self.path.open('a') as output: output.write(json.dumps(value)+'\\n')
-        super().append(value)
-peer=PodComfy({provider.comfy.classes!r},lambda:{provider.comfy.installed_files()!r},extra=pin_object_info())
-peer.prompts=Recorded('prompts');peer.views=Recorded('views');peer.rejections=Recorded('rejections')
-port=int(sys.argv[sys.argv.index('--port')+1])
-with _attached_comfy(peer,port): threading.Event().wait()
-"""
-    (comfy_root / 'main.py').write_text(program)
-    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
-    client = LinuxEngineServiceClient(root=str(root), engine='comfyui', platform=recipe.platform,
-        recipe_sha256=recipe_digest(recipe), helper_sha256=_sha(helper_manifest(recipe)))
-    try:
-        yield
-    finally:
-        client.stop_owned(deadline=time.monotonic() + 20)
-        for name in ('prompts', 'views', 'rejections'):
-            path = records / name
-            setattr(provider.comfy, name, [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else [])
+    with owned_cpu_peer(provider, installed, monkeypatch) as records:
+        try:
+            yield
+        finally:
+            read_peer_events(provider, records)
 
 
-def test_controller_shipped_default_job_runs_on_the_real_local_path(tmp_path, monkeypatch):
+def test_controller_shipped_default_job_runs_on_the_real_local_path(tmp_path, monkeypatch, pinned_managed_install):  # noqa: F811
     """Real shared preparation -> machine.start's uploads -> unmodified run_job.
 
     Claim/source-bootstrap/Runtime journeys have their own provider tests. This
@@ -152,7 +101,9 @@ def test_controller_shipped_default_job_runs_on_the_real_local_path(tmp_path, mo
         return {'id': job_id, 'dir': str(tmp_path / 'pod-agent' / job_id)}
     adapter = SimpleNamespace(placement=transport, lease_owner=owner)
     state = SimpleNamespace(note=lambda *args, **kwargs: None)
-    lease = machine.MachineLease(object(), SimpleNamespace(ops=SimpleNamespace(job_start=job_start)), state, {}, False)
+    # cause 9e5a1963a; ruling: machines 11:35 Sat
+    lease = machine.MachineLease(SimpleNamespace(claim=owner.record),
+        SimpleNamespace(ops=SimpleNamespace(job_start=job_start)), state, {}, False)
     monkeypatch.setattr(machine, 'RUNS_ROOT', str(tmp_path / 'pod' / 'runs'))
     job = MachineJob(entry=identifier, mode=mode, policy={},
         inputs={'python': str(folder / 'workflow.py'), 'companion': str(folder / 'workflow.vibe.json'),
@@ -173,7 +124,7 @@ def test_controller_shipped_default_job_runs_on_the_real_local_path(tmp_path, mo
     assert owner.record['lease']['job']['state'] == 'running'
 
     provider = SlotPod(tmp_path / 'claim.json', tmp_path / 'attempts', _slot_classes(slot))
-    with _owned_cpu_engine(provider, tmp_path / 'pod-engine', monkeypatch):
+    with _owned_cpu_engine(provider, pinned_managed_install, monkeypatch):
         manifest = run_job(identifier, job_path, Path(remote.remote_root) / 'out', mode=mode)
     assert (Path(remote.remote_root) / 'out' / manifest['managed_generation_result_path']).is_file()
     assert provider.comfy.prompts and not provider.comfy.rejections

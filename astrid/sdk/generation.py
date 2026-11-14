@@ -333,7 +333,11 @@ def _runpod_operation(operation, *, client, wait, include_quote=False, preferenc
 
     if operation == "claim" or fresh_claim:
         _require_runpod_claim_host(client)
-    policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences if preferences is not None else _runpod_preferences(client)}
+    # Cleanup addresses retained custody, never mutable or unreadable settings.
+    selected = ({} if operation in {"ls", "release"} else
+                None if operation == "status" and not include_quote and preferences is None else
+                preferences if preferences is not None else _runpod_preferences(client))
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": selected}
     if fresh_claim:
         if operation != "status":
             raise GenerationInputError("fresh claim disclosure requires status")
@@ -1162,13 +1166,13 @@ class GenerationFacade:
         The owned managed engine is verified as the registered loopback owner, then
         released through the existing native unload path (CheckoutServerAdapter.release).
         """
+        from astrid.core.generation.placement import is_runpod_placement
         from astrid.core.generation.preflight import generation_error
         from astrid.core.generation.targets import canonical_engine
-        if canonical_engine(engine) != 'comfyui':
-            raise GenerationInputError('Phase 1 release supports only comfyui')
-        from astrid.core.generation.placement import is_runpod_placement
         if is_runpod_placement(placement):
             return _runpod_operation('release', client=client, wait=wait, machine_id=machine_id)
+        if canonical_engine(engine) != 'comfyui':
+            raise GenerationInputError('Phase 1 release supports only comfyui')
         if machine_id is not None:
             raise GenerationInputError('machine id release requires runpod placement')
         bridge = getattr(client, 'release_generation', None)

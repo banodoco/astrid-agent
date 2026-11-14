@@ -19,6 +19,9 @@ from tests.integrations.test_runpod_slot_path_cpu import TARGET_KINDS, _assert_r
 
 pytestmark = pytest.mark.integration
 
+# cause f96644329; ruling: machines 11:35 Sat
+# _drive's managed branch uses the shared _pinned_source.managed_cpu_engine.
+
 # The built-in image t2i default (priority 30): its ready template is a workflow file, and the
 # CPU fakes already carry its classes, models and object_info.
 DEFAULT_ENTRY = "qwen-image-2.1-turbo"
@@ -44,6 +47,9 @@ def _workflow_file() -> Path:
 _RED = {}  # local-managed flipped in T4f: the registered managed install (see _managed_local_engine) runs the file
 
 
+# A full managed-preparation run through a real Runtime: about 100 s per case on a box running three such proofs at once, so the
+# 120 s default timeout cuts it off (local-managed timed out at 120 s while its sibling cases passed).
+@pytest.mark.timeout(600)
 @pytest.mark.parametrize("target_kind", TARGET_KINDS)
 def test_workflow_file_runs_on_each_placement(target_kind, tmp_path, monkeypatch, real_runtime, tuple_sources):
     workflow = _workflow_file()

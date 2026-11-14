@@ -84,6 +84,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
     stop_token = POD_STOP.set(stop)
     preparation = None
+    evidence = None
     closed = False
     try:
         selected = scratch / "selected"
@@ -141,9 +142,17 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
         preparation = ManagedEnginePreparation(task=task_identity, attempt=attempt_identity, mode=align,
             deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine",
             logs_root=out, on_phase=on_phase)
-        from astrid.core.generation.engine_custody import declare_engine_log
+        from contextlib import suppress
 
-        declare_engine_log(out, preparation.root, preparation.recipe.engine)
+        from astrid.core.generation.engine_custody import declare_engine_log
+        from astrid.core.generation.job_evidence import JobEvidence, job_evidence_scope
+
+        with suppress(Exception):
+            evidence = JobEvidence(out, preparation)
+            preparation.evidence_start = evidence.begin
+            preparation.evidence_waiting = evidence.waiting
+        if evidence is None:
+            declare_engine_log(out, preparation.root, preparation.recipe.engine)
         try:
             report = preparation.prepare(workflow, execution_identity=identity, inputs=members,
                                          canonical_workflow=canonical, input_digests=digests)
@@ -161,7 +170,10 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
         if signum is not None:
             state["phase"] = "drain"
             raise SystemExit(128 + signum)
-        with preparation_scope(report):
+        with suppress(Exception):
+            if evidence is not None:
+                evidence.start_execution()
+        with preparation_scope(report), job_evidence_scope(evidence):
             return run_action._run_and_settle(workflow, out, task_identity=task_identity,
                 attempt_identity=attempt_identity, execution_identity=identity,
                 align=align, comfy_url=report["endpoint"], **kwargs)
@@ -170,6 +182,10 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
         raise
     finally:
         state["phase"] = "drain"
+        from contextlib import suppress
+        with suppress(Exception):
+            if evidence is not None:
+                evidence.finish()
         try:
             if preparation is not None:
                 try:

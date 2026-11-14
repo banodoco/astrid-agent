@@ -9,7 +9,7 @@ import os
 import re
 import time
 from concurrent.futures import CancelledError
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -333,6 +333,13 @@ class ManagedEnginePreparation:
         self.report: dict[str, Any] | None = None
         self.uncertain = False
         self._preparing_engine = False
+        self.verification_seconds = 0.0
+        self.verification_attempted = False
+        self.engine_start_seconds: float | None = 0.0
+        self.engine_start_attempted = False
+        self.engine_reused: bool | None = None
+        self.evidence_waiting: Any = None
+        self.evidence_start: Any = None
 
     def check(self):
         if self.cancelled():
@@ -434,8 +441,17 @@ class ManagedEnginePreparation:
 
         lock = self.adapter.local_install_lock(self.root, deadline=self.deadline, cancelled=self.cancelled,
                                                on_contention=refuse_while_installing)
+        from contextlib import suppress
+        with suppress(Exception):
+            callback = getattr(self, "evidence_waiting", None)
+            if callback is not None:
+                callback()
         lock.__enter__()
         self.lock = lock
+        with suppress(Exception):
+            callback = getattr(self, "evidence_start", None)
+            if callback is not None:
+                callback()
         self.check()
         try:
             raw = self.context.read_json(receipt_path, deadline=self.deadline)
@@ -493,11 +509,11 @@ class ManagedEnginePreparation:
         runner.step_id = "start"
         if callback is not None:
             callback("start_engine")
-        start_action, start_facts = runner.start(readonly=False)
+        start_action, start_facts = self._start_engine(runner)
         self._preparing_engine = True
         self.check()
         runner.step_id = "health"
-        health_action, health_facts = runner.check_health()
+        health_action, health_facts = self._time_engine(runner.check_health)
         self.check()
         receipt_sha256 = refresh_installed_launch(runner, raw, start_action=start_action, start_facts=start_facts,
                                                   health_action=health_action, health_facts=health_facts, check=self.check)
@@ -520,6 +536,33 @@ class ManagedEnginePreparation:
                 native_preparation["pip_bootstrap"] = self.pip_bootstrap
         return report
 
+    def _start_engine(self, runner):
+        """Accumulate every supervisor probe/start, preserving its actual reuse decision."""
+        self.engine_start_attempted = True
+        action, facts = self._time_engine(lambda: runner.start(readonly=False))
+        self.engine_reused = action == "skipped" and getattr(self, "engine_reused", None) is not False
+        return action, facts
+
+    def _time_engine(self, operation):
+        """Measure supervisor work, including readiness, without changing its result."""
+        from contextlib import suppress
+
+        started = None
+        with suppress(Exception):
+            started = time.monotonic()
+        try:
+            return operation()
+        finally:
+            # Timing failure must never mask the start result or its refusal.
+            elapsed = None
+            with suppress(Exception):
+                if started is not None:
+                    elapsed = max(0.0, time.monotonic() - started)
+            with suppress(Exception):
+                previous = getattr(self, "engine_start_seconds", 0.0)
+                self.engine_start_seconds = (None if elapsed is None or previous is None else
+                                             previous + elapsed)
+
     def _verify_alignment(self, workflow, runner, staged_digests, manifest, receipt):
         """Attest mutation results before executing the engine, and again after doctor."""
         from .engine_contracts import IntegrityError
@@ -528,7 +571,14 @@ class ManagedEnginePreparation:
                for path, expected in staged_digests.items()):
             raise IntegrityError("managed alignment changed the canonical workflow bytes")
         if self.mode != "trust":
-            self._verify_models(manifest)
+            self.verification_attempted = True
+            started = time.monotonic()
+            try:
+                self._verify_models(manifest)
+            finally:
+                # Timing is evidence only; it must never replace a verification error.
+                with suppress(Exception):
+                    self.verification_seconds = getattr(self, "verification_seconds", 0.0) + time.monotonic() - started
         self._guard_runtime(workflow, runner, post=True)
         for step in runner.plan.steps:
             if step.kind in {"source", "environment"}:
@@ -811,12 +861,12 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         try:
             self.check()
             runner.step_id = "doctor-start"
-            runner.start(readonly=False)
+            self._start_engine(runner)
             # A refused foreign owner or mismatched launch never authorizes
             # stop. Uncertain start responses retain the fence in prepare().
             self._preparing_engine = True
             runner.step_id = "doctor-health"
-            runner.check_health()
+            self._time_engine(runner.check_health)
             expected = runner.health.object_info_sha256
             request = {"argv": argv, "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
                        "expected_schema_sha256": expected,
@@ -824,7 +874,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             result = self._native(native_doctor_program(), json.dumps(request), step="doctor")
             self.check()
             runner.step_id = "doctor-post-health"
-            runner.check_health()
+            self._time_engine(runner.check_health)
             if runner.health.object_info_sha256 != expected:
                 raise IntegrityError("managed doctor target schema changed during diagnosis")
             return result

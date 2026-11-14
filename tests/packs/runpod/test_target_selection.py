@@ -93,6 +93,8 @@ def case(tmp_path, monkeypatch, pod_watchdog_transport):
         "invocation-1", offer.digest(prefs), 1.0, (now + timedelta(hours=1)).isoformat(),
         ("paid",), 30, 30, 60,
     )
+    # Paid POSTs require positively known current saved policy, even in fakes.
+    save_runpod_preferences(raw)
     return state
 
 
@@ -545,6 +547,136 @@ def test_definite_capacity_rejection_rotates_datacenters_without_reobserving(cas
     assert attempts == [("preferred-gpu", "DC-A"), ("preferred-gpu", "DC-B")]
     assert len(observations) == 1 and sleeps == [5]
     assert result["network_volume_datacenter_id"] == "DC-B" and case.creates == 2
+
+
+def test_saved_ceiling_lowered_during_capacity_wait_prevents_post(case, monkeypatch, request):
+    attempts, owner = capacity_offer_provider(case, monkeypatch, request)
+    preferences = case.owner.preferences.as_mapping()
+    save_runpod_preferences(preferences)
+    observations = []
+
+    def offers():
+        observations.append(1)
+        if len(observations) == 1:
+            raise selection.OfferObservationError("stock_unavailable")
+        return (replace(case.offer, datacenter_id="DC-A"),)
+
+    async def sleep(seconds):
+        case.now += timedelta(seconds=seconds)
+        save_runpod_preferences({**preferences, "budget_cap_usd": 1.5})
+
+    case.owner.observe_offers = offers
+    case.owner.sleep = sleep
+    case.owner.monotonic = lambda: case.now.timestamp()
+    with pytest.raises(ValueError, match="preferences differ.*runpod.setup"):
+        owner.acquire(waiting_grant(case, max_usd=2), requested_idle_seconds=0)
+    assert len(observations) == 2
+    assert attempts == [] and case.creates == 0 and case.pods == []
+
+
+def test_saved_ceiling_lowered_during_provider_pacing_prevents_post(case, monkeypatch, request, tmp_path):
+    import time
+
+    from astrid.packs.runpod import provider, worker_preparation
+
+    attempts, owner = capacity_offer_provider(case, monkeypatch, request)
+    case.owner.preferences = replace(case.owner.preferences, budget_cap_usd=2.5)
+    preferences = case.owner.preferences.as_mapping()
+    save_runpod_preferences(preferences)
+    case.owner.observe_offers = lambda: (replace(case.offer, datacenter_id="DC-A"),)
+    clock = [time.time()]
+    sleeps = []
+
+    def pacing_sleep(seconds):
+        sleeps.append(seconds)
+        save_runpod_preferences({**preferences, "budget_cap_usd": 1.5})
+        clock[0] += seconds
+
+    gate = provider.ProviderGate(tmp_path / "pacing.json", clock=lambda: clock[0],
+                                 sleep=pacing_sleep, minimum_interval=0)
+    monkeypatch.setattr(provider, "account_gate", lambda *args, **kwargs: gate)
+    admitted_operation = worker_preparation.async_provider_operation
+
+    async def paced_create(*args, **kwargs):
+        # Seed the real gate immediately before create admission. Its actual
+        # before_call() loop sleeps and changes policy after the old callback.
+        gate._state(lambda state: state.update(next=clock[0] + 1))
+        return await admitted_operation(*args, **kwargs)
+
+    monkeypatch.setattr(worker_preparation, "async_provider_operation", paced_create)
+    with pytest.raises(ValueError, match="ceiling.*runpod.setup"):
+        owner.acquire(waiting_grant(case, max_usd=2), requested_idle_seconds=0)
+    assert sleeps == [1]
+    assert attempts == [] and case.creates == 0 and case.pods == []
+
+
+def test_cancel_during_saved_policy_read_prevents_intent_and_post(case, monkeypatch, tmp_path):
+    from threading import Event
+
+    import runpod_lifecycle
+
+    from astrid.core.generation import settings
+    from astrid.packs.runpod import provider, worker_preparation
+
+    entered, release, finished = Event(), Event(), Event()
+    saved = settings.read()
+    intents = []
+    gate = provider.ProviderGate(tmp_path / "cancel.json", minimum_interval=0)
+    monkeypatch.setattr(provider, "account_gate", lambda *args, **kwargs: gate)
+    monkeypatch.setattr(selection, "account_gate", lambda *args, **kwargs: gate)
+
+    def blocked_read():
+        entered.set()
+        assert release.wait(5), "saved policy read was never released"
+        return saved  # Unchanged, valid policy must not conceal the cancellation.
+
+    persist = worker_preparation.replace_target_record
+
+    def record_intent(path, value, **kwargs):
+        if value["state"] == "allocation_pending":
+            intents.append(dict(value))
+        return persist(path, value, **kwargs)
+
+    async def forbidden_post(*args, **kwargs):
+        case.creates += 1
+        raise AssertionError("cancelled caller reached create POST")
+
+    admitted = worker_preparation.async_provider_operation
+
+    async def tracked_operation(api_key, operation, **kwargs):
+        async def tracked():
+            try:
+                return await operation()
+            finally:
+                finished.set()
+
+        return await admitted(api_key, tracked, **kwargs)
+
+    monkeypatch.setattr(settings, "read", blocked_read)
+    monkeypatch.setattr(worker_preparation, "replace_target_record", record_intent)
+    monkeypatch.setattr(worker_preparation, "async_provider_operation", tracked_operation)
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", forbidden_post)
+
+    async def cancel_while_reading():
+        caller = asyncio.create_task(case.owner._select(waiting_grant(case)))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5), "create never read saved policy"
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+        finally:
+            release.set()
+            if not caller.done():
+                caller.cancel()
+                await asyncio.gather(caller, return_exceptions=True)
+            assert await asyncio.to_thread(finished.wait, 5), "provider worker did not finish"
+
+    asyncio.run(cancel_while_reading())
+    assert case.creates == 0 and case.pods == []
+    assert intents == []
+    record = json.loads(case.owner.path.read_text())
+    assert record["state"] != "allocation_pending"
+    assert record["create_attempts"] == 0 and "last_create_started_at" not in record
 
 
 def test_exhausted_offer_list_reobserves_and_restarts_the_user_gpu_order(case, monkeypatch, request):
