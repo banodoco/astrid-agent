@@ -302,7 +302,10 @@ def test_no_systemd_second_stop_after_foreground_retirement_is_idempotent(tmp_pa
     backend, old, data, paths, realm, _calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
     backend.service.systemd = lambda: False
     record = backend.service.recorded()
-    record['foreground'] = {'pid': 123, 'birth_id': 'birth', 'realm_id': 'selected',
+    # This test runs the real Service.stop_foreground, which reads the real process table: a fixed small pid such as 123
+    # can belong to a live process on a busy runner ("foreground process identity changed"). 2**22 + 17 is above
+    # Linux's largest pid_max (2**22), so no process can have it.
+    record['foreground'] = {'pid': 4_194_321, 'birth_id': 'birth', 'realm_id': 'selected',
                             'realm_root': str(realm)}
     write_json(backend.service.selection, record)
     backend.service.stop_foreground = lambda **kwargs: Service.stop_foreground(
