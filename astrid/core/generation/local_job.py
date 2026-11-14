@@ -38,6 +38,13 @@ def read_job(path: str | Path) -> dict[str, Any]:
         raise JobFileError(f"job align must be one of {', '.join(ALIGN_MODES)}")
     if not isinstance(body.get("inputs"), dict):
         raise JobFileError("job inputs must be an object")
+    if "generation_settings" in body:
+        projected = body["generation_settings"]
+        if (not isinstance(projected, dict) or set(projected) != {"models"}
+                or not isinstance(projected["models"], dict)
+                or set(projected["models"]) != {"trust_unchanged"}
+                or type(projected["models"]["trust_unchanged"]) is not bool):
+            raise JobFileError("job generation settings must declare boolean models.trust_unchanged")
     volume = body.get("storage_volume")
     if volume is not None:
         if (not isinstance(volume, dict) or set(volume) != {"id", "size_gb", "mount_path"}
@@ -55,6 +62,7 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     """Run with this job's validated trust choice scoped to the execution."""
     from astrid.core.execution import phase_timing
 
+    from . import settings
     from .model_storage import DECLARED_VOLUME, DeclaredVolume
     from .target_inventory import POD_ALIGN
 
@@ -66,9 +74,13 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     volume = job.get("storage_volume")
     storage_token = DECLARED_VOLUME.set(
         DeclaredVolume(Path(volume["mount_path"]), volume["size_gb"]) if volume is not None else None)
+    projected = job.get("generation_settings")
+    policy = settings.using_model_trust_unchanged(
+        projected["models"]["trust_unchanged"] if projected is not None else True)
     try:
         phase_timing.transition(timing, "execution")
-        result = _run_job(entry, job, out, mode=mode, align=align)
+        with policy:
+            result = _run_job(entry, job, out, mode=mode, align=align)
         phase_timing.attach_host(result, timing, output_root=Path(out))
         return result
     except Exception as exc:  # noqa: BLE001 - attach telemetry without changing the failure
