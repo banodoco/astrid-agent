@@ -30,6 +30,8 @@ def _fake_server(monkeypatch, info, folders):
         if path == "/object_info":
             return info
         if path == "/internal/folder_paths":
+            if isinstance(folders, Exception):
+                raise folders
             return folders
         raise AssertionError(f"unexpected target operation: {path}")
 
@@ -37,9 +39,9 @@ def _fake_server(monkeypatch, info, folders):
     return seen
 
 
-def _capture(kind, monkeypatch, *, folders=FOLDERS):
+def _capture(kind, monkeypatch, *, folders=FOLDERS, vaes=("other.safetensors",)):
     # z-image's VAE role expects FLUX1\ae.safetensors; this target only has other.safetensors.
-    info = target_info("t2i", vaes=("other.safetensors",))
+    info = target_info("t2i", vaes=vaes)
     seen = _fake_server(monkeypatch, info, folders)
     client = ComfyTargetClient(ComfyTarget(URL, kind))
     with pytest.raises(ComfyModelMissing) as caught:
@@ -78,3 +80,22 @@ def test_managed_missing_model_keeps_align_message_and_fixes(monkeypatch):
         "details": {"model": "ae.safetensors, FLUX1\\ae.safetensors (role vae)"},
     }]
     assert "/internal/folder_paths" not in seen
+
+
+def test_attached_ambiguous_model_asks_user_to_keep_exactly_one(monkeypatch):
+    error, _ = _capture("attached", monkeypatch, vaes=("ae.safetensors", r"FLUX1\ae.safetensors"))
+    text = str(error)
+    assert "Keep exactly one of ae.safetensors or FLUX1\\ae.safetensors" in text
+    assert "/srv/ComfyUI/models/vae" in text
+    assert "Put " not in text
+    assert "align" not in text
+    assert all("argv" not in fix for fix in error.readiness["fixes"])
+
+
+def test_attached_folder_lookup_failure_falls_back_without_folder(monkeypatch):
+    error, seen = _capture("attached", monkeypatch, folders=ValueError("checkout_server request failed"))
+    assert "/internal/folder_paths" in seen
+    assert "the models folder for vae on your ComfyUI" in str(error)
+    assert "/srv/ComfyUI" not in str(error)
+    assert "align" not in str(error)
+    assert all("argv" not in fix for fix in error.readiness["fixes"])
