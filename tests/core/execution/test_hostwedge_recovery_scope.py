@@ -638,19 +638,39 @@ def test_readable_identity_corrupt_result_cedes_and_host_starts(settlement_case,
 def test_exhausted_recovery_is_listed_and_host_starts(settlement_case, tmp_path, monkeypatch):
     case = settlement_case
     root, _ = _saved_failure(case, tmp_path)
+    original_task = case.service.task(case.task_id)["task"]
     calls, claimed = [], []
     def outage(attempt_id, **body):
         calls.append(body)
         raise OSError("Runtime unavailable")
     monkeypatch.setattr(case.host.client.generated, "fail_attempt", outage)
     monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_POLL_SECONDS", 0)
-    monkeypatch.setattr(case.host, "claim_once", lambda: claimed.append("claimed"))
+    def next_claim():
+        # The real same-engine overlap boundary is exercised in
+        # test_corrupt_identity_never_writes_runtime_and_host_starts above.
+        # Here pin the cede/outage path: admission must not retry or fail the
+        # blocked attempt, clear its lease, or lose its original Runtime fence.
+        assert case.host.recovery_blocked[0]["path"] == str(root / "fail-request.json")
+        assert len(calls) == 2 * generic_host._TERMINAL_RECOVERY_MAX_ATTEMPTS
+        stored = case.service.task(case.task_id)["task"]
+        assert stored["status"] == "running"
+        for key in ("attempt_id", "lease_fence", "lease_token", "lease_expires_at", "executor_id"):
+            assert stored[key] == original_task[key], key
+        assert not case.failures and not case.cancels and not case.writes
+        claimed.append("claimed")
+
+    monkeypatch.setattr(case.host, "claim_once", next_claim)
     _bounded_run(case.host, lambda: case.host.run(once=True))
     assert claimed == ["claimed"]
     assert len(calls) == 2 * generic_host._TERMINAL_RECOVERY_MAX_ATTEMPTS
     assert case.host.recovery_blocked[0]["path"] == str(root / "fail-request.json")
     assert "Runtime unavailable" in case.host.recovery_blocked[0]["reason"]
     assert case.service.task(case.task_id)["task"]["status"] == "running"
+
+    assert not case.failures and not case.cancels and not case.writes
+    stored = case.service.task(case.task_id)["task"]
+    for key in ("attempt_id", "lease_fence", "lease_token", "lease_expires_at", "executor_id"):
+        assert stored[key] == original_task[key], key
 
 
 @pytest.mark.parametrize("contents", ["{broken", "{}", "[]", '{"body": null}'])
