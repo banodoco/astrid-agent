@@ -771,7 +771,7 @@ models:
         backends:
           local:
             template: video/ltx2_3_t2v
-            template_hash: "sha256:bf19355cf7c9b17f78dfc2daa120b1e64ad3429ee97044098a4ef4c26cd49d36"
+            template_hash: "sha256:7d5201f83c21a5e3d0287099871c1e5305cc91fbf6931efcf5e11677acc8c342"
           cloud:
             endpoint: fal-ai/ltx-2.3/text-to-video/fast
       i2v:
@@ -794,7 +794,7 @@ models:
         backends:
           local:
             template: video/ltx2_3_i2v
-            template_hash: "sha256:a9041b2d23ab057778cd6b9f346193cff855d3761c32477644fed55e74824a49"
+            template_hash: "sha256:b4c03b1e3bd14ed3399eb8426af756c18057ea2dfae91ba1e1c7655b29a47560"
           cloud:
             endpoint: fal-ai/ltx-2.3/image-to-video/fast
             # When LoRAs are requested the backend routes to this quality
@@ -819,7 +819,7 @@ models:
         backends:
           local:
             template: video/ltx2_3_runexx_first_last_frame
-            template_hash: "sha256:159bc18555e969cf889279a57a0002b5b7aaf58de337037e6f590dd6da1958e1"
+            template_hash: "sha256:74019142182b684558178d0d1e8849df0f3d1887d2e03e1cc8dff5702682f1f4"
   # =========================================================================
   # ltx-2.3-pro — LTX-2.3 pro endpoints (cloud-only t2v + i2v)
   # =========================================================================
