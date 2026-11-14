@@ -4,7 +4,7 @@
   "platform": "linux-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "6b1fdf74695cf1a8da48ba726b2356ca671adb3a3e1ba26ee4f3ca34524d59c4"
+    "sha256": "2082dd60c49ba2136ffe02ee792b20b13a6160f464a1f098a5d9e45d254aded8"
   },
   "source_bindings": [
     {

@@ -799,7 +799,7 @@ models:
         backends:
           local:
             template: video/ltx2_3_i2v
-            template_hash: "sha256:9e7d3fe3bad9f59f9250810130c96ea3f17cc3126e627de22bc1b1515deebb68"
+            template_hash: "sha256:a9041b2d23ab057778cd6b9f346193cff855d3761c32477644fed55e74824a49"
           cloud:
             endpoint: fal-ai/ltx-2.3/image-to-video/fast
             # When LoRAs are requested the backend routes to this quality
@@ -1178,7 +1178,7 @@ models:
         backends:
           local:
             template: audio/hunyuan_video_foley
-            template_hash: "sha256:d31fc21886192c3c23565d6a54b2d8444e16e7d63948f5c906fdf35db6e7749e"
+            template_hash: "sha256:ce61d756a18c7ff5d46d5e6da8108d893e1c6f6e73a513443b9636a3c63f9aaa"
             param_map: {video_ref: video_ref, prompt: prompt, seed: seed}
             model_roles:
               foley: {node_class: HunyuanFoleyModelLoader, input: foley_checkpoint_name, binding: diffusion_model, names: ['hunyuanvideo_foley_xl.pth']}
