@@ -367,7 +367,10 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
            describe: Callable[..., Any] | None, input_fn: Callable[[str], str],
            deadline: str | None = None) -> int:
     """Disclose one saved-storage policy, then submit fresh per-claim authority."""
-    import sys
+    if "paid" not in consent_scopes and (as_json or not sys.stdin.isatty()):
+        message = "claim requires paid consent; review the policy and pass --consent paid"
+        print(json.dumps({"ok": False, "error": message}) if as_json else message)
+        return 2
 
     from astrid.core.generation.cli import _gpu_placement
     from astrid.packs.runpod.target_selection import PaidRunConsent, RunPodPreferences, _number
@@ -422,8 +425,6 @@ def _claim(*, gpu_types: list[str], datacenter: str | None, max_usd: float, max_
               ". Capacity polling creates no new pod charges. Automatic release only happens while the owning Astrid host is running.",
               file=sys.stderr)
         if "paid" not in consent_scopes:
-            if as_json or not sys.stdin.isatty() and input_fn is input:
-                raise ValueError("claim requires paid consent; review the policy and pass --consent paid")
             if input_fn("Claim this paid machine? [y/N]: ").strip().lower() not in {"y", "yes"}:
                 raise ValueError("claim cancelled; paid consent was not given")
         _assert_release_storage_reserve()
