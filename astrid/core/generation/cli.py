@@ -160,8 +160,12 @@ def _attached_workflow_endpoint(parsed: argparse.Namespace) -> str:
         return ''
     if not Path(parsed.workflow).expanduser().exists():
         return ''
-    from astrid.core.generation import placement as placements
-    return placements.resolve_placement(placements.request_from_selector(parsed.placement)).endpoint or ''
+    from astrid.core.generation import placement as placements, settings, targets
+    endpoint = placements.resolve_placement(placements.request_from_selector(parsed.placement)).endpoint or ''
+    try:  # loopback only, like `settings set placement`: nothing is sent to any other host
+        return targets.normalize_target({'endpoint': endpoint}).endpoint
+    except (targets.TargetConfigError, ValueError) as exc:
+        raise ValueError(settings.ATTACHED_REFUSAL) from exc
 
 
 def _json_inputs(path: str) -> dict[str, Any]:
@@ -310,6 +314,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     unpin.add_argument('kind', choices=('image', 'video', 'audio'))
     unpin.add_argument('mode')
     unpin.add_argument('--json', action='store_true')
+    command = sub.add_parser('scan', help='List the running loopback ComfyUI servers (read-only).')
+    command.add_argument('--ports', default='8188,8000', help='Comma-separated loopback ports to probe.')
+    command.add_argument('--json', action='store_true', help='Print JSON (the default; kept for symmetry).')
     command = sub.add_parser('settings', help='Edit the generation settings document as a file.')
     actions = command.add_subparsers(dest='settings_action', required=True)
     out = actions.add_parser('checkout', help='Write the settings document to a new file.')
@@ -380,6 +387,10 @@ def _defaults_text(payload):
         lines.append(f"{row['slot']}: {entry}  [{row['source']}: {row['origin']}]")
         for other in row['others']:
             lines.append(f"    also: {other['pack']}/{other['entry']} (priority {other['priority']})")
+    if 'restore' in payload:
+        previous = payload.get('previous')
+        was = f"{previous['pack']}/{previous['entry']}" if previous else 'none'
+        lines.append(f"Previous pin: {was}; restore: {payload['restore']}")
     return '\n'.join(lines)
 
 
@@ -570,6 +581,9 @@ def _main(argv: list[str]) -> int:
         return _targets_command(parsed)
     if parsed.modality == 'defaults':
         return _defaults_command(parsed)
+    if parsed.modality == 'scan':
+        from astrid.packs.vibecomfy.local import main as scan_main
+        return scan_main(['scan', '--ports', parsed.ports])
     if parsed.modality == 'settings':
         return _settings_command(parsed)
     if parsed.modality == 'launch':

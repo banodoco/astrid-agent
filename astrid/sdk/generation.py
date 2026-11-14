@@ -1154,8 +1154,10 @@ class GenerationFacade:
     def set_default(self, kind, mode, entry, *, pack=None, client=None):
         """Pin ``entry`` as the default for ``kind``/``mode``; refuses an entry that cannot fill the slot."""
         from astrid.core.generation import defaults as generation_defaults
-        generation_defaults.set_default(kind, mode, entry, pack=pack, client=client)
-        return generation_defaults.listing(client)
+        _, previous = generation_defaults.set_default_reporting(kind, mode, entry, pack=pack, client=client)
+        return {**generation_defaults.listing(client), "previous": previous,
+                "restore": generation_defaults.restore_command(kind, mode, previous,
+                                                                generation_defaults.known_entries())}
 
     @_generation_boundary
     def unset_default(self, kind, mode, *, client=None):
