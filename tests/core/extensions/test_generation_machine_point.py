@@ -122,6 +122,23 @@ def test_the_test_machine_runs_a_job_through_the_same_contract(registry, tmp_pat
     assert '"current": 2' in (tmp_path / ".astrid-progress.json").read_text()
 
 
+def test_machine_poll_backoff_reaches_default_cap(tmp_path) -> None:
+    machine = RentedDirMachine(polls_before_exit=7)
+    sleeps = []
+    run_on_machine(machine, _job(tmp_path), destination=tmp_path / "outputs",
+                   cancelled=lambda: False, sleep=sleeps.append)
+    assert sleeps == [1.0, 1.5, 2.25, 3.375, 5.0, 5.0]
+    assert len([event for event in machine.events if event[0] == "poll"]) == 7
+
+
+def test_machine_poll_backoff_respects_subsecond_cap(tmp_path) -> None:
+    machine = RentedDirMachine(polls_before_exit=7)
+    sleeps = []
+    run_on_machine(machine, _job(tmp_path), destination=tmp_path / "outputs",
+                   cancelled=lambda: False, poll_seconds=0.05, sleep=sleeps.append)
+    assert sleeps == [0.05] * 6
+
+
 def test_machine_claim_can_receive_the_existing_cancel_callback(tmp_path) -> None:
     received = []
 
