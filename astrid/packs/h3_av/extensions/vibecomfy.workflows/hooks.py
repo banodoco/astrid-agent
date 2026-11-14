@@ -86,6 +86,8 @@ def _plain_request(inputs: Mapping[str, Any], files: Mapping[str, Any], facts: A
         return ({**base, "operation": "generate", "output": {"duration": frames / 24},
                  "changes": {"video": [], "audio": []},
                  "references": [{"asset": "image_ref", "purpose": "appearance"}]}, {"image_ref": str(image)})
+    if (inputs or {}).get("frames") is not None:
+        raise ValueError("h3 frames is only supported with image_ref; video_ref uses its full source length")
     duration = int(facts.measure_source_av(video)["video_frames"]) / 24
     return ({**base, "operation": "edit", "source": {"asset": "video_ref", "range": [0.0, duration]},
              "output": {"duration": duration},
