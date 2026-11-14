@@ -150,11 +150,16 @@ exists). Undo with `settings unset placement`:
 
 **First image.** Read the entry for slot `image.t2i` from `defaults`. If its
 models are missing on their ComfyUI, show the plan (writes nothing). It lists
-files, sizes, folder and total. On the person's one yes, rerun with the plan's
-digest; this is the only write setup makes to their ComfyUI:
+files, sizes, folder and total:
 
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL
+```
+
+Stop and ask for the person's one yes. On the person's one yes, rerun with the
+plan's digest; this is the only write setup makes to their ComfyUI:
+
+```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL --apply PLAN_SHA256
 ```
 

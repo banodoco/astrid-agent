@@ -610,3 +610,11 @@ def test_setup_skill_placement_commands_run_against_a_fake_store(
     assert generation_cli.main(unset_argv) == 0
     capsys.readouterr()
     assert not settings.read().content["placement"]  # empty: the built-in default applies again
+
+
+def test_setup_skill_fetch_models_plan_and_apply_are_in_separate_blocks():
+    markdown = _SETUP.read_text()
+    for block in re.findall(r"```[^\n]*\n(.*?)\n```", markdown, re.S):
+        lines = [line for line in block.splitlines() if "generate fetch-models" in line]
+        assert not (any("--apply" in line for line in lines)
+                    and any("--apply" not in line for line in lines)), block
