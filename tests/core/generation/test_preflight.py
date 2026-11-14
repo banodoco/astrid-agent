@@ -27,6 +27,14 @@ def test_catalog_qualification_follows_matrix_and_input_validation(backend, monk
     valid = {'prompt': 'a boat', 'image_ref': 'start.png'}
     with pytest.raises(CapabilityValidationError, match='Available backends'):
         validate_generation_request(registry, model='wan-2.2', mode='i2v', execution='invalid', inputs=valid)
+    if backend == 'local':
+        # 2616bc3cc removed the unqualified local Wan i2v route from the catalog: local is refused
+        # as an undeclared backend, before input checks or qualification, naming what remains.
+        for inputs in (valid, {'prompt': 'boat'}):
+            with pytest.raises(CapabilityValidationError,
+                               match=r"Execution 'local' is not available .*Available backends: cloud"):
+                validate_generation_request(registry, model='wan-2.2', mode='i2v', execution=backend, inputs=inputs)
+        return
     with pytest.raises(CapabilityMissingInputError, match='image_ref'):
         validate_generation_request(registry, model='wan-2.2', mode='i2v', execution=backend, inputs={'prompt': 'boat'})
     with pytest.raises(AstridError) as caught:
@@ -167,11 +175,13 @@ def test_typed_local_generation_rejects_before_invoke_and_output_staging(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # c5f05bcdf: execution="local" resolves placement "auto" onto the one ComfyUI target path,
+    # whose readiness asks for the registered managed engine (not the legacy vibecomfy import).
     import astrid
     import astrid.sdk as sdk
     from astrid.core.generation import preflight
 
-    monkeypatch.setattr(preflight, "_module_available", lambda _name: False)
+    monkeypatch.setattr(preflight, "_registered_managed_engine", lambda: None)
     invoked = False
 
     def unexpected_invoke(*_args: Any, **_kwargs: Any) -> Any:
@@ -181,7 +191,8 @@ def test_typed_local_generation_rejects_before_invoke_and_output_staging(
 
     monkeypatch.setattr(sdk, "invoke", unexpected_invoke)
     out = tmp_path / "out"
-    with pytest.raises(astrid.CapabilityPreconditionError, match="vibecomfy"):
+    with pytest.raises(preflight.GenerationReadinessError,
+                       match="no managed engine is installed or registered") as caught:
         astrid.generate.image(
             model="z-image",
             mode="t2i",
@@ -191,38 +202,31 @@ def test_typed_local_generation_rejects_before_invoke_and_output_staging(
             prompt="a red paper boat",
         )
 
+    assert caught.value.code == "engine_not_found"
     assert invoked is False
     assert not out.exists()
 
 
-def test_typed_local_generation_admits_when_structural_runtime_is_ready(
+def test_typed_local_generation_returns_success_from_target(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # c5f05bcdf routes typed local requests through the ComfyUI target boundary.
+    # A successful target result must return through the public facade.
     import astrid
     import astrid.sdk as sdk
-    from astrid.core.generation import GENERATION_RESULT_KEY, preflight
+    import astrid.sdk.generation as generation
     from astrid.core.generation.backends.base import GenerationResult
 
-    monkeypatch.setattr(preflight, "_module_available", lambda _name: True)
-    monkeypatch.setattr(preflight.shutil, "which", lambda _name: None)
-    invoked = False
+    monkeypatch.setattr(sdk, "invoke", lambda *_a, **_k: pytest.fail("the target path never uses SDK invoke"))
 
-    def fake_invoke(capability_id: str, **_kwargs: Any) -> Any:
-        nonlocal invoked
-        invoked = True
-        raw = GenerationResult(run_dir=tmp_path).to_dict()
-        return astrid.InvocationResult(
-            capability_id=capability_id,
-            capability_type="executor",
-            native_kind="built_in",
-            ok=True,
-            raw_result={
-                "payload": {GENERATION_RESULT_KEY: raw, "returncode": 0},
-            },
-        )
+    admitted = []
 
-    monkeypatch.setattr(sdk, "invoke", fake_invoke)
+    def generate_on_target(_self: Any, **kwargs: Any) -> GenerationResult:
+        admitted.append((kwargs["model"], kwargs["mode"], kwargs["placement"], kwargs["execution"]))
+        return GenerationResult(run_dir=tmp_path)
+
+    monkeypatch.setattr(generation.GenerationFacade, "_generate_on_target", generate_on_target)
     result = astrid.generate.image(
         model="z-image",
         mode="t2i",
@@ -233,7 +237,7 @@ def test_typed_local_generation_admits_when_structural_runtime_is_ready(
     )
 
     assert result.ok is True
-    assert invoked is True
+    assert admitted == [("z-image", "t2i", "auto", "local")]
 
 
 @pytest.mark.parametrize("dry_run", [True, False])

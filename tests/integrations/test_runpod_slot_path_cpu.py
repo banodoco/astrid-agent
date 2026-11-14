@@ -196,7 +196,7 @@ def _managed_local_engine(provider, tmp_path, monkeypatch):
     root = str(tmp_path / "managed" / "engines" / "comfyui")
     receipt = provider._install_receipt("comfyui", root)
     path = Path(root) / ".astrid-engine" / "install.json"
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, mode=0o700)  # the installer keeps .astrid-engine private to its owner
     path.write_text(_json.dumps(receipt))
     record_engine_root("comfyui", root)
     provider.comfy.installed_files = lambda: files
