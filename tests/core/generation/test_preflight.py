@@ -27,6 +27,14 @@ def test_catalog_qualification_follows_matrix_and_input_validation(backend, monk
     valid = {'prompt': 'a boat', 'image_ref': 'start.png'}
     with pytest.raises(CapabilityValidationError, match='Available backends'):
         validate_generation_request(registry, model='wan-2.2', mode='i2v', execution='invalid', inputs=valid)
+    if backend == 'local':
+        # 2616bc3cc removed the unqualified local Wan i2v route from the catalog: local is refused
+        # as an undeclared backend, before input checks or qualification, naming what remains.
+        for inputs in (valid, {'prompt': 'boat'}):
+            with pytest.raises(CapabilityValidationError,
+                               match=r"Execution 'local' is not available .*Available backends: cloud"):
+                validate_generation_request(registry, model='wan-2.2', mode='i2v', execution=backend, inputs=inputs)
+        return
     with pytest.raises(CapabilityMissingInputError, match='image_ref'):
         validate_generation_request(registry, model='wan-2.2', mode='i2v', execution=backend, inputs={'prompt': 'boat'})
     with pytest.raises(AstridError) as caught:
