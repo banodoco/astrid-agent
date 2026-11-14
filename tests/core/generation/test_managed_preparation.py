@@ -625,9 +625,8 @@ def fetch_volume(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, 'run', quota)
 
     from contextlib import nullcontext
-    from astrid.core.generation import engine_runner, managed_preparation
+    from astrid.core.generation import engine_runner, entries, managed_preparation
     from astrid.core.generation.engine_recipe import load_recipe
-    from astrid.packs.vibecomfy.actions.run import run as run_action
     from tests.core.generation.test_run_local import mod
 
     # Installation custody is already proven by the existing installation tests.
@@ -658,7 +657,7 @@ def fetch_volume(tmp_path, monkeypatch):
     commands = SimpleNamespace(nodes_restore=lambda _nodes: None,
         fetch=lambda _rows: prep._command(['fetch', str(canonical)]),
         prepare_deps_sync=lambda: None, doctor=lambda: None)
-    monkeypatch.setattr(run_action, '_engine_for', lambda _body: mod.ComfyUIEngine(commands))
+    monkeypatch.setattr(entries, 'engine_table', lambda: {'comfyui': mod.ComfyUIEngine(commands)})
     source = tmp_path / 'workflow.json'
     source.write_text('{}')
 
