@@ -109,3 +109,21 @@ def test_no_project_gives_no_open_url(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(mcp_server, '_run', _mcp_run(_completed_task().replace('completed', 'running')))
     running = mcp_server.call_tool(_tools()['tasks_show'], {'project': PROJECT, 'task_id': 'task-1'})
     assert 'open_url' not in running['structuredContent']['data']
+
+
+def test_mcp_admission_without_a_project_argument_names_the_selected_project(monkeypatch, capsys):
+    # Most agents pass no project: MCP runs the CLI child, which must name the Runtime's selection.
+    selected = SimpleNamespace(ok=True, error=None, data={'project': {'project_id': PROJECT}})
+    client = SimpleNamespace(projects=SimpleNamespace(current=lambda: selected))
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
+        image=lambda **kwargs: SimpleNamespace(ok=True, to_dict=lambda: {'kernel_task_id': 'task-1'})))
+    monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(client))
+    assert cli.main(['image', 'portrait', '--placement', 'local', '--no-wait', '--json']) == 0
+    child_stdout = capsys.readouterr().out
+
+    # The MCP side runs that child and returns its output; the arguments name no project.
+    monkeypatch.setattr(mcp_server, '_run', _mcp_run(child_stdout))
+    admitted = mcp_server.call_tool(_tools()['generate_image'], {'prompt': 'portrait'})
+
+    assert admitted['structuredContent']['open_url'] == EXPECTED
+    assert admitted['structuredContent']['kernel_task_id'] == 'task-1'
