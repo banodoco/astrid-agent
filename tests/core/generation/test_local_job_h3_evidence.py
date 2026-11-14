@@ -162,7 +162,7 @@ def test_preparation_timeout_says_rerun_to_resume_and_still_drains(tmp_path, mon
         local_job.run_owned_action(workflow, tmp_path / "out", task_identity="task", attempt_identity="attempt",
                                    align="align")
     error = caught.value
-    assert "rerun to resume the download" in generation_error(error).to_envelope()["issues"][0]["message"]
+    assert "rerun to retry preparation; completed model files are kept and verified; interrupted models download again from the start" in generation_error(error).to_envelope()["issues"][0]["message"]
     assert error is timed_out
     assert error.code == "deadline_exceeded" and error.retryable
     assert error.step_id == "models" and error.recovery_handle == "download-prefix"
@@ -186,9 +186,9 @@ def test_cold_download_timeout_receipt_tells_user_to_rerun():
     facts = {"failure": RuntimeError("private pod message"), "stage": "fetch", "lease": lease, "run": run}
     receipt = build_receipt(facts, job=SimpleNamespace(task_id="task-h3"), machine={}, timing=None)
     assert receipt["stage"] == "model_download"
-    assert "rerun to resume the download" in receipt["message"]
+    assert "rerun to retry preparation; completed model files are kept and verified; interrupted models download again from the start" in receipt["message"]
     assert "private pod message" not in receipt["message"]
     run.progress = [{"phase": "run"}]
     receipt = build_receipt(facts, job=SimpleNamespace(task_id="task-h3"), machine={}, timing=None)
     assert receipt["stage"] == "execution"
-    assert "rerun to resume the download" not in receipt["message"]
+    assert "rerun to retry preparation; completed model files are kept and verified; interrupted models download again from the start" not in receipt["message"]

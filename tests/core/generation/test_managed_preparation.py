@@ -578,3 +578,479 @@ def test_managed_node_lock_refuses_a_recipe_patch_at_another_commit(tmp_path):
     with pytest.raises(IntegrityError, match='ComfyUI-QwenTTS'):
         _write_managed_nodes_lock(tmp_path / 'custom_nodes.lock',
                                   [{'repo': source.pin.repository, 'commit': '0' * 40}], recipe)
+
+
+@pytest.fixture
+def fetch_volume(tmp_path, monkeypatch):
+    """Real preparation + engine alignment on a fake volume; no native download."""
+    import os
+    import subprocess
+
+    mount = tmp_path / 'volume'
+    models = mount / 'engine/models'
+    (models / 'checkpoints').mkdir(parents=True)
+    have = models / 'checkpoints/have.bin'
+    have.write_bytes(b'have')
+    rows = [
+        {'name': 'have.bin', 'subdir': 'checkpoints', 'size': 4,
+         'sha256': hashlib.sha256(b'have').hexdigest()},
+        {'name': 'need.bin', 'subdir': 'checkpoints', 'size': 9,
+         'sha256': hashlib.sha256(b'need-more').hexdigest()},
+    ]
+    manifest = {'models_root': str(models), 'models': rows}
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep.mode = 'align'
+    prep.deadline = time.monotonic() + 20
+    prep.cancelled = lambda: False
+    native, quota_calls = [], []
+    prep._native = lambda *args, **kwargs: native.append(kwargs['step'])
+    original_read = Path.read_text
+    device = mount.stat().st_dev
+    mountinfo = f'40 1 {os.major(device)}:{os.minor(device)} / {mount} rw - fuse.mfs mfs#host:9421 rw\n'
+    monkeypatch.setattr(Path, 'read_text', lambda path, *a, **kw:
+        state.mountinfo if str(path) == '/proc/self/mountinfo' else original_read(path, *a, **kw))
+    state = SimpleNamespace(free=10, fs_free=10**12, unavailable=False,
+                            fs_unavailable=False, query_failure=False, mountinfo=mountinfo,
+                            transform=lambda text, _path: text)
+
+    def filesystem_space(_path):
+        if state.fs_unavailable:
+            raise OSError('PRIVATE_PROVIDER_BODY')
+        return SimpleNamespace(f_bavail=state.fs_free, f_frsize=1, f_blocks=10**15)
+
+    monkeypatch.setattr(os, 'statvfs', filesystem_space)
+
+    def quota(argv, **kwargs):
+        quota_calls.append(argv)
+        if state.unavailable:
+            raise FileNotFoundError('PRIVATE_PROVIDER_BODY')
+        if state.query_failure:
+            return SimpleNamespace(returncode=1, stdout='PRIVATE_PROVIDER_BODY', stderr='PRIVATE_PROVIDER_BODY')
+        text = ('quota:\nsoft quota grace period: default\n'
+                '          | current value | soft quota | percent | hard quota | percent |\n'
+                ' inodes   | 10 | - | - | - | - |\n'
+                f' length   | 190 | - | - | {190 + state.free} | 95.00 |\n'
+                ' size     | 200 | - | - | - | - |\n'
+                ' realsize | 400 | - | - | - | - |\n')
+        return SimpleNamespace(returncode=0, stdout=state.transform(text, argv[-1]),
+                               stderr='PRIVATE_PROVIDER_BODY')
+
+    monkeypatch.setattr(subprocess, 'run', quota)
+
+    from contextlib import nullcontext
+    from astrid.core.generation import engine_runner, entries, managed_preparation
+    from astrid.core.generation.engine_recipe import load_recipe
+    from tests.core.generation.test_run_local import mod
+
+    # Installation custody is already proven by the existing installation tests.
+    # Keep the actual _prepare -> engine.align -> managed _command fetch path.
+    prep.root = str(tmp_path / 'install')
+    prep.task = 'task-storage'
+    prep.logs_root = tmp_path / 'out'
+    prep.logs_root.mkdir()
+    prep.scratch = tmp_path / 'scratch'
+    prep.device = prep.visibility = None
+    prep.recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    prep.adapter = SimpleNamespace(local_install_lock=lambda *a, **kw: nullcontext())
+    prep.context = SimpleNamespace(read_json=lambda *a, **kw: {})
+    prep._guard_runtime = lambda *a, **kw: None
+    receipt = SimpleNamespace(status='installed', requirements_locks={}, source_commits={})
+    runner = SimpleNamespace(helper_sha256='a' * 64, locks={}, commits={},
+                             helper=lambda _op: {'helper_sha256': 'a' * 64})
+    monkeypatch.setattr(engine_runner, '_parse_receipt', lambda *a: receipt)
+    monkeypatch.setattr(engine_runner, 'plan_install', lambda *a, **kw: None)
+    monkeypatch.setattr(engine_runner, 'plan_from_receipt', lambda *a, **kw: SimpleNamespace(steps=[]))
+    monkeypatch.setattr(engine_runner, 'require_current_receipt', lambda *a: None)
+    monkeypatch.setattr(engine_runner, '_Runner', lambda *a, **kw: runner)
+    monkeypatch.setattr(managed_preparation, 'configured_models_root', lambda **kw: str(models))
+    canonical = prep.scratch / 'canonical/workflow.py'
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text('# canonical CPU fixture')
+    monkeypatch.setattr(managed_preparation, 'judge_declarations', lambda *a: (manifest, 'scratchpad'))
+    commands = SimpleNamespace(nodes_restore=lambda _nodes: None,
+        fetch=lambda _rows: prep._command(['fetch', str(canonical)]),
+        prepare_deps_sync=lambda: None, doctor=lambda: None)
+    monkeypatch.setattr(entries, 'engine_table', lambda: {'comfyui': mod.ComfyUIEngine(commands)})
+    source = tmp_path / 'workflow.json'
+    source.write_text('{}')
+
+    class AlignmentComplete(Exception):
+        pass
+
+    def alignment_complete(*_args):
+        raise AlignmentComplete
+
+    prep._verify_alignment = alignment_complete
+
+    def fetch():
+        try:
+            prep._prepare(source, execution_identity='execution', inputs={},
+                          canonical_workflow=None, input_digests={})
+        except AlignmentComplete:
+            pass  # Never start an engine in a CPU storage test.
+
+    return SimpleNamespace(prep=prep, fetch=fetch, models=models, have=have, rows=rows,
+                           state=state, native=native, quota_calls=quota_calls)
+
+
+def test_fetch_storage_preflight_refuses_before_any_download(fetch_volume):
+    c = fetch_volume
+    c.have.unlink()
+    with pytest.raises(IntegrityError) as caught:
+        c.fetch()
+    assert caught.value.code == 'insufficient_storage'
+    assert caught.value.details == {'needed_bytes': 13, 'free_bytes': 10}
+    assert str(caught.value) == ('Model download refused (reason=insufficient_storage): '
+        '13 bytes needed, 10 bytes free; use a larger volume; '
+        'see `astrid tasks logs task-storage` (storage.inventory).')
+    assert c.native == []
+
+
+def test_fetch_storage_preflight_enough_space_proceeds(fetch_volume):
+    c = fetch_volume
+    c.have.unlink()
+    c.state.free = 13
+    c.fetch()
+    assert c.quota_calls, 'fetch bypassed the quota check'
+    assert all(argv[:2] == ['mfsgetquota', '-n'] for argv in c.quota_calls)
+    assert c.native == ['fetch']
+
+
+def test_fetch_storage_preflight_skips_already_verified_models(fetch_volume):
+    c = fetch_volume
+    c.state.free = 9  # fits only the missing model, not the whole 13-byte lock
+    c.fetch()
+    assert c.quota_calls, 'fetch bypassed verified-present accounting'
+    assert c.native == ['fetch']
+    assert c.have.read_bytes() == b'have'
+
+
+def test_fetch_storage_preflight_counts_same_size_bad_digest(fetch_volume):
+    c = fetch_volume
+    c.have.write_bytes(b'fake')
+    c.state.free = 9
+    with pytest.raises(IntegrityError) as caught:
+        c.fetch()
+    assert caught.value.details == {'needed_bytes': 13, 'free_bytes': 9}
+    assert c.native == []
+
+
+def test_fetch_storage_preflight_does_not_credit_unverified_partials(fetch_volume):
+    c = fetch_volume
+    (c.models / 'checkpoints/need.bin.part').write_bytes(b'need-mor')
+    c.state.free = 8
+    with pytest.raises(IntegrityError) as caught:
+        c.fetch()
+    assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
+    assert c.native == []
+
+
+@pytest.mark.parametrize('free,refused', [(8, True), (9, False)], ids=['below-full-size', 'fits-full-size'])
+def test_fetch_storage_preflight_stale_part_requires_full_size(fetch_volume, free, refused):
+    c = fetch_volume
+    part = c.models / 'checkpoints/need.bin.part'
+    part.write_bytes(b'need-mor')  # Eight of nine bytes, ignored by native VibeComfy fetch.
+    c.state.free = free
+    if refused:
+        with pytest.raises(IntegrityError) as caught:
+            c.fetch()
+        assert caught.value.code == 'insufficient_storage'
+        assert caught.value.details == {'needed_bytes': 9, 'free_bytes': free}
+        assert c.native == []
+    else:
+        c.fetch()
+        assert c.native == ['fetch']
+    assert c.quota_calls, 'fetch bypassed the measured capacity check'
+    assert part.read_bytes() == b'need-mor'
+    assert c.have.read_bytes() == b'have'
+
+
+def test_fetch_storage_preflight_also_respects_filesystem_free_space(fetch_volume):
+    c = fetch_volume
+    c.state.fs_free = 8
+    with pytest.raises(IntegrityError) as caught:
+        c.fetch()
+    assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
+    assert c.native == []
+
+
+def _assert_storage_warning(c):
+    from astrid.core._shared import run_logs
+
+    collected = run_logs.collect(c.prep.logs_root)
+    warning = next(row for row in collected if row['name'] == 'preparation.storage.stderr')
+    assert warning['role'] == 'stderr'
+    text = (c.prep.logs_root / 'logs' / warning['file']).read_text()
+    assert text == 'storage capacity could not be measured; proceeding\n'
+    assert 'PRIVATE_PROVIDER_BODY' not in text
+
+
+def test_fetch_storage_preflight_falls_back_after_failed_quota_query(fetch_volume):
+    c = fetch_volume
+    c.state.query_failure = True
+    c.fetch()
+    assert c.native == ['fetch']
+    _assert_storage_warning(c)
+
+
+@pytest.mark.parametrize('kind,current', [('inodes', 10), ('size', 200), ('realsize', 400)])
+def test_fetch_storage_preflight_falls_back_for_unaccounted_quota_dimensions(fetch_volume, kind, current):
+    c = fetch_volume
+    c.state.transform = lambda text, _path: text.replace(
+        f'{kind:<8} | {current} | - | - | - | - |',
+        f'{kind:<8} | {current} | - | - | 1000 | 1.00 |')
+    c.fetch()
+    assert c.native == ['fetch']
+    _assert_storage_warning(c)
+
+
+def test_fetch_storage_preflight_respects_soft_limit_without_grace(fetch_volume):
+    c = fetch_volume
+    c.state.free = 810  # usage190, hard1000; only the soft limit has eight bytes left.
+    c.state.transform = lambda text, _path: text.replace(
+        'soft quota grace period: default', 'soft quota grace period: 0').replace(
+        'length   | 190 | - | - |', 'length   | 190 | 198 | 95.96 |')
+    c.fetch()
+    assert c.native == ['fetch']
+
+
+@pytest.mark.parametrize('hard,refused', [(1000, False), (198, True)])
+def test_fetch_storage_preflight_only_hard_quota_can_refuse(fetch_volume, hard, refused):
+    c = fetch_volume
+    c.state.free = hard - 190
+    c.state.transform = lambda text, _path: text.replace(
+        'soft quota grace period: default', 'soft quota grace period: 24h').replace(
+        'length   | 190 | - | - |', 'length   | 190 | 198 | 95.96 |')
+    if refused:
+        with pytest.raises(IntegrityError) as caught:
+            c.fetch()
+        assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
+        assert c.native == []
+    else:
+        c.fetch()
+        assert c.native == ['fetch']
+
+
+@pytest.mark.parametrize('first_size,refused', [(4, False), (5, True)])
+def test_fetch_storage_preflight_keeps_destination_quota_scopes(fetch_volume, first_size, refused):
+    c = fetch_volume
+    c.have.unlink()
+    first, second = c.models / 'first', c.models / 'second'
+    first.mkdir()
+    second.mkdir()
+    c.rows[0].update(subdir='first', size=first_size,
+                     sha256=hashlib.sha256(b'x' * first_size).hexdigest())
+    c.rows[1]['subdir'] = 'second'
+    c.state.free = 100
+    headroom = {str(first): 4, str(second): 9}
+    c.state.transform = lambda text, path: text.replace('| 290 |', f'| {190 + headroom.get(path, 100)} |')
+    if refused:
+        with pytest.raises(IntegrityError) as caught:
+            c.fetch()
+        assert caught.value.details == {'needed_bytes': 5, 'free_bytes': 4}
+        assert '5 bytes needed, 4 bytes free' in str(caught.value)
+        assert c.native == []
+    else:
+        c.fetch()
+        assert c.native == ['fetch']
+    assert str(first) in {argv[-1] for argv in c.quota_calls}
+    if not refused:
+        assert str(second) in {argv[-1] for argv in c.quota_calls}
+
+
+@pytest.mark.parametrize('first_free,second_free', [(5, 10), (4, 9), (12, 12), (4, None)])
+def test_fetch_storage_preflight_checks_each_directory_independently(fetch_volume, monkeypatch, first_free, second_free):
+    import os
+
+    c = fetch_volume
+    c.have.unlink()
+    first, second = c.models / 'first', c.models / 'second'
+    first.mkdir()
+    second.mkdir()
+    assert first.stat().st_dev == second.stat().st_dev  # XFS projects may share a device.
+    c.rows[0]['subdir'], c.rows[1]['subdir'] = 'first', 'second'
+    c.state.mountinfo = c.state.mountinfo.replace('fuse.mfs mfs#host:9421', 'ext4 /dev/fake')
+    def space(path):
+        value = {first: first_free, second: second_free}.get(path, 1000)
+        if value is None:
+            raise OSError('PRIVATE_PROVIDER_BODY')
+        return SimpleNamespace(f_bavail=value, f_frsize=1, f_blocks=1000)
+
+    monkeypatch.setattr(os, 'statvfs', space)
+    c.fetch()
+    assert c.native == ['fetch']
+    if second_free is None:
+        _assert_storage_warning(c)
+
+
+def test_fetch_storage_preflight_does_not_sum_different_directories_under_shared_quota(fetch_volume):
+    c = fetch_volume
+    c.have.unlink()
+    first, second = c.models / 'first', c.models / 'second'
+    first.mkdir()
+    second.mkdir()
+    c.rows[0]['subdir'], c.rows[1]['subdir'] = 'first', 'second'
+    c.state.free = 100
+    c.state.transform = lambda text, path: text.replace('| 290 |', '| 202 |') if path == str(c.models) else text
+    c.fetch()
+    assert c.native == ['fetch']
+
+
+def test_fetch_storage_preflight_sums_only_one_destination_directory(fetch_volume):
+    c = fetch_volume
+    c.have.unlink()
+    c.state.free = 12
+    with pytest.raises(IntegrityError) as caught:
+        c.fetch()
+    assert caught.value.details == {'needed_bytes': 13, 'free_bytes': 12}
+    assert c.native == []
+
+
+@pytest.mark.parametrize('same_directory,refused', [(False, False), (True, True)])
+def test_fetch_storage_preflight_keeps_missing_intended_directories_distinct(fetch_volume, same_directory, refused):
+    c = fetch_volume
+    c.have.unlink()
+    c.rows[0]['subdir'] = 'missing/first'
+    c.rows[1]['subdir'] = 'missing/first' if same_directory else 'missing/second'
+    c.state.free = 12
+    if refused:
+        with pytest.raises(IntegrityError) as caught:
+            c.fetch()
+        assert caught.value.details == {'needed_bytes': 13, 'free_bytes': 12}
+        assert c.native == []
+    else:
+        c.fetch()
+        assert c.native == ['fetch']
+    assert not (c.models / 'missing').exists()
+
+
+def test_fetch_storage_preflight_checks_destination_ancestor_quota(fetch_volume):
+    c = fetch_volume
+    c.state.free = 100
+    c.state.transform = lambda text, path: text.replace('| 290 |', '| 198 |') \
+        if path == str(c.models / 'checkpoints') else text
+    with pytest.raises(IntegrityError) as caught:
+        c.fetch()
+    assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
+    assert c.native == []
+
+
+def test_fetch_storage_preflight_falls_back_after_malformed_quota_output(fetch_volume):
+    c = fetch_volume
+    c.state.transform = lambda _text, _path: 'PRIVATE_PROVIDER_BODY'
+    c.fetch()
+    assert c.native == ['fetch']
+    _assert_storage_warning(c)
+
+
+def test_fetch_storage_preflight_no_quota_tool_with_ample_statvfs_proceeds_and_logs(fetch_volume):
+    c = fetch_volume
+    c.state.unavailable = True
+    c.fetch()
+    assert c.native == ['fetch']
+    _assert_storage_warning(c)
+
+
+def test_fetch_storage_preflight_no_quota_tool_with_low_statvfs_refuses(fetch_volume):
+    c = fetch_volume
+    c.state.unavailable = True
+    c.state.fs_free = 8
+    with pytest.raises(IntegrityError) as caught:
+        c.fetch()
+    assert caught.value.code == 'insufficient_storage'
+    assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
+    assert c.native == []
+    names = {row['name'] for row in json.loads((c.prep.logs_root / 'logs.json').read_text())['logs']}
+    assert 'storage.inventory' in names
+    assert 'preparation.storage.stderr' not in names
+
+
+def test_fetch_storage_preflight_both_measurements_unavailable_proceeds_and_logs(fetch_volume):
+    c = fetch_volume
+    c.state.unavailable = c.state.fs_unavailable = True
+    c.fetch()
+    assert c.native == ['fetch']
+    _assert_storage_warning(c)
+
+
+def test_fetch_storage_preflight_other_network_filesystem_uses_statvfs(fetch_volume):
+    c = fetch_volume
+    c.state.mountinfo = c.state.mountinfo.replace('fuse.mfs mfs#host:9421', 'nfs server:/volume')
+    c.fetch()
+    assert c.native == ['fetch'] and c.quota_calls == []
+    _assert_storage_warning(c)
+
+
+def test_fetch_storage_preflight_valid_quota_survives_unavailable_statvfs(fetch_volume):
+    c = fetch_volume
+    c.state.fs_unavailable = True
+    c.fetch()
+    assert c.native == ['fetch'] and c.quota_calls
+    assert not (c.prep.logs_root / 'logs.json').exists()
+
+
+@pytest.fixture
+def inventory_pod(fetch_volume, monkeypatch):
+    import os
+
+    c = fetch_volume
+    c.state.fs_free = 8
+    c.listings, c.listing_failed = [], False
+    original = os.scandir
+
+    def listing(path):
+        c.listings.append(path)
+        if c.listing_failed:
+            raise OSError('PRIVATE_PROVIDER_BODY')
+        return original(path)
+
+    monkeypatch.setattr(os, 'scandir', listing)
+    return c
+
+
+def _storage_inventory(c):
+    from astrid.core._shared import run_logs
+
+    row = next(row for row in run_logs.collect(c.prep.logs_root) if row['name'] == 'storage.inventory')
+    return (c.prep.logs_root / 'logs' / row['file']).read_text()
+
+
+def test_storage_refusal_declares_inventory_with_bounded_sorted_listing(inventory_pod):
+    c = inventory_pod
+    for i in range(1, 101):
+        with (c.models / f'model-{i:03}.bin').open('wb') as stream:
+            stream.truncate(2**30 + i)
+    with pytest.raises(IntegrityError) as caught:
+        c.fetch()
+    assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
+    text = _storage_inventory(c)
+    assert 'fuse.mfs mfs#host:9421' in text and 'statvfs: free_bytes=8' in text
+    assert '/model-100.bin' in text and '/model-040.bin\n' not in text
+    assert text.index('/model-100.bin') < text.index('/model-099.bin')
+    assert len(text.encode()) < 128 * 1024
+    assert 'see `astrid tasks logs task-storage` (storage.inventory)' in str(caught.value)
+    assert c.native == []
+
+
+def test_storage_refusal_failed_inventory_preserves_numbers_and_note(inventory_pod):
+    c = inventory_pod
+    c.listing_failed = True
+    with pytest.raises(IntegrityError) as caught:
+        c.fetch()
+    assert caught.value.code == 'insufficient_storage'
+    assert caught.value.details == {'needed_bytes': 9, 'free_bytes': 8}
+    assert 'incomplete' in _storage_inventory(c)
+    assert 'PRIVATE_PROVIDER_BODY' not in _storage_inventory(c)
+    assert c.native == []
+
+
+def test_storage_inventory_never_deletes_volume_content(inventory_pod):
+    c = inventory_pod
+    (c.models / 'retained.bin').write_bytes(b'retained version')
+    (c.models / 'checkpoints/need.bin.part').write_bytes(b'partial')
+    before = {str(p): p.read_bytes() for p in c.models.rglob('*') if p.is_file()}
+    with pytest.raises(IntegrityError):
+        c.fetch()
+    assert {str(p): p.read_bytes() for p in c.models.rglob('*') if p.is_file()} == before
+    assert c.models in c.listings
+    assert 'storage.inventory' in (c.prep.logs_root / 'logs.json').read_text()

@@ -2403,3 +2403,33 @@ def test_automatic_machine_release_runs_below_runtime_floor(machine_case, monkey
     assert receipt == {"operation_id": record["operation_id"], "pod_id": "pod-1",
                        "state": "cleanup_complete", "journal_path": str(c.host.selection.path)}
     assert c.deletes == ["pod-1"] and c.read() == saved
+
+
+@pytest.mark.parametrize('code,counts,message', [
+    ('insufficient_storage', {'needed_bytes': 13, 'free_bytes': 10},
+     'Model download refused (reason=insufficient_storage): '
+     '13 bytes needed, 10 bytes free; use a larger volume; '
+     'see `astrid tasks logs task-storage` (storage.inventory).'),
+    ('storage_capacity_unavailable', {},
+     'remote generation failed (exit 2; category=unknown; code=unknown)'),
+])
+def test_remote_storage_refusal_renders_only_bounded_capacity_facts(tmp_path, code, counts, message):
+    """Use the real remote failure consumer without a pod, lease timer or provider."""
+    from types import SimpleNamespace
+    from astrid.packs.runpod import failure_diagnostics as fd
+
+    frame = fd.MARK + json.dumps({'code': code, 'category': 'model', **counts}) + '\n'
+    ops = SimpleNamespace(job_poll=lambda _job: {'exit_code': 2},
+                          exec=lambda *_args: (0, frame, 'PRIVATE_PROVIDER_BODY'))
+    lease = SimpleNamespace(state=None, claim=SimpleNamespace(ops=ops))
+    run = SimpleNamespace(lease=lease, job_id='job', directory='/job', progress=[],
+                          remote_root='/run', scratch=tmp_path, task_id='task-storage')
+    machine = rm.RunPodMachine()
+    machine._require = lambda: SimpleNamespace(placement=None)
+    machine._checkpoint = lambda *_args: None
+    machine._fetch_failure_logs = lambda *_args: None
+    with pytest.raises(rm.MachineError) as caught:
+        machine._fetch(run, tmp_path / 'out')
+    assert str(caught.value) == message
+    assert caught.value.code == (code if code == 'insufficient_storage' else None)
+    assert getattr(caught.value, 'details', {}) == counts

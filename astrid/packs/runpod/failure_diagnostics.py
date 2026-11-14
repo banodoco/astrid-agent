@@ -30,6 +30,7 @@ CODES = {
     'endpoint_ownership': 'ownership', 'custody_unresolved': 'ownership',
     'target_unreachable': 'health', 'endpoint_unhealthy': 'health',
     'missing_model': 'model', 'download_failed': 'model', 'missing_node_pack': 'dependency',
+    'insufficient_storage': 'model',
     'deadline_exceeded': 'deadline', 'transport_failed': 'transport',
     'command_failed': 'execution', 'generation_failed': 'execution',
     'generation_route_unqualified': 'qualification',
@@ -59,7 +60,7 @@ CODES = {
     'comfy_rejected_nodes': 'execution',
 
 }
-FACTS = ('node_id', 'node_class', 'field', 'constraint', 'exception_type', 'oom')
+FACTS = ('node_id', 'node_class', 'field', 'constraint', 'exception_type', 'oom', 'needed_bytes', 'free_bytes')
 EXCEPTION_TYPES = frozenset({
     'OutOfMemoryError', 'RuntimeError', 'ValueError', 'KeyError', 'TypeError',
     'IndexError', 'FileNotFoundError', 'ModuleNotFoundError', 'ImportError',
@@ -118,6 +119,8 @@ def fact_allowlist(engine_id):
 
 
 def _safe_fact(key, value, node_ids=None, node_names=frozenset(), *, engine_id=None):
+    if key in {'needed_bytes', 'free_bytes'}:
+        return value if type(value) is int and 0 <= value < 2**63 else None
     if key == 'exception_type':
         return value if isinstance(value, str) and value in EXCEPTION_TYPES else None
     if key == 'oom':
