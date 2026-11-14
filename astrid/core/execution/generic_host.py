@@ -12525,8 +12525,14 @@ class GenericPackHost:
                     raise HostError("deadline terminalization was not accepted by Runtime") from exc
                 deadline_failed = state == "failed"
 
+        job_evidence = None
+
         def upload_log_outputs(output_root: Path) -> list[dict[str, Any]]:
             warnings = _terminal.setdefault("evidence_warnings", [])
+            from contextlib import suppress
+            with suppress(Exception):
+                if job_evidence is not None:
+                    job_evidence.finish()
             try:
                 logs = self._log_outputs(output_root, attempt=root, warnings=warnings)
                 task_epoch = task_data.get("runtime_epoch")
@@ -12560,8 +12566,9 @@ class GenericPackHost:
             if output_root is None:
                 error_key = "host_failure" if status == "failed" else "error"
                 result_value = {"status": status, error_key: error_value}
-                _terminal.update(pending_outputs=[], pending_result=result_value, pending_status=status)
-                return [], result_value
+                uploaded = upload_log_outputs(root / "outputs") if job_evidence is not None else []
+                _terminal.update(pending_outputs=uploaded, pending_result=result_value, pending_status=status)
+                return uploaded, result_value
             try:
                 values = dict(_terminal.get("inputs") or {})
                 values.update({"out": str(output_root), "run_root": str(root), "python_exec": sys.executable})
@@ -12635,10 +12642,11 @@ class GenericPackHost:
                         "outcomes": {"execution": {"status": status}},
                     }
                     result_value["host_failure" if status == "failed" else "error"] = error_value
+                    logs = upload_log_outputs(Path(output_root)) if job_evidence is not None else []
                     _terminal.update(
-                        pending_outputs=[], pending_result=result_value, pending_status=status
+                        pending_outputs=logs, pending_result=result_value, pending_status=status
                     )
-                    return [], result_value
+                    return logs, result_value
                 # Keep the attempt spool and expose why evidence could not be attached.
                 _terminal["evidence_pending"] = True
                 raise HostError("terminal evidence publication is pending Runtime recovery") from evidence_error
@@ -12824,7 +12832,17 @@ class GenericPackHost:
                 admitted_mode = _align_admission(task_data).get("align", "check")
                 engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
-                    scratch=root / "engine-preparation", device=local_device, logs_root=root)
+                    scratch=root / "engine-preparation", device=local_device, logs_root=_host_log_root(root))
+                from contextlib import suppress
+
+                from astrid.core.generation.engine_custody import declare_engine_log
+                from astrid.core.generation.job_evidence import JobEvidence
+                with suppress(Exception):
+                    job_evidence = JobEvidence(_host_log_root(root), engine_preparation)
+                    engine_preparation.evidence_start = job_evidence.begin
+                    engine_preparation.evidence_waiting = job_evidence.waiting
+                if job_evidence is None:
+                    declare_engine_log(_host_log_root(root), engine_preparation.root, engine_preparation.recipe.engine)
                 _terminal["machine"] = {**_local_machine({}), "placement": "managed",
                                          "id": engine_preparation.root,
                                          "device": engine_preparation.visibility if engine_preparation.visibility is not None else "auto"}
@@ -12850,9 +12868,6 @@ class GenericPackHost:
                     assert_managed_input_identity()
                     from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value
                     canonical = _canonical_bundle_value(loaded.resolved)
-                    from astrid.core.generation.engine_custody import declare_engine_log
-
-                    declare_engine_log(root, engine_preparation.root, engine_preparation.recipe.engine)
                     report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs,
                                                         canonical_workflow=canonical.workflow, input_digests=original_input_digests)
                     assert_managed_input_identity()
@@ -13085,6 +13100,10 @@ class GenericPackHost:
                 if assert_managed_input_identity is not None:
                     assert_managed_input_identity()
                 lifetime.begin_execution()
+                from contextlib import suppress
+                with suppress(Exception):
+                    if job_evidence is not None:
+                        job_evidence.start_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
                 if capability_id != "wan2gp.generate_video":
@@ -13195,7 +13214,10 @@ class GenericPackHost:
             finally:
                 # The outer run_task finally owns lease-pump shutdown and
                 # cleanup; this boundary only preserves child env cleanup.
-                pass
+                from contextlib import suppress
+                with suppress(Exception):
+                    if job_evidence is not None:
+                        job_evidence.start_collect()
             render_child_pending = False
             _terminal["output_root"] = output_root
             _terminal["payload"] = getattr(result, "payload", {}) or {}

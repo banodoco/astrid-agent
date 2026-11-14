@@ -1005,6 +1005,8 @@ def _run_and_settle(
                         else:
                             os.environ[key] = value
     except BaseException as error:
+        from astrid.core.generation.job_evidence import mark_job_collect
+        mark_job_collect()
         if settlement_attempt != "-" and not getattr(error, "_astrid_settlement_done", False):
             cast(_SettlementFailure, error)._astrid_settlement_done = True
             _settle_failed_attempt(output_root, workflow_path, source_snapshot,
@@ -1012,6 +1014,8 @@ def _run_and_settle(
                                    workflow_input_bindings, producer_context, error)
         raise
 
+    from astrid.core.generation.job_evidence import mark_job_collect
+    mark_job_collect()
     if production_result.managed_generation_result_path is not None:
         from astrid.core.generation.progress import write_progress
         write_progress("finalize")
