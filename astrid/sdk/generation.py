@@ -1280,10 +1280,14 @@ class GenerationFacade:
                     if isinstance(exc, CapabilityValidationError):
                         raise
                     if align == 'check' and 'not present locally' in str(exc):
+                        if target_client is not None and target_client.target.kind == 'attached':
+                            remedy = 'put the missing model files in their folders on your ComfyUI, then retry'
+                        else:
+                            remedy = (f"run: astrid generate align --apply --consent user_env"
+                                      f" --entry {identifier}")
                         exc = ValueError(
                             f"{exc}. Fix: pass --align trust to accept the workflow's declared models as present "
-                            f"on the target (unverified), or run: astrid generate align --apply --consent user_env"
-                            f" --entry {identifier}")
+                            f"on the target (unverified), or {remedy}")
                     raise generation_error(exc, entry={'id': identifier, 'engine': 'comfyui', 'mode': mode},
                         target=getattr(target_client, 'generation_target', None),
                         code='missing_dependency' if 'missing' in str(exc).lower() else 'input_rejected') from exc

@@ -163,6 +163,18 @@ def test_alternatives_are_declared_role_matches_that_compile_canonically(network
     undeclared = with_roles(entry, "undeclared", {})
     incomplete = with_roles(entry, "incomplete", {**spec.model_roles, "vae": replace(spec.model_roles["vae"], names=("missing.safetensors",))})
     client, requests = install_target(network, target_info(vaes=("ae.safetensors", EXACT_VAE) if failure == "ambiguous" else (EXACT_VAE,)))
+    # The attached server's own folder listing answers the failure-path lookup; it is recorded apart from /object_info.
+    folder_requests = []
+    served = network["handler"]
+    folders = {"diffusion_models": ["/srv/ComfyUI/models/diffusion_models"], "vae": ["/srv/ComfyUI/models/vae"]}
+
+    async def serve_folders(request):
+        if request.method == "GET" and request.path == "/internal/folder_paths":
+            folder_requests.append((request.method, request.path))
+            return web.json_response(folders)
+        return await served(request)
+
+    network["handler"] = serve_folders
     if failure == "ambiguous":
         # The requested entry accepts both names; the executable alternative
         # declares only the exact name it will bind.
@@ -173,8 +185,15 @@ def test_alternatives_are_declared_role_matches_that_compile_canonically(network
     assert raised.value.alternatives == ["works"]
     assert raised.value.as_dict()["code"] == "missing_model"
     assert raised.value.as_dict()["engine_code"] == "COMFY_MODEL_MISSING"
-    assert raised.value.readiness['fixes'][0]['argv'] == [
-        'astrid', 'generate', 'align', '--apply', '--consent', 'user_env', '--entry', 'wanted']
+    # P4.6: an attached target is never told to install into the managed engine
+    expected = {
+        "missing": [{"scope": "attached_target", "details": {"action":
+            "Put wanted.safetensors in /srv/ComfyUI/models/diffusion_models on your ComfyUI, then retry."}}],
+        "ambiguous": [{"scope": "attached_target", "details": {"action":
+            "Keep exactly one of ae.safetensors or FLUX1\\ae.safetensors in /srv/ComfyUI/models/vae on your ComfyUI and remove the others, then retry."}}],
+    }[failure]
+    assert raised.value.readiness['fixes'] == expected
+    assert folder_requests == [("GET", "/internal/folder_paths")]
     assert requests == [("GET", "/object_info")]
 
 
