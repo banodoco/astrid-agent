@@ -1,5 +1,6 @@
 import importlib.util
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from astrid.installer.outcome import SUCCESS, Outcome
@@ -12,6 +13,8 @@ FULL_UNIX_LINE = "curl -fsSL https://astrid.haus/install | sh -s -- --yes --auto
 FRESH_LABEL = "for a fresh install, or after the choices step only"
 BANNER_ENDING = "Confirm that astrid.haus shows Connected, then help me begin at https://astrid.haus."
 FENCE = re.compile(r"^```[^\n]*\n(.*?)^```", re.M | re.S)
+ISO_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z")
+DEADLINE_LITERAL = re.compile(r"--deadline[= ]+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z)")
 OS_LABEL = re.compile(r"\*\*(macOS or Linux|macOS|Linux|Windows)[^*]*:\*\*")
 OS_OF_LABEL = {"macOS or Linux": ["macOS", "Linux"], "macOS": ["macOS"], "Linux": ["Linux"], "Windows": ["Windows"]}
 DEFAULTS = (
@@ -183,12 +186,26 @@ def test_generation_commands_include_platform_launchers_and_paid_bounds():
     assert all_claims, "no `machines claim` line found in any guide"
     assert runpod_generates, "no `generate ... --placement runpod` line found in any guide"
     assert claims_by_guide.get(runpod_skill), "the RunPod skill shows no `machines claim` line"
+    now = datetime.now(timezone.utc)
+    deadline_now = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     for guide, claim in all_claims:
+        claim = [deadline_now if arg == "FUTURE_UTC_DEADLINE" else arg for arg in claim]
         flags = [arg.split("=", 1)[0] for arg in claim if arg.startswith("--")]
         assert {"--consent", "--max-usd", "--deadline", "--for"} <= set(flags), (guide.name, claim)
         parsed = _parser().parse_args(claim)
         assert parsed.consent == ["paid"], (guide.name, claim)
         assert parsed.max_usd > 0 and parsed.deadline and parsed.claim_for, (guide.name, claim)
+    # A literal deadline a day or more out goes stale and agents copy it; only placeholders may sit that far ahead.
+    horizon = now + timedelta(hours=24)
+    for guide in guides:
+        for block in FENCE.findall(guide.read_text(encoding="utf-8")):
+            for line in block.replace("\\\n", " ").splitlines():
+                stamps = DEADLINE_LITERAL.findall(line)
+                if "machines" in line and " claim" in line:
+                    stamps += ISO_UTC.findall(line)
+                for stamp in stamps:
+                    when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                    assert when <= horizon, (guide.name, stamp, line)
     for guide, generate in generates:
         assert not paid_flags.intersection(arg.split("=", 1)[0] for arg in generate), (guide.name, generate)
 
