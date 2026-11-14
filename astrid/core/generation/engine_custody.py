@@ -51,6 +51,8 @@ _SCHEMA = "astrid.engine-service.v1"
 _FRAME_LIMIT = 16 * 1024 * 1024
 _OUTPUT_LIMIT = 1024 * 1024
 _CLEANUP_SECONDS = 8.0
+_RELEASE_POLL_SECONDS = 0.25
+_RELEASE_POLL_LIMIT_SECONDS = 3.0
 _CAUSE_LIMIT = 600
 _CLEANUP_STAGES = {"terminate", "verify", "stdout_drain", "stderr_drain",
                    "stdout_close", "stderr_close", "drain"}
@@ -1423,8 +1425,8 @@ class _Supervisor:
             raise EndpointOwnershipError("live engine custody is required")
         engine = self.engine
         check = lambda: self.check(channel, deadline)
-        def request(path, payload=None, *, empty_ok=False):
-            return _get_json(self.recipe.start.port, path, 1024 * 1024, deadline, check,
+        def request(path, payload=None, *, empty_ok=False, request_deadline=deadline):
+            return _get_json(self.recipe.start.port, path, 1024 * 1024, request_deadline, check,
                              owned=engine, payload=payload, empty_ok=empty_ok)
         def vram(stats):
             devices = stats.get("devices")
@@ -1455,6 +1457,20 @@ class _Supervisor:
             unloaded = False
         after_stats = request("/system_stats")
         _, after = vram(after_stats)
+        # Release holds self.work; preparation RPCs wait behind it within their
+        # 10-second budget. Bound polling by both this limit and the deadline.
+        poll_deadline = min(deadline, time.monotonic() + _RELEASE_POLL_LIMIT_SECONDS)
+        while unloaded and after <= before:
+            remaining = poll_deadline - time.monotonic()
+            if remaining <= _RELEASE_POLL_SECONDS:
+                break
+            time.sleep(_RELEASE_POLL_SECONDS)
+            try:
+                sample = request("/system_stats", request_deadline=poll_deadline)
+            except DeadlineExceeded:
+                break
+            _, after = vram(sample)
+            after_stats = sample
         result = {"status": "completed" if unloaded else "failed", "models_unloaded": unloaded,
                   "vram_total_bytes": total, "vram_free_before_bytes": before,
                   "vram_free_after_bytes": after}

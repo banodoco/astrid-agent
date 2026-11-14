@@ -29,12 +29,13 @@ PLATFORM = "linux-x86_64-cu130"
 pytestmark = pytest.mark.linux_native
 
 _SERVER = r'''
-import json,os,sys,time
+import json,os,sys,time,threading
 from http.server import BaseHTTPRequestHandler,HTTPServer
 from pathlib import Path
 port=int(sys.argv[1]); mode=Path(sys.argv[2]); started=Path(sys.argv[3])
 with started.open('a') as f: f.write(str(os.getpid())+'\n')
 if mode.read_text()=='exit': raise SystemExit(3)
+unloaded=threading.Event()
 class Handler(BaseHTTPRequestHandler):
  def do_POST(self):
   request=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))))
@@ -42,6 +43,10 @@ class Handler(BaseHTTPRequestHandler):
    if mode.read_text()=='freefails':
     self.send_response(500);self.end_headers();return
    with (started.parent/'release-posts').open('a') as f: f.write(self.path+'\n')
+   if mode.read_text()=='delayed':
+    def unload():
+     unloaded.wait(.5); unloaded.set(); (started.parent/'unloaded').write_text('yes')
+    threading.Thread(target=unload, daemon=True).start()
    data=json.dumps({'models_unloaded':True}).encode() if mode.read_text()=='freejson' else b''
    self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
   prompt_id=request['client_id']
@@ -61,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
   value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'UNETLoader':{},'VAELoader':{},'VHS_VideoCombine':{}}
   if self.path=='/queue': value={'queue_running':[[1,'running-work']] if setting=='busy' else [],'queue_pending':[[2,'pending-work']] if setting=='pending' else []}
-  if self.path=='/system_stats': value={'system':{'comfyui_version':'0.36.0'},'devices':[{'vram_total':24000,'vram_free':20000}]}
+  if self.path=='/system_stats': value={'system':{'comfyui_version':'0.36.0', 'ram_total':64000, 'ram_free':40000 if unloaded.is_set() else 30000},'devices':[{'vram_total':24000,'vram_free':22000 if unloaded.is_set() else 20000}]}
   if self.path.startswith('/history/'):
    prompt_id=self.path.rsplit('/',1)[1]
    value={prompt_id:{'status':{'completed':True,'status_str':'success'},'outputs':{}}}
@@ -157,10 +162,15 @@ def session(tmp_path, monkeypatch):
     # dependency is replaced, to run an actual tiny HTTP child instead of GPU code.
     program = f'''
 import json,sys
+from pathlib import Path
 from dataclasses import replace
 from astrid.core.generation.engine_contracts import StartSpec
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_custody import _serve
+from astrid.core.generation import engine_custody as custody
+if Path({str(mode)!r}).read_text() != 'delayed':
+ custody._RELEASE_POLL_SECONDS=0.001
+ custody._RELEASE_POLL_LIMIT_SECONDS=0.002
 base=load_recipe('comfyui',{PLATFORM!r})
 recipe=replace(base,sources=tuple(replace(s,pin=replace(s.pin,revision={revision!r})) if s.name=='vibecomfy' else s for s in base.sources),start=StartSpec({recipe.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1'}},'127.0.0.1',{port}),health=replace(base.health,timeout_seconds=4,poll_interval_seconds=0.02))
 _serve(json.loads(sys.argv[1]),recipe,int(sys.argv[2]),sys.argv[4])
@@ -1912,7 +1922,8 @@ def test_release_runs_in_live_supervisor_against_owned_child(session, monkeypatc
     result = client._request("release", {}, time.monotonic() + 8, start=False)
     assert result == {"status": "completed", "models_unloaded": True,
                       "vram_total_bytes": 24000, "vram_free_before_bytes": 20000,
-                      "vram_free_after_bytes": 20000}
+                      "vram_free_after_bytes": 20000, "ram_total_bytes": 64000,
+                      "ram_free_before_bytes": 30000, "ram_free_after_bytes": 30000}
     assert (root / "release-posts").read_text().splitlines() == ["/api/free"]
     from astrid.core.generation import preflight, engine_recipe
     from astrid.sdk.client import AstridClient
@@ -2278,7 +2289,35 @@ def test_release_records_optional_host_ram(tmp_path, monkeypatch, system, expect
     supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "owner")
     supervisor.engine = object()
     monkeypatch.setattr(supervisor, "check", lambda *args: None)
+    monkeypatch.setattr(custody, "_RELEASE_POLL_LIMIT_SECONDS", 0)
     stats = {"system": system, "devices": [{"vram_total": 200, "vram_free": 100}]}
     monkeypatch.setattr(custody, "_get_json", lambda port, path, *args, **kwargs: stats if path == "/system_stats" else {"queue_running": [], "queue_pending": []})
     result = supervisor.release({}, time.monotonic() + 5, None)
     assert {key: value for key, value in result.items() if key.startswith("ram_")} == expected
+
+
+def test_release_waits_for_delayed_unload_stats(session):
+    client, payload, recipe, root, mode, started = session
+    mode.write_text("delayed")
+    _call(client, payload)
+    result = client.release_owned(deadline=time.monotonic() + 8)
+    assert (root / "unloaded").exists()
+    assert result["status"] == "completed"
+    assert result["vram_free_before_bytes"] == 20000
+    assert result["vram_free_after_bytes"] == 22000
+    assert result["ram_free_before_bytes"] == 30000
+    assert result["ram_free_after_bytes"] == 40000
+
+
+def test_release_completes_when_vram_does_not_change(tmp_path, monkeypatch):
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "owner")
+    supervisor.engine = object()
+    monkeypatch.setattr(supervisor, "check", lambda *args: None)
+    monkeypatch.setattr(custody, "_RELEASE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(custody, "_RELEASE_POLL_LIMIT_SECONDS", 0.04)
+    stats = {"devices": [{"vram_total": 200, "vram_free": 100}]}
+    monkeypatch.setattr(custody, "_get_json", lambda port, path, *args, **kwargs: stats if path == "/system_stats" else {"queue_running": [], "queue_pending": []})
+    start = time.monotonic()
+    result = supervisor.release({}, start + 2, None)
+    assert result["status"] == "completed" and result["vram_free_after_bytes"] == 100
+    assert time.monotonic() - start < 1
