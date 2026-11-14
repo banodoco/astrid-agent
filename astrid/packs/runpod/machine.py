@@ -1036,6 +1036,12 @@ class RunPodMachine:
             run.lease.failure_exit_code = safe_exit if type(safe_exit) is int else None
             run.lease.failure_logs = self._fetch_failure_logs(ops, run, stdout, destination)
             _stamp(timing, "collection_ended_at")
+            from astrid.core.generation.model_storage import storage_refusal_message
+            needed, free = diagnostic.get("needed_bytes"), diagnostic.get("free_bytes")
+            if diagnostic["code"] == "insufficient_storage" and type(needed) is int and type(free) is int:
+                refusal = MachineError(storage_refusal_message(needed, free, getattr(run, "task_id", "<task>")), code="insufficient_storage")
+                setattr(refusal, "details", {"needed_bytes": needed, "free_bytes": free})
+                raise refusal
             raise MachineError(f"remote generation failed (exit {safe_exit}; "
                                f"category={diagnostic['category']}; code={diagnostic['code']})")
         lines = stdout.splitlines()
