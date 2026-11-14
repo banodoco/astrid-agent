@@ -155,6 +155,9 @@ def test_user_facing_scan_strings_name_the_generate_scan_command():
     guidance = gpu_environment._unmanaged_guidance("vibecomfy", "linux")
     assert "astrid generate scan" in guidance, guidance
     assert "vibecomfy.local scan" not in guidance, guidance
+    run_action = _text("astrid/packs/vibecomfy/actions/run/run.py")
+    assert "astrid generate scan" in run_action
+    assert "vibecomfy.local scan" not in run_action
     mcp_server = _text("astrid/mcp_server.py")
     assert "(astrid generate scan)" in mcp_server
     assert "vibecomfy local scan" not in mcp_server

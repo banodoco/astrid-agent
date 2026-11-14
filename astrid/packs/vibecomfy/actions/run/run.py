@@ -1188,7 +1188,7 @@ def main(argv: list[str] | None = None) -> int:
         error = exc if isinstance(exc, AstridError) else AstridError(
             f"vibecomfy.run: {exc}",
             recovery_command=(
-                "python3 -m astrid.packs.vibecomfy.local scan" if args.comfy_url
+                "astrid generate scan" if args.comfy_url
                 else "python3 -m astrid executors run vibecomfy.run --help"
             ),
         )
