@@ -22,7 +22,9 @@ REQUEST = Path(__file__).resolve().parents[2] / "fixtures" / "h3_cpu" / "request
 
 
 def _video(path, seconds, frames=None):
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24",
+    # Bound both inputs: FFmpeg 8 can drain buffered frames from an unlimited
+    # color source past the sine's end despite -shortest (504e59244).
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c=blue:s=1024x576:r=24:duration={seconds}",
                "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}"]
     if frames:
         command += ["-frames:v", str(frames)]

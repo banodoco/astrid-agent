@@ -364,20 +364,33 @@ def test_preparation_scope_is_attempt_bound_and_does_not_leak_across_threads(pre
 
 
 def test_native_pip_uses_real_python312_and_exact_recipe_selector(tmp_path):
-    import importlib.util, subprocess
+    import importlib.util, os, shutil, subprocess
     from astrid.packs.vibecomfy.native_preparation import native_pip_program
-    interpreter = Path('/usr/bin/python3.12')
+    interpreter = shutil.which('python3.12')
     venv = tmp_path / 'python312'
-    subprocess.run([str(interpreter), '-I', '-m', 'venv', '--without-pip', str(venv)],
-                   check=True, capture_output=True, text=True, timeout=20)
+    if interpreter is None:
+        # Hosted images need not carry 3.12 in /usr/bin. As the engine does,
+        # provision the recipe's managed Python with uv, within this test root.
+        uv = shutil.which('uv')
+        assert uv is not None, 'uv is required to provision the recipe Python'
+        subprocess.run([uv, '--system-certs', '--no-config', 'venv', '--python', '3.12.10',
+                        '--managed-python', str(venv)],
+                       env={**os.environ, 'UV_PYTHON_INSTALL_DIR': str(tmp_path / 'interpreters'),
+                            'UV_CACHE_DIR': str(tmp_path / 'uv-cache')},
+                       check=True, capture_output=True, text=True, timeout=120)
+    else:
+        subprocess.run([interpreter, '-I', '-m', 'venv', '--without-pip', str(venv)],
+                       check=True, capture_output=True, text=True, timeout=20)
     python = str(venv / 'bin/python')
+    version = subprocess.run([python, '-I', '-c', 'import sys;print(sys.version_info[:2])'],
+                             check=True, capture_output=True, text=True, timeout=10)
+    assert version.stdout.strip() == '(3, 12)'
     completed = subprocess.run([python, '-I', '-c', native_pip_program(), json.dumps({'python_executable': python})],
                                check=True, capture_output=True, text=True, timeout=30)
     report = json.loads(completed.stdout)
     assert report['installed']['version'] == report['bundled_version'] and len(report['wheel_sha256']) == 64
-    # The shared machine has 3.12.3, not the recipe's 3.12.10 binary. Exercise
-    # the exact tagged 3.12.10 selector source separately, without replacing the
-    # runtime or pretending that its full binary was qualified here.
+    # A PATH interpreter can differ from the recipe's 3.12.10 binary. Exercise
+    # the exact tagged selector source separately from the native pip bootstrap.
     path = Path(__file__).resolve().parents[2] / 'fixtures/plan32_cpython31210_ensurepip_selector.py'
     spec = importlib.util.spec_from_file_location('plan32_recipe_ensurepip', path)
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
