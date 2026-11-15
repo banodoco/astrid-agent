@@ -25,9 +25,30 @@ BOOT_MANIFEST_FILENAME = "boot-manifest.json"
 _PRE_RESTAMP_SUFFIX = ".pre-restamp"
 BOOT_MANIFEST_SCHEMA_VERSION = 1
 _DEFAULT_PROFILE_ORDER: tuple[str, ...] = ()
-# Retired by 9f00e2ae2 (pip_embedded) and a26030e78 (checkout_server).
-# Older releases stamped these derived rows into persistent runtime support.
-_REMOVED_BOOT_PROFILES = frozenset({"pip_embedded", "checkout_server"})
+# Exact stamp written by R9 709492fa5f4850b9caf0cea4a4c543023b73fa0a,
+# R10 6e9c4f9c8f4b53aa7c16d4e3e098ab75218bdc45,
+# R11 a105de3a4852cb61b9647dfe2c920118bd29f272, and
+# R12 0e1543e0da2215db9cb3320cfd1083174c3c62a9 (byte-identical).
+# Captures: tests/fixtures/boot_manifest/r9-stamp.json and sibling provenance.
+# Only this complete historical identity may migrate to the empty R13 registry;
+# recognizing a retired profile name alone does not authenticate its digests.
+_LEGACY_BOOT_MANIFEST = {
+    "conformance_digest": "6bb502e7e495fa1041cd2726561588326aaf1d97c34ba0c7d779bbd7a57460f3",
+    "fixture_digests": {
+        "attempt-output-fixture.json": "951b9b4ce85dfc3ab999af705c4a3732acaa1d45468fa0ce0eaaf9edc941b31e",
+        "fake-runner-transcript.json": "379c7821ecf6213ced2ede36c2fb991d82c56167616d7e21aa23d7e3890e43e0",
+        "host-instance-paired-fixture.json": "4171922e65ea94a2c1af9f9abb7c8d5559125e354ca6ebb7f5efe1266ca22b4f",
+        "portable-capability-fixture.json": "9284b056aa8a38f884599a7634be0fe0cb7fbfbd117823960e563375b3aa43b7",
+        "task-resource-fixture.json": "ddc2d00bb893ea214d000bf618f67785c89c81d68d892864d9676d3c8b8d5164",
+    },
+    "profile_digests": {
+        "checkout_server": "3bc043a13d64fb7ae3efb683edadd4a95754aef2035e4fc626914ab37637dd18",
+        "pip_embedded": "dce36735a51bf3a26a475666dcd54ed889414907d0bed6f2e472e711eca663f9",
+    },
+    "profile_order": ["pip_embedded", "checkout_server"],
+    "registry_digest": "09cde0e29e4ea063f248153628182be23290d835acf4d2d8dfa701cb8be19dc3",
+    "schema_version": 1,
+}
 _REGISTRY_ENTRY_FIELDS = ("definition_version", "binding", "output_policy", "probe")
 _SECRET_WORDS = ("secret", "token", "password", "credential", "api_key", "private_key")
 
@@ -470,17 +491,15 @@ def stamp_boot_manifest(
         stored = _load_stored(path)
         if stored == current:
             return current
-        stored_order = set(stored["profile_order"])
-        removed_profiles = sorted(stored_order & _REMOVED_BOOT_PROFILES)
         stale_legacy = (
-            stored["profile_order"] != current["profile_order"]
-            and bool(removed_profiles)
-            and stored_order <= _REMOVED_BOOT_PROFILES | set(current["profile_order"])
+            stored == _LEGACY_BOOT_MANIFEST
+            and current["profile_order"] == []
         )
         if not stale_legacy:
             drift = sorted(set(stored) | set(current))
             details = "; ".join(f"key={key} stamped={stored.get(key)!r} live={current.get(key)!r}" for key in drift if stored.get(key) != current.get(key))
             raise BootManifestDrift(f"boot manifest disagrees with live registry/fixtures at {path}: {details}")
+        removed_profiles = sorted(stored["profile_order"])
         if write:
             _preserve_pre_restamp(path, stored)
     if not write:
