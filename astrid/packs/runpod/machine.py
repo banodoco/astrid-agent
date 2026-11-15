@@ -220,8 +220,10 @@ def selection_env(remote_root: str) -> str:
 
 def extract_selection_command(remote_root: str) -> str:
     root = shlex.quote(f"{remote_root}/selection")
-    return (f"mkdir -p {root}/packs {root}/entries {root}/no-user-packs && "
-            f"tar -xzf {shlex.quote(f'{remote_root}/{SELECTION_NAME}')} -C {root}")
+    # The dispatch verifier already extracted and authenticated every selection
+    # member. Preserve the generation gate and the empty selection directories.
+    return (f"test -f {root}/{SELECTION_MANIFEST} && "
+            f"mkdir -p {root}/packs {root}/entries {root}/no-user-packs")
 
 
 # The pod's one long-lived Runtime and its in-place reset (T5f): see pod_reset.py.
@@ -316,6 +318,7 @@ def build_selection(entry: str | None, staging: Path, *, sources: Any = None,
     entry ships its own folder from ``VIBECOMFY_ENTRIES_DIR``. ``selection.json``
     records both, with a sha256 per shipped file.
     """
+    import stat
     import tarfile
 
     if sources is None:
@@ -343,10 +346,13 @@ def build_selection(entry: str | None, staging: Path, *, sources: Any = None,
     body = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
     with tarfile.open(archive, "w:gz") as handle:
         for name, path in members:
-            info = handle.gettarinfo(str(path), arcname=name)
-            info.uid = info.gid = 0
-            info.uname = info.gname = "root"
-            with path.open("rb") as stream:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                observed = os.fstat(stream.fileno())
+                if not stat.S_ISREG(observed.st_mode):
+                    raise MachineError(f"selection source is not regular: {path}")
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = observed.st_size, stat.S_IMODE(observed.st_mode)
                 handle.addfile(info, stream)
         import io
         info = tarfile.TarInfo(SELECTION_MANIFEST)
@@ -868,11 +874,16 @@ class RunPodMachine:
         placement, state, ops = adapter.placement, lease.state, lease.claim.ops
         run_id = uuid.uuid4().hex
         remote_root = f"{RUNS_ROOT}/{run_id}"
-        placement._exec_ok(state, f"mkdir -p {shlex.quote(remote_root + '/in')} {shlex.quote(remote_root + '/out')}",
-                           "job directory")
+        # The checked HTTPS upload creates each destination's parents. The
+        # local generation path owns creation of out, including failure logs.
         check_cancelled()
         staging = Path(job.scratch) / "machine"
         staging.mkdir(parents=True, exist_ok=True)
+        uploads: list[tuple[Path, str]] = []
+
+        def put(local: Path, remote: str) -> None:
+            uploads.append((local, remote.removeprefix(remote_root + "/")))
+
         shipped: dict[str, Any] = {}
         for name, value in sorted(job.inputs.items()):
             check_cancelled()
@@ -880,10 +891,8 @@ class RunPodMachine:
                 continue  # this controller-side envelope becomes the job's public inputs below
             if name in job.files:
                 local = Path(str(value))
-                if local.is_symlink() or not local.is_file():
-                    raise MachineError(f"job input {name!r} is not a regular file")
                 remote = f"{remote_root}/in/{name}{''.join(local.suffixes)[-16:]}"
-                placement._put_checked(state, local, remote)
+                put(local, remote)
                 check_cancelled()
                 shipped[name] = remote
             else:
@@ -894,7 +903,7 @@ class RunPodMachine:
             def ship(local):
                 check_cancelled()
                 remote = f"{remote_root}/in/entry-{local.name}"
-                placement._put_checked(state, local, remote)
+                put(local, remote)
                 check_cancelled()
                 return remote
             public_inputs = read_archive(Path(str(job.inputs["entry_inputs"])), staging / "entry-inputs", map_file=ship)
@@ -920,15 +929,31 @@ class RunPodMachine:
         from .failure_diagnostics import graph_facts
         lease.node_ids, lease.node_names = graph_facts(job.inputs.get("source"))
         check_cancelled()
-        placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
+        put(local_job, f"{remote_root}/{JOB_NAME}")
         check_cancelled()
         # The active pack selection and the user entry ship with the job; the
         # pod-side run resolves its entry from them only.
         archive, selection = build_selection(job.entry, staging)
         check_cancelled()
-        placement._put_checked(state, archive, f"{remote_root}/{SELECTION_NAME}")
+        from . import job_bundle
+
+        bundle = staging / job_bundle.NAME
+        manifest_digest = job_bundle.build(uploads, archive, bundle, check_cancelled)
+        placement._check_deadline("job upload")
+        check_cancelled()
+        ops.put(bundle, f"{remote_root}/{job_bundle.NAME}")
+        check_cancelled()
+        command = " ".join(shlex.quote(value) for value in (
+            f"{POD_VENV}/bin/python", "-c", job_bundle.UNPACK,
+            f"{remote_root}/{job_bundle.NAME}", remote_root, sha256_file(bundle), manifest_digest))
+        code, observed, error = placement._exec(state, command, timeout=300)
+        try:
+            job_bundle.verify_response(bundle, code, observed, error)
+        except ValueError as exc:
+            raise DigestMismatch(f"job uploads did not verify: {exc}") from exc
         check_cancelled()
         archive.unlink(missing_ok=True)
+        bundle.unlink(missing_ok=True)
         lease.state.note("selection", "shipped", packs=[row["pack_id"] for row in selection["packs"]],
                          entries=[row["id"] for row in selection["entries"]])
         # The entry check runs inside the job's one command, on the prepared connection.
@@ -1193,7 +1218,11 @@ class RunPodMachine:
         later folder fetch (the failure folder).
         """
         manifest_local = scratch / MANIFEST_NAME
-        ops.get(f"{remote_dir}/{MANIFEST_NAME}", manifest_local)
+        try:
+            ops.get(f"{remote_dir}/{MANIFEST_NAME}", manifest_local)
+        except BaseException:
+            manifest_local.unlink(missing_ok=True)
+            raise
         if sha256_file(manifest_local) != manifest_digest:
             manifest_local.unlink(missing_ok=True)
             raise DigestMismatch("downloaded manifest does not match the digest the job reported")
@@ -1210,7 +1239,11 @@ class RunPodMachine:
                 raise DigestMismatch(f"pod manifest names an unsafe path: {relative!r}")
             local = destination / relative
             local.parent.mkdir(parents=True, exist_ok=True)
-            ops.get(f"{remote_dir}/{relative}", local)
+            try:
+                ops.get(f"{remote_dir}/{relative}", local)
+            except BaseException:
+                local.unlink(missing_ok=True)
+                raise
             if sha256_file(local) != entry.get("sha256") or local.stat().st_size != entry.get("size"):
                 local.unlink(missing_ok=True)
                 raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")

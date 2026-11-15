@@ -49,6 +49,26 @@ class FakePod:
     # --- agent surface
     def exec(self, command, timeout=600):
         self.exec_log.append(command)
+        if "DISPATCH_VERIFIED" in command:
+            import shlex
+            import tempfile
+
+            # Execute the real stdlib verifier; only the remote filesystem is
+            # replaced. Corruption and unsafe-member checks remain product code.
+            argv = shlex.split(command)
+            remote, root = argv[3:5]
+            with tempfile.TemporaryDirectory() as work:
+                landing = Path(work) / "dispatch.tar"
+                landing.write_bytes(self.files[remote])
+                destination = Path(work) / "run"
+                result = subprocess.run([sys.executable, *argv[1:3], str(landing), str(destination), *argv[5:]],
+                                        capture_output=True, text=True, timeout=timeout)
+                if result.returncode == 0:
+                    for path in destination.rglob("*"):
+                        if path.is_file():
+                            self.files[root + "/" + path.relative_to(destination).as_posix()] = path.read_bytes()
+                    self.files.pop(remote, None)
+                return result.returncode, result.stdout, result.stderr
         if "from astrid.core.gateway.doctor_bundle import redact_log" in command:
             import shlex
 

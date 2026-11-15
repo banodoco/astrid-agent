@@ -722,7 +722,7 @@ def test_job_projects_current_claim_operation_id(machine_case):
 
 
 def test_warm_second_job_operation_budget(request, monkeypatch):
-    from tests.packs.runpod._budget import RemoteBudget
+    from tests.packs.runpod._budget import WARM_SECOND_JOB_BOUNDS, RemoteBudget
 
     c = request.getfixturevalue("machine_case")
 
@@ -751,16 +751,8 @@ def test_warm_second_job_operation_budget(request, monkeypatch):
     assert not hasattr(budget.agent, "error"), getattr(budget.agent, "error", None)
     c.host.wait_for_reset()  # the deferred reset is part of job 2's counted work
     print("warm second job counts:", dict(budget.counts))
-    # W-B fallback: per-file transfer and legacy finish, within pre-Tier-1 ceilings.
-    bounds = {
-        "http.post.jobs": 21, "http.get.jobs": 21,
-        "put.create": 5, "put.chunk": 5, "get.chunk": 5, "job_poll.read": 9,
-        "put.reconcile": 0, "put.verify": 0, "http.delete.jobs": 0,
-        "process_launch": 79, "process_fork": 43, "process_start": 20, "provider.read_exact_pod": 2,
-        "provider.get_network_volumes": 2, "provider.list_pods": 1,
-        "provider.confirm_acquired_machine": 1, "provider.get_pod_status": 1,
-        "provider.observe_mounts": 1,
-    }
+    # Count the complete warm job, including W-C's deferred reset and W-B's verifier.
+    bounds = WARM_SECOND_JOB_BOUNDS
     budget.assert_within(bounds)
     assert c.creates == 1 and c.read()["paid_limits"] == paid
     assert c.read()["lease"]["state"] == "idle"
@@ -782,3 +774,75 @@ def test_warm_second_job_operation_budget(request, monkeypatch):
     assert budget.counts["process_start"] == before + 2
     with pytest.raises(AssertionError, match="process_start.*per-kind counts"):
         budget.assert_within(bounds)
+
+
+@pytest.mark.usefixtures("machine_case")
+def test_warm_dispatch_bundle_operation_budget(request, monkeypatch):
+    """Dispatch is one real chunked upload, one verifier and one launch."""
+    from collections import Counter
+    from pathlib import Path
+
+    import httpx
+
+    from tests.packs.runpod.test_machine import HttpsPodTransport
+
+    c = request.getfixturevalue("machine_case")
+    claim(c)
+    run(c, job(c))
+    c.host.wait_for_reset()
+    counts = Counter({name: 0 for name in ("exec", "put", "get", "job_start", "job_poll",
+                                            "job_cancel", "put.create", "put.chunk")})
+    uploads = {}
+    calls = []
+
+    def upload(request):
+        if request.method == "POST":
+            assert request.url.path == "/uploads"
+            counts["put.create"] += 1
+            metadata = json.loads(request.content)
+            identity = f"{len(uploads) + 1:032x}"
+            uploads[identity] = metadata
+            c.pod.files[metadata["path"]] = b""
+            return httpx.Response(200, json={"id": identity, "offset": 0, "complete": False})
+        assert request.method == "PUT"
+        counts["put.chunk"] += 1
+        metadata = uploads[request.url.path.rsplit("/", 1)[-1]]
+        path = metadata["path"]
+        assert int(request.url.params["offset"]) == len(c.pod.files[path])
+        c.pod.files[path] += request.content
+        size = len(c.pod.files[path])
+        return httpx.Response(200, json={"offset": size, "complete": size == metadata["size"]})
+
+    def put(local, remote):
+        c.pod.put_log.append(remote)
+        transport = HttpsPodTransport("pod1", "x" * 32, base_url="http://localhost")
+        transport.http.close()
+        transport.http = httpx.Client(base_url="http://localhost", transport=httpx.MockTransport(upload))
+        try:
+            return transport.put(local, remote)
+        finally:
+            transport.disconnect()
+
+    monkeypatch.setattr(c.pod, "put", put)
+    for name in ("exec", "put", "get", "job_start", "job_poll", "job_cancel"):
+        original = getattr(c.pod, name)
+
+        def counted(*args, _name=name, _original=original, **kwargs):
+            counts[_name] += 1
+            calls.append((_name, args[0]))
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(c.pod, name, counted)
+    request = job(c, 2)
+    result = run(c, request)
+    c.host.wait_for_reset()
+    print("WBD_OPERATION_COUNTS=" + json.dumps(dict(counts), sort_keys=True))
+    assert counts == {"exec": 14, "put": 1, "get": 5, "job_start": 2, "job_poll": 3,
+                      "job_cancel": 0, "put.create": 1, "put.chunk": 1}, dict(counts)
+    assert sum(name == "exec" and "DISPATCH_VERIFIED" in command for name, command in calls) == 1
+    assert not any(name == "exec" and command.startswith(("sha256sum ", "mkdir "))
+                   for name, command in calls)
+    assert [Path(path).name for name, path in calls if name == "get" and "/out/" in path] == [
+        "wrapper-manifest.json", "cpu.png", "manifest.json"]
+    assert Path(result["files"]["artifacts/cpu.png"]).read_bytes() == b"png-bytes"
+    assert c.creates == 1 and c.deletes == []

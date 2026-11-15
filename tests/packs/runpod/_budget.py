@@ -24,6 +24,18 @@ from astrid.packs.runpod.remote_placement import _HttpsOps
 
 _REAL_BOUNDED_CALL = _HttpsOps._bounded_call
 
+# Tier 1 + W-B dispatch-only: include deferred reset and the real verifier
+# interpreter; output and log transfers still use the verified per-file path.
+WARM_SECOND_JOB_BOUNDS = {
+    "http.post.jobs": 16, "http.get.jobs": 16,
+    "put.create": 1, "put.chunk": 1, "get.chunk": 5, "job_poll.read": 9,
+    "put.reconcile": 0, "put.verify": 0, "http.delete.jobs": 0,
+    "process_launch": 67, "process_fork": 41, "process_start": 21,
+    "provider.read_exact_pod": 2, "provider.get_network_volumes": 2,
+    "provider.list_pods": 1, "provider.confirm_acquired_machine": 1,
+    "provider.get_pod_status": 1, "provider.observe_mounts": 1,
+}
+
 
 class CpuHttpsPodTransport(RealHttpsPodTransport):
     def __init__(self, pod_id, token, **kwargs):

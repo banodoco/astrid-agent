@@ -43,7 +43,7 @@ def test_v2_nests_whole_pod_span_without_double_counting(tmp_path):
     block = timing.block()
     execution = block['phases']['execution']
     assert block['tier1_cards'] == list(phase_timing.TIER1_CARDS)
-    assert block['tier1_cards'] == ["P3", "P4", "W-C", "W-D", "W-E", "W-F", "W-H", "Q2"]
+    assert block['tier1_cards'] == ["P3", "P4", "W-B-dispatch", "W-C", "W-D", "W-E", "W-F", "W-H", "Q2"]
     assert execution['seconds'] == 20
     assert execution['pod_job'] == {'whole_job': {'seconds': 15.0}, 'unaccounted': {'seconds': 7.0}}
     assert execution['sub_phases_seconds'] == 8

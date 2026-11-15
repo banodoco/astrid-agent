@@ -159,9 +159,9 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     # Claim on a fresh pod: the reset takes the empty-realm template and writes ready.json.
     assert record["lease"]["preparation"]["pod_ready"] == {"entry": None, "ready": True, "found": "absent",
                                                            "reset": "taken"}
-    # The job's one command extracts the selection and checks the entry, then runs.
+    # The verified dispatch extracts the selection before the job checks it.
     generation = next(line for line in c.pod.job_log if " generate cpu-image " in line)
-    assert ("tar -xzf" in generation and "--check-entry" in generation
+    assert ("/selection/selection.json" in generation and "--check-entry" in generation
             and "generate list" not in generation)
     # After the fetch, before settle: the reset removed the run and job folders.
     reset = c.pod.resets[-1]
@@ -172,9 +172,9 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     assert not [path for path in c.pod.files if path.startswith(reset["dirs"][0] + "/")]
     assert c.creates == 1 and c.deletes == []
     assert [kind for kind, _ in c.active] == ["begin", "done"]
-    # Inputs shipped inside the job directory, each digest-checked after upload.
-    shipped = [path for path in c.pod.put_log if "/in/" in path]
-    assert len(shipped) == 3 and any(path.endswith("job.json") for path in c.pod.put_log)
+    # All inputs and job.json travel in the authenticated dispatch bundle.
+    shipped = [path for path in c.pod.put_log if "/runs/" in path]
+    assert len(shipped) == 1 and shipped[0].endswith("/dispatch.tar")
     # A second job on the warm machine fetches and installs nothing again.
     jobs = len(c.pod.job_log)
     second = c.job(2)
@@ -778,7 +778,7 @@ def test_cancel_during_shipping_stops_within_one_chunk_and_launches_nothing(mach
         path = metadata["path"]
         assert int(request.url.params["offset"]) == len(c.pod.files[path])
         c.pod.files[path] += request.content
-        if path.endswith(".bin"):
+        if path.endswith("/dispatch.tar"):
             chunks.append(len(request.content))
             abort.set()  # The first in-flight chunk finishes after force_abort sets its signal.
         size = len(c.pod.files[path])
@@ -2441,3 +2441,106 @@ def test_remote_storage_refusal_renders_only_bounded_capacity_facts(tmp_path, co
     assert str(caught.value) == message
     assert caught.value.code == (code if code == 'insufficient_storage' else None)
     assert getattr(caught.value, 'details', {}) == counts
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failed", ["manifest", "output"])
+def test_failed_get_removes_only_its_partial_landing(tmp_path, existing, failed):
+    import hashlib
+    from types import SimpleNamespace
+
+    scratch, destination = tmp_path / "scratch", tmp_path / "outputs"
+    scratch.mkdir()
+    destination.mkdir()
+    manifest = json.dumps({"files": {"image.png": {"size": 5,
+                           "sha256": hashlib.sha256(b"image").hexdigest()}}}).encode()
+    landing = scratch / rm.MANIFEST_NAME if failed == "manifest" else destination / "image.png"
+    if existing:
+        landing.write_bytes(b"old")
+    unrelated = destination / "unrelated.png"
+    unrelated.write_bytes(b"keep")
+
+    def get(remote, local):
+        if Path(local) == landing:
+            Path(local).write_bytes(b"truncated")
+            raise OSError("mid-file failure")
+        Path(local).write_bytes(manifest)
+
+    with pytest.raises(OSError, match="mid-file failure"):
+        rm.RunPodMachine._fetch_verified(SimpleNamespace(get=get), "/remote", destination, scratch,
+                                        hashlib.sha256(manifest).hexdigest())
+    assert not landing.exists()
+    assert unrelated.read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("fault", ["empty", "truncated", "non-json", "non-object", "missing-status",
+                                  "missing-file", "extra-file", "digest", "size", "mode"])
+def test_dispatch_verifier_response_fails_closed_before_launch(machine_case, monkeypatch, fault):
+    c = machine_case
+    _claim_machine(c)
+    job = c.job()
+    lease = c.machine.claim(job)
+    before = list(c.pod.job_log)
+    execute = c.pod.exec
+    offending = []
+
+    def exec_(command, timeout=600):
+        code, stdout, stderr = execute(command, timeout)
+        if "DISPATCH_VERIFIED" not in command:
+            return code, stdout, stderr
+        assert code == 0, stderr
+        response = json.loads(stdout)
+        names = sorted(response["files"])
+        if fault in {"empty", "truncated", "non-json", "non-object", "missing-status"}:
+            offending.extend(names)
+            stdout = {"empty": "", "truncated": stdout[:-8], "non-json": "DISPATCH_VERIFIED",
+                      "non-object": "[]", "missing-status": '{"files":{}}'}[fault]
+        else:
+            offending.extend(names[:2])
+            for name in offending:
+                if fault == "missing-file":
+                    del response["files"][name]
+                elif fault in {"digest", "size", "mode"}:
+                    key = "sha256" if fault == "digest" else fault
+                    response["files"][name][key] = "bad" if key == "sha256" else -1
+            if fault == "extra-file":
+                offending[:] = ["in/extra"]
+                response["files"]["in/extra"] = {"size": 0, "mode": 0o644, "sha256": "bad"}
+            stdout = json.dumps(response)
+        return code, stdout, stderr
+
+    monkeypatch.setattr(c.pod, "exec", exec_)
+    with pytest.raises(rm.DigestMismatch) as caught:
+        c.machine.start(lease, job)
+    assert offending and all(path in str(caught.value) for path in offending)
+    assert c.pod.job_log == before
+    c.machine.release(lease, False)
+
+
+def test_dispatch_missing_local_files_fail_before_any_upload_or_launch(machine_case):
+    c = machine_case
+    _claim_machine(c)
+    job = c.job()
+    lease = c.machine.claim(job)
+    before = list(c.pod.job_log), list(c.pod.put_log)
+    missing = [Path(job.inputs[key]) for key in ("python", "companion")]
+    for path in missing:
+        path.unlink()
+    with pytest.raises(ValueError) as caught:
+        c.machine.start(lease, job)
+    assert all(str(path) in str(caught.value) for path in missing)
+    assert (c.pod.job_log, c.pod.put_log) == before
+    c.machine.release(lease, False)
+
+
+def test_dispatch_corrupt_upload_refuses_before_launch(machine_case):
+    c = machine_case
+    _claim_machine(c)
+    job = c.job()
+    lease = c.machine.claim(job)
+    before = list(c.pod.job_log)
+    c.pod.corrupt_put = True
+    with pytest.raises(rm.DigestMismatch, match="dispatch.tar"):
+        c.machine.start(lease, job)
+    assert c.pod.job_log == before
+    c.machine.release(lease, False)
