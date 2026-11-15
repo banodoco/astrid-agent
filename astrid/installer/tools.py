@@ -160,8 +160,10 @@ def asset_downloads(asset: dict) -> list[tuple[str, str | None]]:
 def download(url: str, target: Path, *, sha256: str | None = None) -> None:
     if not url.startswith("https://"):
         raise ValueError("Installer downloads require HTTPS.")
+    from .tls_fallback import urlopen_with_tls_fallback
+
     request = urllib.request.Request(url, headers={"User-Agent": f"astrid-installer/{ASTRID_VERSION}"})
-    with urllib.request.urlopen(request, timeout=120) as response, target.open("wb") as output:
+    with urlopen_with_tls_fallback(request, timeout=120) as response, target.open("wb") as output:
         shutil.copyfileobj(response, output)
     if sha256 and hashlib.sha256(target.read_bytes()).hexdigest() != sha256:
         raise ValueError(f"Download checksum mismatch: {url}")
