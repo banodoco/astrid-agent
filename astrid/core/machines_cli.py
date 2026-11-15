@@ -220,6 +220,29 @@ def _release(machine_id: str, *, as_json: bool, release: Callable[[], Any] | Non
     ok = result is None or bool(getattr(result, "ok", True))
     rows = [row for row in _leases() if row.get("id") == machine_id]
     payload = {"ok": ok, "machine": rows[0] if rows else None}
+    raw = getattr(result, "raw_result", {})
+    settled = raw.get("result", {}) if isinstance(raw, Mapping) else {}
+    evidence = settled.get("payload", settled) if isinstance(settled, Mapping) else {}
+    operation = evidence.get("target_operation") if isinstance(evidence, Mapping) else None
+    if ok and isinstance(operation, Mapping) and operation.get("state") == "absent":
+        # Task success proves only that the host found no matching custody.
+        # Only this host's ended journal can make that an idempotent release.
+        still_live = any(row.get("live") for row in rows)
+        already_released = not still_live and any(
+            row.get("live") is False and row.get("state") == "ended" for row in rows
+        )
+        if already_released:
+            print(json.dumps(payload, sort_keys=True, default=str) if as_json
+                  else f"already released {machine_id}")
+            return 0
+        message = f"{machine_id} is not held by this host: not released"
+        if still_live:
+            message += f"; the CLI journal still lists {machine_id} as live"
+        message += ("; check `astrid machines`, or run the release from the host that holds it;"
+                    " if this host lost the claim, stop the pod in the provider console")
+        print(json.dumps({**payload, "ok": False, "error": message}, sort_keys=True, default=str)
+              if as_json else message)
+        return 1
     if not ok:
         payload["error"] = getattr(result, "error", None)
     print(json.dumps(payload, sort_keys=True, default=str) if as_json
