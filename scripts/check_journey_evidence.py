@@ -85,14 +85,12 @@ RELEASE9_IDENTITY = {
     "runtime": "f4c7a4623c84da077daac3e3a9366fc2e6a55051",
     "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
 }
-# The served Release 11 starts the release11-then-update leg; the candidate's
-# install --update must take it to Release 12 (the pins live in journey_version_jumps).
+# The pinned Release 11 starts the release11-then-update leg.
 RELEASE9_LEG = "release9-then-install"
 RELEASE9_CHECKS = ("release", "service", "health", "semantic_data", "task_settled", "unrelated_sentinel")
 RELEASE11_LEG = "release11-then-update"
 RELEASE11_APP_COMMIT = "57e200b45615a59181920192697a932400d985fc"
 RELEASE11_RELEASE = 11
-RELEASE11_TARGET_RELEASE = 12
 RELEASE11_IDENTITY = {
     "agent": "a105de3a4852cb61b9647dfe2c920118bd29f272",
     "runtime": "4f5477cb0f5b03d28bec991a1fe34edcd8fc309f",
@@ -100,6 +98,15 @@ RELEASE11_IDENTITY = {
 }
 RELEASE11_CHECKS = ("release11_install", "update_exit", "run_receipt", "release", "one_runtime", "service",
                     "health", "semantic_data", "task_settled", "unrelated_sentinel")
+RELEASE12_LEG = "release12-then-update"
+RELEASE12_APP_COMMIT = "ae4da5d76bfcd9ef87fd117d4cbf02f4fe998bea"
+RELEASE12_RELEASE = 12
+RELEASE12_IDENTITY = {
+    "agent": "0e1543e0da2215db9cb3320cfd1083174c3c62a9",
+    "runtime": "42ae24aff8d2cb854f874ce134161077a3ba3641",
+    "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+}
+RELEASE12_CHECKS = tuple("release12_install" if name == "release11_install" else name for name in RELEASE11_CHECKS)
 AUTOSTART_LEG = "fresh-install-autostart-off"
 AUTOSTART_CHECKS = ("install_exit", "selection_autostart_false", "update_status_autostart_off",
                     "post_update_refused_unchanged", "autostart_card_capture", "service", "health",
@@ -341,7 +348,7 @@ def _windows_fresh_update_errors(update, job_id):
 # The receipt kind each Release-1 matrix leg writes. The R0 handoff leg and the
 # release11-then-update leg write their own kinds; every other leg writes the shared lifecycle receipt.
 RELEASE1_RECEIPT_KINDS = {"r0-handoff-then-update": "r0-handoff-then-update",
-                          RELEASE11_LEG: RELEASE11_LEG, AUTOSTART_LEG: AUTOSTART_LEG}
+                          RELEASE11_LEG: RELEASE11_LEG, RELEASE12_LEG: RELEASE12_LEG, AUTOSTART_LEG: AUTOSTART_LEG}
 RELEASE1_DEFAULT_RECEIPT_KIND = "release1-installed-lifecycle"
 
 
@@ -350,7 +357,7 @@ def release1_receipt_kind(contract):
     return RELEASE1_RECEIPT_KINDS.get(contract.get("leg", "fresh-install"), RELEASE1_DEFAULT_RECEIPT_KIND)
 
 
-UPGRADE_LEGS = frozenset({"r0-handoff-then-update", RELEASE9_LEG, RELEASE11_LEG})
+UPGRADE_LEGS = frozenset({"r0-handoff-then-update", RELEASE9_LEG, RELEASE11_LEG, RELEASE12_LEG})
 
 
 def _upgrade_release_errors(job_id, contract, row, release):
@@ -442,11 +449,11 @@ def _release9_row_errors(job_id, row):
     return errors
 
 
-def _release11_row_errors(job_id, row):
+def _release11_row_errors(job_id, row, target_release):
     """The release11-then-update row's four assertions, each read from the leg's own receipt fields.
 
-    1. the installed release is 12 (from 11, the pinned Release 11 source, live identity 12);
-    2. the candidate's run receipt says updated, exit 0, still and target 12;
+    1. the installed and live release match the candidate, from the pinned source;
+    2. the candidate's run receipt says updated, exit 0, still and target match;
     3. exactly one Runtime is live afterwards;
     4. the seeded user data survives (identical semantic digests).
     Every other leg assertion must also pass. Each failure names the missing assertion.
@@ -459,20 +466,20 @@ def _release11_row_errors(job_id, row):
     transition = row.get("release_transition")
     health = row.get("health_transition") if isinstance(row.get("health_transition"), dict) else {}
     if (not isinstance(transition, dict) or transition.get("from") != RELEASE11_RELEASE
-            or transition.get("to") != RELEASE11_TARGET_RELEASE
+            or transition.get("to") != target_release
             or transition.get("source") != "candidate-install-update"
-            or health.get("candidate_live_release") != RELEASE11_TARGET_RELEASE):
-        errors.append(f"{job_id}: installed release is not {RELEASE11_TARGET_RELEASE} "
-                      f"(release {RELEASE11_RELEASE} to {RELEASE11_TARGET_RELEASE}, live identity)")
+            or health.get("candidate_live_release") != target_release):
+        errors.append(f"{job_id}: installed release is not {target_release} "
+                      f"(release {RELEASE11_RELEASE} to {target_release}, live identity)")
     update = row.get("update")
     receipt = update.get("receipt") if isinstance(update, dict) else None
     if (not isinstance(update, dict) or update.get("command") != "install --update"
             or update.get("exit_code") != 0 or not isinstance(receipt, dict)
             or receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
-            or receipt.get("still") != RELEASE11_TARGET_RELEASE
-            or receipt.get("target") != RELEASE11_TARGET_RELEASE):
+            or receipt.get("still") != target_release
+            or receipt.get("target") != target_release):
         errors.append(f"{job_id}: candidate install --update receipt does not say updated to release "
-                      f"{RELEASE11_TARGET_RELEASE}")
+                      f"{target_release}")
     live = row.get("live_runtimes")
     roots = row.get("run_roots") if isinstance(row.get("run_roots"), dict) else {}
     data = roots.get("data")
@@ -487,6 +494,56 @@ def _release11_row_errors(job_id, row):
         errors.append(f"{job_id}: seeded user data preservation is absent or unequal")
     checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
     for check in RELEASE11_CHECKS:
+        if checks.get(check) != "pass":
+            errors.append(f"{job_id}: {check} assertion did not pass")
+    return errors
+
+
+def _release12_row_errors(job_id, row, target_release):
+    """The release12-then-update row's four assertions, each read from the leg's own receipt fields.
+
+    1. the installed and live release match the candidate, from the pinned source;
+    2. the candidate's run receipt says updated, exit 0, still and target match;
+    3. exactly one Runtime is live afterwards;
+    4. the seeded user data survives (identical semantic digests).
+    Every other leg assertion must also pass. Each failure names the missing assertion.
+    """
+    errors = []
+    source = row.get("release12_source")
+    if (not isinstance(source, dict) or source.get("app_commit") != RELEASE12_APP_COMMIT
+            or source.get("identity") != RELEASE12_IDENTITY):
+        errors.append(f"{job_id}: pinned release-12 source identity is absent or wrong")
+    transition = row.get("release_transition")
+    health = row.get("health_transition") if isinstance(row.get("health_transition"), dict) else {}
+    if (not isinstance(transition, dict) or transition.get("from") != RELEASE12_RELEASE
+            or transition.get("to") != target_release
+            or transition.get("source") != "candidate-install-update"
+            or health.get("candidate_live_release") != target_release):
+        errors.append(f"{job_id}: installed release is not {target_release} "
+                      f"(release {RELEASE12_RELEASE} to {target_release}, live identity)")
+    update = row.get("update")
+    receipt = update.get("receipt") if isinstance(update, dict) else None
+    if (not isinstance(update, dict) or update.get("command") != "install --update"
+            or update.get("exit_code") != 0 or not isinstance(receipt, dict)
+            or receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
+            or receipt.get("still") != target_release
+            or receipt.get("target") != target_release):
+        errors.append(f"{job_id}: candidate install --update receipt does not say updated to release "
+                      f"{target_release}")
+    live = row.get("live_runtimes")
+    roots = row.get("run_roots") if isinstance(row.get("run_roots"), dict) else {}
+    data = roots.get("data")
+    if (not isinstance(live, list) or len(live) != 1 or not isinstance(live[0], dict)
+            or not isinstance(data, str) or live[0].get("data_root") not in {data, data + "-r1"}):
+        errors.append(f"{job_id}: exactly one live Runtime is not recorded after the update")
+    semantic = row.get("semantic_data")
+    if (not isinstance(semantic, dict) or semantic.get("identical") is not True
+            or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
+                       for name in ("before_sha256", "after_sha256"))
+            or semantic.get("before_sha256") != semantic.get("after_sha256")):
+        errors.append(f"{job_id}: seeded user data preservation is absent or unequal")
+    checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
+    for check in RELEASE12_CHECKS:
         if checks.get(check) != "pass":
             errors.append(f"{job_id}: {check} assertion did not pass")
     return errors
@@ -620,7 +677,9 @@ def _release1_row_errors(candidate, contract, row):
         elif contract.get("leg") == RELEASE9_LEG:
             errors.extend(_release9_row_errors(job_id, row))
         elif contract.get("leg") == RELEASE11_LEG:
-            errors.extend(_release11_row_errors(job_id, row))
+            errors.extend(_release11_row_errors(job_id, row, candidate.get("release")))
+        elif contract.get("leg") == RELEASE12_LEG:
+            errors.extend(_release12_row_errors(job_id, row, candidate.get("release")))
         elif not fresh:
             if row.get("scenario") != "r0-handoff-then-update":
                 errors.append(f"{job_id}: direct receipt did not run the r0-handoff-then-update leg")
@@ -710,9 +769,9 @@ def fresh_update_errors(job_id, update):
 
 
 def evaluate_release1_matrix(candidate, results, scope="nine"):
-    """Reject an incomplete, skipped, or ownership-ambiguous nine-job receipt set.
+    """Reject an incomplete, skipped, or ownership-ambiguous receipt set.
 
-    The nine rows are the Release-1 matrix: every one is required, and each is validated
+    The direct rows are the Release-1 matrix: every one is required, and each is validated
     against its own leg, receipt kind and assertions. A missing row is named.
     """
     if scope not in {"five", "nine"}:
@@ -1426,7 +1485,7 @@ def main():
     parser.add_argument("--allow-source-override", action="store_true", help="Explicit test-mode evidence only")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--release1-scope", choices=("five", "nine"), default="nine",
-                        help="five for an automatic run of the previous five rows; nine for row=direct")
+                        help="five for an automatic run; nine selects all direct rows")
     parser.add_argument("--aggregate-release1", action="store_true",
                         help="require the exact five direct Release-1 job receipts under --results")
     parser.add_argument("--aggregate-release1-1-pinokio", action="store_true",

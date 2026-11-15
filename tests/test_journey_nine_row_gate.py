@@ -32,6 +32,8 @@ NINE = {
     "direct-macos-r9-install": ("release9-then-install", "macos", "macos-15"),
     "direct-linux-r11-update": ("release11-then-update", "linux", "ubuntu-24.04"),
     "direct-macos-r11-update": ("release11-then-update", "macos", "macos-15"),
+    "direct-linux-r12-update": ("release12-then-update", "linux", "ubuntu-24.04"),
+    "direct-macos-r12-update": ("release12-then-update", "macos", "macos-15"),
     "direct-linux-autostart-off": ("fresh-install-autostart-off", "linux", "ubuntu-24.04"),
     "direct-macos-autostart-off": ("fresh-install-autostart-off", "macos", "macos-15"),
 }
@@ -47,7 +49,7 @@ def mutate(tmp_path, job_id, change):
 def test_the_release1_matrix_is_exactly_the_nine_direct_rows():
     matrix = {row["job_id"]: (row["leg"], row["os"], row["runner"]) for row in gate.RELEASE1_MATRIX}
     assert matrix == NINE
-    assert len(gate.RELEASE1_MATRIX) == 11
+    assert len(gate.RELEASE1_MATRIX) == 13
     assert all(row["mode"] == "direct" for row in gate.RELEASE1_MATRIX)
     assert set(gate.RELEASE1_JOB_IDS) == set(NINE)
 
@@ -126,7 +128,8 @@ def test_an_automatic_run_is_the_five_rows_and_a_direct_run_is_the_nine(tmp_path
     assert sorted(errors) == sorted(f"{job}: missing receipt" for job in NINE if job not in AUTOMATIC_FIVE)
     # The five-row scope rejects the release9 and release11 rows as outside its scope.
     scoped = gate.evaluate_release1_matrix(candidate, tmp_path, scope="five")
-    assert len(scoped) == 6 and all("unknown or absent Release-1 job id" in error for error in scoped)
+    assert sum("unknown or absent Release-1 job id" in error for error in scoped) == 8
+    assert sum("duplicate receipt" in error for error in scoped) == 5
 
 
 UPGRADE_ROWS = ("direct-linux", "direct-macos", "direct-linux-r9-install", "direct-macos-r9-install",
@@ -161,3 +164,17 @@ def test_the_candidate_release_is_read_from_the_candidate_manifest(tmp_path):
     del candidate["release"]
     errors = gate.evaluate_release1_matrix(candidate, tmp_path)
     assert "direct-linux: candidate release is absent from the candidate manifest" in errors
+
+
+@pytest.mark.parametrize("job_id", ["direct-linux-r11-update", "direct-linux-r12-update"])
+def test_update_receipt_is_checked_against_release_13(tmp_path, job_id):
+    candidate = rows.release1_receipts(tmp_path)
+    path = tmp_path / job_id / "journey-result.json"
+    row = json.loads(path.read_text())
+    row["release_transition"]["to"] = 13
+    row["health_transition"]["candidate_live_release"] = 13
+    row["update"]["receipt"].update(still=13, target=13)
+    check = gate._release11_row_errors if "r11" in job_id else gate._release12_row_errors
+    assert check(job_id, row, 13) == []
+    row["update"]["receipt"]["target"] = 12
+    assert any("receipt" in error for error in check(job_id, row, 13))

@@ -62,7 +62,7 @@ JOURNEY_PACKS = {"chiptune": ("https://github.com/banodoco/poms_packs", "2379ab5
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
-                     "release9-then-install", "r0-handoff-then-update", "release11-then-update",
+                     "release9-then-install", "r0-handoff-then-update", "release11-then-update", "release12-then-update",
                      "fresh-install-autostart-off", "windows-upgrade-refusal")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
@@ -3963,9 +3963,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-release0-to-release1", action="store_true",
                         help="admit only the exact pinned direct journey from its starting release to the candidate")
     parser.add_argument("--release11-app-checkout", type=Path,
-                        help="a checkout containing the pinned Release-11 App commit for the direct 11-to-12 update leg")
+                        help="a checkout containing the pinned Release-11 App commit for the direct 11-to-candidate update leg")
     parser.add_argument("--allow-release11-to-candidate", action="store_true",
                         help="admit only the exact pinned direct update from the served Release 11 to the candidate")
+    parser.add_argument("--release12-app-checkout", type=Path,
+                        help="a checkout containing the pinned Release-12 App commit")
+    parser.add_argument("--allow-release12-to-candidate", action="store_true",
+                        help="admit the pinned direct update from Release 12")
     parser.add_argument("--source-override", action="store_true", help="TEST MODE: install Agent and Runtime from local Git commits")
     parser.add_argument("--agent-checkout", type=Path)
     parser.add_argument("--runtime-checkout", type=Path)
@@ -4031,7 +4035,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("fresh-install-autostart-off requires a frozen direct candidate receipt")
         if (args.release0_fixture is not None or args.release9_app_checkout is not None
                 or args.release11_app_checkout is not None or args.allow_release0_to_release1
-                or args.allow_release11_to_candidate):
+                or args.allow_release11_to_candidate or args.release12_app_checkout is not None
+                or args.allow_release12_to_candidate):
             parser.error("fresh-install-autostart-off admits no release source")
     if args.leg == "release11-then-update":
         if sys.platform == "win32" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
@@ -4045,6 +4050,17 @@ def main(argv: list[str] | None = None) -> int:
                          "and admits no release-0 or release-9 source")
     elif args.release11_app_checkout is not None or args.allow_release11_to_candidate:
         parser.error("release-11 admission is only valid for the release11-then-update leg")
+    if args.leg == "release12-then-update":
+        if sys.platform == "win32" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
+            parser.error("release12-then-update requires a disposable direct qualification job on Linux or macOS")
+        if not (args.job_id and args.mode == "direct" and args.candidate):
+            parser.error("release12-then-update requires a frozen direct candidate receipt")
+        if (args.release12_app_checkout is None or not args.allow_release12_to_candidate
+                or args.release0_fixture is not None or args.release9_app_checkout is not None
+                or args.allow_release0_to_release1):
+            parser.error("release12-then-update requires its pinned Release-12 source only")
+    elif args.release12_app_checkout is not None or args.allow_release12_to_candidate:
+        parser.error("release-12 admission is only valid for the release12-then-update leg")
     if args.leg in {"release9-then-install", "r0-handoff-then-update", "windows-upgrade-refusal"}:
         if args.leg == "windows-upgrade-refusal" and (sys.platform != "win32" or args.job_id != "direct-windows" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
             parser.error("windows-upgrade-refusal requires the disposable direct-windows qualification job")

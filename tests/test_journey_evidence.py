@@ -115,6 +115,14 @@ def release1_receipts(tmp_path):
             elif contract.get("leg") == "release11-then-update":
                 row.update(release11_fields())
                 row["checks"].update({name: "pass" for name in gate.RELEASE11_CHECKS})
+            elif contract.get("leg") == "release12-then-update":
+                fields = release11_fields()
+                fields["release12_source"] = fields.pop("release11_source")
+                fields["release12_source"].update(app_commit=gate.RELEASE12_APP_COMMIT, identity=gate.RELEASE12_IDENTITY)
+                fields["release_transition"]["from"] = 12
+                fields["update"]["receipt"]["start"] = 12
+                row.update(fields)
+                row["checks"].update({name: "pass" for name in gate.RELEASE12_CHECKS})
             elif contract.get("leg") == "fresh-install-autostart-off":
                 row.update(autostart_fields())
                 row["checks"].update({name: "pass" for name in gate.AUTOSTART_CHECKS})

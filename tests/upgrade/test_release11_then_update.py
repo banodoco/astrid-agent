@@ -35,7 +35,7 @@ def _leg(monkeypatch, tmp_path, *, candidate_release=12, update_exit=0, update_i
     args = argparse.Namespace(job_id="direct-linux-r11-update", mode="direct", leg=LEG,
                               shell="sh", candidate_checkouts={}, service_manager_prerequisite={},
                               app_checkout=app, candidate=candidate_path)
-    release = {"r11": RELEASE11_RELEASE, "r12": RELEASE12_RELEASE}
+    release = {"r11": RELEASE11_RELEASE, "r12": candidate_release}
 
     def installation(*_args):
         version = versions[state["current"]]
@@ -62,7 +62,7 @@ def _leg(monkeypatch, tmp_path, *, candidate_release=12, update_exit=0, update_i
     monkeypatch.setattr(jumps, "candidate_update", candidate_update)
     monkeypatch.setattr(jumps, "run_receipt", lambda _data: {
         "format": "astrid-last-run/v1", "kind": receipt_kind, "exit_code": 0 if receipt_kind == "updated" else 3,
-        "start": 11, "still": 12 if receipt_kind == "updated" else 11, "target": 12})
+        "start": 11, "still": candidate_release if receipt_kind == "updated" else 11, "target": candidate_release})
     monkeypatch.setattr(jumps, "live_runtime_owners", lambda _data: (
         live if live is not None else [{"data_root": str(data), "pid": 1, "runtime_instance_id": "new"}]))
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_args, **_kwargs: None)
@@ -342,9 +342,9 @@ def test_seeded_user_data_must_survive_the_update(monkeypatch, tmp_path):
     assert recorded["checks"]["task_settled"] == "not-run"
 
 
-def test_candidate_must_be_release_twelve(monkeypatch, tmp_path):
+def test_candidate_must_be_newer_than_release_eleven(monkeypatch, tmp_path):
     run, bootstraps, receipt = _leg(monkeypatch, tmp_path, candidate_release=11)
-    with pytest.raises(RuntimeError, match="requires the candidate to be Release 12"):
+    with pytest.raises(RuntimeError, match="requires a candidate newer than Release 11"):
         run()
     assert bootstraps == []
     assert json.loads(receipt.read_text())["status"] == "fail"
@@ -490,3 +490,11 @@ def test_r11_refusal_snapshot_requires_exact_failure_and_scope(changed):
     else:
         with pytest.raises(ValueError, match="Seeded"):
             jumps.live.snapshot(Client(), keys)
+
+
+def test_release13_candidate_keeps_all_update_checks(monkeypatch, tmp_path):
+    run, _, _ = _leg(monkeypatch, tmp_path, candidate_release=13)
+    result = run()
+    assert result["release_transition"] == {"from": 11, "to": 13, "source": "candidate-install-update"}
+    assert result["update"]["receipt"]["target"] == 13
+    assert all(value == "pass" for value in result["checks"].values())
