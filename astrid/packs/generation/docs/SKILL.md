@@ -242,6 +242,7 @@ Placement and defaults live in one document in the Runtime's user settings,
 The default shape is `{"placement": {...}, "defaults": {"<kind>.<mode>": {"pack": "...", "entry": "..."}}, "machines": {"runpod": {...}}, "models": {"trust_unchanged": true}}`.
 Opt in to full per-job re-verification by checking out the document, setting `"models": {"trust_unchanged": false}`, and checking it back in with the commands above.
 The default skips re-checking model files that haven't changed since they were verified: faster warm jobs; trusts file metadata, not a fresh checksum.
+The same setting controls per-claim warm attestations: true reuses fully verified workflow requirements on an unchanged kept-warm claim; false forces full source, environment, runtime and workflow verification on every job.
 With it on, a file counts as unchanged when its size, timestamps and inode match the verified record; another process running as you could make a record match, and a network volume remounted on another pod may match by metadata alone. Set it to false to re-check every file on the next preparation.
 A stale checkin is refused with both versions shown; check out again and merge.
 Secrets are never stored there: the RunPod credential is a name, and the key lives

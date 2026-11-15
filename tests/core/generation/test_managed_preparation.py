@@ -1085,3 +1085,371 @@ def test_storage_inventory_never_deletes_volume_content(inventory_pod):
     assert {str(p): p.read_bytes() for p in c.models.rglob('*') if p.is_file()} == before
     assert c.models in c.listings
     assert 'storage.inventory' in (c.prep.logs_root / 'logs.json').read_text()
+
+
+@pytest.fixture
+def warm_case(tmp_path, monkeypatch):
+    """Real preparation orchestration and disk witness; CPU-only verification edges."""
+    from contextlib import nullcontext
+    from dataclasses import replace
+    import subprocess
+    from astrid.core.generation import engine_runner, entries, managed_preparation, settings, warm_attestation
+    from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
+    from tests.core.generation.test_run_local import mod
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+
+    root = tmp_path / 'install'
+    state_dir = root / '.astrid-engine'
+    state_dir.mkdir(parents=True)
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    recipe = replace(recipe, sources=recipe.sources[:1], environments=recipe.environments[:1])
+    checkout = root / recipe.sources[0].relative_path
+    checkout.mkdir(parents=True)
+    for args in [('init',), ('config', 'user.email', 'cpu@example.invalid'),
+                 ('config', 'user.name', 'CPU'), ('add', '.'), ('commit', '--allow-empty', '-m', 'fixture')]:
+        subprocess.run(['git', '-C', str(checkout), *args], check=True, capture_output=True)
+    (checkout / 'tracked.py').write_text('verified = True\n')
+    subprocess.run(['git', '-C', str(checkout), 'add', '.'], check=True)
+    subprocess.run(['git', '-C', str(checkout), 'commit', '-m', 'source'], check=True, capture_output=True)
+    head = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
+    recipe = replace(recipe, sources=(replace(recipe.sources[0], pin=replace(recipe.sources[0].pin, revision=head)),))
+    locks = {recipe.environments[0].name: 'b' * 64}
+    lockfile = state_dir / 'environments' / recipe.environments[0].name / 'requirements.lock'
+    lockfile.parent.mkdir(parents=True)
+    lockfile.write_text('verified lock')
+    raw = {'receipt_id': 'receipt', 'models_root': None, 'fixture': True}
+    (state_dir / 'install.json').write_text(json.dumps(raw))
+    receipt = SimpleNamespace(status='installed', requirements_locks=locks,
+                              source_commits={recipe.sources[0].name: head}, receipt_id='receipt', models_root=None)
+    calls, logs = [], []
+    state = SimpleNamespace(claim='claim-1', birth={'pid': 123, 'start_ticks': '456', 'uid': 1000},
+                            nodes=[], models=[], fail_doctor=False, recipe=recipe, helper_sha='a' * 64)
+    monkeypatch.setattr(warm_attestation, 'supervisor_incarnation', lambda *a: state.birth)
+    (root / 'runtime/ComfyUI/models').mkdir(parents=True, exist_ok=True)
+    (root / recipe.environments[0].relative_path / 'lib/python3.12/site-packages').mkdir(parents=True)
+    plan = SimpleNamespace(steps=[SimpleNamespace(kind=k) for k in ('source', 'environment')])
+
+    class Runner:
+        def __init__(self, *args, **kwargs):
+            self.plan, self.recipe = plan, state.recipe
+            self.helper_sha256 = state.helper_sha
+            self.context = SimpleNamespace(service_client=None)
+            self.commits, self.locks = {}, {}
+            self.health = SimpleNamespace(object_info_sha256='d' * 64, required_nodes_present=True)
+        def helper(self, op, **kwargs):
+            calls.append(op)
+            return {'helper_sha256': self.helper_sha256}
+        def execute(self, step, **kwargs):
+            calls.append(step.kind)
+            self.commits.update(receipt.source_commits)
+            self.locks.update(receipt.requirements_locks)
+        def run(self, argv, **kwargs):
+            calls.append('git-inventory')
+            result = subprocess.run(argv, capture_output=True, text=True, check=kwargs.get('check', True))
+            return SimpleNamespace(stdout=result.stdout, stdout_truncated=False, exit_code=result.returncode)
+        def check_health(self):
+            calls.append('health')
+            return 'skipped', {}
+        def launch_spec(self):
+            return {'argv': []}
+
+    monkeypatch.setattr(engine_runner, '_parse_receipt', lambda *a: receipt)
+    monkeypatch.setattr(engine_runner, 'plan_install', lambda *a, **kw: plan)
+    monkeypatch.setattr(engine_runner, 'plan_from_receipt', lambda *a, **kw: plan)
+    monkeypatch.setattr(engine_runner, 'require_current_receipt', lambda *a: None)
+    monkeypatch.setattr(engine_runner, '_Runner', Runner)
+    monkeypatch.setattr(engine_runner, 'refresh_installed_launch', lambda *a, **kw: 'c' * 64)
+    monkeypatch.setattr(settings, 'model_trust_unchanged', lambda: state.trust)
+    state.trust = True
+    monkeypatch.setattr(managed_preparation, 'configured_models_root', lambda **kw: str(root / 'runtime/ComfyUI/models'))
+    workflow = VibeWorkflow('warm', WorkflowSource('warm'))
+    source = tmp_path / 'workflow.json'
+    source.write_text('{}')
+
+    def judge(*args):
+        canonical = args[1] / 'canonical/workflow.py'
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_text('# CPU canonical workflow')
+        return {'engine': 'comfyui', 'base': None, 'models': state.models, 'extra': {'nodes': state.nodes}}, 'scratchpad'
+
+    monkeypatch.setattr(managed_preparation, 'judge_declarations', judge)
+
+    def run():
+        prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+        prep.root, prep.recipe, prep.claim_id = str(root), state.recipe, state.claim
+        prep.task, prep.attempt, prep.mode = 'task', 'attempt', 'align'
+        prep.deadline, prep.cancelled = time.monotonic() + 30, lambda: False
+        prep.device = prep.visibility = None
+        prep.scratch = tmp_path / 'scratch'
+        prep.context = SimpleNamespace(read_json=lambda *a, **kw: raw)
+        prep.adapter = SimpleNamespace(local_install_lock=lambda *a, **kw: nullcontext())
+        prep._start_engine = lambda runner: ('skipped', {})
+        prep._keep_step_output = lambda step, result: logs.append((step, result.stdout))
+        prep._guard_runtime = lambda *a, **kw: calls.append('runtime')
+        def verify_alignment(*args):
+            calls.append('alignment')
+            return ManagedEnginePreparation._verify_alignment(prep, *args)
+        prep._verify_alignment = verify_alignment
+        def doctor():
+            prep._verify_alignment(*prep._alignment_verification)
+            calls.append('doctor')
+            if state.fail_doctor:
+                raise IntegrityError('doctor failed')
+        commands = SimpleNamespace(nodes_restore=lambda rows: calls.append('nodes'),
+            prepare_deps_sync=lambda: calls.append('prepare'), doctor=doctor)
+        monkeypatch.setattr(entries, 'engine_table', lambda: {'comfyui': mod.ComfyUIEngine(commands)})
+        try:
+            return prep._prepare(source, execution_identity='execution', inputs={},
+                                 canonical_workflow=workflow, input_digests={})
+        finally:
+            if getattr(prep, 'lock', None):
+                prep.lock.__exit__(None, None, None)
+
+    return SimpleNamespace(run=run, state=state, calls=calls, logs=logs, root=root, checkout=checkout,
+        lockfile=lockfile, attestation=state_dir / 'warm-attestation.json', recipe_digest=recipe_digest,
+        runner=Runner, raw=raw, plan=plan)
+
+
+def test_warm_attestation_second_job_skips_expensive_steps(warm_case):
+    c = warm_case
+    c.run()
+    c.calls.clear()
+    c.run()
+    assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment', 'git-inventory'}
+    log = json.loads([body for step, body in c.logs if step == 'warm_attestation'][-1])
+    assert log['warm_attestation']['used'] is True
+    assert 'doctor' in log['warm_attestation']['skipped']
+
+
+def test_warm_attestation_requirement_set_survives_t2i_edit_t2i(warm_case):
+    c = warm_case
+    c.run()
+    c.calls.clear()
+    c.state.nodes = [{'repo': 'https://example.invalid/edit.git', 'commit': 'e' * 40}]
+    c.run()
+    assert not set(c.calls) & {'source', 'environment', 'runtime'}
+    assert {'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    c.state.nodes = []
+    c.calls.clear()
+    c.run()
+    assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
+    assert len(json.loads(c.attestation.read_text())['requirements']) == 2
+
+
+@pytest.mark.parametrize('change', ['recipe', 'head', 'dirty', 'lock', 'claim', 'supervisor',
+    'corrupt', 'absent', 'schema', 'types', 'false', 'dependency', 'receipt', 'helper'])
+def test_warm_attestation_drift_fails_closed(warm_case, change):
+    from dataclasses import replace
+    import subprocess
+    c = warm_case
+    c.run()
+    assert c.attestation.exists()
+    if change == 'recipe':
+        c.state.recipe = replace(c.state.recipe, start=replace(c.state.recipe.start, port=8199))
+    elif change == 'head':
+        subprocess.run(['git', '-C', str(c.checkout), 'commit', '--allow-empty', '-m', 'changed'],
+                       check=True, capture_output=True)
+    elif change == 'dirty':
+        (c.checkout / 'tracked.py').write_text('dirty = True\n')
+    elif change == 'lock':
+        c.lockfile.write_text('changed lock')
+    elif change == 'claim':
+        c.state.claim = 'claim-2'
+    elif change == 'supervisor':
+        c.state.birth = {**c.state.birth, 'start_ticks': '789'}
+    elif change == 'corrupt':
+        c.attestation.write_text('{')
+    elif change == 'absent':
+        c.attestation.unlink()
+    elif change in {'schema', 'types'}:
+        saved = json.loads(c.attestation.read_text())
+        saved['schema' if change == 'schema' else 'requirements'] = 1
+        c.attestation.write_text(json.dumps(saved))
+    elif change == 'false':
+        c.state.trust = False
+    elif change == 'dependency':
+        site = next(c.root.glob('**/site-packages'))
+        (site / 'injected.dist-info').mkdir()
+    elif change == 'receipt':
+        path = c.root / '.astrid-engine/install.json'
+        raw = json.loads(path.read_text())
+        raw['receipt_id'] = 'reinstalled'
+        path.write_text(json.dumps(raw))
+    elif change == 'helper':
+        c.state.helper_sha = 'f' * 64
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    log = json.loads([body for step, body in c.logs if step == 'warm_attestation'][-1])
+    assert log['warm_attestation'] == {'used': False, 'skipped': []}
+
+
+def test_warm_attestation_failing_doctor_writes_nothing(warm_case):
+    c = warm_case
+    c.state.fail_doctor = True
+    with pytest.raises(IntegrityError, match='doctor failed'):
+        c.run()
+    assert not c.attestation.exists()
+
+
+def test_warm_attestation_new_requirement_failure_does_not_extend(warm_case):
+    c = warm_case
+    c.run()
+    before = c.attestation.read_bytes()
+    c.state.nodes = [{'repo': 'https://example.invalid/edit.git', 'commit': 'e' * 40}]
+    c.state.fail_doctor = True
+    with pytest.raises(IntegrityError, match='doctor failed'):
+        c.run()
+    assert c.attestation.read_bytes() == before
+
+
+def test_warm_attestation_requirement_digest_ignores_graph_parameters():
+    from astrid.core.generation.warm_attestation import requirement_digest
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    workflow = VibeWorkflow('warm', WorkflowSource('warm'))
+    workflow.add_node('KSampler', _id='1', uid='sampler', seed=1)
+    manifest = {'models': [], 'extra': {'nodes': []}}
+    before = requirement_digest(workflow, manifest)
+    other = VibeWorkflow('warm', WorkflowSource('warm'))
+    other.add_node('KSampler', _id='1', uid='sampler', seed=999)
+    assert requirement_digest(other, manifest) == before
+    assert requirement_digest(other, {'models': [], 'extra': {'nodes': [
+        {'repo': 'https://example.invalid/edit.git', 'commit': 'e' * 40}]}}) != before
+
+
+@pytest.mark.parametrize('change', ['outputs', 'tracked-output'])
+def test_warm_attestation_ignores_generated_outputs_but_watches_tracked_members(warm_case, change):
+    import subprocess
+    c = warm_case
+    (c.checkout / 'output').mkdir()
+    (c.checkout / 'output/placeholder').write_text('tracked')
+    subprocess.run(['git', '-C', str(c.checkout), 'add', 'output/placeholder'], check=True)
+    (c.checkout / '.gitignore').write_text('output/\n')
+    subprocess.run(['git', '-C', str(c.checkout), 'add', '.gitignore'], check=True)
+    subprocess.run(['git', '-C', str(c.checkout), 'commit', '-m', 'generated output rule'],
+                   check=True, capture_output=True)
+    c.run()
+    assert c.attestation.exists()
+    if change == 'outputs':
+        (c.checkout / 'output/new.png').write_bytes(b'new result')
+    else:
+        (c.checkout / 'output/placeholder').write_text('changed tracked member')
+    c.calls.clear()
+    c.run()
+    assert ('source' in c.calls) is (change == 'tracked-output')
+
+
+@pytest.mark.parametrize('change', ['none', 'claim', 'supervisor', 'corrupt', 'false'])
+def test_warm_attestation_collection_receipt_requires_same_live_claim(warm_case, monkeypatch, change):
+    from contextlib import nullcontext
+    from astrid.core.generation import engine_execution, engine_recipe, warm_attestation
+    c = warm_case
+    c.run()
+    monkeypatch.setattr(engine_recipe, 'load_recipe', lambda *args: c.state.recipe)
+    context = SimpleNamespace(read_json=lambda *a, **kw: c.raw)
+    adapter = SimpleNamespace(local_install_lock=lambda *a, **kw: nullcontext())
+    monkeypatch.setattr(engine_execution, 'create_local_backend', lambda **kwargs: (context, adapter))
+    if change == 'claim':
+        c.state.claim = 'other-claim'
+    elif change == 'supervisor':
+        c.state.birth = {**c.state.birth, 'pid': 999}
+    elif change == 'corrupt':
+        c.attestation.write_text('{')
+    result = warm_attestation.collection_receipt(root=str(c.root), engine='comfyui', platform=c.state.recipe.platform,
+        claim_id=c.state.claim, deadline=time.monotonic() + 20, trust_unchanged=change != 'false')
+    assert result == (c.raw if change == 'none' else None)
+
+
+@pytest.mark.parametrize('error', [OSError('unreadable'), ValueError('parse'), TypeError('type')])
+def test_warm_attestation_observation_errors_fall_back(warm_case, monkeypatch, error):
+    from astrid.core.generation import warm_attestation
+    c = warm_case
+    c.run()
+    def fail(*args):
+        raise error
+    monkeypatch.setattr(warm_attestation, 'supervisor_incarnation', fail)
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'doctor'} <= set(c.calls)
+
+
+def test_warm_attestation_tracks_model_rows_and_metadata(warm_case):
+    c = warm_case
+    model = c.root / 'runtime/ComfyUI/models/weights.bin'
+    model.write_bytes(b'good')
+    c.state.models = [{'name': 'weights.bin', 'subdir': '', 'url': None, 'size': 4,
+                       'sha256': hashlib.sha256(b'good').hexdigest()}]
+    c.run()
+    saved = json.loads(c.attestation.read_text())
+    assert saved['model_rows'] == c.state.models
+    c.calls.clear()
+    c.run()
+    assert 'doctor' not in c.calls
+    model.write_bytes(b'evil')
+    c.calls.clear()
+    with pytest.raises(IntegrityError, match='model bytes differ'):
+        c.run()
+    assert {'source', 'environment', 'alignment'} <= set(c.calls)
+
+
+def test_warm_attestation_receipt_health_refresh_preserves_claim(warm_case):
+    c = warm_case
+    c.raw['health'] = {'checked_at': 'first'}
+    receipt = c.root / '.astrid-engine/install.json'
+    receipt.write_text(json.dumps(c.raw))
+    c.run()
+    c.raw['health'] = {'checked_at': 'second'}
+    receipt.write_text(json.dumps(c.raw))
+    c.calls.clear()
+    c.run()
+    assert 'doctor' not in c.calls
+
+
+@pytest.mark.parametrize('field,value', [('size', True), ('sha256', 123), ('url', []), ('name', None)])
+def test_warm_attestation_refuses_wrong_model_row_types(warm_case, field, value):
+    from astrid.core.generation.warm_attestation import WarmAttestation
+    c = warm_case
+    c.run()
+    saved = json.loads(c.attestation.read_text())
+    row = {'name': 'weights.bin', 'subdir': '', 'url': None, 'size': 4, 'sha256': 'a' * 64}
+    row[field] = value
+    saved['model_rows'] = [row]
+    with pytest.raises(ValueError, match='model declaration'):
+        WarmAttestation._validate(saved)
+
+
+def test_warm_attestation_observes_live_supervisor_peer(tmp_path):
+    import os
+    import socket
+    from astrid.core.generation.engine_custody import _vibe_birth
+    from astrid.core.generation.warm_attestation import supervisor_incarnation
+    control = tmp_path / 'session'
+    control.mkdir(mode=0o700)
+    identity = {'engine': 'cpu-test'}
+    channel, peer = socket.socketpair()
+    observed = []
+    def connect(fd, deadline, *, start):
+        observed.append(start)
+        return channel
+    client = SimpleNamespace(control=str(control), identity=identity,
+        _marker=lambda fd: {'identity': identity, 'process': {'pid': os.getpid()}}, _connect=connect)
+    try:
+        assert supervisor_incarnation(client, time.monotonic() + 10) == {
+            'pid': os.getpid(), 'uid': os.getuid(), 'start_ticks': _vibe_birth(os.getpid())}
+        assert observed == [False]
+    finally:
+        peer.close()
+        channel.close()
+
+
+@pytest.mark.parametrize('field,value', [('engine_port', 9191), ('object_info_sha256', 'f' * 64),
+    ('model_rows', [{'name': 'later-host.bin', 'subdir': '', 'url': None, 'sha256': 'f' * 64, 'size': 4}])])
+def test_warm_attestation_host_route_fields_are_not_reuse_predicates(warm_case, field, value):
+    c = warm_case
+    c.run()
+    saved = json.loads(c.attestation.read_text())
+    saved[field] = value
+    c.attestation.write_text(json.dumps(saved))
+    c.calls.clear()
+    c.run()
+    assert not {'source', 'environment', 'runtime', 'doctor', 'alignment'} & set(c.calls)

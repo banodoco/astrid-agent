@@ -338,6 +338,8 @@ class ManagedEnginePreparation:
         self.engine_start_seconds: float | None = 0.0
         self.engine_start_attempted = False
         self.engine_reused: bool | None = None
+        from .warm_attestation import CLAIM_ID
+        self.claim_id = CLAIM_ID.get()
         self.evidence_waiting: Any = None
         self.evidence_start: Any = None
 
@@ -467,15 +469,23 @@ class ManagedEnginePreparation:
         runner.step_id = "helper-identity"
         if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
             raise IntegrityError("managed engine helper identity differs")
-        # These checks read the saved environment identities; they do not
-        # re-enter the install lock or require the HTTP service to be running.
-        for step in plan.steps:
-            if step.kind in {"source", "environment"}:
-                runner.execute(step, readonly=True)
-        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
-            raise IntegrityError("managed installation evidence differs from its receipt")
+        from .warm_attestation import WarmAttestation, requirement_digest
+        warm = WarmAttestation(self.root, self.recipe, runner, getattr(self, "claim_id", None), self.deadline,
+                               enabled=self._model_verification.trust_unchanged and self.mode == "align")
+        self._warm_claim_matched = warm.matched
+        if warm.matched:
+            runner.locks.update(receipt.requirements_locks)
+            runner.commits.update(receipt.source_commits)
+        else:
+            # A miss retains the canonical read-only verification path.
+            for step in plan.steps:
+                if step.kind in {"source", "environment"}:
+                    runner.execute(step, readonly=True)
+            if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
+                raise IntegrityError("managed installation evidence differs from its receipt")
         self._runtime_requirements = None
-        self._guard_runtime(canonical_workflow, runner, post=False)
+        if not warm.matched:
+            self._guard_runtime(canonical_workflow, runner, post=False)
         engine = _preparation_engine(DEFAULT_ENGINE)
         manifest, source_format = judge_declarations(canonical_workflow, self.scratch, engine)
         self._native_generated_scratchpad = source_format == "scratchpad"
@@ -486,6 +496,17 @@ class ManagedEnginePreparation:
                                    for path in native_members if path.is_file()}
         staged_digests.update(self._canonical_members)
         manifest = {**manifest, "engine": DEFAULT_ENGINE, "models_root": configured_models_root(root=self.root)}
+        requirement = requirement_digest(canonical_workflow, manifest) if warm.enabled else None
+        warm_used = warm.contains(requirement)
+        if warm.matched and not warm_used:
+            self._configure_runtime(canonical_workflow, runner, warm.saved["protected_packages"])
+        skipped = (["source", "environment", "runtime_inspect"] if warm.matched else [])
+        if warm_used:
+            skipped += ["nodes_restore", "pip_bootstrap", "fetch", "prepare_deps_sync", "doctor", "verify_alignment"]
+        from types import SimpleNamespace
+        if getattr(self, "claim_id", None):
+            self._keep_step_output("warm_attestation", SimpleNamespace(stdout=json.dumps(
+                {"warm_attestation": {"used": warm_used, "skipped": skipped}}, sort_keys=True) + "\n", stderr=""))
         self._has_declared_nodes = bool((manifest.get("extra") or {}).get("nodes"))
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
         self.scratch.mkdir(parents=True, exist_ok=True)
@@ -496,16 +517,18 @@ class ManagedEnginePreparation:
         self.check()
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
-        if self.mode == "align":
+        if self.mode == "align" and not warm_used:
             self._preflight_model_storage(manifest)
         callback = getattr(self, "on_phase", None)
         if callback is not None:
             callback("align")
-        alignment = engine.align(manifest, self.mode, workflow=canonical_path)
+        alignment = ({"mode": self.mode, "missing": [], "fetched": [], "verified": True, "status": "ready"}
+                     if warm_used else engine.align(manifest, self.mode, workflow=canonical_path))
         if alignment.get("status") == "missing":
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
         self.check()
-        self._verify_alignment(*self._alignment_verification)
+        if not warm_used:
+            self._verify_alignment(*self._alignment_verification)
         runner.step_id = "start"
         if callback is not None:
             callback("start_engine")
@@ -520,6 +543,9 @@ class ManagedEnginePreparation:
         self.check()
         health = {"healthy": True, "object_info_sha256": runner.health.object_info_sha256,
                   "required_nodes_present": runner.health.required_nodes_present}
+        if not warm_used:
+            warm.write(requirement, manifest, object_info_sha256=runner.health.object_info_sha256,
+                       protected_packages=getattr(self, "_protected_packages", ()))
         report: dict[str, Any] = {"schema": SCHEMA, "task_id": self.task, "attempt_id": self.attempt,
             "execution_identity": execution_identity, "inputs": dict(input_digests),
             "manifest": manifest, "manifest_sha256": digest(manifest),
@@ -579,10 +605,11 @@ class ManagedEnginePreparation:
                 # Timing is evidence only; it must never replace a verification error.
                 with suppress(Exception):
                     self.verification_seconds = getattr(self, "verification_seconds", 0.0) + time.monotonic() - started
-        self._guard_runtime(workflow, runner, post=True)
-        for step in runner.plan.steps:
-            if step.kind in {"source", "environment"}:
-                runner.execute(step, readonly=True)
+        if not getattr(self, "_warm_claim_matched", False):
+            self._guard_runtime(workflow, runner, post=True)
+            for step in runner.plan.steps:
+                if step.kind in {"source", "environment"}:
+                    runner.execute(step, readonly=True)
         if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
             raise IntegrityError("managed alignment changed the installed base")
         self.check()
@@ -693,9 +720,8 @@ class ManagedEnginePreparation:
         except Exception:  # noqa: BLE001 - inventory must never mask the original storage failure
             return False
 
-    def _guard_runtime(self, workflow, runner, *, post):
-        """Refuse changes to the receipt-owned base before native synchronization."""
-        from packaging.requirements import Requirement
+    def _configure_runtime(self, workflow, runner, base_packages):
+        """Project requirement-specific native inputs without inspecting installed dependencies."""
         from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
 
         from .engine_contracts import IntegrityError
@@ -703,11 +729,6 @@ class ManagedEnginePreparation:
         self._runtime_requirements = requirements
         self._runtime_launch_flags = list(runner.launch_spec()["argv"])
         self._sync_packages = []
-        primary = next(environment for environment in self.recipe.environments if environment.name == self.recipe.primary_environment)
-        specification = runner.helper("environment-spec", environment=primary.name)["expected"]
-        base_packages = {Requirement(text).name.lower().replace("_", "-") for text in specification["requirements"]}
-        base_packages.update(specification["wheels"])
-        base_packages.update(Requirement(text).name.lower().replace("_", "-") for text in specification["constraints"])
         self._protected_packages = sorted(base_packages)
         if requirements is None:
             return
@@ -718,6 +739,21 @@ class ManagedEnginePreparation:
                 or requirements.extras):
             raise IntegrityError("managed workflow runtime conflicts with the installed recipe")
         self._sync_packages = [name for name, _ in requirements.packages if name.lower().replace("_", "-") not in base_packages]
+
+    def _guard_runtime(self, workflow, runner, *, post):
+        """Refuse changes to the receipt-owned base before native synchronization."""
+        from packaging.requirements import Requirement
+
+        from .engine_contracts import IntegrityError
+        primary = next(environment for environment in self.recipe.environments if environment.name == self.recipe.primary_environment)
+        specification = runner.helper("environment-spec", environment=primary.name)["expected"]
+        base_packages = {Requirement(text).name.lower().replace("_", "-") for text in specification["requirements"]}
+        base_packages.update(specification["wheels"])
+        base_packages.update(Requirement(text).name.lower().replace("_", "-") for text in specification["constraints"])
+        self._configure_runtime(workflow, runner, base_packages)
+        requirements = self._runtime_requirements
+        if requirements is None:
+            return
         program = """import ast,json,sys
 from vibecomfy.runtime.dependencies import inspect_runtime_target,compare_runtime
 requirements=json.loads(sys.argv[1])
