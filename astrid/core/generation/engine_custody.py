@@ -61,6 +61,36 @@ _ERRORS = {e.code: e for e in (CustodyUnresolved, DeadlineExceeded, EndpointHeal
            EndpointOwnershipError, IntegrityError, RecipeValidationError, UnsafePathError)}
 
 
+def _valid_lifecycle(value):
+    return (isinstance(value, dict) and set(value) == {
+        'launch_token', 'child_generation', 'child_pid', 'child_start_ticks', 'boot_id'}
+        and all(isinstance(value[key], str) and re.fullmatch(r'[0-9a-f]{32}', value[key])
+                for key in ('launch_token', 'child_generation'))
+        and type(value['child_pid']) is int and value['child_pid'] > 0
+        and isinstance(value['child_start_ticks'], str) and value['child_start_ticks'].isdigit()
+        and isinstance(value['boot_id'], str)
+        and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value['boot_id']) is not None)
+
+
+def _invalidate_warm(root, *, deadline):
+    """Durably revoke all requirement membership BEFORE mutation or replacement.
+
+    One installation has one current-generation record; schemas never coexist.
+    Revocation is mandatory even when the optional optimization is disabled.
+    """
+    files = _TargetFiles(str(root))
+    path = Path(root) / '.astrid-engine/warm-attestation.json'
+    try:
+        with files._directory(path.parts[1:-1], deadline) as parent:
+            try:
+                os.unlink(path.name, dir_fd=parent)
+            except FileNotFoundError:
+                return
+            os.fsync(parent)
+    except FileNotFoundError:
+        pass
+
+
 def _cleanup_failure(stage, exc, secrets=()):
     """Only bounded diagnostic text crosses the owner boundary, never env/argv."""
     try:
@@ -479,7 +509,7 @@ class LinuxEngineServiceClient:
                 if channel is None:
                     return None
                 with channel:
-                    if cancelled is not None or expected_peer is not None or operation in {"probe", "start", "health"}:
+                    if cancelled is not None or expected_peer is not None or operation in {"probe", "start", "health", "observe", "submit"}:
                         peer = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
                         incarnation = (*peer, _vibe_birth(peer[0]))
                         if expected_peer is not None and incarnation != expected_peer:
@@ -492,7 +522,7 @@ class LinuxEngineServiceClient:
                                     "remaining_seconds": _remaining(deadline)}, deadline)
                     # Keep the connection open while target deadline cleanup is verified.
                     try:
-                        response = _receive(channel, deadline if operation in {"stop", "release"} else deadline + _CLEANUP_SECONDS,
+                        response = _receive(channel, deadline if operation in {"stop", "release", "observe", "submit"} else deadline + _CLEANUP_SECONDS,
                                             **({"cancelled": cancelled} if cancelled is not None else {}))
                     except CancelledError:
                         # EOF cancels only this request; the supervisor drains its
@@ -506,6 +536,10 @@ class LinuxEngineServiceClient:
                             raise CustodyUnresolved("cancelled engine command drainage is unconfirmed")
                         raise
                     except (DeadlineExceeded, socket.timeout) as exc:
+                        if operation == "observe":
+                            # Observation launches no command or child to drain.
+                            # Its independent budget expiring is an optional miss.
+                            raise DeadlineExceeded("lifecycle observation deadline exceeded") from exc
                         raise CustodyUnresolved("supervisor did not confirm command cleanup before the response deadline") from exc
                 if (not isinstance(response, dict) or response.get("identity") != self.identity
                         or set(response) not in ({"identity", "result"}, {"identity", "error", "reason"},
@@ -526,7 +560,7 @@ class LinuxEngineServiceClient:
                     error.reason = reason
                     error.cleanup_failure = cause
                     raise error
-                if operation in {"probe", "start", "health"}:
+                if operation in {"probe", "start", "health", "observe", "submit"}:
                     self._prepared_peer = incarnation
                 return response["result"]
         except (CustodyUnresolved, EndpointOwnershipError, UnsafePathError) as exc:
@@ -557,6 +591,16 @@ class LinuxEngineServiceClient:
         if operation not in {"probe", "start", "health"}:
             raise RecipeValidationError("unsupported engine service operation")
         return self._request(operation, payload, deadline, **({"cancelled": self.cancelled} if self.cancelled is not None else {}))
+
+    def observe_generation(self, payload, *, deadline):
+        """One deadline-bounded live/owned health observation; never launch an owner."""
+        return self._request("observe", payload, deadline, start=False, cancelled=self.cancelled)
+
+    def submit_bound(self, payload, *, expected_lifecycle, deadline):
+        """Only a known pre-POST mismatch permits preparation and a first submission."""
+        result = self._request("submit", {"prompt": payload, "expected_lifecycle": expected_lifecycle},
+                               deadline, start=False, cancelled=self.cancelled)
+        return {"submitted": False} if result is None else result
 
     def run(self, request: CommandRequest) -> CommandResult:
         return CommandResult(**self._request("run", {"argv": list(request.argv), "cwd": request.cwd,
@@ -787,6 +831,7 @@ def refuse_busy_engine(*, root, engine, platform, deadline):
 
 def stop_engine_for_converge(plan, *, context, deadline):
     """Under the exclusive install lock, refuse queued work before stopping."""
+    _invalidate_warm(plan.root, deadline=deadline)
     if context.placement != "local":
         return
     client = LinuxEngineServiceClient.for_stop(root=plan.root, engine=plan.engine, platform=plan.platform)
@@ -1085,7 +1130,7 @@ def _verify_connected_child(channel, owned, port, deadline, check):
         time.sleep(min(0.01, _remaining(deadline)))
 
 
-def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None, empty_ok=False):
+def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None, empty_ok=False, before_send=None):
     """Bound the whole HTTP exchange, including slow headers and body reads."""
     with socket.socket() as channel:
         channel.settimeout(min(1.0, _remaining(deadline)))
@@ -1098,6 +1143,8 @@ def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None, e
         if payload is not None:
             headers += f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
         check()
+        if before_send is not None:
+            before_send()
         channel.sendall(headers.encode("ascii") + b"\r\n" + body)
         data = bytearray()
         def receive():
@@ -1261,8 +1308,20 @@ class _Supervisor:
                       time.monotonic() - started, uuid.uuid4().hex,
                       owned.stdout.truncated(), owned.stderr.truncated()))
 
+    def lifecycle(self):
+        if self.engine is None or not self.engine.live():
+            return None
+        birth = getattr(self.engine, "child_birth", None)
+        if not birth or birth != process_birth_identity(self.engine.process.pid):
+            return None
+        boot, ticks = birth.rsplit(":", 1)
+        return {"launch_token": self.token, "child_generation": self.engine.child_generation,
+                "child_pid": self.engine.process.pid, "child_start_ticks": ticks, "boot_id": boot}
+
     def facts(self, state, *, healthy=False, digest=None):
-        return {"state": state, **self.identity, "launch_sha256": _sha(self.launch) if state == "owned" else None,
+        lifecycle = self.lifecycle() if state == "owned" else None
+        return {"state": state, **self.identity, **(lifecycle or {}), "lifecycle": lifecycle,
+                "launch_sha256": _sha(self.launch) if state == "owned" else None,
                 "owner_id": self.token if state == "owned" else None, "healthy": healthy,
                 "object_info_sha256": digest, "required_nodes_present": healthy}
 
@@ -1301,6 +1360,7 @@ class _Supervisor:
     def stop_engine(self, deadline=None):
         deadline = self.cleanup_deadline(deadline)
         if self.engine is not None:
+            _invalidate_warm(self.root, deadline=deadline)
             self.drain(self.engine, deadline)
             self.engine = None
         self.clear_registry()
@@ -1405,6 +1465,10 @@ class _Supervisor:
                 or payload["timeout_seconds"] != self.recipe.health.timeout_seconds
                 or payload["poll_interval_seconds"] != self.recipe.health.poll_interval_seconds):
             raise EndpointOwnershipError("service request differs from bound recipe or owner")
+        if operation == "observe":
+            if self.engine is None or not self.engine.live():
+                return self.facts("absent")
+            return self.health(channel, deadline)
         if self.engine is not None and not self.engine.live():
             self.stop_engine(deadline)
         if self.engine is None:
@@ -1428,9 +1492,14 @@ class _Supervisor:
             request = _command({**self.launch, "max_output_bytes": 262144}, deadline)
             # The engine's complete stdout and stderr are appended here from launch.
             launch_size = _engine_log_size(path)
+            _invalidate_warm(self.root, deadline=deadline)
+            generation = uuid.uuid4().hex
             self.engine = self.spawn(request, output_log=path)
             ready = None
             try:
+                # Created only for an engine spawn, retained on that exact native handle.
+                self.engine.child_generation = generation
+                self.engine.child_birth = process_birth_identity(self.engine.process.pid)
                 facts = self.health(channel, deadline)
                 ready = _engine_log_size(path)
                 _write_engine_launch(path, launch_size, ready)
@@ -1445,6 +1514,36 @@ class _Supervisor:
         if operation == "health":
             return self.health(channel, deadline)
         return self.facts("owned")
+
+    def submit(self, payload, deadline, channel):
+        if not isinstance(payload, dict) or set(payload) != {"prompt", "expected_lifecycle"}:
+            raise RecipeValidationError("invalid generation-bound prompt")
+        expected = payload["expected_lifecycle"]
+        if self.unresolved:
+            raise CustodyUnresolved("session retains an unresolved native cleanup obligation")
+        if (not _valid_lifecycle(expected) or self.lifecycle() != expected
+                or not _listener_owned(self.engine.process, self.recipe.start.port)):
+            return {"submitted": False}
+        engine = self.engine
+        def check():
+            self.check(channel, deadline)
+        check()
+        post_attempted = False
+        def before_send():
+            nonlocal post_attempted
+            check()
+            if self.lifecycle() != expected:
+                raise EndpointOwnershipError("engine generation changed before POST")
+            post_attempted = True
+        try:
+            acceptance = _get_json(self.recipe.start.port, "/prompt", 1024 * 1024, deadline, check,
+                                   owned=engine, payload=payload["prompt"], before_send=before_send)
+        except (EndpointOwnershipError, OSError):
+            if not post_attempted:
+                return {"submitted": False}
+            raise
+        # Never turn post-submission child death into a retryable mismatch.
+        return {"submitted": True, "acceptance": acceptance}
 
     def release(self, payload, deadline, channel):
         if payload != {} or self.unresolved or self.engine is None:
@@ -1545,7 +1644,7 @@ class _Supervisor:
                     self.stopping.set()
             # Release owns no command to drain. In particular, preparation
             # must not queue behind an idle RPC's command-cleanup allowance.
-            response_deadline = deadline if operation in {"stop", "release"} else deadline + _CLEANUP_SECONDS
+            response_deadline = deadline if operation in {"stop", "release", "observe", "submit"} else deadline + _CLEANUP_SECONDS
             if not self.work.acquire(timeout=_remaining(response_deadline)):
                 raise CustodyUnresolved("active supervisor operation did not drain")
             engine_before = self.engine
@@ -1559,9 +1658,11 @@ class _Supervisor:
                     self.check(channel, deadline)
                     if operation == "run":
                         result = self.run(value["payload"], deadline, channel)
+                    elif operation == "submit":
+                        result = self.submit(value["payload"], deadline, channel)
                     elif operation == "release":
                         result = self.release(value["payload"], deadline, channel)
-                    elif operation in {"probe", "start", "health"}:
+                    elif operation in {"probe", "start", "health", "observe"}:
                         result = self.service(operation, value["payload"], deadline, channel)
                     else:
                         raise RecipeValidationError("unsupported supervisor operation")

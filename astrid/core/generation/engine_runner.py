@@ -494,7 +494,8 @@ class _Runner:
         value = self.response(result, _SERVICE_SCHEMA, operation)
         keys = {"state", "engine", "platform", "root", "recipe_sha256", "helper_sha256",
                 "launch_sha256", "owner_id", "healthy", "object_info_sha256", "required_nodes_present"}
-        if set(value) != keys or any(value[k] != request[k] for k in (
+        lifecycle_keys = {"launch_token", "child_generation", "child_pid", "child_start_ticks", "boot_id"}
+        if set(value) not in (keys, keys | {"lifecycle"}, keys | {"lifecycle"} | lifecycle_keys) or any(value[k] != request[k] for k in (
                 "engine", "platform", "root", "recipe_sha256", "helper_sha256")):
             raise self._custody_refusal(EndpointOwnershipError, "service evidence does not match installation",
                                         reason="request_mismatch", step_id=self.step_id)
@@ -514,7 +515,13 @@ class _Runner:
                 raise self._custody_refusal(EndpointOwnershipError, "service incarnation or launch binding differs",
                                             reason="request_mismatch", step_id=self.step_id)
             self.service_owner = value["owner_id"]
+        self.lifecycle = value.get("lifecycle")
         return value
+
+    def service_payload(self):
+        return {**self.payload(), "schema": _SERVICE_SCHEMA, "launch": self.launch_spec(),
+                "owner_id": self.service_owner, "timeout_seconds": self.recipe.health.timeout_seconds,
+                "poll_interval_seconds": self.recipe.health.poll_interval_seconds}
 
     def launch_spec(self):
         request = self.adapter.start_request(self.recipe, self.plan.root, deadline=self.deadline,

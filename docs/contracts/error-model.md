@@ -94,6 +94,14 @@ or report the failure.
   prior full verification when the file's stat identity is unchanged by default;
   full per-job re-verification is the explicit opt-in `models.trust_unchanged: false`.
   A file without a matching record is always fully hashed.
+  Lifecycle warm attestation (`astrid.warm-attestation.v4`) can reuse node audits
+  and alignment only for the same live engine generation and raw requirement
+  declarations. W3 checks live model files and per-job validation always run.
+  The node residual is BROADER than W3's: same-user writers under a live engine,
+  including ComfyUI-Manager, custom nodes writing `custom_nodes`, runtime pip or
+  installer nodes, node-time downloads, and drift in imported dependencies, are
+  accepted residuals. Lifecycle attestation does not detect or prevent them.
+  `models.trust_unchanged` must be exactly `true` to allow this reuse.
 - `assert` is not runtime validation. Python strips asserts under `-O`, so
   operator-facing validation and runtime invariants must raise explicit
   exceptions instead.

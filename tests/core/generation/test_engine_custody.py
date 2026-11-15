@@ -2551,3 +2551,351 @@ def test_release_preserves_last_good_stats_when_poll_fails(tmp_path, monkeypatch
     assert result["status"] == "completed" and result["models_unloaded"] is True
     assert result["vram_free_after_bytes"] == 100
     assert result["ram_free_after_bytes"] == 50
+
+
+def test_lifecycle_generation_is_stable_across_live_observations(session):
+    """The child witness identifies a native spawn, independently of a client."""
+    client, payload, recipe, root, mode, started = session
+    first = _call(client, payload)
+    observed = client.observe_generation(payload, deadline=time.monotonic() + 5)
+    later = _client(client.identity).observe_generation(payload, deadline=time.monotonic() + 5)
+    identity = first["lifecycle"]
+    assert set(identity) == {"launch_token", "child_generation", "child_pid", "child_start_ticks", "boot_id"}
+    assert all(first[field] == value for field, value in identity.items())
+    assert len(identity["child_generation"]) == 32
+    assert int(identity["child_generation"], 16) >= 0
+    assert identity["launch_token"] == first["owner_id"]
+    assert identity["child_pid"] == int(started.read_text().strip())
+    assert identity["child_start_ticks"] == custody._vibe_birth(identity["child_pid"])
+    assert isinstance(identity["boot_id"], str) and identity["boot_id"]
+    assert observed["healthy"] is True and observed["state"] == "owned"
+    assert later["lifecycle"] == observed["lifecycle"] == identity
+    assert len(started.read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize("replacement", ["child", "supervisor"])
+def test_lifecycle_replacement_cannot_submit_with_old_generation(session, replacement):
+    client, payload, recipe, root, mode, started = session
+    original = _call(client, payload)["lifecycle"]
+    if replacement == "child":
+        os.kill(original["child_pid"], 9)
+        _wait(lambda: not _alive(original["child_pid"]))
+    else:
+        client.stop_owned(deadline=time.monotonic() + 8)
+    successor = _call(client, payload)["lifecycle"]
+    assert successor["child_generation"] != original["child_generation"]
+    assert (successor["launch_token"] == original["launch_token"]) is (replacement == "child")
+    result = client.submit_bound({"prompt": {}, "client_id": "stale-generation"},
+                                 expected_lifecycle=original, deadline=time.monotonic() + 5)
+    assert result == {"submitted": False}
+    assert not (root / "prompts").exists()
+    accepted = client.submit_bound({"prompt": {}, "client_id": "successor-generation"},
+                                   expected_lifecycle=successor, deadline=time.monotonic() + 5)
+    assert accepted["submitted"] is True
+    assert accepted["acceptance"]["prompt_id"] == "successor-generation"
+    assert (root / "prompts").read_text().splitlines() == ["successor-generation"]
+
+
+def test_lifecycle_equal_pid_and_ticks_do_not_replace_child_generation(session):
+    """Even simulated PID/start-tick reuse cannot authorize an old generation."""
+    client, payload, recipe, root, mode, started = session
+    current = _call(client, payload)["lifecycle"]
+    stale = {**current, "child_generation": "0" * 32 if current["child_generation"] != "0" * 32 else "1" * 32}
+    assert stale["child_pid"] == current["child_pid"]
+    assert stale["child_start_ticks"] == current["child_start_ticks"]
+    assert client.submit_bound({"prompt": {}, "client_id": "reused-pid"},
+                               expected_lifecycle=stale, deadline=time.monotonic() + 5) == {"submitted": False}
+    assert not (root / "prompts").exists()
+
+
+@pytest.mark.parametrize("damage", ["missing", "pid-bool", "generation", "boot", "launch"])
+def test_lifecycle_malformed_expected_identity_never_posts(session, damage):
+    client, payload, recipe, root, mode, started = session
+    expected = dict(_call(client, payload)["lifecycle"])
+    if damage == "missing":
+        expected.pop("child_generation")
+    elif damage == "pid-bool":
+        expected["child_pid"] = True
+    elif damage == "generation":
+        expected["child_generation"] = "not-a-generation"
+    elif damage == "boot":
+        expected["boot_id"] = ""
+    else:
+        expected["launch_token"] = "different-supervisor"
+    assert client.submit_bound({"prompt": {}, "client_id": "malformed-identity"},
+                               expected_lifecycle=expected, deadline=time.monotonic() + 5) == {"submitted": False}
+    assert not (root / "prompts").exists()
+
+
+def test_lifecycle_observe_and_bound_submit_never_start_supervisor(session, monkeypatch):
+    client, payload, recipe, root, mode, started = session
+    def forbidden(*args, **kwargs):
+        pytest.fail("hit-path observation or submission spawned a supervisor")
+    monkeypatch.setattr(custody, "_supervisor_argv", forbidden)
+    observed = client.observe_generation(payload, deadline=time.monotonic() + 1)
+    assert observed is None or observed["healthy"] is False
+    assert client.submit_bound({"prompt": {}, "client_id": "absent-supervisor"},
+                               expected_lifecycle={}, deadline=time.monotonic() + 1) == {"submitted": False}
+    assert not started.exists() and not (root / "prompts").exists()
+    assert not Path(client.control, "session.json").exists()
+
+
+def test_lifecycle_supervisor_loss_before_post_never_starts_successor(session, monkeypatch):
+    client, payload, recipe, root, mode, started = session
+    expected = _call(client, payload)["lifecycle"]
+    client.stop_owned(deadline=time.monotonic() + 8)
+    def forbidden(*args, **kwargs):
+        pytest.fail("bound submission replaced its missing supervisor")
+    monkeypatch.setattr(custody, "_supervisor_argv", forbidden)
+    assert client.submit_bound({"prompt": {}, "client_id": "lost-supervisor"},
+                               expected_lifecycle=expected, deadline=time.monotonic() + 2) == {"submitted": False}
+    assert len(started.read_text().splitlines()) == 1
+    assert not (root / "prompts").exists()
+
+
+def test_lifecycle_foreign_listener_receives_no_bound_prompt(session):
+    client, payload, recipe, root, mode, started = session
+    expected = _call(client, payload)["lifecycle"]
+    os.kill(expected["child_pid"], 9)
+    _wait(lambda: not _alive(expected["child_pid"]))
+    with socket.socket() as foreign:
+        foreign.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        foreign.bind(("127.0.0.1", recipe.start.port))
+        foreign.listen()
+        observed = client.observe_generation(payload, deadline=time.monotonic() + 2)
+        assert observed["healthy"] is False and observed["state"] in {"absent", "unowned"}
+        assert client.submit_bound({"prompt": {}, "client_id": "foreign-listener"},
+                                   expected_lifecycle=expected, deadline=time.monotonic() + 2) == {"submitted": False}
+        foreign.settimeout(0.1)
+        with pytest.raises(socket.timeout):
+            foreign.accept()
+    assert not (root / "prompts").exists()
+
+
+def test_lifecycle_child_death_after_submission_does_not_duplicate_prompt(session):
+    client, payload, recipe, root, mode, started = session
+    expected = _call(client, payload)["lifecycle"]
+    prompt = {"prompt": {}, "client_id": "accepted-before-death"}
+    result = client.submit_bound(prompt, expected_lifecycle=expected, deadline=time.monotonic() + 5)
+    assert result["submitted"] is True and result["acceptance"]["prompt_id"] == prompt["client_id"]
+    os.kill(expected["child_pid"], 9)
+    _wait(lambda: not _alive(expected["child_pid"]))
+    observed = client.observe_generation(payload, deadline=time.monotonic() + 2)
+    assert observed["healthy"] is False
+    assert client.submit_bound(prompt, expected_lifecycle=expected,
+                               deadline=time.monotonic() + 2) == {"submitted": False}
+    assert (root / "prompts").read_text().splitlines() == ["accepted-before-death"]
+    assert len(started.read_text().splitlines()) == 1
+
+
+@pytest.fixture
+def lifecycle_gateway_case(session):
+    """Real HTTP gateway, supervisor, child and install lock; fake only full audits."""
+    from astrid.core.generation.engine_platforms import platform_adapter
+    from astrid.core.generation.lifecycle_submission import LifecycleGateway
+    from astrid.core.generation.managed_preparation import ManagedEnginePreparation
+
+    client, payload, recipe, root, mode, started = session
+    facts = _call(client, payload)
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep.root, prep.recipe = str(root), recipe
+    prep.deadline, prep.cancelled = time.monotonic() + 25, lambda: False
+    prep.uncertain = False
+    prep._expected_lifecycle = dict(facts["lifecycle"])
+    prep._submission_runner = SimpleNamespace(context=SimpleNamespace(service_client=client))
+    prep._submission_arguments = (root / "workflow.py", "cpu-execution", {}, None, {})
+    full_preparations = []
+    def full_prepare(*args, **kwargs):
+        assert prep.lock is not None and prep._force_full is True
+        full_preparations.append("full-verification-and-doctor")
+        successor = _call(client, payload)
+        verified = _call(client, payload, "health")
+        assert successor["lifecycle"] == verified["lifecycle"]
+        prep._expected_lifecycle = dict(verified["lifecycle"])
+    prep.prepare = full_prepare
+    lock = platform_adapter(PLATFORM).local_install_lock(str(root), deadline=prep.deadline, kind="job")
+    lock.__enter__()
+    prep.lock = lock
+    gateway = LifecycleGateway(prep)
+    try:
+        yield SimpleNamespace(client=client, payload=payload, recipe=recipe, root=root,
+                              started=started, prep=prep, gateway=gateway, full=full_preparations)
+    finally:
+        gateway.close()
+        prep.lock = None
+        lock.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("replacement", ["child", "supervisor"])
+def test_lifecycle_gateway_reprepares_replacement_between_final_check_and_post(lifecycle_gateway_case, replacement):
+    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+
+    c = lifecycle_gateway_case
+    # This is the final no-start preparation observation. Replacement happens
+    # after it, while the HTTP submitter still carries that old generation.
+    checked = c.client.observe_generation(c.payload, deadline=time.monotonic() + 5)["lifecycle"]
+    target = ComfyTargetClient(ComfyTarget(c.gateway.endpoint, "attached"),
+                               expected_child_generation=checked["child_generation"])
+    if replacement == "child":
+        os.kill(checked["child_pid"], 9)
+        _wait(lambda: not _alive(checked["child_pid"]))
+        successor = _call(c.client, c.payload)["lifecycle"]
+        assert successor["child_generation"] != checked["child_generation"]
+    else:
+        c.client.stop_owned(deadline=time.monotonic() + 8)
+    assert not (c.root / "prompts").exists()
+    acceptance = target.submit_prompt({"prompt": {}, "client_id": "prepared-successor-only"})
+    assert acceptance["prompt_id"] == "prepared-successor-only"
+    assert c.full == ["full-verification-and-doctor"]
+    assert c.prep._expected_lifecycle["child_generation"] != checked["child_generation"]
+    assert (c.root / "prompts").read_text().splitlines() == ["prepared-successor-only"]
+    assert len(c.started.read_text().splitlines()) == 2
+    assert c.gateway.attempted is True
+
+
+def test_lifecycle_gateway_child_death_after_post_has_no_history_success_or_replay(lifecycle_gateway_case):
+    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+    from astrid.core.generation.engine_contracts import TransportError
+
+    c = lifecycle_gateway_case
+    expected = dict(c.prep._expected_lifecycle)
+    target = ComfyTargetClient(ComfyTarget(c.gateway.endpoint, "attached"),
+                               expected_child_generation=expected["child_generation"])
+    prompt = {"prompt": {}, "client_id": "submitted-before-death"}
+    assert target.submit_prompt(prompt)["prompt_id"] == prompt["client_id"]
+    os.kill(expected["child_pid"], 9)
+    _wait(lambda: not _alive(expected["child_pid"]))
+    with pytest.raises((ValueError, OSError, TransportError)):
+        target.history(prompt["client_id"])
+    with pytest.raises(TransportError, match="prompt already attempted"):
+        target.submit_prompt(prompt)
+    assert c.full == [] and c.gateway.attempted is True
+    assert (c.root / "prompts").read_text().splitlines() == [prompt["client_id"]]
+    assert len(c.started.read_text().splitlines()) == 1
+
+
+def test_lifecycle_gateway_lost_acknowledgement_never_reprepares_or_duplicates(lifecycle_gateway_case):
+    from astrid.core.generation.backends.comfy_target import (
+        ComfyTarget,
+        ComfyTargetClient,
+        open_comfy_http,
+    )
+    from astrid.core.generation.engine_contracts import TransportError
+
+    c = lifecycle_gateway_case
+    def lose_acknowledgement(request, *, timeout):
+        response = open_comfy_http(request, timeout=timeout)
+        response.close()
+        raise OSError("lost acknowledgement after accepted POST")
+    target = ComfyTargetClient(ComfyTarget(c.gateway.endpoint, "attached"),
+                               expected_child_generation=c.prep._expected_lifecycle["child_generation"],
+                               opener=lose_acknowledgement)
+    prompt = {"prompt": {}, "client_id": "accepted-with-lost-ack"}
+    with pytest.raises(TransportError, match="prompt acceptance unknown") as error:
+        target.submit_prompt(prompt)
+    assert error.value.acceptance_known is False
+    with pytest.raises(TransportError, match="prompt already attempted"):
+        target.submit_prompt(prompt)
+    assert c.full == [] and c.gateway.attempted is True
+    assert (c.root / "prompts").read_text().splitlines() == [prompt["client_id"]]
+    assert len(c.started.read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize("boundary", ["before-post", "after-post"])
+def test_lifecycle_supervisor_final_send_boundary_preserves_attempt_attribution(tmp_path, monkeypatch, boundary):
+    """Only a failure before the bound socket sends bytes is a retryable miss."""
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "1" * 32)
+    original = {"launch_token": "1" * 32, "child_generation": "2" * 32,
+                "child_pid": 123, "child_start_ticks": "456",
+                "boot_id": "12345678-1234-1234-1234-123456789abc"}
+    current = {"identity": original}
+    supervisor.engine = SimpleNamespace(process=SimpleNamespace(pid=123))
+    monkeypatch.setattr(supervisor, "lifecycle", lambda: current["identity"])
+    monkeypatch.setattr(supervisor, "check", lambda *args: None)
+    monkeypatch.setattr(custody, "_listener_owned", lambda *args: True)
+    attempted = []
+    def exchange(*args, owned, payload, before_send, **kwargs):
+        assert owned is supervisor.engine
+        if boundary == "before-post":
+            current["identity"] = {**original, "child_generation": "3" * 32}
+            before_send()
+            pytest.fail("a replaced generation passed the final socket check")
+        before_send()
+        attempted.append(payload)
+        raise OSError("acknowledgement lost after POST")
+    monkeypatch.setattr(custody, "_get_json", exchange)
+    request = {"prompt": {"prompt": {}, "client_id": "boundary"}, "expected_lifecycle": original}
+    if boundary == "before-post":
+        assert supervisor.submit(request, time.monotonic() + 2, None) == {"submitted": False}
+        assert attempted == []
+    else:
+        with pytest.raises(OSError, match="acknowledgement lost"):
+            supervisor.submit(request, time.monotonic() + 2, None)
+        assert attempted == [request["prompt"]]
+
+
+def test_lifecycle_unresolved_supervisor_never_grants_full_preparation_permission(tmp_path, monkeypatch):
+    from astrid.core.generation import managed_preparation
+    from astrid.core.generation.managed_preparation import ManagedEnginePreparation
+
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "1" * 32)
+    supervisor.unresolved = True
+    lifecycle = {"launch_token": "1" * 32, "child_generation": "2" * 32,
+                 "child_pid": 123, "child_start_ticks": "456",
+                 "boot_id": "12345678-1234-1234-1234-123456789abc"}
+    def forbidden(*args, **kwargs):
+        pytest.fail("unresolved native custody authorized preparation or POST")
+    monkeypatch.setattr(custody, "_get_json", forbidden)
+    class Client:
+        def submit_bound(self, payload, *, expected_lifecycle, deadline):
+            return supervisor.submit({"prompt": payload, "expected_lifecycle": expected_lifecycle}, deadline, None)
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep.cancelled, prep.deadline = lambda: False, time.monotonic() + 5
+    prep.lock, prep.uncertain = object(), False
+    prep._expected_lifecycle = lifecycle
+    prep._submission_runner = SimpleNamespace(context=SimpleNamespace(service_client=Client()))
+    prep.prepare = forbidden
+    try:
+        with pytest.raises(CustodyUnresolved):
+            prep.submit_bound({"prompt": {}, "client_id": "unresolved"})
+        assert prep.uncertain is True
+        assert managed_preparation._UNRESOLVED_CUSTODY[id(prep)] is prep
+    finally:
+        # This unit test owns only a fake lock, with no native handles to drain.
+        managed_preparation._UNRESOLVED_CUSTODY.pop(id(prep), None)
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_lifecycle_cleanup_after_job_deadline_preserves_raw_allowance_and_fence(tmp_path, monkeypatch, cleanup_fails):
+    from astrid.core.generation import managed_preparation
+    from astrid.core.generation.backends import vibecomfy_local_server
+
+    prep = managed_preparation.ManagedEnginePreparation.__new__(managed_preparation.ManagedEnginePreparation)
+    prep.deadline = time.monotonic() - 1
+    prep.recipe = SimpleNamespace(start=SimpleNamespace(port=8188))
+    prep.report = {"endpoint": "http://127.0.0.1:59999"}
+    prep.uncertain, prep._preparing_engine = False, False
+    events, retained = [], []
+    gateway = SimpleNamespace(close=lambda: events.append("gateway-close"))
+    lock = SimpleNamespace(__exit__=lambda *args: events.append("unlock"))
+    prep._submission_gateway, prep.lock = gateway, lock
+    def cleanup(endpoint, destination, *, confirm):
+        assert time.monotonic() > prep.deadline
+        assert endpoint == "http://127.0.0.1:8188"
+        assert destination == tmp_path and confirm is True
+        assert prep.lock is lock and prep._submission_gateway is gateway
+        events.append("scoped-cleanup")
+        if cleanup_fails:
+            raise ValueError("raw owned prompt drainage unconfirmed")
+    monkeypatch.setattr(vibecomfy_local_server, "cleanup_prompts", cleanup)
+    monkeypatch.setattr(managed_preparation, "_retain_unresolved", lambda owner: retained.append(owner))
+    if cleanup_fails:
+        with pytest.raises(ValueError, match="drainage unconfirmed"):
+            prep.close(execution_root=tmp_path)
+        assert prep.uncertain is True and prep.lock is lock
+        assert events == ["scoped-cleanup"] and retained == [prep]
+    else:
+        prep.close(execution_root=tmp_path)
+        assert prep.lock is None and prep._submission_gateway is None
+        assert events == ["scoped-cleanup", "gateway-close", "unlock"]
+        assert retained == []

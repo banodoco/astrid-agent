@@ -200,7 +200,7 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
     body = json.loads(raw)
     keys = {"schema", "task_id", "attempt_id", "execution_identity", "inputs", "manifest", "manifest_sha256",
             "installation", "endpoint", "output_dir", "placement", "mode", "alignment", "health"}
-    if (not isinstance(body, dict) or set(body) not in (keys, keys | {"native_preparation"}) or body["schema"] != SCHEMA
+    if (not isinstance(body, dict) or set(body) - {"native_preparation", "child_generation"} != keys or body["schema"] != SCHEMA
             or body["task_id"] != task or body["attempt_id"] != attempt or body["endpoint"] != endpoint
             or body["placement"] != "managed" or body["mode"] not in {"align", "check", "trust"}
             or not isinstance(body["manifest"], dict) or digest(body["manifest"]) != body["manifest_sha256"]
@@ -386,7 +386,11 @@ class ManagedEnginePreparation:
                 self._stop_preparing_engine()
             if not self.uncertain and execution_root is not None and self.report is not None:
                 from .backends.vibecomfy_local_server import cleanup_prompts
-                cleanup_prompts(self.report["endpoint"], execution_root, confirm=True)
+                # Cleanup retains its existing independent bounded allowance.
+                # The execution gateway stops admitting work at the job deadline.
+                endpoint = (f"http://127.0.0.1:{self.recipe.start.port}"
+                            if getattr(self, "_submission_gateway", None) is not None else self.report["endpoint"])
+                cleanup_prompts(endpoint, execution_root, confirm=True)
         except BaseException:
             # A failed stop or failed prompt cleanup cannot establish that a
             # request has drained, regardless of which boundary raised it.
@@ -397,6 +401,10 @@ class ManagedEnginePreparation:
             _retain_unresolved(self)
             from .engine_contracts import CustodyUnresolved
             raise CustodyUnresolved("managed preparation retains an unconfirmed command; keep installation fenced")
+        gateway = getattr(self, "_submission_gateway", None)
+        if gateway is not None:
+            gateway.close()
+            self._submission_gateway = None
         if self.lock is not None:
             lock, self.lock = self.lock, None
             lock.__exit__(None, None, None)
@@ -410,7 +418,11 @@ class ManagedEnginePreparation:
             self.check()
             if self._write_warm_attestation is not None:
                 self._write_warm_attestation()
+                self.check()
         except BaseException as error:
+            if self._write_warm_attestation is not None:
+                from .warm_attestation import invalidate
+                invalidate(self.root, deadline=time.monotonic() + _ENGINE_STOP_TIMEOUT_SECONDS)
             if isinstance(error, CustodyUnresolved):
                 self.uncertain = True
             if not self.uncertain:
@@ -424,7 +436,78 @@ class ManagedEnginePreparation:
         # Only the completed report hands the live engine to the attempt. A
         # successful doctor still leaves all remaining preparation under custody.
         self._preparing_engine = False
+        if getattr(self, "_expected_lifecycle", None) is not None:
+            from .lifecycle_submission import LifecycleGateway
+            if getattr(self, "_submission_gateway", None) is None:
+                self._submission_gateway = LifecycleGateway(self)
+            report["endpoint"] = self._submission_gateway.endpoint
+            report["child_generation"] = self._expected_lifecycle["child_generation"]
         return report
+
+    def _begin_alignment(self, runner, warm):
+        """One transaction under install exclusion; revoke before the first write."""
+        from .warm_attestation import invalidate
+        invalidate(self.root, deadline=self.deadline)
+        warm.matched = False
+        self._doctor_lifecycle = None
+        if self.mode == "align":
+            client = getattr(getattr(runner, "context", None), "service_client", None)
+            if client is not None:
+                client.stop_owned(deadline=self.deadline)
+                runner.service_owner = None
+            # Stopping changes lifecycle, not installation bytes. The native
+            # steps still invalidate audit reuse when they actually write.
+
+    def submit_bound(self, payload):
+        from .engine_contracts import CustodyUnresolved
+        try:
+            return self._submit_bound(payload)
+        except CustodyUnresolved:
+            self.uncertain = True
+            _retain_unresolved(self)
+            raise
+
+    def _submit_bound(self, payload):
+        """Gateway thread: keep install exclusion through the sole actual POST.
+
+        Only the supervisor's explicit no-POST result allows a full preparation.
+        EOF, timeout, cancellation and unknown acceptance are never replayed.
+        """
+        self.check()
+        if getattr(self, "_submission_cancelled", lambda: False)():
+            raise CancelledError("submission caller disconnected before POST")
+        if self.lock is None or self.uncertain:
+            from .engine_contracts import CustodyUnresolved
+            raise CustodyUnresolved("submission installation custody unavailable")
+        runner = self._submission_runner
+        result = runner.context.service_client.submit_bound(payload,
+            expected_lifecycle=self._expected_lifecycle, deadline=self.deadline)
+        if result is None or result == {"submitted": False}:
+            # Absence is safe only when the full path can establish custody;
+            # owner loss with unresolved handles still raises and retains fence.
+            from .warm_attestation import invalidate
+            invalidate(self.root, deadline=self.deadline)
+            self._force_full = True
+            workflow, identity, inputs, canonical, digests = self._submission_arguments
+            self._write_warm_attestation = None
+            self._preparing_engine = False
+            previous_report = getattr(self, "report", None)
+            refreshed = self.prepare(workflow, execution_identity=identity, inputs=inputs,
+                                     canonical_workflow=canonical, input_digests=digests)
+            if previous_report is not None and refreshed is not None:
+                previous_report.clear()
+                previous_report.update(refreshed)
+                self.report = previous_report
+            self.check()
+            if getattr(self, "_submission_cancelled", lambda: False)():
+                raise CancelledError("submission caller disconnected during preparation")
+            runner = self._submission_runner
+            result = runner.context.service_client.submit_bound(payload,
+                expected_lifecycle=self._expected_lifecycle, deadline=self.deadline)
+        if not isinstance(result, dict) or result.get("submitted") is not True:
+            from .engine_contracts import EndpointHealthError
+            raise EndpointHealthError("engine generation changed before submission")
+        return result["acceptance"]
 
     def _stop_preparing_engine(self):
         if not getattr(self, "_preparing_engine", False):
@@ -445,7 +528,7 @@ class ManagedEnginePreparation:
         self._preparing_engine = False
 
     def _prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
-        from .engine_contracts import IntegrityError, RecipeValidationError
+        from .engine_contracts import EngineError, IntegrityError, RecipeValidationError
         from .engine_local_endpoint import EngineNotInstalled
         from .engine_recipe import recipe_digest
         from .engine_runner import (
@@ -478,8 +561,9 @@ class ManagedEnginePreparation:
             callback = getattr(self, "evidence_waiting", None)
             if callback is not None:
                 callback()
-        lock.__enter__()
-        self.lock = lock
+        if getattr(self, "lock", None) is None:
+            lock.__enter__()
+            self.lock = lock
         with suppress(Exception):
             callback = getattr(self, "evidence_start", None)
             if callback is not None:
@@ -497,39 +581,45 @@ class ManagedEnginePreparation:
         require_current_receipt(receipt, plan, self.recipe)
         runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
         runner.step_id = "helper-identity"
-        if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
-            raise IntegrityError("managed engine helper identity differs")
-        # These checks read the saved environment identities; they do not
-        # re-enter the install lock or require the HTTP service to be running.
-        from .warm_attestation import WarmAttestation, requirement_digest
-        warm = WarmAttestation(self.root, self.recipe, runner, getattr(self, "claim_id", None), self.deadline,
-                               enabled=(self._model_verification.trust_unchanged and self.mode == "align"
-                                        and canonical_workflow is not None))
-        self._warm_claim_matched = warm.matched
-        if warm.matched:
-            runner.locks.update(receipt.requirements_locks)
-            runner.commits.update(receipt.source_commits)
-        else:
-            # A miss retains the canonical read-only verification path (one audit per lock hold, Q2).
-            self._audit_installation(runner, receipt, plan.steps)
-        self._runtime_requirements = None
-        if not warm.matched:
-            self._guard_runtime(canonical_workflow, runner, post=False)
+        # Declarations and per-job validation run even on a lifecycle hit.
         engine = _preparation_engine(DEFAULT_ENGINE)
         manifest, source_format = judge_declarations(canonical_workflow, self.scratch, engine)
         self._native_generated_scratchpad = source_format == "scratchpad"
         canonical_path = self.scratch / "canonical" / "workflow.py"
-        # CLI preparation owns only this emitted copy.
         native_members = list(canonical_path.parent.iterdir())
         self._canonical_members = {path: hashlib.sha256(path.read_bytes()).hexdigest()
                                    for path in native_members if path.is_file()}
         staged_digests.update(self._canonical_members)
         manifest = {**manifest, "engine": DEFAULT_ENGINE, "models_root": configured_models_root(root=self.root)}
+        from .warm_attestation import WarmAttestation, requirement_digest
+        warm_enabled = (self._model_verification.trust_unchanged is True and self.mode == "align"
+                        and canonical_workflow is not None)
+        warm = getattr(self, "_warm_attestation", None)
+        if warm is None:
+            warm = WarmAttestation(self.root, self.recipe, runner, getattr(self, "claim_id", None), self.deadline,
+                                   enabled=warm_enabled, check=self.check,
+                                   reuse=not getattr(self, "_force_full", False))
+            self._warm_attestation = warm
+        else:
+            # A known pre-POST miss retries under this same lock and sub-budget.
+            # Full verification may succeed after exhaustion, but publication
+            # must not obtain a fresh allowance or old requirement membership.
+            warm.runner = runner
+            warm.saved, warm.matched, warm.facts = None, False, None
+            warm.enabled = warm.enabled and warm_enabled
         requirement = requirement_digest(canonical_workflow, manifest) if warm.enabled else None
         warm_used = warm.contains(requirement)
-        if warm.matched and not warm_used:
-            self._configure_runtime(canonical_workflow, runner, warm.saved["protected_packages"])
-        skipped = (["source", "environment", "runtime_inspect"] if warm.matched else [])
+        self._warm_claim_matched = warm_used
+        self._runtime_requirements = None
+        if warm_used:
+            runner.locks.update(receipt.requirements_locks)
+            runner.commits.update(receipt.source_commits)
+        else:
+            if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
+                raise IntegrityError("managed engine helper identity differs")
+            self._audit_installation(runner, receipt, plan.steps)
+            self._guard_runtime(canonical_workflow, runner, post=False)
+        skipped = (["source", "environment", "runtime_inspect"] if warm_used else [])
         if warm_used:
             skipped += ["alignment", "nodes_restore", "pip_bootstrap", "prepare_deps_sync", "doctor", "verify_alignment"]
         from types import SimpleNamespace
@@ -553,6 +643,8 @@ class ManagedEnginePreparation:
             callback("align")
         # Storage preflight above and model verification below still observe
         # every model. Only native alignment is attested; W3 stays independent.
+        if not warm_used:
+            self._begin_alignment(runner, warm)
         alignment = ({"mode": self.mode, "missing": [], "fetched": [], "verified": True, "status": "ready"}
                      if warm_used else engine.align(manifest, self.mode, workflow=canonical_path))
         if alignment.get("status") == "missing":
@@ -566,11 +658,50 @@ class ManagedEnginePreparation:
         runner.step_id = "start"
         if callback is not None:
             callback("start_engine")
-        start_action, start_facts = self._start_engine(runner)
-        self._preparing_engine = True
-        self.check()
-        runner.step_id = "health"
-        health_action, health_facts = self._time_engine(runner.check_health)
+        if warm_used:
+            # Observation only: no runner.start(), no _request(start=True).
+            try:
+                facts = warm.probe()
+            except (OSError, ValueError, TypeError, KeyError, AttributeError, EngineError):
+                facts = None
+            if (facts is None or facts["lifecycle"] != warm.saved["identity"]["lifecycle"]
+                    or facts["object_info_sha256"] != warm.saved["object_info_sha256"]):
+                # No prompt was attempted. Restart the entire full path under
+                # this same installation lock; a successor inherits no hit.
+                self._force_full = True
+                return self._prepare(workflow, execution_identity=execution_identity, inputs=inputs,
+                                     canonical_workflow=canonical_workflow, input_digests=input_digests)
+            from .engine_contracts import HealthEvidence
+            from .engine_runner import _now
+            runner.health = HealthEvidence("healthy", _now(), facts["object_info_sha256"], True)
+            self.engine_start_attempted, self.engine_reused = True, True
+            # The no-start observation supplies the same verified launch facts
+            # the existing receipt writer requires from runner.start().
+            from .engine_runner import _sha
+            runner.service_owner = facts["lifecycle"]["launch_token"]
+            runner.lifecycle = facts["lifecycle"]
+            start_action, start_facts = "skipped", {
+                "owner_id": runner.service_owner, "launch_sha256": _sha(runner.launch_spec()),
+                "cuda_visible_devices": self.visibility}
+            health_action, health_facts = "skipped", {"object_info_sha256": facts["object_info_sha256"],
+                                                        "required_nodes_present": True}
+            self._expected_lifecycle = facts["lifecycle"]
+        else:
+            start_action, start_facts = self._start_engine(runner)
+            self._preparing_engine = True
+            self.check()
+            runner.step_id = "health"
+            health_action, health_facts = self._time_engine(runner.check_health)
+            self.check()
+            # Publication and submission are tied to the doctor generation.
+            self._expected_lifecycle = getattr(self, "_doctor_lifecycle", None)
+            if (self._expected_lifecycle is not None
+                    and (getattr(runner, "lifecycle", None) != self._expected_lifecycle
+                         or runner.health.object_info_sha256 != getattr(
+                             self, "_doctor_schema", runner.health.object_info_sha256))):
+                raise IntegrityError("engine generation changed after managed doctor")
+        self._submission_runner = runner
+        self._submission_arguments = (workflow, execution_identity, inputs, canonical_workflow, input_digests)
         self.check()
         receipt_sha256 = refresh_installed_launch(runner, raw, start_action=start_action, start_facts=start_facts,
                                                   health_action=health_action, health_facts=health_facts, check=self.check)
@@ -595,13 +726,14 @@ class ManagedEnginePreparation:
             # Publish only after the public prepare path's final cancellation/deadline check.
             self._write_warm_attestation = lambda: warm.write(
                 requirement, manifest, object_info_sha256=runner.health.object_info_sha256,
-                protected_packages=getattr(self, "_protected_packages", ()))
+                protected_packages=getattr(self, "_protected_packages", ()),
+                expected_lifecycle=getattr(self, "_doctor_lifecycle", None))
         return report
 
     def _start_engine(self, runner):
         """Accumulate every supervisor probe/start, preserving its actual reuse decision."""
         self.engine_start_attempted = True
-        action, facts = self._time_engine(lambda: runner.start(readonly=False))
+        action, facts = self._time_engine(lambda: runner.start(readonly=getattr(self, "_doctor_lifecycle", None) is not None))
         self.engine_reused = action == "skipped" and getattr(self, "engine_reused", None) is not False
         return action, facts
 
@@ -962,6 +1094,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             runner.step_id = "doctor-health"
             self._time_engine(runner.check_health)
             expected = runner.health.object_info_sha256
+            doctor_lifecycle = getattr(runner, "lifecycle", None)
             request = {"argv": argv, "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
                        "expected_schema_sha256": expected,
                        "request_timeout": min(20.0, max(0.001, self.deadline - time.monotonic()))}
@@ -969,8 +1102,11 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             self.check()
             runner.step_id = "doctor-post-health"
             self._time_engine(runner.check_health)
-            if runner.health.object_info_sha256 != expected:
-                raise IntegrityError("managed doctor target schema changed during diagnosis")
+            if (runner.health.object_info_sha256 != expected
+                    or getattr(runner, "lifecycle", None) != doctor_lifecycle):
+                raise IntegrityError("managed doctor target schema or generation changed during diagnosis")
+            self._doctor_lifecycle = doctor_lifecycle
+            self._doctor_schema = expected
             return result
         except BaseException:
             if start_action == "skipped" and not self._preparing_engine:

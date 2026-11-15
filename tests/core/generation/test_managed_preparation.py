@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.core.generation.engine_contracts import CommandResult, CustodyUnresolved, IntegrityError
+from astrid.core.generation.engine_runner import refresh_installed_launch as _real_refresh_installed_launch
 from astrid.core.generation.managed_preparation import (
     ManagedEnginePreparation, PREPARATION_ENV, SCHEMA, digest, read_preparation,
 )
@@ -2096,3 +2097,514 @@ def test_r13_ships_warm_reuse_witness_disabled(tmp_path):
     assert warm.enabled is False and warm.matched is False
     warm.write("requirement", {}, object_info_sha256="0" * 64, protected_packages=())
     assert not (tmp_path / ".astrid-engine" / "warm-attestation.json").exists()
+
+
+@pytest.fixture
+def lifecycle_case(warm_case, monkeypatch):
+    """Extend the real preparation fixture with a CPU-only live-generation edge."""
+    import uuid
+
+    from astrid.core.generation import lifecycle_submission, managed_preparation, warm_attestation
+
+    c = warm_case
+    c.attestation.parent.chmod(0o700)
+    monkeypatch.setattr(warm_attestation, "WARM_ATTESTATION_ENABLED", True)
+    c.state.lifecycle = {"launch_token": "1" * 32, "child_generation": "2" * 32,
+                         "child_pid": 123, "child_start_ticks": "456",
+                         "boot_id": "12345678-1234-1234-1234-123456789abc"}
+    c.state.observation_error = None
+    c.state.observation_deadlines = []
+    c.state.healthy = True
+
+    class Service:
+        def observe_generation(self, payload, *, deadline):
+            c.state.observation_deadlines.append(deadline)
+            if c.state.observation_error is not None:
+                raise c.state.observation_error
+            return {"state": "owned", "healthy": c.state.healthy,
+                    "required_nodes_present": c.state.healthy,
+                    "object_info_sha256": "d" * 64,
+                    "lifecycle": dict(c.state.lifecycle)}
+
+        def stop_owned(self, *, deadline):
+            # This is the first lifecycle mutation edge. It must not leave an
+            # old requirement witness available while alignment can write.
+            assert not c.attestation.exists()
+            c.calls.append("stop-old-generation")
+            c.state.lifecycle = {**c.state.lifecycle, "child_generation": uuid.uuid4().hex}
+
+    original_init = c.runner.__init__
+    def initialize(runner, *args, **kwargs):
+        original_init(runner, *args, **kwargs)
+        runner.context.service_client = Service()
+        runner.service_owner = None
+    monkeypatch.setattr(c.runner, "__init__", initialize)
+    monkeypatch.setattr(c.runner, "service_payload", lambda self: {}, raising=False)
+    original_health = c.runner.check_health
+    def health(runner):
+        result = original_health(runner)
+        runner.lifecycle = dict(c.state.lifecycle)
+        return result
+    monkeypatch.setattr(c.runner, "check_health", health)
+
+    # warm_case replaces the native doctor command and its HTTP start with
+    # finite CPU edges. Give that doctor the same explicit generation binding
+    # as the real _doctor, without fabricating it in the attestation writer.
+    original_begin = getattr(ManagedEnginePreparation, "_begin_alignment", None)
+    if original_begin is not None:
+        def begin(prep, runner, warm):
+            c.preparation = prep
+            return original_begin(prep, runner, warm)
+        monkeypatch.setattr(ManagedEnginePreparation, "_begin_alignment", begin)
+        original_engine = managed_preparation._preparation_engine
+        def engine(*args):
+            selected = original_engine(*args)
+            original_doctor = selected.commands.doctor
+            def doctor():
+                runner = c.preparation._alignment_runner
+                runner.check_health()
+                expected = dict(runner.lifecycle)
+                original_doctor()
+                runner.check_health()
+                assert runner.lifecycle == expected
+                c.preparation._doctor_lifecycle = expected
+            selected.commands.doctor = doctor
+            return selected
+        monkeypatch.setattr(managed_preparation, "_preparation_engine", engine)
+
+    class FiniteGateway:
+        # These tests exercise preparation only. Real supervisor/gateway POST
+        # tests separately cover the boundary; avoid opening unused listeners.
+        def __init__(self, prep):
+            self.endpoint = f"http://127.0.0.1:{prep.recipe.start.port}"
+        def close(self):
+            pass
+    monkeypatch.setattr(lifecycle_submission, "LifecycleGateway", FiniteGateway)
+    c.manifest = {"models": [], "extra": {"nodes": []}}
+    c.requirement = hashlib.sha256(b"raw requirement declarations").hexdigest()
+
+    def witness(*, enabled=True, check=None):
+        kwargs = {"enabled": enabled}
+        if check is not None:
+            kwargs["check"] = check
+        return warm_attestation.WarmAttestation(c.root, c.state.recipe, c.runner(), c.state.claim,
+                                                time.monotonic() + 30, **kwargs)
+
+    def publish(requirement=None, *, check=None):
+        warm = witness(check=check)
+        warm.write(requirement or c.requirement, c.manifest,
+                   object_info_sha256="d" * 64, protected_packages=(),
+                   expected_lifecycle=dict(c.state.lifecycle))
+        return warm
+
+    c.witness, c.publish = witness, publish
+    return c
+
+
+def test_lifecycle_warm_second_job_zero_audit_budget_keeps_live_w3_and_job_checks(lifecycle_case, monkeypatch):
+    """W-A CPU budget: zero audit/alignment/Git starts on the second job."""
+    c = lifecycle_case
+    c.state.nodes = [{"repo": "https://example.invalid/edit.git", "commit": "e" * 40}]
+    model = c.root / "runtime/ComfyUI/models/weights.bin"
+    model.write_bytes(b"good")
+    c.state.models = [{"name": "weights.bin", "subdir": "", "url": None, "size": 4,
+                       "sha256": hashlib.sha256(b"good").hexdigest()}]
+    original_models = ManagedEnginePreparation._verify_models
+    original_canonical = ManagedEnginePreparation._verify_canonical_bytes
+    def models(prep, manifest):
+        c.calls.append("live-w3")
+        return original_models(prep, manifest)
+    def canonical(prep, digests):
+        c.calls.append("per-job-validation")
+        return original_canonical(prep, digests)
+    monkeypatch.setattr(ManagedEnginePreparation, "_verify_models", models)
+    monkeypatch.setattr(ManagedEnginePreparation, "_verify_canonical_bytes", canonical)
+    c.run()
+    c.calls.clear()
+    c.run()
+    audit_commands = {name: c.calls.count(name) for name in
+                      ("source", "environment", "runtime", "nodes", "prepare", "doctor",
+                       "alignment", "engine-align", "git-inventory", "stop-old-generation", "identity")}
+    assert audit_commands == dict.fromkeys(audit_commands, 0)
+    assert c.calls.count("live-w3") == 1
+    assert c.calls.count("per-job-validation") == 1
+    assert json.loads(c.attestation.read_text())["schema"] == "astrid.warm-attestation.v4"
+
+
+@pytest.mark.parametrize("change", ["child", "supervisor", "claim", "missing-identity", "unhealthy"])
+def test_lifecycle_warm_attestation_replacement_and_missing_identity_miss(lifecycle_case, change):
+    c = lifecycle_case
+    c.publish()
+    assert c.witness().contains(c.requirement)
+    if change == "child":
+        # Keep PID and start ticks equal: the generation UUID is indispensable.
+        c.state.lifecycle["child_generation"] = "3" * 32
+    elif change == "supervisor":
+        c.state.lifecycle["launch_token"] = "4" * 32
+    elif change == "claim":
+        c.state.claim = "other-claim"
+    elif change == "missing-identity":
+        c.state.lifecycle.pop("child_generation")
+    else:
+        c.state.healthy = False
+    assert not c.witness().contains(c.requirement)
+
+
+@pytest.mark.parametrize("damage", ["corrupt", "v3", "receipt", "helper", "recipe", "requirement"])
+def test_lifecycle_warm_attestation_claim_and_digest_changes_miss(lifecycle_case, damage):
+    from dataclasses import replace
+    c = lifecycle_case
+    c.publish()
+    if damage == "corrupt":
+        c.attestation.write_text("{")
+    elif damage == "v3":
+        saved = json.loads(c.attestation.read_text())
+        saved["schema"] = "astrid.warm-attestation.v3"
+        c.attestation.write_text(json.dumps(saved))
+    elif damage == "receipt":
+        c.raw["receipt_id"] = "replacement-install"
+        (c.attestation.parent / "install.json").write_text(json.dumps(c.raw))
+    elif damage == "helper":
+        c.state.helper_sha = "f" * 64
+    elif damage == "recipe":
+        c.state.recipe = replace(c.state.recipe, start=replace(c.state.recipe.start, port=8199))
+    requirement = "f" * 64 if damage == "requirement" else c.requirement
+    assert not c.witness().contains(requirement)
+
+
+@pytest.mark.parametrize("trust", [False, None, 0, 1, "true"])
+def test_lifecycle_warm_attestation_requires_exact_true_trust(lifecycle_case, trust):
+    c = lifecycle_case
+    c.run()
+    c.state.trust = trust
+    c.calls.clear()
+    c.run()
+    assert {"source", "environment", "runtime", "nodes", "prepare", "doctor", "alignment"} <= set(c.calls)
+
+
+@pytest.mark.parametrize("residual", ["runtime-installer", "lazy-import", "node-download", "manager"])
+def test_lifecycle_warm_attestation_accepts_live_node_writer_residual(lifecycle_case, residual):
+    """These same-user writers are deliberately NOT detected while the engine lives."""
+    c = lifecycle_case
+    c.run()
+    if residual in {"runtime-installer", "lazy-import"}:
+        site = next(c.root.glob("**/site-packages"))
+        (site / "late_imported_dependency.py").write_text("changed = True\n")
+    elif residual == "node-download":
+        (c.checkout / "custom_nodes/node_time_download.py").write_text("downloaded = True\n")
+    else:
+        pack = c.checkout / "custom_nodes/manager-installed"
+        pack.mkdir()
+        (pack / "node.py").write_text("installed_at_runtime = True\n")
+    generation = dict(c.state.lifecycle)
+    c.calls.clear()
+    c.run()
+    assert not {"source", "environment", "runtime", "nodes", "prepare", "doctor", "alignment", "git-inventory"} & set(c.calls)
+    assert c.state.lifecycle == generation
+    log = json.loads([body for step, body in c.logs if step == "warm_attestation"][-1])
+    assert log["warm_attestation"]["used"] is True
+
+
+@pytest.mark.parametrize("seam", ["nodes_restore", "prepare_deps_sync"])
+@pytest.mark.parametrize("failure", ["partial-error", "cancelled"])
+def test_lifecycle_warm_attestation_invalidated_before_mutation_failure(lifecycle_case, monkeypatch, seam, failure):
+    from concurrent.futures import CancelledError
+
+    from astrid.core.generation import managed_preparation
+
+    c = lifecycle_case
+    c.run()
+    previous = json.loads(c.attestation.read_text())["requirements"]
+    c.state.nodes = [{"repo": "https://example.invalid/edit.git", "commit": "e" * 40}]
+    original_engine = managed_preparation._preparation_engine
+    def engine(*args):
+        selected = original_engine(*args)
+        def mutate(*args):
+            assert not c.attestation.exists()
+            assert "stop-old-generation" in c.calls
+            (c.checkout / "partial-alignment.py").write_text("partial mutation\n")
+            raise CancelledError("alignment cancelled") if failure == "cancelled" else IntegrityError("partial alignment")
+        setattr(selected.commands, seam, mutate)
+        return selected
+    c.calls.clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(managed_preparation, "_preparation_engine", engine)
+        with pytest.raises(CancelledError if failure == "cancelled" else IntegrityError):
+            c.run()
+    assert not c.attestation.exists()
+    c.calls.clear()
+    c.run()
+    assert {"source", "environment", "runtime", "doctor", "alignment"} <= set(c.calls)
+    assert not set(previous) & set(json.loads(c.attestation.read_text())["requirements"])
+
+
+def test_lifecycle_warm_attestation_doctor_failure_removes_previous_membership(lifecycle_case):
+    c = lifecycle_case
+    c.run()
+    c.state.nodes = [{"repo": "https://example.invalid/edit.git", "commit": "e" * 40}]
+    c.state.fail_doctor = True
+    with pytest.raises(IntegrityError, match="doctor failed"):
+        c.run()
+    assert not c.attestation.exists()
+
+
+def test_lifecycle_warm_attestation_bounded_io_miss_leaves_job_budget(lifecycle_case, monkeypatch):
+    from astrid.core.generation._engine_target_files import _TargetFiles
+    from astrid.core.generation.engine_contracts import DeadlineExceeded
+
+    c = lifecycle_case
+    c.run()
+    original_read = _TargetFiles.read_json
+    observed = []
+    def read(files, path, *, deadline):
+        if path == str(c.attestation):
+            observed.append(deadline - time.monotonic())
+            raise DeadlineExceeded("bounded attestation read exhausted")
+        return original_read(files, path, deadline=deadline)
+    monkeypatch.setattr(_TargetFiles, "read_json", read)
+    c.calls.clear()
+    report = c.run()
+    assert observed and all(0 < seconds <= 3.1 for seconds in observed)
+    assert report["health"]["healthy"] is True
+    assert {"source", "environment", "runtime", "nodes", "prepare", "doctor", "alignment"} <= set(c.calls)
+
+
+def test_lifecycle_warm_attestation_cancellation_at_publication_leaves_no_record(lifecycle_case, monkeypatch):
+    import os
+    import stat
+    from concurrent.futures import CancelledError
+
+    c = lifecycle_case
+    c.publish()
+    state = {"cancelled": False}
+    original_fsync = os.fsync
+    def fsync(fd):
+        original_fsync(fd)
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            state["cancelled"] = True
+    def check():
+        if state["cancelled"]:
+            raise CancelledError("cancelled during record publication")
+    monkeypatch.setattr(os, "fsync", fsync)
+    with pytest.raises(CancelledError, match="record publication"):
+        c.publish("f" * 64, check=check)
+    assert not c.attestation.exists()
+    assert not list(c.attestation.parent.glob(".a2-*.tmp"))
+
+
+def test_lifecycle_final_probe_deadline_miss_runs_full_preparation(lifecycle_case, monkeypatch):
+    from astrid.core.generation.engine_contracts import DeadlineExceeded
+    from astrid.core.generation.warm_attestation import WarmAttestation
+
+    c = lifecycle_case
+    c.run()
+    original_probe = WarmAttestation.probe
+    failures = []
+    def probe(warm):
+        # Constructor lookup succeeded; fail only the later pre-start probe.
+        if warm.matched and not failures:
+            failures.append("final-probe-deadline")
+            raise DeadlineExceeded("attestation final probe exhausted")
+        return original_probe(warm)
+    monkeypatch.setattr(WarmAttestation, "probe", probe)
+    c.calls.clear()
+    report = c.run()
+    assert failures == ["final-probe-deadline"]
+    assert report["health"]["healthy"] is True
+    assert {"source", "environment", "runtime", "nodes", "prepare", "doctor", "alignment"} <= set(c.calls)
+    assert "stop-old-generation" in c.calls
+
+
+def test_lifecycle_attestation_io_shares_cumulative_subbudget(lifecycle_case, monkeypatch):
+    from astrid.core.generation import warm_attestation
+    from astrid.core.generation._engine_target_files import _TargetFiles
+
+    c = lifecycle_case
+    c.publish()
+    clock = SimpleNamespace(now=1000.0)
+    monkeypatch.setattr(warm_attestation.time, "monotonic", lambda: clock.now)
+    deadlines, charged = [], []
+    def consume(kind, deadline, seconds):
+        deadlines.append((kind, clock.now, deadline))
+        clock.now += seconds
+        charged.append(seconds)
+        assert clock.now < deadline
+
+    original_read = _TargetFiles.read_json
+    def read(files, path, *, deadline):
+        consume("read", deadline, 0.2)
+        return original_read(files, path, deadline=deadline)
+    monkeypatch.setattr(_TargetFiles, "read_json", read)
+    original_fact = _TargetFiles.file_fact
+    def fact(files, path, *, deadline, **kwargs):
+        consume("digest-read", deadline, 0.2)
+        return original_fact(files, path, deadline=deadline, **kwargs)
+    monkeypatch.setattr(_TargetFiles, "file_fact", fact)
+    service_type = type(c.runner().context.service_client)
+    original_observe = service_type.observe_generation
+    def observe(service, payload, *, deadline):
+        consume("rpc", deadline, 0.3)
+        return original_observe(service, payload, deadline=deadline)
+    monkeypatch.setattr(service_type, "observe_generation", observe)
+    original_write = _TargetFiles.write_json_atomic
+    def write(files, path, value, *, deadline, **kwargs):
+        consume("publication", deadline, 0.2)
+        return original_write(files, path, value, deadline=deadline, **kwargs)
+    monkeypatch.setattr(_TargetFiles, "write_json_atomic", write)
+
+    warm = c.witness()
+    assert warm.contains(c.requirement)
+    initial_budget = 3.0  # min(10 seconds, ten percent of the 30-second job)
+    # Independent W3/per-job work consumes job time, not the attestation budget.
+    clock.now += 10
+    assert warm.probe()["lifecycle"] == c.state.lifecycle
+    warm.write("f" * 64, c.manifest, object_info_sha256="d" * 64,
+               expected_lifecycle=dict(c.state.lifecycle))
+    assert {kind for kind, _, _ in deadlines} == {"read", "digest-read", "rpc", "publication"}
+    assert sum(charged) == pytest.approx(initial_budget - warm.budget_remaining)
+    assert sum(charged) <= initial_budget
+    for _, started, deadline in deadlines:
+        assert 0 < deadline - started <= min(10, (warm.job_deadline - started) * 0.1) + 1e-9
+        assert deadline < warm.job_deadline
+    assert json.loads(c.attestation.read_text())["requirements"] == ["f" * 64]
+
+
+@pytest.mark.parametrize("seam", ["pip_bootstrap", "nodes_restore", "prepare", "fetch"])
+@pytest.mark.parametrize("outcome", ["success", "partial-error", "cancelled"])
+def test_lifecycle_native_mutation_seams_revoke_before_first_write(lifecycle_case, seam, outcome):
+    from concurrent.futures import CancelledError
+
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+
+    c = lifecycle_case
+    c.run()
+    saved = json.loads(c.attestation.read_text())
+    original_generation = dict(saved["identity"]["lifecycle"])
+    old_requirements = set(saved["requirements"])
+    prep = c.preparation
+    runner = prep._alignment_runner
+    prep.adapter = LinuxPlatformAdapter(c.state.recipe.platform)
+    prep._runtime_launch_flags, prep._sync_packages = [], []
+    prep._runtime_requirements = None
+    prep._has_declared_nodes = True
+    writes = []
+    def native(program, *args, step):
+        assert program and args
+        # Assert before a real sentinel installation write, including the
+        # bootstrap that precedes node restore and partial failing mutations.
+        assert not c.attestation.exists()
+        assert c.state.lifecycle["child_generation"] != original_generation["child_generation"]
+        assert "stop-old-generation" in c.calls
+        sentinel = c.checkout / "custom_nodes" / f"native-{step}.sentinel"
+        sentinel.write_text("partial installation mutation\n")
+        writes.append(step)
+        if step == seam and outcome == "partial-error":
+            raise IntegrityError(f"partial native {seam}")
+        if step == seam and outcome == "cancelled":
+            raise CancelledError(f"cancelled native {seam}")
+        stdout = {"pip_bootstrap": '{"existed":false}', "nodes_restore": '{"changed":true}',
+                  "prepare": '{"synchronization":{"synced":true}}', "fetch": "downloaded cpu-model\n"}[step]
+        return SimpleNamespace(stdout=stdout, stdout_truncated=False)
+    prep._native = native
+    argv = (["nodes", "restore"] if seam in {"pip_bootstrap", "nodes_restore"}
+            else [seam, str(next(iter(prep._canonical_members)))])
+    warm = c.witness()
+    assert warm.matched is True
+    lock = prep._installation_lock(lambda *args: None)
+    with lock:
+        prep.lock = lock
+        try:
+            prep._begin_alignment(runner, warm)
+            assert not c.attestation.exists()
+            if outcome == "success":
+                prep._command(argv)
+            else:
+                expected_error = CancelledError if outcome == "cancelled" else IntegrityError
+                with pytest.raises(expected_error, match=f"native {seam}"):
+                    prep._command(argv)
+        finally:
+            prep.lock = None
+        assert seam in writes
+        assert not c.attestation.exists()
+    assert not c.attestation.exists()
+    c.state.nodes = [{"repo": "https://example.invalid/successor.git", "commit": "e" * 40}]
+    c.calls.clear()
+    c.run()
+    successor = json.loads(c.attestation.read_text())
+    assert {"source", "environment", "runtime", "nodes", "prepare", "doctor", "alignment"} <= set(c.calls)
+    assert successor["identity"]["lifecycle"]["child_generation"] != original_generation["child_generation"]
+    assert not old_requirements & set(successor["requirements"])
+
+
+def test_lifecycle_publication_unresolved_custody_revokes_and_propagates(lifecycle_case):
+    c = lifecycle_case
+    c.publish()
+    warm = c.witness()
+    assert warm.contains(c.requirement)
+    c.state.observation_error = CustodyUnresolved("native custody is unresolved during publication")
+    with pytest.raises(CustodyUnresolved, match="custody is unresolved"):
+        warm.write("f" * 64, c.manifest, object_info_sha256="d" * 64,
+                   expected_lifecycle=dict(c.state.lifecycle))
+    assert not c.attestation.exists()
+
+
+def test_lifecycle_warm_hit_refreshes_real_verified_launch_receipt(lifecycle_case, monkeypatch):
+    from astrid.core.generation import engine_runner
+    from astrid.core.generation._engine_target_files import _TargetFiles
+
+    c = lifecycle_case
+    c.run()
+    c.raw["steps"] = [{"kind": "start", "facts": {}}, {"kind": "health", "facts": {}}]
+    receipt_path = c.attestation.parent / "install.json"
+    receipt_path.write_text(json.dumps(c.raw))
+    assert c.witness().matched is True
+    files = _TargetFiles(str(c.root))
+    previous_init = c.runner.__init__
+    def initialize(runner, *args, **kwargs):
+        previous_init(runner, *args, **kwargs)
+        runner.deadline = time.monotonic() + 30
+        runner.visibility = None
+        runner.path = lambda relative: str(c.root / relative)
+        # Keep the finite live-supervisor edge while using real receipt I/O and
+        # the unchanged strict launch-facts admission in the production writer.
+        runner.context.read_json = files.read_json
+        runner.context.write_json_atomic = files.write_json_atomic
+        runner.context.file_fact = files.file_fact
+    monkeypatch.setattr(c.runner, "__init__", initialize)
+    monkeypatch.setattr(engine_runner, "refresh_installed_launch", _real_refresh_installed_launch)
+    c.calls.clear()
+    report = c.run()
+    committed = json.loads(receipt_path.read_text())
+    start = next(step for step in committed["steps"] if step["kind"] == "start")
+    assert start["facts"]["owner_id"] == c.state.lifecycle["launch_token"]
+    assert start["action"] == "skipped" and start["validation"] == "passed"
+    assert report["installation"]["receipt_sha256"] == hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    assert not {"source", "environment", "runtime", "nodes", "prepare", "doctor", "alignment",
+                "engine-align", "git-inventory", "identity"} & set(c.calls)
+
+
+def test_lifecycle_final_probe_budget_not_reset_by_full_fallback(lifecycle_case, monkeypatch):
+    from astrid.core.generation.engine_contracts import DeadlineExceeded
+    from astrid.core.generation.warm_attestation import WarmAttestation
+
+    c = lifecycle_case
+    c.run()
+    assert c.attestation.exists()
+    probes = []
+    original_probe = WarmAttestation.probe
+    def probe(warm):
+        probes.append(warm)
+        if len(probes) == 2:
+            # Lookup passed, but its final hit check spends the entire shared
+            # allowance. Retrying full preparation cannot mint another budget.
+            warm.budget_remaining = 0
+            raise DeadlineExceeded("final warm probe exhausted the shared subbudget")
+        return original_probe(warm)
+    monkeypatch.setattr(WarmAttestation, "probe", probe)
+    c.calls.clear()
+    report = c.run()
+    assert report["health"]["healthy"] is True
+    assert {"source", "environment", "runtime", "nodes", "prepare", "doctor", "alignment"} <= set(c.calls)
+    assert not c.attestation.exists()
+    assert len(probes) == 2
+    assert probes[0] is probes[1]

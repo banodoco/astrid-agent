@@ -432,7 +432,8 @@ def run_local_server(
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
     from astrid.core.generation.managed_preparation import read_preparation
     prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=url)
-    client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    client = ComfyTargetClient(ComfyTarget(url, "attached"), expected_child_generation=(
+        prepared.get("child_generation") if prepared is not None else None))
     custody = _trust_from_environment(bundle)
     from astrid.core.generation.target_inventory import declared_rows
     provider = _live_preflight(bundle, run_inputs, url, destination, client=client, target_custody=custody,
@@ -517,6 +518,15 @@ def run_local_server(
                 if context is not None and prepared is not None:
                     original_error = sys.exc_info()[1]
                     try:
+                        if getattr(client, "managed_preparation", None) is not None:
+                            from astrid.core.generation.managed_preparation import preparation_scope
+                            # A known pre-POST miss may have required full preparation.
+                            # Carry its actual generation into this attempt's evidence.
+                            with preparation_scope(client.managed_preparation):
+                                refreshed = read_preparation(task=task_identity, attempt=attempt_identity,
+                                    endpoint=url, execution_identity=prepared.get("execution_identity"))
+                            prepared.clear()
+                            prepared.update(refreshed)
                         _project_native_attempt(context.receipt_path, destination,
                                                 alignment=prepared["alignment"], prepared=prepared)
                     except Exception as projection_error:

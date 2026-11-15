@@ -180,7 +180,7 @@ class _TargetFiles:
         _check(deadline)
         return value
 
-    def write_json_atomic(self, path, value, *, deadline, ensure_ascii=False):
+    def write_json_atomic(self, path, value, *, deadline, ensure_ascii=False, check=None):
         parts = self._relative(path)
         if not isinstance(value, Mapping):
             raise RecipeValidationError("target JSON must be an object")
@@ -212,6 +212,8 @@ class _TargetFiles:
                         view = view[written:]
                     os.fsync(fd)
                     _check(deadline)
+                    if check is not None:
+                        check()
                     os.replace(temp, parts[-1], src_dir_fd=parent, dst_dir_fd=parent)
                     os.fsync(parent)
                     _check(deadline)

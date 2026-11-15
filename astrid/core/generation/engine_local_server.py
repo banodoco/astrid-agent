@@ -73,7 +73,12 @@ def ensure_local_engine_server(
                                      health_action=health_action, health_facts=health_facts,
                                      check=lambda: None)
     else:
-        runner = runner_factory(engine=engine, platform=platform, root=root, deadline=deadline)
-        runner.step_id = "start"
-        action, _facts = runner.start(readonly=False)
+        # Injected factories have no proven generation/custody contract.
+        from .engine_platforms import platform_adapter
+        from .warm_attestation import invalidate
+        with platform_adapter(platform).local_install_lock(root, deadline=deadline):
+            invalidate(root, deadline=deadline)
+            runner = runner_factory(engine=engine, platform=platform, root=root, deadline=deadline)
+            runner.step_id = "start"
+            action, _facts = runner.start(readonly=False)
     return "reused" if action == "skipped" else "started"

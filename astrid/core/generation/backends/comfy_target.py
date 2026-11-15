@@ -105,7 +105,8 @@ class ComfyTargetClient:
     reply arrives. Reconciliation or a new attempt belongs to the caller.
     """
 
-    def __init__(self, target: ComfyTarget, *, endpoint_transport=None, opener=None):
+    def __init__(self, target: ComfyTarget, *, endpoint_transport=None, opener=None,
+                 expected_child_generation=None):
         if not isinstance(target, ComfyTarget):
             raise TypeError("ComfyTargetClient requires a ComfyTarget")
         if target.kind == "pod":
@@ -116,6 +117,12 @@ class ComfyTargetClient:
                 raise ValueError("pod Comfy target requires its exact attested EngineEndpointTransport")
         elif endpoint_transport is not None:
             raise ValueError("only a pod Comfy target accepts an endpoint transport")
+        if (expected_child_generation is not None and (
+                not isinstance(expected_child_generation, str)
+                or re.fullmatch(r"[0-9a-f]{32}", expected_child_generation) is None)):
+            raise ValueError("invalid expected child generation")
+        self.expected_child_generation = expected_child_generation
+        self.managed_preparation = None
         self.target = target
         self.endpoint_transport = endpoint_transport
         self._opener = opener or open_comfy_http
@@ -159,7 +166,8 @@ class ComfyTargetClient:
     def _json(self, path, payload=None, *, timeout=10.0, response_limit=64 * 1024,
               acknowledge_empty=True):
         timeout = float(timeout)
-        if not math.isfinite(timeout) or not 0 < timeout <= LOCAL_HTTP_SECONDS:
+        maximum = 3600 if path == "/prompt" and self.expected_child_generation is not None else LOCAL_HTTP_SECONDS
+        if not math.isfinite(timeout) or not 0 < timeout <= maximum:
             raise ValueError("Comfy request timeout must be finite and at most 30 seconds")
         if not isinstance(response_limit, int) or not 0 < response_limit <= MAX_JSON_BYTES:
             raise ValueError("invalid Comfy response bound")
@@ -168,7 +176,9 @@ class ComfyTargetClient:
             raise ValueError("Comfy request is too large")
         request = urllib_request.Request(
             self.http_origin + path, data=body,
-            headers={"Accept-Encoding": "identity", **({"Content-Type": "application/json"} if body is not None else {})},
+            headers={"Accept-Encoding": "identity", **({"Content-Type": "application/json"} if body is not None else {}),
+                     **({"X-Astrid-Child-Generation": self.expected_child_generation}
+                        if path == "/prompt" and self.expected_child_generation is not None else {})},
             method="GET" if body is None else "POST",
         )
         deadline = time.monotonic() + timeout
@@ -277,10 +287,14 @@ class ComfyTargetClient:
                 raise TransportError("prompt already attempted; do not resubmit; reconcile the original attempt")
             self._prompt_attempted = True
         try:
-            result = self._json("/prompt", body, timeout=HTTP_TRANSFER_SECONDS, acknowledge_empty=False)
+            result = self._json("/prompt", body,
+                                timeout=3600 if self.expected_child_generation is not None else HTTP_TRANSFER_SECONDS,
+                                acknowledge_empty=False, response_limit=MAX_JSON_BYTES)
             if not isinstance(result, dict):
                 raise ValueError("Comfy prompt acceptance is not an object")
             self.witness_prompt(result.get("prompt_id"))
+            if self.expected_child_generation is not None:
+                self.managed_preparation = result.pop("astrid_managed_preparation", None)
             return result
         except urllib_error.HTTPError as exc:
             if exc.code in {400, 401, 403, 404, 422}:
