@@ -45,6 +45,8 @@ _MANAGED_KIND_RULES: dict[str, dict[str, Any]] = {
     "video": {"hash_required": True},
     "audio": {"hash_required": True},
 }
+_CONTENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff",
+                       ".mp4", ".webm", ".mov", ".avi", ".mkv", ".mp3", ".wav", ".flac", ".ogg", ".m4a"}
 
 
 def validate_attached_url(value: str) -> str:
@@ -349,6 +351,39 @@ class ComfyTargetClient:
                 frozen.write_bytes(data)
                 self.endpoint_transport.put(frozen, str(root / subfolder / filename))
             return f"{subfolder}/{filename}"
+        old_subfolder, old_filename = subfolder, filename
+        extension = source.suffix.lower()
+        content_name = digest + extension if extension in _CONTENT_EXTENSIONS else None
+        if content_name:
+            state = self._input_size(content_name)
+            if state == len(data):
+                return f"astrid/{content_name}"
+            if state == -1:
+                subfolder, filename = "astrid", content_name
+        result_name = self._upload_http(data, media_type, subfolder, filename)
+        if content_name and subfolder == "astrid" and result_name != content_name:
+            if self._input_size(result_name) != len(data):
+                result_name = self._upload_http(data, media_type, old_subfolder, old_filename)
+                return f"{old_subfolder}/{result_name}"
+        return f"{subfolder}/{result_name}"
+
+    def _input_size(self, filename: str) -> int | None:
+        """Return size, -1 for absence, or None when the probe is inconclusive."""
+        query = urllib_parse.urlencode({"filename": filename, "subfolder": "astrid", "type": "input"})
+        request = urllib_request.Request(self.http_origin + "/view?" + query,
+                                         headers={"Accept-Encoding": "identity"}, method="HEAD")
+        try:
+            with self._opener(request, timeout=HTTP_TRANSFER_SECONDS) as response:
+                if not 200 <= getattr(response, "status", 200) < 300:
+                    return None
+                value = response.headers.get("Content-Length", "")
+                return int(value) if value.isdigit() else None
+        except urllib_error.HTTPError as exc:
+            return -1 if exc.code == 404 else None
+        except (OSError, ValueError):
+            return None
+
+    def _upload_http(self, data: bytes, media_type: str, subfolder: str, filename: str) -> str:
         boundary = uuid.uuid4().hex
         fields = []
         for name, value in (("subfolder", subfolder), ("type", "input")):
@@ -372,7 +407,7 @@ class ComfyTargetClient:
                 or name in {"", ".", ".."} or "\\" in name
                 or result.get("subfolder") != subfolder or result.get("type") != "input"):
             raise ValueError("ComfyUI returned an unsafe uploaded image reference")
-        return f"{subfolder}/{name}"
+        return name
 
     def _pod_directory(self, name: str) -> Path:
         from runpod_lifecycle.pod_agent import observation_path
