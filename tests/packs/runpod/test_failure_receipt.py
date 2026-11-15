@@ -17,12 +17,18 @@ from astrid.core.execution.machine_run import run_on_machine
 from astrid.core.execution.phase_timing import PhaseTiming
 from astrid.packs.runpod import failure_receipt
 from astrid.packs.runpod import machine as rm
-from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401  (fixture)
-from tests.packs.runpod.test_machine import _claim_machine as _claim_machine, machine_case as machine_case  # noqa: F401
+from tests.packs.runpod.test_generation_preparation import (
+    retained as retained,  # noqa: F401  (fixture)
+)
+from tests.packs.runpod.test_machine import _claim_machine as _claim_machine  # noqa: F401
+from tests.packs.runpod.test_machine import machine_case as machine_case
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401  (fixture)
 from tests.packs.runpod.test_target_selection import case as case  # noqa: F401  (fixture)
 from tests.packs.runpod.test_warm_session import (  # noqa: F401  (fixtures)
-    lease_selection_case as lease_selection_case, small_lease as small_lease,
+    lease_selection_case as lease_selection_case,
+)
+from tests.packs.runpod.test_warm_session import (
+    small_lease as small_lease,
 )
 
 FRAME = "astrid-generation-failure: "
@@ -319,7 +325,10 @@ def test_stage_decision_rules(kwargs, stage, basis):
 def test_claim_cause_marker_is_projected_with_identity_gate(marker, error_type):
     from astrid.packs.runpod.failure_diagnostics import EXCEPTIONS
     from astrid.packs.runpod.target_selection import PaidSelectionError
-    from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError, observation_failure_gate
+    from astrid.packs.runpod.worker_preparation import (
+        AcquisitionUnresolvedError,
+        observation_failure_gate,
+    )
 
     error = (PaidSelectionError("private") if error_type == "PaidSelectionError"
              else AcquisitionUnresolvedError("private"))
@@ -486,3 +495,117 @@ def test_failure_command_logs_prints_stderr_first(tmp_path, monkeypatch, capsys)
 def test_render_shows_collected_log_path():
     receipt = {"logs": [{"name": "stderr", "path": "/tmp/example/stderr"}]}
     assert "/tmp/example/stderr" in failure_receipt.render(receipt)
+
+
+def test_v2_monotonic_intervals_are_disjoint_and_expose_gaps(tmp_path):
+    now = [10.0]
+    timing = phase_timing.GenerationTiming(clock=lambda: now[0])
+    now[0] = 11.0
+    timing.transition("preparation")
+    now[0] = 15.0
+    timing.transition("capacity_wait")
+    now[0] = 18.0
+    timing.transition("preparation")
+    now[0] = 20.0
+    timing.transition("execution")
+    now[0] = 30.0
+    timing.transition(None)
+    now[0] = 32.0  # A real gap must remain unaccounted.
+    timing.transition("collection")
+    now[0] = 34.0
+    timing.transition("release")
+    now[0] = 35.0
+    block = timing.block()
+    intervals = block["intervals"]
+    assert all(a["end"] <= b["start"] for a, b in zip(intervals, intervals[1:]))
+    assert block["total"]["seconds"] == 25.0
+    assert block["phases"]["preparation"]["seconds"] == 6.0
+    assert block["unaccounted"] == {"seconds": 2.0, "raw_seconds": 2.0}
+    assert abs(sum(p["seconds"] or 0 for p in block["phases"].values())
+               + block["unaccounted"]["raw_seconds"] - block["total"]["seconds"]) < 0.001
+
+
+def test_v2_nests_fetched_job_run_without_comparing_pod_stamps(tmp_path):
+    now = [10.0]
+    timing = phase_timing.GenerationTiming(clock=lambda: now[0])
+    timing.transition("execution")
+    fixture = {"schema": "astrid.job-run.v1", "started_at": "2099-01-01T00:00:00Z",
+               "ended_at": "1900-01-01T00:00:00Z", "engine_reused": True,
+               "phases": {"verify_models": 0.4, "engine_start_or_reuse": 1.5,
+                          "queue_wait": 0.1, "execute": 7.0, "collect": 1.1}}
+    (tmp_path / "job-run.json").write_text(json.dumps(fixture))
+    timing.read_job(tmp_path)
+    now[0] = 20.0
+    block = timing.block()
+    execution = block["phases"]["execution"]
+    assert execution["sub_phases"] == {name: {"seconds": seconds} for name, seconds in fixture["phases"].items()}
+    assert execution["engine_reused"] is True
+    assert execution["sub_phases_seconds"] == pytest.approx(10.1)
+    assert execution["unaccounted"]["raw_seconds"] == pytest.approx(-0.1)
+    assert execution["unaccounted"]["seconds"] == 0.0
+    human = phase_timing.summary({"host": block})
+    assert "verify_models 0.4" in human and "sum 10.1" in human and "unaccounted 0.0" in human
+
+
+def test_v2_forwarded_stamp_failure_never_fails_machine_job(machine_case, receipts, monkeypatch):  # noqa: F811 - imported fixture
+    from astrid.core.execution.phase_timing import GenerationTiming
+
+    def broken(*args, **kwargs):
+        raise OSError("clock unavailable")
+
+    monkeypatch.setattr(GenerationTiming, "stamp", broken)
+    c = machine_case
+    timing = PhaseTiming(generation=GenerationTiming())
+    error, _, machine = _run(c, receipts, timing=timing)
+    assert error is None and machine["timing"]["schema"] == phase_timing.SCHEMA
+    block = {}
+    phase_timing.attach_host(block, timing.generation)
+    assert block["timing"]["schema"] == phase_timing.TIMING_SCHEMA
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_machine_loop_v2_keeps_nested_job_phases_on_success_and_failure(machine_case, receipts, monkeypatch, failed):  # noqa: F811 - imported fixture
+    c = machine_case
+    _claim_machine(c)
+    now = [10.0]
+    timing = phase_timing.GenerationTiming(clock=lambda: now[0])
+    fixture = {"schema": "astrid.job-run.v1", "engine_reused": False,
+               "phases": {"verify_models": 1.0, "engine_start_or_reuse": 2.0,
+                          "queue_wait": 0.0, "execute": 6.0, "collect": 0.5}}
+    original_start, original_poll, original_fetch = c.machine.start, c.machine.poll, c.machine.fetch
+
+    def start(*args, **kwargs):
+        now[0] = 15.0
+        return original_start(*args, **kwargs)
+
+    def poll(*args, **kwargs):
+        now[0] = 25.0
+        return original_poll(*args, **kwargs)
+
+    def fetch(run, destination):
+        result = original_fetch(run, destination)
+        (destination / "job-run.json").write_text(json.dumps(fixture))
+        now[0] = 27.0
+        if failed:
+            raise ValueError("fixture collection failed")
+        return result
+
+    monkeypatch.setattr(c.machine, "start", start)
+    monkeypatch.setattr(c.machine, "poll", poll)
+    monkeypatch.setattr(c.machine, "fetch", fetch)
+    job = replace(c.job(), timing=PhaseTiming(generation=timing), generation_timing=timing)
+    if failed:
+        with pytest.raises(ValueError, match="fixture collection failed"):
+            run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False, sleep=lambda _: None)
+        # Same best-effort final read as the host, after release on either path.
+        timing.read_job(job.scratch / "outputs")
+    else:
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False, sleep=lambda _: None)
+    payload = {}
+    phase_timing.attach_host(payload, timing)
+    execution = payload["timing"]["host"]["phases"]["execution"]
+    # Five seconds of dispatch precede the ten-second observed pod run.
+    assert execution["seconds"] == 15.0
+    assert execution["sub_phases_seconds"] == 9.5
+    assert execution["unaccounted"] == {"seconds": 5.5, "raw_seconds": 5.5}
+    assert execution["engine_reused"] is False

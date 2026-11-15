@@ -11,7 +11,6 @@ import pytest
 from astrid.core.cli.domain_tasks import COMMANDS, build_parser
 from astrid.sdk.contracts import DomainResult
 
-
 TASK_ID = "a123456789abcdef"
 
 
@@ -179,3 +178,22 @@ def test_logs_without_project_at_module_entrypoint(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "worker.log" in result.stdout
+
+
+def test_tasks_show_displays_stored_host_timing_in_json_and_human(capsys):
+    from types import SimpleNamespace
+    timing = {"schema": "astrid.generation.timing.v2", "host": {
+        "total": {"seconds": 12.0}, "phases": {"execution": {"seconds": 10.0}},
+        "unaccounted": {"seconds": 2.0, "raw_seconds": 2.0}}}
+    task = {"task_id": TASK_ID, "result": {"timing": timing}}
+    client = SimpleNamespace(tasks=SimpleNamespace(show=lambda _: DomainResult.success(task),
+        list=lambda *args, **kwargs: DomainResult.success([task])))
+    for flags in ([], ["--json"]):
+        parser = build_parser(client)
+        parsed = parser.parse_args(["show", "--project", "demo", TASK_ID, *flags])
+        assert parsed.handler(parsed) == 0
+        text = capsys.readouterr().out
+        if flags:
+            assert json.loads(text)["data"]["result"]["timing"] == timing
+        else:
+            assert "timing: 12.0s = execution 10.0 + unaccounted 2.0" in text

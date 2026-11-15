@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-import importlib
+import time as _entry_time
 
-from .version import __version__
+# Both console scripts and python -m astrid import this package first.
+_PROCESS_ENTRY_MONOTONIC = _entry_time.monotonic()
+
+import importlib  # noqa: E402 - entry clock precedes heavy imports
+
+from .version import __version__  # noqa: E402
 
 _SDK_EXPORTS = (
     # Curated public SDK surface: lazy

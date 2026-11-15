@@ -11,15 +11,19 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from urllib.parse import urlencode
 
+from astrid.core.execution.phase_timing import cli_phase
+
 # The hosted App: the origin the installers open (installer/backend.py) and the one the README names.
 HOSTED_APP_ORIGIN = 'https://astrid.haus'
 
 
+@cli_phase("project_open_url")
 def open_url_for(project: str) -> str:
     """The one link that opens a project's gallery in the hosted App; the project id is its only parameter."""
     return f'{HOSTED_APP_ORIGIN}/tools/video-editor?{urlencode({"project": project})}'
 
 
+@cli_phase("project_open_url")
 def admitted_project(payload: Any, *, explicit: str | None = None, client: Any = None) -> str | None:
     """The project an admitted generation runs in: the Runtime's own id, then the caller's, then the selection."""
     project = payload.get('project_id') if isinstance(payload, Mapping) else None
@@ -45,6 +49,7 @@ def _sha256(value: Any) -> str:
     return digest
 
 
+@cli_phase("delivery")
 def deliver_generation(result: Any, *, client: Any, out: str | Path | None, project: str | None = None) -> Any:
     """Return JSON with verified caller-local paths; never expose worker paths.
 
@@ -103,14 +108,16 @@ def _deliver(payload, rows, *, client, out, managed, project):
         def open_verified(reference, digest, *, size=None, slot):
             # Reuse the product's scoped resolver, integrity checks and CAS
             # clone/copy path, including for the immutable producer manifest.
-            opened = client.media.open(project, reference, materialize=True,
-                cache_root=Path(scratch) / slot, preview_bytes=0,
-                max_bytes=size if isinstance(size, int) and size > 0 else DEFAULT_MATERIALIZE_BYTES)
+            with cli_phase("materialisation"):
+                opened = client.media.open(project, reference, materialize=True,
+                    cache_root=Path(scratch) / slot, preview_bytes=0,
+                    max_bytes=size if isinstance(size, int) and size > 0 else DEFAULT_MATERIALIZE_BYTES)
             if not opened.ok:
                 raise ValueError(opened.error.message)
             path = Path(opened.data['local_path'])
-            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-                raise ValueError(f'sha256 mismatch for Runtime object {reference}')
+            with cli_phase('output_hashing'):
+                if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                    raise ValueError(f'sha256 mismatch for Runtime object {reference}')
             if size is not None and path.stat().st_size != size:
                 raise ValueError(f'byte count mismatch for Runtime object {reference}')
             return path
@@ -149,11 +156,13 @@ def _deliver(payload, rows, *, client, out, managed, project):
             else:
                 source = Path(row['path'])
                 data = source.read_bytes()
-                if digest and hashlib.sha256(data).hexdigest() != digest:
-                    raise ValueError('sha256 mismatch for local generation output')
-                local_path, _ = _materialize(data, filename=source.name,
-                    media_type=row.get('media_type', 'application/octet-stream'),
-                    cache_root=Path(scratch) / str(index), source=source)
+                with cli_phase('output_hashing'):
+                    if digest and hashlib.sha256(data).hexdigest() != digest:
+                        raise ValueError('sha256 mismatch for local generation output')
+                with cli_phase('materialisation'):
+                    local_path, _ = _materialize(data, filename=source.name,
+                        media_type=row.get('media_type', 'application/octet-stream'),
+                        cache_root=Path(scratch) / str(index), source=source)
                 temporary = Path(local_path)
             name = Path(str(row.get('filename') or row.get('path') or temporary.name)).name
             if name in {'', '.', '..'}:

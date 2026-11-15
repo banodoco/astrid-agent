@@ -552,6 +552,8 @@ def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
     settled = task.get('result') or raw.get('result')
     settled = settled if isinstance(settled, Mapping) else {}
     refs = {'task_id': task.get('task_id') or result.kernel_task_id}
+    if isinstance(settled.get('timing'), Mapping):
+        refs['timing'] = deepcopy(settled['timing'])
     rows = settled.get('outputs')
     if isinstance(rows, list):
         refs['logs'] = [deepcopy({key: value for key, value in row.items()

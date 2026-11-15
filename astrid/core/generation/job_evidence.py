@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core._shared import run_logs
-from astrid.core.execution.phase_timing import PhaseTiming
+from astrid.core.execution.phase_timing import PhaseTiming, stamp
 
 from .engine_custody import engine_log_path
 
@@ -52,11 +52,11 @@ def _process_entry() -> tuple[float | None, str]:
 
 
 class JobEvidence:
-    def __init__(self, out: Path, preparation: Any):
+    def __init__(self, out: Path, preparation: Any, *, generation: Any = None):
         self.process_entry, self.process_entry_source = _process_entry()
         self.out = Path(out)
         self.started_at = datetime.now(timezone.utc).isoformat()
-        self.timing = PhaseTiming()
+        self.timing = PhaseTiming(clock=time.monotonic, generation=generation)
         self.preparation = preparation
         self.path = engine_log_path(str(preparation.root), preparation.recipe.engine)
         self.start: int | None = 0
@@ -68,20 +68,21 @@ class JobEvidence:
         self.begin()
 
     def waiting(self) -> None:
-        self.timing.stamp("capacity_wait_started_at", first=True)
+        stamp(self.timing, "capacity_wait_started_at", first=True)
 
     def start_execution(self) -> None:
-        self.timing.stamp("job_started_at", first=True)
+        stamp(self.timing, "job_started_at", first=True)
 
     def start_collect(self) -> None:
         if "job_started_at" in self.timing.stamps:
-            self.timing.stamp("job_ended_at", first=True)
-        self.timing.stamp("collection_started_at", first=True)
+            stamp(self.timing, "job_ended_at", first=True)
+        stamp(self.timing, "collection_started_at", first=True)
 
     def begin(self) -> None:
         """Reset the boundary after acquiring exclusive engine custody."""
         if "capacity_wait_started_at" in self.timing.stamps:
-            self.timing.stamp("claimed_at", first=True)
+            stamp(self.timing, "claimed_at", first=True)
+        stamp(self.timing, "preparation_started_at")
         self.notes.clear()
         self.log_identity = None
         try:
@@ -125,7 +126,7 @@ class JobEvidence:
                 declared = True
         if not declared:
             self.notes.append("engine log declaration unavailable")
-        self.timing.stamp("collection_ended_at")
+        stamp(self.timing, "collection_ended_at")
         if ("capacity_wait_started_at" in self.timing.stamps
                 and "claimed_at" not in self.timing.stamps):
             self.notes.append("queue_wait unavailable: custody admission was interrupted before completion")
@@ -150,9 +151,9 @@ class JobEvidence:
                   "phase_sources": {
                       "verify_models": "managed preparation verification_seconds; model_verification_seconds is an alias",
                       "engine_start_or_reuse": "sum of supervisor probe/start and readiness-health calls, including doctor preparation",
-                      "queue_wait": "phase-timing.v1 capacity_wait: local engine custody admission",
-                      "execute": "phase-timing.v1 execution: dispatch through producer result; includes ComfyUI prompt queue",
-                      "collect": "phase-timing.v1 collection: local finalization and evidence capture; excludes record serialization",
+                      "queue_wait": "pod monotonic capacity_wait: local engine custody admission",
+                      "execute": "pod monotonic execution: dispatch through producer result; includes ComfyUI prompt queue",
+                      "collect": "pod monotonic collection: local finalization and evidence capture; excludes record serialization",
                   }, "notes": self.notes}
         with suppress(Exception):
             path = self.out / "job-run.json"

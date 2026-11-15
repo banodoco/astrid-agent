@@ -127,7 +127,7 @@ def test_machine_poll_backoff_reaches_default_cap(tmp_path) -> None:
     sleeps = []
     run_on_machine(machine, _job(tmp_path), destination=tmp_path / "outputs",
                    cancelled=lambda: False, sleep=sleeps.append)
-    assert sleeps == [1.0, 1.5, 2.25, 3.375, 5.0, 5.0]
+    assert sleeps == [0.2] * 6
     assert len([event for event in machine.events if event[0] == "poll"]) == 7
 
 

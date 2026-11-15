@@ -899,6 +899,9 @@ class RunPodMachine:
                 "task_identity": job.task_id, "attempt_identity": job.attempt_id,
                 "idempotency_key": f"remote:{job.task_id}:{job.attempt_id}",
                 "inputs": public_inputs, "bindings": bindings, "execution": shipped}
+        from astrid.core.generation.settings import model_trust_unchanged
+
+        body["generation_settings"] = {"models": {"trust_unchanged": model_trust_unchanged()}}
         record = lease.lease.claim
         size, mount = record.get("network_volume_size_gb"), record.get("volume_mount_path")
         if (record.get("network_volume_id") and type(size) is int and size > 0
@@ -1599,7 +1602,7 @@ class RunPodMachine:
             raise MachineError("reset job differs from the checkpointed job custody")
         self._checkpoint(lease, {"id": job_id, "state": "running"})
         limit = time.monotonic() + RESET_SECONDS
-        poll = min(POLL_SECONDS, float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 1.0))
+        poll = min(POLL_SECONDS, float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 0.2))
         while True:
             if (verify_deadline is not None and time.monotonic() >= verify_deadline) or (
                     paid_expiry is not None and self._require().lease_owner.clock() >= paid_expiry):
@@ -1615,13 +1618,13 @@ class RunPodMachine:
                 break
             if record.get("state") in {"missing", "cancelled"}:
                 raise MachineError(f"reset job is {record.get('state')}")
-            if time.monotonic() > limit:
+            if time.monotonic() >= limit:
                 stopped = ops.job_cancel(job_id)
                 if stopped.get("id") != job_id or stopped.get("state") not in {"exited", "cancelled"}:
                     raise MachineError("exact reset job stop could not be verified")
                 self._checkpoint(lease, {"id": job_id, "state": stopped["state"]})
                 raise MachineError(f"reset did not finish in {RESET_SECONDS:.0f}s")
-            sleep_for = poll
+            sleep_for = min(poll, max(0, limit - time.monotonic()))
             if verify_deadline is not None:
                 sleep_for = min(sleep_for, max(0, verify_deadline - time.monotonic()))
             if paid_expiry is not None:

@@ -230,7 +230,14 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
     if task_id is None:
         return code
     result = parsed.client.tasks.show(task_id)
-    return print_result(result, as_json=parsed.json)
+    code = print_result(result, as_json=parsed.json)
+    if not parsed.json and isinstance(result.data, Mapping):
+        from astrid.core.execution.phase_timing import summary
+        terminal = result.data.get("result") or {}
+        line = summary(terminal.get("timing")) if isinstance(terminal, Mapping) else ""
+        if line:
+            print(line)
+    return code
 
 
 def _cmd_cancel(parsed: argparse.Namespace) -> int:
