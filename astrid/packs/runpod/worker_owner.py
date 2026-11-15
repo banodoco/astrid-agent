@@ -1542,7 +1542,9 @@ def _read_credential(path_value: str) -> bytes:
     if not path.is_absolute() or path.is_symlink():
         raise RunPodWorkerOwnerError("Runtime credential source path is unsafe")
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        # Windows has no O_NOFOLLOW; the symlink pre-check and the identity
+        # re-check after reading still refuse a swapped or linked source.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError as exc:
         raise RunPodWorkerOwnerError("Runtime credential source is unavailable") from exc
     try:
