@@ -9,6 +9,76 @@ from astrid.core.generation import cli
 from astrid.packs.runpod import failure_receipt
 
 
+@pytest.mark.parametrize("message, redacted", [
+    ("failed: api_key=abc123 then continued", "failed: api_key=<redacted> then continued"),
+    ("Bearer abc.def https://url-token@example.test/keep",
+     "Bearer <redacted> https://<redacted>@example.test/keep"),
+])
+def test_failure_json_redacts_only_free_text_preserving_shape(tmp_path, monkeypatch, capsys, message, redacted):
+    receipt = {
+        "message": "failed: api_key=abc123 then continued",
+        "cause": {"issue_message": message,
+                  "token_count": 7, "secret": {"token_count": 3}, "exit_code": 1},
+        "logs": [{"path": "/tmp/run/job.log", "bytes": 23, "digest": "sha256:abc",
+                  "tail": "api_key=tail-secret keep-end"}],
+        "identity": {"task_id": "task", "secret": [1, False, None]},
+        "timing": {"phases": {"token_count": {"seconds": 0.5}}},
+        "stage": "execution", "token_count": 9,
+    }
+    path = tmp_path / "receipt.json"
+    original = json.dumps(receipt)
+    path.write_text(original)
+    monkeypatch.setattr(failure_receipt, "find_receipt", lambda _task_id: path)
+    assert cli._failure_command(cli._parser().parse_args(["failure", "--json"])) == 0
+    actual = json.loads(capsys.readouterr().out)
+    expected = json.loads(original)
+    expected["message"] = "failed: api_key=<redacted> then continued"
+    expected["cause"]["issue_message"] = redacted
+    expected["logs"][0]["tail"] = "api_key=<redacted> keep-end"
+    assert actual == expected
+    assert type(actual["cause"]["token_count"]) is int
+
+    def shape(value):
+        if isinstance(value, dict):
+            return {key: shape(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [shape(item) for item in value]
+        return type(value)
+
+    assert shape(actual) == shape(receipt)
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_failure_human_pem_keeps_heading_cause_and_later_fields(closed):
+    key = "-----BEGIN PRIVATE KEY-----\nkey-bytes"
+    if closed:
+        key += "\n-----END PRIVATE KEY-----"
+    result = failure_receipt.render({"stage": "execution", "message": "generation failed",
+                                     "cause": {"issue_message": key, "exit_code": 1},
+                                     "identity": {"task_id": "task"}})
+    assert result.startswith("Failure: execution (None)\ngeneration failed\n")
+    assert "Cause: issue_message=<redacted PEM>, exit_code=1\nTask: task" in result
+    assert "key-bytes" not in result
+
+
+def test_failure_json_logs_redacts_escaped_pem(tmp_path, monkeypatch, capsys):
+    key = "-----BEGIN PRIVATE KEY-----\nkey-bytes\n-----END PRIVATE KEY-----"
+    log = tmp_path / "job.log"
+    original = json.dumps({"tail": f"before {key} after"})
+    log.write_text(original)
+    receipt = {"message": "failed", "cause": {"issue_message": f"before {key} after"},
+               "logs": [{"name": "stdout", "path": str(log)}]}
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(receipt))
+    monkeypatch.setattr(failure_receipt, "find_receipt", lambda _task_id: path)
+    assert cli._failure_command(cli._parser().parse_args(["failure", "--json", "--logs"])) == 0
+    receipt_text, log_text = capsys.readouterr().out.split("==> stdout <==\n")
+    assert json.loads(receipt_text)["cause"]["issue_message"] == "before <redacted PEM> after"
+    assert json.loads(log_text)["tail"] == "before <redacted PEM> after"
+    assert log.read_text() == original
+
+
 @pytest.mark.parametrize("args", [[], ["--json"], ["--logs"], ["--logs", "--json"],
                                  ["--name", "generation.stdout"],
                                  ["--name", "generation.stdout", "--json"], ["mcp"]])

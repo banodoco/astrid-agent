@@ -147,6 +147,32 @@ def test_json_contains_only_role_log_rows(capsys):
     assert envelope["data"] == outputs()[1:]
 
 
+def test_json_logs_redacts_escaped_pem_without_extra_object_reads(capsys):
+    key = "-----BEGIN PRIVATE KEY-----\nkey-bytes\n-----END PRIVATE KEY-----"
+    rows = [{"role": "log", "filename": f"before {key} after", "digest": "sha256:engine"}]
+    client = FakeClient(rows)
+    assert invoke(client, "--json") == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["data"][0]["filename"] == "before <redacted PEM> after"
+    assert rows[0]["filename"] == f"before {key} after"
+    assert client.read == []  # formatting adds zero remote object reads
+
+
+def test_named_json_log_redacts_escaped_pem_with_one_object_read(capsys):
+    key = "-----BEGIN PRIVATE KEY-----\nkey-bytes\n-----END PRIVATE KEY-----"
+    original = json.dumps({"tail": f"before {key} after"}).encode()
+    client = FakeClient(outputs())
+
+    def read_bytes(digest):
+        client.media.read.append(digest)
+        return original
+
+    client.media.read_bytes = read_bytes
+    assert invoke(client, "--name", "engine", "--json") == 0
+    assert json.loads(capsys.readouterr().out) == {"tail": "before <redacted PEM> after"}
+    assert client.read == ["sha256:engine"]
+
+
 def test_empty_logs_fails_with_task_message(capsys):
     assert invoke(FakeClient([])) == 1
     assert f"no logs recorded for task {TASK_ID}" in capsys.readouterr().err

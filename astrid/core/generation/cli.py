@@ -789,7 +789,8 @@ def _failure_command(parsed) -> int:
     receipt = json.loads(path.read_text(encoding="utf-8"))
     selected_name = getattr(parsed, 'name', None)
     if not selected_name:
-        print(redact_log(json.dumps(receipt, indent=2, sort_keys=True)) if parsed.json else failure_receipt.render(receipt))
+        print(json.dumps(failure_receipt.redact_for_display(receipt), indent=2, sort_keys=True)
+              if parsed.json else failure_receipt.render(receipt))
     if parsed.logs or getattr(parsed, 'name', None):
         logs = sorted(receipt.get('logs', []), key=failure_receipt.log_order)
         name = selected_name

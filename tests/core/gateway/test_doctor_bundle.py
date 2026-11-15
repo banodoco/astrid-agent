@@ -76,7 +76,7 @@ def test_redact_log_handles_json_environment_urls_and_private_keys():
 
     for secret in ("json-token", "nested-key", "workspace-secret", "openai-secret", "url-password", "private-key-bytes"):
         assert secret not in redacted
-    assert "credentials" in redacted and "<redacted private key>" in redacted
+    assert "credentials" in redacted and "<redacted PEM>" in redacted
 
 
 def test_bundle_contains_redacted_logs_and_safe_manifest_projection(tmp_path, monkeypatch):
@@ -416,3 +416,49 @@ def test_url_credential_redaction_is_linear_on_long_scheme_like_runs(text):
     started = time.monotonic()
     redact_log(text)
     assert time.monotonic() - started < 0.2
+
+
+@pytest.mark.parametrize("length", [513, 4096])
+def test_redact_log_long_url_userinfo(length):
+    assert doctor_bundle.redact_log(f"https://{'a' * length}@example.test/keep") == (
+        "https://<redacted>@example.test/keep")
+
+
+@pytest.mark.parametrize("escaped", [False, True])
+def test_inline_pem_preserves_prefix_suffix_and_two_blocks(escaped):
+    key = "-----BEGIN RSA PRIVATE KEY-----\nkey-bytes\n-----END RSA PRIVATE KEY-----"
+    text = f"heading\nCause: issue_message={key} keep-middle {key} keep-end"
+    if escaped:
+        text = json.dumps({"tail": text})
+    result = doctor_bundle.redact_log(text)
+    if escaped:
+        result = json.loads(result)["tail"]
+    assert result == "heading\nCause: issue_message=<redacted PEM> keep-middle <redacted PEM> keep-end"
+
+
+def test_unterminated_json_pem_stops_at_field_boundary():
+    text = json.dumps({"tail": "before -----BEGIN PRIVATE KEY-----\nkey-bytes",
+                       "next": "keep-next", "count": 3})
+    assert json.loads(doctor_bundle.redact_log(text)) == {
+        "tail": "before <redacted PEM>", "next": "keep-next", "count": 3}
+
+
+def test_pem_end_must_match_begin_kind():
+    text = ("prefix -----BEGIN RSA PRIVATE KEY-----\nkey-bytes\n"
+            "-----END EC PRIVATE KEY-----\nstill-private\n-----END RSA PRIVATE KEY----- suffix")
+    assert doctor_bundle.redact_log(text) == "prefix <redacted PEM> suffix"
+
+
+@pytest.mark.parametrize("text", [
+    "a" * (1024 * 1024),
+    "https://" + "a" * (1024 * 1024 - 8),
+    "a://" * (1024 * 256),
+    "x@" * (1024 * 512),
+    ("a-b.c+d" * 149797)[:1024 * 1024],
+], ids=["letters", "https-letters", "schemes", "at-signs", "scheme-characters"])
+def test_redact_log_one_mib_cpu_budget(text):
+    import time
+
+    started = time.monotonic()
+    doctor_bundle.redact_log(text)
+    assert time.monotonic() - started < 1.0

@@ -428,10 +428,31 @@ def find_receipt(task_id: str | None = None, *, root: Path | None = None) -> Pat
     return max(rows, key=lambda row: row[0])[1] if rows else None
 
 
+def redact_for_display(value: Any, key: str = "") -> Any:
+    """Copy a receipt, redacting only free-text strings, never its metadata.
+
+    In particular, sensitive-looking keys do not change values' types, and
+    retained log paths and identities remain usable by receipt consumers.
+    """
+    from astrid.core.gateway.doctor_bundle import redact_log
+
+    if isinstance(value, dict):
+        return {name: redact_for_display(item, name) for name, item in value.items()}
+    if isinstance(value, list):
+        return [redact_for_display(item, key) for item in value]
+    if isinstance(value, str) and key in {
+        "message", "issue_message", "cause", "tail", "excerpt",
+        "log_tail", "log_excerpt", "stdout_tail", "stderr_tail",
+    }:
+        return redact_log(value)
+    return value
+
+
 def render(receipt: Mapping[str, Any]) -> str:
     """The human form: a few fixed lines from the receipt."""
     from astrid.core.gateway.doctor_bundle import redact_log
 
+    receipt = redact_for_display(receipt)
     cause, ident = receipt.get("cause") or {}, receipt.get("identity") or {}
     machine, collection = receipt.get("machine") or {}, receipt.get("collection") or {}
     timing = ((receipt.get("timing") or {}).get("phases") or {})
