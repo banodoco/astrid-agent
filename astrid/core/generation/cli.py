@@ -181,7 +181,8 @@ def _json_inputs(path: str) -> dict[str, Any]:
     def invalid_constant(value):
         raise ValueError(f"invalid JSON constant {value}")
 
-    values = json.loads(Path(path).expanduser().read_text(), object_pairs_hook=object_pairs,
+    # JSON is UTF-8 by definition; never the Windows ANSI code page. utf-8-sig tolerates a BOM.
+    values = json.loads(Path(path).expanduser().read_text(encoding="utf-8-sig"), object_pairs_hook=object_pairs,
                         parse_constant=invalid_constant)
     if not isinstance(values, dict):
         raise ValueError("--inputs-json must contain a JSON object")

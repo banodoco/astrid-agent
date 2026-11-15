@@ -3,6 +3,7 @@
 import os
 import shutil
 import stat
+import time
 
 
 def _is_windows():
@@ -32,3 +33,20 @@ def remove_pack_tree(path, *, ignore_errors=False):
     except OSError:
         if not ignore_errors:
             raise
+
+
+def remove_tree_after_release(path, *, attempts=6, delay=0.25, sleep=time.sleep):
+    """Remove a just-used tree, riding out a brief Windows sharing violation.
+
+    A virus scanner or a just-exited child can hold a freshly written file for a
+    moment; on Windows that surfaces as PermissionError, so the removal is retried
+    a few times with a short, growing pause. POSIX has no such lock, so there the
+    first failure is final.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return remove_pack_tree(path)
+        except PermissionError:
+            if not _is_windows() or attempt == attempts:
+                raise
+            sleep(delay * attempt)

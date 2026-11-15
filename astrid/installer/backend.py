@@ -511,7 +511,7 @@ class Backend:
                 self.run([env["ASTRID_NODE_EXECUTABLE"], npm, "ci", "--no-audit", "--no-fund"],
                          cwd=remotion, extra_env=env)
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-                self.say(f"Rendering unavailable: Remotion npm ci failed ({self._command_failure(exc)}). Check the installer log and retry the install.")
+                self.say(f"Rendering unavailable: Remotion npm ci failed ({self._command_failure(exc)}). Details are in the installer log at {self.log}; retry the install.")
                 return False
             marker.write_text(lock_hash + "\n", encoding="ascii")
         # Renders never download: fetch Remotion's browser now, once per Remotion

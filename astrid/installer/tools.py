@@ -23,7 +23,7 @@ from runtime_protocol import platform
 
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_FORK_URL
 from ..version import ASTRID_VERSION
-from ._pack_cleanup import remove_pack_tree
+from ._pack_cleanup import remove_pack_tree, remove_tree_after_release
 
 ENCODERS = {"libx264", "libx265", "libvpx-vp9", "libaom-av1", "libopus"}
 FILTERS = {"ebur128", "silencedetect", "astats", "signalstats", "blackdetect",
@@ -467,7 +467,7 @@ def source(name: str, sha: str, destination: Path, *, repo: str | None = None,
     finally:
         archive.unlink(missing_ok=True)
         if staging.exists():
-            shutil.rmtree(staging)
+            remove_tree_after_release(staging)
     return destination
 
 
@@ -602,7 +602,7 @@ def _install_omp_source(selected: dict, recipe: dict, root: Path, target: str, r
     normalized = root / "source"
     platform.replace_path(source_root, normalized)
     if container.exists():
-        shutil.rmtree(container)
+        remove_tree_after_release(container)
     source_root = normalized
     tree_sha256 = source_tree_sha256(source_root)
     _check_omp_lock(source_root, recipe["bun_lock_sha256"])
@@ -628,7 +628,7 @@ def _install_omp_source(selected: dict, recipe: dict, root: Path, target: str, r
                 raise ValueError(f"The pinned OMP native archive is missing {name}.")
             platform.replace_path(native_file, destination / name)
     finally:
-        shutil.rmtree(native_archive)
+        remove_tree_after_release(native_archive)
     # Import the producer's CPU-aware loader, then enforce the exact ABI marker
     # even in workspace mode, where the producer normally omits that guard.
     probe = ("import {pathToFileURL} from 'node:url';"
