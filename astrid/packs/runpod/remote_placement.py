@@ -1127,7 +1127,7 @@ class _HttpsOps:
 
     def bounded(self, deadline: float, *, abort_event: threading.Event | None = None) -> "_HttpsOps":
         return type(self)(self.pod_id, self.token, deadline=deadline, base_url=self.base_url,
-                          abort_event=abort_event)
+                          abort_event=abort_event, cancelled=self.cancelled)
 
     def _transport(self):
         from runpod_lifecycle.https import HttpsPodTransport
@@ -1158,13 +1158,16 @@ class _HttpsOps:
 
     def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Kill a slow-drip caller before it can hold the host's drain forever."""
+        from astrid.core.execution.machine_run import MachineRunCancelled
+
         assert self.deadline is not None
         def refuse(code: str, message: str) -> PlacementReasonError:
             return PlacementReasonError(
                 message, reason=Reason(stage="boot", step="provider_contract", gate="provider", code=code)
             )
 
-        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
+        self._check_cancelled()
+        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel", "get"}:
             raise RemotePlacementError("unsupported bounded pod operation")
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
@@ -1221,10 +1224,12 @@ class _HttpsOps:
             reader = threading.Thread(target=read_frame, daemon=True)
             reader.start()
             while not read_done.wait(0.02):
+                self._check_cancelled()
                 if self.abort_event is not None and self.abort_event.is_set():
                     raise refuse("custody_unresolved", "bounded pod operation was interrupted")
                 if time.monotonic() >= request_deadline:
                     raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
+            self._check_cancelled()
             if received.get("error") or "raw" not in received:
                 if self.abort_event is not None and self.abort_event.is_set():
                     raise refuse("custody_unresolved", "bounded pod operation was interrupted")
@@ -1241,8 +1246,9 @@ class _HttpsOps:
                 raise refuse("transport_failed", "bounded pod operation failed")
             if self.abort_event is not None and self.abort_event.is_set():
                 raise refuse("custody_unresolved", "bounded pod operation was interrupted")
+            self._check_cancelled()
             return payload["value"]
-        except PlacementReasonError:
+        except (PlacementReasonError, MachineRunCancelled):
             raise
         except (OSError, EOFError, ValueError, TypeError, RuntimeError):
             raise refuse("deadline_exceeded" if time.monotonic() >= request_deadline else "transport_failed",

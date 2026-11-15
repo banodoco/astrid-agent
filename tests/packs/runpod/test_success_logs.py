@@ -3,6 +3,7 @@
 import hashlib
 import json
 import shlex
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ def completed_case(machine_case, monkeypatch):
     c.output_reads = []
     c.log_fault = None
     c.output_fault = None
+    c.manifest_logs = None
 
     def start(command, **kwargs):
         result = original_start(command, **kwargs)
@@ -49,6 +51,10 @@ def completed_case(machine_case, monkeypatch):
                 manifest["files"]["logs/engine.log"]["size"] += 1
             if c.output_fault == "size":
                 manifest["files"]["artifacts/cpu.png"]["size"] += 1
+            if c.manifest_logs is not None:
+                manifest["files"] = {key: value for key, value in manifest["files"].items()
+                                     if not key.startswith("logs/")}
+                manifest["files"].update(c.manifest_logs)
             data = json.dumps(manifest).encode()
             c.pod.files[manifest_path] = data
             c.pod.files[result["dir"] + "/stdout"] = (
@@ -94,7 +100,7 @@ def test_completed_job_log_fetch_budget(completed_case, fault):
     assert (destination / "logs/stdout.log").read_bytes() == b"verified log\n"
     if fault:
         reason = "TimeoutError" if fault == "timeout" else "DigestMismatch"
-        assert fetched["logs_unavailable"] == {"logs/engine.log": reason}
+        assert fetched["logs_unavailable"] == {"engine.log": reason}
         assert "logs/engine.log" not in fetched["files"]
         assert not (destination / "logs/engine.log").exists()
     else:
@@ -134,3 +140,192 @@ def test_host_records_successful_job_logs_unavailable(tmp_path, monkeypatch):
         cancel_signal=None, task_id="task", attempt_id="attempt", fence=1, terminal=terminal)
     assert result.returncode == 0
     assert terminal["machine"]["logs_unavailable"] == unavailable
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_stalled_success_log_budget_aborts_transfer_and_releases(completed_case, monkeypatch, cancel):
+    import multiprocessing
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+
+    from astrid.core.execution.machine_run import MachineRunCancelled
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    c = completed_case
+    entered, stop, cancelled = Event(), Event(), Event()
+    attempts, deadlines = [], []
+    budget = 2.0
+    monkeypatch.setattr(rm, "SUCCESS_LOG_SECONDS", budget, raising=False)
+
+    class Stalled(BaseHTTPRequestHandler):
+        def do_POST(self):
+            entered.set()
+            if cancel:
+                cancelled.set()
+            # This fake server never supplies the requested body until teardown.
+            self.send_response(200)
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            stop.wait(10)
+
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Stalled)
+    Thread(target=server.serve_forever, daemon=True).start()
+    first_log = []
+    original_call = _HttpsOps._call_direct
+
+    def call(ops, name, *args, **kwargs):
+        if name == "get" and "/out/logs/" in args[0]:
+            first_log.append(time.monotonic())
+            attempts.append(args[0].rsplit("/", 1)[1])
+            deadlines.append(ops.deadline)
+            # The in-memory fixture's pod-1 is not a valid lifecycle proxy ID.
+            ops.pod_id, ops.token = "pod1", "x" * 32
+            ops.base_url = f"http://127.0.0.1:{server.server_port}"
+            return c.real_bounded_call(ops, name, *args, **kwargs)
+        return original_call(ops, name, *args, **kwargs)
+
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", call)
+    job = c.job()
+    destination = job.scratch / "outputs"
+    children = {child.pid for child in multiprocessing.active_children()}
+    try:
+        if cancel:
+            with pytest.raises(MachineRunCancelled):
+                run_on_machine(c.machine, job, destination=destination,
+                               cancelled=cancelled.is_set, sleep=lambda _: None)
+        else:
+            fetched = run_on_machine(c.machine, job, destination=destination,
+                                     cancelled=cancelled.is_set, sleep=lambda _: None)
+            assert fetched["returncode"] == 0
+            assert fetched["logs_unavailable"] == {"engine.log": "deadline", "stdout.log": "deadline"}
+            assert c.read()["lease"]["state"] == "idle"
+            assert c.pod.resets[-1]["ok"]
+        assert entered.is_set() and attempts == ["engine.log"]
+        assert deadlines[0] is not None
+        assert time.monotonic() - first_log[0] < budget + 1.5
+        assert {child.pid for child in multiprocessing.active_children()} == children
+        assert (destination / "artifacts/cpu.png").read_bytes() == b"png-bytes"
+        assert not list(destination.glob("logs/*"))
+        assert not list(job.scratch.rglob("*.https-part"))
+        assert not list(job.scratch.rglob("engine.log"))
+        assert [kind for kind, _ in c.active] == ["begin", "done"]
+    finally:
+        stop.set()
+        server.shutdown()
+        server.server_close()
+        c.host.release()
+
+
+def test_success_logs_share_one_deadline(completed_case, monkeypatch):
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    c = completed_case
+    monkeypatch.setattr(rm, "SUCCESS_LOG_SECONDS", 0.05, raising=False)
+    original_call = _HttpsOps._call_direct
+    attempts = []
+
+    def call(ops, name, *args, **kwargs):
+        if name == "get" and "/out/logs/" in args[0]:
+            attempts.append(args[0].rsplit("/", 1)[1])
+            Path(args[1]).write_bytes(b"partial")
+            assert ops.deadline is not None
+            time.sleep(max(0, ops.deadline - time.monotonic()))
+            raise TimeoutError("deadline")
+        return original_call(ops, name, *args, **kwargs)
+
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", call)
+    job = c.job()
+    fetched = run_on_machine(c.machine, job, destination=job.scratch / "outputs",
+                             cancelled=lambda: False, sleep=lambda _: None)
+    assert attempts == ["engine.log"]
+    assert fetched["logs_unavailable"] == {"engine.log": "deadline", "stdout.log": "deadline"}
+    assert not list(job.scratch.rglob("engine.log"))
+    assert c.read()["lease"]["state"] == "idle"
+    c.host.release()
+
+
+@pytest.mark.parametrize("relative, size, reason", [
+    ("logs/engine.log", 256 * 1024 * 1024 + 1, "too_large"),
+    ("/home/alice/x/logs/engine.log", 1, "DigestMismatch"),
+    ("logs/../engine.log", 1, "DigestMismatch"),
+    ("logs/nested/engine.log", 256 * 1024 * 1024 + 1, "too_large"),
+])
+def test_success_log_manifest_refusals_have_relative_keys(completed_case, relative, size, reason):
+    c = completed_case
+    c.manifest_logs = {relative: {"sha256": "0" * 64, "size": size}}
+    job = c.job()
+    fetched = run_on_machine(c.machine, job, destination=job.scratch / "outputs",
+                             cancelled=lambda: False, sleep=lambda _: None)
+    key = "nested/engine.log" if "nested/" in relative else "engine.log"
+    assert fetched["logs_unavailable"] == {key: reason}
+    assert relative not in c.output_reads
+    assert fetched["returncode"] == 0
+    assert c.read()["lease"]["state"] == "idle"
+    c.host.release()
+
+
+def test_success_logs_refuse_symlink_destination(completed_case, tmp_path):
+    c = completed_case
+    job = c.job()
+    destination = job.scratch / "outputs"
+    destination.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (destination / "logs").symlink_to(elsewhere, target_is_directory=True)
+    fetched = run_on_machine(c.machine, job, destination=destination,
+                             cancelled=lambda: False, sleep=lambda _: None)
+    assert fetched["logs_unavailable"] == {
+        "engine.log": "unsafe_destination", "stdout.log": "unsafe_destination"}
+    assert "logs/engine.log" not in c.output_reads and not list(elsewhere.iterdir())
+    assert fetched["returncode"] == 0
+    c.host.release()
+
+
+@pytest.mark.parametrize("paid, job, transport, expected", [
+    (300, 300, None, 1060),
+    (20, 300, None, 1005),
+    (300, 22, None, 1007),
+    (300, 300, 1018, 1003),
+    (10, 300, None, 995),
+])
+def test_success_log_deadline_reserves_cleanup_time(monkeypatch, paid, job, transport, expected):
+    from threading import RLock
+
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    monkeypatch.setattr(rm.time, "monotonic", lambda: 1000)
+    original = _HttpsOps("fake-pod", "fake-only", deadline=transport)
+    owner = SimpleNamespace(lock=RLock(), clock=lambda: 100,
+                            preparation_claim=lambda _: {"lease": {"paid_expires_at": 100 + paid}})
+    placement = SimpleNamespace(_clock=lambda: 200, _deadline_at=200 + job)
+    machine = rm.RunPodMachine(SimpleNamespace(lease_owner=owner, placement=placement))
+    def cancelled():
+        return False
+
+    run = SimpleNamespace(lease=SimpleNamespace(claim=SimpleNamespace(ops=original), lease=object()),
+                          cancelled=cancelled)
+    with machine._success_log_transport(run) as ops:
+        assert ops.deadline == expected
+        assert ops.cancelled is cancelled
+    assert run.lease.claim.ops is original
+
+
+def test_nested_log_named_output_failure_still_fails(completed_case, monkeypatch):
+    c = completed_case
+    c.manifest_logs = {"artifacts/logs/engine.log": {"sha256": "0" * 64, "size": 1}}
+    original_get = c.pod.get
+
+    def get(remote, local):
+        if remote.endswith("/artifacts/logs/engine.log"):
+            raise TimeoutError("required output transfer failed")
+        return original_get(remote, local)
+
+    monkeypatch.setattr(c.pod, "get", get)
+    job = c.job()
+    with pytest.raises(TimeoutError):
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs",
+                       cancelled=lambda: False, sleep=lambda _: None)
+    c.host.release()

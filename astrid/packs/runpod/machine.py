@@ -36,7 +36,7 @@ import secrets
 import shlex
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -66,6 +66,8 @@ POLL_SECONDS = 15.0
 PROGRESS_NAME = "progress.json"
 JOB_NAME = "job.json"
 MAX_PROGRESS_BYTES = 64 * 1024
+SUCCESS_LOG_SECONDS = 60.0
+SUCCESS_LOG_MARGIN_SECONDS = 15.0
 PROGRESS_KEYS = frozenset({"phase", "percent", "current", "total"})
 CUSTODY_SCHEMA = "astrid.runpod.machine-custody.v1"
 #: The local private engine footprint the storage probe requires besides the volume.
@@ -1014,8 +1016,12 @@ class RunPodMachine:
 
     def fetch(self, run: MachineRun, destination: Path) -> dict[str, Any]:
         """Copy the job's ``out`` directory back, every file against the pod's digest manifest."""
+        from astrid.core.execution.machine_run import MachineRunCancelled
+
         try:
             return self._fetch(run, destination)
+        except MachineRunCancelled:
+            raise
         except Exception as failure:  # noqa: BLE001 - every host refusal keeps its evidence
             run.lease.failure_progress_phase = next(
                 (row.get("phase") for row in reversed(run.progress) if row.get("phase")), None)
@@ -1083,7 +1089,8 @@ class RunPodMachine:
         logs_unavailable: dict[str, str] = {}
         files = self._fetch_verified(ops, f"{run.remote_root}/out", destination, run.scratch,
                                      manifest_line[len(MANIFEST_MARK):].strip(),
-                                     logs_unavailable=logs_unavailable)
+                                     logs_unavailable=logs_unavailable,
+                                     log_scope=lambda: self._success_log_transport(run))
         self._checkpoint_installed(run, files)
         state.note("fetch", "done", files=len(files))
         _stamp(timing, "collection_ended_at")
@@ -1095,6 +1102,32 @@ class RunPodMachine:
                 "progress": list(run.progress),
                 # The remote detached job's own process evidence (its pid on the pod).
                 "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
+
+    @contextmanager
+    def _success_log_transport(self, run: MachineRun) -> Iterator[Any]:
+        """Share one cancellable log deadline, leaving time for checkpoint/reset."""
+        adapter = self._require()
+        owner, placement = adapter.lease_owner, adapter.placement
+        with _cancellable(run.lease, run.cancelled):
+            started = time.monotonic()
+            with owner.lock:
+                current = owner.preparation_claim(run.lease.lease)
+                remaining = current["lease"]["paid_expires_at"] - owner.clock()
+            if placement._deadline_at is not None:
+                remaining = min(remaining, placement._deadline_at - placement._clock())
+            original_ops = run.lease.claim.ops
+            transport_deadline = getattr(original_ops, "deadline", None)
+            if transport_deadline is not None:
+                remaining = min(remaining, transport_deadline - started)
+            deadline = started + min(SUCCESS_LOG_SECONDS, remaining - SUCCESS_LOG_MARGIN_SECONDS)
+            run.lease.claim.ops = original_ops.bounded(deadline)
+            try:
+                yield run.lease.claim.ops
+            finally:
+                unreaped = getattr(run.lease.claim.ops, "unreaped_child", None)
+                if unreaped is not None:
+                    owner.fence_unreaped_observer(run.lease.lease, run.lease.claim.pod_id, unreaped)
+                    raise MachineError("success log observer could not be reaped")
 
     def _collect_fetch_failure_logs(self, run: MachineRun, destination: Path) -> dict[str, Any]:
         """Collect host-refusal evidence before reset, within cancellable paid time."""
@@ -1176,7 +1209,8 @@ class RunPodMachine:
     @staticmethod
     def _fetch_verified(ops: Any, remote_dir: str, destination: Path, scratch: Path,
                         manifest_digest: str, *,
-                        logs_unavailable: dict[str, str] | None = None) -> dict[str, str]:
+                        logs_unavailable: dict[str, str] | None = None,
+                        log_scope: Callable[[], Any] | None = None) -> dict[str, str]:
         """Copy one pod folder back, every file against its digest manifest.
 
         The manifest is downloaded and checked against the digest the pod
@@ -1185,7 +1219,8 @@ class RunPodMachine:
         ``{relative path: local path}``. Shared by the output fetch and any
         later folder fetch (the failure folder). On success, passing
         ``logs_unavailable`` verifies all non-log outputs first, then attempts
-        each log once; only verified log bytes are installed in the destination.
+        each eligible log once within ``log_scope``'s shared deadline; only
+        verified log bytes are installed in the destination.
         """
         manifest_local = scratch / MANIFEST_NAME
         ops.get(f"{remote_dir}/{MANIFEST_NAME}", manifest_local)
@@ -1198,7 +1233,7 @@ class RunPodMachine:
         destination = Path(destination)
         destination.mkdir(parents=True, exist_ok=True)
 
-        def fetch_file(relative: str, root: Path) -> Path:
+        def fetch_file(relative: str, root: Path, transport: Any) -> Path:
             entry = recorded[relative]
             parts = Path(relative).parts
             if (not isinstance(entry, Mapping) or Path(relative).is_absolute() or not parts
@@ -1206,7 +1241,7 @@ class RunPodMachine:
                 raise DigestMismatch(f"pod manifest names an unsafe path: {relative!r}")
             local = root / relative
             local.parent.mkdir(parents=True, exist_ok=True)
-            ops.get(f"{remote_dir}/{relative}", local)
+            transport.get(f"{remote_dir}/{relative}", local)
             if sha256_file(local) != entry.get("sha256") or local.stat().st_size != entry.get("size"):
                 local.unlink(missing_ok=True)
                 raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
@@ -1214,22 +1249,56 @@ class RunPodMachine:
 
         files: dict[str, str] = {}
         ordered = sorted(recorded)
-        if logs_unavailable is not None:
-            ordered.sort(key=lambda relative: relative.split("/", 1)[0] == "logs")
+        logs = []
         for relative in ordered:
-            if logs_unavailable is not None and relative.split("/", 1)[0] == "logs":
+            parts = Path(relative).parts
+            is_log = (parts and parts[0] == "logs" or "logs" in parts
+                      and (Path(relative).is_absolute() or ".." in parts))
+            if logs_unavailable is not None and is_log:
+                logs.append(relative)
+            else:
+                files[relative] = str(fetch_file(relative, destination, ops))
+        if not logs:
+            return files
+
+        from astrid.core._shared.run_logs import CAP_BYTES
+        from astrid.core.execution.machine_run import MachineRunCancelled
+
+        with log_scope() if log_scope is not None else nullcontext(ops) as log_ops:
+            exhausted = False
+            for relative in logs:
+                parts = Path(relative).parts
+                key = "/".join(part for part in parts[parts.index("logs") + 1:]
+                               if part not in {"..", "."}) or "unknown"
+                deadline = getattr(log_ops, "deadline", None)
+                if exhausted or deadline is not None and time.monotonic() >= deadline:
+                    exhausted = True
+                    logs_unavailable[key] = "deadline"
+                    continue
+                entry = recorded[relative]
+                if (isinstance(entry, Mapping) and isinstance(entry.get("size"), int)
+                        and entry["size"] > CAP_BYTES):
+                    logs_unavailable[key] = "too_large"
+                    continue
+                if (destination / "logs").is_symlink():
+                    logs_unavailable[key] = "unsafe_destination"
+                    continue
                 try:
                     # A partial or corrupt log must never appear among delivered outputs.
                     with TemporaryDirectory(dir=scratch) as staging:
-                        verified = fetch_file(relative, Path(staging))
+                        verified = fetch_file(relative, Path(staging), log_ops)
                         local = destination / relative
                         local.parent.mkdir(parents=True, exist_ok=True)
                         verified.replace(local)
                     files[relative] = str(local)
+                except MachineRunCancelled:
+                    raise
                 except Exception as exc:  # noqa: BLE001 - optional logs cannot change a completed result
-                    logs_unavailable[relative] = type(exc).__name__
-            else:
-                files[relative] = str(fetch_file(relative, destination))
+                    if getattr(log_ops, "unreaped_child", None) is not None:
+                        raise
+                    exhausted = (deadline is not None and time.monotonic() >= deadline
+                                 or getattr(getattr(exc, "reason", None), "code", None) == "deadline_exceeded")
+                    logs_unavailable[key] = "deadline" if exhausted else type(exc).__name__
         return files
 
     @staticmethod
