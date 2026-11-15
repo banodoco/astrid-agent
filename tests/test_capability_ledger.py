@@ -6,6 +6,20 @@ from pathlib import Path
 from astrid.core.execution.capability_ledger import load_capability_ledger
 
 
+def test_provenance_census_does_not_validate_pack_apis(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.execution.capability_ledger import _quarantine_snapshot
+    from astrid.core.pack import loader
+
+    calls = []
+    def census(root, **kwargs):
+        calls.append((root, kwargs))
+        return SimpleNamespace(quarantined=())
+    monkeypatch.setattr(loader, "scan_packs", census)
+    assert _quarantine_snapshot(tmp_path) == ({}, [])
+    assert calls == [(tmp_path / "astrid" / "packs", {"strict": False, "_validate": False})]
+
+
 def test_shipped_ledger_reconciles_historical_capability_sets():
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
     sources = ledger["sources"]
