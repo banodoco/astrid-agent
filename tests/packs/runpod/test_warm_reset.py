@@ -48,10 +48,14 @@ def hold_reset(c, monkeypatch):
     return entered, complete, resets, polls
 
 
-def test_result_budget_has_one_reset_start_and_zero_reset_polls_on_caller(machine_case, monkeypatch):
+@pytest.mark.parametrize("acknowledged", [True, False])
+def test_result_budget_has_one_reset_start_and_zero_reset_polls_only_with_ack(
+        machine_case, monkeypatch, acknowledged):
     c = machine_case
     claim(c)
     entered, complete, resets, polls = hold_reset(c, monkeypatch)
+    if not acknowledged:
+        monkeypatch.setattr("astrid.packs.runpod.pod_watchdog.write_deadline", lambda *args: False)
     caller, release_ops = [], []
     releasing = threading.Event()
     release = c.machine.release
@@ -82,19 +86,32 @@ def test_result_budget_has_one_reset_start_and_zero_reset_polls_on_caller(machin
         result = pool.submit(invoke)
         try:
             assert entered.wait(60)
+            if not acknowledged:
+                # Host-only custody must spend at least one reset poll before
+                # delivery; no reset wait may be skipped without a pod ACK.
+                with pytest.raises(TimeoutError):
+                    result.result(timeout=0.1)
+                assert polls and set(polls) == {caller[0]}
+                complete.set()
             assert set(result.result(timeout=1)["files"]) == {"artifacts/cpu.png", "manifest.json"}
             assert len(resets) == 1
             # The idle watchdog deadline is published before delivery. Reset
             # polls, stdout reads and cleanup stay on the bounded owner.
-            assert release_ops == ["job_start", "exec"]
-            assert caller[0] not in polls
+            if acknowledged:
+                assert release_ops == ["job_start", "exec"]
+                assert caller[0] not in polls
+            else:
+                assert release_ops.count("job_start") == 1
+                assert release_ops.count("job_poll") == len(polls)
+                assert release_ops.count("exec") == 1  # reset stdout/cleanup; publication is stubbed
             pending = c.read()["lease"]
-            assert pending["state"] == "active"
-            assert pending["reset"]["state"] == "pending"
+            assert pending["state"] == ("active" if acknowledged else "idle")
+            assert pending["reset"]["state"] == ("pending" if acknowledged else "ready")
             assert pending["reset"]["job_id"] == resets[0]
             idle_expiry = pending["idle_expires_at"]
             status = test_machine.rm.lease_row(c.read())
-            assert status["reset_state"] == "pending" and status["state"] == "active"
+            assert status["reset_state"] == pending["reset"]["state"]
+            assert status["state"] == pending["state"]
             assert status["release_at"] == status["idle_expires_at"] == idle_expiry
             c.clock.advance(5)
         finally:
@@ -106,11 +123,15 @@ def test_result_budget_has_one_reset_start_and_zero_reset_polls_on_caller(machin
     assert test_machine.rm.lease_row(c.read())["reset_state"] == "ready"
 
 
-def test_interrupt_after_result_keeps_published_idle_deadline_and_armed_timer(machine_case, monkeypatch):
+@pytest.mark.parametrize("acknowledged", [True, False])
+def test_interrupt_after_result_keeps_published_idle_deadline_and_armed_timer(
+        machine_case, monkeypatch, acknowledged):
     c = machine_case
     claim(c)
     interrupted = threading.Event()
     order = []
+    if not acknowledged:
+        monkeypatch.setattr("astrid.packs.runpod.pod_watchdog.write_deadline", lambda *args: False)
     finish, sync, arm = c.machine._finish, c.host._sync_deadline, c.host._arm
 
     def settled(invocation):
@@ -122,7 +143,7 @@ def test_interrupt_after_result_keeps_published_idle_deadline_and_armed_timer(ma
         if (record["lease"].get("reset") or {}).get("state") != "pending":
             return record
         assert record["lease"]["reset"]["state"] == "pending"
-        assert record["self_stop"]["acknowledged"] is True
+        assert record["self_stop"]["acknowledged"] is acknowledged
         order.append("published")
         return record
 
@@ -131,8 +152,17 @@ def test_interrupt_after_result_keeps_published_idle_deadline_and_armed_timer(ma
         if (record["lease"].get("reset") or {}).get("state") == "pending":
             order.append("armed")
 
-    # Model a controller interrupted after delivery, before reset completion.
-    monkeypatch.setattr(c.machine, "_complete_reset", lambda *args: interrupted.wait(60))
+    complete_reset = c.machine._complete_reset
+
+    def reset(*args, **kwargs):
+        if acknowledged:
+            # Model a controller interrupted after delivery, before completion.
+            interrupted.wait(60)
+        else:
+            complete_reset(*args, **kwargs)
+            order.append("reset")
+
+    monkeypatch.setattr(c.machine, "_complete_reset", reset)
     monkeypatch.setattr(c.machine, "_finish", settled)
     monkeypatch.setattr(c.host, "_sync_deadline", published)
     monkeypatch.setattr(c.host, "_arm", armed)
@@ -141,11 +171,12 @@ def test_interrupt_after_result_keeps_published_idle_deadline_and_armed_timer(ma
         order.append("result")
         record = c.read()
         pending = record["lease"]
-        assert order == ["settled", "published", "armed", "result"]
-        assert pending["state"] == "active" and pending["reset"]["state"] == "pending"
+        assert order == ["settled", "published", "armed", *([] if acknowledged else ["reset"]), "result"]
+        assert pending["state"] == ("active" if acknowledged else "idle")
+        assert pending["reset"]["state"] == ("pending" if acknowledged else "ready")
         assert pending["last_job"]["outcome"] == "success"
         assert record["self_stop"]["deadline"] == pending["idle_expires_at"]
-        assert record["self_stop"]["acknowledged"] is True
+        assert record["self_stop"]["acknowledged"] is acknowledged
         hold = c.host.holds._holds[c.host.key]
         assert hold.timer.due == pending["idle_expires_at"]
         assert not hold.timer.cancelled and hold.leases == 0
@@ -160,6 +191,12 @@ def test_interrupt_after_result_keeps_published_idle_deadline_and_armed_timer(ma
     c.host.close()
     replacement = c.fresh()
     replacement.recover_job()
+    if not acknowledged:
+        # Completed host-only reset is safe to adopt; no pending work survives.
+        assert c.read()["lease"]["reset"]["state"] == "ready"
+        assert c.read()["lease"]["state"] == "idle"
+        assert c.deletes == []
+        replacement.release()
     assert c.read()["state"] == "cleanup_complete"
     assert c.deletes == ["pod-1"]
 
@@ -168,23 +205,114 @@ def test_next_job_waits_for_reset_without_polling_or_starting_it(machine_case, m
     c = machine_case
     claim(c)
     entered, complete, resets, _ = hold_reset(c, monkeypatch)
+    waiting, admitted = threading.Event(), threading.Event()
+    wait = c.host.wait_for_reset
+
+    def wait_for_reset(**kwargs):
+        waiting.set()
+        wait(**kwargs)
+        admitted.set()
+
     with ThreadPoolExecutor() as pool:
         first = pool.submit(run, c, job(c))
         try:
             assert entered.wait(60)
             first.result(timeout=1)
             commands = len(c.pod.job_log)
+            monkeypatch.setattr(c.host, "wait_for_reset", wait_for_reset)
             second = pool.submit(run, c, job(c, 2))
+            assert waiting.wait(60)
+            assert not admitted.wait(0.1)
             with pytest.raises(TimeoutError):
                 second.result(timeout=0.1)
             assert len(c.pod.job_log) == commands
             assert len(resets) == 1
         finally:
             complete.set()
-        second.result(timeout=10)
+        # Bound the reset wakeup itself, independently of the CPU-heavy
+        # workflow/dispatch verification that follows admission.
+        assert admitted.wait(1)
+        second.result(timeout=10)  # Bound the remaining job after observing reset admission.
     c.host.wait_for_reset()
     assert len(resets) == 2
     assert c.read()["lease"]["state"] == "idle"
+
+
+@pytest.mark.parametrize("publication", ["unknown", "no", "error"])
+def test_unavailable_watchdog_reset_failure_releases_before_delivery(machine_case, monkeypatch, publication):
+    c = machine_case
+    claim(c)
+    execute = c.pod.exec
+    release = c.host.release
+    order = []
+
+    def exec_unavailable(command, *args):
+        if ("__pod_watchdog__" in command
+                and (c.read()["lease"].get("reset") or {}).get("state") == "pending"):
+            order.append("publication")
+            if publication == "error":
+                raise OSError("unavailable watchdog")
+            return 1, "pod_watchdog:termination_" + ("unknown" if publication == "unknown" else "denied"), ""
+        return execute(command, *args)
+
+    def released(**kwargs):
+        result = release(**kwargs)
+        assert c.deletes == ["pod-1"]
+        order.append("released")
+        return result
+
+    c.pod.fail_jobs = {"--run-dir"}
+    monkeypatch.setattr(c.pod, "exec", exec_unavailable)
+    monkeypatch.setattr(c.host, "release", released)
+    if publication == "error":
+        from astrid.packs.runpod.pod_watchdog import PodWatchdogError
+
+        # Publishing failure refuses settlement; exact release precedes the error.
+        with pytest.raises(PodWatchdogError):
+            run(c, job(c))
+    else:
+        assert run(c, job(c))["files"]
+    order.append("result")
+    assert order.index("released") < order.index("result")
+    assert c.read()["state"] == "cleanup_complete"
+    if publication != "error":
+        assert c.read()["lease"]["reset"]["state"] == "failed"
+        assert test_machine.rm.lease_row(c.read())["reset_state"] == "failed"
+        assert c.read()["lease"]["ended"] == "reset_failed"
+    assert c.host._reset_worker is None
+
+
+def test_unacknowledged_failed_reset_and_release_never_delivers_result(machine_case, monkeypatch):
+    from runpod_lifecycle import api
+
+    c = machine_case
+    claim(c)
+    terminate = api.terminate_pod
+
+    def terminate_or_fail(pod_id, key):
+        # The shared fake removes the pod before raising. A rejected delete
+        # must leave it alive, so a second release cannot mistake it for gone.
+        if c.delete_error:
+            raise c.delete_error
+        return terminate(pod_id, key)
+
+    monkeypatch.setattr(api, "terminate_pod", terminate_or_fail)
+    monkeypatch.setattr("astrid.packs.runpod.pod_watchdog.write_deadline", lambda *args: False)
+    c.pod.fail_jobs = {"--run-dir"}
+    c.delete_error = RuntimeError("fake release failure")
+    try:
+        with pytest.raises(RuntimeError, match="fake release failure"):
+            run(c, job(c))
+        record = c.read()
+        assert record["state"] in {"cleanup_pending", "release_pending"}
+        assert record["lease"]["state"] == "releasing"
+        assert record["lease"]["reset"]["state"] == "failed"
+        assert not c.host.deadline_timer.cancelled
+        assert c.host._reset_worker is None
+    finally:
+        c.delete_error = None
+        c.host.release(reason="reset_failed")
+    assert c.read()["state"] == "cleanup_complete"
 
 
 @pytest.mark.parametrize("failure", ["exit", "timeout"])

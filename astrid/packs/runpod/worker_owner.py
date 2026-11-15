@@ -802,8 +802,8 @@ class RunPodLeaseOwner:
 
     def settle(self, invocation: RunPodLease, *, outcome: str = "success",
                failure: Mapping[str, Any] | None = None,
-               node_ids: frozenset[str] = frozenset(), node_names: frozenset[str] = frozenset()) -> None:
-        """Called by the host after that exact invocation has settled."""
+               node_ids: frozenset[str] = frozenset(), node_names: frozenset[str] = frozenset()) -> bool:
+        """Settle the exact invocation; return this publication's watchdog ACK."""
         with self.lock:
             record = self._read()
             if record is None:
@@ -814,7 +814,7 @@ class RunPodLeaseOwner:
                     or invocation.invocation_id != lease["invocation_id"]):
                 raise RunPodWorkerOwnerError("invocation lease belongs to another holder")
             if lease["state"] in {"idle", "releasing"}:
-                return  # Release owns the terminal transition; never re-arm it.
+                return False  # Release owns the terminal transition; never re-arm it.
             if record["state"] != "claimed" or lease["state"] != "active":
                 raise RunPodWorkerOwnerError("release already fences this invocation")
             if self.closed or self.clock() >= lease["paid_expires_at"]:
@@ -837,6 +837,7 @@ class RunPodLeaseOwner:
             record = self._save(record, lease)
             record = self._sync_deadline(record)
             self._arm(record)
+            return record["self_stop"]["acknowledged"] is True
 
     def note_failed_job(self, invocation: RunPodLease, failure: Mapping[str, Any], *,
                         outcome: str = "failed", node_ids: frozenset[str] = frozenset(),
