@@ -1315,6 +1315,112 @@ def test_warm_attestation_extra_pack_hit_process_budget(extra_pack_case):
     assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
 
 
+@pytest.fixture(params=['supervisor', 'claim', 'absent'])
+def retained_pack_case(extra_pack_case, request):
+    c = extra_pack_case
+    if request.param == 'supervisor':
+        c.state.birth = {**c.state.birth, 'start_ticks': '789'}
+    elif request.param == 'claim':
+        c.state.claim = 'claim-2'
+    else:
+        c.attestation.unlink()
+    c.state.nodes = []
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    c.calls.clear()
+    return c
+
+
+def test_warm_attestation_installed_pack_after_miss_hit_process_budget(retained_pack_case):
+    c = retained_pack_case
+    c.run()
+    # The installed Git pack still costs exactly two local Git processes, even
+    # though this workflow declares none; the full preparation processes stay skipped.
+    assert c.calls.count('git-inventory') == 2
+    assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
+
+
+def test_warm_attestation_installed_pack_after_miss_drift_realigns(retained_pack_case):
+    c = retained_pack_case
+    (c.pack / 'node.py').write_text('changed after workflow dropped the declaration\n')
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+
+
+@pytest.mark.parametrize('member', ['unmanaged', 'standalone.py'])
+@pytest.mark.parametrize('change', ['changed', 'removed'])
+def test_warm_attestation_new_loader_member_realigns(warm_case, member, change):
+    import shutil
+    c = warm_case
+    c.run()
+    path = c.checkout / 'custom_nodes' / member
+    if member.endswith('.py'):
+        path.write_text('injected = True\n')
+    else:
+        path.mkdir()
+        (path / 'node.py').write_text('injected = True\n')
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    c.calls.clear()
+    c.run()
+    assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
+    if change == 'changed':
+        (path / 'node.py' if path.is_dir() else path).write_text('injected = False\n')
+    elif path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+
+
+@pytest.mark.parametrize('kind', ['file', 'directory'])
+def test_warm_attestation_pack_symlink_target_drift_realigns(extra_pack_case, kind):
+    c = extra_pack_case
+    target = c.root / 'shared'
+    target.mkdir()
+    code = target / 'node.py'
+    code.write_text('verified = True\n')
+    (c.pack / 'linked').symlink_to(code if kind == 'file' else target)
+    c.run()
+    c.calls.clear()
+    c.run()
+    assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
+    code.write_text('verified = False\n')
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+
+
+@pytest.mark.parametrize('kind', ['outside', 'cycle', 'link-loop'])
+def test_warm_attestation_unsafe_pack_symlink_refuses_witness(extra_pack_case, kind):
+    c = extra_pack_case
+    target = c.root.parent / 'external.py'
+    target.write_text('external = True\n')
+    link = c.pack / 'linked'
+    link.symlink_to(target if kind == 'outside' else link if kind == 'link-loop' else c.pack)
+    c.attestation.unlink()
+    c.run()
+    assert not c.attestation.exists()
+
+
+@pytest.mark.parametrize('member', ['__pycache__', 'pack.disabled', 'notes.txt'])
+def test_warm_attestation_loader_skipped_members_do_not_invalidate(warm_case, member):
+    c = warm_case
+    c.run()
+    path = c.checkout / 'custom_nodes' / member
+    if member.endswith('.txt'):
+        path.write_text('not a loader input\n')
+    else:
+        path.mkdir()
+        (path / 'node.py').write_text('not imported\n')
+    c.calls.clear()
+    c.run()
+    assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
+
+
 @pytest.mark.parametrize('damage', ['permission', 'corrupt'])
 def test_warm_attestation_unreadable_record_reaudits(warm_case, monkeypatch, damage):
     from astrid.core.generation.warm_attestation import _TargetFiles
