@@ -70,6 +70,8 @@ def test_video_ref_is_rejected_for_image():
         cli._parser().parse_args(["image", "test prompt", "--video-ref", "reference.mp4"])
 
 
+# dry run compiles the full LTX workflow; about 130 s on a quiet CI-class box
+@pytest.mark.timeout(300)
 @pytest.mark.parametrize("mode,required", [
     ("t2v", ("prompt",)),
     ("flf", ("prompt", "image_ref", "image_end_ref")),
