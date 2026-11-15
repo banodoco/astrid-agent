@@ -431,6 +431,7 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         f"export {p['prepared_env']}={p['prepared']} ASTRID_RUNTIME_DATA_ROOT={p['data_root']} "
         f"ASTRID_RUNTIME_SOURCE_MANIFEST={p['source_manifest']} ASTRID_RUNTIME_DOOR_PORT=0\n"
         f"export ASTRID_PROGRESS_PATH={shlex.quote(f'{remote_root}/{PROGRESS_NAME}')}\n"
+        "export ASTRID_POD_PHASE_TIMING=1\n"
         f"export {selection_env(remote_root)}\n"
         f"{extract_selection_command(remote_root)} || {{ finish_logs; exit 3; }}\n"
         f"{line} > {result}\n"
@@ -1090,6 +1091,8 @@ class RunPodMachine:
         from astrid.core.execution.phase_timing import ingest_job_run
         ingest_job_run(timing, files)
         self._checkpoint_installed(run, files)
+        from astrid.core.execution.phase_timing import attach_pod_recheck
+        attach_pod_recheck(timing, getattr(state, "installation_timing", None))
         state.note("fetch", "done", files=len(files))
         _stamp(timing, "collection_ended_at")
         pid = str(record.get("pid") or "").strip()

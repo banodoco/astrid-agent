@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from astrid.core.execution.phase_timing import pod_phase, pod_step
+
 from .engine_contracts import (
     MANAGED_ENGINE_PREPARATION_ENV as PREPARATION_ENV,
 )
@@ -160,6 +162,7 @@ def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+@pod_step('models_root_inspect', 'models-root')
 def configured_models_root(engine: str = DEFAULT_ENGINE, *, root: str | None = None) -> str:
     """Read the installed cache binding without starting or contacting its owner.
 
@@ -271,6 +274,7 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
     return body
 
 
+@pod_step('workflow_judgment', 'judge-declarations')
 def judge_declarations(workflow, scratch, engine):
     """Render and judge the declarations without consulting installed state."""
     from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
@@ -365,6 +369,8 @@ class ManagedEnginePreparation:
                 self._installation_audit = None
                 self._install_lock_epoch = None
 
+    @pod_step(lambda *a, alignment=False, **kw: "q2_audit" if alignment else "installation_audit",
+              lambda *a, alignment=False, **kw: "q2-audit" if alignment else "installation-audit")
     def _audit_installation(self, runner, receipt, steps, *, alignment=False):
         epoch = getattr(self, "_install_lock_epoch", None)
         reusable = epoch is not None and not getattr(self, "_alignment_changed", False)
@@ -378,6 +384,7 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed alignment changed the installed base" if alignment else
                                  "managed installation evidence differs from its receipt")
 
+    @pod_step('preparation_close', 'preparation-close')
     def close(self, *, execution_root: Path | None = None, worker_drained: bool = True):
         if not worker_drained:
             self.uncertain = True
@@ -402,6 +409,7 @@ class ManagedEnginePreparation:
             lock.__exit__(None, None, None)
         _UNRESOLVED_CUSTODY.pop(id(self), None)
 
+    @pod_step('managed_preparation', 'prepare')
     def prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
         from .engine_contracts import CustodyUnresolved
         self._write_warm_attestation = None
@@ -484,34 +492,35 @@ class ManagedEnginePreparation:
             callback = getattr(self, "evidence_start", None)
             if callback is not None:
                 callback()
-        self.check()
-        try:
-            raw = self.context.read_json(receipt_path, deadline=self.deadline)
-        except RecipeValidationError as error:
-            raise EngineNotInstalled(self.recipe.engine, "install receipt unreadable") from error
-        locator = plan_install(self.recipe, root=self.root, placement="local")
-        receipt = _parse_receipt(raw, locator)
-        plan = plan_from_receipt(self.recipe, receipt, root=self.root, placement="local")
-        if receipt.status != "installed":
-            raise EngineNotInstalled(self.recipe.engine, f"install status {receipt.status}, engine not healthy")
-        require_current_receipt(receipt, plan, self.recipe)
-        runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
-        runner.step_id = "helper-identity"
-        if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
-            raise IntegrityError("managed engine helper identity differs")
-        # These checks read the saved environment identities; they do not
-        # re-enter the install lock or require the HTTP service to be running.
-        from .warm_attestation import WarmAttestation, requirement_digest
-        warm = WarmAttestation(self.root, self.recipe, runner, getattr(self, "claim_id", None), self.deadline,
-                               enabled=(self._model_verification.trust_unchanged and self.mode == "align"
-                                        and canonical_workflow is not None))
-        self._warm_claim_matched = warm.matched
-        if warm.matched:
-            runner.locks.update(receipt.requirements_locks)
-            runner.commits.update(receipt.source_commits)
-        else:
-            # A miss retains the canonical read-only verification path (one audit per lock hold, Q2).
-            self._audit_installation(runner, receipt, plan.steps)
+        with pod_phase("installation_inspect", "installation-inspect"):
+            self.check()
+            try:
+                raw = self.context.read_json(receipt_path, deadline=self.deadline)
+            except RecipeValidationError as error:
+                raise EngineNotInstalled(self.recipe.engine, "install receipt unreadable") from error
+            locator = plan_install(self.recipe, root=self.root, placement="local")
+            receipt = _parse_receipt(raw, locator)
+            plan = plan_from_receipt(self.recipe, receipt, root=self.root, placement="local")
+            if receipt.status != "installed":
+                raise EngineNotInstalled(self.recipe.engine, f"install status {receipt.status}, engine not healthy")
+            require_current_receipt(receipt, plan, self.recipe)
+            runner = _Runner(plan, self.context, self.adapter, self.deadline, device=self.device, visibility=self.visibility)
+            runner.step_id = "helper-identity"
+            if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
+                raise IntegrityError("managed engine helper identity differs")
+            # These checks read the saved environment identities; they do not
+            # re-enter the install lock or require the HTTP service to be running.
+            from .warm_attestation import WarmAttestation, requirement_digest
+            warm = WarmAttestation(self.root, self.recipe, runner, getattr(self, "claim_id", None), self.deadline,
+                                   enabled=(self._model_verification.trust_unchanged and self.mode == "align"
+                                            and canonical_workflow is not None))
+            self._warm_claim_matched = warm.matched
+            if warm.matched:
+                runner.locks.update(receipt.requirements_locks)
+                runner.commits.update(receipt.source_commits)
+            else:
+                # A miss retains the canonical read-only verification path (one audit per lock hold, Q2).
+                self._audit_installation(runner, receipt, plan.steps)
         self._runtime_requirements = None
         if not warm.matched:
             self._guard_runtime(canonical_workflow, runner, post=False)
@@ -553,8 +562,9 @@ class ManagedEnginePreparation:
             callback("align")
         # Storage preflight above and model verification below still observe
         # every model. Only native alignment is attested; W3 stays independent.
-        alignment = ({"mode": self.mode, "missing": [], "fetched": [], "verified": True, "status": "ready"}
-                     if warm_used else engine.align(manifest, self.mode, workflow=canonical_path))
+        with pod_phase("alignment_attestation" if warm_used else "alignment", "align"):
+            alignment = ({"mode": self.mode, "missing": [], "fetched": [], "verified": True, "status": "ready"}
+                         if warm_used else engine.align(manifest, self.mode, workflow=canonical_path))
         if alignment.get("status") == "missing":
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
         self.check()
@@ -570,7 +580,7 @@ class ManagedEnginePreparation:
         self._preparing_engine = True
         self.check()
         runner.step_id = "health"
-        health_action, health_facts = self._time_engine(runner.check_health)
+        health_action, health_facts = self._health_engine(runner)
         self.check()
         receipt_sha256 = refresh_installed_launch(runner, raw, start_action=start_action, start_facts=start_facts,
                                                   health_action=health_action, health_facts=health_facts, check=self.check)
@@ -598,12 +608,17 @@ class ManagedEnginePreparation:
                 protected_packages=getattr(self, "_protected_packages", ()))
         return report
 
+    @pod_step("engine_start", lambda self, runner: getattr(runner, "step_id", "start"))
     def _start_engine(self, runner):
         """Accumulate every supervisor probe/start, preserving its actual reuse decision."""
         self.engine_start_attempted = True
         action, facts = self._time_engine(lambda: runner.start(readonly=False))
         self.engine_reused = action == "skipped" and getattr(self, "engine_reused", None) is not False
         return action, facts
+
+    @pod_step("engine_health", lambda self, runner: getattr(runner, "step_id", "health"))
+    def _health_engine(self, runner):
+        return self._time_engine(runner.check_health)
 
     def _time_engine(self, operation):
         """Measure supervisor work, including readiness, without changing its result."""
@@ -625,9 +640,9 @@ class ManagedEnginePreparation:
                 self.engine_start_seconds = (None if elapsed is None or previous is None else
                                              previous + elapsed)
 
+    @pod_step('alignment_verification', 'verify-alignment')
     def _verify_alignment(self, workflow, runner, staged_digests, manifest, receipt):
         """Attest mutation results before executing the engine, and again after doctor."""
-        from .engine_contracts import IntegrityError
         self.check()
         self._verify_canonical_bytes(staged_digests)
         self._verify_model_alignment(manifest)
@@ -640,12 +655,14 @@ class ManagedEnginePreparation:
         self._audit_installation(runner, receipt, runner.plan.steps, alignment=True)
         self.check()
 
+    @pod_step('canonical_verification', 'verify-canonical-bytes')
     def _verify_canonical_bytes(self, staged_digests):
         from .engine_contracts import IntegrityError
         if any(path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected
                for path, expected in staged_digests.items()):
             raise IntegrityError("managed alignment changed the canonical workflow bytes")
 
+    @pod_step(lambda self, manifest: 'verify_models' if self.mode != 'trust' else None, 'verify-models')
     def _verify_model_alignment(self, manifest):
         if self.mode != "trust":
             self.verification_attempted = True
@@ -657,6 +674,7 @@ class ManagedEnginePreparation:
                 with suppress(Exception):
                     self.verification_seconds = getattr(self, "verification_seconds", 0.0) + time.monotonic() - started
 
+    @pod_step('model_verification_setup', 'model-verification-setup')
     def _begin_model_verification(self):
         from .model_verification import ModelVerification
         from .settings import model_trust_unchanged
@@ -695,6 +713,7 @@ class ManagedEnginePreparation:
                     or fact.sha256 != expected):
                 raise IntegrityError("managed model bytes differ from the declared digest: " + model["name"])
 
+    @pod_step('model_storage_preflight', 'model-storage-preflight')
     def _preflight_model_storage(self, manifest):
         """Budget native VibeComfy fetch's full writes; that path ignores `.part`."""
         from ._engine_target_files import _TargetFiles
@@ -783,6 +802,7 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed workflow runtime conflicts with the installed recipe")
         self._sync_packages = [name for name, _ in requirements.packages if name.lower().replace("_", "-") not in base_packages]
 
+    @pod_step('runtime_inspect', lambda *a, post, **kw: 'runtime-inspect-post' if post else 'runtime-inspect-pre')
     def _guard_runtime(self, workflow, runner, *, post):
         """Refuse changes to the receipt-owned base before native synchronization."""
         from packaging.requirements import Requirement
@@ -824,6 +844,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             if check["status"] != "matching" and (post or package is None or package in base_packages):
                 raise IntegrityError("managed runtime requirement is not satisfied by the installed base: " + path)
 
+    @pod_step(lambda *a, step="runtime_inspect", **kw: "native_" + step,
+              lambda *a, step="runtime_inspect", **kw: step)
     def _native(self, program, *args, step="runtime_inspect"):
         from .engine_contracts import (
             CommandRequest,
@@ -869,6 +891,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         self.check()
         return result
 
+    @pod_step('preparation_log_declaration', lambda self, step, result: 'preparation.' + step)
     def _keep_step_output(self, step, result) -> bool:
         """Keep a step's whole stdout and stderr as declared run logs, on success and failure; never raises."""
         logs_root = getattr(self, "logs_root", None)
@@ -887,6 +910,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         except Exception:  # noqa: BLE001 - keeping logs must never change the step's failure
             return False
 
+    @pod_step(lambda self, argv: "prepare_deps_sync" if argv[0] == "prepare" else "command_" + argv[0],
+              lambda self, argv: argv[0])
     def _command(self, argv):
         """Run the pinned CLI in its verified installation, through host custody."""
         from .engine_contracts import IntegrityError
@@ -942,6 +967,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                         error.add_note(f"see `astrid tasks logs {self.task}` (storage.inventory).")
                 raise
 
+    @pod_step('doctor', 'doctor')
     def _doctor(self, argv):
         from astrid.packs.vibecomfy.native_preparation import native_doctor_program
 
@@ -960,7 +986,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             if start_action != "skipped":
                 self._preparing_engine = True
             runner.step_id = "doctor-health"
-            self._time_engine(runner.check_health)
+            self._health_engine(runner)
             expected = runner.health.object_info_sha256
             request = {"argv": argv, "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
                        "expected_schema_sha256": expected,
@@ -968,7 +994,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             result = self._native(native_doctor_program(), json.dumps(request), step="doctor")
             self.check()
             runner.step_id = "doctor-post-health"
-            self._time_engine(runner.check_health)
+            self._health_engine(runner)
             if runner.health.object_info_sha256 != expected:
                 raise IntegrityError("managed doctor target schema changed during diagnosis")
             return result
@@ -980,7 +1006,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 if expected is not None:
                     with suppress(Exception):
                         runner.step_id = "doctor-failure-health"
-                        self._time_engine(runner.check_health)
+                        self._health_engine(runner)
                         if runner.health.object_info_sha256 == expected:
                             self._preparing_engine = False
             self._stop_preparing_engine()

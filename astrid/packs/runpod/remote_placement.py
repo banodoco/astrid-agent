@@ -957,7 +957,7 @@ class RemotePlacement:
         if remaining <= 0:
             state.install_unverified = "status_deadline_exhausted"
             return False
-        command = (f"{POD_VENV}/bin/astrid engines status {installation.engine} "
+        command = (f"ASTRID_POD_PHASE_TIMING=1 {POD_VENV}/bin/astrid engines status {installation.engine} "
                    f"--platform {installation.platform} --placement local "
                    f"--root {shlex.quote(installation.root)} --deadline {remaining}")
         from astrid.core.generation.settings import model_trust_unchanged
@@ -970,15 +970,17 @@ class RemotePlacement:
                       "claim_id=sys.argv[4],deadline=time.monotonic()+float(sys.argv[5]),trust_unchanged=True);"
                       "raw is not None or sys.exit(3);print(json.dumps(raw))")
             arguments = [installation.root, installation.engine, installation.platform, claim_id, str(remaining)]
-            command = (f"{POD_VENV}/bin/python -c {shlex.quote(script)} "
+            command = (f"ASTRID_POD_PHASE_TIMING=1 {POD_VENV}/bin/python -c {shlex.quote(script)} "
                        + " ".join(shlex.quote(argument) for argument in arguments) + " || " + command)
         # Checkpoint verification is read-only and bounded by the original paid
         # lease, independently of the execution timer that the job may exhaust.
         if verification_seconds is None:
-            code, stdout, _ = self._exec(state, command, timeout=120)
+            code, stdout, status_stderr = self._exec(state, command, timeout=120)
         else:
             assert state.claim is not None
-            code, stdout, _ = state.claim.ops.exec(command, remaining)
+            code, stdout, status_stderr = state.claim.ops.exec(command, remaining)
+        from astrid.core.execution.phase_timing import read_pod_reports
+        state.installation_timing = read_pod_reports(status_stderr)
         if code != 0 or stdout.strip() in {"", "null"}:
             state.install_unverified = (_safe_label(f"status_exit_{code}") if code != 0
                                         else "status_no_receipt")
@@ -1021,12 +1023,16 @@ class RemotePlacement:
                       "data=os.read(fd,1048577);"
                       "len(data)<=1048576 or sys.exit(2);"
                       "print(base64.b64encode(data).decode())")
+            script = ("from astrid.core.execution.phase_timing import pod_timing_report;"
+                      "pod_timing_report('collection_receipt_read','installed-receipt-read')"
+                      f"(lambda:exec({script!r}))()")
             remaining = max(0, verification_deadline - time.monotonic())
             if remaining <= 0:
                 state.install_unverified = "status_deadline_exhausted"
                 return False
-            code, output, _ = state.claim.ops.exec(
-                f"{POD_VENV}/bin/python -c {shlex.quote(script)} {shlex.quote(receipt)}", remaining)
+            code, output, receipt_stderr = state.claim.ops.exec(
+                f"ASTRID_POD_PHASE_TIMING=1 {POD_VENV}/bin/python -c {shlex.quote(script)} {shlex.quote(receipt)}", remaining)
+            state.installation_timing.extend(read_pod_reports(receipt_stderr))
             if code != 0 or len(output) > 1400000:
                 state.install_unverified = "receipt_read_failed"
                 return False

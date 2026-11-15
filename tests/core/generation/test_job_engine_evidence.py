@@ -580,3 +580,177 @@ def test_job_evidence_stamp_failure_keeps_the_run_record(tmp_path, monkeypatch):
     evidence.start_collect()
     evidence.finish()
     assert json.loads((evidence.out / "job-run.json").read_text())["schema"] == "astrid.job-run.v1"
+
+
+@pytest.mark.parametrize('warm', [False, True])
+def test_named_native_step_budget_and_whole_job_accounting(tmp_path, monkeypatch, warm):
+    """Timing must add zero command starts, including on a reused engine."""
+    from astrid.core.execution import phase_timing
+    from astrid.core.generation import job_evidence
+    from astrid.core.generation.engine_contracts import CommandResult
+    from astrid.core.generation.engine_recipe import load_recipe
+
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(job_evidence, '_process_entry', lambda: (10.0, 'fake pod process entry'))
+    monkeypatch.setattr(job_evidence, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(JobEvidence, '_vram', lambda *args: None)
+    monkeypatch.setattr(engine_custody, '_installed_models_root', lambda *args: None)
+    starts = []
+    durations = {'runtime_inspect': 2, 'nodes_restore': 3, 'pip_bootstrap': 4,
+                 'fetch': 5, 'prepare': 6, 'doctor': 7}
+    prep = object.__new__(managed_preparation.ManagedEnginePreparation)
+    prep.root = str(tmp_path / 'engine')
+    prep.recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    prep.adapter = SimpleNamespace(join=lambda *p: '/'.join(p), venv_python=lambda p: p + '/bin/python')
+    prep.deadline, prep.check = 1000, lambda: None
+    prep.engine_reused = warm
+    prep._keep_step_output = lambda *args: True
+
+    def run(request):
+        step = request.argv[-1]
+        starts.append(step)
+        clock.now += durations[step]
+        return CommandResult(0, '{}', '', False, durations[step], None, False, False)
+
+    prep.context = SimpleNamespace(run=run)
+    timing = phase_timing.PhaseTiming(clock=lambda: clock.now)
+    with phase_timing.pod_timing_scope(timing):
+        evidence = JobEvidence(tmp_path / 'out', prep)
+        with phase_timing.pod_phase('managed_preparation', 'prepare'):
+            for step in durations:
+                # A warm fetch is missing-only and can be skipped; absence is the convention.
+                if warm and step == 'fetch':
+                    continue
+                prep._native('fake program', step, step=step)
+        evidence.start_execution()
+        clock.now += 12
+        evidence.start_collect()
+        clock.now += 2
+        evidence.finish()
+    record = json.loads((evidence.out / 'job-run.json').read_text())
+    expected = [step for step in durations if not (warm and step == 'fetch')]
+    assert starts == expected  # CPU process budget: exactly one start per existing native step.
+    rows = {row['phase']: row for row in record['named_phases']}
+    for step in expected:
+        assert rows['native_' + step]['seconds'] == durations[step]
+        assert rows['native_' + step]['step_id'] == step
+    if warm:
+        assert 'native_fetch' not in rows
+    assert rows['execute']['seconds'] == 12
+    assert rows['result_writing']['seconds'] == 2
+    assert record['phases']['whole_job'] == pytest.approx(
+        sum(row['seconds'] for row in record['top_level_phases'].values())
+        + record['phases']['unaccounted'], abs=0.01)
+    assert record['phases']['unaccounted'] == pytest.approx(0, abs=0.01)
+    assert sum(row['exclusive_seconds'] for row in record['named_phases']) == pytest.approx(
+        sum(row['seconds'] for row in record['top_level_phases'].values()), abs=0.01)
+
+
+def test_doctor_alignment_w3_and_q2_are_nested_without_double_counting(tmp_path, monkeypatch):
+    from astrid.core.execution import phase_timing
+    from astrid.core.generation import engine_runner, job_evidence
+    from astrid.core.generation.engine_contracts import CommandResult
+    from astrid.core.generation.engine_recipe import load_recipe
+    from astrid.core.generation.engine_runner import _Runner
+
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(managed_preparation, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(engine_runner, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(job_evidence, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(job_evidence, '_process_entry', lambda: (10.0, 'fake pod process entry'))
+    monkeypatch.setattr(JobEvidence, '_vram', lambda *args: None)
+    monkeypatch.setattr(engine_custody, '_installed_models_root', lambda *args: None)
+    prep = object.__new__(managed_preparation.ManagedEnginePreparation)
+    prep.root = str(tmp_path / 'engine')
+    prep.recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    prep.adapter = SimpleNamespace(join=lambda *p: '/'.join(p), venv_python=lambda p: p + '/bin/python')
+    prep.check, prep.deadline, prep.mode = lambda: None, 1000, 'align'
+    prep._keep_step_output = lambda *args: True
+    prep._guard_runtime = lambda *args, **kwargs: None
+    prep._install_lock_epoch = object()
+    steps = [SimpleNamespace(kind=kind, id=kind + ':' + name, depends_on=())
+             for kind, name in [('source', 'comfyui'), ('environment', prep.recipe.primary_environment)]]
+    receipt = SimpleNamespace(requirements_locks={}, source_commits={})
+    starts = []
+
+    def spend(seconds, label, result):
+        starts.append(label)
+        clock.now += seconds
+        return result
+
+    runner = SimpleNamespace(plan=SimpleNamespace(steps=steps), locks={}, commits={}, steps=[],
+        recipe=prep.recipe, deadline=1000, health=SimpleNamespace(object_info_sha256='a' * 64),
+        start=lambda **kw: spend(3, 'start', ('skipped', {})),
+        check_health=lambda: spend(4, 'health', ('skipped', {})),
+        source=lambda *a, **kw: spend(1, 'source', ('skipped', {})),
+        environment=lambda *a, **kw: spend(2, 'environment', ('skipped', {})))
+    runner.execute = lambda step, **kw: _Runner.execute(runner, step, **kw)
+    prep._verify_models = lambda manifest: spend(5, 'verify-models', None)
+    prep.context = SimpleNamespace(run=lambda request: spend(7, 'native-doctor',
+        CommandResult(0, '{}', '', False, 7, None, False, False)))
+    prep._alignment_runner = runner
+    prep._alignment_verification = (None, runner, {}, {}, receipt)
+    with phase_timing.pod_timing_scope(phase_timing.PhaseTiming(clock=lambda: clock.now)):
+        evidence = JobEvidence(tmp_path / 'out', prep)
+        with phase_timing.pod_phase('managed_preparation', 'prepare'):
+            prep._audit_installation(runner, receipt, steps)
+            prep._doctor(['doctor', 'workflow.py'])
+            prep._verify_alignment(*prep._alignment_verification)
+        evidence.start_execution()
+        clock.now += 12
+        evidence.finish()
+    record = json.loads((evidence.out / 'job-run.json').read_text())
+    rows = record['named_phases']
+    assert {'installation_audit', 'alignment_verification', 'canonical_verification', 'verify_models',
+            'q2_audit', 'doctor', 'engine_start', 'engine_health', 'native_doctor'} <= {r['phase'] for r in rows}
+    assert [(r['step_id'], r['seconds']) for r in rows if r['phase'] == 'engine_health'] == [
+        ('doctor-health', 4), ('doctor-post-health', 4)]
+    assert [r['seconds'] for r in rows if r['phase'] == 'verify_models'] == [5, 5]
+    assert [r['seconds'] for r in rows if r['phase'] == 'q2_audit'] == [0, 0]
+    assert starts == ['source', 'environment', 'verify-models', 'start', 'health',
+                      'native-doctor', 'health', 'verify-models']
+    assert record['phases']['whole_job'] == 43
+    assert record['phases']['unaccounted'] == pytest.approx(0, abs=0.01)
+    assert sum(r['exclusive_seconds'] for r in rows) == 43
+
+
+def test_detached_log_declaration_and_collection_extend_the_same_pod_span(tmp_path, monkeypatch):
+    from astrid.core.execution import phase_timing
+    from astrid.core.generation import job_evidence
+
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(job_evidence, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(phase_timing, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(job_evidence, '_process_entry', lambda: (10.0, 'fake process entry'))
+    monkeypatch.setattr(JobEvidence, '_vram', lambda *args: None)
+    prep = SimpleNamespace(root=str(tmp_path / 'engine'), recipe=SimpleNamespace(
+        engine='comfyui', start=SimpleNamespace(port=1)))
+    with phase_timing.pod_timing_scope():
+        evidence = JobEvidence(tmp_path / 'out', prep)
+        evidence.start_execution()
+        clock.now += 3
+        evidence.finish()
+    original = json.loads((evidence.out / 'job-run.json').read_text())
+    birth = clock.now
+    monkeypatch.setattr(job_evidence, '_process_entry', lambda: (birth, 'fake log process entry'))
+    clock.now += 0.5
+    atomic = run_logs._atomic_json
+
+    def write(*args):
+        clock.now += 0.25
+        return atomic(*args)
+
+    monkeypatch.setattr(run_logs, '_atomic_json', write)
+    monkeypatch.setenv('ASTRID_POD_PHASE_TIMING', '1')
+    log = tmp_path / 'detached.stdout'
+    log.write_text('detached output')
+    run_logs.declare(evidence.out, run_logs.LogDecl('job.stdout', 'stdout', str(log)))
+    run_logs.collect(evidence.out)
+    record = json.loads((evidence.out / 'job-run.json').read_text())
+    assert {'log_declaration', 'log_collection'} <= {row['phase'] for row in record['named_phases']}
+    assert record['phases']['whole_job'] == original['phases']['whole_job'] + 1
+    assert record['phases']['unaccounted'] == pytest.approx(0, abs=0.01)
+    assert [row['seconds'] for row in record['top_level_phases'].values()
+            if row['phase'] == 'log_process_startup'] == [0.5]
+    assert record['schema'] == 'astrid.job-run.v1'
+    assert record['tier1_cards'] == list(phase_timing.TIER1_CARDS)

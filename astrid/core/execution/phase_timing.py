@@ -10,13 +10,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import platform
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
-from functools import lru_cache
+from functools import lru_cache, wraps
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,6 +47,46 @@ class PhaseTiming:
         self.pod_job: dict[str, Any] | None = None
         self.paid_started_at: float | None = None
         self.idle_before_s: float | None = None
+        self._named: list[dict[str, Any]] = []
+        self._step_stack: list[int] = []
+
+    def start_step(self, phase: str, step_id: str) -> int:
+        with self._lock:
+            index = len(self._named)
+            now = float(self._clock())
+            self._named.append({"phase": phase, "step_id": step_id, "start": now,
+                                "end": None, "parent": self._step_stack[-1] if self._step_stack else None})
+            self._step_stack.append(index)
+        stamp(self, f"pod_step_{index}_started_at", at=now)
+        return index
+
+    def end_step(self, index: int | None) -> None:
+        with self._lock:
+            if index is not None and index in self._step_stack:
+                now = float(self._clock())
+                # An interrupted lock wait may still be active when its owning
+                # preparation exits. Close descendants at that same boundary.
+                position = self._step_stack.index(index)
+                closed = self._step_stack[position:]
+                for active in closed:
+                    self._named[active]["end"] = now
+                del self._step_stack[position:]
+            else:
+                return
+        for active in closed:
+            stamp(self, f"pod_step_{active}_ended_at", at=now)
+
+    def named_steps(self) -> list[dict[str, Any]]:
+        """Inclusive wall spans plus exclusive seconds; children never enter the sum twice."""
+        with self._lock:
+            now = float(self._clock())
+            rows = [dict(row) for row in self._named]
+        for row in rows:
+            row["seconds"] = max(0.0, (now if row["end"] is None else row["end"]) - row["start"])
+        for index, row in enumerate(rows):
+            row["exclusive_seconds"] = row["seconds"] - sum(
+                child["seconds"] for child in rows if child["parent"] == index)
+        return rows
 
     def stamp(self, name: str, at: float | None = None, *, first: bool = False) -> None:
         with self._lock:
@@ -102,6 +144,9 @@ def ingest_job_run(timing: Any, files: dict[str, Any]) -> None:
                  (value is None or type(value) in (int, float) and math.isfinite(value))}
         with timing._lock:
             timing.pod_job = {"schema": record["schema"], "phases": clean}
+            for key in ("named_phases", "top_level_phases"):
+                if key in record:
+                    timing.pod_job[key] = clean_pod_steps(record[key])
     except Exception:  # noqa: BLE001 - optional evidence must never fail delivery
         pass
 
@@ -127,6 +172,130 @@ def attach(machine: dict[str, Any] | None, timing: Any) -> None:
 
 
 __all__ = ["PhaseTiming", "SCHEMA", "attach", "ingest_job_run", "stamp"]
+
+
+_POD_TIMING: ContextVar[PhaseTiming | None] = ContextVar("pod_phase_timing", default=None)
+
+
+def current_pod_timing() -> PhaseTiming | None:
+    return _POD_TIMING.get()
+
+
+@contextmanager
+def pod_timing_scope(timing: PhaseTiming | None = None):
+    timing = timing if timing is not None else PhaseTiming(clock=time.monotonic)
+    token = _POD_TIMING.set(timing)
+    try:
+        yield timing
+    finally:
+        _POD_TIMING.reset(token)
+
+
+@contextmanager
+def pod_phase(phase: str, step_id: str):
+    """Optional pod-only wall timing; a clock failure must preserve the job result."""
+    timing, index = current_pod_timing(), None
+    with suppress(Exception):
+        if timing is not None:
+            index = timing.start_step(phase, step_id)
+    try:
+        yield
+    finally:
+        with suppress(Exception):
+            if timing is not None:
+                timing.end_step(index)
+
+
+def pod_step(phase, step_id):
+    """Name a trusted step without changing its arguments, return value or exception."""
+    def decorate(operation):
+        @wraps(operation)
+        def measured(*args, **kwargs):
+            if current_pod_timing() is None:
+                return operation(*args, **kwargs)
+            name, identifier = operation.__name__, operation.__name__
+            with suppress(Exception):
+                name = phase(*args, **kwargs) if callable(phase) else phase
+                identifier = step_id(*args, **kwargs) if callable(step_id) else step_id
+            if name is None:
+                return operation(*args, **kwargs)
+            with pod_phase(name, identifier):
+                return operation(*args, **kwargs)
+        return measured
+    return decorate
+
+
+POD_TIMING_MARK = "ASTRID_POD_TIMING_JSON="
+
+
+def read_pod_reports(stderr: str) -> list[dict[str, Any]]:
+    reports = []
+    if not isinstance(stderr, str):
+        return reports
+    for line in stderr.splitlines():
+        if line.startswith(POD_TIMING_MARK) and len(line) <= 65536:
+            with suppress(ValueError, TypeError, AttributeError):
+                rows = clean_pod_steps(json.loads(line[len(POD_TIMING_MARK):]).get("named_phases"))
+                if isinstance(rows, list) and rows:
+                    reports.append({"named_phases": rows})
+    return reports
+
+
+def attach_pod_recheck(timing: Any, reports: Any) -> None:
+    with suppress(Exception):
+        if isinstance(timing, PhaseTiming) and reports:
+            if timing.pod_job is not None:
+                timing.pod_job["collection_recheck"] = reports
+            if isinstance(timing.generation, GenerationTiming):
+                timing.generation.pod_collection_recheck = reports
+
+
+def clean_pod_steps(value):
+    """Only fixed timing fields cross the optional evidence boundary."""
+    mapping = isinstance(value, dict)
+    source = value.items() if mapping else enumerate(value) if isinstance(value, list) else ()
+    result = {}
+    for key, row in source:
+        if len(result) >= 512 or not isinstance(row, dict):
+            continue
+        if any(not isinstance(row.get(k), str) or not row[k] or len(row[k]) > 256
+               or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:/-" for c in row[k])
+               for k in ("phase", "step_id")):
+            continue
+        seconds = _seconds(row.get("seconds"))
+        if seconds is None or seconds < 0:
+            continue
+        clean = {"phase": row["phase"], "step_id": row["step_id"], "seconds": seconds}
+        for field in ("exclusive_seconds", "start", "end"):
+            number = _seconds(row.get(field))
+            if number is not None:
+                clean[field] = number
+        if row.get("parent") is None or type(row.get("parent")) is int:
+            clean["parent"] = row.get("parent")
+        result[str(key)] = clean
+    return result if mapping else list(result.values())
+
+
+def pod_timing_report(phase: str, step_id: str):
+    """Emit pod-local status timing on stderr only for the requesting controller.
+
+    This process runs after the generation evidence is sealed. Its span must
+    remain outside that earlier whole_job; no cross-process endpoints are subtracted.
+    """
+    def decorate(operation):
+        @wraps(operation)
+        def reported(*args, **kwargs):
+            if os.environ.get("ASTRID_POD_PHASE_TIMING") != "1":
+                return operation(*args, **kwargs)
+            with pod_timing_scope() as timing:
+                try:
+                    with pod_phase(phase, step_id):
+                        return operation(*args, **kwargs)
+                finally:
+                    with suppress(Exception):
+                        print(POD_TIMING_MARK + json.dumps({"named_phases": timing.named_steps()}), file=sys.stderr)
+        return reported
+    return decorate
 
 
 TIMING_SCHEMA = "astrid.generation.timing.v2"
@@ -185,6 +354,7 @@ class GenerationTiming:
         self.intervals: list[dict[str, Any]] = []
         self.seen: set[str] = set()
         self.job_phases: dict[str, Any] | None = None
+        self.pod_collection_recheck: list[dict[str, Any]] | None = None
         with suppress(Exception):
             self.transition("admission", at=self.started)
 
@@ -255,14 +425,21 @@ class GenerationTiming:
                 source = self.job_phases.get("phases")
                 source = source if isinstance(source, dict) else {}
                 execution["sub_phases"] = {name: {"seconds": _seconds(source.get(name))} for name in JOB_PHASES}
+                top = clean_pod_steps(self.job_phases.get("top_level_phases"))
+                if isinstance(top, dict) and top:
+                    execution["sub_phases"] = top
                 subtotal = sum(row["seconds"] or 0.0 for row in execution["sub_phases"].values())
                 execution["sub_phases_seconds"] = subtotal
                 # Pod whole-job overlaps its measured subphases; keep it as a
                 # nested span, never add it to the exclusive phase sum.
                 execution["pod_job"] = {name: {"seconds": _seconds(source.get(name))}
                                         for name in ("whole_job", "unaccounted")}
+                if "named_phases" in self.job_phases:
+                    execution["pod_job"]["named_phases"] = clean_pod_steps(self.job_phases["named_phases"])
                 execution["engine_reused"] = self.job_phases.get("engine_reused")
                 execution["unaccounted"] = _remainder(execution["seconds"], subtotal)
+            if self.pod_collection_recheck:
+                phases["collection"]["pod_recheck"] = self.pod_collection_recheck
             return {"total": {"seconds": total}, "phases": phases, "tier1_cards": list(TIER1_CARDS),
                     "unaccounted": _remainder(total, sum(row["seconds"] or 0.0 for row in phases.values())),
                     "clock_id": clock_id(), "started_monotonic": self.started, "ended_monotonic": now,

@@ -15,6 +15,8 @@ import os
 import re
 import sys
 import tempfile
+from contextlib import nullcontext
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,27 @@ ROLES = ("engine", "run", "stdout", "stderr", "install")
 _NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,47}\Z")
 _TIMESTAMP = re.compile(r"^\s*(\d{4}-\d\d-\d\d[T ][^\s]+|\d{10}(?:\.\d+)?)")
 _FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S,%f")
+
+
+def _timed_log(phase):
+    """Optional installed-pod timing; the transported source still works with stdlib alone."""
+    def decorate(operation):
+        @wraps(operation)
+        def measured(root, *args, **kwargs):
+            context = nullcontext()
+            if os.environ.get("ASTRID_POD_PHASE_TIMING") == "1":
+                try:
+                    from astrid.core.generation.job_evidence import pod_log_phase
+                except ImportError:
+                    pass
+                else:
+                    decl = args[0] if args else kwargs.get("decl")
+                    step = "declare:" + getattr(decl, "name", "log") if phase == "log_declaration" else "collect-logs"
+                    context = pod_log_phase(Path(root), phase, step)
+            with context:
+                return operation(root, *args, **kwargs)
+        return measured
+    return decorate
 
 
 @dataclasses.dataclass(frozen=True)
@@ -82,6 +105,7 @@ def _load(root: Path) -> dict[str, Any]:
     return {"schema": SCHEMA, "logs": logs, "children": children}
 
 
+@_timed_log("log_declaration")
 def declare(root: Path, decl: LogDecl) -> None:
     root = Path(root)
     if not _NAME.fullmatch(decl.name) or decl.role not in ROLES:
@@ -187,6 +211,7 @@ def _time_slice(payload: bytes, decl: LogDecl) -> bytes:
     return b"".join(kept)
 
 
+@_timed_log("log_collection")
 def collect(root: Path, *, cap_bytes: int = CAP_BYTES, extra_root: Path | None = None) -> list[dict[str, Any]]:
     root = Path(root).resolve()
     merging = extra_root is not None and (root / LOGS_DIR / INDEX_NAME).exists()

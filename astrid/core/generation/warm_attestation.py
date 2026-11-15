@@ -23,6 +23,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from astrid.core.execution.phase_timing import pod_step, pod_timing_report
+
 from ._engine_target_files import _TargetFiles
 from .engine_contracts import EngineError
 
@@ -222,6 +224,7 @@ def _dependencies(root, recipe, deadline):
 
 
 class WarmAttestation:
+    @pod_step("warm_claim_inspect", "warm-claim-inspect")
     def __init__(self, root, recipe, runner, claim_id, deadline, *, enabled):
         self.root, self.recipe, self.runner = Path(root), recipe, runner
         self.claim_id, self.deadline = claim_id, deadline
@@ -434,9 +437,11 @@ class WarmAttestation:
             result[key] = {'path': record['path'], 'stat': _signature(path)}
         return result
 
+    @pod_step("warm_requirement_lookup", "warm-requirement-lookup")
     def contains(self, requirement):
         return self.matched and requirement in self.saved['requirements']
 
+    @pod_step("warm_attestation_write", "warm-attestation-write")
     def write(self, requirement, manifest, *, object_info_sha256, protected_packages):
         """Only the full-verification success path may extend this witness."""
         if not self.enabled:
@@ -497,6 +502,7 @@ class WarmAttestation:
             pass  # An unavailable optimization must not spoil a fully verified job.
 
 
+@pod_timing_report("collection_attestation", "collection-attestation")
 def collection_receipt(*, root, engine, platform, claim_id, deadline, trust_unchanged):
     """Optional pod-local preparation/collection status shortcut under install custody.
 

@@ -22,14 +22,16 @@ from dataclasses import fields, is_dataclass, replace
 from datetime import datetime, timezone
 from typing import Mapping
 
+from astrid.core.execution.phase_timing import pod_step, pod_timing_report
+
 from . import engine_recipe as recipes
 from ._engine_python_bootstrap import engine_process_env
 from .engine_contracts import (
     CommandFailed,
     CommandRequest,
     CustodyUnresolved,
-    Deadline,
     DataRef,
+    Deadline,
     DeadlineExceeded,
     DownloadResult,
     EndpointHealthError,
@@ -81,6 +83,7 @@ _CODE_PATHS = (
     "core/generation/engine_contracts.py", "core/generation/engine_recipe.py",
     "core/generation/engine_runner.py", "core/generation/engine_runner_target.py",
     "core/generation/model_downloader.py", "core/generation/_engine_python_bootstrap.py",
+    "core/execution/phase_timing.py",
 )
 # A2 must extend this list with its transitive custody/helper imports when landing.
 _A2_PATHS = ("core/generation/engine_execution.py", "core/generation/engine_platforms.py",
@@ -456,6 +459,7 @@ class _Runner:
                 "root": self.plan.root, "recipe_sha256": self.plan.recipe_sha256,
                 "helper_sha256": self.helper_sha256, **extra}
 
+    @pod_step("engine_helper", lambda self, operation, **kw: self.step_id + ":" + operation)
     def helper(self, operation, **extra):
         result = self.run(("python3", "-I", "-m", "astrid.core.generation.engine_runner_target",
                            operation, _json(self.payload(**extra))))
@@ -735,6 +739,7 @@ class _Runner:
         if result.stdout_truncated or result.stdout.split()[:2] != ["uv", version]:
             raise IntegrityError("uv version differs from recipe", step_id=self.step_id)
 
+    @pod_step("environment_probe", lambda self, environment, lock_digest: "environment:" + environment.name)
     def environment_probe(self, environment, lock_digest):
         # This is static product verification code, never recipe-supplied code
         # or an installer blob. It runs under the context's process custody.
@@ -780,6 +785,7 @@ class _Runner:
         self.health = HealthEvidence("healthy", _now(), digest, True)
         return "skipped", {"object_info_sha256": digest, "required_nodes_present": True}
 
+    @pod_step(lambda self, step, **kw: "installation_" + step.kind, lambda self, step, **kw: step.id)
     def execute(self, step, *, readonly=False):
         self.step_id = step.id
         _deadline(self.deadline, step.id)
@@ -1025,6 +1031,7 @@ def _parse_receipt(raw, plan):
     return InstallReceipt(**{**value, "models": models, "steps": steps, "health": health})
 
 
+@pod_step("receipt_refresh", "refresh-installed-launch")
 def refresh_installed_launch(runner, raw, *, start_action, start_facts, health_action, health_facts, check):
     """Commit verified live launch facts while the caller holds the install lock.
 
@@ -1073,6 +1080,7 @@ def refresh_installed_launch(runner, raw, *, start_action, start_facts, health_a
     return fact.sha256
 
 
+@pod_timing_report("collection_engine_status", "engine-status")
 def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placement, root: TargetPath,
                   context: ExecutionContext, deadline: Deadline) -> InstallReceipt | None:
     recipe = recipes.load_recipe(engine, platform)
