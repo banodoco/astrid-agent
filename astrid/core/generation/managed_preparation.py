@@ -348,6 +348,33 @@ class ManagedEnginePreparation:
             from .engine_contracts import DeadlineExceeded
             raise DeadlineExceeded("managed preparation deadline exceeded")
 
+    @contextmanager
+    def _installation_lock(self, on_contention):
+        """Bind audit reuse to one uninterrupted acquisition, including direct exits."""
+        with self.adapter.local_install_lock(self.root, deadline=self.deadline, cancelled=self.cancelled,
+                                             on_contention=on_contention):
+            self._installation_audit = None
+            self._alignment_changed = False
+            self._install_lock_epoch = object()
+            try:
+                yield
+            finally:
+                self._installation_audit = None
+                self._install_lock_epoch = None
+
+    def _audit_installation(self, runner, receipt, steps, *, alignment=False):
+        epoch = getattr(self, "_install_lock_epoch", None)
+        reusable = epoch is not None and not getattr(self, "_alignment_changed", False)
+        if not reusable or getattr(self, "_installation_audit", None) != (epoch, runner):
+            for step in steps:
+                if step.kind in {"source", "environment"}:
+                    runner.execute(step, readonly=True)
+            if reusable:
+                self._installation_audit = (epoch, runner)
+        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
+            raise IntegrityError("managed alignment changed the installed base" if alignment else
+                                 "managed installation evidence differs from its receipt")
+
     def close(self, *, execution_root: Path | None = None, worker_drained: bool = True):
         if not worker_drained:
             self.uncertain = True
@@ -439,8 +466,7 @@ class ManagedEnginePreparation:
                 from .engine_contracts import EngineBusy
                 raise EngineBusy("the local engine is being updated; try again when astrid engines install finishes")
 
-        lock = self.adapter.local_install_lock(self.root, deadline=self.deadline, cancelled=self.cancelled,
-                                               on_contention=refuse_while_installing)
+        lock = self._installation_lock(refuse_while_installing)
         from contextlib import suppress
         with suppress(Exception):
             callback = getattr(self, "evidence_waiting", None)
@@ -469,11 +495,7 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed engine helper identity differs")
         # These checks read the saved environment identities; they do not
         # re-enter the install lock or require the HTTP service to be running.
-        for step in plan.steps:
-            if step.kind in {"source", "environment"}:
-                runner.execute(step, readonly=True)
-        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
-            raise IntegrityError("managed installation evidence differs from its receipt")
+        self._audit_installation(runner, receipt, plan.steps)
         self._runtime_requirements = None
         self._guard_runtime(canonical_workflow, runner, post=False)
         engine = _preparation_engine(DEFAULT_ENGINE)
@@ -580,11 +602,7 @@ class ManagedEnginePreparation:
                 with suppress(Exception):
                     self.verification_seconds = getattr(self, "verification_seconds", 0.0) + time.monotonic() - started
         self._guard_runtime(workflow, runner, post=True)
-        for step in runner.plan.steps:
-            if step.kind in {"source", "environment"}:
-                runner.execute(step, readonly=True)
-        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
-            raise IntegrityError("managed alignment changed the installed base")
+        self._audit_installation(runner, receipt, runner.plan.steps, alignment=True)
         self.check()
 
     def _begin_model_verification(self):
@@ -820,6 +838,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             python = self.adapter.venv_python(self.adapter.join(self.root, primary.relative_path))
             self.pip_bootstrap = json.loads(self._native(native_pip_program(), json.dumps({"python_executable": python}),
                                                         step="pip_bootstrap").stdout)
+            if self.pip_bootstrap["existed"] is False:
+                self._alignment_changed = True
         program = "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))"
         if argv[0] in {"prepare", "doctor", "fetch"}:
             # This is the host's own canonical renderer output, never admitted
@@ -839,10 +859,21 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 "sync_packages": self._sync_packages}
             self.native_preparation = json.loads(self._native(native_preparation_program(), json.dumps(request),
                                                               step="prepare").stdout)
+            if self.native_preparation["synchronization"]["synced"]:
+                self._alignment_changed = True
         else:
             step = "nodes_restore" if argv[0] == "nodes" else argv[0]
+            if step == "nodes_restore":
+                from astrid.packs.vibecomfy.native_preparation import native_nodes_restore_program
+                program = native_nodes_restore_program()
+                argv = [json.dumps({"argv": argv})]
             try:
-                self._native(program, *argv, step=step)
+                result = self._native(program, *argv, step=step)
+                if step == "nodes_restore" and json.loads(result.stdout.splitlines()[-1])["changed"]:
+                    self._alignment_changed = True
+                if step == "fetch" and (getattr(result, "stdout_truncated", False) or any(
+                        line.startswith("downloaded ") for line in getattr(result, "stdout", "").splitlines())):
+                    self._alignment_changed = True
             except (OSError, IntegrityError) as error:
                 if step == "fetch" and (getattr(error, "errno", None) in {errno.EDQUOT, errno.ENOSPC}
                                         or getattr(error, "storage_exhausted", False)):
