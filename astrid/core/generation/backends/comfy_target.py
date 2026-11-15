@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Literal
+from http import client as http_client
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -338,20 +339,38 @@ class ComfyTargetClient:
         if (rule["hash_required"] or expected_sha256 is not None) and (
                 expected_sha256 is None or digest != _digest_hex(expected_sha256)):
             raise ValueError(f"managed {kind} failed hash verification: {source.name}")
-        filename = source.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
+        safe_source_name = source.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
         if self.endpoint_transport is not None:
             root = self._pod_directory("input_directory")
             # Only chunk put can enforce the claimed agent's exact input-file
             # permission. Freeze the verified bytes so a source race cannot
             # change the upload after hashing.
             with tempfile.TemporaryDirectory(prefix="astrid-comfy-upload-") as staging:
-                frozen = Path(staging) / filename
+                frozen = Path(staging) / safe_source_name
                 frozen.write_bytes(data)
-                self.endpoint_transport.put(frozen, str(root / subfolder / filename))
-            return f"{subfolder}/{filename}"
+                self.endpoint_transport.put(frozen, str(root / subfolder / safe_source_name))
+            return f"{subfolder}/{safe_source_name}"
+        # Local Comfy inputs use a content-addressed shared name. Reuse it only
+        # when /view can confirm the exact byte length; an existing but
+        # different-sized file is never repaired in the shared namespace.
+        extension = source.suffix.lstrip(".").lower()
+        if re.fullmatch(r"[a-z0-9]{1,16}", extension) is None:
+            extension = (mimetypes.guess_extension(media_type, strict=False) or ".bin").lstrip(".")
+        content_name = f"sha256-{digest}.{extension}"
+        content_subfolder = "astrid/content"
+        content_state, content_size = self._input_size(content_name, content_subfolder)
+        if content_state == "present" and content_size == len(data):
+            return f"{content_subfolder}/{content_name}"
+        if content_state == "missing":
+            filename, upload_subfolder = content_name, content_subfolder
+        else:
+            # HEAD is unsupported/unavailable or the shared name is occupied
+            # by a different-sized file. Keep the upload attempt-scoped.
+            filename = f"{digest}-{safe_source_name}"
+            upload_subfolder = subfolder
         boundary = uuid.uuid4().hex
         fields = []
-        for name, value in (("subfolder", subfolder), ("type", "input")):
+        for name, value in (("subfolder", upload_subfolder), ("type", "input")):
             fields.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
         fields.append(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{filename}"\r\nContent-Type: {media_type}\r\n\r\n'.encode())
         ending = f"\r\n--{boundary}--\r\n".encode()
@@ -370,9 +389,31 @@ class ComfyTargetClient:
         name = result.get("name") if isinstance(result, dict) else None
         if (not isinstance(name, str) or PurePosixPath(name).name != name
                 or name in {"", ".", ".."} or "\\" in name
-                or result.get("subfolder") != subfolder or result.get("type") != "input"):
+                or result.get("subfolder") != upload_subfolder or result.get("type") != "input"):
             raise ValueError("ComfyUI returned an unsafe uploaded image reference")
-        return f"{subfolder}/{name}"
+        return f"{upload_subfolder}/{name}"
+
+    def _input_size(self, filename: str, subfolder: str) -> tuple[str, int | None]:
+        """Return present size, confirmed absence, or unknown for a local input."""
+        query = urllib_parse.urlencode({"filename": filename, "subfolder": subfolder, "type": "input"})
+        request = urllib_request.Request(self.http_origin + "/view?" + query, method="HEAD",
+                                        headers={"Accept-Encoding": "identity"})
+        try:
+            with self._opener(request, timeout=HTTP_TRANSFER_SECONDS) as response:
+                status = getattr(response, "status", 200)
+                if status == 404:
+                    return "missing", None
+                if not 200 <= status < 300:
+                    return "unknown", None
+                headers = getattr(response, "headers", {})
+                raw_size = headers.get("Content-Length") if hasattr(headers, "get") else None
+                if not isinstance(raw_size, str) or not raw_size.isdecimal():
+                    return "unknown", None
+                return "present", int(raw_size)
+        except urllib_error.HTTPError as exc:
+            return ("missing", None) if exc.code == 404 else ("unknown", None)
+        except (OSError, urllib_error.URLError, http_client.HTTPException, ValueError):
+            return "unknown", None
 
     def _pod_directory(self, name: str) -> Path:
         from runpod_lifecycle.pod_agent import observation_path

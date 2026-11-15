@@ -125,7 +125,8 @@ class SlotPod(MachineProviderHTTP):
 
 @contextlib.contextmanager
 def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=(), call=None,
-           machine_identity=False, target_kind="runpod", h3_output=False, trusted_inventory=False):
+           machine_identity=False, target_kind="runpod", h3_output=False, trusted_inventory=False,
+           request_observer=None, timeline_observer=None, runtime_observer=None):
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
     import subprocess
@@ -147,6 +148,8 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
     provider = SlotPod(claim_path, tmp_path / "attempts", _slot_classes(slot) | set(extra_classes))
     provider.comfy.h3_output = h3_output
+    provider.comfy.request_observer = request_observer
+    provider.comfy.timeline_observer = timeline_observer
     send, send_requests, connect = httpx.Client.send, requests.Session.send, socket.socket.connect
     local = {"127.0.0.1", "localhost", "::1"}
     def respond(request):
@@ -189,6 +192,8 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     provider.bridge_rejections = []
     monkeypatch.setattr(HostChildBridge, "dispatch", observe_dispatch)
     daemon = real_runtime()
+    if runtime_observer is not None:
+        runtime_observer(daemon)
     worker_token = daemon.worker_token
     if machine_identity:
         # H3's delegated child needs the ordinary host's credential-verified machine identity
