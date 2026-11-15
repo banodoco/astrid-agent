@@ -20,6 +20,7 @@ from typing import Any
 from runtime_protocol import platform
 
 from astrid.core.generation.producer_result import public_alignment_evidence
+from astrid.core.generation.vibecomfy_runtime_root import vibecomfy_runtime_root
 from astrid.packs.vibecomfy.production_engine import (
     ProductionEngineError,
     ProductionRunResult,
@@ -361,10 +362,16 @@ def _trust_from_environment(bundle: Any) -> tuple[dict[str, Any], ...] | None:
     return target_inventory.declared_rows(bundle.workflow)
 
 
+def _inside_custody(resolved: Path, destination: Path) -> bool:
+    # The runtime folder is inside destination, except on Windows where it is short and beside it.
+    return (resolved.is_relative_to(destination.resolve(strict=True))
+            or resolved.is_relative_to(Path(vibecomfy_runtime_root(destination)).resolve()))
+
+
 def _custody_file(path: Path, destination: Path, label: str) -> Path:
     """Check the native file and all ancestors before reading or replacing it."""
     if (path.is_symlink() or not path.is_file()
-            or not path.resolve(strict=True).is_relative_to(destination.resolve(strict=True))
+            or not _inside_custody(path.resolve(strict=True), destination)
             or any(part.is_symlink() for part in path.parents)
             or not stat.S_ISREG(path.lstat().st_mode)):
         raise ProductionEngineError(f"local_server {label} escaped attempt custody")
@@ -417,7 +424,7 @@ def run_local_server(
     bundle = _canonical_bundle_value(resolved)
     values = _workflow_comfy_configuration(bundle)
     values.update({
-        "runtime_root": str(destination / ".vibecomfy-runtime"),
+        "runtime_root": str(vibecomfy_runtime_root(destination)),
         "cwd": str(destination), "warm_policy": "never",
         "disable_known_models": True, "quiet_schema_degradation": False,
         "schema_warn_only": False, "prompt_timeout_sec": _LOCAL_PROMPT_TIMEOUT_SEC,
@@ -486,11 +493,11 @@ def run_local_server(
             if prepared is not None:
                 from vibecomfy.runtime.run_context import RunContext
                 run_id = "run-" + uuid.uuid4().hex
-                run_dir = destination / ".vibecomfy-runtime" / "out" / "runs" / run_id
+                run_dir = vibecomfy_runtime_root(destination) / "out" / "runs" / run_id
                 if any(part.is_symlink() for part in (run_dir, *run_dir.parents)):
                     raise ProductionEngineError("local_server native attempt escaped attempt custody")
                 run_dir.mkdir(parents=True, exist_ok=False)
-                if not run_dir.resolve().is_relative_to(destination.resolve()):
+                if not _inside_custody(run_dir.resolve(), destination):
                     raise ProductionEngineError("local_server native attempt escaped attempt custody")
                 context = RunContext(run_id, run_dir, task_id=task_identity,
                                      attempt_id=attempt_identity, execution_id=prepared.get("execution_identity"))

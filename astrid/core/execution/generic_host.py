@@ -787,6 +787,11 @@ class StorageEnvelopeError(HostError):
 
 def _cleanup_ephemeral_attempt(root: Path) -> None:
     """Remove an owned attempt root and verify that no residue remains."""
+    from astrid.core.generation.vibecomfy_runtime_root import remove_windows_runtime_root
+    try:
+        remove_windows_runtime_root(root / "outputs")
+    except OSError as exc:
+        raise HostError(f"owned attempt cleanup failed: {root}") from exc
     try:
         shutil.rmtree(root)
     except FileNotFoundError:
