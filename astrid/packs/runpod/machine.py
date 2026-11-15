@@ -39,6 +39,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Callable, Iterator, Mapping
 
 from .failure_reason import Reason, installation_reason
@@ -1079,13 +1080,16 @@ class RunPodMachine:
         except ValueError:
             raise MachineError("remote result is not JSON") from None
         placement._check_deadline("fetch")
+        logs_unavailable: dict[str, str] = {}
         files = self._fetch_verified(ops, f"{run.remote_root}/out", destination, run.scratch,
-                                     manifest_line[len(MANIFEST_MARK):].strip())
+                                     manifest_line[len(MANIFEST_MARK):].strip(),
+                                     logs_unavailable=logs_unavailable)
         self._checkpoint_installed(run, files)
         state.note("fetch", "done", files=len(files))
         _stamp(timing, "collection_ended_at")
         pid = str(record.get("pid") or "").strip()
         return {"files": files, "result": result if isinstance(result, Mapping) else {},
+                **({"logs_unavailable": logs_unavailable} if logs_unavailable else {}),
                 **({"policy_notice": run.lease.policy_notice} if run.lease.policy_notice is not None else {}),
                 "manifest_sha256": manifest_line[len(MANIFEST_MARK):].strip(),
                 "progress": list(run.progress),
@@ -1171,14 +1175,17 @@ class RunPodMachine:
 
     @staticmethod
     def _fetch_verified(ops: Any, remote_dir: str, destination: Path, scratch: Path,
-                        manifest_digest: str) -> dict[str, str]:
+                        manifest_digest: str, *,
+                        logs_unavailable: dict[str, str] | None = None) -> dict[str, str]:
         """Copy one pod folder back, every file against its digest manifest.
 
         The manifest is downloaded and checked against the digest the pod
         printed, then each file is downloaded over the same pod-agent transport,
         rejecting unsafe paths and any digest or size mismatch. Returns
         ``{relative path: local path}``. Shared by the output fetch and any
-        later folder fetch (the failure folder).
+        later folder fetch (the failure folder). On success, passing
+        ``logs_unavailable`` verifies all non-log outputs first, then attempts
+        each log once; only verified log bytes are installed in the destination.
         """
         manifest_local = scratch / MANIFEST_NAME
         ops.get(f"{remote_dir}/{MANIFEST_NAME}", manifest_local)
@@ -1190,19 +1197,39 @@ class RunPodMachine:
             raise MachineError("remote job reported no output files")
         destination = Path(destination)
         destination.mkdir(parents=True, exist_ok=True)
-        files: dict[str, str] = {}
-        for relative, entry in sorted(recorded.items()):
+
+        def fetch_file(relative: str, root: Path) -> Path:
+            entry = recorded[relative]
             parts = Path(relative).parts
             if (not isinstance(entry, Mapping) or Path(relative).is_absolute() or not parts
                     or ".." in parts or relative != Path(relative).as_posix()):
                 raise DigestMismatch(f"pod manifest names an unsafe path: {relative!r}")
-            local = destination / relative
+            local = root / relative
             local.parent.mkdir(parents=True, exist_ok=True)
             ops.get(f"{remote_dir}/{relative}", local)
             if sha256_file(local) != entry.get("sha256") or local.stat().st_size != entry.get("size"):
                 local.unlink(missing_ok=True)
                 raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
-            files[relative] = str(local)
+            return local
+
+        files: dict[str, str] = {}
+        ordered = sorted(recorded)
+        if logs_unavailable is not None:
+            ordered.sort(key=lambda relative: relative.split("/", 1)[0] == "logs")
+        for relative in ordered:
+            if logs_unavailable is not None and relative.split("/", 1)[0] == "logs":
+                try:
+                    # A partial or corrupt log must never appear among delivered outputs.
+                    with TemporaryDirectory(dir=scratch) as staging:
+                        verified = fetch_file(relative, Path(staging))
+                        local = destination / relative
+                        local.parent.mkdir(parents=True, exist_ok=True)
+                        verified.replace(local)
+                    files[relative] = str(local)
+                except Exception as exc:  # noqa: BLE001 - optional logs cannot change a completed result
+                    logs_unavailable[relative] = type(exc).__name__
+            else:
+                files[relative] = str(fetch_file(relative, destination))
         return files
 
     @staticmethod
