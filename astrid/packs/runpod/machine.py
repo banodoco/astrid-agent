@@ -56,7 +56,6 @@ from .remote_placement import (
     RemotePlacement,
     RemotePlacementError,
     RemoteRun,
-    manifest_command,
     sha256_file,
 )
 
@@ -69,6 +68,9 @@ JOB_NAME = "job.json"
 MAX_PROGRESS_BYTES = 64 * 1024
 OUTPUT_ARCHIVE = "outputs.tar"
 OUTPUT_ARCHIVE_MARK = "OUTPUT_ARCHIVE=" + OUTPUT_ARCHIVE
+LOGS_ARCHIVE = "logs.tar"
+LOGS_ARCHIVE_MARK = "LOGS_ARCHIVE=" + LOGS_ARCHIVE
+PROGRESS_MARK = "JOB_PROGRESS="
 PROGRESS_KEYS = frozenset({"phase", "percent", "current", "total"})
 CUSTODY_SCHEMA = "astrid.runpod.machine-custody.v1"
 #: The local private engine footprint the storage probe requires besides the volume.
@@ -222,8 +224,10 @@ def selection_env(remote_root: str) -> str:
 
 def extract_selection_command(remote_root: str) -> str:
     root = shlex.quote(f"{remote_root}/selection")
-    return (f"mkdir -p {root}/packs {root}/entries {root}/no-user-packs && "
-            f"tar -xzf {shlex.quote(f'{remote_root}/{SELECTION_NAME}')} -C {root}")
+    # The dispatch verifier already extracted and authenticated every selection
+    # member. Preserve the generation gate and the empty selection directories.
+    return (f"test -f {root}/{SELECTION_MANIFEST} && "
+            f"mkdir -p {root}/packs {root}/entries {root}/no-user-packs")
 
 
 # The pod's one long-lived Runtime and its in-place reset (T5f): see pod_reset.py.
@@ -328,6 +332,7 @@ def build_selection(entry: str | None, staging: Path, *, sources: Any = None,
     entry ships its own folder from ``VIBECOMFY_ENTRIES_DIR``. ``selection.json``
     records both, with a sha256 per shipped file.
     """
+    import stat
     import tarfile
 
     if sources is None:
@@ -355,10 +360,13 @@ def build_selection(entry: str | None, staging: Path, *, sources: Any = None,
     body = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
     with tarfile.open(archive, "w:gz") as handle:
         for name, path in members:
-            info = handle.gettarinfo(str(path), arcname=name)
-            info.uid = info.gid = 0
-            info.uname = info.gname = "root"
-            with path.open("rb") as stream:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                observed = os.fstat(stream.fileno())
+                if not stat.S_ISREG(observed.st_mode):
+                    raise MachineError("selection source is not regular")
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = observed.st_size, stat.S_IMODE(observed.st_mode)
                 handle.addfile(info, stream)
         import io
         info = tarfile.TarInfo(SELECTION_MANIFEST)
@@ -457,15 +465,13 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         f"{shlex.quote(Path(__file__).with_name('failure_diagnostics.py').read_text(encoding='utf-8'))} "
         f"{result} {shlex.quote(f'{remote_root}/{JOB_NAME}')}; exit $rc; fi\n"
         f"printf '%s' {shlex.quote(RESULT_MARK)}; tr -d '\\n' < {result}; echo\n"
-        f"{output_manifest_command(remote_root)}\n"
     )
 
 
-def output_manifest_command(remote_root: str) -> str:
-    """Seal the output manifest and transport archive in the same pod process."""
-    program = _MANIFEST_SCRIPT + '''
+def _archive_script(destination: str, marker: str) -> str:
+    return '''
 import stat, tarfile
-with tarfile.open(sys.argv[2], "w") as archive:
+with tarfile.open(ARCHIVE_DESTINATION, "w") as archive:
     for relative in ["wrapper-manifest.json", *sorted(files)]:
         fd = os.open(os.path.join(root, relative), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as stream:
@@ -475,8 +481,13 @@ with tarfile.open(sys.argv[2], "w") as archive:
             member = tarfile.TarInfo(relative)
             member.size = info.st_size
             archive.addfile(member, stream)
-print("OUTPUT_ARCHIVE=outputs.tar")
-'''
+print(ARCHIVE_MARKER)
+'''.replace("ARCHIVE_DESTINATION", destination).replace("ARCHIVE_MARKER", repr(marker))
+
+
+def output_manifest_command(remote_root: str) -> str:
+    """Seal the output manifest and transport archive in the same pod process."""
+    program = _MANIFEST_SCRIPT + _archive_script("sys.argv[2]", OUTPUT_ARCHIVE_MARK)
     return (f"{POD_VENV}/bin/python -c {shlex.quote(program)} "
             f"{shlex.quote(remote_root + '/out')} {shlex.quote(remote_root + '/' + OUTPUT_ARCHIVE)}")
 
@@ -500,14 +511,29 @@ for name, role, path in [("job.stdout", "stdout", job / "stdout"),
         pass
 collect(root)
 '''
+    # All five former finish commands share this interpreter, including the
+    # log manifest and archive. Keep the embedded collector package-independent.
+    source += '\nsys.argv = [sys.argv[0], str(root / "logs")]\n'
+    source += _MANIFEST_SCRIPT.replace(MANIFEST_MARK, LOGS_MANIFEST_MARK)
+    source += _archive_script('str(Path(root).parent.parent / "logs.tar")', LOGS_ARCHIVE_MARK)
+    source += '''
+try:
+    progress_path = Path(root).parent.parent / "progress.json"
+    if progress_path.stat().st_size <= 65536:
+        payload = json.loads(progress_path.read_text())
+        if isinstance(payload, dict):
+            print("JOB_PROGRESS=" + json.dumps({k: v for k, v in payload.items()
+                                               if k in {"phase", "percent", "current", "total"}}))
+except (OSError, ValueError):
+    pass
+'''
+    source += '\nsys.argv = [sys.argv[0], str(Path(root).parent)]\n'
+    source += _MANIFEST_SCRIPT
+    source += _archive_script('str(Path(root).parent / "outputs.tar")', OUTPUT_ARCHIVE_MARK)
     interpreter = shlex.quote(python)
     out = f"{remote_root}/out"
     jobdir = '"$(dirname "$0")"'
-    commands = [
-        f"{interpreter} -c {shlex.quote(source)} {shlex.quote(out)} {jobdir}",
-        f"{manifest_command(f'{out}/logs', interpreter)} | sed 's/^{MANIFEST_MARK}/LOGS_MANIFEST_SHA256=/'",
-    ]
-    return "( " + "; ".join(commands) + " ) 2>/dev/null || true"
+    return f"( {interpreter} -c {shlex.quote(source)} {shlex.quote(out)} {jobdir} ) 2>/dev/null || true"
 
 
 LOGS_MANIFEST_MARK = "LOGS_MANIFEST_SHA256="
@@ -965,15 +991,10 @@ class RunPodMachine:
         check_cancelled()
         staging = Path(job.scratch) / "machine"
         staging.mkdir(parents=True, exist_ok=True)
-        uploads: list[tuple[Path, str, str]] = []
+        uploads: list[tuple[Path, str]] = []
 
         def put(local: Path, remote: str) -> None:
-            # Keep chunk cancellation and each original file path. Only the
-            # independent digest observations are batched, before any launch.
-            expected = sha256_file(local)
-            placement._check_deadline("job upload")
-            ops.put(local, remote)
-            uploads.append((local, remote, expected))
+            uploads.append((local, remote.removeprefix(remote_root + "/")))
 
         shipped: dict[str, Any] = {}
         for name, value in sorted(job.inputs.items()):
@@ -1024,16 +1045,23 @@ class RunPodMachine:
         # pod-side run resolves its entry from them only.
         archive, selection = build_selection(job.entry, staging)
         check_cancelled()
-        put(archive, f"{remote_root}/{SELECTION_NAME}")
-        # Parse only digests in argument order, not filenames from pod stdout.
-        observed = placement._exec_ok(
-            state, "sha256sum -- " + " ".join(shlex.quote(remote) for _, remote, _ in uploads),
-            "job upload verification", timeout=300)
-        actual = [line.split()[0] for line in observed.splitlines() if line.split()]
-        if actual != [expected for _, _, expected in uploads]:
+        from . import job_bundle
+
+        bundle = staging / job_bundle.NAME
+        manifest_digest = job_bundle.build(uploads, archive, bundle, check_cancelled)
+        placement._check_deadline("job upload")
+        check_cancelled()
+        ops.put(bundle, f"{remote_root}/{job_bundle.NAME}")
+        check_cancelled()
+        command = " ".join(shlex.quote(value) for value in (
+            f"{POD_VENV}/bin/python", "-c", job_bundle.UNPACK,
+            f"{remote_root}/{job_bundle.NAME}", remote_root, sha256_file(bundle), manifest_digest))
+        code, observed, _error = placement._exec(state, command, timeout=300)
+        if code != 0 or observed.strip() != job_bundle.MARK:
             raise DigestMismatch("job uploads did not match their declared digests")
         check_cancelled()
         archive.unlink(missing_ok=True)
+        bundle.unlink(missing_ok=True)
         lease.state.note("selection", "shipped", packs=[row["pack_id"] for row in selection["packs"]],
                          entries=[row["id"] for row in selection["entries"]])
         # The entry check runs inside the job's one command, on the prepared connection.
@@ -1065,14 +1093,11 @@ class RunPodMachine:
             adapter = self._require()
             adapter.placement._check_deadline("job poll")
             record = run.lease.claim.ops.job_poll(run.job_id)
-            progress = self._copy_progress(run)
             state = record.get("state")
+            # Terminal progress travels in the already-required stdout read.
+            # Running jobs still publish their usual live heartbeat snapshots.
+            progress = self._copy_progress(run) if state != "exited" else None
             timing = getattr(run.lease, "timing", None)
-            if timing is not None and isinstance(progress, Mapping):
-                try:
-                    timing.pod_phase(progress.get("phase"))
-                except Exception:  # noqa: BLE001 - timing: optional telemetry must never fail polling
-                    _logger.debug("Could not record the remote job phase", exc_info=True)
             if state == "exited":
                 _stamp(timing, "job_ended_at", first=True)
                 run.state = "exited"
@@ -1097,6 +1122,10 @@ class RunPodMachine:
             return None
         finally:
             landing.unlink(missing_ok=True)
+        return self._save_progress(run, payload)
+
+    @staticmethod
+    def _save_progress(run: MachineRun, payload: Any) -> dict[str, Any] | None:
         if not isinstance(payload, Mapping):
             return None
         progress = {str(key): value for key, value in payload.items() if str(key) in PROGRESS_KEYS}
@@ -1108,6 +1137,12 @@ class RunPodMachine:
         os.replace(partial, run.progress_path)
         if not run.progress or run.progress[-1] != progress:
             run.progress.append(progress)
+        timing = getattr(run.lease, "timing", None)
+        if timing is not None:
+            try:
+                timing.pod_phase(progress.get("phase"))
+            except Exception:  # noqa: BLE001 - timing: optional telemetry must never fail progress
+                _logger.debug("Could not record the remote job phase", exc_info=True)
         return progress
 
     # -- cancel --------------------------------------------------------------
@@ -1168,6 +1203,12 @@ class RunPodMachine:
                 if failed:
                     raise MachineError("remote failure diagnostic unavailable") from None
                 raise
+        progress_line = _last_marked(stdout, PROGRESS_MARK)
+        if progress_line is not None and len(progress_line) <= MAX_PROGRESS_BYTES:
+            try:
+                self._save_progress(run, json.loads(progress_line[len(PROGRESS_MARK):]))
+            except ValueError:
+                _logger.debug("Could not read final remote progress", exc_info=True)
         if failed:
             diagnostic = parse_frame(stdout, node_ids=getattr(run.lease, "node_ids", frozenset()),
                                      node_names=getattr(run.lease, "node_names", frozenset()))
@@ -1260,15 +1301,18 @@ class RunPodMachine:
         try:
             line = _last_marked(stdout, LOGS_MANIFEST_MARK)
             if line is None and getattr(run, "directory", None) and hasattr(ops, "exec"):
-                command = f"grep -a '^{LOGS_MANIFEST_MARK}' {shlex.quote(run.directory)}/stdout | tail -n 1"
+                command = f"grep -a -E '^LOGS_(MANIFEST_SHA256|ARCHIVE)=' {shlex.quote(run.directory)}/stdout | tail -n 2"
                 _code, output, _error = ops.exec(command, 120)
                 line = _last_marked(output, LOGS_MANIFEST_MARK)
+                stdout += "\n" + output
             if line is not None:
                 from astrid.core._shared import run_logs
 
                 local = Path(destination) / "logs"
                 verified = self._fetch_verified(ops, f"{run.remote_root}/out/logs", local, run.scratch,
-                                                line[len(LOGS_MANIFEST_MARK):].strip())
+                                                line[len(LOGS_MANIFEST_MARK):].strip(),
+                                                remote_archive=(f"{run.remote_root}/{LOGS_ARCHIVE}"
+                                                                if LOGS_ARCHIVE_MARK in stdout.splitlines() else None))
                 rows = run_logs.read_index(Path(destination))
                 for row in rows:
                     if row.get("role") == "run" and row.get("file") in verified:

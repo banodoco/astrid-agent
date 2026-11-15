@@ -77,6 +77,19 @@ class _Ops:
 
     def get(self, remote, local):
         shutil.copyfile(remote, local)
+        if self.tamper and Path(remote).name == "logs.tar":
+            import io
+            import tarfile
+
+            # Keep the original per-log corruption injection after bundling.
+            with tarfile.open(local, "r:") as archive:
+                members = [(member, archive.extractfile(member).read()) for member in archive.getmembers()]
+            with tarfile.open(local, "w") as archive:
+                for member, body in members:
+                    if member.name == self.tamper:
+                        body = b"tampered"
+                        member.size = len(body)
+                    archive.addfile(member, io.BytesIO(body))
         if self.tamper and Path(remote).name == self.tamper:
             Path(local).write_text("tampered")
 

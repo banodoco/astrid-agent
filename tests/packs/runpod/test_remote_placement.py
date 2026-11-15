@@ -49,6 +49,26 @@ class FakePod:
     # --- agent surface
     def exec(self, command, timeout=600):
         self.exec_log.append(command)
+        if "DISPATCH_VERIFIED" in command:
+            import shlex
+            import tempfile
+
+            # Execute the real stdlib verifier; only the remote filesystem is
+            # replaced. Corruption and unsafe-member checks remain product code.
+            argv = shlex.split(command)
+            remote, root = argv[3:5]
+            with tempfile.TemporaryDirectory() as work:
+                landing = Path(work) / "dispatch.tar"
+                landing.write_bytes(self.files[remote])
+                destination = Path(work) / "run"
+                result = subprocess.run([sys.executable, *argv[1:3], str(landing), str(destination), *argv[5:]],
+                                        capture_output=True, text=True, timeout=timeout)
+                if result.returncode == 0:
+                    for path in destination.rglob("*"):
+                        if path.is_file():
+                            self.files[root + "/" + path.relative_to(destination).as_posix()] = path.read_bytes()
+                    self.files.pop(remote, None)
+                return result.returncode, result.stdout, result.stderr
         if "from astrid.core.gateway.doctor_bundle import redact_log" in command:
             import shlex
 
@@ -87,6 +107,11 @@ class FakePod:
             if any(path not in self.files for path in paths):
                 return 1, "", "missing"
             return 0, "".join(f"{_sha(self.files[path])}  {path}\n" for path in paths), ""
+        if command.startswith("grep -a -E "):
+            import shlex
+            path = shlex.split(command)[4]
+            lines = self.files.get(path, b"").decode().splitlines()
+            return 0, "\n".join(line for line in lines if line.startswith(("LOGS_MANIFEST_SHA256=", "LOGS_ARCHIVE="))), ""
         if "engines status" in command:
             body = {"status": "installed", "health": {"status": "healthy"}} if self.installed else None
             return 0, json.dumps(body) + "\n", ""
@@ -111,12 +136,12 @@ class FakePod:
         self.files[remote] = data + b"X" if self.corrupt_put else data
 
     def get(self, remote, local):
-        if remote.endswith("/outputs.tar"):
+        if remote.endswith(("/outputs.tar", "/logs.tar")):
             # Model the job's sealed transport archive, including the same
             # per-file corruption injection the individual downloads use.
             import io
             import tarfile
-            prefix = remote.removesuffix("outputs.tar") + "out/"
+            prefix = remote.rsplit("/", 1)[0] + "/out/" + ("logs/" if remote.endswith("/logs.tar") else "")
             with tarfile.open(local, "w") as archive:
                 for path, data in sorted(self.files.items()):
                     if not path.startswith(prefix):
@@ -254,7 +279,8 @@ def _fake_generate(pod: "FakePod", command: str) -> str:
     files = {path[len(out) + 1:]: {"sha256": _sha(data), "size": len(data)} for path, data in tree.items()}
     body = json.dumps({"schema_version": 1, "files": files}, sort_keys=True, indent=2) + "\n"
     pod.files[f"{out}/{rp.MANIFEST_NAME}"] = body.encode()
-    return (f"{rp.RESULT_MARK}{json.dumps({'status': 'succeeded'})}\n{rp.MANIFEST_MARK}{_sha(body.encode())}\n"
+    return (f"JOB_PROGRESS={json.dumps({'phase': 'fetch'})}\n"
+            f"{rp.RESULT_MARK}{json.dumps({'status': 'succeeded'})}\n{rp.MANIFEST_MARK}{_sha(body.encode())}\n"
             "OUTPUT_ARCHIVE=outputs.tar\n")
 
 

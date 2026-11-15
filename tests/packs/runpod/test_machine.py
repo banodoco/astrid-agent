@@ -152,9 +152,9 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     # Claim on a fresh pod: the reset takes the empty-realm template and writes ready.json.
     assert record["lease"]["preparation"]["pod_ready"] == {"entry": None, "ready": True, "found": "absent",
                                                            "reset": "taken"}
-    # The job's one command extracts the selection and checks the entry, then runs.
+    # The verified dispatch extracted the selection before the job checks it.
     generation = next(line for line in c.pod.job_log if " generate cpu-image " in line)
-    assert "tar -xzf" in generation and "generate list --json" in generation
+    assert "/selection/selection.json" in generation and "generate list --json" in generation
     # After the fetch, before settle: the reset removed the run and job folders.
     reset = c.pod.resets[-1]
     assert reset["ok"] and reset["active"] == {"run_id": reset["dirs"][0].rsplit("/", 1)[1], "task": "task",
@@ -164,9 +164,9 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     assert not [path for path in c.pod.files if path.startswith(reset["dirs"][0] + "/")]
     assert c.creates == 1 and c.deletes == []
     assert [kind for kind, _ in c.active] == ["begin", "done"]
-    # Inputs shipped inside the job directory, each digest-checked after upload.
-    shipped = [path for path in c.pod.put_log if "/in/" in path]
-    assert len(shipped) == 3 and any(path.endswith("job.json") for path in c.pod.put_log)
+    # Every input and job.json travels in the one authenticated dispatch bundle.
+    shipped = [path for path in c.pod.put_log if "/runs/" in path]
+    assert len(shipped) == 1 and shipped[0].endswith("/dispatch.tar")
     # A second job on the warm machine fetches and installs nothing again.
     jobs = len(c.pod.job_log)
     second = c.job(2)
@@ -183,7 +183,6 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
 
 def test_warm_second_job_transport_budget(machine_case, monkeypatch):
     """G1/G4: cap the complete warm path, including claim and safe reset."""
-    import shlex
     from collections import Counter
 
     c = machine_case
@@ -208,11 +207,9 @@ def test_warm_second_job_transport_budget(machine_case, monkeypatch):
     # Fixed budget for a completed-on-first-poll, model-free canonical job.
     # Real jobs add two ops per additional generation poll, one per reset poll,
     # and transfer chunks within put/get; the budget is not a network RTT claim.
-    assert sum(counts.values()) <= 25, dict(counts)
-    hashes = [command for name, command in calls if name == "exec" and command.startswith("sha256sum -- ")]
-    assert len(hashes) == 1
-    assert len(shlex.split(hashes[0])[2:]) == 5
-    assert counts["put"] == 5
+    assert sum(counts.values()) <= 20, dict(counts)
+    assert not any(name == "exec" and "sha256sum " in command for name, command in calls)
+    assert counts["put"] == 1
     assert not any(name == "exec" and command.startswith("mkdir ") for name, command in calls)
     gets = [path for name, path in calls if name == "get"]
     assert sum(path.endswith("/outputs.tar") for path in gets) == 1
@@ -929,7 +926,7 @@ def test_cancel_during_shipping_stops_within_one_chunk_and_launches_nothing(mach
         path = metadata["path"]
         assert int(request.url.params["offset"]) == len(c.pod.files[path])
         c.pod.files[path] += request.content
-        if path.endswith(".bin"):
+        if path.endswith("/dispatch.tar"):
             chunks.append(len(request.content))
             abort.set()  # The first in-flight chunk finishes after force_abort sets its signal.
         size = len(c.pod.files[path])

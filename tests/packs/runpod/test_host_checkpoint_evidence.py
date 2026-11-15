@@ -64,13 +64,28 @@ def evidence_case(machine_case, monkeypatch):
         c.pod.files.update({f"{root}/out/logs/{name}": data for name, data in logs.items()})
         c.pod.files[f"{root}/out/logs/{rp.MANIFEST_NAME}"] = manifest
         stdout = result["dir"] + "/stdout"
-        c.pod.files[stdout] += f"{rm.LOGS_MANIFEST_MARK}{_digest(manifest)}\n".encode()
+        c.pod.files[stdout] += (f"{rm.LOGS_MANIFEST_MARK}{_digest(manifest)}\n"
+                               f"{rm.LOGS_ARCHIVE_MARK}\n").encode()
+        # The real finalizer seals outputs AFTER collecting logs. This fixture
+        # adds its log tree after _generate, so refresh the enclosing manifest
+        # to model that order, retaining every per-member integrity check.
+        manifest_path = f"{root}/out/{rp.MANIFEST_NAME}"
+        if manifest_path in c.pod.files:
+            prefix = f"{root}/out/"
+            members = {path[len(prefix):]: {"sha256": _digest(data), "size": len(data)}
+                       for path, data in c.pod.files.items()
+                       if path.startswith(prefix) and path != manifest_path}
+            sealed = json.dumps({"files": members}).encode()
+            c.pod.files[manifest_path] = sealed
+            c.pod.files[stdout] = "\n".join(
+                rp.MANIFEST_MARK + _digest(sealed) if line.startswith(rp.MANIFEST_MARK) else line
+                for line in c.pod.files[stdout].decode().splitlines()).encode() + b"\n"
         return result
 
     original_get = c.pod.get
 
     def get(remote, local):
-        if "/out/logs/" in remote:
+        if "/out/logs/" in remote or remote.endswith("/logs.tar"):
             assert not c.host.lock._is_owned(), "log transfer held owner.lock"
             c.log_reads.append((remote, c.transport_deadlines[-1], time.monotonic(),
                                 c.read()["lease"]["paid_expires_at"] - c.clock()))
@@ -79,10 +94,10 @@ def evidence_case(machine_case, monkeypatch):
     original_exec = c.pod.exec
 
     def execute(command, timeout=600):
-        if command.startswith("grep -a ") and command.endswith("/stdout | tail -n 1"):
-            path = shlex.split(command)[3]
+        if command.startswith("grep -a -E ") and command.endswith("/stdout | tail -n 2"):
+            path = shlex.split(command)[4]
             lines = c.pod.files.get(path, b"").decode().splitlines()
-            return 0, "\n".join(line for line in lines if line.startswith(rm.LOGS_MANIFEST_MARK)), ""
+            return 0, "\n".join(line for line in lines if line.startswith((rm.LOGS_MANIFEST_MARK, rm.LOGS_ARCHIVE_MARK))), ""
         return original_exec(command, timeout)
 
     monkeypatch.setattr(c.pod, "job_start", start)
@@ -208,7 +223,7 @@ def test_failure_then_edit_completion(evidence_case, tmp_path, monkeypatch, fail
                 stdout = original_generate(command)
                 c.pod.files[next(path for path in c.pod.files if path.endswith("/progress.json"))] = (
                     b'{"phase":"start_engine"}')
-                return stdout
+                return stdout.replace('JOB_PROGRESS={"phase": "fetch"}', 'JOB_PROGRESS={"phase": "start_engine"}')
 
             patch.setattr(c.pod, "_generate", engine_start)
             original_poll = c.pod.job_poll
@@ -226,7 +241,7 @@ def test_failure_then_edit_completion(evidence_case, tmp_path, monkeypatch, fail
             original_get = c.pod.get
 
             def output_unavailable(remote, local):
-                if remote.endswith("/artifacts/cpu.png"):
+                if remote.endswith(("/artifacts/cpu.png", "/outputs.tar")):
                     raise OSError("output transfer unavailable")
                 return original_get(remote, local)
 
@@ -332,7 +347,7 @@ def test_log_collection_cannot_mask_host_refusal(evidence_case, tmp_path, monkey
         return code, stdout, stderr
 
     def unavailable(remote, local):
-        if "/out/logs/" in remote:
+        if "/out/logs/" in remote or remote.endswith("/logs.tar"):
             raise OSError("private transport body")
         return original_get(remote, local)
 
