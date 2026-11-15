@@ -11,6 +11,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from .boot_restore import restore_pre_restamp_boot_manifest
 from .launcher import install as install_launcher
 from .launcher import install_runtime
 from .progress import phase
@@ -322,8 +323,6 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
         if backup is not None and restore_workspace and kind == "migration":
             backend.restore(old, data, realm, backup)
         if candidate is not None and old.release < 13 <= candidate.release:
-            from astrid.core._shared.boot_manifest import restore_pre_restamp_boot_manifest
-
             # R13 retires the R9--R12 boot rows even without a Runtime schema
             # change (and therefore without an installer workspace backup).
             # The host support root is the runtime directory under the data root.
@@ -466,6 +465,7 @@ class Installer:
     def _save_update(self, transaction: dict, step: str, **details) -> None:
         if step in {"switched", "rollback_selected"}:
             import sys
+
             from .service import installer_lock_path
 
             # The entry points hold these locks over activation and recovery.

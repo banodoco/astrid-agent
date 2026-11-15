@@ -8,8 +8,10 @@ from astrid.core._shared import boot_manifest as bm
 from astrid.core.execution.generic_host import GenericPackHost
 from astrid.core.gateway.dispatch import compose_profile_handoff
 from astrid.sdk import host_bootstrap
-from tests.helpers.bootmanifest2_r12 import LEGACY_FIXTURE, r12_export, r12_probe
+from tests.helpers.bootmanifest2_r12 import LEGACY_FIXTURE, r12_probe
 from tests.sdk.test_host_recovery import Harness
+
+pytest_plugins = ("tests.helpers.bootmanifest2_r12",)
 
 
 @pytest.mark.parametrize("existing", [True, False])
