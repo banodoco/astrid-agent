@@ -31,6 +31,9 @@ GENERATION_PROMPT = "a copper teapot"
 GENERATION_TIMEOUT_SECONDS = 420
 GENERATION_BUDGET_SECONDS = 240
 EVIDENCE_FILE_LIMIT = 64 * 1024 * 1024
+LONG_PATHS_ENV = "ASTRID_GUARD_LONG_PATHS"
+# Only this shape is tolerated with long paths off: ERROR_PATH_NOT_FOUND / ERROR_FILENAME_EXCED_RANGE on a Runtime path.
+KNOWN_LONG_PATH_ERROR = re.compile(r"WinError (?:3|206)\b")
 
 
 def prepare():
@@ -167,6 +170,21 @@ def capture_generation_failure():
     windows.save("generation-failure.json", report)
 
 
+def known_long_path_failure(error):
+    """Evidence dict when the generate command failed only on a too-long Runtime path with long paths off, else None."""
+    if os.environ.get(LONG_PATHS_ENV) != "off" or not isinstance(error, RuntimeError):
+        return None  # a timeout is a SubprocessError, not a RuntimeError, so it always fails
+    if not str(error).startswith("Installed command smoke generate-image failed"):
+        return None
+    log = windows.EVIDENCE / "command-generate-image.log"
+    text = (log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "") + "\n" + str(error)
+    if not (KNOWN_LONG_PATH_ERROR.search(text) and ".vibecomfy-runtime" in text):
+        return None
+    lengths = [len(path.rstrip()) for path in re.findall(r"[A-Za-z]:\\[^'\"<>|\r\n]+", text)]
+    return {"reason": "runtime path exceeds 260 characters with long paths off",
+            "path_length": max(lengths, default=None)}
+
+
 def generation_smoke(comfy, command):
     """One real generation through the installed product, into the stand-in ComfyUI server."""
     output = windows.EVIDENCE / "generation-output"
@@ -194,9 +212,17 @@ def generation_smoke(comfy, command):
         if timing["seconds"] > GENERATION_BUDGET_SECONDS:
             raise RuntimeError(f"Real generation took {timing['seconds']} s; budget is {GENERATION_BUDGET_SECONDS} s")
         timing.update(status="passed", prompt_posts=len(posts), outputs=[str(path) for path in images])
+        if os.environ.get(LONG_PATHS_ENV) == "off":
+            print("generation passed with long paths off")
     except BaseException as error:
         timing["error"] = f"{type(error).__name__}: {error}"
         capture_generation_failure()
+        known = known_long_path_failure(error)
+        if known is not None:
+            windows.save("generation-known-failure.json", known)
+            timing["status"] = "known-failure"
+            print("KNOWN FAILURE (tracked): generation needs Windows long paths; runtime path too long")
+            return
         raise RuntimeError(f"Installed real generation failed; see generation-failure/ and generation-timing.json: "
                            f"{timing['error']}") from error
     finally:

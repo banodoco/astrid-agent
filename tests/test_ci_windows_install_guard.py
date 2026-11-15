@@ -265,3 +265,81 @@ def test_command_smoke_rejects_tracebacks_even_with_zero_exit(tmp_path, monkeypa
     with pytest.raises(RuntimeError, match='command smoke doctor failed'):
         guard.command_smoke()
     assert (tmp_path / 'command-doctor.log').read_text() == stdout + stderr
+
+
+_DEEP = "\\".join(["component-with-a-long-name"] * 12)  # pushes the runtime path past 260 characters
+LONG_PATH_MESSAGE = (
+    "FileNotFoundError: [WinError 3] The system cannot find the path specified: "
+    f"'C:\\Users\\AstridLongUserName_Tester01\\AppData\\Local\\Astrid Runtime\\.vibecomfy-runtime\\{_DEEP}\\x'"
+)
+
+
+def _failing_generation(output):
+    def fails(argv, kwargs, urllib_request):
+        return subprocess.CompletedProcess(argv, 1, output, '')
+    return fails
+
+
+@pytest.mark.parametrize('long_paths', ['off'])
+def test_long_paths_off_known_path_failure_is_tracked_not_raised(tmp_path, monkeypatch, capsys, long_paths):
+    monkeypatch.setenv('ASTRID_GUARD_LONG_PATHS', long_paths)
+    _smoke_environment(tmp_path, monkeypatch, generation=_failing_generation(LONG_PATH_MESSAGE))
+    guard.command_smoke()  # no exception: the step passes
+    evidence = tmp_path / 'evidence'
+    known = json.loads((evidence / 'generation-known-failure.json').read_text())
+    assert known['reason'] == 'runtime path exceeds 260 characters with long paths off'
+    runtime_path = LONG_PATH_MESSAGE.split("'")[1]
+    assert known['path_length'] == len(runtime_path) > 260
+    assert json.loads((evidence / 'generation-timing.json').read_text())['status'] == 'known-failure'
+    assert (evidence / 'generation-failure.json').is_file()  # evidence is still captured
+    assert 'KNOWN FAILURE (tracked): generation needs Windows long paths; runtime path too long' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('message', [
+    "OSError: [WinError 32] The process cannot access the file because it is being used by another process "
+    "'C:\\Users\\x\\.vibecomfy-runtime\\a'",
+    "FileNotFoundError: [WinError 3] The system cannot find the path specified: 'C:\\Temp\\other\\b'",
+    "CERTIFICATE_VERIFY_FAILED while downloading the pack .vibecomfy-runtime",
+])
+def test_long_paths_off_other_generation_failure_still_raises(tmp_path, monkeypatch, message):
+    monkeypatch.setenv('ASTRID_GUARD_LONG_PATHS', 'off')
+    _smoke_environment(tmp_path, monkeypatch, generation=_failing_generation(message))
+    with pytest.raises(RuntimeError, match='Installed real generation failed'):
+        guard.command_smoke()
+    evidence = tmp_path / 'evidence'
+    assert not (evidence / 'generation-known-failure.json').exists()
+    assert json.loads((evidence / 'generation-timing.json').read_text())['status'] == 'failed'
+
+
+@pytest.mark.parametrize('long_paths', ['on', None])
+def test_long_paths_on_or_unset_path_failure_raises(tmp_path, monkeypatch, long_paths):
+    if long_paths is None:
+        monkeypatch.delenv('ASTRID_GUARD_LONG_PATHS', raising=False)
+    else:
+        monkeypatch.setenv('ASTRID_GUARD_LONG_PATHS', long_paths)
+    _smoke_environment(tmp_path, monkeypatch, generation=_failing_generation(LONG_PATH_MESSAGE))
+    with pytest.raises(RuntimeError, match='Installed real generation failed'):
+        guard.command_smoke()
+    evidence = tmp_path / 'evidence'
+    assert not (evidence / 'generation-known-failure.json').exists()
+    assert json.loads((evidence / 'generation-timing.json').read_text())['status'] == 'failed'
+
+
+def test_long_paths_off_timeout_still_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv('ASTRID_GUARD_LONG_PATHS', 'off')
+
+    def times_out(argv, kwargs, urllib_request):
+        raise subprocess.TimeoutExpired(argv, kwargs['timeout'], output=LONG_PATH_MESSAGE.encode(), stderr=b'')
+
+    _smoke_environment(tmp_path, monkeypatch, generation=times_out)
+    with pytest.raises(RuntimeError, match='Installed real generation failed'):
+        guard.command_smoke()
+    assert not (tmp_path / 'evidence' / 'generation-known-failure.json').exists()
+
+
+def test_long_paths_off_success_passes_with_message(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('ASTRID_GUARD_LONG_PATHS', 'off')
+    _smoke_environment(tmp_path, monkeypatch, generation=_submitting_generation)
+    guard.command_smoke()
+    assert 'generation passed with long paths off' in capsys.readouterr().out
+    assert json.loads((tmp_path / 'evidence' / 'generation-timing.json').read_text())['status'] == 'passed'

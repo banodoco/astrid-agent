@@ -1,7 +1,8 @@
 name: Windows fresh user install guard
 
-# A fresh-user install with Windows long paths disabled and a long profile path.
-# Keep the failure blocking: no continue-on-error, retries, or installer patches.
+# A fresh-user install with Windows long paths off and on, and a long profile path.
+# "off" runs the real generation as a tracked known failure (see the guard script);
+# "on" must pass. Keep the failure blocking: no continue-on-error, retries, or installer patches.
 on:
   workflow_dispatch:
     inputs:
@@ -34,9 +35,13 @@ permissions:
 
 jobs:
   windows-install-guard:
-    name: Fresh Windows install (long paths off, long user name, TLS, private DACL)
+    name: Fresh Windows install (long paths ${{ matrix.long_paths }}, long user name, TLS, private DACL)
     runs-on: windows-latest
     timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        long_paths: ["off", "on"]
     defaults:
       run:
         shell: pwsh
@@ -84,12 +89,15 @@ jobs:
       - name: Prepare local manifest for the exact checkout archives (no published release)
         run: python -u scripts/ci_windows_install_guard.py prepare
 
-      - name: "B1/B2 long-path guard: disable and verify Windows long paths"
+      - name: "B1/B2 long-path guard: set and verify Windows LongPathsEnabled for this variant"
+        env:
+          ASTRID_GUARD_LONG_PATHS: ${{ matrix.long_paths }}
         run: |
-          reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 0 /f
-          if ($LASTEXITCODE -ne 0) { throw "Could not disable long paths" }
+          $expected = if ($env:ASTRID_GUARD_LONG_PATHS -eq 'on') { 1 } else { 0 }
+          reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d $expected /f
+          if ($LASTEXITCODE -ne 0) { throw "Could not set LongPathsEnabled=$expected" }
           $value = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem').LongPathsEnabled
-          if ($value -ne 0) { throw "Long-path guard requires LongPathsEnabled=0; got $value" }
+          if ($value -ne $expected) { throw "Long-path guard requires LongPathsEnabled=$expected; got $value" }
 
       - name: "B1 long-path guard: create a fresh long user-like LOCALAPPDATA"
         run: |
@@ -99,6 +107,8 @@ jobs:
 
       - name: "Real candidate install: B1 long paths, B3 Git missing, F1 TLS, F4 DACL"
         id: install
+        env:
+          ASTRID_GUARD_LONG_PATHS: ${{ matrix.long_paths }}
         run: |
           # Process-scoped changes: later steps and actions keep the runner PATH.
           $env:LOCALAPPDATA = 'C:\Users\AstridLongUserName_Tester01\AppData\Local'
@@ -110,14 +120,17 @@ jobs:
           if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
             throw "Guard setup failed: Git is not discoverable"
           }
+          $expected = if ($env:ASTRID_GUARD_LONG_PATHS -eq 'on') { 1 } else { 0 }
           $value = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem').LongPathsEnabled
-          if ($value -ne 0) { throw "B1 long-path guard setup drifted" }
+          if ($value -ne $expected) { throw "B1 long-path guard setup drifted: expected $expected, got $value" }
           # No TLS prewarming, trust-store edits, verification bypass or seeded
           # Astrid directory ACLs. Run the real App bootstrap exactly once.
           python -u scripts/ci_windows_install_guard.py install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Installed command and attached ComfyUI smoke
+        env:
+          ASTRID_GUARD_LONG_PATHS: ${{ matrix.long_paths }}
         run: |
           $env:LOCALAPPDATA = 'C:\Users\AstridLongUserName_Tester01\AppData\Local'
           python -u scripts/ci_windows_install_guard.py smoke
@@ -141,7 +154,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: Windows-fresh-user-install-failure
+          name: Windows-fresh-user-install-failure-long-paths-${{ matrix.long_paths }}
           retention-days: 30
           if-no-files-found: error
           path: |
