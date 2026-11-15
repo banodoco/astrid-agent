@@ -32,3 +32,9 @@ with tempfile.TemporaryDirectory() as directory:
 
 Observation: R9 and R12 stamps are byte-identical, both with profile_order
 ["pip_embedded", "checkout_server"]. Both need restamping for R13's empty registry.
+
+R10 and R11 were subsequently captured with their real writers too; all four
+release stamps are byte-identical. Only the canonical r9-stamp.json is retained
+per the widened brief. The original R12 capture command above produces that
+same file content. See r10/r11-stamp.provenance.txt for their commands.
+File SHA-256: b805612c0d150c5d9e31062e2463c4e5b5c8911401d0069d9aa6fbb35ccf6e73

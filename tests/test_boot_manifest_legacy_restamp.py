@@ -12,13 +12,16 @@ from astrid.core.gateway.dispatch import compose_profile_handoff
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "boot_manifest"
+# Historical writers for all four releases produce byte-identical stamps.
+# Each release's commit and capture command are in its sibling provenance note.
+RELEASE_FIXTURES = {release: "r9-stamp.json" for release in ("r9", "r10", "r11", "r12")}
 
 
 def _stored(tmp_path: Path, release: str = "r9") -> tuple[Path, Path]:
     support = tmp_path / "runtime"
     path = support / "astrid-host" / bm.BOOT_MANIFEST_FILENAME
     path.parent.mkdir(parents=True)
-    path.write_bytes((FIXTURES / f"{release}-stamp.json").read_bytes())
+    path.write_bytes((FIXTURES / RELEASE_FIXTURES[release]).read_bytes())
     return support, path
 
 
@@ -31,7 +34,7 @@ def _stamp(support: Path, path: Path) -> dict:
                                   registry=VIBE_PROFILE_REGISTRY, fixtures=vibe_profile_specs())
 
 
-@pytest.mark.parametrize("release", ["r9", "r12"])
+@pytest.mark.parametrize("release", list(RELEASE_FIXTURES))
 def test_real_legacy_stamp_is_atomically_replaced_once(tmp_path, monkeypatch, capsys, release):
     support, path = _stored(tmp_path, release)
     original = path.read_bytes()
@@ -62,7 +65,7 @@ def test_real_legacy_stamp_is_atomically_replaced_once(tmp_path, monkeypatch, ca
     assert capsys.readouterr().err == ""
 
 
-@pytest.mark.parametrize("release", ["r9", "r12"])
+@pytest.mark.parametrize("release", list(RELEASE_FIXTURES))
 def test_legacy_hash_stays_read_only_until_composition(tmp_path, release):
     support, path = _stored(tmp_path, release)
     original = path.read_bytes()
@@ -79,14 +82,14 @@ def test_legacy_hash_stays_read_only_until_composition(tmp_path, release):
     }
 
 
-@pytest.mark.parametrize("release", ["r9", "r12"])
+@pytest.mark.parametrize("release", list(RELEASE_FIXTURES))
 def test_bootstrap_restamps_before_launch_reads_hash(tmp_path, monkeypatch, release):
     from tests.sdk.test_host_recovery import Harness
 
     h = Harness(tmp_path, monkeypatch)
     path = h.support / "astrid-host" / bm.BOOT_MANIFEST_FILENAME
     path.parent.mkdir()
-    path.write_bytes((FIXTURES / f"{release}-stamp.json").read_bytes())
+    path.write_bytes((FIXTURES / RELEASE_FIXTURES[release]).read_bytes())
     launch = h._popen
 
     def checked_launch(argv, **kwargs):
@@ -104,7 +107,7 @@ def test_bootstrap_restamps_before_launch_reads_hash(tmp_path, monkeypatch, rele
         h.cleanup()
 
 
-@pytest.mark.parametrize("release", ["r9", "r12"])
+@pytest.mark.parametrize("release", list(RELEASE_FIXTURES))
 def test_resident_attach_preserves_legacy_completion_provenance(tmp_path, monkeypatch, release):
     from astrid.sdk import host_bootstrap
     from tests.sdk.test_host_recovery import Harness
@@ -113,7 +116,7 @@ def test_resident_attach_preserves_legacy_completion_provenance(tmp_path, monkey
     try:
         h.ensure()
         path = h.support / "astrid-host" / bm.BOOT_MANIFEST_FILENAME
-        original = (FIXTURES / f"{release}-stamp.json").read_bytes()
+        original = (FIXTURES / RELEASE_FIXTURES[release]).read_bytes()
         path.write_bytes(original)
         old_hash = bm.load_boot_manifest_hash(path, support_root=h.support)
         for name in ("generic-host.json", "generic-host.ready.json"):
