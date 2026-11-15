@@ -1950,3 +1950,22 @@ def test_warm_attestation_host_route_fields_are_not_reuse_predicates(warm_case, 
     c.calls.clear()
     c.run()
     assert not {'source', 'environment', 'runtime', 'doctor', 'alignment'} & set(c.calls)
+
+
+@pytest.fixture(autouse=True)
+def _warm_attestation_feature_tests_run_enabled(request, monkeypatch):
+    """R13 ships warm attestation off; its own unit tests still exercise it on."""
+    if any(key in request.node.name for key in ("warm_attestation", "attestation_fails_closed",
+                                                "warm_second_job_skips_audits", "supervisor_restart_reverifies",
+                                                "requirement_set_survives")):
+        from astrid.core.generation import warm_attestation
+        monkeypatch.setattr(warm_attestation, "WARM_ATTESTATION_ENABLED", True)
+
+
+def test_r13_ships_warm_reuse_witness_disabled(tmp_path):
+    from astrid.core.generation import warm_attestation
+    assert warm_attestation.WARM_ATTESTATION_ENABLED is False
+    warm = warm_attestation.WarmAttestation(tmp_path, object(), object(), None, None, enabled=True)
+    assert warm.enabled is False and warm.matched is False
+    warm.write("requirement", {}, object_info_sha256="0" * 64, protected_packages=())
+    assert not (tmp_path / ".astrid-engine" / "warm-attestation.json").exists()
