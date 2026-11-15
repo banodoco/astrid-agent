@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import json
 import os
 import shutil
@@ -78,6 +77,10 @@ def reset_failure_reason(result: str | Mapping[str, Any]) -> str:
 @contextlib.contextmanager
 def reset_lock(path: Path = LOCK) -> Iterator[None]:
     """Exclusive: a reset never overlaps a job (the generation command holds it shared)."""
+    # Only the Linux pod takes this lock; the controller imports the paths and
+    # failure protocol on Windows too.
+    import fcntl
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)

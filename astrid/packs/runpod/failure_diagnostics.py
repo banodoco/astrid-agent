@@ -12,6 +12,12 @@ import stat
 import sys
 from collections.abc import Mapping
 
+if globals().get('__package__'):
+    from runtime_protocol.dirfd import filesystem
+else:
+    # The standalone diagnostic program runs on the Linux pod with stdlib only.
+    filesystem = os
+
 MARK = 'astrid-generation-failure:'
 MAX_RESULT_BYTES = 64 * 1024
 MAX_FRAME_BYTES = 4096
@@ -274,7 +280,7 @@ def graph_facts(path):
     if not isinstance(path, (str, os.PathLike)):
         return frozenset(), frozenset()
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = filesystem.open(path, filesystem.O_RDONLY | filesystem.O_NOFOLLOW | filesystem.O_NONBLOCK)
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_GRAPH_BYTES:
