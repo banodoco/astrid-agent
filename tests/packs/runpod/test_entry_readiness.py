@@ -65,6 +65,9 @@ def test_omitted_mode_requires_one_unambiguous_local_mode(tmp_path):
 def test_generated_command_carries_selected_mode_to_the_guard():
     import shlex
     command = machine.generation_command("entry", "/root/astrid/runs/job", mode="edit")
-    args = shlex.split(command)
-    assert args[args.index(machine._ENTRY_CHECK) + 1:][:3] == [
-        "/root/astrid/runs/job/listing.json", "entry", "edit"]
+    line = next(row for row in command.splitlines() if "--placement local" in row)
+    args = shlex.split(line.split(" > ")[0])
+    assert args[2] == "entry"
+    assert args[args.index("--mode") + 1] == "edit"
+    assert "--check-entry" in args
+    assert "generate list" not in command

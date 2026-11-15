@@ -51,8 +51,14 @@ def test_warm_job_constructs_one_client_and_closes_it(request, monkeypatch):
     for number in (2, 3):
         clients.clear()
         run(c, job(c, number))
-        assert len(clients) == 1, "one client for claim, shipping, polls, fetch and release"
-        assert clients[0].is_closed, "the job must close its client even when the pod stays warm"
+        # W-C: the deferred reset owner holds the job's connection and closes it last.
+        c.host.wait_for_reset()
+        # One client for claim, shipping, polls, fetch and release; the deferred reset's owner
+        # thread opens at most one more, off the caller's path (integration ruling, W-E + W-C).
+        assert 1 <= len(clients) <= 2, len(clients)
+        assert all(made.is_closed for made in clients), "every client closes even when the pod stays warm"
+        lease = c.read()["lease"]
+        assert lease["state"] == "idle" and lease["reset"]["state"] == "ready", lease
 
 
 @pytest.fixture

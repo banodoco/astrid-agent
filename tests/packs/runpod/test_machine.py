@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from runpod_lifecycle.https import CHUNK, HttpsPodTransport
 
-from astrid.core.execution.machine_run import MachineJob, MachineRunCancelled, run_on_machine
+from astrid.core.execution.machine_run import MachineJob, MachineRunCancelled, run_on_machine as _run_on_machine
 from astrid.packs.runpod import machine as rm
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401  (fixture)
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401  (fixture)
@@ -80,7 +80,7 @@ def test_the_pod_side_command_is_the_local_run_with_its_progress_path():
     assert "ensure_runtime" not in command and "astrid-runtime" not in command
     assert "flock -s 9" in command and "export ASTRID_PREPARED_CONNECTION=/root/astrid/prepared-connection.json" in command
     assert "ASTRID_RUNTIME_DATA_ROOT=/root/astrid/runtime-data" in command and "ASTRID_RUNTIME_DOOR_PORT=0" in command
-    assert command.index("generate list --json") < command.index("--placement local")
+    assert "--check-entry" in command and "generate list" not in command
 
 
 # ----------------------------------------------------------------------------
@@ -129,6 +129,13 @@ def machine_case(retained, tmp_path, monkeypatch):
     return c
 
 
+def run_on_machine(machine, *args, **kwargs):
+    """Wait for the owner before these legacy tests inspect final custody."""
+    result = _run_on_machine(machine, *args, **kwargs)
+    machine._require().lease_owner.wait_for_reset()
+    return result
+
+
 def _claim_machine(c):
     """Establish paid machine authority before submitting a generation job."""
     if c.owner.path.exists():
@@ -154,7 +161,8 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
                                                            "reset": "taken"}
     # The verified dispatch extracted the selection before the job checks it.
     generation = next(line for line in c.pod.job_log if " generate cpu-image " in line)
-    assert "/selection/selection.json" in generation and "generate list --json" in generation
+    assert ("/selection/selection.json" in generation and "--check-entry" in generation
+            and "generate list" not in generation)
     # After the fetch, before settle: the reset removed the run and job folders.
     reset = c.pod.resets[-1]
     assert reset["ok"] and reset["active"] == {"run_id": reset["dirs"][0].rsplit("/", 1)[1], "task": "task",

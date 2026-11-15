@@ -154,6 +154,9 @@ class RunPodLeaseOwner:
         self.closed, self.started = False, False
         self._release_inflight = False
         self._acquisition_cancel = threading.Event()
+        self._reset_worker: threading.Thread | None = None
+        self._reset_done = threading.Event()
+        self._reset_done.set()
         self._observer_lock = threading.Lock()
         self._failure_observers: dict[tuple[str, str, int, str], threading.Event] = {}
         self._unreaped_children: list[Any] = []
@@ -256,7 +259,7 @@ class RunPodLeaseOwner:
     def _sync_deadline(self, record: Mapping[str, Any]) -> dict[str, Any]:
         lease = record["lease"]
         deadline = (min(lease["idle_expires_at"], lease["paid_expires_at"])
-                    if lease["state"] == "idle" else lease["paid_expires_at"])
+                    if self._idle_retention(lease) else lease["paid_expires_at"])
         try:
             return sync_deadline(record, self.selection.path, deadline)
         except PodWatchdogError:
@@ -287,13 +290,19 @@ class RunPodLeaseOwner:
         self.warm_lease = self.holds.lease(
             self.key, lock=self.lock,
             stop=lambda: self.timer(0, lambda: self._expire("idle", generation, operation)))
-        if lease["state"] == "idle":
+        if self._idle_retention(lease):
             self.holds.release(self.warm_lease, holding="RunPod " + record["pod_id"],
                                on_idle="terminate exact owned pod; verify absence",
                                idle_seconds=max(0, lease["idle_expires_at"] - self.clock()))
             self.warm_lease = None
         self.deadline_timer = self.timer(max(0, lease["paid_expires_at"] - self.clock()),
                                         lambda: self._expire("paid_deadline", generation, operation))
+
+    @staticmethod
+    def _idle_retention(lease: Mapping[str, Any]) -> bool:
+        """Settlement starts idle billing bounds while reset still fences reuse."""
+        return lease["state"] == "idle" or (
+            (lease.get("reset") or {}).get("state") == "pending" and "idle_expires_at" in lease)
 
     def _expire(self, reason: str, generation: int, operation: str) -> None:
         deadline_timer = self.deadline_timer
@@ -306,7 +315,7 @@ class RunPodLeaseOwner:
                 if lease["owner_epoch"] != self.epoch or lease["generation"] != generation:
                     return
                 if (self.clock() < lease["paid_expires_at"]
-                        and (lease["state"] != "idle" or self.clock() < lease["idle_expires_at"])):
+                        and (not self._idle_retention(lease) or self.clock() < lease["idle_expires_at"])):
                     return
             self.release(reason=reason, _expected_operation=operation)
         except Exception as exc:  # noqa: BLE001 - expiry failure must keep exact custody and its retry armed.
@@ -362,6 +371,7 @@ class RunPodLeaseOwner:
             now = self.clock()
             if (record is not None and record.get("state") == "claimed"
                     and lease.get("state") == "idle"
+                    and (lease.get("reset") or {}).get("state") != "pending"
                     and now < lease["idle_expires_at"] and now < lease["paid_expires_at"]):
                 try:
                     self.selection._owned(record, self.selection._recorded_offer(record))
@@ -476,6 +486,34 @@ class RunPodLeaseOwner:
             logging.getLogger(__name__).debug("Metadata or recovery failure must retain durable retry authority", exc_info=True)
             self.last_error_type = type(exc).__name__
 
+    def wait_for_reset(self, *, cancelled: Callable[[], bool] | None = None) -> None:
+        """Wait only for this host's bounded reset owner; never perform its reset."""
+        from astrid.core.execution.machine_run import MachineRunCancelled
+
+        from .machine import RESET_SECONDS
+
+        limit = time.monotonic() + RESET_SECONDS
+        while True:
+            if cancelled is not None and cancelled():
+                raise MachineRunCancelled("generation cancelled while waiting for pod reset")
+            with self.lock:
+                record = self._read()
+                lease = record.get("lease", {}) if record else {}
+                reset = lease.get("reset") or {}
+                pending = (record is not None and record.get("state") == "claimed"
+                           and reset.get("state") == "pending")
+                running = self._reset_worker is not None and not self._reset_done.is_set()
+                if not pending and not running:
+                    return
+                remaining = min(limit - time.monotonic(),
+                                reset["deadline"] - self.clock(),
+                                lease["paid_expires_at"] - self.clock())
+                if lease.get("owner_epoch") != self.epoch or self._reset_done.is_set():
+                    raise AcquisitionUnresolvedError("pending pod reset requires owner recovery")
+                if remaining <= 0:
+                    raise AcquisitionUnresolvedError("pending pod reset exceeded its bounded wait")
+            self._reset_done.wait(min(0.1, remaining))
+
     def job_limits(self, invocation_id, *, consent=()):
         """Read claim authority without provider calls; rechecked on admission."""
         from .target_selection import ClaimedJob, PaidSelectionError, _utc
@@ -577,6 +615,7 @@ class RunPodLeaseOwner:
                  cancelled: Callable[[], bool] | None = None) -> RunPodLease:
         from .target_selection import ClaimedJob, _utc
         from .worker_preparation import TargetObservationError
+        self.wait_for_reset(cancelled=cancelled)
         job = isinstance(consent, ClaimedJob)
         if job:
             current = self.job_limits(consent.invocation_id, consent=consent.consent)
@@ -599,6 +638,7 @@ class RunPodLeaseOwner:
                 previous = None
             if previous is not None and (
                 record["state"] != "claimed" or previous["state"] != "idle"
+                or (previous.get("reset") or {}).get("state") == "pending"
                 or previous["owner_epoch"] != self.epoch
                 or self.clock() >= previous["idle_expires_at"]
                 or self.clock() >= previous["paid_expires_at"]
@@ -791,7 +831,8 @@ class RunPodLeaseOwner:
                                    if outcome != "success" else None,
                                    "structural_node_ids": sorted(node_ids) if outcome != "success" else [],
                                    "structural_names": sorted(node_names) if outcome != "success" else []},
-                         state="idle", idle_expires_at=(lease["paid_expires_at"] if lease.get("keep_until_release")
+                         state=("active" if (lease.get("reset") or {}).get("state") == "pending" else "idle"),
+                         idle_expires_at=(lease["paid_expires_at"] if lease.get("keep_until_release")
                          else min(self.clock() + lease["idle_seconds"], lease["paid_expires_at"])))
             record = self._save(record, lease)
             record = self._sync_deadline(record)

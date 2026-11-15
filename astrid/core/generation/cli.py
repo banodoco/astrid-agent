@@ -550,6 +550,7 @@ def _job_command(argv: list[str]) -> int:
     parser.add_argument('entry')
     parser.add_argument('--placement', required=True, choices=('local',))
     parser.add_argument('--job', required=True, metavar='FILE')
+    parser.add_argument('--check-entry', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--out', required=True)
     parser.add_argument('--mode')
     parser.add_argument('--align', choices=('align', 'check', 'trust'),
@@ -559,6 +560,15 @@ def _job_command(argv: list[str]) -> int:
     from astrid.core.contracts.errors import AstridError
     from astrid.core.generation.local_job import JobInputError, run_job
     from astrid.core.generation.progress import write_progress
+    if parsed.check_entry:
+        from astrid.core.generation.entry_check import selected_entry_error
+        try:
+            refusal = selected_entry_error(parsed.entry, parsed.mode)
+        except (RuntimeError, ValueError, OSError, ImportError) as exc:
+            refusal = str(exc)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 3
     try:
         result = run_job(parsed.entry, parsed.job, parsed.out, mode=parsed.mode, align=parsed.align)
     except AstridError:
