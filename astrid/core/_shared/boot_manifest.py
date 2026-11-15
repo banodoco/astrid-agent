@@ -437,7 +437,13 @@ def stamp_boot_manifest(
     registry: Mapping[str, Any] | None = None,
     fixtures: Iterable[Any] | None = None,
     profile_order: Iterable[str] = _DEFAULT_PROFILE_ORDER,
+    write: bool = True,
 ) -> dict[str, Any]:
+    """Validate live identity; publish only when the caller admits a new host.
+
+    ``write=False`` previews the same drift checks and live identity without
+    creating a stamp, backup or directory, or changing resident provenance.
+    """
     raw_path = Path(manifest_path).expanduser()
     if raw_path.is_symlink() or (raw_path.exists() and not raw_path.is_file()):
         raise BootManifestCorrupt(
@@ -475,7 +481,10 @@ def stamp_boot_manifest(
             drift = sorted(set(stored) | set(current))
             details = "; ".join(f"key={key} stamped={stored.get(key)!r} live={current.get(key)!r}" for key in drift if stored.get(key) != current.get(key))
             raise BootManifestDrift(f"boot manifest disagrees with live registry/fixtures at {path}: {details}")
-        _preserve_pre_restamp(path, stored)
+        if write:
+            _preserve_pre_restamp(path, stored)
+    if not write:
+        return current
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
     try:
