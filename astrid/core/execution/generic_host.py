@@ -317,8 +317,10 @@ def _terminal_publication_rejection(
 def _persist_terminal_request(path: Path, request: Mapping[str, Any]) -> None:
     """Keep the exact fenced wire request before sending any terminal mutation."""
     temporary = path.with_suffix(".tmp")
+    from runtime_protocol.platform import owner_only
+
     with temporary.open("w", encoding="utf-8") as stream:
-        os.fchmod(stream.fileno(), 0o600)
+        owner_only(stream.fileno())  # 0600 on POSIX; owner-only DACL on Windows
         json.dump(request, stream, separators=(",", ":"), allow_nan=False)
         stream.flush()
         os.fsync(stream.fileno())

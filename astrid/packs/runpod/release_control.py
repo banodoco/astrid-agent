@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from runtime_protocol import platform
+
 _MAX_MESSAGE = 4096
 _SCHEMA = "astrid.runpod.release-control.v1"
 
@@ -96,7 +98,7 @@ class ReleaseControlServer:
         }, separators=(",", ":")).encode("utf-8")
         fd, temporary = tempfile.mkstemp(prefix=".runpod-release-", dir=self.path.parent)
         try:
-            os.fchmod(fd, 0o600)
+            platform.owner_only(fd)
             stream = os.fdopen(fd, "wb")
             fd = -1  # The stream owns it; its number may be reused after close.
             with stream:
@@ -176,10 +178,11 @@ def request_release(claim_path: Path, operation_id: str, pod_id: str) -> Mapping
     fd = os.open(path, flags)
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
-            raise RuntimeError("retained RunPod release endpoint is not private")
         if hasattr(os, "getuid") and info.st_uid != os.getuid():
             raise RuntimeError("retained RunPod release endpoint has a different owner")
+        # POSIX: 0600 and this user; Windows: a protected owner-only DACL.
+        if not stat.S_ISREG(info.st_mode) or not platform.is_owner_only(fd):
+            raise RuntimeError("retained RunPod release endpoint is not private")
         with os.fdopen(fd, "r", encoding="utf-8") as stream:
             fd = -1
             encoded = stream.read(_MAX_MESSAGE + 1)
