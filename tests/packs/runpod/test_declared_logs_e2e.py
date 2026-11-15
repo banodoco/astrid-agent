@@ -198,6 +198,18 @@ sys.exit(2)
     engine_copy = out / 'logs/engine.log'
     data = engine_copy.read_bytes()
     engine_copy.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+    # The transfer now reads a sealed bundle, so corrupt the same log member
+    # in that bundle as well; retain the original DigestMismatch oracle.
+    import io
+    import tarfile
+    bundle = run_root / machine.LOGS_ARCHIVE
+    with tarfile.open(bundle, 'r:') as archive:
+        members = [(member, archive.extractfile(member).read()) for member in archive.getmembers()]
+    with tarfile.open(bundle, 'w') as archive:
+        for member, body in members:
+            if member.name == 'engine.log':
+                body = engine_copy.read_bytes()
+            archive.addfile(member, io.BytesIO(body))
     with pytest.raises(machine.MachineError, match='exit 2') as tampered:
         owner.fetch(run, tmp_path / 'tampered')
     bad_receipt = failure_receipt.record_failure({'failure': tampered.value, 'stage': 'fetch', 'lease': lease, 'run': run},

@@ -152,9 +152,9 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     # Claim on a fresh pod: the reset takes the empty-realm template and writes ready.json.
     assert record["lease"]["preparation"]["pod_ready"] == {"entry": None, "ready": True, "found": "absent",
                                                            "reset": "taken"}
-    # The job's one command extracts the selection and checks the entry, then runs.
+    # The verified dispatch extracted the selection before the job checks it.
     generation = next(line for line in c.pod.job_log if " generate cpu-image " in line)
-    assert "tar -xzf" in generation and "generate list --json" in generation
+    assert "/selection/selection.json" in generation and "generate list --json" in generation
     # After the fetch, before settle: the reset removed the run and job folders.
     reset = c.pod.resets[-1]
     assert reset["ok"] and reset["active"] == {"run_id": reset["dirs"][0].rsplit("/", 1)[1], "task": "task",
@@ -164,9 +164,9 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     assert not [path for path in c.pod.files if path.startswith(reset["dirs"][0] + "/")]
     assert c.creates == 1 and c.deletes == []
     assert [kind for kind, _ in c.active] == ["begin", "done"]
-    # Inputs shipped inside the job directory, each digest-checked after upload.
-    shipped = [path for path in c.pod.put_log if "/in/" in path]
-    assert len(shipped) == 3 and any(path.endswith("job.json") for path in c.pod.put_log)
+    # Every input and job.json travels in the one authenticated dispatch bundle.
+    shipped = [path for path in c.pod.put_log if "/runs/" in path]
+    assert len(shipped) == 1 and shipped[0].endswith("/dispatch.tar")
     # A second job on the warm machine fetches and installs nothing again.
     jobs = len(c.pod.job_log)
     second = c.job(2)
@@ -179,6 +179,162 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
     c.host.release()
     assert c.deletes == ["pod-1"]
+
+
+def test_warm_second_job_transport_budget(machine_case, monkeypatch):
+    """G1/G4: cap the complete warm path, including claim and safe reset."""
+    from collections import Counter
+
+    c = machine_case
+    _claim_machine(c)
+    first = c.job()
+    run_on_machine(c.machine, first, destination=first.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda _: None)
+    counts = Counter()
+    calls = []
+    for name in ("exec", "put", "get", "job_start", "job_poll"):
+        original = getattr(c.pod, name)
+
+        def counted(*args, _name=name, _original=original, **kwargs):
+            counts[_name] += 1
+            calls.append((_name, args[0]))
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(c.pod, name, counted)
+    job = c.job(2)
+    result = run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                            sleep=lambda _: None)
+    # Fixed budget for a completed-on-first-poll, model-free canonical job.
+    # Real jobs add two ops per additional generation poll, one per reset poll,
+    # and transfer chunks within put/get; the budget is not a network RTT claim.
+    assert sum(counts.values()) <= 20, dict(counts)
+    assert not any(name == "exec" and "sha256sum " in command for name, command in calls)
+    assert counts["put"] == 1
+    assert not any(name == "exec" and command.startswith("mkdir ") for name, command in calls)
+    gets = [path for name, path in calls if name == "get"]
+    assert sum(path.endswith("/outputs.tar") for path in gets) == 1
+    assert not any("/out/" in path for path in gets)
+    assert (Path(result["files"]["artifacts/cpu.png"])).read_bytes() == b"png-bytes"
+    assert counts["job_start"] == 2  # generation and mandatory realm reset
+    assert counts["job_poll"] == 2  # reuse the generation's durable terminal record at fetch
+    reset_reads = [command for name, command in calls
+                   if name == "exec" and command.startswith("cat ") and " && rm -rf " in command]
+    assert len(reset_reads) == 1
+    assert not any(name == "exec" and command.startswith("rm -rf ") for name, command in calls)
+    assert c.creates == 1 and c.deletes == []
+
+
+def test_batch_upload_verification_refuses_corruption_before_launch(machine_case):
+    c = machine_case
+    _claim_machine(c)
+    lease = c.machine.claim(c.job())
+    jobs = list(c.pod.job_log)
+    c.pod.corrupt_put = True
+    with pytest.raises(rm.DigestMismatch, match="job uploads"):
+        c.machine.start(lease, c.job())
+    assert c.pod.job_log == jobs
+    c.machine.release(lease, False)
+
+
+@pytest.mark.parametrize("hardlink", [False, True])
+def test_output_archive_program_and_single_download_verify_all_members(tmp_path, hardlink):
+    import shlex
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    root = tmp_path / "remote"
+    out = root / "out"
+    out.mkdir(parents=True)
+    (out / "one.png").write_bytes(b"image")
+    (out / "run.json").write_text("{}")
+    if hardlink:
+        (out / "alias.png").hardlink_to(out / "one.png")
+    argv = shlex.split(rm.output_manifest_command(str(root)))
+    argv[0] = sys.executable
+    result = subprocess.run(argv, capture_output=True, text=True, check=True)
+    digest = next(line.removeprefix(rm.MANIFEST_MARK) for line in result.stdout.splitlines()
+                  if line.startswith(rm.MANIFEST_MARK))
+    calls = []
+
+    def get(remote, local):
+        calls.append(remote)
+        Path(local).write_bytes(Path(remote).read_bytes())
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    files = rm._fetch_output_archive(SimpleNamespace(get=get), str(root / rm.OUTPUT_ARCHIVE),
+                                     tmp_path / "landed", scratch, digest)
+    assert set(files) == ({"one.png", "run.json", "alias.png"} if hardlink else {"one.png", "run.json"})
+    if hardlink:
+        assert Path(files["alias.png"]).read_bytes() == b"image"
+    assert Path(files["one.png"]).read_bytes() == b"image"
+    assert len(calls) == 1
+    assert not (scratch / rm.OUTPUT_ARCHIVE).exists()
+
+
+@pytest.mark.parametrize("fault", ["digest", "path", "symlink", "hardlink", "duplicate", "undeclared", "size", "content"])
+def test_output_archive_refuses_unsafe_or_unverified_members(tmp_path, fault):
+    import hashlib
+    import io
+    import tarfile
+    from types import SimpleNamespace
+
+    name = "../escape" if fault == "path" else "image.png"
+    data = b"image"
+    body = json.dumps({"files": {name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}}}).encode()
+    digest = hashlib.sha256(body).hexdigest()
+    source = tmp_path / "source.tar"
+    with tarfile.open(source, "w") as archive:
+        manifest = tarfile.TarInfo(rm.MANIFEST_NAME)
+        manifest.size = len(body)
+        archive.addfile(manifest, io.BytesIO(body))
+        member = tarfile.TarInfo(name)
+        member_data = data + b"x" if fault == "size" else data
+        if fault == "content":
+            member_data = b"other"  # same size, wrong digest; manifest remains authentic
+        member.size = len(member_data)
+        if fault in {"symlink", "hardlink"}:
+            member.type = tarfile.SYMTYPE if fault == "symlink" else tarfile.LNKTYPE
+            member.linkname = "elsewhere"
+            member.size = 0
+        archive.addfile(member, io.BytesIO(member_data))
+        if fault == "duplicate":
+            archive.addfile(member, io.BytesIO(data))
+        if fault == "undeclared":
+            archive.addfile(tarfile.TarInfo("surprise"), io.BytesIO())
+    if fault == "digest":
+        digest = "0" * 64
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    ops = SimpleNamespace(get=lambda remote, local: Path(local).write_bytes(source.read_bytes()))
+    with pytest.raises(rm.DigestMismatch):
+        rm._fetch_output_archive(ops, "remote", tmp_path / "landed", scratch, digest)
+    assert not (tmp_path / "escape").exists()
+    assert not (scratch / rm.OUTPUT_ARCHIVE).exists()
+
+
+def test_finish_logs_collects_all_streams_in_one_declaration_process(tmp_path):
+    import shlex
+    import subprocess
+    import sys
+
+    from astrid.core._shared import run_logs
+
+    root, job = tmp_path / "run", tmp_path / "detached"
+    root.mkdir()
+    job.mkdir()
+    (job / "stdout").write_text("job output\n")
+    (job / "stderr").write_text("job error\n")
+    (root / "result.json").write_text('{"ok":true}\n')
+    command = rm.finish_command(str(root), python=sys.executable)
+    assert command.count(shlex.quote(sys.executable) + " -c ") == 1
+    result = subprocess.run(["bash", "-c", command, str(job / "command.sh")],
+                            capture_output=True, text=True, check=True)
+    rows = {row["name"]: row for row in run_logs.read_index(root / "out")}
+    assert set(rows) == {"job.stdout", "job.stderr", "generation.stdout"}
+    assert all(not row.get("missing") for row in rows.values())
+    assert result.stdout.startswith(rm.LOGS_MANIFEST_MARK)
 
 
 def test_job_cannot_change_claim_idle_timeout(machine_case):
@@ -770,7 +926,7 @@ def test_cancel_during_shipping_stops_within_one_chunk_and_launches_nothing(mach
         path = metadata["path"]
         assert int(request.url.params["offset"]) == len(c.pod.files[path])
         c.pod.files[path] += request.content
-        if path.endswith(".bin"):
+        if path.endswith("/dispatch.tar"):
             chunks.append(len(request.content))
             abort.set()  # The first in-flight chunk finishes after force_abort sets its signal.
         size = len(c.pod.files[path])
